@@ -33,7 +33,7 @@ Every contribution lives in its own folder, so two people never edit the same fi
 
 ```text
 community/
-  10.1111_1468-0017.00215/            one folder per paper key
+  doi_10.1111_1468-0017.00215/        one folder per paper key (`:` and `/` become `_`)
     paper.json                        DOI, title, authors, year, venue (first contributor writes it)
     knobe-2003--hs-7f3a/              <slug>--<contributor id>: a contribution
     knobe-2003--gh-xuanl17/
