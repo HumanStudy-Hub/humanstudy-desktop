@@ -1,16 +1,21 @@
 // Mock kernel: streams a plausible reply with one tool step, for UI work without opencode.
 import { Emitter } from './types'
-import type { Kernel, KernelEvent } from './types'
+import type { Kernel, KernelEvent, PermissionReply } from './types'
 
 export interface MockOptions {
   /** Delay between streamed chunks in ms (default 40). Tests pass 0. */
   tickMs?: number
 }
 
+type Step = Omit<KernelEvent, 'sessionId'>
+
 export class MockKernel implements Kernel {
   readonly name = 'mock'
   private emitter = new Emitter()
-  private sessions = new Map<string, { dir: string; timers: Set<NodeJS.Timeout>; busy: boolean }>()
+  private sessions = new Map<
+    string,
+    { dir: string; timers: Set<NodeJS.Timeout>; busy: boolean; pending?: { id: string; rest: Step[] } }
+  >()
   private counter = 0
   private tickMs: number
 
@@ -30,7 +35,7 @@ export class MockKernel implements Kernel {
     if (s.busy) throw new Error('session is busy')
     s.busy = true
 
-    const steps: Omit<KernelEvent, 'sessionId'>[] = [{ type: 'status', text: 'busy' }]
+    const steps: Step[] = [{ type: 'status', text: 'busy' }]
     const say = (t: string): void => {
       for (const w of t.match(/\S+\s*/g) ?? []) steps.push({ type: 'text', text: w })
     }
@@ -43,8 +48,50 @@ export class MockKernel implements Kernel {
         'Items without a verbatim source are labelled missing. ' +
         'Install opencode and set OPENROUTER_API_KEY to talk to a real agent.'
     )
-    steps.push({ type: 'done' })
+    const tokens = Math.max(1, Math.ceil(text.length / 4))
+    const tail: Step[] = [{ type: 'usage', usage: { input: tokens, output: 60, reasoning: 0, cost: 0 } }, { type: 'done' }]
 
+    // A resumed thread prefixes the old transcript; only the new message decides.
+    if (/\brun/i.test(text.split('</transcript>').pop() ?? text)) {
+      // Pause for approval, like a bash call under opencode's "ask" permission.
+      const head = steps.splice(0, steps.findIndex((e) => e.type === 'tool'))
+      const id = `mockperm_${++this.counter}`
+      s.pending = { id, rest: [...steps, ...tail] }
+      head.push({
+        type: 'permission',
+        permission: { id, type: 'bash', title: 'python run_simulation.py', patterns: ['python run_simulation.py'] },
+      })
+      this.play(sessionId, head)
+      return
+    }
+    this.play(sessionId, [...steps, ...tail])
+  }
+
+  async reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void> {
+    const s = this.sessions.get(sessionId)
+    if (!s?.pending || s.pending.id !== permissionId) throw new Error(`no pending permission ${permissionId}`)
+    const { rest } = s.pending
+    s.pending = undefined
+    const steps: Step[] = [{ type: 'permission', permission: { id: permissionId, type: 'bash', resolved: response } }]
+    if (response === 'reject') {
+      steps.push({ type: 'tool', tool: 'bash', text: 'error', detail: 'The user rejected this call' })
+      steps.push({ type: 'text', text: 'Understood, I did not run it. ' })
+      steps.push(...rest.filter((e) => e.type === 'usage' || e.type === 'done'))
+    } else {
+      steps.push({ type: 'tool', tool: 'bash', text: 'running', detail: 'python run_simulation.py' })
+      steps.push({ type: 'tool', tool: 'bash', text: 'completed', detail: 'python run_simulation.py' })
+      steps.push(...rest)
+    }
+    this.play(sessionId, steps)
+  }
+
+  async resumeSession(_projectDir: string, sessionId: string): Promise<string | null> {
+    return this.sessions.has(sessionId) ? sessionId : null
+  }
+
+  private play(sessionId: string, steps: Step[]): void {
+    const s = this.sessions.get(sessionId)
+    if (!s) return
     let delay = 0
     for (const step of steps) {
       delay += this.tickMs
@@ -62,6 +109,7 @@ export class MockKernel implements Kernel {
     if (!s || !s.busy) return
     for (const t of s.timers) clearTimeout(t)
     s.timers.clear()
+    s.pending = undefined
     s.busy = false
     this.emitter.emit({ sessionId, type: 'status', text: 'aborted' })
     this.emitter.emit({ sessionId, type: 'done' })

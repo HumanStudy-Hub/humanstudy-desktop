@@ -11,22 +11,43 @@
 //   - GET  /event: SSE, `data: {id,type,properties}` frames, first `server.connected` (live)
 //   - Event types used: message.updated {info:{id,role}}, message.part.updated {part},
 //     message.part.delta {messageID,partID,field,delta}, session.status {status:{type}},
-//     session.idle, session.error {error:{name,data:{message}}}, permission.asked  (live spec;
-//     text/error/idle path observed live, tool parts only from the schema - not observed,
-//     because no real OpenRouter key was available while writing this)
+//     session.idle, session.error {error:{name,data:{message}}}, permission.asked  (live; tool parts
+//     and permissions observed live in wave M2)
 //   - OPENCODE_CONFIG_CONTENT (inline config, highest precedence) and `{env:VAR}`
 //     substitution are documented; verified live that the config is applied.
+//
+// Added in wave M2 (all verified live on 1.18.21, using a local OpenAI-compatible stub as the model so
+// real bash/write tool calls and a real title/usage round trip happened):
+//   - Permissions: config key `permission: {edit:"ask", bash:"ask"}` (PermissionConfig in the spec;
+//     values ask|allow|deny; per the docs opencode allows most tools by default). Event
+//     `permission.asked` properties = {id:"per_..", sessionID, permission:"bash"|"edit"|
+//     "external_directory"|.., patterns[], metadata, always[], tool?}. metadata: bash {command},
+//     edit {filepath, diff}; external_directory {filepath, parentDir}. NOTE edit `patterns` are relative
+//     to opencode's worktree root ("/" outside git), so the absolute `metadata.filepath` is used.
+//   - Reply: POST /permission/{requestID}/reply {reply:"once"|"always"|"reject"} -> true.
+//     Unknown id -> 404 {_tag:"PermissionNotFoundError"}. The older POST
+//     /session/{id}/permissions/{permissionID} {response} still exists and is the fallback.
+//     `permission.replied` {sessionID, requestID, reply} follows every reply. A rejected call ends as
+//     tool state `error` ("The user rejected permission ...") and the turn still reaches idle.
+//   - Usage: `message.updated` for an assistant message carries info.tokens {input, output, reasoning,
+//     total, cache{read,write}} and info.cost (number); `info.time.completed` is set when the message
+//     is final. One assistant message per model step, so a tool-using turn yields several.
+//   - Title: sessions created without a title get "New session - <iso>"; opencode then renames them
+//     via `session.updated` {info:{title}} after the first reply (needs small_model, which we set).
+//   - Sessions persist on disk: a freshly started server answers GET /session/{id} (200) for a session
+//     made by an earlier server (404 {name:"NotFoundError"} when it does not exist), so resume works
+//     across app restarts. GET /session/{id}/message and GET /session exist (see spec) but are unused.
 // Not verified: whether `message.part.delta` is emitted for every provider (we also fall back
-// to diffing `message.part.updated` text), and permission-reply flow (we only surface it).
+// to diffing `message.part.updated` text), and the real OpenRouter / hosted proxy token counts.
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { accessSync, constants } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { delimiter, join, relative, isAbsolute, resolve } from 'node:path'
 import { Emitter } from './types'
-import type { Kernel, KernelEvent } from './types'
+import type { Kernel, KernelEvent, KernelPermission, PermissionReply } from './types'
 
 export const DEFAULT_PROVIDER = 'openrouter'
 export const DEFAULT_MODEL = 'anthropic/claude-sonnet-5.5'
@@ -118,12 +139,17 @@ interface SessionState {
   partTypes: Map<string, string> // partID -> part type
   emitted: Map<string, number> // text partID -> chars already emitted
   toolStatus: Map<string, string> // tool partID -> last emitted status
+  usageSent: Set<string> // assistant messageIDs whose usage was already emitted
+  title: string // last session title emitted
 }
 
 export interface OpencodeOptions {
   binary?: string
   provider?: string
   model?: string
+  /** 'ask': every edit/bash call goes to the renderer. 'project': those inside the project folder are
+   *  approved automatically. Default: HUMANSTUDY_PERMISSION env (set from Settings), else 'ask'. */
+  permission?: 'ask' | 'project'
   readyTimeoutMs?: number
 }
 
@@ -138,6 +164,7 @@ export class OpencodeKernel implements Kernel {
   private provider: string
   private model: string
   private readyTimeoutMs: number
+  private permission: 'ask' | 'project' | undefined
   private exitHook = (): void => this.killAll('SIGKILL')
 
   constructor(opts: OpencodeOptions = {}) {
@@ -150,6 +177,7 @@ export class OpencodeKernel implements Kernel {
     this.model = opts.model ?? process.env.HUMANSTUDY_MODEL ?? DEFAULT_MODEL
     if (this.provider === 'openrouter' && !process.env.OPENROUTER_API_KEY && !opts.provider) this.provider = ''
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 30_000
+    this.permission = opts.permission
     process.once('exit', this.exitHook)
   }
 
@@ -157,18 +185,60 @@ export class OpencodeKernel implements Kernel {
 
   async startSession(projectDir: string): Promise<string> {
     const server = await this.serverFor(projectDir)
-    const res = await this.request(server, 'POST', '/session', { title: 'HumanStudy' })
+    // No title: opencode names a default-titled session itself after the first reply (session.updated).
+    const res = await this.request(server, 'POST', '/session', {})
     const info = (await res.json()) as { id?: string }
     if (!info.id) throw new Error('opencode: session create returned no id')
-    this.sessions.set(info.id, {
+    this.register(info.id, server)
+    return info.id
+  }
+
+  async resumeSession(projectDir: string, sessionId: string): Promise<string | null> {
+    const known = this.sessions.get(sessionId)
+    if (known && !known.server.exited) return sessionId
+    // opencode keeps sessions on disk, so a freshly started server may still know this one.
+    const server = await this.serverFor(projectDir)
+    const res = await fetch(server.base + `/session/${encodeURIComponent(sessionId)}`, {
+      headers: { authorization: server.auth },
+    })
+    if (res.status === 404 || res.status === 400) return null
+    if (!res.ok) throw new Error(`opencode GET /session/${sessionId} -> ${res.status}`)
+    this.register(sessionId, server)
+    return sessionId
+  }
+
+  private register(id: string, server: Server): void {
+    this.sessions.set(id, {
       server,
       inFlight: false,
       roles: new Map(),
       partTypes: new Map(),
       emitted: new Map(),
       toolStatus: new Map(),
+      usageSent: new Set(),
+      title: '',
     })
-    return info.id
+  }
+
+  async reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void> {
+    await this.replyTo(this.session(sessionId).server, sessionId, permissionId, response)
+  }
+
+  private async replyTo(server: Server, sessionId: string, permissionId: string, response: PermissionReply): Promise<void> {
+    const post = (path: string, body: unknown): Promise<Response> =>
+      fetch(server.base + path, {
+        method: 'POST',
+        headers: { authorization: server.auth, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    let res = await post(`/permission/${encodeURIComponent(permissionId)}/reply`, { reply: response })
+    if (res.status === 404 || res.status === 405) {
+      const text = await res.clone().text()
+      // Older servers only have the (now deprecated) per-session route.
+      if (!text.includes('PermissionNotFound'))
+        res = await post(`/session/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}`, { response })
+    }
+    if (!res.ok) throw new Error(`opencode permission reply -> ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`)
   }
 
   async send(sessionId: string, text: string): Promise<void> {
@@ -223,6 +293,10 @@ export class OpencodeKernel implements Kernel {
 
   // ---- server lifecycle ---------------------------------------------------------------
 
+  private permissionMode(): 'ask' | 'project' {
+    return this.permission ?? (process.env.HUMANSTUDY_PERMISSION === 'project' ? 'project' : 'ask')
+  }
+
   private session(id: string): SessionState {
     const s = this.sessions.get(id)
     if (!s) throw new Error(`unknown session ${id}`)
@@ -247,6 +321,9 @@ export class OpencodeKernel implements Kernel {
       ...(model ? { model, small_model: model } : {}), // small_model: otherwise titles go to opencode's own default
       autoupdate: false,
       share: 'disabled',
+      // opencode allows edit/bash by default; "ask" makes it emit permission.asked, which the app
+      // answers (user prompt, or auto-approval inside the project, see handle()).
+      permission: { edit: 'ask', bash: 'ask' },
     }
     // Only point at the env var when it is set: an unset {env:} becomes "" and would clobber
     // credentials the user stored with `opencode auth login`. The key itself never enters
@@ -433,9 +510,34 @@ export class OpencodeKernel implements Kernel {
     const emit = (e: Omit<KernelEvent, 'sessionId'>): void => this.emitter.emit({ sessionId, ...e })
 
     switch (ev.type) {
-      case 'message.updated':
-        if (p.info?.id && p.info.role) s.roles.set(p.info.id, p.info.role)
+      case 'message.updated': {
+        const info = p.info
+        if (info?.id && info.role) s.roles.set(info.id, info.role)
+        // Once an assistant message is complete, report its tokens/cost (one `usage` per message).
+        if (info?.role === 'assistant' && info.time?.completed && !s.usageSent.has(info.id)) {
+          s.usageSent.add(info.id)
+          const t = info.tokens ?? {}
+          emit({
+            type: 'usage',
+            usage: {
+              input: Number(t.input) || 0,
+              output: Number(t.output) || 0,
+              reasoning: Number(t.reasoning) || 0,
+              cost: typeof info.cost === 'number' ? info.cost : undefined,
+            },
+          })
+        }
         return
+      }
+
+      case 'session.updated': {
+        const title: unknown = p.info?.title
+        if (typeof title === 'string' && title && title !== s.title) {
+          s.title = title
+          if (!isDefaultTitle(title)) emit({ type: 'title', text: title })
+        }
+        return
+      }
 
       case 'message.part.delta': {
         if (p.field !== 'text' || typeof p.delta !== 'string') return
@@ -495,16 +597,81 @@ export class OpencodeKernel implements Kernel {
         return
       }
 
-      case 'permission.asked':
-        // Surfaced only; replying (POST /permission/:id/reply) is left to the app layer.
-        emit({ type: 'status', text: 'permission', detail: `${p.permission} ${(p.patterns ?? []).join(' ')}`.trim() })
+      case 'permission.asked': {
+        const perm = toKernelPermission(p)
+        if (!perm) return
+        if (this.permissionMode() === 'project' && isInsideProject(s.server.dir, perm)) {
+          // Settings -> "allow inside the project": answer without bothering the user.
+          this.replyTo(s.server, sessionId, perm.id, 'always').then(
+            () => emit({ type: 'permission', permission: { ...perm, resolved: 'always' } }),
+            () => emit({ type: 'permission', permission: perm }) // could not auto-reply: ask the user
+          )
+          return
+        }
+        emit({ type: 'permission', permission: perm })
         return
+      }
+
+      case 'permission.replied': {
+        const reply = p.reply ?? p.response
+        if (p.requestID && (reply === 'once' || reply === 'always' || reply === 'reject'))
+          emit({ type: 'permission', permission: { id: p.requestID, type: '', resolved: reply } })
+        return
+      }
     }
   }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type OcEvent = { type: string; properties?: any }
+
+const isDefaultTitle = (t: string): boolean => /^(new session|child session)\b/i.test(t) || t === 'HumanStudy'
+
+/** opencode `permission.asked` properties -> KernelPermission. */
+export function toKernelPermission(p: {
+  id?: string
+  permission?: string
+  patterns?: string[]
+  metadata?: Record<string, unknown>
+}): KernelPermission | null {
+  if (!p.id) return null
+  const patterns = Array.isArray(p.patterns) ? p.patterns.filter((x): x is string => typeof x === 'string') : []
+  const md = p.metadata ?? {}
+  const pick = (k: string): string | undefined => (typeof md[k] === 'string' && md[k] ? (md[k] as string) : undefined)
+  const title = pick('command') ?? pick('filepath') ?? pick('filePath') ?? pick('description') ?? (patterns.join(' ') || undefined)
+  return { id: p.id, type: p.permission ?? 'unknown', title: title?.slice(0, 300), patterns, metadata: md }
+}
+
+/** Tool permissions that are safe to auto-approve when "inside the project": edit/write patterns that
+ *  resolve under `dir`, and bash commands that name no path outside it. Anything else is asked. */
+export function isInsideProject(dir: string, perm: KernelPermission): boolean {
+  const inside = (p: string): boolean => {
+    const abs = isAbsolute(p) ? p : resolve(dir, p)
+    const rel = relative(dir, abs)
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  }
+  if (perm.type === 'edit' || perm.type === 'write') {
+    // patterns are relative to opencode's worktree root ("/" outside git), so prefer the absolute filepath.
+    const fp = perm.metadata?.filepath ?? perm.metadata?.filePath
+    const paths = typeof fp === 'string' && fp ? [fp] : perm.patterns?.length ? perm.patterns : []
+    return paths.length > 0 && paths.every((x) => inside(x.replace(/[*?].*$/, '') || '.'))
+  }
+  if (perm.type === 'bash') {
+    // Patterns are command lines. Reject absolute/home/parent paths and shell indirection we cannot judge.
+    return (perm.patterns ?? []).length > 0 &&
+      (perm.patterns ?? []).every((cmd) => {
+        if (/[`$]\(|`|\$\{|\|\s*(sh|bash|zsh)\b|\bsudo\b|\brm\s+-\w*[rf]/.test(cmd)) return false
+        return cmd
+          .split(/\s+/)
+          .every((tok) => {
+            const t = tok.replace(/^["']|["']$/g, '')
+            if (t.startsWith('~') || t === '..' || t.startsWith('../') || t.includes('/../')) return false
+            return !isAbsolute(t) || inside(t)
+          })
+      })
+  }
+  return false
+}
 
 function summarizeInput(input: unknown): string {
   if (!input || typeof input !== 'object') return ''

@@ -4,9 +4,9 @@ import { MockKernel } from './mock'
 import { OpencodeKernel, findOpencode } from './opencode'
 import type { Kernel } from './types'
 
-export type { Kernel, KernelEvent, KernelEventType } from './types'
+export type { Kernel, KernelEvent, KernelEventType, KernelPermission, KernelUsage, PermissionReply } from './types'
 export { MockKernel } from './mock'
-export { OpencodeKernel, findOpencode, DEFAULT_MODEL, DEFAULT_PROVIDER } from './opencode'
+export { OpencodeKernel, findOpencode, isInsideProject, toKernelPermission, DEFAULT_MODEL, DEFAULT_PROVIDER } from './opencode'
 
 export function createKernel(): Kernel {
   const forced = process.env.HUMANSTUDY_KERNEL

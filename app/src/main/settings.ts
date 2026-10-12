@@ -71,6 +71,7 @@ export function applySettings(): void {
   const s = getSettings()
   nativeTheme.themeSource = s.theme
   process.env.HUMANSTUDY_MODEL = s.model
+  process.env.HUMANSTUDY_PERMISSION = s.permission
   ensureProjectsRoot()
 }
 
