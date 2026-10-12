@@ -6,7 +6,25 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { providers } from './credentials'
 import { getSettings } from './settings'
+import { execFileSync } from 'node:child_process'
 import { createAccount, DEFAULT_SERVER, type Account, type AccountStore } from './account-core'
+
+/** A dogfood build targets a preview server chosen at build time (MAIN_VITE_HUMANSTUDY_SERVER).
+ * A preview is protected by Vercel, so its bypass secret is read from the macOS Keychain item
+ * `humanstudy-dev-bypass` at runtime; nothing secret is bundled. Env vars still take precedence. */
+function configureServer(): void {
+  const built = import.meta.env.MAIN_VITE_HUMANSTUDY_SERVER?.trim()
+  if (!process.env.HUMANSTUDY_SERVER?.trim() && built) process.env.HUMANSTUDY_SERVER = built
+  const server = process.env.HUMANSTUDY_SERVER?.trim()
+  if (process.env.HUMANSTUDY_SERVER_BYPASS || !server || process.platform !== 'darwin') return
+  if (!/\.vercel\.app$/.test(new URL(server).hostname)) return
+  try {
+    process.env.HUMANSTUDY_SERVER_BYPASS = execFileSync('security', ['find-generic-password', '-s', 'humanstudy-dev-bypass', '-a', 'vercel', '-w'], { encoding: 'utf8', timeout: 5000 }).trim()
+  } catch {
+    /* no Keychain item: requests to the preview will be refused until it is added */
+  }
+}
+configureServer()
 
 /** Dogfooding against a protected Vercel preview: requests to our own server carry the
  * deployment-protection bypass header (HUMANSTUDY_SERVER_BYPASS); Supabase requests do not. */
