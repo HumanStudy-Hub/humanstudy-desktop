@@ -69,7 +69,8 @@ export interface QueuedMessage {
 
 let nextId = 1
 
-export function useSession(projectDir: string | null): Session {
+/** `enabled` is false until the user has hosted model access and the research agreement; no kernel session starts before. */
+export function useSession(projectDir: string | null, enabled = true): Session {
   const [id, setId] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [busy, setBusy] = useState(false)
@@ -133,7 +134,7 @@ export function useSession(projectDir: string | null): Session {
     setResumed(false)
     setBusyBoth(false)
     setError(null)
-    if (!projectDir) return
+    if (!projectDir || !enabled) return
     let live = true
     setStatus('Starting agent…')
     ;(async () => {
@@ -147,7 +148,7 @@ export function useSession(projectDir: string | null): Session {
     return () => {
       live = false
     }
-  }, [projectDir, activate])
+  }, [projectDir, enabled, activate])
 
   useEffect(
     () =>

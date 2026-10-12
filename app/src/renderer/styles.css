@@ -657,3 +657,12 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
 .kernel-error { display: flex; gap: 10px; align-items: baseline; justify-content: space-between; }
 .kernel-error span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kernel-error .link { color: var(--danger); text-decoration: underline; flex: none; }
+
+/* Research data agreement */
+.consent-text ul { margin: 0 0 9px; padding-left: 20px; }
+.consent-text li { margin: 2px 0; }
+.agreement-lock {
+  margin: 10px 14px 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg-soft, transparent); font-size: 13px; color: var(--muted, inherit);
+}
+.agreement-lock .link { font-size: inherit; }

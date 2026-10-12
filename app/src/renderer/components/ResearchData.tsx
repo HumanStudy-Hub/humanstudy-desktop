@@ -1,7 +1,6 @@
-// Research data: the first-run consent dialog and the Settings → Research data section. Both use
-// the same plain-language explanation and the same two separate choices.
+// Research data: the mandatory research data agreement dialog and the Settings → Research data section.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { TelemetryConsent, TelemetryRecent, TelemetryStatus } from '../../preload/types'
+import type { TelemetryRecent, TelemetryStatus } from '../../preload/types'
 
 /** Electron prefixes errors from ipcMain handlers; show only the message the main process wrote. */
 function errorText(e: unknown, fallback: string): string {
@@ -9,109 +8,71 @@ function errorText(e: unknown, fallback: string): string {
   return msg.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '') || fallback
 }
 
-export function ConsentExplainer() {
+export function AgreementText() {
   return (
     <div className="consent-text">
       <p>
-        HumanStudy Hub is a research platform. With your permission, we record how researchers work with the study
-        agent so we can study human–AI research practice and improve the app. Interaction data is research data:
-        you choose what is collected, you can see exactly what is sent, and you can withdraw and delete it at any
-        time.
+        HumanStudy Hub is a research platform. To use the study agent you agree that HumanStudy Hub stores
+        everything needed to replay your session, for research on how social scientists work with AI:
+      </p>
+      <ul>
+        <li>your conversation with the agent, in full;</li>
+        <li>the files the agent writes in your projects;</li>
+        <li>your actions in the app: clicks, selections, edits and which panels you open;</li>
+        <li>timings, and your account email.</li>
+      </ul>
+      <p>
+        <strong>No paper PDFs are uploaded.</strong> The data is stored by HumanStudy Hub, linked to your account,
+        and only your account and the HumanStudy Hub research team can read it.
       </p>
       <p>
-        <strong>Never collected:</strong> file contents (papers, programs, artifacts), API keys, your email
-        address, or paths outside the project. File names are sent only relative to the project folder.
-      </p>
-      <p>
-        <strong>Where it goes:</strong> the HumanStudy Hub database (Supabase), linked to your Hub account. Only
-        your account and the HumanStudy Hub research team can read it.
-      </p>
-      <p>
-        <strong>Withdraw:</strong> Settings → Research data. Turn either choice off at any time, review the last
-        100 events, or delete everything sent from your account.
+        You can download or delete your data at any time in Settings → Research data. A paid plan without data
+        collection is planned for later.
       </p>
     </div>
   )
 }
 
-function Choices({ value, onChange }: { value: TelemetryConsent; onChange(v: TelemetryConsent): void }) {
-  return (
-    <div className="consent-choices">
-      <label className="consent-choice">
-        <input
-          type="checkbox"
-          checked={value.usage}
-          onChange={(e) => onChange({ usage: e.target.checked, content: e.target.checked && value.content })}
-        />
-        <span>
-          <span className="setting-label">Usage events</span>
-          <span className="muted small">
-            App and session start and end; which features and panes you use; clicks on program items, citations
-            and tabs (ids only); timings; agent turn metadata (duration, tool names, errors); artifacts and
-            exports generated.
-          </span>
-        </span>
-      </label>
-      <label className={`consent-choice ${value.usage ? '' : 'disabled'}`}>
-        <input
-          type="checkbox"
-          checked={value.usage && value.content}
-          disabled={!value.usage}
-          onChange={(e) => onChange({ ...value, content: e.target.checked })}
-        />
-        <span>
-          <span className="setting-label">Conversation content</span>
-          <span className="muted small">
-            The text of your messages to the agent and its replies. Requires usage events.
-          </span>
-        </span>
-      </label>
-    </div>
-  )
-}
-
-export function ConsentDialog({ onDone, onLater }: { onDone(s: TelemetryStatus): void; onLater(): void }) {
-  const [value, setValue] = useState<TelemetryConsent>({ usage: false, content: false })
-  const [busy, setBusy] = useState(false)
+/** Shown right after sign-in and before any agent use. One choice: agree, or keep the agent locked. */
+export function AgreementDialog({ onDone }: { onDone(s: TelemetryStatus): void }) {
+  const [busy, setBusy] = useState<'' | 'agree' | 'decline'>('')
   const [error, setError] = useState('')
   const box = useRef<HTMLDivElement>(null)
   useEffect(() => box.current?.focus(), [])
 
-  const save = async (v: TelemetryConsent) => {
-    setBusy(true)
+  const save = async (agree: boolean) => {
+    setBusy(agree ? 'agree' : 'decline')
     setError('')
     try {
-      onDone(await window.humanstudy.telemetry.setConsent(v))
+      onDone(await window.humanstudy.telemetry.setConsent({ usage: agree, content: agree }))
     } catch (e) {
       setError(errorText(e, 'Could not save your choice.'))
-      setBusy(false)
+      setBusy('')
     }
   }
 
   return (
     <div className="overlay">
-      <div className="consent-dialog" role="dialog" aria-modal="true" aria-label="Research data" tabIndex={-1} ref={box}>
-        <h2>Help HumanStudy Hub research?</h2>
-        <ConsentExplainer />
-        <Choices value={value} onChange={setValue} />
-        <p className="muted small">Nothing is sent until you confirm. Leaving both unchecked sends nothing.</p>
+      <div className="consent-dialog" role="dialog" aria-modal="true" aria-label="Research data agreement" tabIndex={-1} ref={box}>
+        <h2>Research data agreement</h2>
+        <AgreementText />
         {error && <p className="home-error">{error}</p>}
         <div className="row-end">
-          <button className="ghost" onClick={onLater} disabled={busy}>
-            Decide later
+          <button className="ghost" onClick={() => void save(false)} disabled={Boolean(busy)}>
+            Not now
           </button>
-          <button className="primary" onClick={() => void save(value)} disabled={busy}>
-            {value.usage ? 'Confirm choices' : 'Confirm: share nothing'}
+          <button className="primary" onClick={() => void save(true)} disabled={Boolean(busy)}>
+            {busy === 'agree' ? 'Saving…' : 'I agree'}
           </button>
         </div>
+        <p className="muted small">Choosing Not now keeps you signed in, but the agent stays locked until you agree.</p>
       </div>
     </div>
   )
 }
 
-export function ResearchDataSection() {
+export function ResearchDataSection({ onReview }: { onReview(): void }) {
   const [status, setStatus] = useState<TelemetryStatus | null>(null)
-  const [draft, setDraft] = useState<TelemetryConsent>({ usage: false, content: false })
   const [recent, setRecent] = useState<TelemetryRecent[] | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [busy, setBusy] = useState('')
@@ -120,7 +81,6 @@ export function ResearchDataSection() {
 
   const apply = useCallback((s: TelemetryStatus) => {
     setStatus(s)
-    setDraft({ usage: s.usage, content: s.content })
   }, [])
   useEffect(() => {
     window.humanstudy.telemetry
@@ -141,15 +101,23 @@ export function ResearchDataSection() {
       setBusy('')
     }
   }
-  const save = (v: TelemetryConsent, message: string) =>
+  const exportData = () =>
     run(
-      'save',
+      'export',
       async () => {
-        apply(await window.humanstudy.telemetry.setConsent(v))
-        if (recent) setRecent(await window.humanstudy.telemetry.recent())
-        setNotice(message)
+        const events = await window.humanstudy.telemetry.recent()
+        const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), events }, null, 2)], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = 'humanstudy-research-data.json'
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        window.setTimeout(() => URL.revokeObjectURL(url), 2000)
+        setNotice(`Downloaded ${events.length} events (the local queue and the rows already uploaded).`)
       },
-      'Could not save your choice.'
+      'Could not export your data.'
     )
   const loadRecent = () =>
     run('recent', async () => setRecent(await window.humanstudy.telemetry.recent()), 'Could not load recent events.')
@@ -182,22 +150,20 @@ export function ResearchDataSection() {
       </section>
     )
 
-  const changed = draft.usage !== status.usage || draft.content !== status.content
-  const current = !status.decided
-    ? 'Not decided yet: nothing is collected.'
-    : status.usage
-      ? status.content
-        ? 'Sharing usage events and conversation content.'
-        : 'Sharing usage events only.'
-      : 'Not sharing anything.'
+  const agreed = status.decided && status.usage && status.content
+  const current = agreed
+    ? `Agreed${status.decidedAt ? ` on ${new Date(status.decidedAt).toLocaleDateString()}` : ''}. The agent is unlocked.`
+    : status.decided
+      ? 'Not agreed. The agent is locked.'
+      : 'Not agreed yet. The agent is locked.'
 
   return (
     <section>
       <h2>Research data</h2>
       {!status.signedIn ? (
         <p className="muted settings-lead">
-          Research data is tied to your HumanStudy Hub account. Sign in under Account to choose; while signed out
-          nothing is sent.
+          Research data is tied to your HumanStudy Hub account. Sign in under Account; while signed out nothing is
+          sent.
         </p>
       ) : (
         <p className="settings-lead">{current}</p>
@@ -207,28 +173,14 @@ export function ResearchDataSection() {
 
       <details className="consent-details">
         <summary>What is collected, why, and where it is stored</summary>
-        <ConsentExplainer />
+        <AgreementText />
       </details>
 
       {status.signedIn && (
         <>
-          <Choices value={draft} onChange={setDraft} />
           <div className="row-end">
-            {status.usage && (
-              <button
-                className="ghost danger"
-                disabled={Boolean(busy)}
-                onClick={() => void save({ usage: false, content: false }, 'Turned off. Nothing more will be sent.')}
-              >
-                Turn off
-              </button>
-            )}
-            <button
-              className="primary"
-              disabled={Boolean(busy) || (status.decided && !changed)}
-              onClick={() => void save(draft, 'Saved.')}
-            >
-              {busy === 'save' ? 'Saving…' : 'Save choices'}
+            <button className="ghost" disabled={Boolean(busy)} onClick={onReview}>
+              Review agreement
             </button>
           </div>
 
@@ -251,6 +203,9 @@ export function ResearchDataSection() {
               )}
               <button className="ghost" disabled={Boolean(busy)} onClick={() => (recent ? setRecent(null) : void loadRecent())}>
                 {recent ? 'Hide recent events' : 'View recent events'}
+              </button>
+              <button className="ghost" disabled={Boolean(busy)} onClick={() => void exportData()}>
+                {busy === 'export' ? 'Exporting…' : 'Download my data'}
               </button>
             </div>
           </div>
@@ -284,7 +239,7 @@ export function ResearchDataSection() {
           <h3>Delete my data</h3>
           <p className="muted small">
             Removes every research event stored for your account on HumanStudy Hub, and clears the events waiting
-            on this computer. This cannot be undone. Your choices above stay as they are.
+            on this computer. This cannot be undone. Your agreement stays as it is.
           </p>
           {confirmDelete ? (
             <div className="row-end">

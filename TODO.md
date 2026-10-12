@@ -9,7 +9,7 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
 - [~] **Login front and center** — Sign in / email in the Home title bar; sign-in card in the chat
       when there is no model access. (wave R1, renderer)
 - [x] **Model error without a key** — never force `openrouter/...` on opencode when no key or
-      account exists; fall back to the user's own opencode setup. (ca1438f)
+      account exists. Superseded by H1: no own-key path in the product; signed-out users get a sign-in card and no session starts. (ca1438f)
 - [x] **Bundled agent kernel** — main side done: pinned opencode 1.18.21 downloads into userData on
       first run (SHA-256, resume, `kernel.install` IPC). Progress UI still to do in the renderer. (M1)
 - [x] **Permission prompts** — opencode `permission.asked` → Allow once / Allow for this project /
@@ -33,13 +33,21 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
 - [ ] **Notarized Mac build** — Apple agreement accepted at developer.apple.com, then
       `npm run dist:mac` notarizes; publish a draft GitHub release and test auto-update. (lead)
 
+- [x] **Hosted-only product (H1)** — no API keys, no provider choice (C17 "own keys" is not a product
+      feature; `HUMANSTUDY_DEV_KEYS=1` keeps a hidden developer path). Sign in + invitation code unlocks
+      the agent; one mandatory Research data agreement (consent v2, usage + content together); "Not now"
+      locks the composer; no kernel session before hosted access and agreement. Projects folder
+      "Change…" in Settings and "Choose folder…" on Home. Still open: server/main-side capture of agent
+      files and UI actions promised by the agreement; a paid no-collection tier; gate `kernel.startSession`
+      in the main process too.
+
 ## P1 · Codex-level agent pane
 
 - [x] **Markdown rendering** of agent replies (headings, lists, tables, code with copy button,
       links open externally). (R2)
 - [x] **Tool calls as diffs** — unified diffs coloured and collapsible, file name as summary, "Show in
       Study" for program.json. (R3) Still open: summarising program.json changes as changed item titles.
-- [~] **Model picker in the composer** (hosted list + own key models) and per-turn model;
+- [~] **Model picker in the composer** (hosted list only) and per-turn model;
       recommended default Sonnet 5.5, Haiku 5.5 for quick questions. (R2)
 - [x] **Queue vs interrupt** while the agent runs (the setting exists; implement both). (R2)
 - [x] **Attach files** — drag a PDF/CSV/image into the chat or project; `@file` mentions from the

@@ -108,11 +108,13 @@ export function AboutUpdates() {
       <div className="setting-row">
         <div>
           <div className="setting-label">Agent kernel</div>
-          <div className="muted small">opencode, downloaded on first run.</div>
+          <div className="muted small">Set up automatically on first run.</div>
         </div>
-        <div className="setting-control">
-          <code className="path" title={info?.kernelPath}>{info ? (info.kernelPath ?? 'Not installed yet') : '…'}</code>
-        </div>
+        {info?.devKeys && (
+          <div className="setting-control">
+            <code className="path" title={info.kernelPath}>{info.kernelPath ?? 'Not installed yet'}</code>
+          </div>
+        )}
       </div>
       {info && (
         <p className="muted small">

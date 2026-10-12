@@ -11,7 +11,7 @@ import { useSession } from './useSession'
 import { useKernelInstall } from './useKernelInstall'
 import { ThreadMenu } from './components/Threads'
 import { UpdateNotice, useUpdateStatus } from './components/Updates'
-import { ConsentDialog } from './components/ResearchData'
+import { AgreementDialog } from './components/ResearchData'
 import { setTelemetryProject, track } from './telemetry'
 
 const PANES_KEY = 'hs.panes'
@@ -63,7 +63,34 @@ export default function App() {
   const home = useRef<HomeHandle>(null)
   const update = useUpdateStatus()
   const workbench = useRef<WorkbenchHandle>(null)
-  const session = useSession(project?.dir ?? null)
+  // Research data agreement: asked right after sign-in (per account and agreement version). The agent
+  // only starts with hosted access (or the hidden developer key path) and an accepted agreement.
+  const [research, setResearch] = useState<TelemetryStatus | null>(null)
+  const [reviewing, setReviewing] = useState(false)
+  const [devKeys, setDevKeys] = useState(false)
+  useEffect(() => {
+    window.humanstudy.app.info().then((i) => setDevKeys(Boolean(i.devKeys))).catch(() => undefined)
+  }, [])
+  const agreed = Boolean(research?.decided && research.usage && research.content)
+  const hasAccess = account?.modelAccess === 'hosted' || (devKeys && account?.modelAccess === 'own-key')
+  const agentReady = Boolean(hasAccess && agreed)
+  const session = useSession(project?.dir ?? null, agentReady)
+  useEffect(() => {
+    if (!account?.signedIn) return setResearch(null)
+    window.humanstudy.telemetry
+      ?.status()
+      .then(setResearch)
+      .catch(() => undefined)
+  }, [account?.signedIn, account?.email, settingsOpen])
+  const consent = account?.signedIn && research && (reviewing || (!research.decided && !settingsOpen)) && (
+    <AgreementDialog
+      onDone={(s) => {
+        setResearch(s)
+        setReviewing(false)
+      }}
+    />
+  )
+
   const kernel = useKernelInstall()
   const openStudy = () => {
     setPane('program', true)
@@ -106,20 +133,6 @@ export default function App() {
     window.humanstudy.account.status().then(setAccount).catch(() => undefined)
   }, [])
   useEffect(refreshAccount, [refreshAccount])
-
-  // Research data: ask once per account (and per consent version) after sign-in.
-  const [research, setResearch] = useState<TelemetryStatus | null>(null)
-  const [askLater, setAskLater] = useState(false)
-  useEffect(() => {
-    if (!account?.signedIn) return setResearch(null)
-    window.humanstudy.telemetry
-      ?.status()
-      .then(setResearch)
-      .catch(() => undefined)
-  }, [account?.signedIn, account?.email, settingsOpen])
-  const consent = account?.signedIn && research && !research.decided && !askLater && !settingsOpen && (
-    <ConsentDialog onDone={setResearch} onLater={() => setAskLater(true)} />
-  )
 
   // The explicit theme choice wins over the OS preference; 'system' defers to prefers-color-scheme.
   useEffect(() => {
@@ -234,6 +247,11 @@ export default function App() {
       account={account}
       onAccount={setAccount}
       onClose={closeSettings}
+      devKeys={devKeys}
+      onReviewAgreement={() => {
+        setSettingsOpen(null)
+        setReviewing(true)
+      }}
     />
   )
 
@@ -301,6 +319,8 @@ export default function App() {
                 onClearSelection={() => setSelected([])}
                 account={account}
                 onSettings={openSettings}
+                agreement={account?.signedIn && research ? (agreed ? 'accepted' : 'needed') : 'accepted'}
+                onReview={() => setReviewing(true)}
                 projectDir={project.dir}
                 tree={project.tree}
                 model={settings?.model ?? ''}
