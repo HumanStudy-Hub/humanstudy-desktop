@@ -8,6 +8,18 @@ import { providers } from './credentials'
 import { getSettings } from './settings'
 import { createAccount, DEFAULT_SERVER, type Account, type AccountStore } from './account-core'
 
+/** Dogfooding against a protected Vercel preview: requests to our own server carry the
+ * deployment-protection bypass header (HUMANSTUDY_SERVER_BYPASS); Supabase requests do not. */
+function withBypass(input: Parameters<typeof fetch>[0], init?: RequestInit): RequestInit | undefined {
+  const secret = process.env.HUMANSTUDY_SERVER_BYPASS?.trim()
+  const server = process.env.HUMANSTUDY_SERVER?.trim()
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+  if (!secret || !server || !url.startsWith(server)) return init
+  const headers = new Headers(init?.headers)
+  headers.set('x-vercel-protection-bypass', secret)
+  return { ...init, headers }
+}
+
 const file = (): string => join(app.getPath('userData'), 'account.json')
 
 let account: Account | null = null
@@ -16,7 +28,7 @@ export function getAccount(): Account {
   if (account) return account
   account = createAccount({
     server: process.env.HUMANSTUDY_SERVER?.trim() || DEFAULT_SERVER,
-    fetch: (...args) => fetch(...args),
+    fetch: (input, init) => fetch(input, withBypass(input, init)),
     readStore: (): AccountStore => {
       try {
         return JSON.parse(readFileSync(file(), 'utf8')) as AccountStore

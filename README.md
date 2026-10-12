@@ -27,6 +27,13 @@ npm run typecheck
 npm run dist:mac      # signed macOS build (needs a Developer ID certificate)
 ```
 
+## Dogfooding against the dev preview
+
+The `dev` branch of the website deploys to a protected Vercel preview. `npm run dev:dogfood`
+points the app at it and sends the deployment-protection bypass secret, which it reads from the
+macOS Keychain item `humanstudy-dev-bypass` (ask a maintainer for it; it is never committed). Use
+the dev promo code to unlock hosted models there.
+
 ## License
 
 MIT. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

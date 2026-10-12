@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "preview:web": "vite --config vite.web.config.ts",
     "dist:mac": "electron-vite build && node scripts/dist.mjs --mac --publish never",
-    "dist:win": "electron-vite build && node scripts/dist.mjs --win --publish never"
+    "dist:win": "electron-vite build && node scripts/dist.mjs --win --publish never",
+    "dev:dogfood": "HUMANSTUDY_SERVER=https://humanstudy-hub-web-git-dev-xuanl17s-projects.vercel.app HUMANSTUDY_SERVER_BYPASS=\"$(security find-generic-password -s humanstudy-dev-bypass -a vercel -w)\" electron-vite dev"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",

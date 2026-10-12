@@ -538,6 +538,8 @@ export function hostedProviderConfig(model: string): Record<string, unknown> {
     options: {
       baseURL: process.env.HUMANSTUDY_HOSTED_BASEURL ?? 'https://humanstudy-hub-web.vercel.app/api/desktop/v1',
       apiKey: '{env:HUMANSTUDY_DESKTOP_KEY}',
+      // Only when dogfooding against a protected preview deployment.
+      ...(process.env.HUMANSTUDY_SERVER_BYPASS ? { headers: { 'x-vercel-protection-bypass': '{env:HUMANSTUDY_SERVER_BYPASS}' } } : {}),
     },
     models: Object.fromEntries(ids.map((id) => [id, { name: id }])),
   }
