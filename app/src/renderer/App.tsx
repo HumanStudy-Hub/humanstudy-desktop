@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ProjectSnapshot, Settings } from '../preload/types'
+import type { AccountStatus, ProjectSnapshot, Settings } from '../preload/types'
 import { Chat, type ChatHandle } from './components/Chat'
 import { ArtifactPanel } from './components/ArtifactPanel'
 import { SourceDrawer, type SourceRef } from './components/SourceDrawer'
 import { VisualizeMenu } from './components/VisualizeMenu'
 import { Home } from './components/Home'
-import { SettingsDialog } from './components/SettingsDialog'
+import { SettingsDialog, type SettingsSection } from './components/SettingsDialog'
 import { useSession } from './useSession'
 
 const PANES_KEY = 'hs.panes'
@@ -17,7 +17,8 @@ export default function App() {
   const [selected, setSelected] = useState<string[]>([])
   const [source, setSource] = useState<SourceRef | null>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null)
+  const [account, setAccount] = useState<AccountStatus | null>(null)
   // Three panes, each foldable to a rail; at least one stays open.
   const [open, setOpen] = useState<Record<Pane, boolean>>(() => {
     try {
@@ -55,6 +56,10 @@ export default function App() {
   useEffect(() => {
     window.humanstudy.settings.get().then(setSettings).catch(() => undefined)
   }, [])
+  const refreshAccount = useCallback(() => {
+    window.humanstudy.account.status().then(setAccount).catch(() => undefined)
+  }, [])
+  useEffect(refreshAccount, [refreshAccount])
 
   // The explicit theme choice wins over the OS preference; 'system' defers to prefers-color-scheme.
   useEffect(() => {
@@ -68,7 +73,10 @@ export default function App() {
       .then(setSettings)
       .catch(() => undefined)
   }, [])
-  const closeSettings = useCallback(() => setSettingsOpen(false), [])
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(null)
+    refreshAccount() // a saved or removed own key changes model access too
+  }, [refreshAccount])
 
   useEffect(() => {
     if (!project) return
@@ -83,13 +91,25 @@ export default function App() {
     )
 
   const dialog = settingsOpen && (
-    <SettingsDialog settings={settings} onChange={updateSettings} onClose={closeSettings} />
+    <SettingsDialog
+      initialSection={settingsOpen}
+      settings={settings}
+      onChange={updateSettings}
+      account={account}
+      onAccount={setAccount}
+      onClose={closeSettings}
+    />
   )
 
   if (!project)
     return (
       <div className="app">
-        <Home onOpen={(dir) => void load(dir)} onSettings={() => setSettingsOpen(true)} />
+        <Home
+          onOpen={(dir) => void load(dir)}
+          onSettings={() => setSettingsOpen('general')}
+          account={account}
+          onAccount={() => setSettingsOpen('account')}
+        />
         {dialog}
       </div>
     )
@@ -114,7 +134,7 @@ export default function App() {
           <button className="ghost" onClick={() => setProject(null)} title="Back to all projects">
             Projects
           </button>
-          <button className="ghost icon" onClick={() => setSettingsOpen(true)} aria-label="Settings" title="Settings">
+          <button className="ghost icon" onClick={() => setSettingsOpen('general')} aria-label="Settings" title="Settings">
             <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden>
               <circle cx="10" cy="10" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.5" />
               <path

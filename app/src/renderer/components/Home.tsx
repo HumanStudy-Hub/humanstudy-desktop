@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ProjectSummary } from '../../preload/types'
+import type { AccountStatus, ProjectSummary } from '../../preload/types'
 import { Studies, type StudiesHandle } from './Studies'
 
 type Section = 'projects' | 'studies'
@@ -8,6 +8,9 @@ const SECTION_KEY = 'hs.homeSection'
 interface Props {
   onOpen(dir: string): void
   onSettings(): void
+  account: AccountStatus | null
+  /** Opens Settings → Account. */
+  onAccount(): void
 }
 
 export function relativeTime(iso: string, now = Date.now()): string {
@@ -31,7 +34,7 @@ export function relativeTime(iso: string, now = Date.now()): string {
 
 const baseName = (path: string) => (path.split(/[\\/]/).pop() ?? '').replace(/\.pdf$/i, '').trim() || 'Untitled project'
 
-export function Home({ onOpen, onSettings }: Props) {
+export function Home({ onOpen, onSettings, account, onAccount }: Props) {
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null)
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
@@ -217,6 +220,14 @@ export function Home({ onOpen, onSettings }: Props) {
             <Studies ref={studies} query={query} onOpenProject={onOpen} />
           ) : (
             <div className="home-inner">
+              {!query && account?.modelAccess === 'none' && (
+                <button className="access-banner" onClick={onAccount}>
+                  <span>Sign in and enter a promo code to use the agent — or add your own key</span>
+                  <span className="access-banner-go" aria-hidden>
+                    →
+                  </span>
+                </button>
+              )}
               {!query && (
                 <section className="home-section">
                   <h2 className="home-label">Start a new project</h2>

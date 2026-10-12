@@ -21,6 +21,13 @@ const api: HumanStudyApi = {
     fork: (id) => ipcRenderer.invoke('community:fork', id),
     openExternal: (url) => ipcRenderer.invoke('community:openExternal', url),
   },
+  account: {
+    status: () => ipcRenderer.invoke('account:status'),
+    signIn: (email, password) => ipcRenderer.invoke('account:signIn', email, password),
+    signUp: (email, password) => ipcRenderer.invoke('account:signUp', email, password),
+    signOut: () => ipcRenderer.invoke('account:signOut'),
+    unlock: (code) => ipcRenderer.invoke('account:unlock', code),
+  },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (patch) => ipcRenderer.invoke('settings:set', patch),

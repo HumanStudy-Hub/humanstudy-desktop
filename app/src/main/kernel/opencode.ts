@@ -223,6 +223,9 @@ export class OpencodeKernel implements Kernel {
     if (this.provider === 'openrouter' && process.env.OPENROUTER_API_KEY) {
       cfg.provider = { openrouter: { options: { apiKey: '{env:OPENROUTER_API_KEY}' } } }
     }
+    // Hosted models through HumanStudy Hub: a custom OpenAI-compatible provider
+    // (https://opencode.ai/docs/providers/ "Custom provider"). The desktop key stays in the env.
+    if (this.provider === HOSTED_PROVIDER) cfg.provider = { [HOSTED_PROVIDER]: hostedProviderConfig(this.model) }
     return JSON.stringify(cfg)
   }
 
@@ -482,6 +485,31 @@ function summarizeInput(input: unknown): string {
 }
 
 function redact(s: string): string {
-  const key = process.env.OPENROUTER_API_KEY
-  return key ? s.split(key).join('[redacted]') : s
+  for (const key of [process.env.OPENROUTER_API_KEY, process.env.HUMANSTUDY_DESKTOP_KEY]) {
+    if (key) s = s.split(key).join('[redacted]')
+  }
+  return s
+}
+
+export const HOSTED_PROVIDER = 'humanstudy'
+
+/** opencode `provider.humanstudy` entry, from env set by the app (src/main/account.ts). */
+export function hostedProviderConfig(model: string): Record<string, unknown> {
+  let ids: string[] = []
+  try {
+    const parsed = JSON.parse(process.env.HUMANSTUDY_HOSTED_MODELS ?? '[]') as unknown
+    if (Array.isArray(parsed)) ids = parsed.filter((m): m is string => typeof m === 'string')
+  } catch {
+    /* fall back to the selected model only */
+  }
+  if (!ids.includes(model)) ids.push(model)
+  return {
+    npm: '@ai-sdk/openai-compatible',
+    name: 'HumanStudy',
+    options: {
+      baseURL: process.env.HUMANSTUDY_HOSTED_BASEURL ?? 'https://humanstudy-hub-web.vercel.app/api/desktop/v1',
+      apiKey: '{env:HUMANSTUDY_DESKTOP_KEY}',
+    },
+    models: Object.fromEntries(ids.map((id) => [id, { name: id }])),
+  }
 }

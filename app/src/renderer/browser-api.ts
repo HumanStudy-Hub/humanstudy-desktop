@@ -1,7 +1,7 @@
 // Browser preview: when the renderer runs outside Electron, stand in for the preload bridge with
 // the sample program, a local paper and a scripted kernel, so the interface can be reviewed in a
 // normal browser. Electron never loads this path because window.humanstudy already exists.
-import type { CommunityStudy, CommunityStudyDetail, HumanStudyApi, KernelEvent, ProjectSnapshot, ProjectSummary, ProviderStatus, Settings } from '../preload/types'
+import type { AccountStatus, CommunityStudy, CommunityStudyDetail, HumanStudyApi, KernelEvent, ProjectSnapshot, ProjectSummary, ProviderStatus, Settings } from '../preload/types'
 import sample from '../shared/sample-program.json'
 
 if (!('humanstudy' in window)) {
@@ -27,13 +27,27 @@ if (!('humanstudy' in window)) {
     busyEnter: 'queue',
     permission: 'ask',
     model: 'anthropic/claude-haiku-5.5',
-    projectsRoot: '~/HumanStudy',
+    projectsRoot: '~/Documents/HumanStudy Projects',
   }
   const providers: ProviderStatus[] = [
     { id: 'openrouter', label: 'OpenRouter', configured: false },
     { id: 'anthropic', label: 'Anthropic', configured: false },
     { id: 'deepseek', label: 'DeepSeek', configured: false },
   ]
+  const account: AccountStatus = {
+    signedIn: false,
+    unlocked: false,
+    server: 'https://humanstudy-hub-web.vercel.app',
+    modelAccess: 'none',
+  }
+  const accountStatus = (): AccountStatus => ({
+    ...account,
+    modelAccess: providers.some((p) => p.id === 'openrouter' && p.configured)
+      ? 'own-key'
+      : account.unlocked
+        ? 'hosted'
+        : 'none',
+  })
   const script = (text: string): Omit<KernelEvent, 'sessionId'>[] => [
     { type: 'status', text: 'Reading the project' },
     { type: 'tool', tool: 'read', detail: 'program.json' },
@@ -275,6 +289,26 @@ if (!('humanstudy' in window)) {
       },
       openExternal: async (url) => {
         window.open(url, '_blank', 'noopener')
+      },
+    },
+    account: {
+      status: async () => accountStatus(),
+      signIn: async (email, password) => {
+        if (!email.trim() || !password) throw new Error('Enter your email and password.')
+        Object.assign(account, { signedIn: true, email: email.trim() })
+        return accountStatus()
+      },
+      signUp: async () => ({ needsConfirmation: true }),
+      signOut: async () => {
+        Object.assign(account, { signedIn: false, email: undefined, unlocked: false, keyExpiresAt: undefined })
+        return accountStatus()
+      },
+      unlock: async (code) => {
+        if (!account.signedIn) throw new Error('Sign in first, then enter your code.')
+        if (code.trim() !== 'preview') throw new Error('That code is not valid.')
+        account.unlocked = true
+        account.keyExpiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString()
+        return accountStatus()
       },
     },
     settings: {

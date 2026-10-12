@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron'
 import { applyCredentials, providers, setKey } from './credentials'
+import { applyAccount, getAccount } from './account'
 import {
   communityStudies,
   communityStudy,
@@ -50,6 +51,17 @@ function currentKernel(): Kernel {
 }
 function markKernelStale(): void {
   kernel = null
+}
+// Model access (own key / hosted / none) decides the kernel's provider; when it changes, new
+// sessions get a fresh kernel. Checked on every change and before each new session, because a
+// desktop key can expire while the app is open.
+let appliedAccess = ''
+function syncAccess(): void {
+  const sig = applyAccount()
+  if (sig !== appliedAccess) {
+    appliedAccess = sig
+    markKernelStale()
+  }
 }
 function kernelFor(id: string): Kernel {
   const k = sessionKernel.get(id)
@@ -164,6 +176,12 @@ app.whenReady().then(() => {
   } catch (e) {
     console.error('settings: could not apply', e)
   }
+  syncAccess()
+  // Fetch the server's model list in the background; hosted sessions use it once it arrives.
+  void getAccount()
+    .getConfig()
+    .then(syncAccess)
+    .catch(() => undefined)
 
   protocol.handle('hsfile', (req) => {
     const p = resolve(decodeURIComponent(new URL(req.url).pathname.slice(1)))
@@ -229,16 +247,37 @@ app.whenReady().then(() => {
     const before = getSettings()
     const next = setSettings(patch)
     if (next.model !== before.model) markKernelStale()
+    syncAccess()
     return next
   })
   ipcMain.handle('settings:providers', () => providers())
   ipcMain.handle('settings:setKey', (_e, id: 'openrouter' | 'anthropic' | 'deepseek', key: string) => {
     const r = setKey(id, key)
     markKernelStale()
+    syncAccess()
     return r
   })
 
+  const acct = getAccount()
+  const afterAccount = <T>(v: T): T => {
+    syncAccess()
+    return v
+  }
+  ipcMain.handle('account:status', () => acct.status())
+  ipcMain.handle('account:signIn', async (_e, email: string, password: string) =>
+    afterAccount(await acct.signIn(email, password))
+  )
+  ipcMain.handle('account:signUp', async (_e, email: string, password: string) =>
+    afterAccount(await acct.signUp(email, password))
+  )
+  ipcMain.handle('account:signOut', async () => afterAccount(await acct.signOut()))
+  ipcMain.handle('account:unlock', async (_e, code: string) => {
+    await acct.getConfig().catch(() => undefined) // the hosted model list, if reachable
+    return afterAccount(await acct.unlock(code))
+  })
+
   ipcMain.handle('kernel:startSession', async (_e, dir: string) => {
+    syncAccess()
     const k = currentKernel()
     const id = await k.startSession(dir)
     sessionKernel.set(id, k)

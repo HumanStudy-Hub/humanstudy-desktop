@@ -1,17 +1,29 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { ProviderStatus, Settings } from '../../preload/types'
+import type { AccountStatus, ProviderStatus, Settings } from '../../preload/types'
+
+export type SettingsSection = 'account' | 'general' | 'models'
 
 interface Props {
+  initialSection?: SettingsSection | null
   settings: Settings | null
   onChange(patch: Partial<Settings>): void
+  account: AccountStatus | null
+  onAccount(status: AccountStatus): void
   onClose(): void
 }
 
-type Section = 'general' | 'models'
+type Section = SettingsSection
+const SECTION_LABEL: Record<Section, string> = { account: 'Account', general: 'General', models: 'Models' }
+
+/** Electron prefixes errors from ipcMain handlers; show only the message the main process wrote. */
+export function errorText(e: unknown, fallback: string): string {
+  const msg = e instanceof Error ? e.message : ''
+  return msg.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '') || fallback
+}
 const MODEL_SUGGESTIONS = ['anthropic/claude-haiku-5.5', 'anthropic/claude-sonnet-5.5', 'deepseek/deepseek-chat']
 
-export function SettingsDialog({ settings, onChange, onClose }: Props) {
-  const [section, setSection] = useState<Section>('general')
+export function SettingsDialog({ initialSection, settings, onChange, account, onAccount, onClose }: Props) {
+  const [section, setSection] = useState<Section>(initialSection ?? 'general')
   const dialog = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -31,9 +43,9 @@ export function SettingsDialog({ settings, onChange, onClose }: Props) {
       <div className="settings" role="dialog" aria-modal="true" aria-label="Settings" tabIndex={-1} ref={dialog}>
         <nav className="settings-nav">
           <strong className="settings-title">Settings</strong>
-          {(['general', 'models'] as Section[]).map((s) => (
+          {(['account', 'general', 'models'] as Section[]).map((s) => (
             <button key={s} aria-current={section === s ? 'page' : undefined} onClick={() => setSection(s)}>
-              {s === 'general' ? 'General' : 'Models'}
+              {SECTION_LABEL[s]}
             </button>
           ))}
         </nav>
@@ -41,7 +53,9 @@ export function SettingsDialog({ settings, onChange, onClose }: Props) {
           <button className="ghost settings-close" aria-label="Close settings" title="Close (Esc)" onClick={onClose}>
             ×
           </button>
-          {!settings ? (
+          {section === 'account' ? (
+            <Account account={account} onAccount={onAccount} />
+          ) : !settings ? (
             <p className="muted">Loading…</p>
           ) : section === 'general' ? (
             <General settings={settings} onChange={onChange} />
@@ -168,7 +182,10 @@ function Models({ settings, onChange }: { settings: Settings; onChange(p: Partia
   return (
     <section>
       <h2>Models</h2>
-      <p className="muted settings-lead">Add an API key for a provider to use its models.</p>
+      <p className="muted settings-lead">
+        Add an API key for a provider to use its models. A saved OpenRouter key takes precedence over hosted
+        access from your HumanStudy Hub account.
+      </p>
       {error && <p className="home-error">{error}</p>}
       <ul className="provider-list">
         {(providers ?? []).map((p) => (
@@ -284,6 +301,177 @@ function Models({ settings, onChange }: { settings: Settings; onChange(p: Partia
             {m}
           </button>
         ))}
+      </div>
+    </section>
+  )
+}
+
+function accessLine(a: AccountStatus): string {
+  if (a.modelAccess === 'own-key') return 'Your own OpenRouter key'
+  if (a.modelAccess === 'hosted') {
+    const t = a.keyExpiresAt ? Date.parse(a.keyExpiresAt) : NaN
+    const until = Number.isNaN(t)
+      ? ''
+      : ` · until ${new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`
+    return `Hosted models via HumanStudy Hub${until}`
+  }
+  return 'No model access yet'
+}
+
+function Account({ account, onAccount }: { account: AccountStatus | null; onAccount(a: AccountStatus): void }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [code, setCode] = useState('')
+  const [busy, setBusy] = useState<'' | 'signin' | 'signup' | 'signout' | 'unlock'>('')
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  const run = async (kind: Exclude<typeof busy, ''>, task: () => Promise<void>, fallback: string) => {
+    setBusy(kind)
+    setError('')
+    setNotice('')
+    try {
+      await task()
+    } catch (e) {
+      setError(errorText(e, fallback))
+    } finally {
+      setBusy('')
+    }
+  }
+  const signIn = () =>
+    run(
+      'signin',
+      async () => {
+        onAccount(await window.humanstudy.account.signIn(email.trim(), password))
+        setPassword('')
+      },
+      'Could not sign in.'
+    )
+  const signUp = () =>
+    run(
+      'signup',
+      async () => {
+        const r = await window.humanstudy.account.signUp(email.trim(), password)
+        setPassword('')
+        if (r.needsConfirmation) setNotice('Check your email to confirm, then sign in.')
+        else onAccount(await window.humanstudy.account.status())
+      },
+      'Could not create the account.'
+    )
+  const signOut = () =>
+    run('signout', async () => onAccount(await window.humanstudy.account.signOut()), 'Could not sign out.')
+  const unlock = () =>
+    run(
+      'unlock',
+      async () => {
+        onAccount(await window.humanstudy.account.unlock(code.trim()))
+        setCode('')
+      },
+      'Could not redeem the code.'
+    )
+
+  if (!account)
+    return (
+      <section>
+        <h2>Account</h2>
+        <p className="muted">Loading…</p>
+      </section>
+    )
+
+  return (
+    <section>
+      <h2>Account</h2>
+      <p className="muted settings-lead">
+        Sign in to your HumanStudy Hub account to use hosted models without an API key of your own.
+      </p>
+      {error && <p className="home-error">{error}</p>}
+      {notice && <p className="account-notice">{notice}</p>}
+
+      {!account.signedIn ? (
+        <form
+          className="account-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (email.trim() && password) void signIn()
+          }}
+        >
+          <label>
+            <span className="setting-label">Email</span>
+            <input
+              className="field"
+              type="email"
+              autoComplete="email"
+              spellCheck={false}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </label>
+          <label>
+            <span className="setting-label">Password</span>
+            <input
+              className="field"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </label>
+          <div className="row-end">
+            <button
+              type="button"
+              className="ghost"
+              disabled={Boolean(busy) || !email.trim() || !password}
+              onClick={() => void signUp()}
+            >
+              {busy === 'signup' ? 'Creating…' : 'Create account'}
+            </button>
+            <button type="submit" className="primary" disabled={Boolean(busy) || !email.trim() || !password}>
+              {busy === 'signin' ? 'Signing in…' : 'Sign in'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <>
+          <Row label="Signed in" hint={account.email}>
+            <button className="ghost" onClick={() => void signOut()} disabled={Boolean(busy)}>
+              {busy === 'signout' ? 'Signing out…' : 'Sign out'}
+            </button>
+          </Row>
+          {!account.unlocked && (
+            <div className="unlock-box">
+              <div className="setting-label">Unlock hosted models</div>
+              <div className="muted small">Enter the promo code you received to use models hosted by HumanStudy Hub.</div>
+              <form
+                className="key-form"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  if (code.trim()) void unlock()
+                }}
+              >
+                <input
+                  className="field"
+                  placeholder="Promo code"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  aria-label="Promo code"
+                />
+                <button type="submit" className="primary" disabled={Boolean(busy) || !code.trim()}>
+                  {busy === 'unlock' ? 'Unlocking…' : 'Unlock'}
+                </button>
+              </form>
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="access-line">
+        <span className={`access-dot ${account.modelAccess}`} aria-hidden />
+        <span>
+          <span className="muted">Model access: </span>
+          {accessLine(account)}
+        </span>
       </div>
     </section>
   )
