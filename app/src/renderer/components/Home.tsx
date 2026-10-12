@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ProjectSummary } from '../../preload/types'
+import { Studies, type StudiesHandle } from './Studies'
+
+type Section = 'projects' | 'studies'
+const SECTION_KEY = 'hs.homeSection'
 
 interface Props {
   onOpen(dir: string): void
@@ -18,11 +22,14 @@ export function relativeTime(iso: string, now = Date.now()): string {
   const d = Math.round(h / 24)
   if (d === 1) return 'yesterday'
   if (d < 7) return `${d} days ago`
-  return new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: d > 300 ? 'numeric' : undefined })
+  return new Date(t).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: d > 300 ? 'numeric' : undefined,
+  })
 }
 
-const baseName = (path: string) =>
-  (path.split(/[\\/]/).pop() ?? '').replace(/\.pdf$/i, '').trim() || 'Untitled project'
+const baseName = (path: string) => (path.split(/[\\/]/).pop() ?? '').replace(/\.pdf$/i, '').trim() || 'Untitled project'
 
 export function Home({ onOpen, onSettings }: Props) {
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null)
@@ -34,6 +41,23 @@ export function Home({ onOpen, onSettings }: Props) {
   const [renaming, setRenaming] = useState<{ dir: string; name: string } | null>(null)
   const [confirmTrash, setConfirmTrash] = useState<string | null>(null)
   const search = useRef<HTMLInputElement>(null)
+  const studies = useRef<StudiesHandle>(null)
+  const [section, setSectionState] = useState<Section>(() => {
+    try {
+      return localStorage.getItem(SECTION_KEY) === 'studies' ? 'studies' : 'projects'
+    } catch {
+      return 'projects'
+    }
+  })
+  const setSection = (next: Section) => {
+    setSectionState(next)
+    setQuery('')
+    try {
+      localStorage.setItem(SECTION_KEY, next)
+    } catch {
+      /* ignore */
+    }
+  }
 
   const refresh = useCallback(async () => {
     try {
@@ -141,10 +165,13 @@ export function Home({ onOpen, onSettings }: Props) {
                 setQuery('')
                 e.currentTarget.blur()
               }
-              if (e.key === 'Enter' && shown[0]) onOpen(shown[0].dir)
+              if (e.key === 'Enter') {
+                if (section === 'studies') studies.current?.openFirst()
+                else if (shown[0]) onOpen(shown[0].dir)
+              }
             }}
-            placeholder="Search projects"
-            aria-label="Search projects"
+            placeholder={section === 'studies' ? 'Search studies' : 'Search projects'}
+            aria-label={section === 'studies' ? 'Search studies' : 'Search projects'}
           />
           <kbd>⌘K</kbd>
         </label>
@@ -158,190 +185,222 @@ export function Home({ onOpen, onSettings }: Props) {
         </div>
       </header>
 
-      <main className="home-main">
-        <div className="home-inner">
-          {!query && (
-            <section className="home-section">
-              <h2 className="home-label">Start a new project</h2>
-              <div className="tiles">
-                <button className="tile" onClick={fromPaper} disabled={busy}>
-                  <span className="tile-art paper" aria-hidden>
-                    <i />
-                    <i />
-                    <i />
-                  </span>
-                  <strong>From a paper</strong>
-                  <span className="muted small">Pick a PDF; the agent builds its Human Program.</span>
-                </button>
-                {blank === null ? (
-                  <button className="tile" onClick={() => setBlank('')} disabled={busy}>
-                    <span className="tile-art blank" aria-hidden>
-                      +
-                    </span>
-                    <strong>Blank project</strong>
-                    <span className="muted small">An empty folder to fill with sources later.</span>
-                  </button>
-                ) : (
-                  <form
-                    className="tile tile-form"
-                    onSubmit={(e) => {
-                      e.preventDefault()
-                      createBlank()
-                    }}
-                  >
-                    <strong>Blank project</strong>
-                    <input
-                      autoFocus
-                      className="field"
-                      value={blank}
-                      placeholder="Project name"
-                      onChange={(e) => setBlank(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Escape' && setBlank(null)}
-                    />
-                    <div className="row-end">
-                      <button type="button" className="ghost" onClick={() => setBlank(null)}>
-                        Cancel
+      <div className="home-body">
+        <nav className="home-side" aria-label="Sections">
+          <button aria-current={section === 'projects' ? 'page' : undefined} onClick={() => setSection('projects')}>
+            <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
+              <path
+                d="M2 4.5c0-.8.7-1.5 1.5-1.5h3l1.5 1.5h4.5c.8 0 1.5.7 1.5 1.5v5.5c0 .8-.7 1.5-1.5 1.5h-9c-.8 0-1.5-.7-1.5-1.5z"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.3"
+                strokeLinejoin="round"
+              />
+            </svg>
+            Projects
+          </button>
+          <button aria-current={section === 'studies' ? 'page' : undefined} onClick={() => setSection('studies')}>
+            <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
+              <path
+                d="M2.5 3.5h4c.8 0 1.5.7 1.5 1.5v8c0-.6-.5-1-1-1h-4.5zM13.5 3.5h-4c-.8 0-1.5.7-1.5 1.5v8c0-.6.5-1 1-1h4.5z"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.3"
+                strokeLinejoin="round"
+              />
+            </svg>
+            Studies
+          </button>
+        </nav>
+        <main className="home-main">
+          {section === 'studies' ? (
+            <Studies ref={studies} query={query} onOpenProject={onOpen} />
+          ) : (
+            <div className="home-inner">
+              {!query && (
+                <section className="home-section">
+                  <h2 className="home-label">Start a new project</h2>
+                  <div className="tiles">
+                    <button className="tile" onClick={fromPaper} disabled={busy}>
+                      <span className="tile-art paper" aria-hidden>
+                        <i />
+                        <i />
+                        <i />
+                      </span>
+                      <strong>From a paper</strong>
+                      <span className="muted small">Pick a PDF; the agent builds its Human Program.</span>
+                    </button>
+                    {blank === null ? (
+                      <button className="tile" onClick={() => setBlank('')} disabled={busy}>
+                        <span className="tile-art blank" aria-hidden>
+                          +
+                        </span>
+                        <strong>Blank project</strong>
+                        <span className="muted small">An empty folder to fill with sources later.</span>
                       </button>
-                      <button type="submit" className="primary" disabled={busy || !blank.trim()}>
-                        Create
-                      </button>
-                    </div>
-                  </form>
-                )}
-                <button className="tile" onClick={sample} disabled={busy}>
-                  <span className="tile-art sample" aria-hidden>
-                    <i />
-                    <i />
-                  </span>
-                  <strong>Sample · Knobe 2003</strong>
-                  <span className="muted small">The side-effect effect, ready to explore.</span>
-                </button>
-              </div>
-            </section>
-          )}
-
-          {error && <p className="home-error">{error}</p>}
-
-          <section className="home-section">
-            <h2 className="home-label">{query ? `Results for “${query}”` : 'Recent projects'}</h2>
-            {projects === null ? (
-              <p className="muted small">Loading…</p>
-            ) : shown.length === 0 ? (
-              <div className="home-empty">
-                {query ? (
-                  <p className="muted">No project matches that name.</p>
-                ) : (
-                  <>
-                    <p>No projects yet.</p>
-                    <p className="muted small">Start from a paper, or open the Knobe 2003 sample to look around.</p>
-                  </>
-                )}
-              </div>
-            ) : (
-              <ul className="project-list">
-                {shown.map((p) => (
-                  <li key={p.dir} className={menu === p.dir ? 'menu-open' : ''}>
-                    {renaming?.dir === p.dir ? (
+                    ) : (
                       <form
-                        className="project-row editing"
+                        className="tile tile-form"
                         onSubmit={(e) => {
                           e.preventDefault()
-                          saveRename()
+                          createBlank()
                         }}
                       >
-                        <span className="doc-icon" aria-hidden />
+                        <strong>Blank project</strong>
                         <input
                           autoFocus
                           className="field"
-                          value={renaming.name}
-                          onChange={(e) => setRenaming({ dir: p.dir, name: e.target.value })}
-                          onBlur={saveRename}
-                          onKeyDown={(e) => e.key === 'Escape' && setRenaming(null)}
-                          aria-label="Project name"
+                          value={blank}
+                          placeholder="Project name"
+                          onChange={(e) => setBlank(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Escape' && setBlank(null)}
                         />
+                        <div className="row-end">
+                          <button type="button" className="ghost" onClick={() => setBlank(null)}>
+                            Cancel
+                          </button>
+                          <button type="submit" className="primary" disabled={busy || !blank.trim()}>
+                            Create
+                          </button>
+                        </div>
                       </form>
+                    )}
+                    <button className="tile" onClick={sample} disabled={busy}>
+                      <span className="tile-art sample" aria-hidden>
+                        <i />
+                        <i />
+                      </span>
+                      <strong>Sample · Knobe 2003</strong>
+                      <span className="muted small">The side-effect effect, ready to explore.</span>
+                    </button>
+                  </div>
+                </section>
+              )}
+
+              {error && <p className="home-error">{error}</p>}
+
+              <section className="home-section">
+                <h2 className="home-label">{query ? `Results for “${query}”` : 'Recent projects'}</h2>
+                {projects === null ? (
+                  <p className="muted small">Loading…</p>
+                ) : shown.length === 0 ? (
+                  <div className="home-empty">
+                    {query ? (
+                      <p className="muted">No project matches that name.</p>
                     ) : (
-                      <button className="project-row" onClick={() => onOpen(p.dir)} title={p.dir}>
-                        <span className="doc-icon" aria-hidden />
-                        <span className="project-name">{p.name}</span>
-                        <span className="badges">
-                          {p.hasPaper && <span className="badge">Paper</span>}
-                          {p.hasProgram && <span className="badge">Program</span>}
-                          {p.artifactCount > 0 && (
-                            <span className="badge">
-                              {p.artifactCount} artifact{p.artifactCount === 1 ? '' : 's'}
+                      <>
+                        <p>No projects yet.</p>
+                        <p className="muted small">Start from a paper, or open the Knobe 2003 sample to look around.</p>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <ul className="project-list">
+                    {shown.map((p) => (
+                      <li key={p.dir} className={menu === p.dir ? 'menu-open' : ''}>
+                        {renaming?.dir === p.dir ? (
+                          <form
+                            className="project-row editing"
+                            onSubmit={(e) => {
+                              e.preventDefault()
+                              saveRename()
+                            }}
+                          >
+                            <span className="doc-icon" aria-hidden />
+                            <input
+                              autoFocus
+                              className="field"
+                              value={renaming.name}
+                              onChange={(e) => setRenaming({ dir: p.dir, name: e.target.value })}
+                              onBlur={saveRename}
+                              onKeyDown={(e) => e.key === 'Escape' && setRenaming(null)}
+                              aria-label="Project name"
+                            />
+                          </form>
+                        ) : (
+                          <button className="project-row" onClick={() => onOpen(p.dir)} title={p.dir}>
+                            <span className="doc-icon" aria-hidden />
+                            <span className="project-name">{p.name}</span>
+                            <span className="badges">
+                              {p.hasPaper && <span className="badge">Paper</span>}
+                              {p.hasProgram && <span className="badge">Program</span>}
+                              {p.artifactCount > 0 && (
+                                <span className="badge">
+                                  {p.artifactCount} artifact{p.artifactCount === 1 ? '' : 's'}
+                                </span>
+                              )}
                             </span>
-                          )}
-                        </span>
-                        <span className="project-time muted small">{relativeTime(p.updatedAt)}</span>
-                      </button>
-                    )}
-                    {confirmTrash === p.dir ? (
-                      <span className="confirm">
-                        <span className="small muted">Move to Trash?</span>
-                        <button className="ghost danger" onClick={() => void trash(p.dir)} disabled={busy}>
-                          Move
-                        </button>
-                        <button className="ghost" onClick={() => setConfirmTrash(null)}>
-                          Cancel
-                        </button>
-                      </span>
-                    ) : (
-                      <span className="menu row-menu">
-                        <button
-                          className="ghost more"
-                          aria-label={`More actions for ${p.name}`}
-                          aria-expanded={menu === p.dir}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setMenu(menu === p.dir ? null : p.dir)
-                          }}
-                        >
-                          ⋯
-                        </button>
-                        {menu === p.dir && (
-                          <div className="menu-pop narrow" role="menu" onClick={(e) => e.stopPropagation()}>
-                            <button
-                              className="menu-item row"
-                              role="menuitem"
-                              onClick={() => {
-                                setMenu(null)
-                                setRenaming({ dir: p.dir, name: p.name })
-                              }}
-                            >
-                              Rename
-                            </button>
-                            <button
-                              className="menu-item row"
-                              role="menuitem"
-                              onClick={() => {
-                                setMenu(null)
-                                void window.humanstudy.project.reveal(p.dir)
-                              }}
-                            >
-                              Show in Finder
-                            </button>
-                            <button
-                              className="menu-item row danger"
-                              role="menuitem"
-                              onClick={() => {
-                                setMenu(null)
-                                setConfirmTrash(p.dir)
-                              }}
-                            >
-                              Move to Trash
-                            </button>
-                          </div>
+                            <span className="project-time muted small">{relativeTime(p.updatedAt)}</span>
+                          </button>
                         )}
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </div>
-      </main>
+                        {confirmTrash === p.dir ? (
+                          <span className="confirm">
+                            <span className="small muted">Move to Trash?</span>
+                            <button className="ghost danger" onClick={() => void trash(p.dir)} disabled={busy}>
+                              Move
+                            </button>
+                            <button className="ghost" onClick={() => setConfirmTrash(null)}>
+                              Cancel
+                            </button>
+                          </span>
+                        ) : (
+                          <span className="menu row-menu">
+                            <button
+                              className="ghost more"
+                              aria-label={`More actions for ${p.name}`}
+                              aria-expanded={menu === p.dir}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setMenu(menu === p.dir ? null : p.dir)
+                              }}
+                            >
+                              ⋯
+                            </button>
+                            {menu === p.dir && (
+                              <div className="menu-pop narrow" role="menu" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  className="menu-item row"
+                                  role="menuitem"
+                                  onClick={() => {
+                                    setMenu(null)
+                                    setRenaming({ dir: p.dir, name: p.name })
+                                  }}
+                                >
+                                  Rename
+                                </button>
+                                <button
+                                  className="menu-item row"
+                                  role="menuitem"
+                                  onClick={() => {
+                                    setMenu(null)
+                                    void window.humanstudy.project.reveal(p.dir)
+                                  }}
+                                >
+                                  Show in Finder
+                                </button>
+                                <button
+                                  className="menu-item row danger"
+                                  role="menuitem"
+                                  onClick={() => {
+                                    setMenu(null)
+                                    setConfirmTrash(p.dir)
+                                  }}
+                                >
+                                  Move to Trash
+                                </button>
+                              </div>
+                            )}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   )
 }

@@ -1,5 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron'
 import { applyCredentials, providers, setKey } from './credentials'
+import {
+  communityStudies,
+  communityStudy,
+  forkCommunityStudy,
+  isAllowedExternal,
+  setCommunityCacheDir,
+} from './community'
 import { createProject, isInside, listProjects, renameProject, trashProject } from './projects'
 import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
 import { existsSync, watch, type FSWatcher } from 'node:fs'
@@ -206,6 +213,15 @@ app.whenReady().then(() => {
   ipcMain.handle('projects:trash', async (_e, dir: string) => {
     unwatch(resolve(dir))
     await trashProject(dir)
+  })
+
+  setCommunityCacheDir(app.getPath('userData'))
+  ipcMain.handle('community:studies', () => communityStudies())
+  ipcMain.handle('community:study', (_e, id: string) => communityStudy(id))
+  ipcMain.handle('community:fork', (_e, id: string) => forkCommunityStudy(id, (input) => createProject(input)))
+  ipcMain.handle('community:openExternal', async (_e, url: string) => {
+    if (!isAllowedExternal(url)) throw new Error('refusing to open a URL outside github.com / humanstudy-hub.org')
+    await shell.openExternal(url)
   })
 
   ipcMain.handle('settings:get', () => getSettings())

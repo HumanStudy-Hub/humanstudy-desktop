@@ -15,6 +15,12 @@ const api: HumanStudyApi = {
     rename: (dir, name) => ipcRenderer.invoke('projects:rename', dir, name),
     trash: (dir) => ipcRenderer.invoke('projects:trash', dir),
   },
+  community: {
+    studies: () => ipcRenderer.invoke('community:studies'),
+    study: (id) => ipcRenderer.invoke('community:study', id),
+    fork: (id) => ipcRenderer.invoke('community:fork', id),
+    openExternal: (url) => ipcRenderer.invoke('community:openExternal', url),
+  },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (patch) => ipcRenderer.invoke('settings:set', patch),
