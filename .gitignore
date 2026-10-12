@@ -4,3 +4,5 @@ dist/
 .DS_Store
 *.log
 app/src/renderer/public/preview/
+__pycache__/
+*.pyc

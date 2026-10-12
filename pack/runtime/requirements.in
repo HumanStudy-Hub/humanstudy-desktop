@@ -1,0 +1,17 @@
+# Direct dependencies of the managed research runtime (CPython 3.12). The resolved, hash-pinned set is
+# requirements.lock; regenerate with pack/runtime/relock.sh. Binary wheels only.
+numpy
+scipy
+pandas
+statsmodels
+matplotlib
+pingouin
+pypdf
+pdfplumber
+openpyxl
+python-docx
+pyreadstat
+jinja2
+jsonschema
+# pdfminer.six needs it; 49+ ship no macOS Intel wheel, and we install binary wheels only
+cryptography<49

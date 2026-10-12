@@ -4,7 +4,8 @@ import { applyAccount, getAccount } from './account'
 import * as telemetry from './telemetry'
 import { setupMenu } from './menu'
 import * as notify from './notify'
-import { cancelInstall, ensureOpencode, installStatus, kernelBinary, managedBinary, onInstallProgress } from './opencode-install'
+import { cancelAssistantInstall, ensureAssistant, installStatus, onInstallProgress } from './assistant-install'
+import { kernelBinary, managedBinary } from './opencode-install'
 import {
   communityStudies,
   communityStudy,
@@ -413,7 +414,7 @@ app.whenReady().then(() => {
     syncAccess()
     // No opencode installed: fetch the managed one first, and replace a mock kernel created before it arrived.
     if (process.env.HUMANSTUDY_KERNEL !== 'mock') {
-      await ensureOpencode().catch((err) => console.error('opencode install failed', err))
+      await ensureAssistant().catch((err) => console.error('assistant install failed', err))
       const bin = kernelBinary() // also publishes HUMANSTUDY_OPENCODE_BIN for the kernel factory
       if (kernel && kernelName(kernel) === 'mock' && bin) markKernelStale()
     }
@@ -475,11 +476,11 @@ app.whenReady().then(() => {
 
   ipcMain.handle('kernel:installStatus', () => installStatus())
   ipcMain.handle('kernel:installRetry', async () => {
-    await ensureOpencode().catch((err) => console.error('opencode install failed', err))
+    await ensureAssistant().catch((err) => console.error('assistant install failed', err))
   })
   onInstallProgress((s) => broadcast('kernel:installProgress', s))
   // First run: start the download in the background so it is usually done before the first message.
-  if (process.env.HUMANSTUDY_KERNEL !== 'mock') void ensureOpencode().catch((err) => console.error('opencode install failed', err))
+  if (process.env.HUMANSTUDY_KERNEL !== 'mock') void ensureAssistant().catch((err) => console.error('assistant install failed', err))
   ipcMain.handle('app:info', () => ({
     version: app.getVersion(),
     platform: process.platform,
@@ -502,7 +503,7 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', () => {
-  cancelInstall()
+  cancelAssistantInstall()
   void threads().flush().catch(() => undefined)
   for (const k of allKernels) {
     const d = (k as { dispose?: () => Promise<void> }).dispose

@@ -24,6 +24,21 @@ bundled in the installers. To ship a new kernel:
    Installed apps fetch the new kernel into `userData/opencode/<tag>/` on their next start; the app
    never reads checksums from the source, only from the release's `SHA256SUMS.txt`.
 
+## The research runtime
+
+Python and the PDF tools are also downloaded at first run (never bundled, so nothing in it needs
+signing or notarization: files written by the app carry no `com.apple.quarantine` attribute and
+Gatekeeper does not assess them; the python-build-standalone and wheel binaries are ad-hoc signed,
+which is all Apple Silicon requires). To update it:
+
+1. Python: pick a release of [python-build-standalone](https://github.com/astral-sh/python-build-standalone/releases),
+   copy the three `install_only_stripped` asset names, sizes and SHA-256 (from the release's `SHA256SUMS`)
+   into `PYTHON_ASSETS` in `app/src/main/runtime-core.ts` with `PBS_TAG` / `PYTHON_VERSION`.
+2. Packages: edit `pack/runtime/requirements.in`, run `pack/runtime/relock.sh` (needs `uv`; it also checks that
+   every target platform has a binary wheel for every pin), commit `requirements.lock`.
+3. `node --test src/main/runtime.test.mjs`; `node scripts/install-runtime.mjs <dir>` does a real install.
+   A new lock file changes the runtime version, so installed apps fetch it next start and delete the old one.
+
 ## Signing secrets (repository → Settings → Secrets and variables → Actions)
 
 | Secret | What it is |

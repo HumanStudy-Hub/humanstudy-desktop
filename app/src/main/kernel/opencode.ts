@@ -46,6 +46,7 @@ import { mkdirSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, relative, isAbsolute, resolve } from 'node:path'
+import { kernelRuntimeEnv } from '../runtime-core'
 import { truncateString, truncateValue } from '../truncate'
 import { Emitter } from './types'
 import type { Kernel, KernelEvent, KernelPermission, PermissionReply } from './types'
@@ -53,7 +54,7 @@ import type { Kernel, KernelEvent, KernelPermission, PermissionReply } from './t
 /** Per-command bash rules (opencode: last matching pattern wins, compound commands are checked per
  *  command). Read-only commands run without a prompt; anything unlisted, and the risky forms of the
  *  listed ones (find -delete/-exec, rg --pre, output redirection), still asks. */
-const READ_ONLY_BASH = ['ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'find', 'pdftotext', 'pdfinfo', 'file', 'pwd', 'echo']
+const READ_ONLY_BASH = ['ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'find', 'pdftotext', 'pdfinfo', 'hs-pdf', 'file', 'pwd', 'echo']
 export const BASH_PERMISSION: Record<string, 'ask' | 'allow'> = {
   '*': 'ask',
   ...Object.fromEntries(READ_ONLY_BASH.flatMap((c) => [[c, 'allow'], [`${c} *`, 'allow']])),
@@ -313,14 +314,18 @@ export class OpencodeKernel implements Kernel {
       XDG_STATE_HOME: join(this.home, 'state'),
     }
     for (const d of Object.values(xdg)) mkdirSync(d, { recursive: true })
-    const env: NodeJS.ProcessEnv = {
+    // The managed research runtime (Python, PDF tools) goes first on PATH, so `python3` / `pdftotext` in the
+    // agent's bash resolve there and never to the system Python (HUMANSTUDY_RUNTIME_BIN is set by the app).
+    const env: NodeJS.ProcessEnv = kernelRuntimeEnv({
       ...process.env,
       ...xdg,
       OPENCODE_SERVER_PASSWORD: password,
       OPENCODE_CONFIG_CONTENT: this.configContent(),
       OPENCODE_DISABLE_AUTOUPDATE: '1',
       OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: '1', // no ~/.claude/CLAUDE.md from the user's own Claude Code
-    }
+      // humanstudy_llm (simulations) defaults to the model the researcher selected.
+      ...(this.provider === HOSTED_PROVIDER ? { HUMANSTUDY_MODEL: this.model } : {}),
+    })
     delete env.OPENCODE_CONFIG // a personal config file path
     delete env.OPENCODE_CONFIG_DIR
     if (this.provider !== HOSTED_PROVIDER) {

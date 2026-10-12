@@ -14,7 +14,7 @@ statistics. If a needed number is not available, say so and name the program fie
 ## Procedure
 
 1. Write the script to `artifacts/<name>.py`. Use standard scientific Python (pandas, numpy,
-   scipy, statsmodels, matplotlib). Fix random seeds. No network.
+   scipy, statsmodels, matplotlib; also pingouin, pyreadstat for SPSS/Stata `.sav`/`.dta`, openpyxl, python-docx) with the bare `python` on PATH. Fix random seeds. No network. Do not `pip install` into the runtime unless the researcher agrees.
 2. Run it. Save figures as `artifacts/<name>-<figure>.png` (300 dpi, labelled axes, units,
    n per group in the caption or legend).
 3. Write `artifacts/<name>.md` containing:

@@ -10,8 +10,12 @@ can actually run as the original participants did, so the researcher can check i
 
 ## 1. Read the sources
 
-- Extract text from `paper.pdf` page by page (`pdftotext -layout paper.pdf -`; OCR if scanned).
-  Keep the physical page number of every passage you may cite.
+- Extract text from `paper.pdf` page by page with `hs-pdf pages paper.pdf` (prints one
+  `=== page N ===` block per page; add `--from N --to M` for a range, `--layout` for column-aligned
+  tables). `pdftotext -layout paper.pdf -` and `pdfinfo` also work (form feed between pages). If
+  `hs-pdf` reports pages with no text, the PDF is scanned: OCR is not available, so say which
+  pages could not be read instead of guessing. Keep the physical page number of every passage
+  you may cite.
 - Read `sources/` only if present. Use the network only for URLs the researcher explicitly gave;
   record each URL consulted in `source/paper_metadata.json` → `external_sources`.
 - List every empirical study in the paper before modelling any of them.

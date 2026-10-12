@@ -41,6 +41,18 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
       files. One session id ties them together; Delete my data and `telemetry.exportMyData()` cover
       all of it. Migration `20261012150000_desktop_replay.sql` (web repo) must be applied before the
       first upload. See `docs/research-data.md`. (wave H2)
+- [x] **Research runtime (K3)** — clean Macs/PCs have no Python or poppler (`python3` even opens the Xcode
+      installer). First run now also installs a private runtime beside the kernel into
+      `userData/runtime/<version>/`: python-build-standalone CPython 3.12.15 (pinned URL + SHA-256) and a
+      hash-pinned wheel set (`pack/runtime/requirements.lock`, `pip --require-hashes --only-binary :all:`;
+      numpy scipy pandas statsmodels matplotlib pingouin pypdf pdfplumber openpyxl python-docx pyreadstat
+      jinja2 jsonschema). `bin/` (python, python3, pip, `pdftotext`/`pdfinfo` shims, `hs-pdf pages`) is first
+      on the kernel PATH; a stub bin that fails loudly replaces it while the runtime is missing, so nothing
+      falls through to the system Python. `humanstudy_llm` (`llm`, `chat`, `llm_many`) gives simulations
+      hosted-model access with retries, a concurrency cap and `.humanstudy/tmp/llm-usage.jsonl`. Kernel +
+      runtime share one `kernel.install` progress stream (`phase`, `runtimeVersion` added, backward
+      compatible). See `docs/runtime.md`. Open: Windows untested on real hardware; Intel-Mac wheel gaps on
+      new releases (run `pack/runtime/relock.sh`); OCR for scanned PDFs; disk use (~0.55 GB). (wave K3)
 - [ ] **Notarized Mac build** — Apple agreement accepted at developer.apple.com, then
       `npm run dist:mac` notarizes; publish a draft GitHub release and test auto-update. (lead)
 
@@ -119,3 +131,4 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
 | R2 | agent pane: markdown, diffs, model picker, queue, attach, version, permission UI, threads UI | Sonnet (after R1) |
 | R3 | proposals review, source tracing, simulation view | Sonnet (after R2) |
 | M3 | Hub import, community publish | later |
+| K3 | `app/src/main/{runtime-core,runtime-install,assistant-install}.ts`, `pack/runtime/**`, kernel PATH env | Opus |

@@ -211,7 +211,7 @@ export interface UpdateStatus {
   nextVersion?: string
 }
 
-/** Managed agent kernel (opencode) download state. */
+/** First-run install state of the assistant: the managed kernel (opencode) plus the research runtime. */
 export interface KernelInstallStatus {
   state: 'checking' | 'downloading' | 'ready' | 'error'
   /** Download progress, 0-100. */
@@ -221,6 +221,10 @@ export interface KernelInstallStatus {
   /** Absolute path to the binary once ready. */
   path?: string
   error?: string
+  /** While downloading: which part is the slow one. `percent` always covers kernel + research runtime together. */
+  phase?: 'kernel' | 'runtime'
+  /** The pinned research runtime (Python + PDF tools) installed next to the kernel. */
+  runtimeVersion?: string
 }
 
 /** A native menu action for the renderer. */

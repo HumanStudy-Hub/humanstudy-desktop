@@ -127,6 +127,14 @@ A message may start with `[Selected study items: …]` listing program ids with 
 quote a passage selected in the Study document or the paper. Answer about exactly those items;
 when changing them, keep every other id untouched.
 
+## Tools on PATH
+
+`python`, `python3` and `pip` are a managed research runtime (CPython 3.12 with numpy, scipy,
+pandas, statsmodels, matplotlib, pingouin, pypdf, pdfplumber, openpyxl, python-docx, pyreadstat,
+jinja2, jsonschema), not the computer's own Python. Never call `/usr/bin/python3` or `brew`/`apt`.
+PDF text comes from `hs-pdf pages paper.pdf` (or `pdftotext`/`pdfinfo`); there is no OCR. If a
+tool answers that the runtime is not installed yet, tell the researcher and stop that step.
+
 ## Views
 
 Views are derived from the program; they never decide study facts. Arrows come only from
