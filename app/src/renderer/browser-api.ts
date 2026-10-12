@@ -160,7 +160,7 @@ if (!('humanstudy' in window)) {
     busyEnter: 'queue',
     permission: 'ask',
     model: 'anthropic/claude-sonnet-5.5',
-    projectsRoot: '~/Documents/HumanStudy Projects',
+    projectsRoot: '~/HumanStudy Hub',
     notifications: true,
   }
   const providers: ProviderStatus[] = [

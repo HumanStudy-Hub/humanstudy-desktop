@@ -12,12 +12,13 @@ export function expandHome(p: string): string {
   return p
 }
 
-/** Lives under Documents with a distinct name: on a case-insensitive disk ~/HumanStudy can be an
- * existing folder (for example a research workspace called ~/humanstudy). */
+/** In the home folder, not under Documents: macOS guards Documents/Desktop/Downloads with a
+ * privacy prompt, and a build that is not yet notarized is simply denied (EPERM on scandir).
+ * The name is distinct from ~/humanstudy-style folders on case-insensitive disks. */
 export function defaultProjectsRoot(): string {
-  return join(homedir(), 'Documents', 'HumanStudy Projects')
+  return join(homedir(), 'HumanStudy Hub')
 }
-const RETIRED_ROOTS = [join(homedir(), 'HumanStudy')]
+const RETIRED_ROOTS = [join(homedir(), 'HumanStudy'), join(homedir(), 'Documents', 'HumanStudy Projects')]
 
 function defaults(): Settings {
   return {

@@ -308,7 +308,18 @@ app.whenReady().then(() => {
     return out
   })
 
-  ipcMain.handle('projects:list', () => listProjects())
+  ipcMain.handle('projects:list', async () => {
+    try {
+      return await listProjects()
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException
+      if (e.code === 'EPERM' || e.code === 'EACCES')
+        throw new Error(
+          `macOS did not allow the app to read ${getSettings().projectsRoot}. Allow it under System Settings → Privacy & Security → Files and Folders, or choose another projects folder in Settings → General.`
+        )
+      throw err
+    }
+  })
   ipcMain.handle('projects:create', async (_e, input: { name: string; pdfPath?: string; sample?: boolean }) => {
     const dir = await createProject(input)
     telemetry.track('project.created', { metadata: { sample: Boolean(input?.sample), withPaper: Boolean(input?.pdfPath) } }, dir)

@@ -79,7 +79,12 @@
       "identity": "Haoyang Shang (ZS2UVBACK8)",
       "icon": "build/icon.icns",
       "notarize": true,
-      "artifactName": "HumanStudy-Hub-${version}-mac-${arch}.${ext}"
+      "artifactName": "HumanStudy-Hub-${version}-mac-${arch}.${ext}",
+      "extendInfo": {
+        "NSDocumentsFolderUsageDescription": "HumanStudy Hub keeps your study projects in the folder you choose.",
+        "NSDesktopFolderUsageDescription": "HumanStudy Hub opens papers and projects you keep on the Desktop.",
+        "NSDownloadsFolderUsageDescription": "HumanStudy Hub opens papers you downloaded."
+      }
     },
     "dmg": {
       "title": "HumanStudy Hub"
