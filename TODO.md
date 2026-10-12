@@ -4,6 +4,19 @@ Feature parity target: the Codex / Claude Code desktop apps, for social scientis
 names its owner wave so several agents can work without touching the same files.
 Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in every PR.
 
+## Next · from the 2026-10-12 review (agent-first: no new buttons/tabs)
+
+- [x] Server: desktop_events owner_id default (every event was rejected by RLS). Web dev 1958777.
+- [x] Beta smoke fixes (11 items), research runtime K3, researcher UX (Study/Paper + Claude-style artifacts, files hidden, plain tool rows, zh UI), missing = amber. v0.4.0.
+- [ ] Production: merge web dev → main + prod env SUPABASE_SERVICE_ROLE_KEY, COMMUNITY_BOT_LOGIN — only when the owner says (still testing on dev).
+- [ ] Paper view: citation click jumps to the page **and highlights the quote** (pdf.js text layer); selecting text in the paper shows which items cite it. Display only.
+- [ ] build skill: verify every evidence quote against `hs-pdf pages` output; flag mismatches as issues (agent, not UI).
+- [ ] simulate skill: label output "Simulation — not human data", report human vs simulated side by side with spread, overestimation caveat, memorisation warning, run manifest (agent writes it into the report).
+- [ ] Skills check: APA tables / prereg (OSF, AsPredicted) / .docx / .qsf / .sav are reachable by asking the agent (runtime has the libs); no UI.
+- [ ] IRB-ready data statement (what is collected, where, not used to train third-party models, export/delete) for the agreement + website.
+- [ ] Windows real-machine test (kernel + runtime).
+- [ ] Remaining English chrome: Research data settings, native menu, kernel status lines.
+
 ## P0 · must work before anyone outside the team uses it
 
 - [~] **Login front and center** — Sign in / email in the Home title bar; sign-in card in the chat
