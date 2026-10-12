@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Session } from '../useSession'
 import { compact, relativeTime } from '../format'
+import { t as tr } from '../i18n'
 
 export function ThreadMenu({ session }: { session: Session }) {
   const [open, setOpen] = useState(false)
@@ -34,22 +35,22 @@ export function ThreadMenu({ session }: { session: Session }) {
   const click = useRef<number>(0)
   return (
     <div className="threads" ref={root}>
-      <button className="ghost thread-btn" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)} title="Thread history">
+      <button className="ghost thread-btn" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)} title={tr('threads.history_hint')}>
         <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden>
           <circle cx="3.5" cy="8" r="1.1" /><circle cx="8" cy="8" r="1.1" /><circle cx="12.5" cy="8" r="1.1" />
         </svg>
-        History
+        {tr('threads.history')}
       </button>
-      <button className="ghost thread-new" onClick={session.newThread} title="New thread (⌘⇧T)" aria-label="New thread" disabled={!session.id}>
+      <button className="ghost thread-new" onClick={session.newThread} title={tr('threads.new_hint')} aria-label={tr('threads.new')} disabled={!session.id}>
         +
       </button>
       {open && (
-        <div className="thread-pop" role="menu" aria-label="Threads">
+        <div className="thread-pop" role="menu" aria-label={tr('threads.aria')}>
           <button className="thread-item new" role="menuitem" onClick={() => { setOpen(false); session.newThread() }}>
-            <span>New thread</span>
+            <span>{tr('threads.new')}</span>
             <kbd>⌘⇧T</kbd>
           </button>
-          {session.threads.length === 0 && <p className="muted small thread-empty">Past conversations with the agent appear here.</p>}
+          {session.threads.length === 0 && <p className="muted small thread-empty">{tr('threads.empty')}</p>}
           {session.threads.map((t) => (
             <div key={t.id} className={`thread-item ${t.id === session.threadId ? 'on' : ''}`} role="menuitem">
               {editing === t.id ? (
@@ -84,17 +85,17 @@ export function ThreadMenu({ session }: { session: Session }) {
                 >
                   <span className="thread-title">{t.title}</span>
                   <span className="thread-meta muted">
-                    {relativeTime(t.updatedAt)} · {compact(t.usage.input + t.usage.output)} tokens
+                    {relativeTime(t.updatedAt)} · {tr('threads.tokens', { n: compact(t.usage.input + t.usage.output) })}
                   </span>
                 </button>
               )}
               {confirming === t.id ? (
                 <span className="thread-confirm">
-                  <button className="link danger" onClick={() => { setConfirming(null); session.deleteThread(t.id) }}>Delete</button>
-                  <button className="link" onClick={() => setConfirming(null)}>Keep</button>
+                  <button className="link danger" onClick={() => { setConfirming(null); session.deleteThread(t.id) }}>{tr('threads.delete')}</button>
+                  <button className="link" onClick={() => setConfirming(null)}>{tr('threads.keep')}</button>
                 </span>
               ) : (
-                <button className="ghost icon thread-del" aria-label={`Delete ${t.title}`} title="Delete thread" onClick={() => setConfirming(t.id)}>
+                <button className="ghost icon thread-del" aria-label={tr('threads.delete_named', { title: t.title })} title={tr('threads.delete_hint')} onClick={() => setConfirming(t.id)}>
                   ×
                 </button>
               )}

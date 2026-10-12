@@ -3,6 +3,7 @@ import * as pdfjs from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { ProjectFile } from '../../preload/types'
 import { lap, track } from '../telemetry'
+import { t } from '../i18n'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
 
@@ -104,9 +105,9 @@ export function SourceDrawer({ pdf, source, onClose }: Props) {
 
   return (
     <div className="source-body">
-      {source?.nodeId && <div className="muted small pad source-cite">Page {source.page} · cited by {source.nodeId} <button className="link" onClick={onClose}>Fold</button></div>}
+      {source?.nodeId && <div className="muted small pad source-cite">{t('paper.cited', { page: source.page, id: source.nodeId })} <button className="link" onClick={onClose}>{t('paper.back')}</button></div>}
       {source?.quote && <blockquote className="quote">“{source.quote}”</blockquote>}
-      {!pdf && <p className="muted pad">This project has no paper.pdf.</p>}
+      {!pdf && <p className="muted pad">{t('paper.none')}</p>}
       {err && <p className="part error pad">{err}</p>}
       <div className="pages" ref={pages} />
     </div>

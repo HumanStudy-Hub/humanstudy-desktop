@@ -2,6 +2,7 @@
 import { useState, type ReactNode } from 'react'
 import type { PermissionReply } from '../../preload/types'
 import type { PermissionPart } from '../useSession'
+import { t } from '../i18n'
 
 const ICONS: Record<string, ReactNode> = {
   bash: <path d="M2.5 4l4 3.5-4 3.5M8 12h5.5" />,
@@ -25,12 +26,12 @@ export function permissionTarget(p: PermissionPart): string {
   const m = p.metadata ?? {}
   return p.title || str(m.command) || str(m.filepath) || str(m.url) || str(m.path) || p.type
 }
-const verbs: Record<string, string> = {
-  bash: 'Run a command',
-  edit: 'Edit a file',
-  write: 'Write a file',
-  webfetch: 'Fetch a web page',
-  external_directory: 'Access a folder outside the project',
+const verbKeys: Record<string, string> = {
+  bash: 'perm.bash',
+  edit: 'perm.edit',
+  write: 'perm.write',
+  webfetch: 'perm.webfetch',
+  external_directory: 'perm.external',
 }
 
 export function PermissionCard({ part, onReply }: { part: PermissionPart; onReply(id: string, response: PermissionReply): void }) {
@@ -39,7 +40,7 @@ export function PermissionCard({ part, onReply }: { part: PermissionPart; onRepl
   const diff = str(part.metadata?.diff)
 
   if (part.resolved || part.expired) {
-    const label = part.expired ? 'Not answered' : part.resolved === 'once' ? 'Allowed once' : part.resolved === 'always' ? 'Allowed for this project' : 'Denied'
+    const label = t(part.expired ? 'perm.expired' : part.resolved === 'once' ? 'perm.done_once' : part.resolved === 'always' ? 'perm.done_always' : 'perm.done_denied')
     return (
       <div className={`perm done ${part.resolved === 'reject' ? 'denied' : ''}`} role="status">
         <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden className="perm-icon">
@@ -57,7 +58,7 @@ export function PermissionCard({ part, onReply }: { part: PermissionPart; onRepl
     <div
       className="perm pending"
       role="group"
-      aria-label="Permission request"
+      aria-label={t('perm.aria')}
       tabIndex={0}
       onKeyDown={(e) => {
         if (e.nativeEvent.isComposing) return
@@ -77,22 +78,22 @@ export function PermissionCard({ part, onReply }: { part: PermissionPart; onRepl
           {ICONS[iconFor(part.type)]}
         </svg>
         <div className="perm-what">
-          <div className="perm-verb">{verbs[part.type] ?? `Permission: ${part.type}`}</div>
+          <div className="perm-verb">{verbKeys[part.type] ? t(verbKeys[part.type]) : t('perm.other', { type: part.type })}</div>
           <code className="perm-title" title={target}>{target}</code>
         </div>
       </div>
       {diff && (
         <div className="perm-diff-wrap">
           <button className="link" onClick={() => setShowDiff(!showDiff)} aria-expanded={showDiff}>
-            {showDiff ? 'Hide changes' : 'Show changes'}
+            {t(showDiff ? 'perm.hide_changes' : 'perm.show_changes')}
           </button>
           {showDiff && <DiffBlock text={diff} />}
         </div>
       )}
       <div className="perm-actions">
-        <button className="primary" onClick={() => reply('once')} title="Allow once (⌘⏎)">Allow once</button>
-        <button className="ghost" onClick={() => reply('always')}>Allow for this project</button>
-        <button className="ghost deny" onClick={() => reply('reject')} title="Deny (Esc)">Deny</button>
+        <button className="primary" onClick={() => reply('once')} title={t('perm.once_hint')}>{t('perm.once')}</button>
+        <button className="ghost" onClick={() => reply('always')}>{t('perm.always')}</button>
+        <button className="ghost deny" onClick={() => reply('reject')} title={t('perm.deny_hint')}>{t('perm.deny')}</button>
       </div>
     </div>
   )

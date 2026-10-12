@@ -3,6 +3,7 @@
 import type { HumanProgram, ProgramField, ProgramNode } from '../../shared/human-program';
 import { fieldText } from '../../shared/program-view';
 import { fieldLabel } from './labels';
+import { tOr } from '../i18n';
 
 export type SectionItem = {
   id: string;
@@ -136,6 +137,18 @@ export const SECTIONS: Section[] = [
     { id: 'limits', label: 'Limits', kinds: ['simulation'], fieldIds: ['limits'] },
   ] },
 ];
+
+// Translation only: the English text stays in the data above; in Chinese the headings and item
+// labels come from the zh-CN dictionary (keys sec.<id> and item.<section>.<item>).
+for (const sec of SECTIONS) {
+  const enTitle = sec.title;
+  Object.defineProperty(sec, 'title', { get: () => tOr(`sec.${sec.id}`, enTitle), enumerable: true });
+  for (const item of sec.items) {
+    const en = item.label;
+    Object.defineProperty(item, 'label', { get: () => tOr(`item.${sec.id}.${item.id}`, en), enumerable: true });
+  }
+}
+
 
 export type Entry = {
   key: string;

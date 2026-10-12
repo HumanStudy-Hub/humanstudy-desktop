@@ -5,6 +5,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ProjectEntry } from '../../preload/types'
 import { size } from './Explorer'
 import { track } from '../telemetry'
+import { t } from '../i18n'
+import { Markdown } from './Markdown'
+import { CsvTable, useVersions } from './Previews'
+import { copyText } from './Markdown'
+import { resultTitle } from '../results'
 
 const TEXT = new Set(['md', 'txt', 'json', 'py', 'html', 'htm', 'css', 'js', 'ts', 'mjs', 'csv', 'tsv', 'yaml', 'yml', 'r', 'sh', 'tex', 'bib', 'xml', 'toml', ''])
 const IMAGE = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'])
@@ -20,7 +25,10 @@ interface Props {
 export function FileView({ file, version, onDirty }: Props) {
   const isHtml = file.ext === 'html' || file.ext === 'htm'
   const isText = TEXT.has(file.ext)
-  const [mode, setMode] = useState<'preview' | 'source'>(isHtml ? 'preview' : 'source')
+  const isMd = file.ext === 'md' || file.ext === 'markdown'
+  const isCsv = file.ext === 'csv' || file.ext === 'tsv'
+  const hasPreview = isHtml || isMd || isCsv
+  const [mode, setMode] = useState<'preview' | 'source'>(hasPreview ? 'preview' : 'source')
   const [saved, setSaved] = useState<string | null>(null)
   const [text, setText] = useState('')
   const [onDisk, setOnDisk] = useState<string | null>(null) // newer content while the editor is dirty
@@ -28,6 +36,11 @@ export function FileView({ file, version, onDirty }: Props) {
   const [saving, setSaving] = useState(false)
   const [flash, setFlash] = useState('')
   const box = useRef<HTMLTextAreaElement>(null)
+  const versions = useVersions(file)
+  const [viewing, setViewing] = useState<{ id: string; text: string } | null>(null)
+  const [copied, setCopied] = useState(false)
+  const latest = versions[versions.length - 1]
+
   const dirty = saved !== null && text !== saved
 
   useEffect(() => onDirty(file.path, dirty), [dirty, file.path, onDirty])
@@ -86,7 +99,7 @@ export function FileView({ file, version, onDirty }: Props) {
       setSaved(text)
       setOnDisk(null)
       setError('')
-      setFlash('Saved')
+      setFlash(t('file.saved'))
       setTimeout(() => setFlash(''), 1500)
       track('file.saved', { target: file.ext || 'file' })
     } catch (e) {
@@ -99,7 +112,7 @@ export function FileView({ file, version, onDirty }: Props) {
   if (IMAGE.has(file.ext))
     return (
       <div className="artifact-image">
-        <img src={file.url} alt={file.name} />
+        <img key={file.mtime ?? 0} src={file.url} alt={file.name} />
       </div>
     )
   if (!isText)
@@ -107,10 +120,10 @@ export function FileView({ file, version, onDirty }: Props) {
       <div className="empty-state">
         <h2>{file.name}</h2>
         <p className="muted">
-          {file.ext.toUpperCase()} file{file.size !== undefined ? ` · ${size(file.size)}` : ''}. It opens outside the app.
+          {t('file.outside', { ext: file.ext.toUpperCase() })}{file.size !== undefined ? ` · ${size(file.size)}` : ''}
         </p>
         <button className="ghost" onClick={() => void window.humanstudy.project.reveal(file.path)}>
-          Show in Finder
+          {t('file.reveal')}
         </button>
       </div>
     )
@@ -118,22 +131,23 @@ export function FileView({ file, version, onDirty }: Props) {
   return (
     <div className="file-view">
       <div className="file-bar">
-        <span className="file-path muted" title={file.path}>
-          {file.rel}
+        <span className="file-path" title={file.path}>
+          {resultTitle(file.rel, saved ?? undefined)}
+          <span className="muted small"> · {file.rel}</span>
         </span>
-        {isHtml && (
-          <div className="segmented mini" role="radiogroup" aria-label="View">
+        {hasPreview && (
+          <div className="segmented mini" role="radiogroup" aria-label={t('file.view')}>
             <button role="radio" aria-checked={mode === 'preview'} onClick={() => setMode('preview')}>
-              Preview
+              {t('file.preview')}
             </button>
             <button role="radio" aria-checked={mode === 'source'} onClick={() => setMode('source')}>
-              Source
+              {t('file.edit')}
             </button>
           </div>
         )}
         {onDisk !== null && (
           <span className="file-notice">
-            changed on disk ·{' '}
+            {t('file.changed')} ·{' '}
             <button
               className="link"
               onClick={() => {
@@ -142,22 +156,74 @@ export function FileView({ file, version, onDirty }: Props) {
                 setOnDisk(null)
               }}
             >
-              reload
+              {t('file.reload')}
             </button>
           </span>
         )}
         {flash && <span className="muted small">{flash}</span>}
-        {mode === 'source' && (
+        {mode === 'source' && !viewing && (
           <button className={dirty ? 'primary small-btn' : 'ghost small-btn'} disabled={!dirty || saving} onClick={() => void save()} title="⌘S">
-            {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+            {saving ? t('file.saving') : dirty ? t('file.save') : t('file.saved')}
           </button>
         )}
+        <span className="file-tools">
+          <button
+            className="ghost small-btn"
+            onClick={() => {
+              void copyText(isText ? text : file.path)
+              setCopied(true)
+              window.setTimeout(() => setCopied(false), 1400)
+              track('artifact.copy', { target: file.ext })
+            }}
+          >
+            {copied ? t('chat.copied') : t('chat.copy')}
+          </button>
+          <button className="ghost small-btn" onClick={() => { track('artifact.download', { target: file.ext }); void window.humanstudy.project.saveCopy(file.path) }}>
+            {t('file.download')}
+          </button>
+        </span>
       </div>
+      {versions.length > 1 && (
+        <div className="version-bar" role="group" aria-label={t('artifact.history')}>
+          <span className="muted small">{t('artifact.history')}</span>
+          {versions.map((v, i) => (
+            <button
+              key={v.id}
+              className={`v-chip${(viewing ? viewing.id === v.id : v === latest) ? ' on' : ''}`}
+              title={new Date(v.at).toLocaleString()}
+              onClick={() => {
+                if (v === latest) return setViewing(null)
+                track('artifact.version_view', { target: file.ext, metadata: { index: i + 1 } })
+                void window.humanstudy.project.readVersion(file.path, v.id).then((tx) => setViewing({ id: v.id, text: tx })).catch(() => undefined)
+              }}
+            >
+              v{i + 1}
+            </button>
+          ))}
+          {viewing && (
+            <button className="link" onClick={() => setViewing(null)}>
+              {t('artifact.back_latest')}
+            </button>
+          )}
+        </div>
+      )}
       {error && <div className="part error file-error">{error}</div>}
-      {mode === 'preview' ? (
-        <iframe className="artifact-frame" src={dirty ? `data:text/html;charset=utf-8,${encodeURIComponent(text)}` : file.url} sandbox="allow-scripts" title={file.name} />
+      {viewing ? (
+        isMd ? (
+          <div className="file-md"><Markdown text={viewing.text} /></div>
+        ) : isHtml && mode === 'preview' ? (
+          <iframe className="artifact-frame" src={`data:text/html;charset=utf-8,${encodeURIComponent(viewing.text)}`} sandbox="allow-scripts" title={file.name} />
+        ) : (
+          <pre className="file-old">{viewing.text}</pre>
+        )
+      ) : mode === 'preview' && isMd ? (
+        <div className="file-md">{saved === null ? <p className="muted">{t('common.loading')}</p> : <Markdown text={text} />}</div>
+      ) : mode === 'preview' && isCsv ? (
+        <div className="file-csv">{saved === null ? <p className="muted">{t('common.loading')}</p> : <CsvTable text={text} rows={200} cols={30} />}</div>
+      ) : mode === 'preview' ? (
+        <iframe key={file.mtime ?? 0} className="artifact-frame" src={dirty ? `data:text/html;charset=utf-8,${encodeURIComponent(text)}` : file.url} sandbox="allow-scripts" title={file.name} />
       ) : saved === null && !error ? (
-        <p className="muted pad">Loading…</p>
+        <p className="muted pad">{t('common.loading')}</p>
       ) : (
         <textarea
           ref={box}
@@ -180,7 +246,7 @@ export function FileView({ file, version, onDirty }: Props) {
               requestAnimationFrame(() => el.setSelectionRange(a + 2, a + 2))
             }
           }}
-          aria-label={`Edit ${file.name}`}
+          aria-label={t('file.edit_named', { name: file.name })}
         />
       )}
     </div>

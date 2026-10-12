@@ -3,6 +3,7 @@ import type { AccountStatus, ProviderStatus, Settings } from '../../preload/type
 import { AboutUpdates } from './Updates'
 import { ResearchDataSection } from './ResearchData'
 import { track } from '../telemetry'
+import { t, getLangPref, setLangPref, type LangPref } from '../i18n'
 
 export type SettingsSection = 'account' | 'general' | 'models' | 'research' | 'about'
 
@@ -19,13 +20,7 @@ interface Props {
 }
 
 type Section = SettingsSection
-const SECTION_LABEL: Record<Section, string> = {
-  account: 'Account',
-  general: 'General',
-  models: 'Models',
-  research: 'Research data',
-  about: 'About & updates',
-}
+const sectionLabel = (s: Section) => t('settings.' + s)
 
 /** Electron prefixes errors from ipcMain handlers; show only the message the main process wrote. */
 export function errorText(e: unknown, fallback: string): string {
@@ -33,9 +28,9 @@ export function errorText(e: unknown, fallback: string): string {
   return msg.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '') || fallback
 }
 const MODELS: [string, string, string][] = [
-  ['anthropic/claude-sonnet-5.5', 'Claude Sonnet 5.5', 'recommended for building studies'],
-  ['anthropic/claude-haiku-5.5', 'Claude Haiku 5.5', 'fast and cheap for questions'],
-  ['deepseek/deepseek-v4.1-flash', 'DeepSeek V4.1 Flash', 'cheapest'],
+  ['anthropic/claude-sonnet-5.5', 'Claude Sonnet 5.5', 'settings.model_sonnet'],
+  ['anthropic/claude-haiku-5.5', 'Claude Haiku 5.5', 'settings.model_haiku'],
+  ['deepseek/deepseek-v4.1-flash', 'DeepSeek V4.1 Flash', 'settings.model_deepseek'],
 ]
 
 export function SettingsDialog({ initialSection, settings, onChange, account, onAccount, onClose, devKeys, onReviewAgreement }: Props) {
@@ -56,9 +51,9 @@ export function SettingsDialog({ initialSection, settings, onChange, account, on
 
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="settings" role="dialog" aria-modal="true" aria-label="Settings" tabIndex={-1} ref={dialog}>
+      <div className="settings" role="dialog" aria-modal="true" aria-label={t('settings.title')} tabIndex={-1} ref={dialog}>
         <nav className="settings-nav">
-          <strong className="settings-title">Settings</strong>
+          <strong className="settings-title">{t('settings.title')}</strong>
           {(['account', 'general', 'models', 'research', 'about'] as Section[]).map((s) => (
             <button
               key={s}
@@ -68,12 +63,12 @@ export function SettingsDialog({ initialSection, settings, onChange, account, on
                 track('settings.section', { target: s })
               }}
             >
-              {SECTION_LABEL[s]}
+              {sectionLabel(s)}
             </button>
           ))}
         </nav>
         <div className="settings-body">
-          <button className="ghost settings-close" aria-label="Close settings" title="Close (Esc)" onClick={onClose}>
+          <button className="ghost settings-close" aria-label={t('settings.close')} title={t('settings.close_hint')} onClick={onClose}>
             ×
           </button>
           {section === 'account' ? (
@@ -83,7 +78,7 @@ export function SettingsDialog({ initialSection, settings, onChange, account, on
           ) : section === 'research' ? (
             <ResearchDataSection onReview={onReviewAgreement} />
           ) : !settings ? (
-            <p className="muted">Loading…</p>
+            <p className="muted">{t('common.loading')}</p>
           ) : section === 'general' ? (
             <General settings={settings} onChange={onChange} />
           ) : (
@@ -132,53 +127,68 @@ function Segmented<T extends string>({
 function General({ settings, onChange }: { settings: Settings; onChange(p: Partial<Settings>): void }) {
   return (
     <section>
-      <h2>General</h2>
-      <Row label="Appearance">
+      <h2>{t('settings.general')}</h2>
+      <Row label={t('settings.appearance')}>
         <Segmented
-          label="Appearance"
+          label={t('settings.appearance')}
           value={settings.theme}
           options={[
-            ['light', 'Light'],
-            ['dark', 'Dark'],
-            ['system', 'System'],
+            ['light', t('settings.light')],
+            ['dark', t('settings.dark')],
+            ['system', t('settings.system')],
           ]}
           onChange={(theme) => onChange({ theme })}
         />
       </Row>
-      <Row label="Enter while the agent is running" hint="What pressing Enter does with a new message mid-run.">
+      <Row label={t('settings.language')} hint={t('settings.language_hint')}>
         <Segmented
-          label="Enter while the agent is running"
+          label={t('settings.language')}
+          value={getLangPref()}
+          options={[
+            ['system', t('settings.lang_system')],
+            ['en', 'English'],
+            ['zh-CN', '中文'],
+          ] as [LangPref, string][]}
+          onChange={(l) => {
+            track('settings.language', { target: l })
+            setLangPref(l)
+          }}
+        />
+      </Row>
+      <Row label={t('settings.busy_enter')} hint={t('settings.busy_enter_hint')}>
+        <Segmented
+          label={t('settings.busy_enter')}
           value={settings.busyEnter}
           options={[
-            ['queue', 'Queue message'],
-            ['interrupt', 'Interrupt'],
+            ['queue', t('settings.queue')],
+            ['interrupt', t('settings.interrupt')],
           ]}
           onChange={(busyEnter) => onChange({ busyEnter })}
         />
       </Row>
-      <Row label="Default permission" hint="Applies to new agent sessions.">
+      <Row label={t('settings.permission')} hint={t('settings.permission_hint')}>
         <Segmented
-          label="Default permission"
+          label={t('settings.permission')}
           value={settings.permission}
           options={[
-            ['ask', 'Ask before commands'],
-            ['project', 'Allow inside the project'],
+            ['ask', t('settings.perm_ask')],
+            ['project', t('settings.perm_project')],
           ]}
           onChange={(permission) => onChange({ permission })}
         />
       </Row>
-      <Row label="Notifications" hint="Notify when the agent finishes while the window is in the background.">
+      <Row label={t('settings.notifications')} hint={t('settings.notifications_hint')}>
         <Segmented
-          label="Notifications"
+          label={t('settings.notifications')}
           value={settings.notifications ? 'on' : 'off'}
           options={[
-            ['on', 'On'],
-            ['off', 'Off'],
+            ['on', t('settings.on')],
+            ['off', t('settings.off')],
           ]}
           onChange={(v) => onChange({ notifications: v === 'on' })}
         />
       </Row>
-      <Row label="Projects folder" hint="Where new projects are created.">
+      <Row label={t('settings.projects_folder')} hint={t('settings.projects_folder_hint')}>
         <code className="path" title={settings.projectsRoot}>
           {settings.projectsRoot}
         </code>
@@ -190,7 +200,7 @@ function General({ settings, onChange }: { settings: Settings; onChange(p: Parti
             })
           }
         >
-          Change…
+          {t('settings.change')}
         </button>
       </Row>
     </section>
@@ -212,18 +222,16 @@ function Models({
   const list = hosted ? MODELS.filter(([id]) => hosted.includes(id)) : MODELS
   return (
     <section>
-      <h2>Models</h2>
-      <p className="muted settings-lead">
-        Models run on HumanStudy Hub servers; your account&apos;s invitation code covers usage during the beta.
-      </p>
-      <h3>Default model</h3>
-      <div className="model-list" role="radiogroup" aria-label="Default model">
+      <h2>{t('settings.models')}</h2>
+      <p className="muted settings-lead">{t('settings.models_lead')}</p>
+      <h3>{t('settings.default_model')}</h3>
+      <div className="model-list" role="radiogroup" aria-label={t('settings.default_model')}>
         {list.map(([id, name, hint]) => (
           <label key={id} className={`model-row ${settings.model === id ? 'on' : ''}`}>
             <input type="radio" name="model" checked={settings.model === id} onChange={() => onChange({ model: id })} />
             <span className="model-name">
               {name}
-              {hint && <span className="muted small"> · {hint}</span>}
+              {hint && <span className="muted small"> · {t(hint)}</span>}
             </span>
           </label>
         ))}
@@ -315,15 +323,15 @@ function DevKeys({ settings, onChange }: { settings: Settings; onChange(p: Parti
 }
 
 function accessLine(a: AccountStatus): string {
-  if (a.modelAccess === 'own-key') return 'Your own OpenRouter key (developer)'
+  if (a.modelAccess === 'own-key') return t('settings.access_own')
   if (a.modelAccess === 'hosted') {
-    const t = a.keyExpiresAt ? Date.parse(a.keyExpiresAt) : NaN
-    const until = Number.isNaN(t)
+    const ms = a.keyExpiresAt ? Date.parse(a.keyExpiresAt) : NaN
+    const until = Number.isNaN(ms)
       ? ''
-      : ` · until ${new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}`
-    return `Hosted models via HumanStudy Hub${until}`
+      : t('settings.access_until', { date: new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) })
+    return `${t('settings.access_hosted')}${until}`
   }
-  return 'No model access yet'
+  return t('settings.access_none')
 }
 
 function Account({ account, onAccount }: { account: AccountStatus | null; onAccount(a: AccountStatus): void }) {
@@ -353,7 +361,7 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
         onAccount(await window.humanstudy.account.signIn(email.trim(), password))
         setPassword('')
       },
-      'Could not sign in.'
+      t('settings.err_signin')
     )
   const signUp = () =>
     run(
@@ -361,13 +369,13 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
       async () => {
         const r = await window.humanstudy.account.signUp(email.trim(), password)
         setPassword('')
-        if (r.needsConfirmation) setNotice('Check your email to confirm, then sign in.')
+        if (r.needsConfirmation) setNotice(t('settings.confirm_email'))
         else onAccount(await window.humanstudy.account.status())
       },
-      'Could not create the account.'
+      t('settings.err_signup')
     )
   const signOut = () =>
-    run('signout', async () => onAccount(await window.humanstudy.account.signOut()), 'Could not sign out.')
+    run('signout', async () => onAccount(await window.humanstudy.account.signOut()), t('settings.err_signout'))
   const unlock = () =>
     run(
       'unlock',
@@ -375,23 +383,21 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
         onAccount(await window.humanstudy.account.unlock(code.trim()))
         setCode('')
       },
-      'Could not redeem the code.'
+      t('settings.err_code')
     )
 
   if (!account)
     return (
       <section>
-        <h2>Account</h2>
-        <p className="muted">Loading…</p>
+        <h2>{t('settings.account')}</h2>
+        <p className="muted">{t('common.loading')}</p>
       </section>
     )
 
   return (
     <section>
-      <h2>Account</h2>
-      <p className="muted settings-lead">
-        Sign in to your HumanStudy Hub account. Your invitation code unlocks the agent.
-      </p>
+      <h2>{t('settings.account')}</h2>
+      <p className="muted settings-lead">{t('settings.account_lead')}</p>
       {error && <p className="home-error">{error}</p>}
       {notice && <p className="account-notice">{notice}</p>}
 
@@ -404,7 +410,7 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
           }}
         >
           <label>
-            <span className="setting-label">Email</span>
+            <span className="setting-label">{t('settings.email')}</span>
             <input
               className="field"
               type="email"
@@ -415,7 +421,7 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
             />
           </label>
           <label>
-            <span className="setting-label">Password</span>
+            <span className="setting-label">{t('settings.password')}</span>
             <input
               className="field"
               type="password"
@@ -431,24 +437,24 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
               disabled={Boolean(busy) || !email.trim() || !password}
               onClick={() => void signUp()}
             >
-              {busy === 'signup' ? 'Creating…' : 'Create account'}
+              {busy === 'signup' ? t('settings.creating') : t('settings.create_account')}
             </button>
             <button type="submit" className="primary" disabled={Boolean(busy) || !email.trim() || !password}>
-              {busy === 'signin' ? 'Signing in…' : 'Sign in'}
+              {busy === 'signin' ? t('settings.signing_in') : t('chat.signin')}
             </button>
           </div>
         </form>
       ) : (
         <>
-          <Row label="Signed in" hint={account.email}>
+          <Row label={t('settings.signed_in')} hint={account.email}>
             <button className="ghost" onClick={() => void signOut()} disabled={Boolean(busy)}>
-              {busy === 'signout' ? 'Signing out…' : 'Sign out'}
+              {busy === 'signout' ? t('settings.signing_out') : t('settings.sign_out')}
             </button>
           </Row>
           {!account.unlocked && (
             <div className="unlock-box">
-              <div className="setting-label">Enter your invitation code</div>
-              <div className="muted small">Your invitation code unlocks the agent during the beta.</div>
+              <div className="setting-label">{t('settings.enter_code')}</div>
+              <div className="muted small">{t('settings.code_hint')}</div>
               <form
                 className="key-form"
                 onSubmit={(e) => {
@@ -458,15 +464,15 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
               >
                 <input
                   className="field"
-                  placeholder="Invitation code"
+                  placeholder={t('settings.code_placeholder')}
                   autoComplete="off"
                   spellCheck={false}
                   value={code}
                   onChange={(e) => setCode(e.target.value)}
-                  aria-label="Invitation code"
+                  aria-label={t('settings.code_placeholder')}
                 />
                 <button type="submit" className="primary" disabled={Boolean(busy) || !code.trim()}>
-                  {busy === 'unlock' ? 'Unlocking…' : 'Unlock'}
+                  {busy === 'unlock' ? t('settings.unlocking') : t('settings.unlock')}
                 </button>
               </form>
             </div>
@@ -477,7 +483,7 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
       <div className="access-line">
         <span className={`access-dot ${account.modelAccess}`} aria-hidden />
         <span>
-          <span className="muted">Model access: </span>
+          <span className="muted">{t('settings.model_access')}</span>
           {accessLine(account)}
         </span>
       </div>

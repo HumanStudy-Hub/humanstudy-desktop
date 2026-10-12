@@ -15,7 +15,7 @@ export interface PermissionPart {
 }
 export type Part =
   | { kind: 'text'; text: string }
-  | { kind: 'tool'; tool: string; detail?: string; state?: string }
+  | { kind: 'tool'; tool: string; detail?: string; state?: string; input?: unknown; output?: string; at?: number; endedAt?: number }
   | { kind: 'error'; text: string }
   | PermissionPart
 
@@ -30,6 +30,9 @@ export interface Message {
   id: number
   role: 'user' | 'assistant'
   parts: Part[]
+  /** ms since the epoch the message started and its last event arrived; only live turns have an end. */
+  at?: number
+  endedAt?: number
 }
 
 export interface Session {
@@ -195,7 +198,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const send = useCallback((text: string) => {
     const sid = idRef.current
     if (!sid || !text.trim()) return
-    setMessages((ms) => [...ms, { id: nextId++, role: 'user', parts: [{ kind: 'text', text }] }])
+    setMessages((ms) => [...ms, { id: nextId++, role: 'user', parts: [{ kind: 'text', text }], at: Date.now() }])
     setBusyBoth(true)
     setStatus('Thinking…')
     window.humanstudy.kernel.send(sid, text).catch((e: unknown) => {
@@ -299,6 +302,7 @@ function fromStored(m: ThreadMessage): Message {
     parts: m.parts.map((p): Part =>
       p.kind === 'permission' ? { kind: 'permission', id: p.id, type: p.type, title: p.title, resolved: p.resolved, expired: !p.resolved } : p,
     ),
+    at: Date.parse(m.at) || undefined,
   }
 }
 
@@ -319,8 +323,8 @@ function appendEvent(ms: Message[], e: KernelEvent): Message[] {
   const last = ms[ms.length - 1]
   const msg: Message =
     last && last.role === 'assistant'
-      ? { ...last, parts: [...last.parts] }
-      : { id: nextId++, role: 'assistant', parts: [] }
+      ? { ...last, parts: [...last.parts], endedAt: Date.now() }
+      : { id: nextId++, role: 'assistant', parts: [], at: Date.now(), endedAt: Date.now() }
   const tail = msg.parts[msg.parts.length - 1]
   if (e.type === 'text') {
     if (tail?.kind === 'text') msg.parts[msg.parts.length - 1] = { kind: 'text', text: tail.text + (e.text ?? '') }
@@ -333,8 +337,8 @@ function appendEvent(ms: Message[], e: KernelEvent): Message[] {
     const open = msg.parts[at]
     const detail = e.detail && e.detail !== '{}' ? e.detail : undefined // '{}' = input not streamed yet
     if (open?.kind === 'tool' && open.tool === (e.tool ?? 'tool') && (open.state === 'pending' || open.state === 'running'))
-      msg.parts[at] = { ...open, detail: detail ?? open.detail, state: e.text }
-    else msg.parts.push({ kind: 'tool', tool: e.tool ?? 'tool', detail, state: e.text })
+      msg.parts[at] = { ...open, detail: detail ?? open.detail, state: e.text, input: e.input ?? open.input, output: e.output ?? open.output, endedAt: Date.now() }
+    else msg.parts.push({ kind: 'tool', tool: e.tool ?? 'tool', detail, state: e.text, input: e.input, output: e.output, at: Date.now(), endedAt: Date.now() })
   } else if (e.type === 'permission' && e.permission) {
     const pe = e.permission
     const at = msg.parts.findIndex((x) => x.kind === 'permission' && x.id === pe.id)

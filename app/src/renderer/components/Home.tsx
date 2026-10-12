@@ -6,6 +6,8 @@ import { VersionFooter } from './Updates'
 import { KernelBar } from './KernelBar'
 import type { KernelInstallStatus } from '../../preload/types'
 import { errorText } from './SettingsDialog'
+import { relativeTime } from '../format'
+import { t } from '../i18n'
 
 type Section = 'projects' | 'studies'
 const SECTION_KEY = 'hs.homeSection'
@@ -19,26 +21,9 @@ interface Props {
   kernel: { status: KernelInstallStatus | null; retry(): void }
 }
 
-export function relativeTime(iso: string, now = Date.now()): string {
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return ''
-  const s = Math.max(0, Math.round((now - t) / 1000))
-  if (s < 45) return 'just now'
-  const m = Math.round(s / 60)
-  if (m < 60) return `${m} min ago`
-  const h = Math.round(m / 60)
-  if (h < 24) return `${h} h ago`
-  const d = Math.round(h / 24)
-  if (d === 1) return 'yesterday'
-  if (d < 7) return `${d} days ago`
-  return new Date(t).toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: d > 300 ? 'numeric' : undefined,
-  })
-}
+export { relativeTime }
 
-const baseName = (path: string) => (path.split(/[\\/]/).pop() ?? '').replace(/\.pdf$/i, '').trim() || 'Untitled project'
+const baseName = (path: string) => (path.split(/[\\/]/).pop() ?? '').replace(/\.pdf$/i, '').trim() || t('home.untitled')
 
 export interface HomeHandle {
   /** Same as the "From a paper" card: pick a PDF and start a project. */
@@ -82,7 +67,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
     } catch (e) {
       setProjects([])
       setFolderProblem(true)
-      setError(errorText(e, 'Could not list projects.'))
+      setError(errorText(e, t('home.err_list')))
     }
   }, [])
 
@@ -115,7 +100,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
     try {
       await task()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Something went wrong.')
+      setError(e instanceof Error ? e.message : t('home.err_generic'))
     } finally {
       setBusy(false)
     }
@@ -189,25 +174,25 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                 else if (shown[0]) onOpen(shown[0].dir)
               }
             }}
-            placeholder={section === 'studies' ? 'Search studies' : 'Search projects'}
-            aria-label={section === 'studies' ? 'Search studies' : 'Search projects'}
+            placeholder={t(section === 'studies' ? 'home.search_studies' : 'home.search_projects')}
+            aria-label={t(section === 'studies' ? 'home.search_studies' : 'home.search_projects')}
           />
           <kbd>⌘K</kbd>
         </label>
         <div className="titlebar-actions">
           <button className="ghost" onClick={openFolder} disabled={busy}>
-            Open folder
+            {t('home.open_folder')}
           </button>
           <button className="ghost" onClick={onSettings}>
-            Settings
+            {t('home.settings')}
           </button>
           {account && !account.signedIn && (
             <button className="primary signin-btn" onClick={onAccount}>
-              Sign in
+              {t('home.signin')}
             </button>
           )}
           {account?.signedIn && (
-            <button className="ghost account-chip" onClick={onAccount} title="Account">
+            <button className="ghost account-chip" onClick={onAccount} title={t('home.account')}>
               <span className="avatar" style={{ width: 22, height: 22, fontSize: 11 }} aria-hidden>
                 {(account.email ?? '?').slice(0, 1).toUpperCase()}
               </span>
@@ -218,7 +203,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
       </header>
 
       <div className="home-body">
-        <nav className="home-side" aria-label="Sections">
+        <nav className="home-side" aria-label={t('home.sections')}>
           <button aria-current={section === 'projects' ? 'page' : undefined} onClick={() => setSection('projects')}>
             <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
               <path
@@ -229,7 +214,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                 strokeLinejoin="round"
               />
             </svg>
-            Projects
+            {t('home.projects')}
           </button>
           <button aria-current={section === 'studies' ? 'page' : undefined} onClick={() => setSection('studies')}>
             <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
@@ -241,7 +226,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                 strokeLinejoin="round"
               />
             </svg>
-            Studies
+            {t('home.studies')}
           </button>
           <VersionFooter />
         </nav>
@@ -253,7 +238,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
               <KernelBar kernel={kernel} />
               {!query && account?.modelAccess === 'none' && (
                 <button className="access-banner" onClick={onAccount}>
-                  <span>Sign in and enter your invitation code to use the agent</span>
+                  <span>{t('home.need_access')}</span>
                   <span className="access-banner-go" aria-hidden>
                     →
                   </span>
@@ -261,7 +246,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
               )}
               {!query && (
                 <section className="home-section">
-                  <h2 className="home-label">Start a new project</h2>
+                  <h2 className="home-label">{t('home.start_new')}</h2>
                   <div className="tiles">
                     <button className="tile" onClick={fromPaper} disabled={busy}>
                       <span className="tile-art paper" aria-hidden>
@@ -269,16 +254,16 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                         <i />
                         <i />
                       </span>
-                      <strong>From a paper</strong>
-                      <span className="muted small">Pick a PDF; the agent builds its Human Program.</span>
+                      <strong>{t('home.from_paper')}</strong>
+                      <span className="muted small">{t('home.from_paper_hint')}</span>
                     </button>
                     {blank === null ? (
                       <button className="tile" onClick={() => setBlank('')} disabled={busy}>
                         <span className="tile-art blank" aria-hidden>
                           +
                         </span>
-                        <strong>Blank project</strong>
-                        <span className="muted small">An empty folder to fill with sources later.</span>
+                        <strong>{t('home.blank')}</strong>
+                        <span className="muted small">{t('home.blank_hint')}</span>
                       </button>
                     ) : (
                       <form
@@ -288,21 +273,21 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                           createBlank()
                         }}
                       >
-                        <strong>Blank project</strong>
+                        <strong>{t('home.blank')}</strong>
                         <input
                           autoFocus
                           className="field"
                           value={blank}
-                          placeholder="Project name"
+                          placeholder={t('home.project_name')}
                           onChange={(e) => setBlank(e.target.value)}
                           onKeyDown={(e) => e.key === 'Escape' && setBlank(null)}
                         />
                         <div className="row-end">
                           <button type="button" className="ghost" onClick={() => setBlank(null)}>
-                            Cancel
+                            {t('home.cancel')}
                           </button>
                           <button type="submit" className="primary" disabled={busy || !blank.trim()}>
-                            Create
+                            {t('home.create')}
                           </button>
                         </div>
                       </form>
@@ -312,8 +297,8 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                         <i />
                         <i />
                       </span>
-                      <strong>Sample · Knobe 2003</strong>
-                      <span className="muted small">The side-effect effect, ready to explore.</span>
+                      <strong>{t('home.sample')}</strong>
+                      <span className="muted small">{t('home.sample_hint')}</span>
                     </button>
                   </div>
                 </section>
@@ -336,7 +321,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                           })
                         }
                       >
-                        Choose folder…
+                        {t('home.choose_folder')}
                       </button>
                     </>
                   )}
@@ -344,17 +329,17 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
               )}
 
               <section className="home-section">
-                <h2 className="home-label">{query ? `Results for “${query}”` : 'Recent projects'}</h2>
+                <h2 className="home-label">{query ? t('home.results_for', { q: query }) : t('home.recent')}</h2>
                 {projects === null ? (
-                  <p className="muted small">Loading…</p>
+                  <p className="muted small">{t('common.loading')}</p>
                 ) : shown.length === 0 ? (
                   <div className="home-empty">
                     {query ? (
-                      <p className="muted">No project matches that name.</p>
+                      <p className="muted">{t('home.no_match')}</p>
                     ) : (
                       <>
-                        <p>No projects yet.</p>
-                        <p className="muted small">Start from a paper, or open the Knobe 2003 sample to look around.</p>
+                        <p>{t('home.no_projects')}</p>
+                        <p className="muted small">{t('home.no_projects_hint')}</p>
                       </>
                     )}
                   </div>
@@ -378,7 +363,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                               onChange={(e) => setRenaming({ dir: p.dir, name: e.target.value })}
                               onBlur={saveRename}
                               onKeyDown={(e) => e.key === 'Escape' && setRenaming(null)}
-                              aria-label="Project name"
+                              aria-label={t('home.project_name')}
                             />
                           </form>
                         ) : (
@@ -389,11 +374,11 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                               {p.title && <span className="muted small project-title"> · {p.title}</span>}
                             </span>
                             <span className="badges">
-                              {p.hasPaper && <span className="badge">Paper</span>}
-                              {p.hasProgram && <span className="badge">Program</span>}
+                              {p.hasPaper && <span className="badge">{t('home.badge_paper')}</span>}
+                              {p.hasProgram && <span className="badge">{t('home.badge_study')}</span>}
                               {p.artifactCount > 0 && (
                                 <span className="badge">
-                                  {p.artifactCount} artifact{p.artifactCount === 1 ? '' : 's'}
+                                  {t(p.artifactCount === 1 ? 'home.badge_results_one' : 'home.badge_results_other', { n: p.artifactCount })}
                                 </span>
                               )}
                             </span>
@@ -402,19 +387,19 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                         )}
                         {confirmTrash === p.dir ? (
                           <span className="confirm">
-                            <span className="small muted">Move to Trash?</span>
+                            <span className="small muted">{t('home.trash_q')}</span>
                             <button className="ghost danger" onClick={() => void trash(p.dir)} disabled={busy}>
-                              Move
+                              {t('home.trash_move')}
                             </button>
                             <button className="ghost" onClick={() => setConfirmTrash(null)}>
-                              Cancel
+                              {t('home.cancel')}
                             </button>
                           </span>
                         ) : (
                           <span className="menu row-menu">
                             <button
                               className="ghost more"
-                              aria-label={`More actions for ${p.name}`}
+                              aria-label={t('home.more', { name: p.name })}
                               aria-expanded={menu === p.dir}
                               onClick={(e) => {
                                 e.stopPropagation()
@@ -433,7 +418,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                                     setRenaming({ dir: p.dir, name: p.name })
                                   }}
                                 >
-                                  Rename
+                                  {t('home.rename')}
                                 </button>
                                 <button
                                   className="menu-item row"
@@ -443,7 +428,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                                     void window.humanstudy.project.reveal(p.dir)
                                   }}
                                 >
-                                  Show in Finder
+                                  {t('home.reveal')}
                                 </button>
                                 <button
                                   className="menu-item row danger"
@@ -453,7 +438,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                                     setConfirmTrash(p.dir)
                                   }}
                                 >
-                                  Move to Trash
+                                  {t('home.trash')}
                                 </button>
                               </div>
                             )}

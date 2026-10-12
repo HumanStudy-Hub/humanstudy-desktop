@@ -9,15 +9,17 @@ export function money(n: number): string {
   return n < 0.01 ? '<$0.01' : `$${n.toFixed(2)}`
 }
 
-/** "just now", "5 min ago", "yesterday", "3 Mar" */
-export function relativeTime(iso: string, now = Date.now()): string {
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return ''
-  const s = Math.max(0, (now - t) / 1000)
-  if (s < 45) return 'just now'
-  if (s < 3600) return `${Math.round(s / 60)} min ago`
-  if (s < 86400) return `${Math.round(s / 3600)} h ago`
-  if (s < 2 * 86400) return 'yesterday'
-  if (s < 7 * 86400) return `${Math.floor(s / 86400)} days ago`
-  return new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+import { getLang, t } from './i18n'
+
+/** "just now", "5 min ago", "yesterday", "3 Mar" (in the app language) */
+export function relativeTime(iso: string | number, now = Date.now()): string {
+  const ms = typeof iso === 'number' ? iso : Date.parse(iso)
+  if (Number.isNaN(ms)) return ''
+  const s = Math.max(0, (now - ms) / 1000)
+  if (s < 45) return t('time.now')
+  if (s < 3600) return t('time.min', { n: Math.round(s / 60) })
+  if (s < 86400) return t('time.hour', { n: Math.round(s / 3600) })
+  if (s < 2 * 86400) return t('time.yesterday')
+  if (s < 7 * 86400) return t('time.days', { n: Math.floor(s / 86400) })
+  return new Date(ms).toLocaleDateString(getLang(), { day: 'numeric', month: 'short' })
 }

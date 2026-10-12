@@ -21,6 +21,7 @@ import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/pro
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
+import { isVersioned, readVersion, relOf, snapshot, versionsOf } from './versions'
 import { createThreads, threads } from './threads'
 import type { Kernel, KernelEvent } from './kernel-types'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings } from '../preload/types'
@@ -115,10 +116,12 @@ async function listDir(dir: string): Promise<ProjectFile[]> {
 // The Program tab shows the project as files, like an editor's explorer. App and kernel internals
 // stay out of it; the agent's skills live in .opencode and the marker in .humanstudy.
 const HIDDEN_DIRS = new Set(['.humanstudy', '.opencode', 'node_modules', '__pycache__', '.git', '.venv', '.DS_Store'])
+// Engineering files the pack installs for the agent. The agent reads them from disk; researchers never need to see them.
+const HIDDEN_TOP = new Set(['AGENTS.md', 'PROJECT_FORMAT.md', 'schema'])
 const TREE_LIMIT = 3000
 async function listTree(root: string, dir: string, depth: number, count: { n: number }): Promise<ProjectEntry[]> {
   if (!existsSync(dir) || depth > 8) return []
-  const entries = (await readdir(dir, { withFileTypes: true })).filter((d) => !HIDDEN_DIRS.has(d.name) && !d.name.startsWith('.'))
+  const entries = (await readdir(dir, { withFileTypes: true })).filter((d) => !HIDDEN_DIRS.has(d.name) && !d.name.startsWith('.') && !(depth === 0 && HIDDEN_TOP.has(d.name)))
   entries.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
   const out: ProjectEntry[] = []
   for (const d of entries) {
@@ -128,12 +131,15 @@ async function listTree(root: string, dir: string, depth: number, count: { n: nu
     if (d.isDirectory()) out.push({ name: d.name, path, rel, kind: 'dir', ext: '', children: await listTree(root, path, depth + 1, count) })
     else if (d.isFile()) {
       let size: number | undefined
+      let mtime: number | undefined
       try {
-        size = (await stat(path)).size
+        const st = await stat(path)
+        size = st.size
+        mtime = Math.round(st.mtimeMs)
       } catch {
         /* unreadable */
       }
-      out.push({ name: d.name, path, rel, kind: 'file', ext: extname(d.name).slice(1).toLowerCase(), url: toUrl(path), size })
+      out.push({ name: d.name, path, rel, kind: 'file', ext: extname(d.name).slice(1).toLowerCase(), url: toUrl(path), size, mtime })
     }
   }
   return out
@@ -176,6 +182,7 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
 
 // ---- watch the open project so new artifacts appear without a reload -----------------
 const watchers = new Map<string, FSWatcher>()
+const snapTimers = new Map<string, NodeJS.Timeout>()
 function watchProject(dir: string): void {
   if (watchers.has(dir)) return
   let timer: NodeJS.Timeout | undefined
@@ -183,6 +190,15 @@ function watchProject(dir: string): void {
     const w = watch(dir, { recursive: true }, (_e, file) => {
       if (file && String(file).startsWith('.humanstudy')) return
       if (file) telemetry.noteFsChange(dir, String(file))
+      if (file) {
+        // A history for what the agent (or the researcher) wrote; debounced so one write is one version.
+        const rel = String(file).split(sep).join('/')
+        if (isVersioned(rel)) {
+          const k = `${dir}\n${rel}`
+          clearTimeout(snapTimers.get(k))
+          snapTimers.set(k, setTimeout(() => { snapTimers.delete(k); void snapshot(dir, rel).catch(() => undefined) }, 600))
+        }
+      }
       clearTimeout(timer)
       timer = setTimeout(() => broadcast('project:changed', dir), 250)
     })
@@ -190,6 +206,13 @@ function watchProject(dir: string): void {
   } catch {
     /* watching is a convenience */
   }
+}
+
+/** The opened project folder a file belongs to. */
+function projectRootOf(file: string): string {
+  const q = resolve(file)
+  for (const d of watchers.keys()) if (q.startsWith(d + sep)) return d
+  throw new Error('that file is not in an opened project')
 }
 
 function unwatch(dir: string): void {
@@ -269,6 +292,25 @@ app.whenReady().then(() => {
     return snap
   })
   ipcMain.handle('project:reveal', (_e, p: string) => shell.showItemInFolder(p))
+  ipcMain.handle('project:versions', async (_e, p: string) => {
+    const q = ownedPath(p)
+    const root = projectRootOf(q)
+    return versionsOf(root, relOf(root, q))
+  })
+  ipcMain.handle('project:readVersion', async (_e, p: string, id: string) => {
+    const q = ownedPath(p)
+    const root = projectRootOf(q)
+    return readVersion(root, relOf(root, q), id)
+  })
+  ipcMain.handle('project:saveCopy', async (e, p: string) => {
+    const q = ownedPath(p)
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const opts = { defaultPath: join(app.getPath('downloads'), basename(q)) }
+    const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    if (r.canceled || !r.filePath) return null
+    await copyFile(q, r.filePath)
+    return r.filePath
+  })
   ipcMain.handle('project:readText', async (_e, p: string) => {
     const q = ownedPath(p)
     if ((await stat(q)).size > TEXT_LIMIT) throw new Error('file is larger than 4 MB')

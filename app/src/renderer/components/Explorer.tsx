@@ -1,7 +1,8 @@
-// Program explorer: the project folder as a tree, like an editor's file explorer.
+// Files sidebar: the project folder as a tree. Hidden by default; toggled with the Files button or ⌘B.
 import { useState } from 'react'
 import type { ProjectEntry } from '../../preload/types'
 import { track } from '../telemetry'
+import { t } from '../i18n'
 
 interface Props {
   tree: ProjectEntry[]
@@ -35,12 +36,12 @@ const GLYPH: Record<string, string> = {
 
 export function Explorer({ tree, name, activePath, dirty, onOpen }: Props) {
   return (
-    <aside className="explorer" aria-label="Program files">
+    <aside className="explorer" aria-label={t('files.aria')}>
       <div className="explorer-head" title={name}>
         {name}
       </div>
       <div className="explorer-tree">
-        {tree.length ? <Branch entries={tree} depth={0} activePath={activePath} dirty={dirty} onOpen={onOpen} /> : <p className="muted small explorer-empty">Empty project.</p>}
+        {tree.length ? <Branch entries={tree} depth={0} activePath={activePath} dirty={dirty} onOpen={onOpen} /> : <p className="muted small explorer-empty">{t('files.empty')}</p>}
       </div>
     </aside>
   )
@@ -82,7 +83,7 @@ function File({ entry, depth, active, dirty, onOpen }: { entry: ProjectEntry; de
           {GLYPH[entry.ext] ?? (entry.ext ? entry.ext.slice(0, 3) : '·')}
         </span>
         <span className="tree-name">{entry.name}</span>
-        {dirty && <span className="tree-dirty" aria-label="unsaved" />}
+        {dirty && <span className="tree-dirty" aria-label={t('files.unsaved')} />}
       </button>
     </li>
   )
