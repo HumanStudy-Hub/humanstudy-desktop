@@ -45,7 +45,7 @@ const stubFetch = async (url, init = {}) => {
     return json(200, { access_token: 'AT2', refresh_token: 'RT2', expires_in: 3600, user: { email: 'a@b.org' } })
   }
   if (u.startsWith(`${SB}/auth/v1/signup?redirect_to=`)) {
-    assert.equal(decodeURIComponent(u.split('redirect_to=')[1]), SERVER)
+    assert.equal(decodeURIComponent(u.split('redirect_to=')[1]), `${SERVER}/auth/confirm`)
     return json(200, { id: 'u1', email: body.email }) // confirmation required: no session
   }
   if (u === `${SB}/auth/v1/logout`) return new Response(null, { status: 204 })

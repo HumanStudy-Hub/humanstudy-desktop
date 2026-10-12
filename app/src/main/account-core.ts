@@ -211,7 +211,8 @@ export function createAccount(deps: AccountDeps) {
   async function signUp(email: string, password: string): Promise<{ needsConfirmation: boolean }> {
     const e = (email ?? '').trim()
     if (!e || !password) throw new AccountError('Enter your email and password.')
-    const json = await supabase(`signup?redirect_to=${encodeURIComponent(server)}`, { email: e, password })
+    // The website confirms the address at /auth/confirm (allowed in Supabase Auth redirect URLs).
+    const json = await supabase(`signup?redirect_to=${encodeURIComponent(`${server}/auth/confirm`)}`, { email: e, password })
     // With email confirmation on, Supabase returns the user without a session.
     const s = sessionFrom(json, e)
     if (s) {
