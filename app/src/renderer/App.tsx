@@ -161,7 +161,7 @@ export default function App() {
       <header className="titlebar">
         <div className="brand">
           <span className="brand-mark" aria-hidden />
-          HumanStudy
+          HumanStudy Hub
           <span className="crumb">/ {project.name}</span>
         </div>
         <div className="titlebar-actions">

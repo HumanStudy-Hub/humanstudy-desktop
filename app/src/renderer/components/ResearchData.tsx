@@ -13,7 +13,7 @@ export function ConsentExplainer() {
   return (
     <div className="consent-text">
       <p>
-        HumanStudy is a research platform. With your permission, we record how researchers work with the study
+        HumanStudy Hub is a research platform. With your permission, we record how researchers work with the study
         agent so we can study human–AI research practice and improve the app. Interaction data is research data:
         you choose what is collected, you can see exactly what is sent, and you can withdraw and delete it at any
         time.
@@ -24,7 +24,7 @@ export function ConsentExplainer() {
       </p>
       <p>
         <strong>Where it goes:</strong> the HumanStudy Hub database (Supabase), linked to your Hub account. Only
-        your account and the HumanStudy research team can read it.
+        your account and the HumanStudy Hub research team can read it.
       </p>
       <p>
         <strong>Withdraw:</strong> Settings → Research data. Turn either choice off at any time, review the last
@@ -91,7 +91,7 @@ export function ConsentDialog({ onDone, onLater }: { onDone(s: TelemetryStatus):
   return (
     <div className="overlay">
       <div className="consent-dialog" role="dialog" aria-modal="true" aria-label="Research data" tabIndex={-1} ref={box}>
-        <h2>Help HumanStudy research?</h2>
+        <h2>Help HumanStudy Hub research?</h2>
         <ConsentExplainer />
         <Choices value={value} onChange={setValue} />
         <p className="muted small">Nothing is sent until you confirm. Leaving both unchecked sends nothing.</p>

@@ -2,7 +2,7 @@
   "name": "humanstudy-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "HumanStudy Desktop: opencode for social scientists",
+  "description": "HumanStudy Hub desktop app: opencode for social scientists",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -31,10 +31,10 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },
-  "productName": "HumanStudy",
+  "productName": "HumanStudy Hub",
   "build": {
     "appId": "org.humanstudy-hub.desktop",
-    "productName": "HumanStudy",
+    "productName": "HumanStudy Hub",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -76,10 +76,10 @@
       "identity": "Haoyang Shang (ZS2UVBACK8)",
       "icon": "build/icon.icns",
       "notarize": true,
-      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
+      "artifactName": "HumanStudy-Hub-${version}-mac-${arch}.${ext}"
     },
     "dmg": {
-      "title": "HumanStudy"
+      "title": "HumanStudy Hub"
     },
     "win": {
       "icon": "build/icon.ico",
@@ -99,7 +99,7 @@
           ]
         }
       ],
-      "artifactName": "${productName}-${version}-win-${arch}.${ext}"
+      "artifactName": "HumanStudy-Hub-${version}-win-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -107,8 +107,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "HumanStudy",
-      "artifactName": "${productName}-Setup-${version}.${ext}"
+      "shortcutName": "HumanStudy Hub",
+      "artifactName": "HumanStudy-Hub-Setup-${version}.${ext}"
     }
   }
 }

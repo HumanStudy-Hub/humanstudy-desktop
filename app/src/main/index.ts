@@ -200,7 +200,7 @@ app.whenReady().then(() => {
   ipcMain.handle('project:open', async () => {
     const win = BrowserWindow.getFocusedWindow()
     const opts = {
-      title: 'Open a HumanStudy project',
+      title: 'Open a HumanStudy Hub project',
       defaultPath: ensureProjectsRoot(),
       properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'>,
     }

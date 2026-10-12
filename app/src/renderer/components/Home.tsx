@@ -154,7 +154,7 @@ export function Home({ onOpen, onSettings, account, onAccount }: Props) {
       <header className="titlebar home-bar">
         <div className="brand">
           <span className="brand-mark" aria-hidden />
-          HumanStudy
+          HumanStudy Hub
         </div>
         <label className="home-search">
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>

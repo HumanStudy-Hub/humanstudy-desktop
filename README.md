@@ -1,4 +1,4 @@
-# HumanStudy Desktop
+# HumanStudy Hub · desktop app
 
 Open-source desktop app for social scientists: turn a published human study into a
 reviewable, replicable Human Program with an agent, and check every claim against the

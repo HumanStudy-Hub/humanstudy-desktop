@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Regenerate icon.png / icon.icns / icon.ico from icon.svg (macOS: rsvg-convert, iconutil, Pillow).
+# Regenerate icon.png / icon.icns / icon.ico from icon.svg (the HumanStudy Hub website icon) and
+# icon-mac.svg (the same icon inset to the macOS grid). Needs macOS rsvg-convert and iconutil.
 set -euo pipefail
 cd "$(dirname "$0")"
 rsvg-convert -w 1024 -h 1024 icon.svg -o icon.png
 set_dir=$(mktemp -d)/icon.iconset
 mkdir -p "$set_dir"
 for s in 16 32 128 256 512; do
-  rsvg-convert -w $s -h $s icon.svg -o "$set_dir/icon_${s}x${s}.png"
-  rsvg-convert -w $((s * 2)) -h $((s * 2)) icon.svg -o "$set_dir/icon_${s}x${s}@2x.png"
+  rsvg-convert -w $s -h $s icon-mac.svg -o "$set_dir/icon_${s}x${s}.png"
+  rsvg-convert -w $((s * 2)) -h $((s * 2)) icon-mac.svg -o "$set_dir/icon_${s}x${s}@2x.png"
 done
 iconutil -c icns "$set_dir" -o icon.icns
 # icon.ico: PNG-compressed entries (Vista+), written without extra tools.

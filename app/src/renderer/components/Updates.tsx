@@ -69,7 +69,7 @@ export function AboutUpdates() {
       <h2>About &amp; updates</h2>
       <div className="setting-row">
         <div>
-          <div className="setting-label">HumanStudy</div>
+          <div className="setting-label">HumanStudy Hub</div>
           <div className="muted small">Version {status?.version ?? '…'}</div>
         </div>
         <div className="setting-control">

@@ -8,6 +8,7 @@
 //   APPLE_API_ISSUER unset -> skip notarization (logged), and drop half-set APPLE_API_* vars,
 //                             which electron-builder would otherwise treat as a config error.
 // --unsigned also skips the Developer ID signature (CI without signing secrets).
+// --no-notarize signs but skips notarization (local test builds).
 // Every other argument goes to electron-builder unchanged, e.g.
 //   node scripts/dist.mjs --mac --publish never
 //   node scripts/dist.mjs --win --x64 --publish never
@@ -18,7 +19,8 @@ import { join } from 'node:path'
 
 const args = process.argv.slice(2)
 const unsigned = args.includes('--unsigned')
-const passthrough = args.filter((a) => a !== '--unsigned')
+const skipNotarize = args.includes('--no-notarize')
+const passthrough = args.filter((a) => a !== '--unsigned' && a !== '--no-notarize')
 const env = { ...process.env }
 const extra = []
 const buildsMac = passthrough.some((a) => a === '--mac' || a === '-m') || (!passthrough.some((a) => /^(--win|-w|--linux|-l)$/.test(a)) && process.platform === 'darwin')
@@ -29,6 +31,13 @@ if (unsigned) {
   delete env.CSC_LINK
   delete env.CSC_KEY_PASSWORD
   env.CSC_IDENTITY_AUTO_DISCOVERY = 'false'
+} else if (skipNotarize) {
+  if (buildsMac) console.log('[dist] --no-notarize: the app is signed but not notarized')
+  delete env.APPLE_API_KEY
+  delete env.APPLE_API_KEY_ID
+  delete env.APPLE_API_ISSUER
+  delete env.APPLE_KEYCHAIN_PROFILE
+  extra.push('-c.mac.notarize=false')
 } else if (!env.APPLE_API_ISSUER && buildsMac && process.platform === 'darwin' && hasProfile(env.APPLE_KEYCHAIN_PROFILE || 'humanstudy-notary')) {
   env.APPLE_KEYCHAIN_PROFILE ||= 'humanstudy-notary'
   delete env.APPLE_API_KEY
