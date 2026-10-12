@@ -16,7 +16,7 @@ import { createProject, isInside, listProjects, renameProject, trashProject } fr
 import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
 import { checkForUpdates, installUpdate, startUpdates, updateStatus } from './updates'
 import { existsSync, watch, type FSWatcher } from 'node:fs'
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
@@ -279,6 +279,33 @@ app.whenReady().then(() => {
     await mkdir(dirname(q), { recursive: true })
     await writeFile(q, text, 'utf8')
     telemetry.track('file.edited', { target: extname(q).slice(1) || 'file' })
+  })
+
+  ipcMain.handle('project:importFiles', async (_e, dir: string, paths: string[]) => {
+    const root = ownedPath(dir)
+    if (!Array.isArray(paths) || paths.length > 50) throw new Error('too many files')
+    const hasPaper = existsSync(join(root, 'paper.pdf'))
+    let paperTaken = hasPaper
+    const out: ProjectFile[] = []
+    for (const src of paths) {
+      if (typeof src !== 'string' || !(await stat(src)).isFile()) continue
+      let name = basename(src)
+      let target: string
+      if (!paperTaken && extname(name).toLowerCase() === '.pdf') {
+        target = join(root, 'paper.pdf')
+        paperTaken = true
+      } else {
+        await mkdir(join(root, 'sources'), { recursive: true })
+        const ext = extname(name)
+        const stem = name.slice(0, name.length - ext.length)
+        target = join(root, 'sources', name)
+        for (let n = 2; existsSync(target); n++) target = join(root, 'sources', `${stem} ${n}${ext}`)
+        name = basename(target)
+      }
+      await copyFile(src, target, 1) // COPYFILE_EXCL: never overwrite
+      out.push({ name: basename(target), path: target, url: toUrl(target), ext: extname(target).slice(1).toLowerCase() })
+    }
+    return out
   })
 
   ipcMain.handle('projects:list', () => listProjects())

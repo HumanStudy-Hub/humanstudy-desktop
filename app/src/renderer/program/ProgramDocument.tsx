@@ -191,12 +191,34 @@ function useSectionState(key?:string):[Record<string,boolean>,(title:string,open
 
 /** The minimal frame of the study, derived only from the program: what it has and whether the
  * paper gave enough to reproduce it (from the agent's own issues). Details live in the sections. */
+/** Sample size when a participants field states one, else the first short value, else "not stated". */
+function participantsFact(list:ProgramNode[]):string{
+ const fields=list.flatMap(n=>n.fields).filter(f=>f.value!==null&&f.value!==''&&f.state!=='missing');
+ const sizeId=/^(n|n[-_]?total|sample[-_]?size|samplesize|total[-_]?n|participants)$/i,sizeLabel=/\bN\b|sample/i;
+ const sizeOf=(f:ProgramField):string|null=>{
+  const v=f.value as unknown;
+  if(typeof v==='number')return `N = ${v}`;
+  if(v&&typeof v==='object'&&!Array.isArray(v)){
+   const o=v as Record<string,unknown>,own=o.n??o.N;
+   if(typeof own==='number')return `N = ${own}`;
+   const parts=Object.values(o).map(x=>x&&typeof x==='object'?((x as Record<string,unknown>).n??(x as Record<string,unknown>).N):x).filter((x):x is number=>typeof x==='number');
+   if(parts.length===1)return `N = ${parts[0]}`;
+   if(parts.length>1)return `N = ${parts.reduce((a,b)=>a+b,0)} (${parts.join(' + ')})`;
+  }
+  if(typeof v==='string'&&v.length<=40&&/\d/.test(v))return v.trim();
+  return null;
+ };
+ for(const f of fields){if(sizeId.test(f.id)||sizeLabel.test(f.label)){const t=sizeOf(f);if(t)return t;}}
+ for(const f of fields){if(typeof f.value==='number')return `N = ${f.value}`;}
+ for(const f of fields){const t=fieldText(f.value).replace(/\s+/g,' ').trim();if(t&&t.length<=48&&!/^[^:]+:$/.test(t))return t;}
+ return 'not stated';
+}
+
 function Glance({program,studyId,items,conditions}:{program:HumanProgram;studyId:string;items:FlowItem[];conditions:Condition[]}){
  const inStudy=(ids:string[])=>!studyId||!ids.length||ids.includes(studyId);
  const nodes=program.nodes.filter(n=>inStudy(n.studyIds));
  const steps=program.steps.filter(st=>!studyId||st.studyId===studyId);
- const participants=nodes.find(n=>n.kind==='participants');
- const pField=participants?.fields.find(f=>typeof f.value==='number')??participants?.fields.find(f=>f.value!==null&&/\b(n|sample|size|participants|recruit)/i.test(`${f.id} ${f.label}`));
+ const participants=participantsFact(nodes.filter(n=>n.kind==='participants'));
  const issues=program.issues.filter(i=>!i.studyId||i.studyId===studyId);
  const blocking=issues.filter(i=>i.severity==='blocking').length,decision=issues.filter(i=>i.severity==='decision').length,check=issues.filter(i=>i.severity==='check').length;
  const unresolved=[...nodes.flatMap(n=>n.fields),...steps.flatMap(st=>st.rule?[st.rule]:[])].filter(f=>f.state==='missing'||f.state==='decision').length;
@@ -204,7 +226,7 @@ function Glance({program,studyId,items,conditions}:{program:HumanProgram;studyId
  const stepCount=steps.filter(st=>st.kind!=='sequence'||st.children.length===0).length||items.length;
  const facts:[string,string][]=[
   ['Studies',String(program.studies.filter(st=>st.type!=='analysis').length||program.studies.length)],
-  ['Participants',pField?fieldText(pField.value).replace(/\s+/g,' ').trim().slice(0,72):'not stated'],
+  ['Participants',participants],
   ['Conditions',conditions.length?String(conditions.length):'not stated'],
   ['Steps',String(stepCount)],
   ['Open issues',issues.length?[blocking&&`${blocking} blocking`,decision&&`${decision} decision`,check&&`${check} check`].filter(Boolean).join(' · '):'none'],

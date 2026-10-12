@@ -144,6 +144,7 @@ if (!('humanstudy' in window)) {
   }
   const accountStatus = (): AccountStatus => ({
     ...account,
+    models: ['anthropic/claude-sonnet-5.5', 'anthropic/claude-haiku-5.5', 'deepseek/deepseek-v4.1-flash'],
     modelAccess: providers.some((p) => p.id === 'openrouter' && p.configured)
       ? 'own-key'
       : account.unlocked
@@ -196,12 +197,36 @@ if (!('humanstudy' in window)) {
       }
   }
   globalThis.setInterval(markSent, 15_000)
+  const reply = (text: string) => `This is a browser preview with a scripted agent, so nothing here comes from a model. You asked: “${text.slice(0, 120)}”.
+
+## What I found
+
+The program has **four studies** and a few gaps. See [the paper](https://github.com/HumanStudy-Hub/HumanStudy-Bench) for the original numbers.
+
+| Item | Status | Source |
+| --- | --- | --- |
+| Participants | N = 78 | p. 2 |
+| Conditions | Harm / Help | p. 3 |
+| Analysis | \`chi-square\` | missing |
+
+> Nothing below is filled in from memory; gaps stay labelled \`missing\`.
+
+1. Read \`program.json\`
+2. Check the materials against the paper
+3. Write the change to \`artifacts/\`
+
+\`\`\`python
+def intentional(harm: float, help_: float) -> float:
+    # difference in the share judging the side effect intentional
+    return harm - help_
+\`\`\`
+`
   const script = (text: string): Omit<KernelEvent, 'sessionId'>[] => [
     { type: 'status', text: 'Reading the project' },
     { type: 'tool', tool: 'read', detail: 'program.json' },
     { type: 'tool', tool: 'read', detail: 'paper.pdf · pages 1–2' },
-    ...`This is a browser preview with a scripted agent, so nothing here comes from a model. You asked: “${text.slice(0, 120)}”. In the app, the agent reads the paper and the program, answers with citations, and writes any view or export into the project's artifacts.`
-      .split(/(?<= )/)
+    ...reply(text)
+      .split(/(?<=\s)/)
       .map((w) => ({ type: 'text' as const, text: w })),
     { type: 'usage', usage: { input: 1800, output: 140, reasoning: 0, cost: 0.004 } },
     { type: 'done' },
@@ -486,6 +511,13 @@ if (!('humanstudy' in window)) {
         }
       },
       reveal: async () => undefined,
+      importFiles: async (dir, paths) =>
+        paths.map((p) => {
+          const name = p.split(/[\\/]/).pop() ?? p
+          const isPaper = /\.pdf$/i.test(name) && !snapshot.pdf
+          const path = `${dir}/${isPaper ? 'paper.pdf' : 'sources/' + name}`
+          return { name: path.split('/').pop()!, path, url: path, ext: name.split('.').pop()?.toLowerCase() ?? '' }
+        }),
       readText: async (path) => {
         const t = texts.get(path)
         if (t === undefined) throw new Error('no such file in the preview')
@@ -634,8 +666,9 @@ if (!('humanstudy' in window)) {
         return researchStatus()
       },
     },
+    files: { pathOf: (file) => file.name },
     updates: {
-      status: async () => ({ version: '0.0.0-preview', state: 'none' }),
+      status: async () => ({ version: '0.1.0-preview', state: 'none' }),
       check: async () => undefined,
       install: async () => undefined,
       onChange: () => () => undefined,
