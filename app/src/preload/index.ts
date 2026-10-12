@@ -83,6 +83,9 @@ const api: HumanStudyApi = {
     recent: () => ipcRenderer.invoke('telemetry:recent'),
     deleteMyData: () => ipcRenderer.invoke('telemetry:deleteMyData'),
     flush: () => ipcRenderer.invoke('telemetry:flush'),
+    sessionId: () => ipcRenderer.invoke('telemetry:sessionId'),
+    replayChunk: (chunk) => ipcRenderer.invoke('telemetry:replayChunk', chunk),
+    exportMyData: () => ipcRenderer.invoke('telemetry:exportMyData'),
   },
 }
 

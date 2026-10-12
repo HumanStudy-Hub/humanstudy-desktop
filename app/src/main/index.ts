@@ -181,6 +181,7 @@ function watchProject(dir: string): void {
   try {
     const w = watch(dir, { recursive: true }, (_e, file) => {
       if (file && String(file).startsWith('.humanstudy')) return
+      if (file) telemetry.noteFsChange(dir, String(file))
       clearTimeout(timer)
       timer = setTimeout(() => broadcast('project:changed', dir), 250)
     })
@@ -277,6 +278,7 @@ app.whenReady().then(() => {
     if (typeof text !== 'string' || text.length > TEXT_LIMIT) throw new Error('text is too large')
     if (basename(q) === 'program.json') JSON.parse(text) // never leave the program unreadable
     await mkdir(dirname(q), { recursive: true })
+    telemetry.noteHumanWrite(q)
     await writeFile(q, text, 'utf8')
     telemetry.track('file.edited', { target: extname(q).slice(1) || 'file' })
   })
@@ -427,7 +429,8 @@ app.whenReady().then(() => {
         return alive
       },
     },
-    (e) => broadcast('threads:changed', e)
+    (e) => broadcast('threads:changed', e),
+    { onCapture: telemetry.onThreadCapture }
   )
   ipcMain.handle('kernel:startSession', async (_e, dir: string) => {
     const id = await startKernelSession(dir)

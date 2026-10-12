@@ -12,7 +12,7 @@ import { useKernelInstall } from './useKernelInstall'
 import { ThreadMenu } from './components/Threads'
 import { UpdateNotice, useUpdateStatus } from './components/Updates'
 import { ConsentDialog } from './components/ResearchData'
-import { setTelemetryProject, track } from './telemetry'
+import { lap, setTelemetryProject, track } from './telemetry'
 
 const PANES_KEY = 'hs.panes'
 type Pane = 'agent' | 'source' | 'program'
@@ -43,7 +43,8 @@ export default function App() {
     return { agent: true, source: false, program: true }
   })
   const setPane = (pane: Pane, value: boolean) => {
-    if (open[pane] !== value) track(value ? 'pane.unfold' : 'pane.fold', { target: pane })
+    // durationMs: how long the pane stayed in the state it just left.
+    if (open[pane] !== value) track(value ? 'pane.unfold' : 'pane.fold', { target: pane, durationMs: lap(`pane:${pane}`) })
     setOpen((prev) => {
       const next = { ...prev, [pane]: value }
       if (!Object.values(next).some(Boolean)) return prev
@@ -128,6 +129,7 @@ export default function App() {
 
   const updateSettings = useCallback((patch: Partial<Settings>) => {
     track('settings.changed', { metadata: { names: Object.keys(patch) } })
+    if (typeof patch.model === 'string') track('model.change', { target: patch.model })
     setSettings((prev) => (prev ? { ...prev, ...patch } : prev))
     window.humanstudy.settings
       .set(patch)
@@ -155,6 +157,14 @@ export default function App() {
     track('program.item_pick', { target: id, metadata: { extend } })
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))
   }
+  const firstSelection = useRef(true)
+  useEffect(() => {
+    if (firstSelection.current) {
+      firstSelection.current = false
+      return
+    }
+    track('selection.change', { metadata: { ids: selected.slice(0, 50), count: selected.length } })
+  }, [selected])
   const selectedItems = useMemo(() => labelItems(project?.program, selected), [project?.program, selected])
   const askSelection = () => {
     track('program.ask_selection', { metadata: { count: selected.length } })

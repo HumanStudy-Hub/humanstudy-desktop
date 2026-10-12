@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const out = mkdtempSync(join(tmpdir(), 'telemetry-test-'))
 await build({
-  entryPoints: [join(here, 'telemetry-core.ts')],
+  entryPoints: [join(here, 'telemetry-core.ts'), join(here, 'replay-core.ts')],
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -21,7 +21,10 @@ await build({
   logLevel: 'error',
 })
 const core = await import(pathToFileURL(join(out, 'telemetry-core.js')).href)
+const replayMod = await import(pathToFileURL(join(out, 'replay-core.js')).href)
 rmSync(out, { recursive: true, force: true })
+const { createReplay, DISK_CAP } = replayMod
+const { truncateValue, truncateString, VALUE_MAX, programDiff } = core
 const { createTelemetry, sanitizeEvent, CONSENT_VERSION, FLUSH_AT, QUEUE_CAP, MAX_BATCH, FLUSH_INTERVAL_MS } = core
 
 const SB = 'https://sb.test'
@@ -334,6 +337,206 @@ await test('Delete my data issues a PostgREST DELETE on own rows and clears loca
   assert.equal(st.usage, true) // choices stay as they are
   server.status = 500
   await assert.rejects(() => t.deleteMyData(), /could not delete/)
+})
+
+// ---- full session replay ------------------------------------------------------------------
+function memoryDisk() {
+  const files = new Map() // rel -> { data, mtimeMs }
+  let t = 0
+  return {
+    files,
+    write: (rel, data) => files.set(rel, { data: typeof data === 'string' ? new TextEncoder().encode(data) : data, mtimeMs: ++t }),
+    read: (rel) => files.get(rel)?.data ?? null,
+    remove: (rel) => files.delete(rel),
+    list: () => [...files].map(([rel, f]) => ({ rel, size: f.data.length, mtimeMs: f.mtimeMs })),
+    clear: () => files.clear(),
+  }
+}
+function replayServer() {
+  const srv = { calls: [], status: 200, rowStatus: 201 }
+  srv.fetch = async (url, init = {}) => {
+    srv.calls.push({ url, method: init.method, headers: init.headers, body: init.body })
+    if (srv.throw) throw new TypeError('fetch failed')
+    if (url.includes('/rest/v1/')) return new Response(null, { status: init.method === 'DELETE' ? 204 : srv.rowStatus })
+    if (url.includes('/object/list/')) return new Response(JSON.stringify([]), { status: 200 })
+    return new Response(null, { status: srv.status })
+  }
+  return srv
+}
+function makeReplay({ allowed = true, capBytes, email = EMAIL } = {}) {
+  const disk = memoryDisk()
+  const server = replayServer()
+  const ctx = { allowed, dropped: [] }
+  const r = createReplay({
+    fs: disk,
+    fetch: (...a) => server.fetch(...a),
+    auth: async () => ({ supabaseUrl: SB, supabaseKey: 'sb_publishable_test', accessToken: 'user-token', userId: USER_ID }),
+    allowed: () => ctx.allowed,
+    acct: () => (email ? 'acct1' : null),
+    appVersion: '0.2.0',
+    now: () => clock,
+    capBytes,
+    onDropped: (i) => ctx.dropped.push(i),
+  })
+  return { r, disk, server, ctx }
+}
+const SID = 'session-0001-abcd'
+const bytes = (n) => new Uint8Array(n).fill(7)
+
+await test('replay gating: nothing is stored or queued without usage + content consent', async () => {
+  // core: usage-only consent queues no content events (conversation, program versions, written files)
+  const { t } = make()
+  await t.setConsent({ usage: true, content: false })
+  const before = t.status().pending
+  for (const type of ['conversation.tool', 'conversation.user', 'project.program_version', 'project.file_written'])
+    assert.equal(t.track(type, { metadata: { text: 'x' } }), null, type)
+  assert.equal(t.status().pending, before)
+  await t.setConsent({ usage: true, content: true })
+  assert.ok(t.track('project.program_version', { metadata: { version: 1 } }))
+  // no consent at all: nothing queued
+  const none = make()
+  assert.equal(none.t.track('project.program_version'), null)
+  // replay store: refuses chunks and blobs while not allowed, writes nothing
+  const off = makeReplay({ allowed: false })
+  assert.equal(off.r.addChunk({ sessionId: SID, startedAt: 1, endedAt: 2, bytes: bytes(10) }), null)
+  assert.equal(off.r.addBlob(SID, bytes(10)), null)
+  assert.equal(off.disk.files.size, 0)
+  // signed out: same
+  const out = makeReplay({ email: null })
+  assert.equal(out.r.addChunk({ sessionId: SID, startedAt: 1, endedAt: 2, bytes: bytes(10) }), null)
+  // losing consent clears what was recorded
+  const on = makeReplay()
+  on.r.addChunk({ sessionId: SID, startedAt: 1, endedAt: 2, bytes: bytes(10) })
+  assert.ok(on.disk.files.size > 0)
+  on.ctx.allowed = false
+  await on.r.flush({ force: true })
+  assert.equal(on.disk.files.size, 0)
+  assert.equal(on.server.calls.length, 0)
+})
+
+await test('replay upload: storage object then row, local file deleted only after both succeed', async () => {
+  const { r, disk, server } = makeReplay()
+  assert.equal(r.addChunk({ sessionId: SID, startedAt: 1000, endedAt: 11000, bytes: bytes(100), windowId: 3 }), 0)
+  assert.equal(r.addChunk({ sessionId: SID, startedAt: 11000, endedAt: 21000, bytes: bytes(100) }), 1)
+  const blob = r.addBlob(SID, bytes(50))
+  assert.match(blob, /^blobs\/[0-9a-f-]+\.gz$/)
+  assert.equal(r.addChunk({ sessionId: 'bad id', startedAt: 1, endedAt: 2, bytes: bytes(1) }), null)
+  server.status = 500 // storage down: nothing is lost, backoff starts
+  await r.flush({ force: true })
+  assert.equal(r.pendingFiles(), 3)
+  server.calls.length = 0
+  server.status = 200
+  clock += 11 * 60_000
+  await r.flush({ force: true })
+  assert.equal(r.pendingFiles(), 0)
+  assert.equal(disk.files.size, 0)
+  const puts = server.calls.filter((c) => c.url.includes('/storage/v1/object/desktop-replays/'))
+  assert.equal(puts[0].url, `${SB}/storage/v1/object/desktop-replays/${USER_ID}/${SID}/0.json.gz`)
+  assert.equal(puts[0].headers.authorization, 'Bearer user-token')
+  assert.ok(puts.some((c) => c.url.includes(`/${SID}/blobs/`)))
+  const rows = server.calls.filter((c) => c.url.includes('/rest/v1/desktop_replay_chunks')).map((c) => JSON.parse(c.body))
+  assert.equal(rows.length, 2) // blobs have no row
+  assert.deepEqual(
+    [rows[0].owner_id, rows[0].session_id, rows[0].seq, rows[0].bytes, rows[0].path, rows[0].window_id, rows[0].app_version],
+    [USER_ID, SID, 0, 100, `${USER_ID}/${SID}/0.json.gz`, 3, '0.2.0']
+  )
+  assert.equal(rows[0].started_at, new Date(1000).toISOString())
+})
+
+await test('replay: a row failure keeps the file; backoff delays the retry', async () => {
+  const { r, server } = makeReplay()
+  r.addChunk({ sessionId: SID, startedAt: 1, endedAt: 2, bytes: bytes(10) })
+  server.rowStatus = 503
+  await r.flush({ force: true })
+  assert.equal(r.pendingFiles(), 1)
+  server.calls.length = 0
+  await r.flush() // inside the backoff window: no request
+  assert.equal(server.calls.length, 0)
+  server.rowStatus = 201
+  await r.flush({ force: true })
+  assert.equal(r.pendingFiles(), 0)
+  // a permanent rejection (400) drops the file and reports it
+  const bad = makeReplay()
+  bad.r.addChunk({ sessionId: SID, startedAt: 1, endedAt: 2, bytes: bytes(10) })
+  bad.server.status = 413
+  await bad.r.flush({ force: true })
+  assert.equal(bad.r.pendingFiles(), 0)
+  assert.deepEqual(bad.ctx.dropped.map((d) => d.reason), ['rejected'])
+})
+
+await test('replay disk cap: oldest files are dropped first and reported', async () => {
+  assert.equal(DISK_CAP, 200 * 1024 * 1024)
+  const { r, disk, ctx } = makeReplay({ capBytes: 1000 })
+  for (let i = 0; i < 5; i++) r.addChunk({ sessionId: SID, startedAt: i, endedAt: i + 1, bytes: bytes(300) })
+  assert.ok(r.pendingBytes() <= 1000)
+  assert.equal(r.pendingFiles(), 3) // 5 x 300 B > 1000 B: two oldest dropped
+  assert.ok(!disk.files.has(`${SID}/0.json.gz`) && !disk.files.has(`${SID}/1.json.gz`))
+  assert.ok(disk.files.has(`${SID}/4.json.gz`))
+  assert.ok(!disk.files.has(`${SID}/0.meta.json`)) // sidecar removed with its file
+  assert.equal(ctx.dropped.reduce((n, d) => n + d.files, 0), 2)
+  assert.equal(ctx.dropped[0].reason, 'cap')
+})
+
+await test('replay delete: rows, storage objects and local files', async () => {
+  const { r, disk, server } = makeReplay()
+  r.addChunk({ sessionId: SID, startedAt: 1, endedAt: 2, bytes: bytes(10) })
+  await r.deleteAll()
+  const del = server.calls.find((c) => c.method === 'DELETE')
+  assert.equal(del.url, `${SB}/rest/v1/desktop_replay_chunks?owner_id=eq.${USER_ID}`)
+  assert.ok(server.calls.some((c) => c.url.includes('/storage/v1/object/list/desktop-replays')))
+  assert.equal(disk.files.size, 0)
+})
+
+await test('truncation: single values above 20 KB are cut with a marker, nested too', () => {
+  assert.equal(VALUE_MAX, 20_000)
+  const big = 'x'.repeat(25_000)
+  const cut = truncateString(big)
+  assert.ok(cut.startsWith('x'.repeat(20_000)))
+  assert.match(cut, /\[truncated 5000 of 25000 characters\]$/)
+  assert.equal(truncateString('short'), 'short')
+  const v = truncateValue({ command: 'ls', nested: { body: big, list: [big, 1] }, n: 3 })
+  assert.equal(v.command, 'ls')
+  assert.equal(v.n, 3)
+  assert.match(v.nested.body, /truncated 5000/)
+  assert.match(v.nested.list[0], /truncated 5000/)
+  assert.equal(v.nested.list[1], 1)
+})
+
+await test('program diff names the nodes and steps that were added, removed or changed', () => {
+  const a = {
+    title: 'T',
+    nodes: [
+      { id: 'n1', fields: [{ id: 'f', value: 'a' }] },
+      { id: 'n2', fields: [] },
+    ],
+    steps: [{ id: 's1', rule: 'x' }],
+  }
+  const b = {
+    title: 'T2',
+    nodes: [
+      { fields: [{ value: 'b', id: 'f' }], id: 'n1' },
+      { id: 'n3', fields: [] },
+    ],
+    steps: [{ id: 's1', rule: 'x' }],
+  }
+  const d = programDiff(a, b)
+  assert.deepEqual(d.sections.nodes, { added: ['n3'], removed: ['n2'], changed: ['n1'] })
+  assert.equal(d.sections.steps, undefined) // unchanged sections are left out
+  assert.deepEqual(d.keys, ['title'])
+  assert.equal(d.total, 4)
+  assert.equal(programDiff(a, JSON.parse(JSON.stringify(a))).total, 0) // key order does not matter either
+  // sanitizer keeps the diff and blob reference, and long tool input/output only for content consent
+  const { t } = make()
+  const ctx = { content: true, email: EMAIL }
+  const base = { installId: 'install-0001', sessionId: SID, appVersion: '0.2.0', platform: 'darwin', now: clock }
+  const row = sanitizeEvent('project.program_version', { metadata: { version: 2, diff: d, blob: 'blobs/x.gz' } }, ctx, base)
+  assert.deepEqual(row.metadata.diff.sections.nodes.added, ['n3'])
+  assert.equal(row.metadata.blob, 'blobs/x.gz')
+  const tool = sanitizeEvent('conversation.tool', { target: 'bash', metadata: { thread_id: 't', input: 'y'.repeat(5000), output: 'z'.repeat(5000) } }, ctx, base)
+  assert.equal(tool.metadata.input.length, 5000)
+  assert.equal(tool.metadata.output.length, 5000)
+  assert.equal(sanitizeEvent('conversation.tool', { metadata: { input: 'y' } }, { ...ctx, content: false }, base), null)
+  void t
 })
 
 console.log(`\n${passed} passed`)

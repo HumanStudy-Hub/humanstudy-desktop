@@ -24,3 +24,13 @@ export function track(type: string, opts: TelemetryTrackOptions = {}): void {
     /* research data must never break the app */
   }
 }
+
+// ---- spans: how long something stayed in its previous state -----------------------------------
+const since = new Map<string, number>()
+/** Milliseconds since the last `lap(key)` for this key (undefined the first time); restarts the span. */
+export function lap(key: string): number | undefined {
+  const now = Date.now()
+  const prev = since.get(key)
+  since.set(key, now)
+  return prev === undefined ? undefined : now - prev
+}

@@ -30,7 +30,25 @@ export interface ThreadHost {
   resume(dir: string, kernelSessionId: string): Promise<string | null>
 }
 
+/** What the research-data layer sees: every part once it is final, and per-message usage. */
+export type Capture =
+  | {
+      kind: 'part'
+      dir: string
+      threadId: string
+      messageId: string
+      role: 'user' | 'assistant'
+      index: number
+      part: ThreadPart
+      at: string
+      /** Permission parts only: the turn ended while the request was still unanswered. */
+      unresolved?: boolean
+    }
+  | { kind: 'usage'; dir: string; threadId: string; messageId?: string; usage: { input: number; output: number; reasoning?: number; cost?: number } }
+
 export interface ThreadsOptions {
+  /** Called for every final part and usage; must never throw into the transcript (errors are swallowed). */
+  onCapture?: (c: Capture) => void
   now?: () => string
   newId?: (prefix: string) => string
   /** Delay before streamed text is written to disk (default 500 ms; done/error flush at once). */
@@ -77,9 +95,9 @@ export function appendEvent(
     const name = e.tool ?? 'tool'
     const detail = e.detail && e.detail !== '{}' ? e.detail : undefined
     if (tail?.kind === 'tool' && tail.tool === name && (tail.state === 'pending' || tail.state === 'running')) {
-      parts[parts.length - 1] = { kind: 'tool', tool: name, detail: detail ?? tail.detail, state: e.text }
+      parts[parts.length - 1] = withIO({ kind: 'tool', tool: name, detail: detail ?? tail.detail, state: e.text }, e.input ?? tail.input, e.output ?? tail.output)
     } else {
-      parts.push({ kind: 'tool', tool: name, detail: detail ?? undefined, state: e.text })
+      parts.push(withIO({ kind: 'tool', tool: name, detail: detail ?? undefined, state: e.text }, e.input, e.output))
     }
   } else if (e.type === 'error') {
     parts.push({ kind: 'error', text: e.text ?? e.detail ?? 'Unknown error' })
@@ -116,6 +134,13 @@ export function appendEvent(
     parts.push(part)
   }
   return fresh ? [...ms, msg] : replaceLast(ms, msg)
+}
+
+/** Adds the full tool input/output to a tool part when present (the research transcript needs them). */
+function withIO(part: Extract<ThreadPart, { kind: 'tool' }>, input: unknown, output: string | undefined): ThreadPart {
+  if (input !== undefined) part.input = input
+  if (output !== undefined) part.output = output
+  return part
 }
 
 function replaceLast(ms: ThreadMessage[], msg: ThreadMessage): ThreadMessage[] {
@@ -206,6 +231,8 @@ export class ThreadManager {
   private now: () => string
   private newId: (prefix: string) => string
   private saveDelay: number
+  private onCapture?: (c: Capture) => void
+  private captured = new Set<string>()
 
   constructor(
     private host: ThreadHost,
@@ -215,6 +242,7 @@ export class ThreadManager {
     this.now = opts.now ?? ((): string => new Date().toISOString())
     this.newId = opts.newId ?? defaultNewId
     this.saveDelay = opts.saveDelayMs ?? 500
+    this.onCapture = opts.onCapture
   }
 
   // ---- public API (IPC) ----
@@ -336,7 +364,10 @@ export class ThreadManager {
     let prompt = text
     if (this.needsContext.delete(sessionId)) prompt = contextPrompt(prior, text)
     const at = this.now()
-    t.messages = [...prior, { id: this.newId('m'), role: 'user', parts: [{ kind: 'text', text }], at }]
+    const user: ThreadMessage = { id: this.newId('m'), role: 'user', parts: [{ kind: 'text', text }], at }
+    t.messages = [...prior, user]
+    this.emitCapture({ kind: 'part', dir: b.dir, threadId: t.id, messageId: user.id, role: 'user', index: 0, part: user.parts[0], at })
+    this.captured.add(`${t.id}:${user.id}:0`)
     if (!t.titleSource && t.title === DEFAULT_TITLE) {
       t.title = autoTitle(text)
       t.titleSource = 'auto'
@@ -348,6 +379,53 @@ export class ThreadManager {
   onEvent(e: KernelEvent): void {
     const b = this.bySession.get(e.sessionId)
     if (!b) return
+    this.apply(e, b)
+    if (!this.onCapture) return
+    if (e.type === 'usage' && e.usage) {
+      const last = b.thread.messages[b.thread.messages.length - 1]
+      this.emitCapture({ kind: 'usage', dir: b.dir, threadId: b.thread.id, messageId: last?.role === 'assistant' ? last.id : undefined, usage: e.usage })
+    } else if (['text', 'tool', 'error', 'permission', 'done'].includes(e.type) || (e.type === 'status' && e.text === 'aborted')) {
+      this.capture(b, e.type === 'done' || e.type === 'status')
+    }
+  }
+
+  private emitCapture(c: Capture): void {
+    try {
+      this.onCapture?.(c)
+    } catch {
+      /* research data must never break the transcript */
+    }
+  }
+
+  /** Emits each part of the recent assistant messages once it is final (see Capture). */
+  private capture(b: Bound, endOfTurn: boolean): void {
+    const t = b.thread
+    const ms = t.messages
+    for (let mi = Math.max(0, ms.length - 4); mi < ms.length; mi++) {
+      const m = ms[mi]
+      if (m.role !== 'assistant') continue
+      const settled = endOfTurn || mi < ms.length - 1
+      m.parts.forEach((p, i) => {
+        const final =
+          p.kind === 'error' ||
+          settled ||
+          (p.kind === 'text' && i < m.parts.length - 1) ||
+          (p.kind === 'tool' && (p.state === 'completed' || p.state === 'error')) ||
+          (p.kind === 'permission' && Boolean(p.resolved))
+        if (!final) return
+        const key = `${t.id}:${m.id}:${i}` + (p.kind === 'permission' ? (p.resolved ? ':r' : ':u') : '')
+        if (this.captured.has(key)) return
+        this.captured.add(key)
+        if (p.kind === 'text' && !p.text.trim()) return
+        this.emitCapture({
+          kind: 'part', dir: b.dir, threadId: t.id, messageId: m.id, role: 'assistant', index: i, part: p, at: m.at,
+          ...(p.kind === 'permission' && !p.resolved ? { unresolved: true } : {}),
+        })
+      })
+    }
+  }
+
+  private apply(e: KernelEvent, b: Bound): void {
     const t = b.thread
     if (e.type === 'title') {
       const title = (e.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 120)
@@ -382,6 +460,10 @@ export class ThreadManager {
   // ---- internals ----
 
   private bind(dir: string, t: Thread): void {
+    // Parts that already exist were captured (or deliberately not) in an earlier run.
+    t.messages.forEach((m) =>
+      m.parts.forEach((p, i) => this.captured.add(`${t.id}:${m.id}:${i}` + (p.kind === 'permission' ? (p.resolved ? ':r' : ':u') : '')))
+    )
     this.live.set(keyOf(dir, t.id), t)
     this.bySession.set(t.kernelSessionId, { dir, thread: t })
   }

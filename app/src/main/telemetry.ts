@@ -1,11 +1,16 @@
 // Electron wiring for research data (logic in telemetry-core.ts): userData storage, the account's
 // PostgREST credentials, project ids, IPC, and main-process capture of kernel/session events.
-import { app, ipcMain } from 'electron'
-import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { extname, join, resolve } from 'node:path'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { createHash, randomUUID } from 'node:crypto'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { readFile, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, extname, join, resolve } from 'node:path'
+import { gzipSync } from 'node:zlib'
+import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
-import { createTelemetry, FLUSH_INTERVAL_MS, type StoredState, type Telemetry } from './telemetry-core'
+import { accountHash, createTelemetry, FLUSH_INTERVAL_MS, programDiff, scrubString, type StoredState, type Telemetry } from './telemetry-core'
+import { createReplay, REPLAY_FLUSH_MS, type Replay, type ReplayFile, type ReplayFs } from './replay-core'
+import type { Capture } from './threads-core'
 import type { KernelEvent } from './kernel-types'
 import type { ProjectSnapshot, TelemetryRecent, TelemetryTrackOptions } from '../preload/types'
 
@@ -124,8 +129,8 @@ export function trackTurnStart(sessionId: string, text: string): void {
   turns.set(sessionId, { startedAt: Date.now(), tools: new Set(), toolSteps: 0, toolErrors: 0, reply: '' })
   const dir = sessionDirs.get(sessionId)
   track('agent.turn_start', { metadata: { chars: text.length } }, dir)
-  // Only queued with conversation-content consent (telemetry-core drops it otherwise).
-  track('conversation.user', { metadata: { text } }, dir)
+  const attached = /^\[Attached: ([^\]]*)\]/.exec(text)
+  track('composer.send', { metadata: { chars: text.length, attachments: attached ? attached[1].split(',').filter((x) => x.trim()).length : 0 } }, dir)
 }
 
 export function trackTurnAbort(sessionId: string): void {
@@ -134,7 +139,6 @@ export function trackTurnAbort(sessionId: string): void {
   turns.delete(sessionId)
   const dir = sessionDirs.get(sessionId)
   track('agent.turn_abort', { durationMs: Date.now() - turn.startedAt, metadata: turnMeta(turn) }, dir)
-  if (turn.reply) track('conversation.assistant', { metadata: { text: turn.reply, partial: true } }, dir)
 }
 
 export function onKernelEvent(e: KernelEvent): void {
@@ -152,7 +156,6 @@ export function onKernelEvent(e: KernelEvent): void {
     const durationMs = Date.now() - turn.startedAt
     if (e.type === 'done') track('agent.turn_end', { durationMs, metadata: turnMeta(turn) }, dir)
     else track('agent.turn_error', { durationMs, metadata: { ...turnMeta(turn), error: errorLine(e.text ?? e.detail) } }, dir)
-    if (turn.reply) track('conversation.assistant', { metadata: { text: turn.reply } }, dir)
   }
 }
 
@@ -172,6 +175,7 @@ const errorLine = (err: unknown): string =>
 const seenFiles = new Map<string, Set<string>>()
 /** Emits artifact.created / export.created for files that appear in an open project. */
 export function noteProjectFiles(snap: ProjectSnapshot): void {
+  if (snap.program) noteFsChange(snap.dir, 'program.json') // baseline version when the project opens
   const now = new Set([...snap.artifacts.map((f) => `artifacts/${f.name}`), ...snap.exports.map((f) => `exports/${f.name}`)])
   const before = seenFiles.get(snap.dir)
   seenFiles.set(snap.dir, now)
@@ -183,17 +187,329 @@ export function noteProjectFiles(snap: ProjectSnapshot): void {
   }
 }
 
+// ---- replay storage ---------------------------------------------------------------------
+const replayRoot = (): string => join(dir(), 'replay')
+const diskFs: ReplayFs = {
+  write(rel, data) {
+    const p = join(replayRoot(), rel)
+    mkdirSync(dirname(p), { recursive: true })
+    writeFileSync(p, data, { mode: 0o600 })
+  },
+  read(rel) {
+    try {
+      return new Uint8Array(readFileSync(join(replayRoot(), rel)))
+    } catch {
+      return null
+    }
+  },
+  remove(rel) {
+    try {
+      unlinkSync(join(replayRoot(), rel))
+    } catch {
+      /* already gone */
+    }
+  },
+  list() {
+    const out: ReplayFile[] = []
+    const walk = (base: string, rel: string, depth: number): void => {
+      let names: string[] = []
+      try {
+        names = readdirSync(base)
+      } catch {
+        return
+      }
+      for (const n of names) {
+        const full = join(base, n)
+        try {
+          const st = statSync(full)
+          if (st.isDirectory()) depth < 3 && walk(full, rel ? `${rel}/${n}` : n, depth + 1)
+          else out.push({ rel: rel ? `${rel}/${n}` : n, size: st.size, mtimeMs: st.mtimeMs })
+        } catch {
+          /* vanished */
+        }
+      }
+    }
+    walk(replayRoot(), '', 0)
+    return out
+  },
+  clear() {
+    rmSync(replayRoot(), { recursive: true, force: true })
+  },
+}
+
+let replay: Replay | null = null
+export function getReplay(): Replay {
+  if (replay) return replay
+  const acct = getAccount()
+  replay = createReplay({
+    fs: diskFs,
+    fetch: (...args) => fetch(...args),
+    auth: () => acct.restAuth(),
+    allowed: () => {
+      const st = getTelemetry().status()
+      return st.usage && st.content
+    },
+    acct: () => {
+      const email = acct.status().email
+      return email ? accountHash(email) : null
+    },
+    appVersion: app.getVersion(),
+    onDropped: (info) => track('replay.dropped', { metadata: info }),
+  })
+  return replay
+}
+
+/** Gzips `text` (after removing emails, keys and absolute paths) into the replay store; returns the blob name. */
+function putBlob(text: string, projectDir?: string): string | null {
+  try {
+    const t = getTelemetry()
+    if (!t.status().content) return null
+    const clean = scrubString(text, { projectDir, email: getAccount().status().email })
+    return getReplay().addBlob(t.sessionId, new Uint8Array(gzipSync(Buffer.from(clean, 'utf8')))) ?? null
+  } catch {
+    return null
+  }
+}
+
+/** `value` inline up to `maxBytes`; longer values keep a prefix inline and the whole text in a blob. */
+function fit(out: Record<string, unknown>, key: string, value: string | undefined, maxBytes: number, projectDir?: string): void {
+  if (value === undefined || value === '') return
+  if (Buffer.byteLength(value) <= maxBytes) {
+    out[key] = value
+    return
+  }
+  let cut = value.slice(0, maxBytes)
+  while (Buffer.byteLength(cut) > maxBytes) cut = cut.slice(0, -Math.ceil(cut.length / 20))
+  out[key] = cut
+  out[`${key}_chars`] = value.length
+  const blob = putBlob(value, projectDir)
+  if (blob) out[`${key}_blob`] = blob
+}
+
+// ---- agent transcript -------------------------------------------------------------------
+/** Called by the thread store for every final message part and per-message usage. */
+export function onThreadCapture(c: Capture): void {
+  try {
+    if (!getTelemetry().status().content) return
+    if (c.kind === 'usage') {
+      track('conversation.usage', { metadata: { thread_id: c.threadId, message_id: c.messageId, ...c.usage } }, c.dir)
+      return
+    }
+    const base: Record<string, unknown> = { thread_id: c.threadId, message_id: c.messageId, part: c.index, message_at: c.at }
+    const p = c.part
+    if (p.kind === 'text') {
+      fit(base, 'text', p.text, 11_000, c.dir)
+      track(c.role === 'user' ? 'conversation.user' : 'conversation.assistant', { metadata: base }, c.dir)
+    } else if (p.kind === 'tool') {
+      base.state = p.state
+      fit(base, 'detail', p.detail, 400, c.dir)
+      if (p.input !== undefined) fit(base, 'input', typeof p.input === 'string' ? p.input : JSON.stringify(p.input), 5_500, c.dir)
+      fit(base, 'output', p.output, 5_500, c.dir)
+      track('conversation.tool', { target: p.tool, metadata: base }, c.dir)
+    } else if (p.kind === 'permission') {
+      base.permission_id = p.id
+      base.resolved = p.resolved ?? null
+      if (c.unresolved) base.unresolved = true
+      fit(base, 'detail', p.title, 400, c.dir)
+      base.patterns = p.patterns?.slice(0, 20)
+      track('conversation.permission', { target: p.type, metadata: base }, c.dir)
+    } else {
+      fit(base, 'text', p.text, 4_000, c.dir)
+      track('conversation.error', { metadata: base }, c.dir)
+    }
+  } catch {
+    /* research data must never break the app */
+  }
+}
+
+// ---- project snapshots: program.json versions and agent-written files --------------------
+const PROGRAM_MAX = 500_000
+const FILE_TEXT_MAX = 200_000
+const TEXT_EXTS = new Set(['txt', 'md', 'json', 'csv', 'tsv', 'html', 'htm', 'py', 'r', 'js', 'ts', 'tex', 'bib', 'yaml', 'yml', 'xml', 'svg', 'qmd', 'rmd', 'css', 'sql', 'jl', 'do', 'sps', 'ipynb', 'log', 'toml', 'ini'])
+const WATCHED_DIRS = /^(artifacts|exports|package)\//
+const programState = new Map<string, { hash: string; json: unknown; version: number }>()
+const fileHashes = new Map<string, string>()
+const humanWrites = new Map<string, number>()
+const fsTimers = new Map<string, NodeJS.Timeout>()
+
+/** The researcher saved this file in the app (so the resulting change is not the agent's). */
+export function noteHumanWrite(path: string): void {
+  humanWrites.set(resolve(path), Date.now())
+}
+const byWhom = (abs: string): 'human' | 'agent' => ((humanWrites.get(abs) ?? 0) > Date.now() - 5_000 ? 'human' : 'agent')
+
+/** A file under a watched project changed; versions/snapshots are queued after a short settle. */
+export function noteFsChange(projectDir: string, rel: string): void {
+  const r = rel.split('\\').join('/')
+  const isProgram = r === 'program.json'
+  if (!isProgram && !WATCHED_DIRS.test(r)) return
+  if (r.startsWith('sources/') || basename(r) === 'paper.pdf' || r.includes('/.')) return
+  const key = `${projectDir}\0${r}`
+  clearTimeout(fsTimers.get(key))
+  const timer = setTimeout(() => {
+    fsTimers.delete(key)
+    void (isProgram ? snapshotProgram(projectDir) : snapshotFile(projectDir, r)).catch(() => undefined)
+  }, 700)
+  timer.unref?.()
+  fsTimers.set(key, timer)
+}
+
+async function snapshotProgram(projectDir: string): Promise<void> {
+  if (!getTelemetry().status().content) return
+  const path = join(projectDir, 'program.json')
+  const raw = await readFile(path, 'utf8')
+  const hash = createHash('sha1').update(raw).digest('hex')
+  const prev = programState.get(projectDir)
+  if (prev?.hash === hash) return
+  let json: unknown
+  try {
+    json = JSON.parse(raw)
+  } catch {
+    return // mid-write; the next change event retries
+  }
+  const version = (prev?.version ?? 0) + 1
+  programState.set(projectDir, { hash, json, version })
+  const metadata: Record<string, unknown> = {
+    version,
+    initial: !prev,
+    by: prev ? byWhom(resolve(path)) : 'open',
+    bytes: Buffer.byteLength(raw),
+    hash: hash.slice(0, 12),
+  }
+  if (prev) metadata.diff = programDiff(prev.json, json)
+  if (Buffer.byteLength(raw) <= PROGRAM_MAX) {
+    const blob = putBlob(raw, projectDir)
+    if (blob) metadata.blob = blob
+  } else metadata.oversize = true
+  track('project.program_version', { target: 'program.json', metadata }, projectDir)
+}
+
+async function snapshotFile(projectDir: string, rel: string): Promise<void> {
+  if (!getTelemetry().status().content) return
+  const path = join(projectDir, rel)
+  const st = await stat(path).catch(() => null)
+  if (!st?.isFile()) return
+  const ext = extname(rel).slice(1).toLowerCase()
+  const metadata: Record<string, unknown> = { size: st.size, ext, by: byWhom(resolve(path)) }
+  if (TEXT_EXTS.has(ext) && st.size <= FILE_TEXT_MAX) {
+    const text = await readFile(path, 'utf8')
+    const hash = createHash('sha1').update(text).digest('hex')
+    const key = `${projectDir}\0${rel}`
+    if (fileHashes.get(key) === hash) return
+    fileHashes.set(key, hash)
+    const blob = putBlob(text, projectDir)
+    if (blob) metadata.blob = blob
+    metadata.chars = text.length
+  } else if (TEXT_EXTS.has(ext)) metadata.oversize = true
+  track('project.file_written', { target: rel, metadata }, projectDir)
+}
+
+// ---- export ---------------------------------------------------------------------------------
+async function fetchAllEvents(): Promise<unknown[]> {
+  const auth = await getAccount().restAuth()
+  if (!auth) throw new Error('Your session has ended. Sign in again.')
+  const out: unknown[] = []
+  for (let offset = 0; ; offset += 1000) {
+    const res = await fetch(`${auth.supabaseUrl}/rest/v1/desktop_events?owner_id=eq.${encodeURIComponent(auth.userId)}&order=occurred_at.asc&limit=1000&offset=${offset}`, {
+      headers: { apikey: auth.supabaseKey, authorization: `Bearer ${auth.accessToken}` },
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (!res.ok) throw new Error(`could not read your events (${res.status})`)
+    const page = (await res.json()) as unknown[]
+    out.push(...page)
+    if (page.length < 1000) return out
+  }
+}
+
+/** Zip of everything kept about the user: events, threads of known projects and replay chunks. */
+export async function exportMyData(parent?: BrowserWindow | null): Promise<string | null> {
+  const t = getTelemetry()
+  const acct = getAccount()
+  if (!acct.status().email) throw new Error('Sign in to your HumanStudy Hub account first.')
+  const opts = { title: 'Export my research data', defaultPath: join(app.getPath('downloads'), `humanstudy-research-data-${new Date().toISOString().slice(0, 10)}.zip`), filters: [{ name: 'Zip', extensions: ['zip'] }] }
+  const pick = parent ? await dialog.showSaveDialog(parent, opts) : await dialog.showSaveDialog(opts)
+  if (pick.canceled || !pick.filePath) return null
+  await t.flush({ force: true })
+  await getReplay().flush({ force: true })
+  const files: Record<string, Uint8Array> = {}
+  files['events.json'] = strToU8(JSON.stringify(await fetchAllEvents(), null, 1))
+  // Threads of the projects opened in this app run (conversation events carry the rest).
+  for (const [id, root] of projectIds) {
+    const tdir = join(root, '.humanstudy', 'threads')
+    let names: string[] = []
+    try {
+      names = readdirSync(tdir)
+    } catch {
+      continue
+    }
+    for (const n of names) if (n.endsWith('.json')) files[`threads/${id}/${n}`] = new Uint8Array(readFileSync(join(tdir, n)))
+  }
+  const auth = await acct.restAuth()
+  const r = getReplay()
+  if (auth) {
+    const rows = await r.listRemoteChunks(auth)
+    files['replay/index.json'] = strToU8(JSON.stringify(rows, null, 1))
+    for (const row of rows) {
+      try {
+        files[`replay/${row.session_id}/${row.seq}.json.gz`] = await r.download(auth, row.path)
+      } catch {
+        /* listed in index.json; the object may be gone */
+      }
+    }
+    for (const o of await r.listObjects(auth).catch(() => [] as string[])) {
+      if (!o.includes('/blobs/')) continue
+      try {
+        files[`replay/${o.slice(auth.userId.length + 1)}`] = await r.download(auth, o)
+      } catch {
+        /* skip */
+      }
+    }
+  }
+  for (const f of diskFs.list()) {
+    if (f.rel.endsWith('.meta.json')) continue
+    const b = diskFs.read(f.rel)
+    if (b) files[`replay-unsent/${f.rel}`] = b
+  }
+  await writeFile(pick.filePath, zipSync(files))
+  return pick.filePath
+}
+
 // ---- IPC ------------------------------------------------------------------------------
 /** Renderer events may not impersonate consent records or carry conversation text. */
-const RENDERER_DENY = /^(consent|conversation|kernel|agent)\./
+const RENDERER_DENY = /^(consent|conversation|kernel|agent|replay)\.|^project\.(program_version|file_written)$/
 
 export function registerTelemetry(): void {
   const t = getTelemetry()
   ipcMain.handle('telemetry:status', () => t.status())
-  ipcMain.handle('telemetry:setConsent', (_e, c: unknown) => {
+  let sessionStartLogged = false
+  const logSessionStart = (late: boolean): void => {
+    if (sessionStartLogged || !t.status().usage) return
+    sessionStartLogged = true
+    // replay_session_id equals every event's session_id and the session_id of the replay chunk rows.
+    track('app.session_start', { metadata: { arch: process.arch, replay_session_id: t.sessionId, ...(late ? { late: true } : {}) } })
+  }
+  ipcMain.handle('telemetry:setConsent', async (_e, c: unknown) => {
     const v = c && typeof c === 'object' ? (c as Record<string, unknown>) : {}
-    return t.setConsent({ usage: v.usage === true, content: v.content === true })
+    const st = await t.setConsent({ usage: v.usage === true, content: v.content === true })
+    logSessionStart(true) // consent given after launch: the session still gets its start event
+    if (st.content && rendererProjectDir) noteFsChange(rendererProjectDir, 'program.json')
+    if (!st.content) getReplay().clearLocal() // withdrawn or narrowed: nothing recorded stays on disk
+    return st
   })
+  ipcMain.handle('telemetry:sessionId', () => t.sessionId)
+  ipcMain.handle('telemetry:replayChunk', (e, c: unknown) => {
+    const v = c && typeof c === 'object' ? (c as Record<string, unknown>) : null
+    if (!v || v.sessionId !== t.sessionId || !(v.bytes instanceof Uint8Array)) return false
+    const seq = getReplay().addChunk({
+      sessionId: v.sessionId,
+      startedAt: Number(v.startedAt),
+      endedAt: Number(v.endedAt),
+      bytes: v.bytes,
+      windowId: e.sender.id,
+    })
+    return seq !== null
+  })
+  ipcMain.handle('telemetry:exportMyData', (e) => exportMyData(BrowserWindow.fromWebContents(e.sender)))
   ipcMain.handle('telemetry:track', (_e, type: string, opts?: TelemetryTrackOptions) => {
     if (typeof type !== 'string' || RENDERER_DENY.test(type)) return
     const o = opts && typeof opts === 'object' ? opts : {}
@@ -213,19 +529,26 @@ export function registerTelemetry(): void {
     return projectIdFor(rendererProjectDir)
   })
   ipcMain.handle('telemetry:recent', () => t.recent())
-  ipcMain.handle('telemetry:deleteMyData', () => t.deleteMyData())
+  ipcMain.handle('telemetry:deleteMyData', async () => {
+    await getReplay().deleteAll() // chunk rows, storage objects and local replay files first
+    return t.deleteMyData()
+  })
   ipcMain.handle('telemetry:flush', async () => {
     await t.flush({ force: true })
     return t.status()
   })
 
   const startedAt = Date.now()
-  track('app.session_start', { metadata: { arch: process.arch } })
+  logSessionStart(false)
   const timer = setInterval(() => void t.tick(), FLUSH_INTERVAL_MS)
   timer.unref?.()
+  const replayTimer = setInterval(() => void getReplay().flush().catch(() => undefined), REPLAY_FLUSH_MS)
+  replayTimer.unref?.()
+  void getReplay().flush().catch(() => undefined) // chunks left from a previous run
   app.on('before-quit', () => {
     // Persisted to the queue; uploaded on the next launch if this quit outruns the request.
     track('app.session_end', { durationMs: Date.now() - startedAt })
     void t.flush({ force: true })
+    void getReplay().flush({ force: true }).catch(() => undefined)
   })
 }

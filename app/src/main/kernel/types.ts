@@ -50,6 +50,10 @@ export interface KernelEvent {
   permission?: KernelPermission
   /** type 'usage' */
   usage?: KernelUsage
+  /** type 'tool': the full tool input (single strings above 20 KB are truncated with a marker). */
+  input?: unknown
+  /** type 'tool', once finished: the tool's output (or error text), truncated like `input`. */
+  output?: string
 }
 
 export interface Kernel {
