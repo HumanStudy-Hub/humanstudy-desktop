@@ -31,23 +31,52 @@ import type { Kernel, KernelEvent } from './types'
 export const DEFAULT_PROVIDER = 'openrouter'
 export const DEFAULT_MODEL = 'anthropic/claude-haiku-5.5'
 
-/** Find the opencode binary. Electron started from Finder has a minimal PATH, so also probe
- *  the usual install locations. Returns an absolute path or null. */
+/** Find the opencode binary. Electron started from Finder (or the Start menu) has a minimal PATH,
+ *  so also probe the usual install locations. Returns an absolute path or null.
+ *  On Windows only a real opencode.exe is accepted: npm's opencode.cmd shim cannot be spawned
+ *  without a shell, so the platform package's binary inside the npm global tree is used instead. */
 export function findOpencode(): string | null {
+  const win = process.platform === 'win32'
   const dirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean)
   const home = homedir()
-  dirs.push(
-    '/usr/local/bin',
-    '/opt/homebrew/bin',
-    join(home, '.opencode', 'bin'),
-    join(home, '.local', 'bin'),
-    join(home, '.bun', 'bin'),
-    join(home, '.npm-global', 'bin')
-  )
+  if (win) {
+    const appData = process.env.APPDATA ?? join(home, 'AppData', 'Roaming')
+    const localAppData = process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local')
+    const npmRoots = [process.env.npm_config_prefix, join(appData, 'npm'), process.env.NVM_SYMLINK].filter(
+      (d): d is string => Boolean(d)
+    )
+    dirs.push(
+      join(home, '.opencode', 'bin'),
+      join(home, '.bun', 'bin'),
+      join(home, 'scoop', 'shims'),
+      join(localAppData, 'Microsoft', 'WinGet', 'Links'),
+      join(process.env.ProgramData ?? 'C:\\ProgramData', 'chocolatey', 'bin'),
+      ...npmRoots
+    )
+    // npm i -g opencode-ai: the exe lives in the platform package (nested or hoisted).
+    const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
+    for (const root of npmRoots) {
+      for (const pkg of [`opencode-windows-${arch}`, `opencode-windows-${arch}-baseline`]) {
+        dirs.push(
+          join(root, 'node_modules', 'opencode-ai', 'node_modules', pkg, 'bin'),
+          join(root, 'node_modules', pkg, 'bin')
+        )
+      }
+    }
+  } else {
+    dirs.push(
+      '/usr/local/bin',
+      '/opt/homebrew/bin',
+      join(home, '.opencode', 'bin'),
+      join(home, '.local', 'bin'),
+      join(home, '.bun', 'bin'),
+      join(home, '.npm-global', 'bin')
+    )
+  }
   for (const d of dirs) {
-    const p = join(d, process.platform === 'win32' ? 'opencode.exe' : 'opencode')
+    const p = join(d, win ? 'opencode.exe' : 'opencode')
     try {
-      accessSync(p, constants.X_OK)
+      accessSync(p, win ? constants.F_OK : constants.X_OK)
       return p
     } catch {
       // keep looking
