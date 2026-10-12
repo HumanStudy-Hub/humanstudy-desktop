@@ -187,6 +187,19 @@ export function Home({ onOpen, onSettings, account, onAccount }: Props) {
           <button className="ghost" onClick={onSettings}>
             Settings
           </button>
+          {account && !account.signedIn && (
+            <button className="primary signin-btn" onClick={onAccount}>
+              Sign in
+            </button>
+          )}
+          {account?.signedIn && (
+            <button className="ghost account-chip" onClick={onAccount} title="Account">
+              <span className="avatar" style={{ width: 22, height: 22, fontSize: 11 }} aria-hidden>
+                {(account.email ?? '?').slice(0, 1).toUpperCase()}
+              </span>
+              <span className="account-email">{account.email}</span>
+            </button>
+          )}
         </div>
       </header>
 

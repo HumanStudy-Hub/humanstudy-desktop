@@ -1,4 +1,4 @@
-import { Fragment, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { HumanProgram, ProgramField, ProgramNode } from '../../shared/human-program';
 import { conditionSuggestion, fieldText, itemSources, sourceRefs, studyConditions, studyFlow, wordDiff, type Condition, type FlowItem, type SourceRef } from '../../shared/program-view';
 import s from './ProgramDocument.module.css';
@@ -12,6 +12,12 @@ type Props = {
  onSource:(id:string,source:SourceRef)=>void;
  /** Discuss a program item, optionally one of its fields, with the agent; draft prefills the message. */
  onAsk:(id:string,fieldId?:string,draft?:string)=>void;
+ /** Open the chat with a free draft (section questions). */
+ onPrefill?:(draft:string)=>void;
+ /** Human edit of a field's text (double-click). Absent: fields are read-only. */
+ onEdit?:(id:string,fieldId:string,text:string)=>void;
+ /** Remembers which sections are open; sections other than Question and Procedure start folded. */
+ storageKey?:string;
 };
 
 /** Studies that have a procedure. Analysis-only studies have nothing to read. */
@@ -44,9 +50,19 @@ export default function ProgramDocument(input:ProgramDocumentProps){
   setAsk({id:el.dataset.modelId!,fieldId:el.closest<HTMLElement>('[data-field-id]')?.dataset.fieldId,quote:sel.toString().trim().slice(0,2000),top:box.bottom-base.top+root.scrollTop+6});
  }
  const ctx:Ctx={...props,conditions};
- const section=(title:string,body:ReactNode,id?:string)=>body?<section id={id}><h2>{title}</h2>{body}</section>:null;
+ const studyTitle=program.studies.find(st=>st.id===studyId)?.title??program.title;
+ const [openSections,setOpenSections]=useSectionState(props.storageKey);
+ const section=(title:string,body:ReactNode,id?:string)=>{
+  if(!body)return null;
+  const open=openSections[title]??DEFAULT_OPEN.has(title);
+  return <details id={id} open={open} onToggle={e=>{const next=(e.currentTarget as HTMLDetailsElement).open;if(next!==open)setOpenSections(title,next);}}>
+   <summary><h2>{title}</h2>{props.onPrefill&&<button className={s.askSection} onClick={e=>{e.preventDefault();e.stopPropagation();props.onPrefill!(`About the ${title.toLowerCase()} of ${studyTitle}: `);}} title={`Ask the agent about ${title.toLowerCase()}`}>Ask ↗</button>}</summary>
+   {body}
+  </details>;
+ };
  const nodes=(list:ProgramNode[])=>list.length?list.map(n=><NodeBlock key={n.id} node={n} ctx={ctx}/>):null;
  return <div className={s.doc}>
+  <Glance program={program} studyId={studyId} items={items} conditions={conditions}/>
   {items.length>0&&<StepBar items={items} ctx={ctx}/>}
   <article ref={article} className={s.article} onMouseUp={()=>requestAnimationFrame(captureSelection)} onKeyUp={captureSelection}>
    {ask&&<button className={s.askBar} style={{top:ask.top}} onMouseDown={e=>e.preventDefault()} onClick={()=>{props.onAsk(ask.id,ask.fieldId,`“${ask.quote}”\n\n`);setAsk(null);window.getSelection()?.removeAllRanges();}}>Discuss or change this with the agent ↗</button>}
@@ -125,8 +141,21 @@ function NodeBlock({node,ctx}:{node:ProgramNode;ctx:Ctx}){
 const origins:Partial<Record<ProgramField['origin'],string>>={derived:'derived',researcher:'researcher decision',implementation:'implementation choice',unknown:'origin unknown'};
 function Field({id,field,ctx,against,labelled=true,quote}:{id:string;field:ProgramField;ctx:Ctx;against?:string;labelled?:boolean;quote?:boolean}){
  const text=field.value===null?'':fieldText(field.value),unresolved=field.state==='missing'||field.state==='decision';
+ const editable=Boolean(ctx.onEdit)&&(field.value===null||typeof field.value==='string');
+ const [editing,setEditing]=useState<string|null>(null);
+ const box=useRef<HTMLTextAreaElement>(null);
+ useEffect(()=>{if(editing!==null){const el=box.current;if(el){el.focus();el.style.height=`${el.scrollHeight}px`;}}},[editing]);
+ const commit=()=>{if(editing===null)return;const next=editing.trim();setEditing(null);if(next!==text)ctx.onEdit!(id,field.id,next);};
  const body=unresolved&&!text?<span className={s.missingText}>Not specified</span>:against!==undefined&&text!==against?wordDiff(text,against).map((p,i)=>p.changed?<mark key={i}>{p.text}</mark>:<Fragment key={i}>{p.text}</Fragment>):text;
- return <p data-field-id={field.id} className={`${s.field} ${quote?s.quote:''} ${unresolved?s.unresolved:''}`}>
+ if(editing!==null)return <p data-field-id={field.id} className={`${s.field} ${s.editing}`}>
+  {labelled&&<span className={s.label}>{field.label}. </span>}
+  <textarea ref={box} className={s.editor} value={editing} rows={1} aria-label={`Edit ${field.label}`}
+   onChange={e=>{setEditing(e.target.value);e.target.style.height='auto';e.target.style.height=`${e.target.scrollHeight}px`;}}
+   onBlur={commit}
+   onKeyDown={e=>{if(e.key==='Escape'){e.preventDefault();setEditing(null);}else if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();commit();}}}/>
+  <span className={s.editHint}>Enter saves · Shift+Enter newline · Esc cancels</span>
+ </p>;
+ return <p data-field-id={field.id} className={`${s.field} ${quote?s.quote:''} ${unresolved?s.unresolved:''} ${editable?s.editable:''}`} title={editable?'Double-click to edit':undefined} onDoubleClick={editable?e=>{e.preventDefault();window.getSelection()?.removeAllRanges();setEditing(text);}:undefined}>
   {labelled&&<span className={s.label}>{field.label}. </span>}{body}
   {origins[field.origin]&&<em className={s.origin}> {origins[field.origin]}</em>}
   {(field.origin==='verbatim'||field.origin==='reported'||field.evidenceIds.length>0)&&<Cite id={id} refs={sourceRefs(ctx.program,field.evidenceIds)} ctx={ctx}/>}
@@ -148,3 +177,40 @@ function Issue({ids,ctx}:{ids:string[];ctx:Props}){
  return <button className={s.issue} onClick={e=>{e.stopPropagation();ctx.onIssue(ids[0]);}} aria-label={`${ids.length} open ${ids.length===1?'question':'questions'}`} title="Open question">!{ids.length>1?` ${ids.length}`:''}</button>;
 }
 
+
+/* ---- at a glance, sections ---------------------------------------------------------- */
+
+const DEFAULT_OPEN=new Set(['Question','Procedure']);
+/** Open/closed state of the sections, remembered per project when a storage key is given. */
+function useSectionState(key?:string):[Record<string,boolean>,(title:string,open:boolean)=>void]{
+ const storage=key?`hs.sections:${key}`:null;
+ const [state,setState]=useState<Record<string,boolean>>(()=>{if(!storage)return {};try{return JSON.parse(localStorage.getItem(storage)||'{}');}catch{return {};}});
+ const set=(title:string,open:boolean)=>setState(prev=>{const next={...prev,[title]:open};if(storage){try{localStorage.setItem(storage,JSON.stringify(next));}catch{/* ignore */}}return next;});
+ return [state,set];
+}
+
+/** The minimal frame of the study, derived only from the program: what it has and whether the
+ * paper gave enough to reproduce it (from the agent's own issues). Details live in the sections. */
+function Glance({program,studyId,items,conditions}:{program:HumanProgram;studyId:string;items:FlowItem[];conditions:Condition[]}){
+ const inStudy=(ids:string[])=>!studyId||!ids.length||ids.includes(studyId);
+ const nodes=program.nodes.filter(n=>inStudy(n.studyIds));
+ const steps=program.steps.filter(st=>!studyId||st.studyId===studyId);
+ const participants=nodes.find(n=>n.kind==='participants');
+ const pField=participants?.fields.find(f=>typeof f.value==='number')??participants?.fields.find(f=>f.value!==null&&/\b(n|sample|size|participants|recruit)/i.test(`${f.id} ${f.label}`));
+ const issues=program.issues.filter(i=>!i.studyId||i.studyId===studyId);
+ const blocking=issues.filter(i=>i.severity==='blocking').length,decision=issues.filter(i=>i.severity==='decision').length,check=issues.filter(i=>i.severity==='check').length;
+ const unresolved=[...nodes.flatMap(n=>n.fields),...steps.flatMap(st=>st.rule?[st.rule]:[])].filter(f=>f.state==='missing'||f.state==='decision').length;
+ const verdict=blocking?{tone:'no',text:`No · ${blocking} blocking ${blocking===1?'gap':'gaps'}`}:unresolved?{tone:'mostly',text:`Mostly · ${unresolved} ${unresolved===1?'item':'items'} to confirm`}:{tone:'yes',text:'Yes, as far as the program states'};
+ const stepCount=steps.filter(st=>st.kind!=='sequence'||st.children.length===0).length||items.length;
+ const facts:[string,string][]=[
+  ['Studies',String(program.studies.filter(st=>st.type!=='analysis').length||program.studies.length)],
+  ['Participants',pField?fieldText(pField.value).replace(/\s+/g,' ').trim().slice(0,72):'not stated'],
+  ['Conditions',conditions.length?String(conditions.length):'not stated'],
+  ['Steps',String(stepCount)],
+  ['Open issues',issues.length?[blocking&&`${blocking} blocking`,decision&&`${decision} decision`,check&&`${check} check`].filter(Boolean).join(' · '):'none'],
+ ];
+ return <dl className={s.glance} aria-label="At a glance">
+  {facts.map(([k,v])=><div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
+  <div className={s.verdict} data-verdict={verdict.tone}><dt>Enough information to reproduce?</dt><dd>{verdict.text}</dd></div>
+ </dl>;
+}

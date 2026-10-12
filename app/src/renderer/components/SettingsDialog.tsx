@@ -29,7 +29,11 @@ export function errorText(e: unknown, fallback: string): string {
   const msg = e instanceof Error ? e.message : ''
   return msg.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '') || fallback
 }
-const MODEL_SUGGESTIONS = ['anthropic/claude-haiku-5.5', 'anthropic/claude-sonnet-5.5', 'deepseek/deepseek-chat']
+const MODELS: [string, string, string][] = [
+  ['anthropic/claude-sonnet-5.5', 'Claude Sonnet 5.5', 'recommended for building studies'],
+  ['anthropic/claude-haiku-5.5', 'Claude Haiku 5.5', 'fast and cheap for questions'],
+  ['deepseek/deepseek-v4.1-flash', 'DeepSeek V4.1 Flash', 'cheapest'],
+]
 
 export function SettingsDialog({ initialSection, settings, onChange, account, onAccount, onClose }: Props) {
   const [section, setSection] = useState<Section>(initialSection ?? 'general')
@@ -284,44 +288,38 @@ function Models({ settings, onChange }: { settings: Settings; onChange(p: Partia
       <p className="muted small">Keys are stored encrypted with the macOS keychain and never leave this machine except to call the provider.</p>
 
       <h3>Default model</h3>
-      <form
-        className="key-form"
-        onSubmit={(e) => {
-          e.preventDefault()
-          saveModel()
-        }}
-      >
-        <input
-          className="field"
-          list="model-suggestions"
-          value={model}
-          spellCheck={false}
-          onChange={(e) => setModel(e.target.value)}
-          onBlur={saveModel}
-          aria-label="Default model"
-        />
-        <datalist id="model-suggestions">
-          {MODEL_SUGGESTIONS.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
-        <button type="submit" className="primary" disabled={!model.trim() || model.trim() === settings.model}>
-          Save
-        </button>
-      </form>
-      <div className="suggest-row">
-        {MODEL_SUGGESTIONS.map((m) => (
-          <button
-            key={m}
-            className={`chip-btn ${settings.model === m ? 'on' : ''}`}
-            onClick={() => {
-              setModel(m)
-              onChange({ model: m })
+      <div className="model-list" role="radiogroup" aria-label="Default model">
+        {MODELS.map(([id, name, hint]) => (
+          <label key={id} className={`model-row ${settings.model === id ? 'on' : ''}`}>
+            <input type="radio" name="model" checked={settings.model === id} onChange={() => onChange({ model: id })} />
+            <span className="model-name">
+              {name}
+              {hint && <span className="muted small"> · {hint}</span>}
+            </span>
+            <code className="model-id">{id}</code>
+          </label>
+        ))}
+        <label className={`model-row ${MODELS.some(([id]) => id === settings.model) ? '' : 'on'}`}>
+          <input type="radio" name="model" checked={!MODELS.some(([id]) => id === settings.model)} onChange={() => setModel(settings.model)} />
+          <span className="model-name">Other…</span>
+          <form
+            className="model-other"
+            onSubmit={(e) => {
+              e.preventDefault()
+              saveModel()
             }}
           >
-            {m}
-          </button>
-        ))}
+            <input
+              className="field"
+              value={model}
+              spellCheck={false}
+              placeholder="provider/model-id"
+              onChange={(e) => setModel(e.target.value)}
+              onBlur={saveModel}
+              aria-label="Other model id"
+            />
+          </form>
+        </label>
       </div>
     </section>
   )

@@ -1,28 +1,42 @@
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react'
 import type { Part, Session } from '../useSession'
+import type { AccountStatus } from '../../preload/types'
+import { selectionContext, type SelectedItem } from '../program/labels'
+import type { SettingsSection } from './SettingsDialog'
 
 export interface ChatHandle {
   ask(id: string, fieldId?: string, draft?: string): void
+  /** Replace the draft and focus the composer. */
+  prefill(text: string): void
+  focus(): void
 }
 
 interface Props {
   ref?: Ref<ChatHandle>
   session: Session
-  selected: string[]
+  selected: SelectedItem[]
   onClearSelection(): void
+  account: AccountStatus | null
+  onSettings(section: SettingsSection): void
 }
 
-export function Chat({ ref, session, selected, onClearSelection }: Props) {
+export function Chat({ ref, session, selected, onClearSelection, account, onSettings }: Props) {
   const [draft, setDraft] = useState('')
   const input = useRef<HTMLTextAreaElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
+  const focus = () => requestAnimationFrame(() => input.current?.focus())
 
   useImperativeHandle(ref, () => ({
     ask(id, fieldId, text) {
       const target = fieldId ? `${id} › ${fieldId}` : id
       setDraft(`About ${target}: ${text ?? ''}`)
-      requestAnimationFrame(() => input.current?.focus())
+      focus()
     },
+    prefill(text) {
+      setDraft(text)
+      focus()
+    },
+    focus,
   }))
 
   useEffect(() => {
@@ -33,8 +47,7 @@ export function Chat({ ref, session, selected, onClearSelection }: Props) {
   const submit = () => {
     const text = draft.trim()
     if (!text || session.busy || !session.id) return
-    const ctx = selected.length ? `[Selected protocol items: ${selected.join(', ')}]\n` : ''
-    session.send(ctx + text)
+    session.send(selectionContext(selected) + text)
     setDraft('')
   }
 
@@ -66,11 +79,31 @@ export function Chat({ ref, session, selected, onClearSelection }: Props) {
         )}
       </div>
 
+      {account?.modelAccess === 'none' && (
+        <div className="signin-card" role="note">
+          <strong>{account.signedIn ? 'Enter a promo code to use the agent' : 'Sign in to use the agent'}</strong>
+          <p className="muted small">
+            {account.signedIn
+              ? 'Hosted models unlock with the promo code you received. You can also add your own OpenRouter key, or keep your existing opencode setup.'
+              : 'Hosted models need a HumanStudy Hub account and a promo code. You can also add your own OpenRouter key, or keep your existing opencode setup.'}
+          </p>
+          <div className="signin-actions">
+            <button className="primary" onClick={() => onSettings('account')}>
+              {account.signedIn ? 'Enter code' : 'Sign in'}
+            </button>
+            <button className="ghost" onClick={() => onSettings('models')}>
+              Add a key
+            </button>
+          </div>
+        </div>
+      )}
       <div className="composer">
         {selected.length > 0 && (
           <div className="chips">
             {selected.map((s) => (
-              <span key={s} className="chip">{s}</span>
+              <span key={s.id} className="chip" title={s.id}>
+                {s.title}
+              </span>
             ))}
             <button className="link" onClick={onClearSelection}>clear</button>
           </div>

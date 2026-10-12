@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AccountStatus, ProjectSnapshot, Settings, TelemetryStatus } from '../preload/types'
 import { Chat, type ChatHandle } from './components/Chat'
-import { ArtifactPanel } from './components/ArtifactPanel'
+import { Workbench } from './components/Workbench'
+import { labelItems } from './program/labels'
 import { SourceDrawer, type SourceRef } from './components/SourceDrawer'
 import { VisualizeMenu } from './components/VisualizeMenu'
 import { Home } from './components/Home'
@@ -13,7 +14,7 @@ import { setTelemetryProject, track } from './telemetry'
 
 const PANES_KEY = 'hs.panes'
 type Pane = 'agent' | 'source' | 'program'
-const paneLabel: Record<Pane, string> = { agent: 'Study agent', source: 'Original paper', program: 'Human Program' }
+const paneLabel: Record<Pane, string> = { agent: 'Study agent', source: 'Original paper', program: 'Study' }
 
 export default function App() {
   const [project, setProject] = useState<ProjectSnapshot | null>(null)
@@ -123,11 +124,20 @@ export default function App() {
     track('settings.opened', { target: section })
     setSettingsOpen(section)
   }
+  // A click toggles the item in the selection, so several items can be picked and asked about together.
   const pick = (id: string, extend: boolean) => {
     track('program.item_pick', { target: id, metadata: { extend } })
-    setSelected((s) =>
-      extend ? (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]) : s.length === 1 && s[0] === id ? [] : [id],
-    )
+    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))
+  }
+  const selectedItems = useMemo(() => labelItems(project?.program, selected), [project?.program, selected])
+  const askSelection = () => {
+    track('program.ask_selection', { metadata: { count: selected.length } })
+    setPane('agent', true)
+    chat.current?.focus()
+  }
+  const prefill = (text: string) => {
+    setPane('agent', true)
+    requestAnimationFrame(() => chat.current?.prefill(text))
   }
 
   const dialog = settingsOpen && (
@@ -195,7 +205,14 @@ export default function App() {
           {open.agent ? (
             <>
               <PaneHead title={paneLabel.agent} onFold={() => setPane('agent', false)} />
-              <Chat ref={chat} session={session} selected={selected} onClearSelection={() => setSelected([])} />
+              <Chat
+                ref={chat}
+                session={session}
+                selected={selectedItems}
+                onClearSelection={() => setSelected([])}
+                account={account}
+                onSettings={openSettings}
+              />
             </>
           ) : (
             <Rail label={paneLabel.agent} onOpen={() => setPane('agent', true)} />
@@ -215,9 +232,13 @@ export default function App() {
           {open.program ? (
             <>
               <PaneHead title={paneLabel.program} onFold={() => setPane('program', false)} />
-              <ArtifactPanel
+              <Workbench
                 project={project}
                 selectedIds={selected}
+                selectedItems={selectedItems}
+                onClearSelection={() => setSelected([])}
+                onAskSelection={askSelection}
+                onPrefill={prefill}
                 onPick={pick}
                 onSource={(id, ref) => {
                   track('citation.click', { target: id, metadata: { page: ref.page ?? null } })

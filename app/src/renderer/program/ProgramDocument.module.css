@@ -316,3 +316,72 @@
   font-size: 12px;
   box-shadow: 0 4px 14px #0002;
 }
+
+/* At a glance */
+.glance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 22px;
+  margin: 0;
+  padding: 12px 28px 10px;
+  font-family: var(--font-sans, system-ui);
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-soft, var(--bg-soft));
+}
+.glance > div { display: flex; flex-direction: column; min-width: 0; }
+.glance dt { color: var(--muted); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+.glance dd { margin: 0; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+.verdict { flex-basis: 100%; flex-direction: row !important; align-items: baseline; gap: 8px; margin-top: 4px; padding-top: 6px; border-top: 1px dashed var(--line); }
+.verdict dt { text-transform: none; font-size: 12.5px; letter-spacing: 0; }
+.verdict dd::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 0; background: var(--muted); }
+.verdict[data-verdict="yes"] dd::before { background: var(--ok, #2f7d4f); }
+.verdict[data-verdict="mostly"] dd::before { background: var(--warning, #986c25); }
+.verdict[data-verdict="no"] dd::before { background: var(--danger, #9b3934); }
+
+/* Sections fold; Question and Procedure start open */
+.article details > summary {
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  cursor: pointer;
+  margin: 24px 0 6px;
+}
+.article details > summary::-webkit-details-marker { display: none; }
+.article details > summary h2 { margin: 0; }
+.article details > summary h2::before {
+  content: '▸';
+  display: inline-block;
+  width: 12px;
+  color: var(--muted);
+  transition: transform 0.12s;
+}
+.article details[open] > summary h2::before { transform: rotate(90deg); }
+.askSection {
+  font-family: var(--font-sans, system-ui);
+  font-size: 11px;
+  color: var(--accent);
+  opacity: 0;
+  padding: 0 4px;
+}
+.article details > summary:hover .askSection, .askSection:focus-visible { opacity: 1; }
+
+/* Human editing */
+.editable { cursor: text; }
+.editable:hover { box-shadow: inset 2px 0 0 var(--line); }
+.editing { display: flex; flex-direction: column; gap: 4px; }
+.editor {
+  width: 100%;
+  resize: none;
+  font: inherit;
+  color: inherit;
+  line-height: inherit;
+  background: var(--surface, var(--bg));
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 4px 8px;
+  outline: 0;
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+.editHint { font-family: var(--font-sans, system-ui); font-size: 11px; color: var(--muted); }

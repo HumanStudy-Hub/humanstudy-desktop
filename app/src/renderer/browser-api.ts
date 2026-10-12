@@ -66,7 +66,7 @@ if (!('humanstudy' in window)) {
     theme: 'system',
     busyEnter: 'queue',
     permission: 'ask',
-    model: 'anthropic/claude-haiku-5.5',
+    model: 'anthropic/claude-sonnet-5.5',
     projectsRoot: '~/Documents/HumanStudy Projects',
   }
   const providers: ProviderStatus[] = [

@@ -22,6 +22,14 @@ const TEMPLATES = [
   },
 ]
 
+const SIMULATE = {
+  label: 'Simulate the study',
+  hint: 'Replay every arm with the model as participants',
+  file: 'simulate',
+  message:
+    'Run a simulation of this study with the simulate skill: use the replay package (build it first if artifacts/package is missing), run every arm with the hosted model as participants, then compare the observed results with the reported results.',
+}
+
 export function VisualizeMenu({ disabled, onSend }: { disabled: boolean; onSend(text: string): void }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -56,6 +64,18 @@ export function VisualizeMenu({ disabled, onSend }: { disabled: boolean; onSend(
               <span className="muted small">{t.hint}</span>
             </button>
           ))}
+          <hr className="menu-sep" />
+          <button
+            className="menu-item"
+            onClick={() => {
+              setOpen(false)
+              track('visualize.template', { target: SIMULATE.file })
+              onSend(SIMULATE.message)
+            }}
+          >
+            <span>{SIMULATE.label}</span>
+            <span className="muted small">{SIMULATE.hint}</span>
+          </button>
         </div>
       )}
     </div>
