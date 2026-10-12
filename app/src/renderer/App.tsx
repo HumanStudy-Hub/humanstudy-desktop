@@ -5,16 +5,23 @@ import { Workbench } from './components/Workbench'
 import { labelItems } from './program/labels'
 import { SourceDrawer, type SourceRef } from './components/SourceDrawer'
 import { VisualizeMenu } from './components/VisualizeMenu'
-import { Home } from './components/Home'
+import { Home, type HomeHandle } from './components/Home'
 import { SettingsDialog, type SettingsSection } from './components/SettingsDialog'
 import { useSession } from './useSession'
-import { UpdateNotice } from './components/Updates'
+import { UpdateNotice, useUpdateStatus } from './components/Updates'
 import { ConsentDialog } from './components/ResearchData'
 import { setTelemetryProject, track } from './telemetry'
 
 const PANES_KEY = 'hs.panes'
 type Pane = 'agent' | 'source' | 'program'
 const paneLabel: Record<Pane, string> = { agent: 'Study agent', source: 'Original paper', program: 'Study' }
+
+/** Commands both the keyboard shortcuts and (later) the native menu run. */
+export type AppCommand = 'pane.toggle' | 'settings.open' | 'project.fromPaper' | 'selection.clear'
+let commandHandler: ((command: AppCommand, arg?: string) => void) | null = null
+export function runCommand(command: AppCommand, arg?: string): void {
+  commandHandler?.(command, arg)
+}
 
 export default function App() {
   const [project, setProject] = useState<ProjectSnapshot | null>(null)
@@ -51,6 +58,8 @@ export default function App() {
     setPane('source', true)
   }
   const chat = useRef<ChatHandle>(null)
+  const home = useRef<HomeHandle>(null)
+  const update = useUpdateStatus()
   const session = useSession(project?.dir ?? null)
 
   const load = useCallback(async (dir: string) => {
@@ -140,6 +149,46 @@ export default function App() {
     requestAnimationFrame(() => chat.current?.prefill(text))
   }
 
+  // Commands: shortcuts below and the native menu both go through runCommand.
+  const state = useRef({ project, open, settingsOpen })
+  state.current = { project, open, settingsOpen }
+  useEffect(() => {
+    commandHandler = (command, arg) => {
+      const st = state.current
+      if (command === 'settings.open') return openSettings((arg as SettingsSection) || 'general')
+      if (command === 'project.fromPaper') return st.project ? undefined : home.current?.fromPaper()
+      if (command === 'selection.clear') return setSelected([])
+      if (command === 'pane.toggle' && st.project && (arg === 'agent' || arg === 'source' || arg === 'program'))
+        setPane(arg, !st.open[arg])
+    }
+    return () => {
+      commandHandler = null
+    }
+  })
+  useEffect(() => {
+    const keys = (e: KeyboardEvent) => {
+      if (e.isComposing) return
+      if (e.key === 'Escape') {
+        if (!state.current.settingsOpen) runCommand('selection.clear')
+        return
+      }
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return
+      const panes: Record<string, Pane> = { '1': 'agent', '2': 'source', '3': 'program' }
+      if (panes[e.key]) {
+        e.preventDefault()
+        runCommand('pane.toggle', panes[e.key])
+      } else if (e.key === ',') {
+        e.preventDefault()
+        runCommand('settings.open', 'general')
+      } else if (e.key.toLowerCase() === 'n' && !state.current.project) {
+        e.preventDefault()
+        runCommand('project.fromPaper')
+      }
+    }
+    window.addEventListener('keydown', keys)
+    return () => window.removeEventListener('keydown', keys)
+  }, [])
+
   const dialog = settingsOpen && (
     <SettingsDialog
       initialSection={settingsOpen}
@@ -155,6 +204,7 @@ export default function App() {
     return (
       <div className="app">
         <Home
+          ref={home}
           onOpen={(dir) => void openProject(dir)}
           onSettings={() => openSettings('general')}
           account={account}
@@ -169,7 +219,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="titlebar">
-        <div className="brand">
+        <div className="brand" title={update ? `v${update.version}` : undefined}>
           <span className="brand-mark" aria-hidden />
           HumanStudy Hub
           <span className="crumb">/ {project.name}</span>
@@ -212,6 +262,11 @@ export default function App() {
                 onClearSelection={() => setSelected([])}
                 account={account}
                 onSettings={openSettings}
+                projectDir={project.dir}
+                tree={project.tree}
+                model={settings?.model ?? ''}
+                busyEnter={settings?.busyEnter ?? 'queue'}
+                onModel={(model) => updateSettings({ model })}
               />
             </>
           ) : (

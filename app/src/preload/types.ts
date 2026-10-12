@@ -100,6 +100,8 @@ export interface AccountStatus {
   server: string
   /** Which model access new sessions use: hosted (via the Hub), own key, or none. */
   modelAccess: 'hosted' | 'own-key' | 'none'
+  /** Hosted model ids from the server config (cached), when known. */
+  models?: string[]
 }
 
 /** Auto-update state (electron-updater, GitHub Releases). Packaged builds only. */
@@ -156,6 +158,8 @@ export interface HumanStudyApi {
     readText(path: string): Promise<string>
     /** Writes a file inside an opened project, creating folders as needed. program.json must stay valid JSON. */
     writeText(path: string, text: string): Promise<void>
+    /** Copies files into the project (sources/, or paper.pdf for a first PDF). Never overwrites; returns the copies. */
+    importFiles(dir: string, paths: string[]): Promise<ProjectFile[]>
     onChanged(cb: (dir: string) => void): () => void
   }
   kernel: {
@@ -163,6 +167,10 @@ export interface HumanStudyApi {
     send(sessionId: string, text: string): Promise<void>
     abort(sessionId: string): Promise<void>
     onEvent(cb: (e: KernelEvent) => void): () => void
+  }
+  files: {
+    /** Absolute path of a File from a drop or file input (Electron webUtils.getPathForFile). */
+    pathOf(file: File): string
   }
   updates: {
     status(): Promise<UpdateStatus>

@@ -60,6 +60,8 @@ function stateLine(s: UpdateStatus): string {
   }
 }
 
+export const RELEASES_URL = 'https://github.com/HumanStudy-Hub/humanstudy-desktop/releases'
+
 /** The "About & updates" section of Settings. */
 export function AboutUpdates() {
   const status = useUpdateStatus()
@@ -70,7 +72,12 @@ export function AboutUpdates() {
       <div className="setting-row">
         <div>
           <div className="setting-label">HumanStudy Hub</div>
-          <div className="muted small">Version {status?.version ?? '…'}</div>
+          <div className="muted small">
+            Version {status?.version ?? '…'} ·{' '}
+            <a href={RELEASES_URL} onClick={(e) => { e.preventDefault(); window.open(RELEASES_URL, '_blank', 'noopener') }}>
+              Release notes
+            </a>
+          </div>
         </div>
         <div className="setting-control">
           {status?.state === 'ready' ? (
@@ -95,5 +102,25 @@ export function AboutUpdates() {
         </div>
       )}
     </section>
+  )
+}
+
+/** One line for the Home sidebar footer: "HumanStudy Hub v0.2.0 · Check for updates". */
+export function VersionFooter() {
+  const status = useUpdateStatus()
+  if (!status) return null
+  const ready = status.state === 'ready'
+  return (
+    <div className="home-version small muted">
+      <span>HumanStudy Hub v{status.version}</span>
+      <span aria-hidden> · </span>
+      {ready ? (
+        <button className="link" onClick={() => void window.humanstudy.updates.install()}>Update ready</button>
+      ) : (
+        <button className="link" disabled={status.state === 'checking'} onClick={() => void window.humanstudy.updates.check()}>
+          {status.state === 'checking' ? 'Checking…' : 'Check for updates'}
+        </button>
+      )}
+    </div>
   )
 }

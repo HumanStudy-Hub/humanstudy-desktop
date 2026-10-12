@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type { HumanStudyApi, KernelEvent, UpdateStatus } from './types'
 
 function listen<T>(channel: string, cb: (v: T) => void): () => void {
@@ -40,7 +40,11 @@ const api: HumanStudyApi = {
     reveal: (path) => ipcRenderer.invoke('project:reveal', path),
     readText: (path) => ipcRenderer.invoke('project:readText', path),
     writeText: (path, text) => ipcRenderer.invoke('project:writeText', path, text),
+    importFiles: (dir, paths) => ipcRenderer.invoke('project:importFiles', dir, paths),
     onChanged: (cb) => listen<string>('project:changed', cb),
+  },
+  files: {
+    pathOf: (file) => webUtils.getPathForFile(file),
   },
   kernel: {
     startSession: (dir) => ipcRenderer.invoke('kernel:startSession', dir),

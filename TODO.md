@@ -16,7 +16,7 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
       Deny in the chat; honour Settings → Default permission. (wave M2 main, R2 renderer)
 - [ ] **Conversation history** — threads per project, restored when a project is reopened; new
       thread button; thread list in the agent pane. (wave M2 main, R2 renderer)
-- [ ] **Version everywhere** — version in Home footer and title bar tooltip, Settings → About with
+- [~] **Version everywhere** — version in Home footer and title bar tooltip, Settings → About with
       "Check for updates" and the changelog link; `npm version` bump to 0.2.0 at release. (R2)
 - [ ] **Real end-to-end run** — sign in → promo code → Sonnet 5.5 build of a real paper →
       package passes `check_package.py` → simulate. Fix whatever breaks. (lead)
@@ -25,14 +25,14 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
 
 ## P1 · Codex-level agent pane
 
-- [ ] **Markdown rendering** of agent replies (headings, lists, tables, code with copy button,
+- [x] **Markdown rendering** of agent replies (headings, lists, tables, code with copy button,
       links open externally). (R2)
 - [ ] **Tool calls as diffs** — file edits by the agent shown as unified diffs; program.json
       changes summarised as changed item titles with a "show in Study" link. (R2)
-- [ ] **Model picker in the composer** (hosted list + own key models) and per-turn model;
+- [~] **Model picker in the composer** (hosted list + own key models) and per-turn model;
       recommended default Sonnet 5.5, Haiku 5.5 for quick questions. (R2)
-- [ ] **Queue vs interrupt** while the agent runs (the setting exists; implement both). (R2)
-- [ ] **Attach files** — drag a PDF/CSV/image into the chat or project; `@file` mentions from the
+- [x] **Queue vs interrupt** while the agent runs (the setting exists; implement both). (R2)
+- [x] **Attach files** — drag a PDF/CSV/image into the chat or project; `@file` mentions from the
       Program tree. (R2)
 - [ ] **Finished notification** — macOS/Windows notification and dock badge when a turn ends
       while the window is in the background. (M1)

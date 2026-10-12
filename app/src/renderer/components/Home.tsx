@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import type { AccountStatus, ProjectSummary } from '../../preload/types'
 import { Studies, type StudiesHandle } from './Studies'
 import { track } from '../telemetry'
+import { VersionFooter } from './Updates'
 
 type Section = 'projects' | 'studies'
 const SECTION_KEY = 'hs.homeSection'
@@ -35,7 +36,12 @@ export function relativeTime(iso: string, now = Date.now()): string {
 
 const baseName = (path: string) => (path.split(/[\\/]/).pop() ?? '').replace(/\.pdf$/i, '').trim() || 'Untitled project'
 
-export function Home({ onOpen, onSettings, account, onAccount }: Props) {
+export interface HomeHandle {
+  /** Same as the "From a paper" card: pick a PDF and start a project. */
+  fromPaper(): void
+}
+
+export function Home({ ref, onOpen, onSettings, account, onAccount }: Props & { ref?: Ref<HomeHandle> }) {
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null)
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
@@ -114,6 +120,7 @@ export function Home({ onOpen, onSettings, account, onAccount }: Props) {
       if (!pdfPath) return
       onOpen(await window.humanstudy.projects.create({ name: baseName(pdfPath), pdfPath }))
     })
+  useImperativeHandle(ref, () => ({ fromPaper: () => void fromPaper() }))
   const createBlank = () => {
     const name = blank?.trim()
     if (!name) return
@@ -229,6 +236,7 @@ export function Home({ onOpen, onSettings, account, onAccount }: Props) {
             </svg>
             Studies
           </button>
+          <VersionFooter />
         </nav>
         <main className="home-main">
           {section === 'studies' ? (
