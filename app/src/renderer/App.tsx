@@ -7,6 +7,7 @@ import { VisualizeMenu } from './components/VisualizeMenu'
 import { Home } from './components/Home'
 import { SettingsDialog, type SettingsSection } from './components/SettingsDialog'
 import { useSession } from './useSession'
+import { UpdateNotice } from './components/Updates'
 
 const PANES_KEY = 'hs.panes'
 type Pane = 'agent' | 'source' | 'program'
@@ -111,6 +112,7 @@ export default function App() {
           onAccount={() => setSettingsOpen('account')}
         />
         {dialog}
+        <UpdateNotice />
       </div>
     )
 
@@ -190,6 +192,7 @@ export default function App() {
         </section>
       </main>
       {dialog}
+      <UpdateNotice />
     </div>
   )
 }

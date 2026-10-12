@@ -10,6 +10,7 @@ import {
 } from './community'
 import { createProject, isInside, listProjects, renameProject, trashProject } from './projects'
 import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
+import { checkForUpdates, installUpdate, startUpdates, updateStatus } from './updates'
 import { existsSync, watch, type FSWatcher } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
@@ -285,6 +286,11 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('kernel:send', (_e, id: string, text: string) => kernelFor(id).send(id, text))
   ipcMain.handle('kernel:abort', (_e, id: string) => kernelFor(id).abort(id))
+
+  ipcMain.handle('updates:status', () => updateStatus())
+  ipcMain.handle('updates:check', () => checkForUpdates())
+  ipcMain.handle('updates:install', () => installUpdate())
+  startUpdates((s) => broadcast('updates:changed', s))
 
   createWindow()
   app.on('activate', () => {

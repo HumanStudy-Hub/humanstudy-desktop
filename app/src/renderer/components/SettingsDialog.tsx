@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { AccountStatus, ProviderStatus, Settings } from '../../preload/types'
+import { AboutUpdates } from './Updates'
 
-export type SettingsSection = 'account' | 'general' | 'models'
+export type SettingsSection = 'account' | 'general' | 'models' | 'about'
 
 interface Props {
   initialSection?: SettingsSection | null
@@ -13,7 +14,12 @@ interface Props {
 }
 
 type Section = SettingsSection
-const SECTION_LABEL: Record<Section, string> = { account: 'Account', general: 'General', models: 'Models' }
+const SECTION_LABEL: Record<Section, string> = {
+  account: 'Account',
+  general: 'General',
+  models: 'Models',
+  about: 'About & updates',
+}
 
 /** Electron prefixes errors from ipcMain handlers; show only the message the main process wrote. */
 export function errorText(e: unknown, fallback: string): string {
@@ -43,7 +49,7 @@ export function SettingsDialog({ initialSection, settings, onChange, account, on
       <div className="settings" role="dialog" aria-modal="true" aria-label="Settings" tabIndex={-1} ref={dialog}>
         <nav className="settings-nav">
           <strong className="settings-title">Settings</strong>
-          {(['account', 'general', 'models'] as Section[]).map((s) => (
+          {(['account', 'general', 'models', 'about'] as Section[]).map((s) => (
             <button key={s} aria-current={section === s ? 'page' : undefined} onClick={() => setSection(s)}>
               {SECTION_LABEL[s]}
             </button>
@@ -55,6 +61,8 @@ export function SettingsDialog({ initialSection, settings, onChange, account, on
           </button>
           {section === 'account' ? (
             <Account account={account} onAccount={onAccount} />
+          ) : section === 'about' ? (
+            <AboutUpdates />
           ) : !settings ? (
             <p className="muted">Loading…</p>
           ) : section === 'general' ? (

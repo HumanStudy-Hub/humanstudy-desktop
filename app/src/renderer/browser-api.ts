@@ -353,6 +353,12 @@ if (!('humanstudy' in window)) {
         return () => listeners.delete(cb)
       },
     },
+    updates: {
+      status: async () => ({ version: '0.0.0-preview', state: 'none' }),
+      check: async () => undefined,
+      install: async () => undefined,
+      onChange: () => () => undefined,
+    },
   }
   ;(window as unknown as { humanstudy: HumanStudyApi }).humanstudy = api
 }

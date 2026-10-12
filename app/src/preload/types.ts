@@ -86,6 +86,18 @@ export interface AccountStatus {
   modelAccess: 'hosted' | 'own-key' | 'none'
 }
 
+/** Auto-update state (electron-updater, GitHub Releases). Packaged builds only. */
+export interface UpdateStatus {
+  /** The running app version. */
+  version: string
+  state: 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'none' | 'error'
+  /** Download progress, 0-100. */
+  progress?: number
+  error?: string
+  /** The version being downloaded or ready to install. */
+  nextVersion?: string
+}
+
 export interface HumanStudyApi {
   projects: {
     list(): Promise<ProjectSummary[]>
@@ -131,5 +143,12 @@ export interface HumanStudyApi {
     send(sessionId: string, text: string): Promise<void>
     abort(sessionId: string): Promise<void>
     onEvent(cb: (e: KernelEvent) => void): () => void
+  }
+  updates: {
+    status(): Promise<UpdateStatus>
+    check(): Promise<void>
+    /** Quits and installs a downloaded update, then relaunches. */
+    install(): Promise<void>
+    onChange(cb: (s: UpdateStatus) => void): () => void
   }
 }
