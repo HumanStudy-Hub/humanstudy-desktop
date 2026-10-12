@@ -3,7 +3,7 @@
 import type { HumanProgram, ProgramField, ProgramNode } from '../../shared/human-program';
 import { fieldText } from '../../shared/program-view';
 import { fieldLabel } from './labels';
-import { tOr } from '../i18n';
+import { t, tOr } from '../i18n';
 
 export type SectionItem = {
   id: string;
@@ -191,10 +191,10 @@ export function resolveSection(program: HumanProgram, section: Section, studyId:
     } else if (item.derived === 'study-aim') {
       entries = studies.filter(st => st.description?.trim()).map(st => ({ key: `aim:${st.id}`, label: st.title, text: st.description!.trim() }));
     } else if (item.derived === 'study-relations') {
-      entries = studies.filter(st => st.dependsOn?.length).map(st => ({ key: `rel:${st.id}`, label: st.title, text: `builds on ${st.dependsOn!.map(titleOf).join(', ')}` }));
+      entries = studies.filter(st => st.dependsOn?.length).map(st => ({ key: `rel:${st.id}`, label: st.title, text: t('doc.builds_on', { x: st.dependsOn!.map(titleOf).join(', ') }) }));
     } else if (item.derived === 'study-tests') {
       const tested = (stId: string) => program.nodes.filter(n => n.kind === 'hypothesis' && (!n.studyIds.length || n.studyIds.includes(stId)));
-      entries = studies.map(st => ({ st, h: tested(st.id) })).filter(x => x.h.length).map(({ st, h }) => ({ key: `tests:${st.id}`, label: st.title, text: `tests ${h.map(n => n.title).join('; ')}`, nodeId: h[0].id, node: h[0] }));
+      entries = studies.map(st => ({ st, h: tested(st.id) })).filter(x => x.h.length).map(({ st, h }) => ({ key: `tests:${st.id}`, label: st.title, text: t('doc.tests', { x: h.map(n => n.title).join('; ') }), nodeId: h[0].id, node: h[0] }));
     } else if (item.special === 'conditions') {
       const conds = mine.filter(n => n.kind === 'condition');
       if (conds.length) { conds.forEach(n => consumedNodes.add(n.id)); entries = conds.map(n => ({ key: n.id, nodeId: n.id, label: n.title, text: n.title, node: n })); mine.filter(n => n.kind === 'design').forEach(n => n.fields.filter(f => item.fieldIds!.includes(f.id)).forEach(f => consumed.add(`${n.id}:${f.id}`))); }
@@ -243,7 +243,7 @@ export function readiness(program: HumanProgram, studyId?: string): { tone: 'no'
   const steps = program.steps.filter(st => !studyId || st.studyId === studyId);
   const blocking = issues.filter(i => i.severity === 'blocking').length;
   const unresolved = [...nodes.flatMap(n => n.fields), ...steps.flatMap(st => st.rule ? [st.rule] : [])].filter(f => f.state === 'missing' || f.state === 'decision').length;
-  if (blocking) return { tone: 'no', text: `No · ${blocking} blocking ${blocking === 1 ? 'gap' : 'gaps'}` };
-  if (unresolved) return { tone: 'mostly', text: `Mostly · ${unresolved} ${unresolved === 1 ? 'item' : 'items'} to confirm` };
-  return { tone: 'yes', text: 'Yes, as far as the program states' };
+  if (blocking) return { tone: 'no', text: t(blocking === 1 ? 'doc.ready_no_1' : 'doc.ready_no', { n: blocking }) };
+  if (unresolved) return { tone: 'mostly', text: t(unresolved === 1 ? 'doc.ready_mostly_1' : 'doc.ready_mostly', { n: unresolved }) };
+  return { tone: 'yes', text: t('doc.ready_yes') };
 }

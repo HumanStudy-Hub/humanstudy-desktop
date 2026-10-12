@@ -78,3 +78,24 @@ assert.equal(I.translate('zh-CN', 'tool.reading_paper_page', { page: 3 }), '正�
 assert.equal(I.translate('en', 'tool.reading_paper_page', { page: 3 }), 'Reading the paper (p. 3)')
 assert.equal(I.translate('zh-CN', 'no.such.key'), 'no.such.key')
 console.log('ux tests passed')
+
+// ---- missing = amber: detection and section counts
+{
+  const out2 = mkdtempSync(join(tmpdir(), 'amber-test-'))
+  await build({ entryPoints: { missing: join(here, 'program/missing.ts') }, bundle: true, platform: 'node', format: 'esm', outdir: out2, logLevel: 'error', outExtension: { '.js': '.mjs' } })
+  const M = await import(pathToFileURL(join(out2, 'missing.mjs')).href)
+  assert.equal(M.fieldNeed({ state: 'missing', value: null }), 'missing')
+  assert.equal(M.fieldNeed({ state: 'decision', value: 'x' }), 'decision')
+  assert.equal(M.fieldNeed({ state: 'confirmed', value: '[填写]' }), 'missing')
+  assert.equal(M.fieldNeed({ state: 'check', value: 'N = [填写] participants' }), 'missing')
+  assert.equal(M.fieldNeed({ state: 'confirmed', value: 'TBD' }), 'missing')
+  assert.equal(M.fieldNeed({ state: 'confirmed', value: '' }), 'missing')
+  assert.equal(M.fieldNeed({ state: 'confirmed', value: 'Adults, n = 120' }), null)
+  assert.equal(M.fieldNeed({ state: 'check', value: 42 }), null)
+  const sample = JSON.parse((await import('node:fs')).readFileSync(join(here, '../shared/sample-program.json'), 'utf8'))
+  const counts = M.amberCounts(sample, sample.studies[0].id)
+  assert.equal(counts.total, Object.values(counts.bySection).reduce((a, b) => a + b, 0))
+  assert.ok(counts.total > 0 && counts.first, 'sample program has amber items')
+  assert.equal(M.amberCounts({ ...sample, nodes: [], steps: [] }, sample.studies[0].id).total, 0)
+}
+console.log('amber ok')

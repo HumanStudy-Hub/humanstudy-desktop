@@ -3,9 +3,10 @@ import { fieldLabel } from './labels';
 import type { HumanProgram, ProgramField, ProgramNode } from '../../shared/human-program';
 import { conditionSuggestion, fieldText, itemSources, sourceRefs, studyConditions, studyFlow, wordDiff, type Condition, type FlowItem, type SourceRef } from '../../shared/program-view';
 import s from './ProgramDocument.module.css';
+import { amberCounts, fieldNeed, isPlaceholderText } from './missing';
 import { SECTIONS, claimedKinds, readiness, resolveSection, type Entry, type ResolvedItem, type Section } from './sections';
 import { track } from '../telemetry';
-import { t } from '../i18n';
+import { getLang, t, translate } from '../i18n';
 
 export type { SourceRef };
 type Props = {
@@ -76,13 +77,19 @@ export default function ProgramDocument(input:ProgramDocumentProps){
   return <Entries key={item.id} entries={r.entries} ctx={ctx} assessment={sec.assessment}/>;
  }
 
+ const amber=amberCounts(program,studyId);
+ const jump=()=>{
+  const id=amber.first;if(!id)return;
+  setOpenSections(id,true);
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{const sec=article.current?.querySelector<HTMLElement>(`[data-section="${id}"]`);(sec?.querySelector<HTMLElement>('[data-amber]')??sec)?.scrollIntoView({block:'center',behavior:'smooth'});}));
+ };
  const renderSection=(sec:Section)=>{
   const r=resolveSection(program,sec,studyId);
   const open=openSections[sec.id]??sec.openByDefault;
   const heading=`${sec.number} ${sec.title}`;
   const ready=sec.assessment?readiness(program,sec.level==='study'?studyId:undefined):null;
   return <details key={sec.id} id={sec.id==='procedure'?'procedure':`section-${sec.id}`} data-section={sec.id} open={open} onToggle={e=>{const next=(e.currentTarget as HTMLDetailsElement).open;if(next!==open){track('study.section_toggle',{target:sec.id,metadata:{open:next}});setOpenSections(sec.id,next);}}}>
-   <summary><h2 title={sec.titleZh} data-empty={!r.present&&!ready}><span className={s.num}>{sec.number}</span>{sec.title}</h2>{props.onPrefill&&<button className={s.askSection} onClick={e=>{e.preventDefault();e.stopPropagation();askAbout(sec,sec.title);}} title={t('doc.ask_about',{what:sec.title.toLowerCase()})}>{t('doc.ask')}</button>}</summary>
+   <summary><h2 title={sec.titleZh} data-empty={!r.present&&!ready}><span className={s.num}>{sec.number}</span>{sec.title}</h2>{amber.bySection[sec.id]>0&&<span className={s.count} data-count={amber.bySection[sec.id]}>{t('doc.to_fill',{n:amber.bySection[sec.id]})}</span>}{props.onPrefill&&<button className={s.askSection} onClick={e=>{e.preventDefault();e.stopPropagation();askAbout(sec,sec.title);}} title={t('doc.ask_about',{what:sec.title.toLowerCase()})}>{t('doc.ask')}</button>}</summary>
    {ready&&<p className={s.readiness} data-verdict={ready.tone}><span className={s.label}>{t('doc.readiness')}. </span>{ready.text}<em className={s.origin}> {t('doc.assessment')}</em></p>}
    {r.present?<>
     {!(sec.blocks&&r.blocks.length)&&r.items.map(ri=>renderItem(sec,ri))}
@@ -92,7 +99,7 @@ export default function ProgramDocument(input:ProgramDocumentProps){
   </details>;
  };
  return <div className={s.doc}>
-  <Glance program={program} studyId={studyId} items={items} conditions={conditions}/>
+  <Glance program={program} studyId={studyId} items={items} conditions={conditions} toFill={amber.total} onJump={jump}/>
   {items.length>0&&<StepBar items={items} ctx={ctx}/>}
   <article ref={article} className={s.article} onMouseUp={()=>requestAnimationFrame(captureSelection)} onKeyUp={captureSelection}>
    {ask&&<button className={s.askBar} style={{top:ask.top}} onMouseDown={e=>e.preventDefault()} onClick={()=>{props.onAsk(ask.id,ask.fieldId,`“${ask.quote}”\n\n`);setAsk(null);window.getSelection()?.removeAllRanges();}}>{t('doc.discuss')}</button>}
@@ -119,7 +126,7 @@ function Plain({entry,ctx,assessment}:{entry:Entry;ctx:Ctx;assessment?:boolean})
   {assessment&&<em className={s.origin}> {t('doc.assessment')}</em>}
   {node&&<Cite id={node.id} refs={itemSources(ctx.program,node.id)} ctx={ctx} quiet/>}
   {node&&<Issue ids={ctx.issuesFor(node.id)} ctx={ctx}/>}
-  {node&&<button className={s.comment} title={t('doc.discuss_hint')} aria-label={`Discuss ${entry.label}`} onClick={e=>{e.stopPropagation();ctx.onAsk(node.id);}}>✎</button>}
+  {node&&<button className={s.comment} title={t('doc.discuss_hint')} aria-label={t('doc.discuss_aria',{what:entry.label})} onClick={e=>{e.stopPropagation();ctx.onAsk(node.id);}}>✎</button>}
  </p>;
 }
 
@@ -130,8 +137,8 @@ const mark=(ctx:Ctx,id:string)=>[ctx.selectedIds.includes(id)?s.picked:'',ctx.hi
 function StepBar({items,ctx}:{items:FlowItem[];ctx:Ctx}){
  const top=items.length===1&&items[0].children.length&&!items[0].columns?items[0].children:items;
  const go=(id:string)=>{ctx.onPick(`flow:${id}`,false);document.getElementById(`step-${id}`)?.scrollIntoView({block:'start',behavior:'smooth'});};
- return <nav className={s.stepBar} aria-label="Procedure at a glance">{top.map((item,i)=><Fragment key={item.step.id}>
-  {i>0&&<span className={s.sep} aria-label={item.linked?'then':'order not stated'}>{item.linked?'→':'·'}</span>}
+ return <nav className={s.stepBar} aria-label={t('doc.stepbar_aria')}>{top.map((item,i)=><Fragment key={item.step.id}>
+  {i>0&&<span className={s.sep} aria-label={item.linked?t('doc.then'):t('doc.order_unstated')}>{item.linked?'→':'·'}</span>}
   <button className={mark(ctx,`flow:${item.step.id}`)} onClick={()=>go(item.step.id)} title={item.step.title}>{item.columns?'⑂ ':item.step.kind==='repeat'?'↻ ':''}{item.step.title}</button>
  </Fragment>)}</nav>;
 }
@@ -147,13 +154,13 @@ function Step({item,ctx}:{item:FlowItem;ctx:Ctx}){
  return <li id={`step-${step.id}`} data-model-id={id} className={`${s.step} ${mark(ctx,id)}`}>
   <h3><button onClick={e=>ctx.onPick(id,e.shiftKey)}>{step.title}</button>{own.map(c=><em key={c.id} className={s.tag} data-tone={c.tone}><i/>{c.label}</em>)}<Cite id={id} refs={itemSources(program,id)} ctx={ctx}/><Issue ids={ctx.issuesFor(id)} ctx={ctx}/></h3>
   {step.rule&&<Field id={id} field={step.rule} ctx={ctx}/>}
-  {shared.length>0&&<Materials label="Participants see" list={shared} ctx={ctx}/>}
-  {split&&<div className={s.split}>{groups.map(({c,nodes:list},gi)=>{const other=groups[gi===0?1:0].nodes;return <div key={c.id} data-tone={c.tone} className={s.arm}><p className={s.armLabel}><i/>In {c.label}, participants see</p>{list.map(n=><MaterialText key={n.id} node={n} ctx={ctx} against={other}/>)}</div>;})}</div>}
-  {used.length>0&&<p className={s.meta}>Uses {used.map((n,i)=><Fragment key={n.id}>{i>0&&', '}<Term node={n} ctx={ctx}/></Fragment>)}</p>}
-  {records.length>0&&<p className={s.meta}>Records {records.map((n,i)=><Fragment key={n.id}>{i>0&&', '}<Term node={n} ctx={ctx}/></Fragment>)}</p>}
-  {item.jumps.map(j=><p key={j.to} className={s.meta}>{j.back?'Then returns to':'Continues to'} <button className={s.term} onClick={()=>document.getElementById(`step-${j.to}`)?.scrollIntoView({block:'start',behavior:'smooth'})}>{j.title}</button>{j.when?` (${j.when})`:''}.</p>)}
+  {shared.length>0&&<Materials label={t('doc.sees')} list={shared} ctx={ctx}/>}
+  {split&&<div className={s.split}>{groups.map(({c,nodes:list},gi)=>{const other=groups[gi===0?1:0].nodes;return <div key={c.id} data-tone={c.tone} className={s.arm}><p className={s.armLabel}><i/>{t('doc.sees_in',{c:c.label})}</p>{list.map(n=><MaterialText key={n.id} node={n} ctx={ctx} against={other}/>)}</div>;})}</div>}
+  {used.length>0&&<p className={s.meta}>{t('doc.uses')} {used.map((n,i)=><Fragment key={n.id}>{i>0&&', '}<Term node={n} ctx={ctx}/></Fragment>)}</p>}
+  {records.length>0&&<p className={s.meta}>{t('doc.records')} {records.map((n,i)=><Fragment key={n.id}>{i>0&&', '}<Term node={n} ctx={ctx}/></Fragment>)}</p>}
+  {item.jumps.map(j=><p key={j.to} className={s.meta}>{j.back?t('doc.returns_to'):t('doc.continues_to')} <button className={s.term} onClick={()=>document.getElementById(`step-${j.to}`)?.scrollIntoView({block:'start',behavior:'smooth'})}>{j.title}</button>{j.when?` (${j.when})`:''}.</p>)}
   {item.children.length>0&&<>
-   {item.columns?<p className={s.meta}>{step.kind==='branch'?'Depending on condition:':'At the same time:'}</p>:step.kind==='repeat'?<p className={s.meta}>Repeated{step.rule&&step.rule.value!==null?'':' (count not stated)'}:</p>:null}
+   {item.columns?<p className={s.meta}>{step.kind==='branch'?t('doc.depending'):t('doc.simultaneous')}</p>:step.kind==='repeat'?<p className={s.meta}>{t('doc.repeated')}{step.rule&&step.rule.value!==null?'':t('doc.count_unstated')}:</p>:null}
    <ol className={item.columns?s.alternatives:s.steps}>{item.children.map(child=>{const cs=altLabel(child);return item.columns?<li key={child.step.id} data-tone={cs[0]?.tone} className={s.alternative}>{cs.length>0&&<p className={s.armLabel}><i/>{cs.map(c=>c.label).join(', ')}</p>}<ol className={s.steps}><Step item={child} ctx={ctx}/></ol></li>:<Step key={child.step.id} item={child} ctx={ctx}/>;})}</ol>
   </>}
  </li>;
@@ -165,7 +172,7 @@ function MaterialText({node,ctx,against}:{node:ProgramNode;ctx:Ctx;against:Progr
 }
 function Materials({label,list,ctx}:{label:string;list:ProgramNode[];ctx:Ctx}){
  return <div className={s.materials}><p className={s.meta}>{label} {list.map((n,i)=><Fragment key={n.id}>{i>0&&', '}<Term node={n} ctx={ctx}/></Fragment>)}</p>
-  {list.filter(n=>n.fields.some(f=>f.origin==='verbatim'&&typeof f.value==='string')).map(n=><details key={n.id} data-model-id={n.id}><summary>Text of {n.title}</summary>{n.fields.filter(f=>f.origin==='verbatim').map(f=><Field key={f.id} id={n.id} field={f} ctx={ctx} quote/>)}</details>)}</div>;
+  {list.filter(n=>n.fields.some(f=>f.origin==='verbatim'&&typeof f.value==='string')).map(n=><details key={n.id} data-model-id={n.id}><summary>{t('doc.text_of',{t:n.title})}</summary>{n.fields.filter(f=>f.origin==='verbatim').map(f=><Field key={f.id} id={n.id} field={f} ctx={ctx} quote/>)}</details>)}</div>;
 }
 
 function NodeBlock({node,ctx}:{node:ProgramNode;ctx:Ctx}){
@@ -177,30 +184,38 @@ function NodeBlock({node,ctx}:{node:ProgramNode;ctx:Ctx}){
  </div>;
 }
 
-const origins:Partial<Record<ProgramField['origin'],string>>={derived:'derived',researcher:'researcher decision',implementation:'implementation choice',unknown:'origin unknown'};
+/** Evidence badge: in zh the Chinese name with the English term kept small after it. */
+const originKeys:Partial<Record<ProgramField['origin'],string>>={derived:'derived',researcher:'researcher',implementation:'implementation',unknown:'unknown'};
+function originEn(o:ProgramField['origin']):string|undefined{const k=originKeys[o];return k?translate('en',`doc.origin_${k}`):undefined;}
+function originName(o:ProgramField['origin']):string|undefined{const k=originKeys[o];return k?t(`doc.origin_${k}`):undefined;}
 function Field({id,field,ctx,against,labelled=true,quote,label,clamp,originLabel}:{id:string;field:ProgramField;ctx:Ctx;against?:string;labelled?:boolean;quote?:boolean;label?:string;clamp?:number;originLabel?:string}){
- const text=field.value===null?'':fieldText(field.value),unresolved=field.state==='missing'||field.state==='decision';
+ const text=field.value===null?'':fieldText(field.value),need=fieldNeed(field),unresolved=need!==null;
  const editable=Boolean(ctx.onEdit)&&(field.value===null||typeof field.value==='string');
+ const placeholder=unresolved&&isPlaceholderText(text);
+ const whatLabel=label??fieldLabel(field.id,field.label);
  const [editing,setEditing]=useState<string|null>(null);
  const [expanded,setExpanded]=useState(false);
  const flat=text.replace(/\s+/g,' ').trim(),long=Boolean(clamp)&&flat.length>clamp!;
  const box=useRef<HTMLTextAreaElement>(null);
  useEffect(()=>{if(editing!==null){const el=box.current;if(el){el.focus();el.style.height=`${el.scrollHeight}px`;}}},[editing]);
  const commit=()=>{if(editing===null)return;const next=editing.trim();setEditing(null);if(next!==text)ctx.onEdit!(id,field.id,next);};
- const body=unresolved&&!text?<span className={s.missingText}>Not specified</span>:against!==undefined&&text!==against?wordDiff(text,against).map((p,i)=>p.changed?<mark key={i}>{p.text}</mark>:<Fragment key={i}>{p.text}</Fragment>):long&&!expanded?`${flat.slice(0,clamp).trimEnd()}…`:text;
- if(editing!==null)return <p data-field-id={field.id} className={`${s.field} ${s.editing}`}>
+ const body=placeholder?<span className={s.missingText}>{editable?t('doc.fill_hint'):t('doc.not_specified')}</span>:against!==undefined&&text!==against?wordDiff(text,against).map((p,i)=>p.changed?<mark key={i}>{p.text}</mark>:<Fragment key={i}>{p.text}</Fragment>):long&&!expanded?`${flat.slice(0,clamp).trimEnd()}…`:text;
+ if(editing!==null)return <p data-field-id={field.id} data-amber={unresolved||undefined} className={`${s.field} ${s.editing} ${unresolved?s.amber:''}`}>
   {labelled&&<span className={s.label}>{label??fieldLabel(field.id,field.label)}. </span>}
-  <textarea ref={box} className={s.editor} value={editing} rows={1} aria-label={`Edit ${field.label}`}
+  <textarea ref={box} className={s.editor} value={editing} rows={1} aria-label={t('doc.edit_aria',{what:whatLabel})}
    onChange={e=>{setEditing(e.target.value);e.target.style.height='auto';e.target.style.height=`${e.target.scrollHeight}px`;}}
    onBlur={commit}
    onKeyDown={e=>{if(e.key==='Escape'){e.preventDefault();setEditing(null);}else if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();commit();}}}/>
-  <span className={s.editHint}>Enter saves · Shift+Enter newline · Esc cancels</span>
+  <span className={s.editHint}>{t('doc.edit_keys')}</span>
  </p>;
- return <p data-field-id={field.id} className={`${s.field} ${clamp?s.line:''} ${quote?s.quote:''} ${unresolved?s.unresolved:''} ${editable?s.editable:''} ${long?s.expandable:''}`} title={editable?'Double-click to edit':undefined} onClick={long?()=>{if(window.getSelection()?.isCollapsed!==false)setExpanded(x=>!x);}:undefined} onDoubleClick={editable?e=>{e.preventDefault();window.getSelection()?.removeAllRanges();setEditing(text);}:undefined}>
-  {labelled&&<span className={s.label}>{label??fieldLabel(field.id,field.label)}. </span>}{body}
-  {!(unresolved&&!text)&&(originLabel??origins[field.origin])&&<em className={s.origin}> {originLabel??origins[field.origin]}</em>}
+ const startEdit=()=>setEditing(placeholder?'':text);
+ const onClick=unresolved&&editable?()=>{if(window.getSelection()?.isCollapsed!==false)startEdit();}:long?()=>{if(window.getSelection()?.isCollapsed!==false)setExpanded(x=>!x);}:undefined;
+ const originText=originLabel??originName(field.origin);
+ return <p data-field-id={field.id} data-amber={unresolved||undefined} className={`${s.field} ${clamp?s.line:''} ${quote?s.quote:''} ${unresolved?s.amber:''} ${editable?s.editable:''} ${long||(unresolved&&editable)?s.expandable:''}`} title={editable?(unresolved?t('doc.fill_hint'):t('doc.edit_hint')):undefined} onClick={onClick} onDoubleClick={editable&&!unresolved?e=>{e.preventDefault();window.getSelection()?.removeAllRanges();startEdit();}:undefined}>
+  {labelled&&<span className={s.label}>{whatLabel}. </span>}{need&&<span className={s.needTag}>{need==='decision'?t('doc.needs_input'):t('doc.missing_label')}</span>}{body}
+  {!placeholder&&originText&&<em className={s.origin}> {originText}{!originLabel&&getLang()==='zh-CN'&&originEn(field.origin)&&<small className={s.en}> {originEn(field.origin)}</small>}</em>}
   {(field.origin==='verbatim'||field.origin==='reported'||field.evidenceIds.length>0)&&<Cite id={id} refs={sourceRefs(ctx.program,field.evidenceIds)} ctx={ctx}/>}
-  <button className={s.comment} title={t('doc.discuss_hint')} aria-label={`Discuss ${label??field.label}`} onClick={()=>ctx.onAsk(id,field.id)}>✎</button>
+  <button className={s.comment} title={t('doc.discuss_hint')} aria-label={t('doc.discuss_aria',{what:label??field.label})} onClick={e=>{e.stopPropagation();ctx.onAsk(id,field.id);}}>✎</button>
  </p>;
 }
 function Term({node,ctx}:{node:ProgramNode;ctx:Ctx}){
@@ -210,12 +225,12 @@ function Term({node,ctx}:{node:ProgramNode;ctx:Ctx}){
 /** The citation that ends each sentence. Without one the sentence says so, so it never reads as settled. */
 function Cite({id,refs,ctx,quiet}:{id:string;refs:SourceRef[];ctx:Props;quiet?:boolean}){
  const ref=refs[0];
- if(!ref)return quiet?null:<span className={s.unsourced} title="No source is cited for this. Check it with the agent."> [no source]</span>;
- return <button className={`${s.cite} ${ref.verified?'':s.unverified}`} title={`${ref.verified?'Open the cited passage':'Cited passage, not yet matched on the page'}${ref.quote?`: “${ref.quote.slice(0,160)}${ref.quote.length>160?'…':''}”`:''}${ref.file?` (${ref.file})`:''}`} onClick={e=>{e.stopPropagation();ctx.onSource(id,ref);}}>[{ref.page?`p. ${ref.page}`:'file'}{ref.verified?'':'?'}]</button>;
+ if(!ref)return quiet?null:<span className={s.unsourced} title={t('doc.no_source_hint')}> {t('doc.no_source')}</span>;
+ return <button className={`${s.cite} ${ref.verified?'':s.unverified}`} title={`${ref.verified?t('doc.cite_open'):t('doc.cite_unmatched')}${ref.quote?`: “${ref.quote.slice(0,160)}${ref.quote.length>160?'…':''}”`:''}${ref.file?` (${ref.file})`:''}`} onClick={e=>{e.stopPropagation();ctx.onSource(id,ref);}}>[{ref.page?t('doc.cite_page',{n:ref.page}):t('doc.cite_file')}{ref.verified?'':'?'}]</button>;
 }
 function Issue({ids,ctx}:{ids:string[];ctx:Props}){
  if(!ids.length)return null;
- return <button className={s.issue} onClick={e=>{e.stopPropagation();ctx.onIssue(ids[0]);}} aria-label={`${ids.length} open ${ids.length===1?'question':'questions'}`} title="Open question">!{ids.length>1?` ${ids.length}`:''}</button>;
+ return <button className={s.issue} onClick={e=>{e.stopPropagation();ctx.onIssue(ids[0]);}} aria-label={t('doc.question_aria',{n:ids.length})} title={t('doc.question_hint')}>!{ids.length>1?` ${ids.length}`:''}</button>;
 }
 
 
@@ -251,10 +266,10 @@ function participantsFact(list:ProgramNode[]):string{
  for(const f of fields){if(sizeId.test(f.id)||sizeLabel.test(f.label)){const t=sizeOf(f);if(t)return t;}}
  for(const f of fields){if(typeof f.value==='number')return `N = ${f.value}`;}
  for(const f of fields){const t=fieldText(f.value).replace(/\s+/g,' ').trim();if(t&&t.length<=48&&!/^[^:]+:$/.test(t))return t;}
- return 'not stated';
+ return t('doc.not_stated');
 }
 
-function Glance({program,studyId,items,conditions}:{program:HumanProgram;studyId:string;items:FlowItem[];conditions:Condition[]}){
+function Glance({program,studyId,items,conditions,toFill,onJump}:{program:HumanProgram;studyId:string;items:FlowItem[];conditions:Condition[];toFill:number;onJump:()=>void}){
  const inStudy=(ids:string[])=>!studyId||!ids.length||ids.includes(studyId);
  const nodes=program.nodes.filter(n=>inStudy(n.studyIds));
  const steps=program.steps.filter(st=>!studyId||st.studyId===studyId);
@@ -272,6 +287,7 @@ function Glance({program,studyId,items,conditions}:{program:HumanProgram;studyId
  ];
  return <dl className={s.glance} aria-label={t('glance.aria')}>
   {facts.map(([k,v])=><div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
+  {toFill>0&&<div><dt>{t('doc.needs_input')}</dt><dd><button className={s.fillTotal} data-count={toFill} onClick={onJump} title={t('doc.to_fill_goto')}>{t('doc.to_fill',{n:toFill})}</button></dd></div>}
   <div className={s.verdict} data-verdict={verdict.tone}><dt>{t('glance.enough')}</dt><dd>{verdict.text}</dd></div>
  </dl>;
 }
