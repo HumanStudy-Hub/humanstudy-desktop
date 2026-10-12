@@ -24,8 +24,12 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
       ⌘⇧T, rename by double-click, delete), "Resumed" note.
 - [x] **Version everywhere** — version in Home footer and title bar tooltip, Settings → About with
       "Check for updates" and the changelog link; `npm version` bump to 0.2.0 at release. (R2)
-- [ ] **Real end-to-end run** — sign in → promo code → Sonnet 5.5 build of a real paper →
-      package passes `check_package.py` → simulate. Fix whatever breaks. (lead)
+- [x] **Real end-to-end run** — dev server → test account → promo code → desktop key → Sonnet 5.5
+      built Knobe (2003) through the hosted proxy: program.json (3 studies, 31 nodes, 13 steps,
+      25 evidence, 14 issues) + eight-file package, `check_package.py` passes, readiness
+      "blocked: question wording not printed in the paper" (correct). Fixed on the way: scratch
+      files must stay in `.humanstudy/tmp`, PROJECT_FORMAT.md is installed, checker resolves
+      relative paths. Simulation not yet run (needs the researcher's decisions). (2026-10-12)
 - [ ] **Notarized Mac build** — Apple agreement accepted at developer.apple.com, then
       `npm run dist:mac` notarizes; publish a draft GitHub release and test auto-update. (lead)
 

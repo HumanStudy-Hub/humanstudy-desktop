@@ -38,7 +38,7 @@ def main() -> None:
     parser.add_argument("package", type=Path, help="package/<paper-slug>")
     parser.add_argument("--program", type=Path, default=None, help="project program.json to compare with")
     args = parser.parse_args()
-    root: Path = args.package
+    root: Path = args.package.resolve()
     if not root.is_dir():
         fail(f"{root} is not a folder")
 
