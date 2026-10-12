@@ -1,6 +1,6 @@
 import { shell } from 'electron'
 import { existsSync } from 'node:fs'
-import { copyFile, mkdir, readdir, rename, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import sampleProgram from '../shared/sample-program.json'
 import { installPack } from './pack'
@@ -47,9 +47,20 @@ async function summarize(dir: string): Promise<ProjectSummary> {
     for (const d of await readdir(dir, { withFileTypes: true })) {
       if (d.name === '.DS_Store') continue
       latest = Math.max(latest, await mtimeOf(join(dir, d.name)))
+      // Editing a file in place only touches the file, not its folder: look one level down
+      // (notes, artifacts, .humanstudy/threads is covered below).
+      if (d.isDirectory() && d.name !== 'node_modules' && d.name !== '.git') {
+        for (const f of await readdir(join(dir, d.name)).catch(() => [] as string[])) {
+          if (f !== '.DS_Store') latest = Math.max(latest, await mtimeOf(join(dir, d.name, f)))
+        }
+      }
     }
   } catch {
     /* unreadable folder */
+  }
+  // Chat threads are saved as files under .humanstudy/threads, so the agent working shows up here.
+  for (const f of await readdir(join(dir, '.humanstudy', 'threads')).catch(() => [] as string[])) {
+    latest = Math.max(latest, await mtimeOf(join(dir, '.humanstudy', 'threads', f)))
   }
   let artifactCount = 0
   try {
@@ -61,9 +72,17 @@ async function summarize(dir: string): Promise<ProjectSummary> {
   } catch {
     /* no artifacts yet */
   }
+  let title: string | undefined
+  try {
+    const t = (JSON.parse(await readFile(join(dir, 'program.json'), 'utf8')) as { source?: { title?: unknown } }).source?.title
+    if (typeof t === 'string' && t.trim() && t.trim() !== basename(dir)) title = t.trim()
+  } catch {
+    /* no program yet */
+  }
   return {
     dir,
     name: basename(dir),
+    title,
     updatedAt: new Date(latest || Date.now()).toISOString(),
     hasPaper: existsSync(join(dir, 'paper.pdf')),
     hasProgram: existsSync(join(dir, 'program.json')),

@@ -135,7 +135,10 @@ export interface ProjectSnapshot {
 
 export interface ProjectSummary {
   dir: string
+  /** The folder name, verbatim (renaming changes it). */
   name: string
+  /** The paper's title from program.json, when the project has one. */
+  title?: string
   /** ISO time of the most recent change to the project folder. */
   updatedAt: string
   hasPaper: boolean
@@ -232,6 +235,8 @@ export interface AppInfo {
   platform: string
   arch: string
   kernelPath?: string
+  /** The user's home directory, for `~`-abbreviated paths. */
+  home?: string
   /** HUMANSTUDY_DEV_KEYS=1: developer path with own provider keys and kernel details. Hidden by default. */
   devKeys?: boolean
 }
@@ -400,6 +405,8 @@ export interface TelemetryApi {
   replayChunk(chunk: TelemetryReplayChunk): Promise<boolean>
   /** Save dialog, then a zip of events, threads and replay chunks. Resolves with the path, null when cancelled. */
   exportMyData(): Promise<string | null>
+  /** Save dialog (default ~/Downloads/humanstudy-research-data-<date>.json), then writes `json`. Resolves with the path, null when cancelled. */
+  saveExport(json: string): Promise<string | null>
 }
 export interface TelemetryReplayChunk {
   sessionId: string

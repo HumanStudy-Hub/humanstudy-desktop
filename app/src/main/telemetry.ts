@@ -512,6 +512,19 @@ export function registerTelemetry(): void {
     return seq !== null
   })
   ipcMain.handle('telemetry:exportMyData', (e) => exportMyData(BrowserWindow.fromWebContents(e.sender)))
+  ipcMain.handle('telemetry:saveExport', async (e, json: unknown) => {
+    if (typeof json !== 'string') throw new Error('Nothing to save.')
+    const parent = BrowserWindow.fromWebContents(e.sender)
+    const opts = {
+      title: 'Download my research data',
+      defaultPath: join(app.getPath('downloads'), `humanstudy-research-data-${new Date().toISOString().slice(0, 10)}.json`),
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    }
+    const pick = parent ? await dialog.showSaveDialog(parent, opts) : await dialog.showSaveDialog(opts)
+    if (pick.canceled || !pick.filePath) return null
+    await writeFile(pick.filePath, json, 'utf8')
+    return pick.filePath
+  })
   ipcMain.handle('telemetry:track', (_e, type: string, opts?: TelemetryTrackOptions) => {
     if (typeof type !== 'string' || RENDERER_DENY.test(type)) return
     const o = opts && typeof opts === 'object' ? opts : {}

@@ -78,6 +78,7 @@ export function ResearchDataSection({ onReview }: { onReview(): void }) {
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [saved, setSaved] = useState('')
 
   const apply = useCallback((s: TelemetryStatus) => {
     setStatus(s)
@@ -93,6 +94,7 @@ export function ResearchDataSection({ onReview }: { onReview(): void }) {
     setBusy(kind)
     setError('')
     setNotice('')
+    setSaved('')
     try {
       await task()
     } catch (e) {
@@ -106,16 +108,11 @@ export function ResearchDataSection({ onReview }: { onReview(): void }) {
       'export',
       async () => {
         const events = await window.humanstudy.telemetry.recent()
-        const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), events }, null, 2)], { type: 'application/json' })
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = 'humanstudy-research-data.json'
-        document.body.appendChild(a)
-        a.click()
-        a.remove()
-        window.setTimeout(() => URL.revokeObjectURL(url), 2000)
-        setNotice(`Downloaded ${events.length} events (the local queue and the rows already uploaded).`)
+        const json = JSON.stringify({ exportedAt: new Date().toISOString(), events }, null, 2)
+        const path = await window.humanstudy.telemetry.saveExport(json)
+        if (!path) return // cancelled
+        setSaved(path)
+        setNotice(`Saved ${events.length} events (the local queue and the rows already uploaded).`)
       },
       'Could not export your data.'
     )
@@ -169,7 +166,20 @@ export function ResearchDataSection({ onReview }: { onReview(): void }) {
         <p className="settings-lead">{current}</p>
       )}
       {error && <p className="home-error">{error}</p>}
-      {notice && <p className="account-notice">{notice}</p>}
+      {notice && (
+        <p className="account-notice">
+          {notice}
+          {saved && (
+            <>
+              {' '}
+              <span title={saved}>{saved}</span>{' '}
+              <button className="link" onClick={() => void window.humanstudy.project.reveal(saved)}>
+                Show in Finder
+              </button>
+            </>
+          )}
+        </p>
+      )}
 
       <details className="consent-details">
         <summary>What is collected, why, and where it is stored</summary>

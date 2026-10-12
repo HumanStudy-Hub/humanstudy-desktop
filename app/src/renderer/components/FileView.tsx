@@ -164,6 +164,7 @@ export function FileView({ file, version, onDirty }: Props) {
           className="file-editor"
           value={text}
           spellCheck={false}
+          wrap="soft"
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {

@@ -64,7 +64,8 @@ export default function App() {
   const home = useRef<HomeHandle>(null)
   const update = useUpdateStatus()
   const workbench = useRef<WorkbenchHandle>(null)
-  // Research data agreement: asked right after sign-in (per account and agreement version). The agent
+  // Research data agreement: asked the moment the account is signed in (also over Settings, where sign-in
+  // happens), per account and agreement version. The agent
   // only starts with hosted access (or the hidden developer key path) and an accepted agreement.
   const [research, setResearch] = useState<TelemetryStatus | null>(null)
   const [reviewing, setReviewing] = useState(false)
@@ -83,7 +84,7 @@ export default function App() {
       .then(setResearch)
       .catch(() => undefined)
   }, [account?.signedIn, account?.email, settingsOpen])
-  const consent = account?.signedIn && research && (reviewing || (!research.decided && !settingsOpen)) && (
+  const consent = account?.signedIn && research && (reviewing || !research.decided) && (
     <AgreementDialog
       onDone={(s) => {
         setResearch(s)
@@ -274,6 +275,7 @@ export default function App() {
           onSettings={() => openSettings('general')}
           account={account}
           onAccount={() => openSettings('account')}
+          kernel={kernel}
         />
         {dialog}
         {consent}
@@ -303,13 +305,14 @@ export default function App() {
           </button>
           <button className="ghost icon" onClick={() => openSettings('general')} aria-label="Settings" title="Settings">
             <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden>
-              <circle cx="10" cy="10" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.5" />
               <path
-                d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"
+                d="M8.4 2.5h3.2l.5 2.1 1.4.8 2-.7 1.6 2.8-1.5 1.5v1.6l1.5 1.5-1.6 2.8-2-.7-1.4.8-.5 2.1H8.4l-.5-2.1-1.4-.8-2 .7-1.6-2.8L4.4 11V9.4L2.9 7.9l1.6-2.8 2 .7 1.4-.8z"
+                fill="none"
                 stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
+                strokeWidth="1.3"
+                strokeLinejoin="round"
               />
+              <circle cx="10" cy="10.2" r="2.3" fill="none" stroke="currentColor" strokeWidth="1.3" />
             </svg>
           </button>
         </div>

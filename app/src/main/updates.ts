@@ -4,6 +4,7 @@
 import { app } from 'electron'
 import electronUpdater from 'electron-updater'
 import type { UpdateStatus } from '../preload/types'
+import { isNoReleaseError, shortError } from './updates-core'
 
 const { autoUpdater } = electronUpdater
 
@@ -33,8 +34,19 @@ export async function checkForUpdates(): Promise<void> {
   try {
     await autoUpdater.checkForUpdates()
   } catch (e) {
-    set({ state: 'error', error: e instanceof Error ? e.message : String(e) })
+    fail(e instanceof Error ? e.message : String(e))
   }
+}
+
+/** No published release is "up to date"; a real failure keeps a short message. */
+function fail(message: string): void {
+  if (isNoReleaseError(message)) {
+    console.info('updates: no published release on GitHub yet, treating as up to date')
+    set({ state: 'none', error: undefined })
+    return
+  }
+  console.warn(`updates: check failed: ${message.split('\n')[0]}`)
+  set({ state: 'error', nextVersion: status.nextVersion, error: shortError(message) })
 }
 
 export function installUpdate(): void {
@@ -63,9 +75,7 @@ export function startUpdates(onChange: (s: UpdateStatus) => void): void {
     set({ state: 'downloading', nextVersion: status.nextVersion, progress: Math.round(p.percent) })
   )
   autoUpdater.on('update-downloaded', (info) => set({ state: 'ready', nextVersion: info.version, progress: 100 }))
-  autoUpdater.on('error', (e) =>
-    set({ state: 'error', nextVersion: status.nextVersion, error: e?.message ?? String(e) })
-  )
+  autoUpdater.on('error', (e) => fail(e?.message ?? String(e)))
 
   setTimeout(() => void checkForUpdates(), FIRST_CHECK_MS)
   setInterval(() => void checkForUpdates(), INTERVAL_MS).unref?.()

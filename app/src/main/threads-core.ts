@@ -94,8 +94,13 @@ export function appendEvent(
   } else if (e.type === 'tool') {
     const name = e.tool ?? 'tool'
     const detail = e.detail && e.detail !== '{}' ? e.detail : undefined
-    if (tail?.kind === 'tool' && tail.tool === name && (tail.state === 'pending' || tail.state === 'running')) {
-      parts[parts.length - 1] = withIO({ kind: 'tool', tool: name, detail: detail ?? tail.detail, state: e.text }, e.input ?? tail.input, e.output ?? tail.output)
+    // A permission card may sit between the tool's pending and running events; look past it.
+    let at = parts.length - 1
+    while (at >= 0 && parts[at].kind === 'permission') at--
+    const open = parts[at]
+    if (open?.kind === 'tool' && open.tool === name && (open.state === 'pending' || open.state === 'running')) {
+      const tail = open
+      parts[at] = withIO({ kind: 'tool', tool: name, detail: detail ?? tail.detail, state: e.text }, e.input ?? tail.input, e.output ?? tail.output)
     } else {
       parts.push(withIO({ kind: 'tool', tool: name, detail: detail ?? undefined, state: e.text }, e.input, e.output))
     }

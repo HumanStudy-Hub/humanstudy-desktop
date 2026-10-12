@@ -50,6 +50,21 @@ import { truncateString, truncateValue } from '../truncate'
 import { Emitter } from './types'
 import type { Kernel, KernelEvent, KernelPermission, PermissionReply } from './types'
 
+/** Per-command bash rules (opencode: last matching pattern wins, compound commands are checked per
+ *  command). Read-only commands run without a prompt; anything unlisted, and the risky forms of the
+ *  listed ones (find -delete/-exec, rg --pre, output redirection), still asks. */
+const READ_ONLY_BASH = ['ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'find', 'pdftotext', 'pdfinfo', 'file', 'pwd', 'echo']
+export const BASH_PERMISSION: Record<string, 'ask' | 'allow'> = {
+  '*': 'ask',
+  ...Object.fromEntries(READ_ONLY_BASH.flatMap((c) => [[c, 'allow'], [`${c} *`, 'allow']])),
+  'find *-delete*': 'ask',
+  'find *-exec*': 'ask',
+  'find *-ok*': 'ask',
+  'find *-fprint*': 'ask',
+  'rg *--pre*': 'ask',
+  '*>*': 'ask',
+}
+
 export const DEFAULT_PROVIDER = 'humanstudy'
 export const DEFAULT_MODEL = 'anthropic/claude-sonnet-5.5'
 /** Models the HumanStudy edition of opencode already declares under provider.humanstudy
@@ -278,7 +293,7 @@ export class OpencodeKernel implements Kernel {
     const cfg: Record<string, unknown> = {
       $schema: 'https://opencode.ai/config.json',
       ...(model ? { model, small_model: model } : {}), // small_model: otherwise titles go to opencode's own default
-      permission: { edit: 'ask', bash: 'ask', external_directory: 'ask' },
+      permission: { edit: 'ask', bash: BASH_PERMISSION, external_directory: 'ask' },
     }
     if (this.provider === HOSTED_PROVIDER && !BAKED_HOSTED_MODELS.includes(this.model)) {
       cfg.provider = { [HOSTED_PROVIDER]: { models: { [this.model]: { name: this.model, tool_call: true } } } }
@@ -538,10 +553,12 @@ export class OpencodeKernel implements Kernel {
         } else if (part.type === 'tool') {
           const st = part.state ?? {}
           const status: string = st.status ?? 'pending'
-          if (s.toolStatus.get(part.id) === status) return
-          s.toolStatus.set(part.id, status)
           const detail =
-            status === 'error' ? String(st.error ?? '') : st.title || summarizeInput(st.input)
+            status === 'error' ? String(st.error ?? '') : toolDetail(part.tool, st.title, st.input)
+          // Re-emit when the input arrives (command, path) even if the status did not change.
+          const key = `${status}\n${detail}`
+          if (s.toolStatus.get(part.id) === key) return
+          s.toolStatus.set(part.id, key)
           const done = status === 'completed' || status === 'error'
           const out = status === 'error' ? st.error : st.output
           emit({
@@ -654,8 +671,17 @@ export function isInsideProject(dir: string, perm: KernelPermission): boolean {
   return false
 }
 
+/** One line for a tool row: a bash call shows its command (the title is only the description). */
+export function toolDetail(tool: string, title: unknown, input: unknown): string {
+  if (tool === 'bash' && input && typeof input === 'object') {
+    const c = (input as Record<string, unknown>).command
+    if (typeof c === 'string' && c.trim()) return c.trim().slice(0, 200)
+  }
+  return (typeof title === 'string' && title) || summarizeInput(input)
+}
+
 function summarizeInput(input: unknown): string {
-  if (!input || typeof input !== 'object') return ''
+  if (!input || typeof input !== 'object' || Object.keys(input).length === 0) return ''
   const o = input as Record<string, unknown>
   for (const k of ['filePath', 'path', 'command', 'pattern', 'url', 'description']) {
     if (typeof o[k] === 'string') return (o[k] as string).slice(0, 200)

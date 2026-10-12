@@ -485,6 +485,7 @@ app.whenReady().then(() => {
     platform: process.platform,
     arch: process.arch,
     kernelPath: managedBinary() ?? kernelBinary() ?? undefined,
+    home: app.getPath('home'),
     devKeys: process.env.HUMANSTUDY_DEV_KEYS === '1',
   }))
 

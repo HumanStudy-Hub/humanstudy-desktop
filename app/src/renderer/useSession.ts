@@ -327,9 +327,14 @@ function appendEvent(ms: Message[], e: KernelEvent): Message[] {
     else msg.parts.push({ kind: 'text', text: e.text ?? '' })
   } else if (e.type === 'tool') {
     // A tool call reports running -> completed; update the open part instead of listing it twice.
-    const open = tail?.kind === 'tool' && tail.tool === (e.tool ?? 'tool') && (tail.state === 'pending' || tail.state === 'running')
-    if (open && tail.kind === 'tool') msg.parts[msg.parts.length - 1] = { ...tail, detail: e.detail ?? tail.detail, state: e.text }
-    else msg.parts.push({ kind: 'tool', tool: e.tool ?? 'tool', detail: e.detail, state: e.text })
+    // A permission card may sit between the tool's pending and running events; look past it.
+    let at = msg.parts.length - 1
+    while (at >= 0 && msg.parts[at].kind === 'permission') at--
+    const open = msg.parts[at]
+    const detail = e.detail && e.detail !== '{}' ? e.detail : undefined // '{}' = input not streamed yet
+    if (open?.kind === 'tool' && open.tool === (e.tool ?? 'tool') && (open.state === 'pending' || open.state === 'running'))
+      msg.parts[at] = { ...open, detail: detail ?? open.detail, state: e.text }
+    else msg.parts.push({ kind: 'tool', tool: e.tool ?? 'tool', detail, state: e.text })
   } else if (e.type === 'permission' && e.permission) {
     const pe = e.permission
     const at = msg.parts.findIndex((x) => x.kind === 'permission' && x.id === pe.id)

@@ -87,6 +87,7 @@ const api: HumanStudyApi = {
     sessionId: () => ipcRenderer.invoke('telemetry:sessionId'),
     replayChunk: (chunk) => ipcRenderer.invoke('telemetry:replayChunk', chunk),
     exportMyData: () => ipcRenderer.invoke('telemetry:exportMyData'),
+    saveExport: (json) => ipcRenderer.invoke('telemetry:saveExport', json),
   },
 }
 

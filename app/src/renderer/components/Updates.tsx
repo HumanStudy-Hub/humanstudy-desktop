@@ -52,7 +52,7 @@ function stateLine(s: UpdateStatus): string {
     case 'ready':
       return `Version ${s.nextVersion ?? ''} is ready. Restart to install.`
     case 'none':
-      return 'You are up to date.'
+      return "You're on the latest version."
     case 'error':
       return `Could not check for updates${s.error ? `: ${s.error.split('\n')[0]}` : '.'}`
     default:

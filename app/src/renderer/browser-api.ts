@@ -664,7 +664,7 @@ def intentional(harm: float, help_: float) -> float:
         retry: async () => runInstall(false),
       },
     },
-    app: { info: async () => ({ version: '0.1.0', platform: 'preview', arch: 'preview', kernelPath: '/preview/kernel/1.18.21/agent', devKeys: query.has('devkeys') }) },
+    app: { info: async () => ({ version: '0.1.0', platform: 'preview', arch: 'preview', kernelPath: '/preview/kernel/1.18.21/agent', home: '/Users/preview', devKeys: query.has('devkeys') }) },
     menu: {
       onCommand: (cb) => {
         menuListeners.add(cb)
@@ -750,6 +750,7 @@ def intentional(harm: float, help_: float) -> float:
       sessionId: async () => 'browser-preview-session',
       replayChunk: async () => false,
       exportMyData: async () => null,
+      saveExport: async () => `/Users/preview/Downloads/humanstudy-research-data-${new Date().toISOString().slice(0, 10)}.json`,
     },
     files: { pathOf: (file) => file.name },
     updates: {

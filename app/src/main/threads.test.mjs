@@ -42,6 +42,16 @@ const K = await import(pathToFileURL(join(out, 'kernel', 'index.js')).href)
   // a finished tool is not overwritten by the next call of the same tool
   ms = T.appendEvent(ms, ev('tool', { tool: 'bash', text: 'running', detail: 'pwd' }), at, ids)
   assert.equal(ms[0].parts.length, 3)
+  // a permission card between a tool's pending and running events does not split the tool row
+  {
+    let t = []
+    t = T.appendEvent(t, ev('tool', { tool: 'bash', text: 'pending', detail: '{}' }), at, ids)
+    t = T.appendEvent(t, ev('permission', { permission: { id: 'per_9', type: 'bash', title: 'ls -la', patterns: ['ls -la'] } }), at, ids)
+    t = T.appendEvent(t, ev('tool', { tool: 'bash', text: 'running', detail: 'ls -la' }), at, ids)
+    const tools = t[0].parts.filter((p) => p.kind === 'tool')
+    assert.equal(tools.length, 1)
+    assert.equal(tools[0].detail, 'ls -la')
+  }
   // permission request, then its answer
   ms = T.appendEvent(ms, ev('permission', { permission: { id: 'per_1', type: 'bash', title: 'pwd', patterns: ['pwd'] } }), at, ids)
   const before = ms

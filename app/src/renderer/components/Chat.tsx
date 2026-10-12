@@ -7,6 +7,7 @@ import { Markdown, copyText } from './Markdown'
 import { ModelPicker, shortModelName } from './ModelPicker'
 import { PermissionCard } from './Permission'
 import { ToolView } from './ToolView'
+import { KernelBar } from './KernelBar'
 import { compact, money } from '../format'
 import type { KernelInstallStatus } from '../../preload/types'
 
@@ -61,6 +62,10 @@ const MENTION = /(^|\s)@([^\s@]*)$/
 
 export function Chat({ ref, session, selected, onClearSelection, account, onSettings, agreement, onReview, projectDir, tree, model, busyEnter, onModel, kernel, onOpenStudy }: Props) {
   const [draft, setDraft] = useState('')
+  const [home, setHome] = useState<string>()
+  useEffect(() => {
+    window.humanstudy.app.info().then((i) => setHome(i.home)).catch(() => undefined)
+  }, [])
   const [attached, setAttached] = useState<{ rel: string; name: string }[]>([])
   const [attachError, setAttachError] = useState('')
   const [dragging, setDragging] = useState(false)
@@ -178,25 +183,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
       }}
     >
       {dragging && <div className="drop-hint">Drop to add to the project (PDF, data, images)</div>}
-      {kernel.status && (kernel.status.state === 'downloading' || kernel.status.state === 'error') && (
-        <div className={`kernel-bar ${kernel.status.state}`} role="status">
-          {kernel.status.state === 'downloading' ? (
-            <>
-              <span>
-                Setting up the agent kernel{kernel.status.percent != null ? ` · ${Math.round(kernel.status.percent)}%` : ''}
-              </span>
-              <div className="kernel-track" aria-hidden>
-                <span style={{ width: `${kernel.status.percent ?? 0}%` }} />
-              </div>
-            </>
-          ) : (
-            <div className="kernel-error">
-              <span title={kernel.status.error}>The agent kernel could not be set up{kernel.status.error ? `: ${kernel.status.error}` : '.'}</span>
-              <button className="link" onClick={kernel.retry}>Retry</button>
-            </div>
-          )}
-        </div>
-      )}
+      <KernelBar kernel={kernel} />
       <div className="messages" ref={scroller}>
         {session.resumedWithContext && session.messages.length > 0 && (
           <p className="resumed-note small muted">Resumed; the agent will be reminded of the earlier conversation on your next message.</p>
@@ -214,7 +201,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
         {session.messages.map((m) => (
           <div key={m.id} className={`msg ${m.role}`}>
             {m.parts.map((p, i) => (
-              <PartView key={i} part={p} role={m.role} onReply={session.reply} onOpenStudy={onOpenStudy} />
+              <PartView key={i} part={p} role={m.role} onReply={session.reply} onOpenStudy={onOpenStudy} projectDir={projectDir} home={home} />
             ))}
             {m.role === 'assistant' && !(session.busy && m.id === lastAssistant) && <CopyMessage message={m.parts} />}
           </div>
@@ -467,11 +454,15 @@ function PartView({
   role,
   onReply,
   onOpenStudy,
+  projectDir,
+  home,
 }: {
   part: Part
   role: 'user' | 'assistant'
   onReply(id: string, response: PermissionReply): void
   onOpenStudy(): void
+  projectDir: string
+  home?: string
 }) {
   if (part.kind === 'text') {
     return role === 'assistant' ? (
@@ -484,5 +475,5 @@ function PartView({
   }
   if (part.kind === 'error') return <div className="part error">{part.text}</div>
   if (part.kind === 'permission') return <PermissionCard part={part} onReply={onReply} />
-  return <ToolView part={part} onOpenStudy={onOpenStudy} />
+  return <ToolView part={part} onOpenStudy={onOpenStudy} projectDir={projectDir} home={home} />
 }

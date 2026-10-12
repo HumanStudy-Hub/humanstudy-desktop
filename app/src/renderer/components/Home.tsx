@@ -3,6 +3,8 @@ import type { AccountStatus, ProjectSummary } from '../../preload/types'
 import { Studies, type StudiesHandle } from './Studies'
 import { track } from '../telemetry'
 import { VersionFooter } from './Updates'
+import { KernelBar } from './KernelBar'
+import type { KernelInstallStatus } from '../../preload/types'
 import { errorText } from './SettingsDialog'
 
 type Section = 'projects' | 'studies'
@@ -14,6 +16,7 @@ interface Props {
   account: AccountStatus | null
   /** Opens Settings → Account. */
   onAccount(): void
+  kernel: { status: KernelInstallStatus | null; retry(): void }
 }
 
 export function relativeTime(iso: string, now = Date.now()): string {
@@ -42,7 +45,7 @@ export interface HomeHandle {
   fromPaper(): void
 }
 
-export function Home({ ref, onOpen, onSettings, account, onAccount }: Props & { ref?: Ref<HomeHandle> }) {
+export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Props & { ref?: Ref<HomeHandle> }) {
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null)
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
@@ -247,6 +250,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount }: Props & { 
             <Studies ref={studies} query={query} onOpenProject={onOpen} />
           ) : (
             <div className="home-inner">
+              <KernelBar kernel={kernel} />
               {!query && account?.modelAccess === 'none' && (
                 <button className="access-banner" onClick={onAccount}>
                   <span>Sign in and enter your invitation code to use the agent</span>
@@ -380,7 +384,10 @@ export function Home({ ref, onOpen, onSettings, account, onAccount }: Props & { 
                         ) : (
                           <button className="project-row" onClick={() => onOpen(p.dir)} title={p.dir}>
                             <span className="doc-icon" aria-hidden />
-                            <span className="project-name">{p.name}</span>
+                            <span className="project-name">
+                              {p.name}
+                              {p.title && <span className="muted small project-title"> · {p.title}</span>}
+                            </span>
                             <span className="badges">
                               {p.hasPaper && <span className="badge">Paper</span>}
                               {p.hasProgram && <span className="badge">Program</span>}

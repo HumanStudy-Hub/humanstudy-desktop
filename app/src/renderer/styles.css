@@ -218,6 +218,7 @@ code, pre { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 1
 .tree-row.active { background: var(--accent-soft); color: var(--accent); }
 .tree-caret { width: 12px; flex: none; font-size: 11px; color: var(--muted); transition: transform 0.12s; display: inline-block; }
 .tree-caret.open { transform: rotate(90deg); }
+.tree-caret.empty { visibility: hidden; }
 .tree-glyph { width: 26px; flex: none; font: 9.5px ui-monospace, 'SF Mono', Menlo, monospace; color: var(--muted); text-align: center; border: 1px solid var(--line); border-radius: 3px; line-height: 14px; }
 .tree-glyph[data-ext="pdf"] { color: var(--danger); }
 .tree-glyph[data-ext="json"] { color: var(--accent); }
@@ -233,7 +234,7 @@ code, pre { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 1
 .segmented.mini { max-width: none; }
 .segmented.mini button { padding: 2px 9px; font-size: 12px; }
 .file-error { margin: 8px 16px 0; font-size: 12.5px; }
-.file-editor { flex: 1; min-height: 0; width: 100%; resize: none; border: 0; outline: 0; padding: 16px 20px 40px; background: var(--bg); color: var(--text); font: 12.5px/1.6 ui-monospace, 'SF Mono', Menlo, monospace; tab-size: 2; white-space: pre; overflow: auto; }
+.file-editor { flex: 1; min-height: 0; width: 100%; resize: none; border: 0; outline: 0; padding: 16px 20px 40px; background: var(--bg); color: var(--text); font: 12.5px/1.6 ui-monospace, 'SF Mono', Menlo, monospace; tab-size: 2; white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; overflow-y: auto; }
 .study-scroll { padding: 0 0 64px; }
 .selection-bar { position: sticky; top: 0; z-index: 4; display: flex; align-items: center; gap: 14px; padding: 7px 28px; background: var(--accent-soft); border-bottom: 1px solid var(--accent-line); font-size: 12.5px; color: var(--text); }
 .selection-bar > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -622,7 +623,7 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
 .dl.del { background: rgba(155, 57, 52, 0.14); color: var(--danger); }
 .dl.hunk { color: var(--accent); }
 .dl.file { color: var(--muted); }
-.tool-file { font-family: ui-monospace, 'SF Mono', Menlo, monospace; color: var(--text); }
+.tool-file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-family: ui-monospace, 'SF Mono', Menlo, monospace; color: var(--text); }
 .diff-count { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 11.5px; }
 .diff-count .add { color: var(--ok); }
 .diff-count .del { color: var(--danger); }
@@ -666,3 +667,5 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
   background: var(--bg-soft, transparent); font-size: 13px; color: var(--muted, inherit);
 }
 .agreement-lock .link { font-size: inherit; }
+.home-inner > .kernel-bar { border: 1px solid var(--accent-line); border-radius: 8px; margin-bottom: 20px; }
+.home-inner > .kernel-bar.error { border-color: var(--danger); }

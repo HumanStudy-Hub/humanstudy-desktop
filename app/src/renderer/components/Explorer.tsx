@@ -55,14 +55,15 @@ function Branch({ entries, depth, activePath, dirty, onOpen }: { entries: Projec
 }
 
 function Folder({ entry, depth, ...rest }: { entry: ProjectEntry; depth: number } & Omit<Props, 'tree' | 'name'>) {
+  const empty = !entry.children?.length
   const [open, setOpen] = useState(depth === 0 && entry.name !== 'schema')
   return (
-    <li role="treeitem" aria-expanded={open}>
+    <li role="treeitem" aria-expanded={empty ? undefined : open}>
       <button className="tree-row" style={{ paddingLeft: 10 + depth * 14 }} onClick={() => {
         track('explorer.toggle', { target: entry.rel, metadata: { open: !open, depth } })
         setOpen(!open)
       }}>
-        <span className={`tree-caret ${open ? 'open' : ''}`} aria-hidden>
+        <span className={`tree-caret ${empty ? 'empty' : open ? 'open' : ''}`} aria-hidden>
           ▸
         </span>
         <span className="tree-name">{entry.name}</span>
