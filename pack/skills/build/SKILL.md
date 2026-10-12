@@ -35,6 +35,26 @@ Validate against `schema/human-program.schema.json`. Work in this order:
    honest here rather than optimistic.
 6. Optional `extensions.presentation` (`open`, `collapsed`).
 
+**Sections the Study document expects** (kind: field ids). State what the paper states; leave the rest out or `missing`.
+
+- 01 Overview: `source` (optional `doi`, `venue`, `version`); `overview`: `method-type`, `summary`.
+- 02 Questions: `background`: `question`, `gap`, `theory`, `concepts`; `hypothesis`: `statement`, `scope`.
+- 03 Study map: `studies[]` (`description`, `dependsOn`), `hypothesis.studyIds`.
+- 04 Participants: `participants`: `setting`, `roles`, `recruitment`, `eligibility`, `n-recruited`, `n-completed`, `n-analysed`, `characteristics`, `unit-of-analysis` (sampling unit), `compensation`, `attrition`.
+- 05 Design: `design`: `type`, `control`, `assignment`, `order`, `blinding`, `manipulation-check`; `condition` nodes.
+- 06 Procedure: `procedure`: `task`, `actions`, `visible`, `feedback`, `payoff`, `stopping`; `steps`; `material` (verbatim).
+- 07 Variables: `variable`: `role` (iv/dv/moderator/mediator/covariate), `type`, `definition`, `scale`, `scoring`, `timing`, `observation-unit` (what one data row is); `record`.
+- 08 Analysis: `analysis`: `aim`, `inputs`, `method`, `criterion`, `coding`, `robustness`.
+- 09 Results: `result` (`result_kind = reported`): `descriptives`, `effect`, `uncertainty`, `test`, `heterogeneity`, `themes`.
+- 10 Findings: `finding`: `answer`, `support`, `mechanism-tested`, `mechanism-proposed`, `contribution`, `design-principles`.
+- 11 Validity: `limitation`: `validity`, `scope`, `limitations`, `replications`, `openness`.
+- 12 Simulation scope: `simulation`: `steps`, `roles`, `conditions`, `outcomes`, `limits`.
+
+Rules: 09 holds what the paper reports (numbers), 10 holds interpretation; never mix them. 12 is your
+assessment, so every field has origin `implementation` and must agree with `readiness` and the
+blocking issues. 11 `replications` records only replications the paper itself reports or cites;
+do no literature search.
+
 Self-check: schema valid; every node, step and paper-derived field has `evidenceIds`; every
 evidence id resolves; every `conditionIds` entry names a condition node of the same study; no
 placeholder text; interactive and sequential structure intact; under 500 KB.

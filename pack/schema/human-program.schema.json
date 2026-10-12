@@ -38,6 +38,18 @@
         "filename": {
           "type": "string",
           "maxLength": 300
+        },
+        "venue": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "doi": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 100
         }
       },
       "required": [

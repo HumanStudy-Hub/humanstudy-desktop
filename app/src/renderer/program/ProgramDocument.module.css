@@ -385,3 +385,17 @@
   box-shadow: 0 0 0 3px var(--accent-bg);
 }
 .editHint { font-family: var(--font-sans, system-ui); font-size: 11px; color: var(--muted); }
+
+/* Study document sections: one line per item */
+.num { margin-right: 8px; font-variant-numeric: tabular-nums; opacity: 0.7; }
+.article h2[data-empty="true"] { opacity: 0.55; }
+.line { margin: 2px 0 !important; font-size: 14.5px; line-height: 1.55; white-space: normal; }
+.expandable { cursor: pointer; }
+.notStated, .nothing { font-family: var(--font-sans, system-ui); font-size: 13px; color: var(--muted); margin: 2px 0 !important; }
+.notStated em { font-style: normal; opacity: 0.8; }
+.notStated button, .nothing button { color: var(--accent) !important; font-size: 11px; margin-left: 8px; opacity: 0.8; }
+.readiness { font-size: 14.5px; margin: 2px 0 !important; }
+.readiness::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
+.readiness[data-verdict="yes"]::before { background: var(--ok, #2f7d4f); }
+.readiness[data-verdict="mostly"]::before { background: var(--warning, #986c25); }
+.readiness[data-verdict="no"]::before { background: var(--danger, #9b3934); }

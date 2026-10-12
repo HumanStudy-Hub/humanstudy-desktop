@@ -1,7 +1,9 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
+import { fieldLabel } from './labels';
 import type { HumanProgram, ProgramField, ProgramNode } from '../../shared/human-program';
 import { conditionSuggestion, fieldText, itemSources, sourceRefs, studyConditions, studyFlow, wordDiff, type Condition, type FlowItem, type SourceRef } from '../../shared/program-view';
 import s from './ProgramDocument.module.css';
+import { SECTIONS, claimedKinds, readiness, resolveSection, type Entry, type ResolvedItem, type Section } from './sections';
 import { track } from '../telemetry';
 
 export type { SourceRef };
@@ -17,7 +19,7 @@ type Props = {
  onPrefill?:(draft:string)=>void;
  /** Human edit of a field's text (double-click). Absent: fields are read-only. */
  onEdit?:(id:string,fieldId:string,text:string)=>void;
- /** Remembers which sections are open; sections other than Question and Procedure start folded. */
+ /** Remembers which sections are open; sections.ts says which start open. */
  storageKey?:string;
 };
 
@@ -39,7 +41,7 @@ export default function ProgramDocument(input:ProgramDocumentProps){
  const scoped=(kinds:string[])=>program.nodes.filter(n=>kinds.includes(n.kind)&&(!studyId||!n.studyIds.length||n.studyIds.includes(studyId)));
  const conditions=studyConditions(program,studyId),suggestion=conditionSuggestion(program,studyId);
  const items=studyFlow(program,studyId);
- const known=['background','hypothesis','participants','design','condition','material','procedure','variable','record','analysis','result'];
+ const claimed=claimedKinds();
  const article=useRef<HTMLElement>(null);
  const [ask,setAsk]=useState<{id:string;fieldId?:string;quote:string;top:number}|null>(null);
  function captureSelection(){
@@ -53,36 +55,71 @@ export default function ProgramDocument(input:ProgramDocumentProps){
  const ctx:Ctx={...props,conditions};
  const studyTitle=program.studies.find(st=>st.id===studyId)?.title??program.title;
  const [openSections,setOpenSections]=useSectionState(props.storageKey);
- const section=(title:string,body:ReactNode,id?:string)=>{
-  if(!body)return null;
-  const open=openSections[title]??DEFAULT_OPEN.has(title);
-  return <details id={id} open={open} onToggle={e=>{const next=(e.currentTarget as HTMLDetailsElement).open;if(next!==open){track('study.section_toggle',{target:title,metadata:{open:next}});setOpenSections(title,next);}}}>
-   <summary><h2>{title}</h2>{props.onPrefill&&<button className={s.askSection} onClick={e=>{e.preventDefault();e.stopPropagation();props.onPrefill!(`About the ${title.toLowerCase()} of ${studyTitle}: `);}} title={`Ask the agent about ${title.toLowerCase()}`}>Ask ↗</button>}</summary>
-   {body}
+ const nodes=(list:ProgramNode[])=>list.length?list.map(n=><NodeBlock key={n.id} node={n} ctx={ctx}/>):null;
+ const subject=(sec:Section)=>sec.level==='paper'?program.title:studyTitle;
+ const askAbout=(sec:Section,what:string)=>props.onPrefill?.(`About the ${what.toLowerCase()} of ${subject(sec)}: `);
+
+ function renderItem(sec:Section,r:ResolvedItem):ReactNode{
+  const {item}=r;
+  const notStated=<p key={item.id} className={s.notStated} data-item={item.id}><span className={s.label}>{item.label}. </span><em>not stated</em>{props.onPrefill&&<button onClick={()=>askAbout(sec,item.label)} title={`Ask the agent about ${item.label.toLowerCase()}`}>Ask ↗</button>}</p>;
+  if(item.special==='steps')return <Fragment key={item.id}>
+   {r.entries.map(e=><Entries key={e.key} entries={[e]} ctx={ctx}/>)}
+   {items.length?<ol className={s.steps}>{items.map(it=><Step key={it.step.id} item={it} ctx={ctx}/>)}</ol>:<p className={s.missing}>The participant procedure has not been mapped yet. <button onClick={()=>props.onAsk(scoped(['design'])[0]?.id??program.nodes[0]?.id??'',undefined,'Map the documented participant procedure into explicit steps and next connections. Preserve unknown order and conditions as questions rather than inventing them.')}>Ask the agent to map it ↗</button></p>}
+  </Fragment>;
+  if(item.special==='conditions'){
+   if(r.present&&r.entries.some(e=>e.node?.kind==='condition'))return <div key={item.id} className={s.conditions}>{conditions.map(c=><span key={c.id} data-tone={c.tone} data-model-id={c.id}><i/>{c.label}<Cite id={c.id} refs={itemSources(program,c.id)} ctx={ctx}/></span>)}</div>;
+   if(suggestion)return <p key={item.id} className={s.suggestion}><b>Conditions are not stated.</b> Possibly {suggestion.labels.join(' / ')} (from {suggestion.basis}). <button onClick={()=>props.onAsk(scoped(['design'])[0]?.id??'',undefined,`The program does not state its experimental conditions. They may be ${suggestion.labels.join(', ')} (from ${suggestion.basis}). Check the paper, add a condition node for each, and set conditionIds on the steps and materials that belong to it. Mark anything the paper does not state as missing.`)}>Ask the agent to confirm ↗</button></p>;
+  }
+  if(!r.present)return notStated;
+  if(item.special==='materials')return <ul key={item.id} className={s.measures}>{r.entries.map(e=><li key={e.key}><Term node={e.node!} ctx={ctx}/>{e.node!.conditionIds?.length?<span className={s.inline}> · {conditions.filter(c=>e.node!.conditionIds!.includes(c.id)).map(c=>c.label).join(', ')}</span>:null}<Issue ids={props.issuesFor(e.node!.id)} ctx={ctx}/></li>)}</ul>;
+  return <Entries key={item.id} entries={r.entries} ctx={ctx} assessment={sec.assessment}/>;
+ }
+
+ const renderSection=(sec:Section)=>{
+  const r=resolveSection(program,sec,studyId);
+  const open=openSections[sec.id]??sec.openByDefault;
+  const heading=`${sec.number} ${sec.title}`;
+  const ready=sec.assessment?readiness(program,sec.level==='study'?studyId:undefined):null;
+  return <details key={sec.id} id={sec.id==='procedure'?'procedure':`section-${sec.id}`} data-section={sec.id} open={open} onToggle={e=>{const next=(e.currentTarget as HTMLDetailsElement).open;if(next!==open){track('study.section_toggle',{target:sec.id,metadata:{open:next}});setOpenSections(sec.id,next);}}}>
+   <summary><h2 title={sec.titleZh} data-empty={!r.present&&!ready}><span className={s.num}>{sec.number}</span>{sec.title}</h2>{props.onPrefill&&<button className={s.askSection} onClick={e=>{e.preventDefault();e.stopPropagation();askAbout(sec,sec.title);}} title={`Ask the agent about ${sec.title.toLowerCase()}`}>Ask ↗</button>}</summary>
+   {ready&&<p className={s.readiness} data-verdict={ready.tone}><span className={s.label}>Readiness. </span>{ready.text}<em className={s.origin}> agent assessment</em></p>}
+   {r.present?<>
+    {!(sec.blocks&&r.blocks.length)&&r.items.map(ri=>renderItem(sec,ri))}
+    {r.blocks.length>0&&nodes(r.blocks)}
+    {r.leftovers.length>0&&<Entries entries={r.leftovers} ctx={ctx} assessment={sec.assessment}/>}
+   </>:<p className={s.nothing}>Nothing stated{props.onPrefill&&<> · <button onClick={()=>askAbout(sec,sec.title)}>Ask ↗</button></>}</p>}
   </details>;
  };
- const nodes=(list:ProgramNode[])=>list.length?list.map(n=><NodeBlock key={n.id} node={n} ctx={ctx}/>):null;
  return <div className={s.doc}>
   <Glance program={program} studyId={studyId} items={items} conditions={conditions}/>
   {items.length>0&&<StepBar items={items} ctx={ctx}/>}
   <article ref={article} className={s.article} onMouseUp={()=>requestAnimationFrame(captureSelection)} onKeyUp={captureSelection}>
    {ask&&<button className={s.askBar} style={{top:ask.top}} onMouseDown={e=>e.preventDefault()} onClick={()=>{props.onAsk(ask.id,ask.fieldId,`“${ask.quote}”\n\n`);setAsk(null);window.getSelection()?.removeAllRanges();}}>Discuss or change this with the agent ↗</button>}
-   {section('Question',nodes(scoped(['background','hypothesis'])))}
-   {section('Participants',nodes(scoped(['participants'])))}
-   {section('Design and conditions',<>
-    {nodes(scoped(['design']))}
-    {conditions.length>0&&<div className={s.conditions}>{conditions.map(c=><span key={c.id} data-tone={c.tone} data-model-id={c.id}><i/>{c.label}<Cite id={c.id} refs={itemSources(program,c.id)} ctx={ctx}/></span>)}</div>}
-    {suggestion&&<p className={s.suggestion}><b>Conditions are not stated.</b> Possibly {suggestion.labels.join(' / ')} (from {suggestion.basis}). <button onClick={()=>props.onAsk(scoped(['design'])[0]?.id??'',undefined,`The program does not state its experimental conditions. They may be ${suggestion.labels.join(', ')} (from ${suggestion.basis}). Check the paper, add a condition node for each, and set conditionIds on the steps and materials that belong to it. Mark anything the paper does not state as missing.`)}>Ask the agent to confirm ↗</button></p>}
-   </>)}
-   {section('Materials',scoped(['material']).length?<ul className={s.measures}>{scoped(['material']).map(n=><li key={n.id}><Term node={n} ctx={ctx}/>{n.conditionIds?.length?<span className={s.inline}> · {ctx.conditions.filter(c=>n.conditionIds!.includes(c.id)).map(c=>c.label).join(', ')}</span>:null}<Issue ids={props.issuesFor(n.id)} ctx={ctx}/></li>)}</ul>:null)}
-   {section('Procedure',<>{nodes(scoped(['procedure']))}{items.length?<ol className={s.steps}>{items.map(item=><Step key={item.step.id} item={item} ctx={ctx}/>)}</ol>:<p className={s.missing}>The participant procedure has not been mapped yet. <button onClick={()=>props.onAsk(scoped(['design'])[0]?.id??program.nodes[0]?.id??'',undefined,'Map the documented participant procedure into explicit steps and next connections. Preserve unknown order and conditions as questions rather than inventing them.')}>Ask the agent to map it ↗</button></p>}</>,'procedure')}
-   {section('Measures',scoped(['variable']).length?<ul className={s.measures}>{scoped(['variable']).map(n=><li key={n.id} data-model-id={n.id} className={mark(ctx,n.id)}><button className={s.term} onClick={e=>props.onPick(n.id,e.shiftKey)}>{n.title}</button>{n.fields.filter(f=>f.value!==null).map(f=><span key={f.id} data-field-id={f.id} className={s.inline}> · {fieldText(f.value)}<Cite id={n.id} refs={sourceRefs(program,f.evidenceIds)} ctx={ctx} quiet/></span>)}<Issue ids={props.issuesFor(n.id)} ctx={ctx}/></li>)}</ul>:null)}
-   {section('Data',nodes(scoped(['record'])))}
-   {section('Analysis',nodes(scoped(['analysis'])))}
-   {section('Results',nodes(scoped(['result'])))}
-   {section('Other details',nodes(program.nodes.filter(n=>!known.includes(n.kind)&&(!studyId||!n.studyIds.length||n.studyIds.includes(studyId)))))}
+   {SECTIONS.map(renderSection)}
+   {(()=>{const other=nodes(program.nodes.filter(n=>!claimed.has(n.kind)&&(!studyId||!n.studyIds.length||n.studyIds.includes(studyId))));return other&&<details open={openSections.other??false} onToggle={e=>setOpenSections('other',(e.currentTarget as HTMLDetailsElement).open)}><summary><h2>Other details</h2></summary>{other}</details>;})()}
   </article>
  </div>;
+}
+
+/** One line per entry: label, value (truncated to ~160 characters; click expands), citation, ✎. */
+const CLAMP=160;
+function Entries({entries,ctx,assessment}:{entries:Entry[];ctx:Ctx;assessment?:boolean}){
+ return <>{entries.map(e=>e.field&&e.nodeId
+  ?<Field key={e.key} id={e.nodeId} field={e.field} ctx={ctx} label={e.label} clamp={CLAMP} originLabel={assessment?'agent assessment':undefined}/>
+  :<Plain key={e.key} entry={e} ctx={ctx} assessment={assessment}/>)}</>;
+}
+function Plain({entry,ctx,assessment}:{entry:Entry;ctx:Ctx;assessment?:boolean}){
+ const [open,setOpen]=useState(false);
+ const text=entry.text.replace(/\s+/g,' ').trim(),long=text.length>CLAMP;
+ const toggle=()=>{if(long&&window.getSelection()?.isCollapsed!==false)setOpen(o=>!o);};
+ const node=entry.node;
+ return <p data-model-id={node?.id} className={`${s.field} ${s.line} ${node?mark(ctx,node.id):''} ${long?s.expandable:''}`} onClick={toggle}>
+  {node&&!text?<button className={s.term} onClick={e=>{e.stopPropagation();ctx.onPick(node.id,e.shiftKey);}}>{entry.label}</button>:<><span className={s.label}>{entry.label}. </span>{long&&!open?`${text.slice(0,CLAMP).trimEnd()}…`:text}</>}
+  {assessment&&<em className={s.origin}> agent assessment</em>}
+  {node&&<Cite id={node.id} refs={itemSources(ctx.program,node.id)} ctx={ctx} quiet/>}
+  {node&&<Issue ids={ctx.issuesFor(node.id)} ctx={ctx}/>}
+  {node&&<button className={s.comment} title="Discuss or change this with the agent" aria-label={`Discuss ${entry.label}`} onClick={e=>{e.stopPropagation();ctx.onAsk(node.id);}}>✎</button>}
+ </p>;
 }
 
 type Ctx = Props & { conditions:Condition[] };
@@ -140,27 +177,29 @@ function NodeBlock({node,ctx}:{node:ProgramNode;ctx:Ctx}){
 }
 
 const origins:Partial<Record<ProgramField['origin'],string>>={derived:'derived',researcher:'researcher decision',implementation:'implementation choice',unknown:'origin unknown'};
-function Field({id,field,ctx,against,labelled=true,quote}:{id:string;field:ProgramField;ctx:Ctx;against?:string;labelled?:boolean;quote?:boolean}){
+function Field({id,field,ctx,against,labelled=true,quote,label,clamp,originLabel}:{id:string;field:ProgramField;ctx:Ctx;against?:string;labelled?:boolean;quote?:boolean;label?:string;clamp?:number;originLabel?:string}){
  const text=field.value===null?'':fieldText(field.value),unresolved=field.state==='missing'||field.state==='decision';
  const editable=Boolean(ctx.onEdit)&&(field.value===null||typeof field.value==='string');
  const [editing,setEditing]=useState<string|null>(null);
+ const [expanded,setExpanded]=useState(false);
+ const flat=text.replace(/\s+/g,' ').trim(),long=Boolean(clamp)&&flat.length>clamp!;
  const box=useRef<HTMLTextAreaElement>(null);
  useEffect(()=>{if(editing!==null){const el=box.current;if(el){el.focus();el.style.height=`${el.scrollHeight}px`;}}},[editing]);
  const commit=()=>{if(editing===null)return;const next=editing.trim();setEditing(null);if(next!==text)ctx.onEdit!(id,field.id,next);};
- const body=unresolved&&!text?<span className={s.missingText}>Not specified</span>:against!==undefined&&text!==against?wordDiff(text,against).map((p,i)=>p.changed?<mark key={i}>{p.text}</mark>:<Fragment key={i}>{p.text}</Fragment>):text;
+ const body=unresolved&&!text?<span className={s.missingText}>Not specified</span>:against!==undefined&&text!==against?wordDiff(text,against).map((p,i)=>p.changed?<mark key={i}>{p.text}</mark>:<Fragment key={i}>{p.text}</Fragment>):long&&!expanded?`${flat.slice(0,clamp).trimEnd()}…`:text;
  if(editing!==null)return <p data-field-id={field.id} className={`${s.field} ${s.editing}`}>
-  {labelled&&<span className={s.label}>{field.label}. </span>}
+  {labelled&&<span className={s.label}>{label??fieldLabel(field.id,field.label)}. </span>}
   <textarea ref={box} className={s.editor} value={editing} rows={1} aria-label={`Edit ${field.label}`}
    onChange={e=>{setEditing(e.target.value);e.target.style.height='auto';e.target.style.height=`${e.target.scrollHeight}px`;}}
    onBlur={commit}
    onKeyDown={e=>{if(e.key==='Escape'){e.preventDefault();setEditing(null);}else if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();commit();}}}/>
   <span className={s.editHint}>Enter saves · Shift+Enter newline · Esc cancels</span>
  </p>;
- return <p data-field-id={field.id} className={`${s.field} ${quote?s.quote:''} ${unresolved?s.unresolved:''} ${editable?s.editable:''}`} title={editable?'Double-click to edit':undefined} onDoubleClick={editable?e=>{e.preventDefault();window.getSelection()?.removeAllRanges();setEditing(text);}:undefined}>
-  {labelled&&<span className={s.label}>{field.label}. </span>}{body}
-  {origins[field.origin]&&<em className={s.origin}> {origins[field.origin]}</em>}
+ return <p data-field-id={field.id} className={`${s.field} ${clamp?s.line:''} ${quote?s.quote:''} ${unresolved?s.unresolved:''} ${editable?s.editable:''} ${long?s.expandable:''}`} title={editable?'Double-click to edit':undefined} onClick={long?()=>{if(window.getSelection()?.isCollapsed!==false)setExpanded(x=>!x);}:undefined} onDoubleClick={editable?e=>{e.preventDefault();window.getSelection()?.removeAllRanges();setEditing(text);}:undefined}>
+  {labelled&&<span className={s.label}>{label??fieldLabel(field.id,field.label)}. </span>}{body}
+  {!(unresolved&&!text)&&(originLabel??origins[field.origin])&&<em className={s.origin}> {originLabel??origins[field.origin]}</em>}
   {(field.origin==='verbatim'||field.origin==='reported'||field.evidenceIds.length>0)&&<Cite id={id} refs={sourceRefs(ctx.program,field.evidenceIds)} ctx={ctx}/>}
-  <button className={s.comment} title="Discuss or change this with the agent" aria-label={`Discuss ${field.label}`} onClick={()=>ctx.onAsk(id,field.id)}>✎</button>
+  <button className={s.comment} title="Discuss or change this with the agent" aria-label={`Discuss ${label??field.label}`} onClick={()=>ctx.onAsk(id,field.id)}>✎</button>
  </p>;
 }
 function Term({node,ctx}:{node:ProgramNode;ctx:Ctx}){
@@ -181,7 +220,6 @@ function Issue({ids,ctx}:{ids:string[];ctx:Props}){
 
 /* ---- at a glance, sections ---------------------------------------------------------- */
 
-const DEFAULT_OPEN=new Set(['Question','Procedure']);
 /** Open/closed state of the sections, remembered per project when a storage key is given. */
 function useSectionState(key?:string):[Record<string,boolean>,(title:string,open:boolean)=>void]{
  const storage=key?`hs.sections:${key}`:null;
@@ -222,8 +260,7 @@ function Glance({program,studyId,items,conditions}:{program:HumanProgram;studyId
  const participants=participantsFact(nodes.filter(n=>n.kind==='participants'));
  const issues=program.issues.filter(i=>!i.studyId||i.studyId===studyId);
  const blocking=issues.filter(i=>i.severity==='blocking').length,decision=issues.filter(i=>i.severity==='decision').length,check=issues.filter(i=>i.severity==='check').length;
- const unresolved=[...nodes.flatMap(n=>n.fields),...steps.flatMap(st=>st.rule?[st.rule]:[])].filter(f=>f.state==='missing'||f.state==='decision').length;
- const verdict=blocking?{tone:'no',text:`No · ${blocking} blocking ${blocking===1?'gap':'gaps'}`}:unresolved?{tone:'mostly',text:`Mostly · ${unresolved} ${unresolved===1?'item':'items'} to confirm`}:{tone:'yes',text:'Yes, as far as the program states'};
+ const verdict=readiness(program,studyId);
  const stepCount=steps.filter(st=>st.kind!=='sequence'||st.children.length===0).length||items.length;
  const facts:[string,string][]=[
   ['Studies',String(program.studies.filter(st=>st.type!=='analysis').length||program.studies.length)],

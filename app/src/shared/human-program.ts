@@ -1,7 +1,7 @@
 // Ported from humanstudy-hub-web lib/studio/human-program.ts (web-only projectHumanProgram / importLegacyModel dropped).
 import * as contract from './human-program.schema.json';
 /** Paper source metadata (standalone stand-in for the web app's StudySchema['source']). */
-export type ProgramSource = { title: string; authors: string; filename: string };
+export type ProgramSource = { title: string; authors: string; filename: string; venue?: string; doi?: string; version?: string };
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | {[key:string]:JsonValue};
 export type ProgramField = {id:string;label:string;value:JsonValue;origin:'verbatim'|'reported'|'derived'|'researcher'|'implementation'|'unknown';state:'confirmed'|'check'|'decision'|'missing';evidenceIds:string[];derivation?:string;studyIds?:string[];extensions?:Record<string,JsonValue>};
@@ -77,4 +77,4 @@ export function programJson(value:unknown):string {
  return JSON.stringify(sort(value));
 }
 export const programText=(v:unknown)=>typeof v==='string'?v:v===undefined?'':JSON.stringify(v,null,2);
-export const programKinds=['background','hypothesis','design','participants','material','procedure','record','variable','analysis','result'] as const;
+export const programKinds=['background','hypothesis','design','participants','material','procedure','record','variable','analysis','result','overview','finding','limitation','simulation'] as const;

@@ -242,7 +242,7 @@ export function Workbench({ ref, project, selectedItems, onClearSelection, onAsk
               <StudyView
                 program={program}
                 studyId={active.slice(6)}
-                storageKey={`${project.dir}:${active}`}
+                storageKey={project.dir}
                 selectedItems={selectedItems}
                 onClearSelection={onClearSelection}
                 onAskSelection={onAskSelection}

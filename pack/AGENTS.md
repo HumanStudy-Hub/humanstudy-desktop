@@ -77,8 +77,9 @@ holds scientific information only, never layout coordinates. Root: `schemaVersio
   consumes another's outputs. A cross-study analysis is an analysis scope, not an experiment.
   Shared nodes use `studyIds: []`.
 - **Nodes.** Stable ids; kinds `background`, `hypothesis`, `design`, `participants`,
-  `condition`, `material`, `procedure`, `record`, `variable`, `analysis`, `result`, or a
-  descriptive custom kind. Hypotheses and conditions may be absent when the research has none.
+  `condition`, `material`, `procedure`, `record`, `variable`, `analysis`, `result`, the paper-level
+  `overview`, `finding`, `limitation`, `simulation` (see `skills/build`), or a descriptive
+  custom kind. Hypotheses and conditions may be absent when the research has none.
 - **Conditions.** One node of kind `condition` per condition, scoped to its study, with
   evidence. Put its id in `conditionIds` on every step and node that belongs only to it.
   Content shared by all conditions has no `conditionIds`. Later phases continuing a condition

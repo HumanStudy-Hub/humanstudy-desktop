@@ -25,3 +25,39 @@ export function selectionContext(items: SelectedItem[]): string {
   if (!items.length) return ''
   return `[Selected study items]\n${items.map((i) => `- ${i.id} — ${i.title}`).join('\n')}\n\n`
 }
+
+/** Display names for node kinds, including the kinds the Study document added. */
+export const KIND_LABELS: Record<string, string> = {
+  overview: 'Overview',
+  finding: 'Findings and contributions',
+  limitation: 'Validity, limitations and replication',
+  simulation: 'Simulation scope',
+}
+
+/** Display names for the field ids the Study document expects (used when a field carries no label). */
+export const FIELD_LABELS: Record<string, string> = {
+  // 01 overview
+  'method-type': 'Method type', summary: 'Summary',
+  // 04 participants
+  setting: 'Setting', roles: 'Participant types and roles', recruitment: 'Recruitment', eligibility: 'Eligibility',
+  'n-recruited': 'N recruited', 'n-completed': 'N completed', 'n-analysed': 'N analysed', characteristics: 'Characteristics',
+  'unit-of-analysis': 'Unit of analysis', compensation: 'Pay and incentives', attrition: 'Attrition and exclusions',
+  // 05 design
+  control: 'Control', assignment: 'Assignment', order: 'Order and counterbalancing', blinding: 'Blinding', 'manipulation-check': 'Manipulation check',
+  // 07 variables
+  scale: 'Scale', scoring: 'Scoring', timing: 'Timing', definition: 'Definition', 'observation-unit': 'Observation unit',
+  // 08 analysis
+  aim: 'Aim and comparison', inputs: 'Data included and exclusions', method: 'Statistical method', criterion: 'Decision criterion', coding: 'Qualitative coding', robustness: 'Robustness checks',
+  // 09 results
+  descriptives: 'Descriptives', effect: 'Effect size and direction', uncertainty: 'Uncertainty', test: 'Test statistics', heterogeneity: 'Subgroup differences', themes: 'Qualitative themes',
+  // 10 findings
+  answer: 'Answer to the question', support: 'Hypothesis support', 'mechanism-tested': 'Mechanism, tested', 'mechanism-proposed': 'Mechanism, speculated',
+  contribution: 'Contribution', 'design-principles': 'Design principles',
+  // 11 limitations
+  validity: 'Credibility of the inference', scope: 'Generalisability', limitations: 'Limitations', replications: 'Replications reported by the paper', openness: 'Materials, data, code, preregistration',
+  // 12 simulation
+  steps: 'Steps an agent can perform', outcomes: 'Observable outcomes', limits: 'Limits', conditions: 'Conditions',
+}
+
+export const kindLabel = (kind: string): string => KIND_LABELS[kind] ?? kind
+export const fieldLabel = (id: string, label?: string): string => label?.trim() || FIELD_LABELS[id] || id

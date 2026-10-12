@@ -6,18 +6,21 @@
   "source": {
     "title": "Intentional Action and Side-Effects in Ordinary Language",
     "authors": "Joshua Knobe",
-    "filename": "KNOBE.pdf"
+    "filename": "KNOBE.pdf",
+    "version": "KNOBE.pdf as supplied with the sample (page numbers refer to it)"
   },
   "studies": [
     {
       "id": "exp-1",
       "title": "Corporate Chairman Vignette",
-      "type": "empirical"
+      "type": "empirical",
+      "description": "Tests whether calling a side effect intentional depends on whether it is harmful or helpful, with a corporate chairman vignette."
     },
     {
       "id": "exp-2",
       "title": "Military Lieutenant Vignette",
-      "type": "empirical"
+      "type": "empirical",
+      "description": "Repeats the test with a military lieutenant vignette to check the effect is not specific to corporations or environmental harm."
     }
   ],
   "nodes": [
@@ -34,6 +37,14 @@
           "state": "check",
           "evidenceIds": [],
           "derivation": "Summarized from the benchmark ground-truth hypotheses."
+        },
+        {
+          "id": "gap",
+          "label": "Background and gap",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": []
         }
       ],
       "studyIds": [
@@ -91,6 +102,38 @@
           "origin": "reported",
           "state": "check",
           "evidenceIds": []
+        },
+        {
+          "id": "setting",
+          "label": "Setting",
+          "value": "A public park in Manhattan.",
+          "origin": "reported",
+          "state": "check",
+          "evidenceIds": []
+        },
+        {
+          "id": "n-recruited",
+          "label": "N recruited",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": []
+        },
+        {
+          "id": "n-analysed",
+          "label": "N analysed",
+          "value": "Experiment 1: 78; Experiment 2: 42 (120 in total).",
+          "origin": "reported",
+          "state": "check",
+          "evidenceIds": []
+        },
+        {
+          "id": "compensation",
+          "label": "Pay and incentives",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": []
         }
       ],
       "studyIds": [
@@ -104,6 +147,14 @@
       "kind": "design",
       "title": "Between-participant conditions",
       "fields": [
+        {
+          "id": "type",
+          "label": "Design type",
+          "value": "Between-participants: each person reads one version of the vignette.",
+          "origin": "reported",
+          "state": "check",
+          "evidenceIds": []
+        },
         {
           "id": "conditions",
           "label": "Conditions",
@@ -198,6 +249,15 @@
           "origin": "reported",
           "state": "check",
           "evidenceIds": []
+        },
+        {
+          "id": "definition",
+          "label": "Definition",
+          "value": "Whether the participant says the agent brought about the side effect intentionally (Yes/No).",
+          "origin": "derived",
+          "state": "check",
+          "evidenceIds": [],
+          "derivation": "Paraphrased from the specification procedure steps."
         }
       ],
       "studyIds": [
@@ -231,6 +291,23 @@
           "id": "observation-unit",
           "label": "Observation unit",
           "value": "participant",
+          "origin": "reported",
+          "state": "check",
+          "evidenceIds": []
+        },
+        {
+          "id": "definition",
+          "label": "Definition",
+          "value": "How much blame (harm condition) or praise (help condition) the agent deserves.",
+          "origin": "derived",
+          "state": "check",
+          "evidenceIds": [],
+          "derivation": "Paraphrased from the specification procedure steps."
+        },
+        {
+          "id": "scale",
+          "label": "Scale",
+          "value": "0 to 6",
           "origin": "reported",
           "state": "check",
           "evidenceIds": []
@@ -326,6 +403,23 @@
           "label": "Analysis plan",
           "value": "Check reported degrees of freedom, scoring and tests before reproducing the analysis.",
           "origin": "implementation",
+          "state": "check",
+          "evidenceIds": []
+        },
+        {
+          "id": "method",
+          "label": "Statistical method",
+          "value": "Chi-square tests of intentionality judgments by condition within each experiment; a t-test on blame vs praise and a correlation with intentionality on the pooled data.",
+          "origin": "derived",
+          "state": "check",
+          "evidenceIds": [],
+          "derivation": "Summarised from the reported tests listed in the tests field."
+        },
+        {
+          "id": "criterion",
+          "label": "Decision criterion",
+          "value": "Significance level 0.05.",
+          "origin": "reported",
           "state": "check",
           "evidenceIds": []
         }
@@ -701,6 +795,190 @@
       "conditionIds": [
         "condition-help"
       ]
+    },
+    {
+      "id": "overview",
+      "kind": "overview",
+      "title": "Paper overview",
+      "studyIds": [],
+      "evidenceIds": [],
+      "fields": [
+        {
+          "id": "method-type",
+          "label": "Method type",
+          "value": "Between-participants vignette experiments (two experiments).",
+          "origin": "reported",
+          "state": "check",
+          "evidenceIds": []
+        },
+        {
+          "id": "summary",
+          "label": "Summary",
+          "value": "Participants in a Manhattan park read a short vignette in which an agent knowingly causes a side effect, then judge whether the agent acted intentionally and how much blame or praise the agent deserves. Two experiments, a corporate and a military scenario.",
+          "origin": "derived",
+          "state": "check",
+          "evidenceIds": [],
+          "derivation": "Condensed from the benchmark specification and ground truth, not from the PDF text."
+        }
+      ]
+    },
+    {
+      "id": "task",
+      "kind": "procedure",
+      "title": "Vignette judgment task",
+      "studyIds": [
+        "exp-1",
+        "exp-2"
+      ],
+      "evidenceIds": [],
+      "fields": [
+        {
+          "id": "task",
+          "label": "Task and goal",
+          "value": "Read one vignette about an agent who knowingly produces a side effect, then answer a Yes/No question on intentionality and rate blame or praise from 0 to 6.",
+          "origin": "reported",
+          "state": "check",
+          "evidenceIds": []
+        }
+      ]
+    },
+    {
+      "id": "finding",
+      "kind": "finding",
+      "title": "What the paper concludes",
+      "studyIds": [],
+      "evidenceIds": [],
+      "fields": [
+        {
+          "id": "answer",
+          "label": "Answer to the question",
+          "value": "Side effects judged bad were called intentional far more often than side effects judged good (82% vs 23% in Experiment 1, 77% vs 30% in Experiment 2).",
+          "origin": "derived",
+          "state": "check",
+          "evidenceIds": [],
+          "derivation": "Restates the reported percentages from the ground truth as a conclusion."
+        },
+        {
+          "id": "support",
+          "label": "Hypothesis support",
+          "value": "Both chi-square tests reported in the ground truth are significant in the predicted direction.",
+          "origin": "derived",
+          "state": "check",
+          "evidenceIds": [],
+          "derivation": "From the reported tests of the harm vs help hypothesis."
+        },
+        {
+          "id": "mechanism-tested",
+          "label": "Mechanism, tested",
+          "value": "Blame and praise scores correlated with intentionality judgments across both experiments.",
+          "origin": "reported",
+          "state": "check",
+          "evidenceIds": []
+        },
+        {
+          "id": "mechanism-proposed",
+          "label": "Mechanism, speculated",
+          "value": "The asymmetry in blame and praise may be at the root of the asymmetry in applying the concept of intentional action.",
+          "origin": "reported",
+          "state": "check",
+          "evidenceIds": []
+        },
+        {
+          "id": "contribution",
+          "label": "Contribution",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": []
+        }
+      ]
+    },
+    {
+      "id": "limitation",
+      "kind": "limitation",
+      "title": "Validity and limitations",
+      "studyIds": [],
+      "evidenceIds": [],
+      "fields": [
+        {
+          "id": "replications",
+          "label": "Replications reported by the paper",
+          "value": "Experiment 2 repeats Experiment 1 with a military scenario.",
+          "origin": "reported",
+          "state": "check",
+          "evidenceIds": []
+        },
+        {
+          "id": "limitations",
+          "label": "Limitations",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": []
+        },
+        {
+          "id": "openness",
+          "label": "Materials, data, code, preregistration",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": []
+        }
+      ]
+    },
+    {
+      "id": "simulation",
+      "kind": "simulation",
+      "title": "What an agent can simulate",
+      "studyIds": [],
+      "evidenceIds": [],
+      "fields": [
+        {
+          "id": "steps",
+          "label": "Steps an agent can perform",
+          "value": "Reading the vignette and answering the two questions are single-turn text tasks an agent can perform.",
+          "origin": "implementation",
+          "state": "check",
+          "evidenceIds": []
+        },
+        {
+          "id": "roles",
+          "label": "Roles that can be simulated",
+          "value": "All original participants. The paper has no confederate or experimenter role to script.",
+          "origin": "implementation",
+          "state": "check",
+          "evidenceIds": []
+        },
+        {
+          "id": "conditions",
+          "label": "Conditions that can be expressed",
+          "value": "Harm and help vignettes are verbatim text and can be given exactly.",
+          "origin": "implementation",
+          "state": "check",
+          "evidenceIds": [
+            "material-e-1-harm",
+            "material-e-1-help",
+            "material-e-2-harm",
+            "material-e-2-help"
+          ]
+        },
+        {
+          "id": "outcomes",
+          "label": "Observable outcomes",
+          "value": "The Yes/No intentionality answer and the 0 to 6 blame or praise rating.",
+          "origin": "implementation",
+          "state": "check",
+          "evidenceIds": []
+        },
+        {
+          "id": "limits",
+          "label": "Limits",
+          "value": "How people were assigned to conditions and the order of the two questions are undecided (see open questions). An agent has no experience of the park setting.",
+          "origin": "implementation",
+          "state": "check",
+          "evidenceIds": []
+        }
+      ]
     }
   ],
   "steps": [
@@ -973,6 +1251,72 @@
       "reason": "The specification lists moral rating before intentionality, but the material JSON lists intentionality first.",
       "impact": "Question order can influence responses.",
       "suggestedAction": "Check the original paper and choose the order before building the study.",
+      "evidenceIds": []
+    },
+    {
+      "id": "background-gap",
+      "title": "Background and gap not extracted",
+      "severity": "check",
+      "nodeId": "background",
+      "fieldId": "gap",
+      "reason": "The sample was built from the benchmark specification, which does not state the gap the paper addresses.",
+      "impact": "Section 02 cannot say what prior work left open.",
+      "suggestedAction": "Read the paper introduction with the agent and add the gap with its page citation.",
+      "evidenceIds": []
+    },
+    {
+      "id": "n-recruited",
+      "title": "Recruited sample size not stated",
+      "severity": "check",
+      "nodeId": "participant",
+      "fieldId": "n-recruited",
+      "reason": "The specification gives analysed sizes only.",
+      "impact": "Attrition and exclusions cannot be reconstructed.",
+      "suggestedAction": "Check the paper for how many people were approached or excluded.",
+      "evidenceIds": []
+    },
+    {
+      "id": "compensation",
+      "title": "Pay and incentives not stated",
+      "severity": "check",
+      "nodeId": "participant",
+      "fieldId": "compensation",
+      "reason": "The specification does not mention payment.",
+      "impact": "Not needed to run the vignettes, but needed to describe the sample.",
+      "suggestedAction": "Check the paper; mark as not paid only if it says so.",
+      "evidenceIds": []
+    },
+    {
+      "id": "contribution",
+      "title": "Contribution not extracted",
+      "severity": "check",
+      "nodeId": "finding",
+      "fieldId": "contribution",
+      "reason": "The sample was built from the benchmark files, which do not state the paper's theoretical or practical contribution.",
+      "impact": "Section 10 cannot say what the finding adds.",
+      "suggestedAction": "Read the discussion with the agent and add it with its page citation.",
+      "evidenceIds": []
+    },
+    {
+      "id": "limitations",
+      "title": "Limitations not extracted",
+      "severity": "check",
+      "nodeId": "limitation",
+      "fieldId": "limitations",
+      "reason": "No limitations were extracted from the paper.",
+      "impact": "Section 11 is incomplete.",
+      "suggestedAction": "Read the discussion with the agent; do not add limitations the paper does not state.",
+      "evidenceIds": []
+    },
+    {
+      "id": "openness",
+      "title": "Openness not stated",
+      "severity": "check",
+      "nodeId": "limitation",
+      "fieldId": "openness",
+      "reason": "Availability of data, code and preregistration is not in the benchmark files.",
+      "impact": "Researchers cannot tell what can be re-used.",
+      "suggestedAction": "Check the paper; record \"not stated\" if it says nothing.",
       "evidenceIds": []
     }
   ],
