@@ -1,0 +1,318 @@
+/* A protocol to read: serif body, generous measure, citations as quiet links. */
+.doc {
+  --arm0: #2f7fa8;
+  --arm0-bg: #edf5fa;
+  --arm1: #9a5a8f;
+  --arm1-bg: #f8eff6;
+  --arm2: #4c8a4a;
+  --arm2-bg: #eff6ee;
+  --arm3: #8a6a2f;
+  --arm3-bg: #f7f2e7;
+  --cite: #c98a12;
+  --cite-bg: #fff6df;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+:global([data-theme="dark"]) .doc {
+  --arm0: #8cc3e0;
+  --arm0-bg: #1f3442;
+  --arm1: #d9a6cf;
+  --arm1-bg: #3a2737;
+  --arm2: #9fd09d;
+  --arm2-bg: #23362a;
+  --arm3: #dcc08b;
+  --arm3-bg: #3a3122;
+  --cite: #e7b955;
+  --cite-bg: #3a3020;
+}
+.doc [data-tone="0"] { --tone: var(--arm0); --tone-bg: var(--arm0-bg); }
+.doc [data-tone="1"] { --tone: var(--arm1); --tone-bg: var(--arm1-bg); }
+.doc [data-tone="2"] { --tone: var(--arm2); --tone-bg: var(--arm2-bg); }
+.doc [data-tone="3"] { --tone: var(--arm3); --tone-bg: var(--arm3-bg); }
+.doc [data-tone] i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tone);
+  margin-right: 5px;
+  vertical-align: 1px;
+}
+.doc button {
+  font: inherit;
+  color: inherit;
+}
+
+/* Step bar */
+.stepBar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 20px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-xs, 0.75rem);
+}
+.stepBar button {
+  flex-shrink: 0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text);
+}
+.stepBar button:hover {
+  border-color: var(--accent);
+}
+.sep {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+/* Document */
+.article {
+  position: relative;
+  padding: 8px 28px 140px;
+  max-width: 760px;
+  font-family: var(--font-serif, Georgia, serif);
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--text);
+}
+.article h2 {
+  font-family: var(--font-sans, system-ui);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 28px 0 8px;
+}
+.article h3 {
+  font-family: var(--font-sans, system-ui);
+  font-size: 14px;
+  font-weight: 600;
+  margin: 14px 0 2px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.article h3 > button:first-child {
+  text-align: left;
+}
+.article p {
+  margin: 4px 0;
+}
+.node {
+  margin-bottom: 6px;
+}
+.label {
+  font-family: var(--font-sans, system-ui);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.field {
+  position: relative;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.field mark {
+  background: color-mix(in srgb, var(--tone, var(--accent)) 24%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+.quote {
+  padding-left: 12px;
+  border-left: 2px solid var(--tone, var(--line));
+}
+.unresolved,
+.missingText {
+  color: var(--warning);
+}
+.origin {
+  font-family: var(--font-sans, system-ui);
+  font-size: 11px;
+  font-style: normal;
+  color: var(--warning);
+}
+.comment {
+  opacity: 0;
+  margin-left: 4px;
+  font-size: 12px !important;
+  color: var(--accent) !important;
+}
+.field:hover .comment,
+.comment:focus-visible {
+  opacity: 1;
+}
+.meta {
+  font-family: var(--font-sans, system-ui);
+  font-size: 13px;
+  color: var(--muted);
+}
+.term {
+  color: var(--text) !important;
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 3px;
+}
+.steps {
+  margin: 0;
+  padding-left: 22px;
+}
+.step {
+  margin: 0 0 10px;
+  padding: 2px 8px 4px;
+  border-radius: 6px;
+}
+.step::marker {
+  font-family: var(--font-sans, system-ui);
+  font-weight: 600;
+  color: var(--muted);
+}
+.tag {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--tone-bg);
+}
+.alternatives {
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+.alternative,
+.arm {
+  border-top: 3px solid var(--tone, var(--line));
+  background: var(--tone-bg, transparent);
+  border-radius: 6px;
+  padding: 4px 8px;
+  min-width: 0;
+}
+.split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin: 6px 0;
+}
+.armLabel {
+  font-family: var(--font-sans, system-ui);
+  font-size: 12px;
+  font-weight: 600;
+}
+.materials details {
+  font-size: 14px;
+}
+.materials summary {
+  font-family: var(--font-sans, system-ui);
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.conditions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-family: var(--font-sans, system-ui);
+  font-size: 13px;
+  margin: 6px 0;
+}
+.conditions > span {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--tone-bg);
+}
+.measures {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 14px;
+}
+.inline {
+  color: var(--muted);
+}
+.suggestion,
+.missing {
+  font-family: var(--font-sans, system-ui);
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--warning-line);
+  border-radius: 6px;
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.suggestion button,
+.missing button {
+  color: var(--accent) !important;
+}
+
+/* Citations and marks */
+.cite {
+  font-family: var(--font-sans, system-ui);
+  font-size: 11px;
+  color: var(--accent) !important;
+  margin-left: 3px;
+  white-space: nowrap;
+}
+.cite:hover {
+  text-decoration: underline;
+}
+.unverified {
+  opacity: 0.8;
+}
+.unsourced {
+  font-family: var(--font-sans, system-ui);
+  font-size: 11px;
+  color: var(--warning);
+  white-space: nowrap;
+}
+.issue {
+  font-family: var(--font-sans, system-ui);
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  border: 1px solid var(--warning-line);
+  background: var(--warning-bg);
+  color: var(--warning) !important;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+}
+.picked {
+  background: var(--accent-bg);
+}
+.cited {
+  background: var(--cite-bg);
+  box-shadow: inset 3px 0 0 var(--cite);
+}
+.changed {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.askBar {
+  position: absolute;
+  left: 28px;
+  z-index: 3;
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: var(--text) !important;
+  color: var(--surface) !important;
+  font-family: var(--font-sans, system-ui);
+  font-size: 12px;
+  box-shadow: 0 4px 14px #0002;
+}
