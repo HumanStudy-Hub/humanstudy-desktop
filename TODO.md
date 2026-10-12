@@ -12,15 +12,17 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
       account exists; fall back to the user's own opencode setup. (ca1438f)
 - [x] **Bundled agent kernel** — main side done: pinned opencode 1.18.21 downloads into userData on
       first run (SHA-256, resume, `kernel.install` IPC). Progress UI still to do in the renderer. (M1)
-- [~] **Permission prompts** — opencode `permission.asked` → Allow once / Allow for this project /
+- [x] **Permission prompts** — opencode `permission.asked` → Allow once / Allow for this project /
       Deny in the chat; honour Settings → Default permission. (wave M2 main, R2 renderer)
       M2 done: `permission` KernelEvent, `kernel.reply(sessionId, permissionId, once|always|reject)`,
-      auto-approve inside the project when Settings is "project". R2: the UI.
-- [~] **Conversation history** — threads per project, restored when a project is reopened; new
+      auto-approve inside the project when Settings is "project". R3: inline card (icon, command/path/URL,
+      diff, Allow once / for this project / Deny, ⌘⏎ and Esc), collapses to one line.
+- [x] **Conversation history** — threads per project, restored when a project is reopened; new
       thread button; thread list in the agent pane. (wave M2 main, R2 renderer)
       M2 done: `window.humanstudy.threads.{list,get,create,resume,rename,delete,onChanged}`, stored in
-      `<project>/.humanstudy/threads/`. R2: the UI (call `threads.resume` to get a live session id).
-- [~] **Version everywhere** — version in Home footer and title bar tooltip, Settings → About with
+      `<project>/.humanstudy/threads/`. R3: newest thread resumes on open, History menu (switch, New thread
+      ⌘⇧T, rename by double-click, delete), "Resumed" note.
+- [x] **Version everywhere** — version in Home footer and title bar tooltip, Settings → About with
       "Check for updates" and the changelog link; `npm version` bump to 0.2.0 at release. (R2)
 - [ ] **Real end-to-end run** — sign in → promo code → Sonnet 5.5 build of a real paper →
       package passes `check_package.py` → simulate. Fix whatever breaks. (lead)
@@ -31,8 +33,8 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
 
 - [x] **Markdown rendering** of agent replies (headings, lists, tables, code with copy button,
       links open externally). (R2)
-- [ ] **Tool calls as diffs** — file edits by the agent shown as unified diffs; program.json
-      changes summarised as changed item titles with a "show in Study" link. (R2)
+- [x] **Tool calls as diffs** — unified diffs coloured and collapsible, file name as summary, "Show in
+      Study" for program.json. (R3) Still open: summarising program.json changes as changed item titles.
 - [~] **Model picker in the composer** (hosted list + own key models) and per-turn model;
       recommended default Sonnet 5.5, Haiku 5.5 for quick questions. (R2)
 - [x] **Queue vs interrupt** while the agent runs (the setting exists; implement both). (R2)
@@ -42,8 +44,8 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
       while the window is in the background. (M1)
 - [x] **Native menu + shortcuts** — File (New project ⌘N, Open ⌘O, Close), Edit, View (panes
       ⌘1/⌘2/⌘3, zoom), Help (docs, release notes, report a problem). (M1)
-- [~] **Token/cost footer** — per-turn tokens and cost from the hosted proxy usage headers. (M2)
-      M2 done: `usage` KernelEvent per assistant message and `thread.usage` totals. R2: the footer.
+- [x] **Token/cost footer** — per-turn tokens and cost from the hosted proxy usage headers. (M2)
+      M2 done: `usage` KernelEvent per assistant message and `thread.usage` totals. R3: footer under the composer (model · in · out · cost, tooltip).
 
 ## P1 · Workbench (right pane)
 

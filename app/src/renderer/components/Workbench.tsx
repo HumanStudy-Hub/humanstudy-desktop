@@ -1,6 +1,6 @@
 // The right pane: tabs like an editor's. A Study tab reads one study of program.json as a document;
 // file tabs show or edit any file of the project; the Program explorer lists the project folder.
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
 import ProgramDocument, { viewStudies, type ProgramDocumentProps } from '../program/ProgramDocument'
 import { validateHumanProgram, type HumanProgram } from '../../shared/human-program'
 import type { ProjectEntry, ProjectSnapshot } from '../../preload/types'
@@ -16,7 +16,15 @@ interface Layout {
   explorer: boolean
 }
 
+export interface WorkbenchHandle {
+  /** Show the Study tab (the first study of program.json). */
+  openStudy(): void
+  /** Open a project file in a tab by its absolute path. */
+  openFile(path: string): void
+}
+
 interface Props extends Pick<ProgramDocumentProps, 'selectedIds' | 'onPick' | 'onSource' | 'onAsk' | 'onPrefill'> {
+  ref?: Ref<WorkbenchHandle>
   project: ProjectSnapshot
   selectedItems: SelectedItem[]
   onClearSelection(): void
@@ -35,7 +43,7 @@ function loadLayout(dir: string): Layout | null {
   return null
 }
 
-export function Workbench({ project, selectedItems, onClearSelection, onAskSelection, ...docProps }: Props) {
+export function Workbench({ ref, project, selectedItems, onClearSelection, onAskSelection, ...docProps }: Props) {
   const { program, error } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError }
     try {
@@ -93,6 +101,19 @@ export function Workbench({ project, selectedItems, onClearSelection, onAskSelec
     track('tab.open', { target: id.startsWith('file:') ? `file.${fileByPath.get(id.slice(5))?.ext ?? ''}` : 'study' })
     update((l) => ({ ...l, tabs: l.tabs.includes(id) ? l.tabs : [...l.tabs, id], active: id }))
   }
+  useImperativeHandle(ref, () => ({
+    openStudy() {
+      const first = studies[0]
+      if (first) open(`study:${first.id}`)
+      else {
+        const f = files.find((x) => x.rel === 'program.json')
+        if (f) open(`file:${f.path}`)
+      }
+    },
+    openFile(path) {
+      if (fileByPath.has(path)) open(`file:${path}`)
+    },
+  }))
   const activate = (id: TabId) => update((l) => (l.active === id ? l : { ...l, active: id }))
   const close = (id: TabId) => {
     if (id.startsWith('file:') && dirty.has(id.slice(5)) && !window.confirm('Discard unsaved changes to this file?')) return

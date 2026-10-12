@@ -447,6 +447,9 @@ app.whenReady().then(() => {
   telemetry.registerTelemetry()
 
   ipcMain.handle('kernel:installStatus', () => installStatus())
+  ipcMain.handle('kernel:installRetry', async () => {
+    await ensureOpencode().catch((err) => console.error('opencode install failed', err))
+  })
   onInstallProgress((s) => broadcast('kernel:installProgress', s))
   // First run: start the download in the background so it is usually done before the first message.
   if (process.env.HUMANSTUDY_KERNEL !== 'mock') void ensureOpencode().catch((err) => console.error('opencode install failed', err))

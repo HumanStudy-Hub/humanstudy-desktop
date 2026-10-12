@@ -595,3 +595,65 @@ button.person:hover { border-color: var(--accent); }
 .home-version .link:hover:not(:disabled) { color: var(--accent); }
 .home-side .home-version button { display: inline; padding: 0; background: none; }
 .home-version { display: flex; flex-wrap: wrap; column-gap: 4px; }
+
+/* ---- R3: permission cards, threads, usage footer, kernel bar, diffs ---- */
+.perm { border: 1px solid var(--warning-line); background: var(--warning-bg); border-radius: 10px; padding: 10px 12px; font-size: 13px; display: flex; flex-direction: column; gap: 10px; }
+.perm:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.perm-head { display: flex; gap: 10px; align-items: flex-start; }
+.perm-icon { flex: none; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; color: var(--warning); margin-top: 2px; }
+.perm-what { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.perm-verb { font-weight: 600; }
+.perm-title { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 12.5px; background: var(--bg); border: 1px solid var(--warning-line); border-radius: 6px; padding: 3px 7px; overflow-wrap: anywhere; }
+.perm-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.perm-actions button { font-size: 12.5px; padding: 5px 10px; }
+.perm-actions .deny { color: var(--danger); }
+.perm.done { flex-direction: row; align-items: center; gap: 7px; padding: 5px 10px; background: var(--bg-soft); border-color: var(--line); color: var(--muted); font-size: 12.5px; }
+.perm.done .perm-icon { color: var(--ok); margin: 0; }
+.perm.done.denied .perm-icon { color: var(--danger); }
+.perm-label { color: var(--text); white-space: nowrap; }
+.perm-target { font-family: ui-monospace, 'SF Mono', Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.perm-diff-wrap { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.perm-diff-wrap .diff { align-self: stretch; }
+
+pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-radius: 8px; font: 12px/1.5 ui-monospace, 'SF Mono', Menlo, monospace; max-height: 260px; overflow: auto; white-space: pre; }
+.part.tool pre.diff { margin: 6px 0 0 14px; padding: 8px 0; white-space: pre; }
+.dl { display: block; padding: 0 12px; color: var(--text); min-width: max-content; }
+.dl.add { background: rgba(47, 125, 79, 0.16); color: var(--ok); }
+.dl.del { background: rgba(155, 57, 52, 0.14); color: var(--danger); }
+.dl.hunk { color: var(--accent); }
+.dl.file { color: var(--muted); }
+.tool-file { font-family: ui-monospace, 'SF Mono', Menlo, monospace; color: var(--text); }
+.diff-count { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 11.5px; }
+.diff-count .add { color: var(--ok); }
+.diff-count .del { color: var(--danger); }
+.tool-link { margin-left: auto; font-size: 12px; }
+
+.threads { position: relative; display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.thread-btn { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 3px 8px; color: var(--muted); }
+.thread-btn svg { fill: currentColor; }
+.thread-new { font-size: 16px; line-height: 1; padding: 2px 8px; color: var(--muted); }
+.thread-pop { position: absolute; right: 0; top: calc(100% + 6px); width: 320px; max-height: 60vh; overflow-y: auto; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 6px; z-index: 30; }
+.thread-item { display: flex; align-items: center; gap: 4px; border-radius: 8px; width: 100%; }
+.thread-item:hover { background: var(--bg-sunk); }
+.thread-item.on { background: var(--accent-soft); }
+.thread-item.new { justify-content: space-between; padding: 8px 10px; font-size: 13px; font-weight: 600; margin-bottom: 4px; border-bottom: 1px solid var(--line); border-radius: 8px 8px 0 0; }
+.thread-item kbd { font: 11px/1 -apple-system, BlinkMacSystemFont, sans-serif; padding: 3px 5px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); }
+.thread-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left; padding: 7px 10px; }
+.thread-title { font-size: 13px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-meta { font-size: 11.5px; }
+.thread-rename { flex: 1; margin: 5px 6px; font: inherit; font-size: 13px; }
+.thread-del { flex: none; color: var(--muted); font-size: 16px; padding: 0 8px; }
+.thread-confirm { display: flex; gap: 8px; padding-right: 8px; flex: none; }
+.thread-confirm .danger { color: var(--danger); }
+.thread-empty { padding: 8px 10px; margin: 0; }
+.resumed-note { margin: 0; padding: 6px 10px; border: 1px dashed var(--line); border-radius: 8px; }
+
+.usage-line { margin: -8px 16px 10px; text-align: center; font-size: 11.5px; cursor: default; font-variant-numeric: tabular-nums; }
+
+.kernel-bar { flex: none; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--accent-soft); font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; }
+.kernel-track { height: 3px; border-radius: 2px; background: var(--accent-line); overflow: hidden; }
+.kernel-track span { display: block; height: 100%; background: var(--accent); transition: width 0.25s; }
+.kernel-bar.error { background: var(--danger-soft); color: var(--danger); }
+.kernel-error { display: flex; gap: 10px; align-items: baseline; justify-content: space-between; }
+.kernel-error span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kernel-error .link { color: var(--danger); text-decoration: underline; flex: none; }

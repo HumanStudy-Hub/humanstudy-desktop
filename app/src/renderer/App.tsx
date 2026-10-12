@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AccountStatus, ProjectSnapshot, Settings, TelemetryStatus } from '../preload/types'
 import { Chat, type ChatHandle } from './components/Chat'
-import { Workbench } from './components/Workbench'
+import { Workbench, type WorkbenchHandle } from './components/Workbench'
 import { labelItems } from './program/labels'
 import { SourceDrawer, type SourceRef } from './components/SourceDrawer'
 import { VisualizeMenu } from './components/VisualizeMenu'
 import { Home, type HomeHandle } from './components/Home'
 import { SettingsDialog, type SettingsSection } from './components/SettingsDialog'
 import { useSession } from './useSession'
+import { useKernelInstall } from './useKernelInstall'
+import { ThreadMenu } from './components/Threads'
 import { UpdateNotice, useUpdateStatus } from './components/Updates'
 import { ConsentDialog } from './components/ResearchData'
 import { setTelemetryProject, track } from './telemetry'
@@ -17,7 +19,7 @@ type Pane = 'agent' | 'source' | 'program'
 const paneLabel: Record<Pane, string> = { agent: 'Study agent', source: 'Original paper', program: 'Study' }
 
 /** Commands both the keyboard shortcuts and (later) the native menu run. */
-export type AppCommand = 'pane.toggle' | 'settings.open' | 'project.fromPaper' | 'selection.clear'
+export type AppCommand = 'pane.toggle' | 'settings.open' | 'project.fromPaper' | 'project.new' | 'project.open' | 'selection.clear' | 'thread.new'
 let commandHandler: ((command: AppCommand, arg?: string) => void) | null = null
 export function runCommand(command: AppCommand, arg?: string): void {
   commandHandler?.(command, arg)
@@ -60,7 +62,22 @@ export default function App() {
   const chat = useRef<ChatHandle>(null)
   const home = useRef<HomeHandle>(null)
   const update = useUpdateStatus()
+  const workbench = useRef<WorkbenchHandle>(null)
   const session = useSession(project?.dir ?? null)
+  const kernel = useKernelInstall()
+  const openStudy = () => {
+    setPane('program', true)
+    requestAnimationFrame(() => workbench.current?.openStudy())
+  }
+  const newThreadRef = useRef(session.newThread)
+  newThreadRef.current = session.newThread
+  // The native menu's File > New project comes from anywhere; it lands on Home's "From a paper".
+  const [wantNew, setWantNew] = useState(false)
+  useEffect(() => {
+    if (project || !wantNew) return
+    setWantNew(false)
+    requestAnimationFrame(() => home.current?.fromPaper())
+  }, [project, wantNew])
 
   const load = useCallback(async (dir: string) => {
     const snap = await window.humanstudy.project.read(dir)
@@ -157,6 +174,12 @@ export default function App() {
       const st = state.current
       if (command === 'settings.open') return openSettings((arg as SettingsSection) || 'general')
       if (command === 'project.fromPaper') return st.project ? undefined : home.current?.fromPaper()
+      if (command === 'project.new') {
+        if (st.project) closeProject()
+        return setWantNew(true)
+      }
+      if (command === 'project.open') return void window.humanstudy.project.open().then((dir) => { if (dir) void openProject(dir) })
+      if (command === 'thread.new') return st.project ? newThreadRef.current() : undefined
       if (command === 'selection.clear') return setSelected([])
       if (command === 'pane.toggle' && st.project && (arg === 'agent' || arg === 'source' || arg === 'program'))
         setPane(arg, !st.open[arg])
@@ -165,9 +188,23 @@ export default function App() {
       commandHandler = null
     }
   })
+  useEffect(
+    () =>
+      window.humanstudy.menu.onCommand((c) => {
+        if (c.command === 'newProject') runCommand('project.new')
+        else if (c.command === 'openFolder') runCommand('project.open')
+        else if (c.command === 'pane') runCommand('pane.toggle', c.arg)
+        else if (c.command === 'settings') runCommand('settings.open', 'general')
+      }),
+    [],
+  )
   useEffect(() => {
     const keys = (e: KeyboardEvent) => {
       if (e.isComposing) return
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') {
+        e.preventDefault()
+        return runCommand('thread.new')
+      }
       if (e.key === 'Escape') {
         if (!state.current.settingsOpen) runCommand('selection.clear')
         return
@@ -254,7 +291,9 @@ export default function App() {
         <section className={`pane agent ${open.agent ? '' : 'folded'}`} aria-label={paneLabel.agent}>
           {open.agent ? (
             <>
-              <PaneHead title={paneLabel.agent} onFold={() => setPane('agent', false)} />
+              <PaneHead title={paneLabel.agent} onFold={() => setPane('agent', false)}>
+                <ThreadMenu session={session} />
+              </PaneHead>
               <Chat
                 ref={chat}
                 session={session}
@@ -267,6 +306,8 @@ export default function App() {
                 model={settings?.model ?? ''}
                 busyEnter={settings?.busyEnter ?? 'queue'}
                 onModel={(model) => updateSettings({ model })}
+                kernel={kernel}
+                onOpenStudy={openStudy}
               />
             </>
           ) : (
@@ -288,6 +329,7 @@ export default function App() {
             <>
               <PaneHead title={paneLabel.program} onFold={() => setPane('program', false)} />
               <Workbench
+                ref={workbench}
                 project={project}
                 selectedIds={selected}
                 selectedItems={selectedItems}
@@ -318,10 +360,11 @@ export default function App() {
   )
 }
 
-function PaneHead({ title, onFold }: { title: string; onFold(): void }) {
+function PaneHead({ title, onFold, children }: { title: string; onFold(): void; children?: ReactNode }) {
   return (
     <header className="pane-head">
       <strong title={title}>{title}</strong>
+      {children}
       <button className="ghost fold" aria-label={`Fold ${title}`} title="Fold" onClick={onFold}>
         ‹
       </button>

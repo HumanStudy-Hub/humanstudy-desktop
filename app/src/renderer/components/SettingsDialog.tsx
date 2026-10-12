@@ -164,6 +164,17 @@ function General({ settings, onChange }: { settings: Settings; onChange(p: Parti
           onChange={(permission) => onChange({ permission })}
         />
       </Row>
+      <Row label="Notifications" hint="Notify when the agent finishes while the window is in the background.">
+        <Segmented
+          label="Notifications"
+          value={settings.notifications ? 'on' : 'off'}
+          options={[
+            ['on', 'On'],
+            ['off', 'Off'],
+          ]}
+          onChange={(v) => onChange({ notifications: v === 'on' })}
+        />
+      </Row>
       <Row label="Projects folder" hint="Where new projects are created.">
         <code className="path" title={settings.projectsRoot}>
           {settings.projectsRoot}

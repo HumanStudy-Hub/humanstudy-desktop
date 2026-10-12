@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { UpdateStatus } from '../../preload/types'
+import type { AppInfo, UpdateStatus } from '../../preload/types'
 import './updates.css'
 
 /** Live update status from the main process (electron-updater). */
@@ -65,6 +65,10 @@ export const RELEASES_URL = 'https://github.com/HumanStudy-Hub/humanstudy-deskto
 /** The "About & updates" section of Settings. */
 export function AboutUpdates() {
   const status = useUpdateStatus()
+  const [info, setInfo] = useState<AppInfo | null>(null)
+  useEffect(() => {
+    window.humanstudy.app.info().then(setInfo).catch(() => undefined)
+  }, [])
   const busy = status?.state === 'checking' || status?.state === 'downloading'
   return (
     <section>
@@ -100,6 +104,20 @@ export function AboutUpdates() {
         <div className="update-bar" aria-hidden>
           <span style={{ width: `${status.progress}%` }} />
         </div>
+      )}
+      <div className="setting-row">
+        <div>
+          <div className="setting-label">Agent kernel</div>
+          <div className="muted small">opencode, downloaded on first run.</div>
+        </div>
+        <div className="setting-control">
+          <code className="path" title={info?.kernelPath}>{info ? (info.kernelPath ?? 'Not installed yet') : '…'}</code>
+        </div>
+      </div>
+      {info && (
+        <p className="muted small">
+          {info.platform} · {info.arch}
+        </p>
       )}
     </section>
   )

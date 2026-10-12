@@ -1,10 +1,14 @@
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import type { Part, Session } from '../useSession'
-import type { AccountStatus, ProjectEntry } from '../../preload/types'
+import type { AccountStatus, PermissionReply, ProjectEntry } from '../../preload/types'
 import { selectionContext, type SelectedItem } from '../program/labels'
 import type { SettingsSection } from './SettingsDialog'
 import { Markdown, copyText } from './Markdown'
-import { ModelPicker } from './ModelPicker'
+import { ModelPicker, shortModelName } from './ModelPicker'
+import { PermissionCard } from './Permission'
+import { ToolView } from './ToolView'
+import { compact, money } from '../format'
+import type { KernelInstallStatus } from '../../preload/types'
 
 export interface ChatHandle {
   ask(id: string, fieldId?: string, draft?: string): void
@@ -25,6 +29,9 @@ interface Props {
   model: string
   busyEnter: 'queue' | 'interrupt'
   onModel(model: string): void
+  kernel: { status: KernelInstallStatus | null; retry(): void }
+  /** Open program.json's Study tab in the workbench. */
+  onOpenStudy(): void
 }
 
 /** Subsequence match on the path; names score higher than folders, prefixes higher still. */
@@ -49,7 +56,7 @@ const flatFiles = (tree: ProjectEntry[]): ProjectEntry[] =>
 
 const MENTION = /(^|\s)@([^\s@]*)$/
 
-export function Chat({ ref, session, selected, onClearSelection, account, onSettings, projectDir, tree, model, busyEnter, onModel }: Props) {
+export function Chat({ ref, session, selected, onClearSelection, account, onSettings, projectDir, tree, model, busyEnter, onModel, kernel, onOpenStudy }: Props) {
   const [draft, setDraft] = useState('')
   const [attached, setAttached] = useState<{ rel: string; name: string }[]>([])
   const [attachError, setAttachError] = useState('')
@@ -144,6 +151,9 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
     setAttached([])
   }
   const canSend = (draft.trim().length > 0 || attached.length > 0) && Boolean(session.id)
+  const settingUp = kernel.status != null && kernel.status.state !== 'ready'
+  const statusLine = session.waitingForPermission ? 'Waiting for your permission' : session.status
+  const u = session.usage
   const lastAssistant = session.messages.length ? session.messages[session.messages.length - 1].id : -1
 
   return (
@@ -165,7 +175,29 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
       }}
     >
       {dragging && <div className="drop-hint">Drop to add to the project (PDF, data, images)</div>}
+      {kernel.status && (kernel.status.state === 'downloading' || kernel.status.state === 'error') && (
+        <div className={`kernel-bar ${kernel.status.state}`} role="status">
+          {kernel.status.state === 'downloading' ? (
+            <>
+              <span>
+                Setting up the agent kernel{kernel.status.percent != null ? ` · ${Math.round(kernel.status.percent)}%` : ''}
+              </span>
+              <div className="kernel-track" aria-hidden>
+                <span style={{ width: `${kernel.status.percent ?? 0}%` }} />
+              </div>
+            </>
+          ) : (
+            <div className="kernel-error">
+              <span title={kernel.status.error}>The agent kernel could not be set up{kernel.status.error ? `: ${kernel.status.error}` : '.'}</span>
+              <button className="link" onClick={kernel.retry}>Retry</button>
+            </div>
+          )}
+        </div>
+      )}
       <div className="messages" ref={scroller}>
+        {session.resumedWithContext && session.messages.length > 0 && (
+          <p className="resumed-note small muted">Resumed; the agent will be reminded of the earlier conversation on your next message.</p>
+        )}
         {session.messages.length === 0 && (
           <div className="empty">
             <p className="muted">Ask the agent to build, check or refine this study.</p>
@@ -179,15 +211,15 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
         {session.messages.map((m) => (
           <div key={m.id} className={`msg ${m.role}`}>
             {m.parts.map((p, i) => (
-              <PartView key={i} part={p} role={m.role} />
+              <PartView key={i} part={p} role={m.role} onReply={session.reply} onOpenStudy={onOpenStudy} />
             ))}
             {m.role === 'assistant' && !(session.busy && m.id === lastAssistant) && <CopyMessage message={m.parts} />}
           </div>
         ))}
         {session.error && <div className="part error">Agent unavailable: {session.error}</div>}
-        {session.status && (
+        {statusLine && (
           <div className="status">
-            <span className="pulse" /> {session.status}
+            <span className="pulse" /> {statusLine}
           </div>
         )}
       </div>
@@ -261,7 +293,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
           ref={input}
           rows={3}
           value={draft}
-          placeholder={session.id ? 'Message the agent…  (@ to mention a file)' : 'Starting agent…'}
+          placeholder={session.id ? 'Message the agent…  (@ to mention a file)' : settingUp ? 'Setting up…' : 'Starting agent…'}
           onChange={(e) => {
             setDraft(e.target.value)
             setCaret(e.target.selectionStart)
@@ -334,6 +366,14 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
           )}
         </div>
       </div>
+      {u.input + u.output > 0 && (
+        <div
+          className="usage-line small muted"
+          title={`Input ${u.input.toLocaleString()} tokens\nOutput ${u.output.toLocaleString()} tokens\nReasoning ${u.reasoning.toLocaleString()} tokens${u.cost > 0 ? `\nCost ${money(u.cost)}` : ''}`}
+        >
+          {shortModelName(model)} · {compact(u.input)} in · {compact(u.output)} out{u.cost > 0 ? ` · ${money(u.cost)} this thread` : ''}
+        </div>
+      )}
       {session.queue.length > 0 && (
         <div className="queue" aria-label="Queued messages">
           <div className="queue-head small muted">
@@ -413,7 +453,17 @@ function CopyMessage({ message }: { message: Part[] }) {
   )
 }
 
-function PartView({ part, role }: { part: Part; role: 'user' | 'assistant' }) {
+function PartView({
+  part,
+  role,
+  onReply,
+  onOpenStudy,
+}: {
+  part: Part
+  role: 'user' | 'assistant'
+  onReply(id: string, response: PermissionReply): void
+  onOpenStudy(): void
+}) {
   if (part.kind === 'text') {
     return role === 'assistant' ? (
       <div className="part text md-part">
@@ -424,16 +474,6 @@ function PartView({ part, role }: { part: Part; role: 'user' | 'assistant' }) {
     )
   }
   if (part.kind === 'error') return <div className="part error">{part.text}</div>
-  return (
-    <details className="part tool">
-      <summary>
-        <span className="tool-dot" />
-        <span className="tool-name">{part.tool}</span>
-        {part.detail && <span className="tool-detail">{firstLine(part.detail)}</span>}
-      </summary>
-      {part.detail && <pre>{part.detail}</pre>}
-    </details>
-  )
+  if (part.kind === 'permission') return <PermissionCard part={part} onReply={onReply} />
+  return <ToolView part={part} onOpenStudy={onOpenStudy} />
 }
-
-const firstLine = (s: string) => s.split('\n')[0].slice(0, 120)

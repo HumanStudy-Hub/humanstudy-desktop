@@ -286,6 +286,8 @@ export interface HumanStudyApi {
     install: {
       status(): Promise<KernelInstallStatus>
       onProgress(cb: (s: KernelInstallStatus) => void): () => void
+      /** Try the download again after an error. Progress arrives through onProgress. */
+      retry(): Promise<void>
     }
   }
   app: {

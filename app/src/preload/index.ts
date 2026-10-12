@@ -55,6 +55,7 @@ const api: HumanStudyApi = {
     install: {
       status: () => ipcRenderer.invoke('kernel:installStatus'),
       onProgress: (cb) => listen<KernelInstallStatus>('kernel:installProgress', cb),
+      retry: () => ipcRenderer.invoke('kernel:installRetry'),
     },
   },
   app: { info: () => ipcRenderer.invoke('app:info') },

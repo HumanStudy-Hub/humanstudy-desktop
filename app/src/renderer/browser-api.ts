@@ -2,7 +2,7 @@
 // the sample program, a local paper and a scripted kernel, so the interface can be reviewed in a
 // normal browser. Electron never loads this path because window.humanstudy already exists.
 import type { TelemetryRecent, TelemetryRow, TelemetryStatus, TelemetryTrackOptions } from '../preload/types'
-import type { AccountStatus, CommunityStudy, CommunityStudyDetail, HumanStudyApi, KernelEvent, PermissionReply, Thread, ThreadMessage, ThreadPart, ProjectSnapshot, ProjectSummary, ProviderStatus, Settings } from '../preload/types'
+import type { AccountStatus, CommunityStudy, CommunityStudyDetail, HumanStudyApi, KernelEvent, KernelInstallStatus, MenuCommand, PermissionReply, Thread, ThreadMessage, ThreadPart, ProjectSnapshot, ProjectSummary, ProviderStatus, Settings } from '../preload/types'
 import sample from '../shared/sample-program.json'
 
 if (!('humanstudy' in window)) {
@@ -71,6 +71,38 @@ if (!('humanstudy' in window)) {
     timers.set(sessionId, ids)
   }
   const timers = new Map<string, number[]>()
+
+  // ?install=1 simulates the first-run kernel download; ?install=error fails it until Retry.
+  const installMode = new URLSearchParams(location.search).get('install')
+  let installStatus: KernelInstallStatus = { state: 'ready', version: '1.18.21', path: '/preview/opencode' }
+  const installListeners = new Set<(s: KernelInstallStatus) => void>()
+  let finishInstall: () => void = () => undefined
+  let installReady: Promise<void> = Promise.resolve()
+  const setInstall = (s: KernelInstallStatus) => {
+    installStatus = s
+    installListeners.forEach((cb) => cb(s))
+  }
+  const runInstall = (fail: boolean) => {
+    installReady = new Promise<void>((resolve) => (finishInstall = resolve))
+    setInstall({ state: 'checking', version: '1.18.21' })
+    let pct = 0
+    const tick = window.setInterval(() => {
+      pct += 7
+      if (fail && pct >= 43) {
+        window.clearInterval(tick)
+        return setInstall({ state: 'error', version: '1.18.21', error: 'network connection lost (sha256 not checked)' })
+      }
+      if (pct >= 100) {
+        window.clearInterval(tick)
+        setInstall({ state: 'ready', version: '1.18.21', percent: 100, path: '/preview/opencode' })
+        return finishInstall()
+      }
+      setInstall({ state: 'downloading', version: '1.18.21', percent: pct })
+    }, 700)
+  }
+  const menuListeners = new Set<(c: MenuCommand) => void>()
+  ;(window as unknown as { __menu: (c: MenuCommand) => void }).__menu = (c) => menuListeners.forEach((cb) => cb(c))
+  if (installMode) setTimeout(() => runInstall(installMode === 'error'), 0)
   const snapshot: ProjectSnapshot = {
     dir: '/preview/knobe-2003',
     name: 'Knobe 2003 · browser preview',
@@ -221,10 +253,36 @@ def intentional(harm: float, help_: float) -> float:
     return harm - help_
 \`\`\`
 `
+  const SAMPLE_DIFF = `--- a/program.json
++++ b/program.json
+@@ -42,7 +42,7 @@
+       "id": "participants",
+-      "value": "Undergraduates",
++      "value": "78 undergraduates (reported, p. 2)",
+       "state": "proposed"
+@@ -88,6 +88,7 @@
+       "id": "analysis",
++      "note": "Chi-square on the share judging the side effect intentional",
+       "origin": "agent"`
+  if (!new URLSearchParams(location.search).has('fresh')) {
+    const ago = (h: number) => new Date(Date.now() - h * 3600_000).toISOString()
+    const seed = (id: string, title: string, hours: number, user: string, answer: string, usage: Thread['usage']) =>
+      threadStore.set(id, {
+        id, title, createdAt: ago(hours + 0.2), updatedAt: ago(hours), kernel: 'mock', kernelSessionId: `seed-${id}`, usage,
+        messages: [
+          { id: 'm0', role: 'user', parts: [{ kind: 'text', text: user }], at: ago(hours + 0.2) },
+          { id: 'm1', role: 'assistant', parts: [{ kind: 'tool', tool: 'read', detail: 'program.json', state: 'completed' }, { kind: 'text', text: answer }], at: ago(hours + 0.19) },
+        ],
+      })
+    seed('thr_a', 'Build the Human Program from paper.pdf', 3, 'Build the Human Program from paper.pdf', 'I read the paper and wrote **four studies** into `program.json`. Participants and conditions are `reported`; the analysis plan is still `missing`.', { input: 12400, output: 3100, cost: 0.08 })
+    seed('thr_b', 'Which items are still missing?', 26, 'Which items are still missing?', 'Three items carry the `missing` label: the exact exclusion rule, the order of vignettes, and the debriefing text.', { input: 4200, output: 610, cost: 0.02 })
+    seed('thr_c', 'Export a preregistration draft', 24 * 5, 'Export a preregistration draft', 'The draft is in `exports/preregistration.md`.', { input: 8800, output: 1900, cost: 0 })
+  }
   const script = (text: string): Omit<KernelEvent, 'sessionId'>[] => [
     { type: 'status', text: 'Reading the project' },
     { type: 'tool', tool: 'read', detail: 'program.json' },
     { type: 'tool', tool: 'read', detail: 'paper.pdf · pages 1–2' },
+    { type: 'tool', tool: 'edit', text: 'completed', detail: SAMPLE_DIFF },
     ...reply(text)
       .split(/(?<=\s)/)
       .map((w) => ({ type: 'text' as const, text: w })),
@@ -539,6 +597,7 @@ def intentional(harm: float, help_: float) -> float:
     },
     kernel: {
       startSession: async () => {
+        await installReady
         const sid = `preview-${++sessionCounter}`
         sessionThread.set(sid, '')
         return sid
@@ -576,8 +635,8 @@ def intentional(harm: float, help_: float) -> float:
         play(
           sessionId,
           response === 'reject'
-            ? [resolved, { type: 'tool', tool: 'bash', text: 'error', detail: 'The user rejected this call' }, { type: 'text', text: 'Understood, I did not run it. ' }, { type: 'done' }]
-            : [resolved, ...p.rest]
+            ? [resolved, resolved, { type: 'tool', tool: 'bash', text: 'error', detail: 'The user rejected this call' }, { type: 'text', text: 'Understood, I did not run it. ' }, { type: 'done' }]
+            : [resolved, resolved, ...p.rest] // the follow-up can arrive twice
         )
       },
       onEvent: (cb) => {
@@ -585,12 +644,21 @@ def intentional(harm: float, help_: float) -> float:
         return () => listeners.delete(cb)
       },
       install: {
-        status: async () => ({ state: 'ready', version: '1.18.21', path: '/preview/opencode' }),
-        onProgress: () => () => undefined,
+        status: async () => installStatus,
+        onProgress: (cb) => {
+          installListeners.add(cb)
+          return () => installListeners.delete(cb)
+        },
+        retry: async () => runInstall(false),
       },
     },
-    app: { info: async () => ({ version: '0.1.0', platform: 'preview', arch: 'preview' }) },
-    menu: { onCommand: () => () => undefined },
+    app: { info: async () => ({ version: '0.1.0', platform: 'preview', arch: 'preview', kernelPath: '/preview/opencode/1.18.21/opencode' }) },
+    menu: {
+      onCommand: (cb) => {
+        menuListeners.add(cb)
+        return () => menuListeners.delete(cb)
+      },
+    },
     threads: {
       list: async () =>
         [...threadStore.values()]
@@ -603,6 +671,7 @@ def intentional(harm: float, help_: float) -> float:
         return structuredClone(t)
       },
       create: async () => {
+        await installReady
         const sid = `preview-${++sessionCounter}`
         const now = new Date().toISOString()
         const t: Thread = { id: `thr_${sid}`, title: 'New thread', createdAt: now, updatedAt: now, kernel: 'mock', kernelSessionId: sid, messages: [], usage: { input: 0, output: 0, cost: 0 } }
@@ -611,6 +680,7 @@ def intentional(harm: float, help_: float) -> float:
         return structuredClone(t)
       },
       resume: async (_dir, id) => {
+        await installReady
         const t = threadStore.get(id)
         if (!t) throw new Error('no such thread')
         if (!sessionThread.has(t.kernelSessionId)) {
