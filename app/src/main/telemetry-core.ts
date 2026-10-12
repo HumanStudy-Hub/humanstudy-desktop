@@ -18,7 +18,7 @@ import type {
   TelemetryTrackOptions,
 } from '../preload/types'
 
-export const CONSENT_VERSION = 1
+export const CONSENT_VERSION = 2 // 2: one mandatory research data agreement (usage + content together)
 export const FLUSH_INTERVAL_MS = 15_000
 export const FLUSH_AT = 50
 export const MAX_BATCH = 200

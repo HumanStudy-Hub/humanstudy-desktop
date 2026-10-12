@@ -3,6 +3,7 @@ import type { AccountStatus, ProjectSummary } from '../../preload/types'
 import { Studies, type StudiesHandle } from './Studies'
 import { track } from '../telemetry'
 import { VersionFooter } from './Updates'
+import { errorText } from './SettingsDialog'
 
 type Section = 'projects' | 'studies'
 const SECTION_KEY = 'hs.homeSection'
@@ -45,6 +46,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount }: Props & { 
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null)
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
+  const [folderProblem, setFolderProblem] = useState(false)
   const [busy, setBusy] = useState(false)
   const [blank, setBlank] = useState<string | null>(null)
   const [menu, setMenu] = useState<string | null>(null)
@@ -73,9 +75,11 @@ export function Home({ ref, onOpen, onSettings, account, onAccount }: Props & { 
   const refresh = useCallback(async () => {
     try {
       setProjects(await window.humanstudy.projects.list())
+      setFolderProblem(false)
     } catch (e) {
       setProjects([])
-      setError(e instanceof Error ? e.message : 'Could not list projects.')
+      setFolderProblem(true)
+      setError(errorText(e, 'Could not list projects.'))
     }
   }, [])
 
@@ -245,7 +249,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount }: Props & { 
             <div className="home-inner">
               {!query && account?.modelAccess === 'none' && (
                 <button className="access-banner" onClick={onAccount}>
-                  <span>Sign in and enter a promo code to use the agent — or add your own key</span>
+                  <span>Sign in and enter your invitation code to use the agent</span>
                   <span className="access-banner-go" aria-hidden>
                     →
                   </span>
@@ -311,7 +315,29 @@ export function Home({ ref, onOpen, onSettings, account, onAccount }: Props & { 
                 </section>
               )}
 
-              {error && <p className="home-error">{error}</p>}
+              {error && (
+                <p className="home-error">
+                  {error}
+                  {folderProblem && (
+                    <>
+                      {' '}
+                      <button
+                        className="ghost"
+                        onClick={() =>
+                          void window.humanstudy.settings.pickProjectsRoot().then((next) => {
+                            if (next) {
+                              setError('')
+                              void refresh()
+                            }
+                          })
+                        }
+                      >
+                        Choose folder…
+                      </button>
+                    </>
+                  )}
+                </p>
+              )}
 
               <section className="home-section">
                 <h2 className="home-label">{query ? `Results for “${query}”` : 'Recent projects'}</h2>

@@ -174,10 +174,14 @@ if (!('humanstudy' in window)) {
     server: 'https://humanstudy-hub-web.vercel.app',
     modelAccess: 'none',
   }
+  const query = new URLSearchParams(location.search)
+  // ?declined=1: signed in and unlocked, but "Not now" was chosen, so the agent is locked.
+  if (query.has('declined')) Object.assign(account, { signedIn: true, email: 'researcher@example.edu', unlocked: true, keyExpiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString() })
+  let folderBlocked = query.has('folderError')
   const accountStatus = (): AccountStatus => ({
     ...account,
     models: ['anthropic/claude-sonnet-5.5', 'anthropic/claude-haiku-5.5', 'deepseek/deepseek-v4.1-flash'],
-    modelAccess: providers.some((p) => p.id === 'openrouter' && p.configured)
+    modelAccess: query.has('devkeys') && providers.some((p) => p.id === 'openrouter' && p.configured)
       ? 'own-key'
       : account.unlocked
         ? 'hosted'
@@ -185,13 +189,13 @@ if (!('humanstudy' in window)) {
   })
   // Research data: in-memory consent and events, so the consent dialog and Settings → Research data
   // can be reviewed. Nothing leaves the browser; "sent" is simulated.
-  const research = { decided: false, usage: false, content: false, sent: 0, decidedAt: undefined as string | undefined }
+  const research = { decided: query.has('declined'), usage: false, content: false, sent: 0, decidedAt: undefined as string | undefined }
   const recentEvents: TelemetryRecent[] = []
   const previewSession = crypto.randomUUID()
   const researchStatus = (): TelemetryStatus => {
     const on = account.signedIn && research.decided
     return {
-      consentVersion: 1,
+      consentVersion: 2,
       signedIn: account.signedIn,
       decided: on,
       usage: on && research.usage,
@@ -216,7 +220,7 @@ if (!('humanstudy' in window)) {
       metadata: opts.metadata ?? {},
       app_version: '0.0.0-preview',
       platform: 'darwin',
-      consent_version: 1,
+      consent_version: 2,
     }
     recentEvents.push({ row, status: 'pending' })
     if (recentEvents.length > 100) recentEvents.shift()
@@ -472,7 +476,10 @@ def intentional(harm: float, help_: float) -> float:
   }
   const api: HumanStudyApi = {
     projects: {
-      list: async () => projects.map((p) => ({ ...p })),
+      list: async () => {
+        if (folderBlocked) throw new Error(`macOS did not allow the app to read ${settings.projectsRoot}. Allow it under System Settings → Privacy & Security → Files and Folders, or choose another projects folder.`)
+        return projects.map((p) => ({ ...p }))
+      },
       create: async ({ name, pdfPath, sample: isSample }) => {
         if (isSample) {
           const existing = projects.find((p) => p.dir === snapshot.dir)
@@ -547,6 +554,11 @@ def intentional(harm: float, help_: float) -> float:
       get: async () => ({ ...settings }),
       set: async (patch) => ({ ...Object.assign(settings, patch) }),
       providers: async () => providers.map((p) => ({ ...p })),
+      pickProjectsRoot: async () => {
+        settings.projectsRoot = '~/Research/Studies'
+        folderBlocked = false
+        return { ...settings }
+      },
       setKey: async (id, key) => {
         const p = providers.find((x) => x.id === id)
         if (p) p.configured = key.length > 0
@@ -652,7 +664,7 @@ def intentional(harm: float, help_: float) -> float:
         retry: async () => runInstall(false),
       },
     },
-    app: { info: async () => ({ version: '0.1.0', platform: 'preview', arch: 'preview', kernelPath: '/preview/opencode/1.18.21/opencode' }) },
+    app: { info: async () => ({ version: '0.1.0', platform: 'preview', arch: 'preview', kernelPath: '/preview/kernel/1.18.21/agent', devKeys: query.has('devkeys') }) },
     menu: {
       onCommand: (cb) => {
         menuListeners.add(cb)
@@ -710,7 +722,7 @@ def intentional(harm: float, help_: float) -> float:
         if (!account.signedIn) throw new Error('Sign in to your HumanStudy Hub account first.')
         const prev = researchStatus()
         Object.assign(research, { decided: true, usage, content: usage && content, decidedAt: new Date().toISOString() })
-        const metadata = { usageEvents: usage, conversationContent: usage && content, consentVersion: 1 }
+        const metadata = { usageEvents: usage, conversationContent: usage && content, consentVersion: 2 }
         if (prev.usage && !usage) {
           recentEvents.forEach((r) => r.status === 'pending' && (r.status = 'dropped'))
           record('consent.withdrawn', { metadata }, true)

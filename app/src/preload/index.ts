@@ -33,6 +33,7 @@ const api: HumanStudyApi = {
     set: (patch) => ipcRenderer.invoke('settings:set', patch),
     providers: () => ipcRenderer.invoke('settings:providers'),
     setKey: (provider, key) => ipcRenderer.invoke('settings:setKey', provider, key),
+    pickProjectsRoot: () => ipcRenderer.invoke('settings:pickProjectsRoot'),
   },
   project: {
     open: () => ipcRenderer.invoke('project:open'),

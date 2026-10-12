@@ -13,6 +13,9 @@ interface Props {
   account: AccountStatus | null
   onAccount(status: AccountStatus): void
   onClose(): void
+  /** Hidden developer path (HUMANSTUDY_DEV_KEYS=1): own provider keys. */
+  devKeys?: boolean
+  onReviewAgreement(): void
 }
 
 type Section = SettingsSection
@@ -35,7 +38,7 @@ const MODELS: [string, string, string][] = [
   ['deepseek/deepseek-v4.1-flash', 'DeepSeek V4.1 Flash', 'cheapest'],
 ]
 
-export function SettingsDialog({ initialSection, settings, onChange, account, onAccount, onClose }: Props) {
+export function SettingsDialog({ initialSection, settings, onChange, account, onAccount, onClose, devKeys, onReviewAgreement }: Props) {
   const [section, setSection] = useState<Section>(initialSection ?? 'general')
   const dialog = useRef<HTMLDivElement>(null)
 
@@ -78,13 +81,13 @@ export function SettingsDialog({ initialSection, settings, onChange, account, on
           ) : section === 'about' ? (
             <AboutUpdates />
           ) : section === 'research' ? (
-            <ResearchDataSection />
+            <ResearchDataSection onReview={onReviewAgreement} />
           ) : !settings ? (
             <p className="muted">Loading…</p>
           ) : section === 'general' ? (
             <General settings={settings} onChange={onChange} />
           ) : (
-            <Models settings={settings} onChange={onChange} />
+            <Models settings={settings} onChange={onChange} account={account} devKeys={Boolean(devKeys)} />
           )}
         </div>
       </div>
@@ -179,12 +182,59 @@ function General({ settings, onChange }: { settings: Settings; onChange(p: Parti
         <code className="path" title={settings.projectsRoot}>
           {settings.projectsRoot}
         </code>
+        <button
+          className="ghost"
+          onClick={() =>
+            void window.humanstudy.settings.pickProjectsRoot().then((next) => {
+              if (next) onChange({ projectsRoot: next.projectsRoot })
+            })
+          }
+        >
+          Change…
+        </button>
       </Row>
     </section>
   )
 }
 
-function Models({ settings, onChange }: { settings: Settings; onChange(p: Partial<Settings>): void }) {
+function Models({
+  settings,
+  onChange,
+  account,
+  devKeys,
+}: {
+  settings: Settings
+  onChange(p: Partial<Settings>): void
+  account: AccountStatus | null
+  devKeys: boolean
+}) {
+  const hosted = account?.models?.length ? account.models : null
+  const list = hosted ? MODELS.filter(([id]) => hosted.includes(id)) : MODELS
+  return (
+    <section>
+      <h2>Models</h2>
+      <p className="muted settings-lead">
+        Models run on HumanStudy Hub servers; your account&apos;s invitation code covers usage during the beta.
+      </p>
+      <h3>Default model</h3>
+      <div className="model-list" role="radiogroup" aria-label="Default model">
+        {list.map(([id, name, hint]) => (
+          <label key={id} className={`model-row ${settings.model === id ? 'on' : ''}`}>
+            <input type="radio" name="model" checked={settings.model === id} onChange={() => onChange({ model: id })} />
+            <span className="model-name">
+              {name}
+              {hint && <span className="muted small"> · {hint}</span>}
+            </span>
+          </label>
+        ))}
+      </div>
+      {devKeys && <DevKeys settings={settings} onChange={onChange} />}
+    </section>
+  )
+}
+
+/** Hidden developer path (HUMANSTUDY_DEV_KEYS=1): own provider keys and a free-form model id. */
+function DevKeys({ settings, onChange }: { settings: Settings; onChange(p: Partial<Settings>): void }) {
   const [providers, setProviders] = useState<ProviderStatus[] | null>(null)
   const [editing, setEditing] = useState<ProviderStatus['id'] | null>(null)
   const [key, setKey] = useState('')
@@ -203,7 +253,6 @@ function Models({ settings, onChange }: { settings: Settings; onChange(p: Partia
     setError('')
     try {
       setProviders(await window.humanstudy.settings.setKey(id, value))
-      track('settings.key_changed', { target: id, metadata: { action: value ? 'saved' : 'removed' } })
       setEditing(null)
       setKey('')
     } catch (e) {
@@ -216,12 +265,9 @@ function Models({ settings, onChange }: { settings: Settings; onChange(p: Partia
   }
 
   return (
-    <section>
-      <h2>Models</h2>
-      <p className="muted settings-lead">
-        Add an API key for a provider to use its models. A saved OpenRouter key takes precedence over hosted
-        access from your HumanStudy Hub account.
-      </p>
+    <>
+      <h3>Developer: provider keys</h3>
+      <p className="muted settings-lead">Hidden developer path. A saved OpenRouter key takes precedence over hosted access.</p>
       {error && <p className="home-error">{error}</p>}
       <ul className="provider-list">
         {(providers ?? []).map((p) => (
@@ -229,26 +275,11 @@ function Models({ settings, onChange }: { settings: Settings; onChange(p: Partia
             <div className="provider-head">
               <div>
                 <div className="setting-label">{p.label}</div>
-                {p.configured ? (
-                  <span className="status-ok small">
-                    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden>
-                      <path d="M3 8.5 6.5 12 13 4.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                    Key configured
-                  </span>
-                ) : (
-                  <span className="muted small">Not configured</span>
-                )}
+                <span className="muted small">{p.configured ? 'Key configured' : 'Not configured'}</span>
               </div>
               {editing !== p.id && (
                 <div className="provider-actions">
-                  <button
-                    className="ghost"
-                    onClick={() => {
-                      setEditing(p.id)
-                      setKey('')
-                    }}
-                  >
+                  <button className="ghost" onClick={() => { setEditing(p.id); setKey('') }}>
                     {p.configured ? 'Edit' : 'Add key'}
                   </button>
                   {p.configured && (
@@ -267,77 +298,24 @@ function Models({ settings, onChange }: { settings: Settings; onChange(p: Partia
                   if (key.trim()) void saveKey(p.id, key.trim())
                 }}
               >
-                <input
-                  autoFocus
-                  type="password"
-                  className="field"
-                  placeholder={`${p.label} API key`}
-                  value={key}
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(e) => setKey(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') {
-                      e.stopPropagation()
-                      e.nativeEvent.stopImmediatePropagation()
-                      setEditing(null)
-                    }
-                  }}
-                />
-                <button type="button" className="ghost" onClick={() => setEditing(null)}>
-                  Cancel
-                </button>
-                <button type="submit" className="primary" disabled={!key.trim()}>
-                  Save
-                </button>
+                <input autoFocus type="password" className="field" placeholder={`${p.label} API key`} value={key} autoComplete="off" spellCheck={false} onChange={(e) => setKey(e.target.value)} />
+                <button type="button" className="ghost" onClick={() => setEditing(null)}>Cancel</button>
+                <button type="submit" className="primary" disabled={!key.trim()}>Save</button>
               </form>
             )}
           </li>
         ))}
-        {providers === null && !error && <li className="muted small">Loading…</li>}
       </ul>
-      <p className="muted small">Keys are stored encrypted with the macOS keychain and never leave this machine except to call the provider.</p>
-
-      <h3>Default model</h3>
-      <div className="model-list" role="radiogroup" aria-label="Default model">
-        {MODELS.map(([id, name, hint]) => (
-          <label key={id} className={`model-row ${settings.model === id ? 'on' : ''}`}>
-            <input type="radio" name="model" checked={settings.model === id} onChange={() => onChange({ model: id })} />
-            <span className="model-name">
-              {name}
-              {hint && <span className="muted small"> · {hint}</span>}
-            </span>
-            <code className="model-id">{id}</code>
-          </label>
-        ))}
-        <label className={`model-row ${MODELS.some(([id]) => id === settings.model) ? '' : 'on'}`}>
-          <input type="radio" name="model" checked={!MODELS.some(([id]) => id === settings.model)} onChange={() => setModel(settings.model)} />
-          <span className="model-name">Other…</span>
-          <form
-            className="model-other"
-            onSubmit={(e) => {
-              e.preventDefault()
-              saveModel()
-            }}
-          >
-            <input
-              className="field"
-              value={model}
-              spellCheck={false}
-              placeholder="provider/model-id"
-              onChange={(e) => setModel(e.target.value)}
-              onBlur={saveModel}
-              aria-label="Other model id"
-            />
-          </form>
-        </label>
-      </div>
-    </section>
+      <h3>Developer: model id</h3>
+      <form className="model-other" onSubmit={(e) => { e.preventDefault(); saveModel() }}>
+        <input className="field" value={model} spellCheck={false} placeholder="provider/model-id" onChange={(e) => setModel(e.target.value)} onBlur={saveModel} aria-label="Model id" />
+      </form>
+    </>
   )
 }
 
 function accessLine(a: AccountStatus): string {
-  if (a.modelAccess === 'own-key') return 'Your own OpenRouter key'
+  if (a.modelAccess === 'own-key') return 'Your own OpenRouter key (developer)'
   if (a.modelAccess === 'hosted') {
     const t = a.keyExpiresAt ? Date.parse(a.keyExpiresAt) : NaN
     const until = Number.isNaN(t)
@@ -412,7 +390,7 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
     <section>
       <h2>Account</h2>
       <p className="muted settings-lead">
-        Sign in to your HumanStudy Hub account to use hosted models without an API key of your own.
+        Sign in to your HumanStudy Hub account. Your invitation code unlocks the agent.
       </p>
       {error && <p className="home-error">{error}</p>}
       {notice && <p className="account-notice">{notice}</p>}
@@ -469,8 +447,8 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
           </Row>
           {!account.unlocked && (
             <div className="unlock-box">
-              <div className="setting-label">Unlock hosted models</div>
-              <div className="muted small">Enter the promo code you received to use models hosted by HumanStudy Hub.</div>
+              <div className="setting-label">Enter your invitation code</div>
+              <div className="muted small">Your invitation code unlocks the agent during the beta.</div>
               <form
                 className="key-form"
                 onSubmit={(e) => {
@@ -480,12 +458,12 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
               >
                 <input
                   className="field"
-                  placeholder="Promo code"
+                  placeholder="Invitation code"
                   autoComplete="off"
                   spellCheck={false}
                   value={code}
                   onChange={(e) => setCode(e.target.value)}
-                  aria-label="Promo code"
+                  aria-label="Invitation code"
                 />
                 <button type="submit" className="primary" disabled={Boolean(busy) || !code.trim()}>
                   {busy === 'unlock' ? 'Unlocking…' : 'Unlock'}

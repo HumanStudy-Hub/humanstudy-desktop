@@ -239,7 +239,7 @@ export function createAccount(deps: AccountDeps) {
 
   async function unlock(code: string): Promise<AccountStatus> {
     const c = (code ?? '').trim()
-    if (!c) throw new AccountError('Enter a promo code.')
+    if (!c) throw new AccountError('Enter an invitation code.')
     const token = await accessToken()
     if (!token) throw new AccountError('Sign in first, then enter your code.', 'not_signed_in')
     let res: Response

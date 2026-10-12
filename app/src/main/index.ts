@@ -367,6 +367,19 @@ app.whenReady().then(() => {
     syncAccess()
     return next
   })
+  ipcMain.handle('settings:pickProjectsRoot', async () => {
+    const win = BrowserWindow.getFocusedWindow()
+    const opts = {
+      title: 'Choose the projects folder',
+      defaultPath: getSettings().projectsRoot,
+      properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'>,
+    }
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    if (r.canceled || !r.filePaths[0]) return null
+    const next = setSettings({ projectsRoot: r.filePaths[0] })
+    syncAccess()
+    return next
+  })
   ipcMain.handle('settings:providers', () => providers())
   ipcMain.handle('settings:setKey', (_e, id: 'openrouter' | 'anthropic' | 'deepseek', key: string) => {
     const r = setKey(id, key)
@@ -469,6 +482,7 @@ app.whenReady().then(() => {
     platform: process.platform,
     arch: process.arch,
     kernelPath: managedBinary() ?? kernelBinary() ?? undefined,
+    devKeys: process.env.HUMANSTUDY_DEV_KEYS === '1',
   }))
 
   ipcMain.handle('updates:status', () => updateStatus())

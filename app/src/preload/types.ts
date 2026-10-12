@@ -181,12 +181,12 @@ export interface CommunityStudyDetail extends CommunityStudy {
 export interface AccountStatus {
   signedIn: boolean
   email?: string
-  /** True once a promo code has been redeemed and a desktop key is held. */
+  /** True once a invitation code has been redeemed and a desktop key is held. */
   unlocked: boolean
   keyExpiresAt?: string
   /** Base URL of the HumanStudy Hub server. */
   server: string
-  /** Which model access new sessions use: hosted (via the Hub), own key, or none. */
+  /** Which model access new sessions use: hosted (via the Hub), none, or own-key (hidden developer path). */
   modelAccess: 'hosted' | 'own-key' | 'none'
   /** Hosted model ids from the server config (cached), when known. */
   models?: string[]
@@ -228,6 +228,8 @@ export interface AppInfo {
   platform: string
   arch: string
   kernelPath?: string
+  /** HUMANSTUDY_DEV_KEYS=1: developer path with own provider keys and kernel details. Hidden by default. */
+  devKeys?: boolean
 }
 
 export interface HumanStudyApi {
@@ -254,7 +256,7 @@ export interface HumanStudyApi {
     /** Creates the account; the user must confirm by email before signing in. */
     signUp(email: string, password: string): Promise<{ needsConfirmation: boolean }>
     signOut(): Promise<AccountStatus>
-    /** Redeems a promo code for a desktop key that unlocks hosted models. */
+    /** Redeems an invitation code for a desktop key that unlocks hosted models. */
     unlock(code: string): Promise<AccountStatus>
   }
   settings: {
@@ -263,6 +265,8 @@ export interface HumanStudyApi {
     providers(): Promise<ProviderStatus[]>
     /** Stores the key encrypted with the OS keychain (Electron safeStorage); empty string removes it. */
     setKey(provider: ProviderStatus['id'], key: string): Promise<ProviderStatus[]>
+    /** Folder picker; saves the choice as projectsRoot and returns the new settings (null if cancelled). */
+    pickProjectsRoot(): Promise<Settings | null>
   }
   project: {
     open(): Promise<string | null>
@@ -323,7 +327,7 @@ export interface HumanStudyApi {
 }
 
 // ---- research data (telemetry) ---------------------------------------------------------
-/** The two separate consent choices. Conversation content requires usage events. */
+/** The research data agreement is one choice: accepting sets both true, declining both false. */
 export interface TelemetryConsent {
   /** Usage events: lifecycle, features and panes used, clicks (ids only), timings, agent turn metadata. */
   usage: boolean

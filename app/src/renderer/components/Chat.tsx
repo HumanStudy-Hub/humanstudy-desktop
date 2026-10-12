@@ -24,6 +24,9 @@ interface Props {
   onClearSelection(): void
   account: AccountStatus | null
   onSettings(section: SettingsSection): void
+  /** 'needed': signed in but the research data agreement is not accepted, so the agent is locked. */
+  agreement: 'accepted' | 'needed'
+  onReview(): void
   projectDir: string
   tree: ProjectEntry[]
   model: string
@@ -56,7 +59,7 @@ const flatFiles = (tree: ProjectEntry[]): ProjectEntry[] =>
 
 const MENTION = /(^|\s)@([^\s@]*)$/
 
-export function Chat({ ref, session, selected, onClearSelection, account, onSettings, projectDir, tree, model, busyEnter, onModel, kernel, onOpenStudy }: Props) {
+export function Chat({ ref, session, selected, onClearSelection, account, onSettings, agreement, onReview, projectDir, tree, model, busyEnter, onModel, kernel, onOpenStudy }: Props) {
   const [draft, setDraft] = useState('')
   const [attached, setAttached] = useState<{ rel: string; name: string }[]>([])
   const [attachError, setAttachError] = useState('')
@@ -226,22 +229,27 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
 
       {account?.modelAccess === 'none' && (
         <div className="signin-card" role="note">
-          <strong>{account.signedIn ? 'Enter a promo code to use the agent' : 'Sign in to use the agent'}</strong>
+          <strong>{account.signedIn ? 'Enter your invitation code to use the agent' : 'Sign in to use the agent'}</strong>
           <p className="muted small">
             {account.signedIn
-              ? 'Hosted models unlock with the promo code you received. You can also add your own OpenRouter key, or keep your existing opencode setup.'
-              : 'Hosted models need a HumanStudy Hub account and a promo code. You can also add your own OpenRouter key, or keep your existing opencode setup.'}
+              ? 'Your invitation code unlocks the agent during the beta.'
+              : 'Your HumanStudy Hub account and invitation code unlock it.'}
           </p>
           <div className="signin-actions">
             <button className="primary" onClick={() => onSettings('account')}>
               {account.signedIn ? 'Enter code' : 'Sign in'}
             </button>
-            <button className="ghost" onClick={() => onSettings('models')}>
-              Add a key
-            </button>
           </div>
         </div>
       )}
+      {account?.modelAccess !== 'none' && agreement === 'needed' && (
+        <div className="agreement-lock" role="note">
+          <span>Agree to the research data agreement to use the agent</span>
+          <span aria-hidden> · </span>
+          <button className="link" onClick={onReview}>Review</button>
+        </div>
+      )}
+      {account?.modelAccess === 'none' || agreement === 'needed' ? null : (
       <div className="composer">
         {selected.length > 0 && (
           <div className="chips">
@@ -366,6 +374,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
           )}
         </div>
       </div>
+      )}
       {u.input + u.output > 0 && (
         <div
           className="usage-line small muted"
