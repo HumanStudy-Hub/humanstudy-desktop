@@ -349,7 +349,8 @@ app.whenReady().then(() => {
     // No opencode installed: fetch the managed one first, and replace a mock kernel created before it arrived.
     if (process.env.HUMANSTUDY_KERNEL !== 'mock') {
       await ensureOpencode().catch((err) => console.error('opencode install failed', err))
-      if (kernel && kernelName(kernel) === 'mock' && kernelBinary()) markKernelStale()
+      const bin = kernelBinary() // also publishes HUMANSTUDY_OPENCODE_BIN for the kernel factory
+      if (kernel && kernelName(kernel) === 'mock' && bin) markKernelStale()
     }
     const k = currentKernel()
     const started = Date.now()

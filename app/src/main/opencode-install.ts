@@ -33,7 +33,11 @@ export function managedBinary(): string | null {
 /** Whichever binary the kernel would use: managed first, then one the user installed. */
 export function kernelBinary(): string | null {
   // HUMANSTUDY_IGNORE_SYSTEM_OPENCODE=1 forces the managed path (testing the first-run download).
-  return managedBinary() ?? (process.env.HUMANSTUDY_IGNORE_SYSTEM_OPENCODE ? null : findOpencode())
+  const managed = managedBinary()
+  // The kernel factory reads this instead of importing this (electron-dependent) module.
+  if (managed) process.env.HUMANSTUDY_OPENCODE_BIN = managed
+  else delete process.env.HUMANSTUDY_OPENCODE_BIN
+  return managed ?? (process.env.HUMANSTUDY_IGNORE_SYSTEM_OPENCODE ? null : findOpencode())
 }
 
 let status: KernelInstallStatus = { state: 'checking', version: OPENCODE_VERSION }
