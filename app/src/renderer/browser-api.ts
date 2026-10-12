@@ -408,13 +408,13 @@ if (!('humanstudy' in window)) {
         if (!account.signedIn) throw new Error('Sign in to your HumanStudy Hub account first.')
         const prev = researchStatus()
         Object.assign(research, { decided: true, usage, content: usage && content, decidedAt: new Date().toISOString() })
-        const metadata = { usage, content: usage && content, consentVersion: 1 }
+        const metadata = { usageEvents: usage, conversationContent: usage && content, consentVersion: 1 }
         if (prev.usage && !usage) {
           recentEvents.forEach((r) => r.status === 'pending' && (r.status = 'dropped'))
           record('consent.withdrawn', { metadata }, true)
           markSent()
         } else if (usage && !prev.usage) record('consent.granted', { metadata })
-        else if (usage && prev.content !== metadata.content) record('consent.changed', { metadata })
+        else if (usage && prev.content !== metadata.conversationContent) record('consent.changed', { metadata })
         return researchStatus()
       },
       track: async (type, opts) => {

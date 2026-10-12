@@ -388,7 +388,8 @@ export function createTelemetry(deps: TelemetryDeps) {
     if (inflight) await inflight.catch(() => undefined)
     state.consent = { version: CONSENT_VERSION, usage, content, decidedAt: new Date(now()).toISOString(), acct }
     saveState()
-    const meta = { usage, content, consentVersion: CONSENT_VERSION }
+    // Not `content`: that key is reserved for message text and stripped by the sanitizer.
+    const meta = { usageEvents: usage, conversationContent: content, consentVersion: CONSENT_VERSION }
     if (prev?.usage && !usage) {
       // Withdrawal: discard what was not sent yet, record the withdrawal, send it, then stop.
       queue = queue.filter((e) => e.acct !== acct)

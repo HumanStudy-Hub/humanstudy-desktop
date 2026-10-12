@@ -190,7 +190,10 @@ const RENDERER_DENY = /^(consent|conversation|kernel|agent)\./
 export function registerTelemetry(): void {
   const t = getTelemetry()
   ipcMain.handle('telemetry:status', () => t.status())
-  ipcMain.handle('telemetry:setConsent', (_e, c: { usage: boolean; content: boolean }) => t.setConsent(c))
+  ipcMain.handle('telemetry:setConsent', (_e, c: unknown) => {
+    const v = c && typeof c === 'object' ? (c as Record<string, unknown>) : {}
+    return t.setConsent({ usage: v.usage === true, content: v.content === true })
+  })
   ipcMain.handle('telemetry:track', (_e, type: string, opts?: TelemetryTrackOptions) => {
     if (typeof type !== 'string' || RENDERER_DENY.test(type)) return
     const o = opts && typeof opts === 'object' ? opts : {}
