@@ -1,8 +1,9 @@
 // Kernel smoke test. Bundles the TS sources with the app's esbuild, then:
 //   node src/main/kernel/kernel.test.mjs              -> mock kernel (always)
-//   node src/main/kernel/kernel.test.mjs --opencode   -> also a live opencode round trip
-//     (needs `opencode` on PATH; with OPENROUTER_API_KEY expect text + done, without it
-//      expect an auth `error` followed by `done`)
+//   HUMANSTUDY_KERNEL_BIN=<fork binary> node src/main/kernel/kernel.test.mjs --opencode
+//     -> also a live round trip with the HumanStudy edition of opencode (no system opencode is
+//        ever used). Without HUMANSTUDY_DESKTOP_KEY expect an auth `error` followed by `done`; with
+//        HUMANSTUDY_DESKTOP_KEY (+ HUMANSTUDY_HOSTED_BASEURL, HUMANSTUDY_SERVER_BYPASS) a real reply.
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -11,6 +12,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
+const liveBin = process.env.HUMANSTUDY_KERNEL_BIN
 const out = mkdtempSync(join(tmpdir(), 'kernel-test-'))
 const bundle = join(out, 'kernel.mjs')
 await build({
@@ -127,11 +129,35 @@ console.log('mock permission ok')
 process.env.HUMANSTUDY_KERNEL = 'mock'
 assert.equal(k.createKernel().name, 'mock')
 delete process.env.HUMANSTUDY_KERNEL
-console.log(`createKernel() would pick: ${k.createKernel().name} (opencode at ${k.findOpencode() ?? 'none'})`)
+delete process.env.HUMANSTUDY_KERNEL_BIN
+delete process.env.HUMANSTUDY_OPENCODE_BIN
+assert.equal(k.findOpencode, undefined, 'no system opencode lookup')
+assert.equal(k.createKernel().name, 'mock', 'no binary announced -> mock, never a system opencode')
+process.env.HUMANSTUDY_KERNEL_BIN = '/bin/true'
+assert.equal(k.createKernel().name, 'opencode')
+await k.createKernel().dispose()
+delete process.env.HUMANSTUDY_KERNEL_BIN
+console.log('createKernel ok')
+
+// kernel env: isolated XDG dirs, no personal config leaking in
+{
+  const home = join(out, 'khome')
+  process.env.OPENCODE_CONFIG = '/home/u/personal.json'
+  const kk = new k.OpencodeKernel({ binary: '/bin/true', home, provider: 'humanstudy', model: 'anthropic/claude-sonnet-5.5' })
+  const env = kk.kernelEnv('pw')
+  for (const [name, dir] of [['XDG_CONFIG_HOME', 'config'], ['XDG_DATA_HOME', 'data'], ['XDG_CACHE_HOME', 'cache'], ['XDG_STATE_HOME', 'state']])
+    assert.equal(env[name], join(home, dir))
+  assert.equal(env.OPENCODE_CONFIG, undefined)
+  assert.equal(env.OPENCODE_SERVER_PASSWORD, 'pw')
+  assert.equal(JSON.parse(env.OPENCODE_CONFIG_CONTENT).model, 'humanstudy/anthropic/claude-sonnet-5.5')
+  delete process.env.OPENCODE_CONFIG
+  await kk.dispose()
+  console.log('kernel env ok')
+}
 
 // ---- optional live opencode -----------------------------------------------------------
 if (process.argv.includes('--opencode')) {
-  const kernel = new k.OpencodeKernel()
+  const kernel = new k.OpencodeKernel({ binary: liveBin, home: join(out, 'khome') })
   try {
     const t0 = Date.now()
     const id = await kernel.startSession(out)

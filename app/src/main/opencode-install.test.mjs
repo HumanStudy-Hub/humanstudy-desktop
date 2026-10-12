@@ -32,13 +32,52 @@ const plain = (req, res) => {
 }
 
 test('asset selection', () => {
-  assert.equal(core.pickAsset('darwin', 'arm64', false).name, 'opencode-darwin-arm64.zip')
-  assert.equal(core.pickAsset('darwin', 'x64', true).name, 'opencode-darwin-x64.zip')
-  assert.equal(core.pickAsset('darwin', 'x64', false).name, 'opencode-darwin-x64-baseline.zip')
-  assert.equal(core.pickAsset('win32', 'x64', true).name, 'opencode-windows-x64.zip')
-  assert.equal(core.pickAsset('win32', 'x64', false).name, 'opencode-windows-x64-baseline.zip')
+  assert.equal(core.pickAsset('darwin', 'arm64', false).name, 'opencode-humanstudy-darwin-arm64.zip')
+  assert.equal(core.pickAsset('darwin', 'x64', true).name, 'opencode-humanstudy-darwin-x64.zip')
+  assert.equal(core.pickAsset('darwin', 'x64', false).name, 'opencode-humanstudy-darwin-x64-baseline.zip')
+  assert.equal(core.pickAsset('win32', 'x64', true).name, 'opencode-humanstudy-windows-x64.zip')
+  assert.equal(core.pickAsset('win32', 'x64', false).name, 'opencode-humanstudy-windows-x64-baseline.zip')
+  assert.equal(core.pickAsset('win32', 'arm64', true).name, 'opencode-humanstudy-windows-arm64.zip')
   assert.equal(core.pickAsset('linux', 'x64', true), null)
   assert.equal(core.binaryName('win32'), 'opencode.exe')
+  assert.equal(core.KERNEL_TAG, 'hs-v1.18.21')
+  assert.equal(core.KERNEL_VERSION, '1.18.21')
+  assert.equal(core.RELEASE_BASE, 'https://github.com/HumanStudy-Hub/opencode/releases/download/hs-v1.18.21')
+  assert.equal(core.assetUrl({ name: 'a.zip' }), `${core.RELEASE_BASE}/a.zip`)
+})
+
+test('SHA256SUMS lookup', async () => {
+  const sums = `${'a'.repeat(64)}  opencode-humanstudy-darwin-arm64.zip\n${'B'.repeat(64)} *opencode-humanstudy-windows-x64.zip\r\n`
+  assert.equal(core.parseChecksum(sums, 'opencode-humanstudy-darwin-arm64.zip'), 'a'.repeat(64))
+  assert.equal(core.parseChecksum(sums, 'opencode-humanstudy-windows-x64.zip'), 'b'.repeat(64))
+  assert.equal(core.parseChecksum(sums, 'opencode-humanstudy-darwin-x64.zip'), null)
+  const srv = createServer((req, res) => {
+    res.writeHead(req.url === '/SHA256SUMS.txt' ? 200 : 404)
+    res.end(sums)
+  })
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${srv.address().port}`
+  assert.equal(await core.fetchChecksum('opencode-humanstudy-darwin-arm64.zip', { base }), 'a'.repeat(64))
+  await assert.rejects(core.fetchChecksum('nope.zip', { base }), /no entry/)
+  await assert.rejects(core.fetchChecksum('x.zip', { base: base + '/missing' }), /HTTP 404/)
+  srv.close()
+})
+
+test('size comes from Content-Length when not given', async () => {
+  const { srv, url } = await serve((req, res) => {
+    const m = /bytes=(\d+)-/.exec(req.headers.range ?? '')
+    const from = m ? Number(m[1]) : 0
+    res.writeHead(m ? 206 : 200, { 'content-length': body.length - from })
+    res.end(body.subarray(from))
+  })
+  const dir = mkdtempSync(join(tmpdir(), 'dl-'))
+  const dest = join(dir, 'f.zip')
+  const totals = new Set()
+  writeFileSync(dest + '.part', body.subarray(0, 100_000))
+  await core.downloadVerified({ url, dest, sha256: sha, onProgress: (_r, t) => totals.add(t) })
+  assert.ok(readFileSync(dest).equals(body))
+  assert.deepEqual([...totals], [body.length])
+  srv.close()
 })
 
 test('downloads and verifies', async () => {

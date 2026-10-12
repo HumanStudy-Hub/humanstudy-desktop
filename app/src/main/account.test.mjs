@@ -123,20 +123,19 @@ assert.ok(calls.some((c) => c.url.endsWith('/auth/v1/logout') && c.headers.autho
 assert.equal(store.session, undefined)
 assert.equal(store.desktopKey, undefined)
 
-// Kernel provider config for hosted access.
-process.env.HUMANSTUDY_HOSTED_BASEURL = `${SERVER}/api/desktop/v1`
-process.env.HUMANSTUDY_HOSTED_MODELS = JSON.stringify(['anthropic/claude-haiku-5.5'])
-const cfg = oc.hostedProviderConfig('deepseek/deepseek-chat')
-assert.deepEqual(cfg, {
-  npm: '@ai-sdk/openai-compatible',
-  name: 'HumanStudy',
-  options: { baseURL: `${SERVER}/api/desktop/v1`, apiKey: '{env:HUMANSTUDY_DESKTOP_KEY}' },
-  models: { 'anthropic/claude-haiku-5.5': { name: 'anthropic/claude-haiku-5.5' }, 'deepseek/deepseek-chat': { name: 'deepseek/deepseek-chat' } },
-})
+// Kernel inline config: the fork bakes in the provider, so only model + permission are passed.
 const k = new oc.OpencodeKernel({ binary: '/bin/true', provider: 'humanstudy', model: 'anthropic/claude-haiku-5.5' })
-const content = JSON.parse(k.configContent())
+let content = JSON.parse(k.configContent())
 assert.equal(content.model, 'humanstudy/anthropic/claude-haiku-5.5')
-assert.equal(content.provider.humanstudy.options.apiKey, '{env:HUMANSTUDY_DESKTOP_KEY}')
+assert.equal(content.small_model, content.model)
+assert.equal(content.provider, undefined)
+assert.equal(content.permission.bash, 'ask')
 await k.dispose()
+// A hosted model the fork does not know is declared; no key ever appears in the config.
+const k2 = new oc.OpencodeKernel({ binary: '/bin/true', provider: 'humanstudy', model: 'deepseek/deepseek-chat' })
+content = JSON.parse(k2.configContent())
+assert.deepEqual(Object.keys(content.provider.humanstudy.models), ['deepseek/deepseek-chat'])
+assert.ok(!JSON.stringify(content).includes('apiKey'))
+await k2.dispose()
 
 console.log(`account ok: ${calls.length} stubbed requests`)

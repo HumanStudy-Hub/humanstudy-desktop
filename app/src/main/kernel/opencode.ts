@@ -42,70 +42,20 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { accessSync, constants } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { homedir } from 'node:os'
-import { delimiter, join, relative, isAbsolute, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { join, relative, isAbsolute, resolve } from 'node:path'
 import { truncateString, truncateValue } from '../truncate'
 import { Emitter } from './types'
 import type { Kernel, KernelEvent, KernelPermission, PermissionReply } from './types'
 
-export const DEFAULT_PROVIDER = 'openrouter'
+export const DEFAULT_PROVIDER = 'humanstudy'
 export const DEFAULT_MODEL = 'anthropic/claude-sonnet-5.5'
-
-/** Find the opencode binary. Electron started from Finder (or the Start menu) has a minimal PATH,
- *  so also probe the usual install locations. Returns an absolute path or null.
- *  On Windows only a real opencode.exe is accepted: npm's opencode.cmd shim cannot be spawned
- *  without a shell, so the platform package's binary inside the npm global tree is used instead. */
-export function findOpencode(): string | null {
-  const win = process.platform === 'win32'
-  const dirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean)
-  const home = homedir()
-  if (win) {
-    const appData = process.env.APPDATA ?? join(home, 'AppData', 'Roaming')
-    const localAppData = process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local')
-    const npmRoots = [process.env.npm_config_prefix, join(appData, 'npm'), process.env.NVM_SYMLINK].filter(
-      (d): d is string => Boolean(d)
-    )
-    dirs.push(
-      join(home, '.opencode', 'bin'),
-      join(home, '.bun', 'bin'),
-      join(home, 'scoop', 'shims'),
-      join(localAppData, 'Microsoft', 'WinGet', 'Links'),
-      join(process.env.ProgramData ?? 'C:\\ProgramData', 'chocolatey', 'bin'),
-      ...npmRoots
-    )
-    // npm i -g opencode-ai: the exe lives in the platform package (nested or hoisted).
-    const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
-    for (const root of npmRoots) {
-      for (const pkg of [`opencode-windows-${arch}`, `opencode-windows-${arch}-baseline`]) {
-        dirs.push(
-          join(root, 'node_modules', 'opencode-ai', 'node_modules', pkg, 'bin'),
-          join(root, 'node_modules', pkg, 'bin')
-        )
-      }
-    }
-  } else {
-    dirs.push(
-      '/usr/local/bin',
-      '/opt/homebrew/bin',
-      join(home, '.opencode', 'bin'),
-      join(home, '.local', 'bin'),
-      join(home, '.bun', 'bin'),
-      join(home, '.npm-global', 'bin')
-    )
-  }
-  for (const d of dirs) {
-    const p = join(d, win ? 'opencode.exe' : 'opencode')
-    try {
-      accessSync(p, win ? constants.F_OK : constants.X_OK)
-      return p
-    } catch {
-      // keep looking
-    }
-  }
-  return null
-}
+/** Models the HumanStudy edition of opencode already declares under provider.humanstudy
+ *  (packages/opencode/src/config/humanstudy.ts in HumanStudy-Hub/opencode). Any other hosted model
+ *  the server offers is declared in the inline config. */
+const BAKED_HOSTED_MODELS = ['anthropic/claude-sonnet-5.5', 'anthropic/claude-haiku-5.5', 'deepseek/deepseek-v4.1-flash']
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -145,7 +95,11 @@ interface SessionState {
 }
 
 export interface OpencodeOptions {
-  binary?: string
+  /** Path of the HumanStudy opencode binary (required: the app never looks for a system opencode). */
+  binary: string
+  /** Folder that holds the kernel's own XDG config/data/cache/state. Default: HUMANSTUDY_KERNEL_HOME,
+   *  else a temp folder. The app points it at userData/kernel so a personal opencode setup never leaks in. */
+  home?: string
   provider?: string
   model?: string
   /** 'ask': every edit/bash call goes to the renderer. 'project': those inside the project folder are
@@ -162,21 +116,22 @@ export class OpencodeKernel implements Kernel {
   private sessions = new Map<string, SessionState>()
   private disposed = false
   private binary: string
+  private home: string
   private provider: string
   private model: string
   private readyTimeoutMs: number
   private permission: 'ask' | 'project' | undefined
   private exitHook = (): void => this.killAll('SIGKILL')
 
-  constructor(opts: OpencodeOptions = {}) {
-    const bin = opts.binary ?? findOpencode()
-    if (!bin) throw new Error('opencode binary not found')
-    this.binary = bin
-    // An empty provider means "do not force a model": opencode then uses the model from the user's
-    // own opencode config, which is the only thing that can work without a key or a Hub account.
+  constructor(opts: OpencodeOptions) {
+    if (!opts?.binary) throw new Error('opencode binary not given')
+    this.binary = opts.binary
+    this.home = opts.home ?? process.env.HUMANSTUDY_KERNEL_HOME ?? join(tmpdir(), 'humanstudy-kernel')
+    // An empty provider means "do not force a model" (no hosted access and no dev key).
     this.provider = opts.provider ?? process.env.HUMANSTUDY_PROVIDER ?? DEFAULT_PROVIDER
     this.model = opts.model ?? process.env.HUMANSTUDY_MODEL ?? DEFAULT_MODEL
-    if (this.provider === 'openrouter' && !process.env.OPENROUTER_API_KEY && !opts.provider) this.provider = ''
+    // Own OpenRouter keys are a developer path only.
+    if (this.provider === 'openrouter' && !(process.env.HUMANSTUDY_DEV_KEYS === '1' && process.env.OPENROUTER_API_KEY)) this.provider = ''
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 30_000
     this.permission = opts.permission
     process.once('exit', this.exitHook)
@@ -317,25 +272,46 @@ export class OpencodeKernel implements Kernel {
 
   private configContent(): string {
     const model = this.provider ? `${this.provider}/${this.model}` : undefined
+    // The fork bakes in the humanstudy provider, its models and the share/autoupdate/telemetry defaults.
+    // Here only what the app decides per run: the chosen model (inline config outranks any config file)
+    // and edit/bash approval, which the app answers (user prompt, or auto-approval in the project, see handle()).
     const cfg: Record<string, unknown> = {
       $schema: 'https://opencode.ai/config.json',
       ...(model ? { model, small_model: model } : {}), // small_model: otherwise titles go to opencode's own default
-      autoupdate: false,
-      share: 'disabled',
-      // opencode allows edit/bash by default; "ask" makes it emit permission.asked, which the app
-      // answers (user prompt, or auto-approval inside the project, see handle()).
-      permission: { edit: 'ask', bash: 'ask' },
+      permission: { edit: 'ask', bash: 'ask', external_directory: 'ask' },
     }
-    // Only point at the env var when it is set: an unset {env:} becomes "" and would clobber
-    // credentials the user stored with `opencode auth login`. The key itself never enters
-    // this string; opencode substitutes it from its own environment.
-    if (this.provider === 'openrouter' && process.env.OPENROUTER_API_KEY) {
-      cfg.provider = { openrouter: { options: { apiKey: '{env:OPENROUTER_API_KEY}' } } }
+    if (this.provider === HOSTED_PROVIDER && !BAKED_HOSTED_MODELS.includes(this.model)) {
+      cfg.provider = { [HOSTED_PROVIDER]: { models: { [this.model]: { name: this.model, tool_call: true } } } }
     }
-    // Hosted models through HumanStudy Hub: a custom OpenAI-compatible provider
-    // (https://opencode.ai/docs/providers/ "Custom provider"). The desktop key stays in the env.
-    if (this.provider === HOSTED_PROVIDER) cfg.provider = { [HOSTED_PROVIDER]: hostedProviderConfig(this.model) }
+    // Developer path only (HUMANSTUDY_DEV_KEYS=1): the key stays in the env, opencode substitutes it.
+    if (this.provider === 'openrouter') cfg.provider = { openrouter: { options: { apiKey: '{env:OPENROUTER_API_KEY}' } } }
     return JSON.stringify(cfg)
+  }
+
+  /** Env for the kernel process: its own XDG dirs, so ~/.config/opencode and ~/.local/share/opencode of
+   *  a personal install are never read, and sessions persist under <home>/data per project. */
+  private kernelEnv(password: string): NodeJS.ProcessEnv {
+    const xdg = {
+      XDG_CONFIG_HOME: join(this.home, 'config'),
+      XDG_DATA_HOME: join(this.home, 'data'),
+      XDG_CACHE_HOME: join(this.home, 'cache'),
+      XDG_STATE_HOME: join(this.home, 'state'),
+    }
+    for (const d of Object.values(xdg)) mkdirSync(d, { recursive: true })
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      ...xdg,
+      OPENCODE_SERVER_PASSWORD: password,
+      OPENCODE_CONFIG_CONTENT: this.configContent(),
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
+      OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: '1', // no ~/.claude/CLAUDE.md from the user's own Claude Code
+    }
+    delete env.OPENCODE_CONFIG // a personal config file path
+    delete env.OPENCODE_CONFIG_DIR
+    if (this.provider !== HOSTED_PROVIDER) {
+      delete env.HUMANSTUDY_DESKTOP_KEY
+    }
+    return env
   }
 
   private async launch(dir: string): Promise<Server> {
@@ -344,12 +320,7 @@ export class OpencodeKernel implements Kernel {
     const password = randomBytes(24).toString('base64url')
     const proc = spawn(this.binary, ['serve', '--port', String(port), '--hostname', '127.0.0.1'], {
       cwd: dir,
-      env: {
-        ...process.env,
-        OPENCODE_SERVER_PASSWORD: password,
-        OPENCODE_CONFIG_CONTENT: this.configContent(),
-        OPENCODE_DISABLE_AUTOUPDATE: '1',
-      },
+      env: this.kernelEnv(password),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const server: Server = {
@@ -693,33 +664,10 @@ function summarizeInput(input: unknown): string {
 }
 
 function redact(s: string): string {
-  for (const key of [process.env.OPENROUTER_API_KEY, process.env.HUMANSTUDY_DESKTOP_KEY]) {
+  for (const key of [process.env.OPENROUTER_API_KEY, process.env.HUMANSTUDY_DESKTOP_KEY, process.env.HUMANSTUDY_SERVER_BYPASS]) {
     if (key) s = s.split(key).join('[redacted]')
   }
   return s
 }
 
 export const HOSTED_PROVIDER = 'humanstudy'
-
-/** opencode `provider.humanstudy` entry, from env set by the app (src/main/account.ts). */
-export function hostedProviderConfig(model: string): Record<string, unknown> {
-  let ids: string[] = []
-  try {
-    const parsed = JSON.parse(process.env.HUMANSTUDY_HOSTED_MODELS ?? '[]') as unknown
-    if (Array.isArray(parsed)) ids = parsed.filter((m): m is string => typeof m === 'string')
-  } catch {
-    /* fall back to the selected model only */
-  }
-  if (!ids.includes(model)) ids.push(model)
-  return {
-    npm: '@ai-sdk/openai-compatible',
-    name: 'HumanStudy',
-    options: {
-      baseURL: process.env.HUMANSTUDY_HOSTED_BASEURL ?? 'https://humanstudy-hub-web.vercel.app/api/desktop/v1',
-      apiKey: '{env:HUMANSTUDY_DESKTOP_KEY}',
-      // Only when dogfooding against a protected preview deployment.
-      ...(process.env.HUMANSTUDY_SERVER_BYPASS ? { headers: { 'x-vercel-protection-bypass': '{env:HUMANSTUDY_SERVER_BYPASS}' } } : {}),
-    },
-    models: Object.fromEntries(ids.map((id) => [id, { name: id }])),
-  }
-}

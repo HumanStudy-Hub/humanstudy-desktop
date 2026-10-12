@@ -10,7 +10,7 @@ original paper.
 - **Studies**: a community library backed by
   [HumanStudy-Bench](https://github.com/HumanStudy-Hub/HumanStudy-Bench); fork a study into
   a local project.
-- **Kernel-agnostic**: the agent runs on [opencode](https://opencode.ai) today; the
+- **Kernel-agnostic**: the agent runs on the HumanStudy edition of [opencode](https://github.com/HumanStudy-Hub/opencode) today; the
   social-science layer in [`pack/`](pack/) (AGENTS.md and skills) works with any
   AGENTS.md-aware harness.
 
@@ -29,9 +29,13 @@ npm run dist:mac      # signed macOS build (needs a Developer ID certificate)
 
 ## Dogfooding against the dev preview
 
-Nothing to install: on first run the app downloads its agent kernel (opencode, pinned to one
-version, checksum-verified) into its own data folder. An opencode you installed yourself is only
-used when the managed copy is missing.
+Nothing to install: on first run the app downloads its agent kernel, the HumanStudy edition of
+opencode, from the [HumanStudy-Hub/opencode releases](https://github.com/HumanStudy-Hub/opencode/releases)
+(pinned to one tag, verified against the release's `SHA256SUMS.txt`) into its own data folder. The
+app never uses an opencode installed on your machine, and the kernel keeps its config, sessions and
+caches under the app's data folder (`kernel/`), so a personal opencode setup is untouched. For
+development, `HUMANSTUDY_KERNEL_BIN=<path>` runs a locally built kernel and `HUMANSTUDY_KERNEL=mock`
+uses the built-in mock agent.
 
 The `dev` branch of the website deploys to a protected Vercel preview. `npm run dev:dogfood`
 points the app at it and sends the deployment-protection bypass secret, which it reads from the
