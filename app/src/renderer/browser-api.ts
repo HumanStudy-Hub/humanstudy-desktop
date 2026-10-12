@@ -2,13 +2,74 @@
 // the sample program, a local paper and a scripted kernel, so the interface can be reviewed in a
 // normal browser. Electron never loads this path because window.humanstudy already exists.
 import type { TelemetryRecent, TelemetryRow, TelemetryStatus, TelemetryTrackOptions } from '../preload/types'
-import type { AccountStatus, CommunityStudy, CommunityStudyDetail, HumanStudyApi, KernelEvent, ProjectSnapshot, ProjectSummary, ProviderStatus, Settings } from '../preload/types'
+import type { AccountStatus, CommunityStudy, CommunityStudyDetail, HumanStudyApi, KernelEvent, PermissionReply, Thread, ThreadMessage, ThreadPart, ProjectSnapshot, ProjectSummary, ProviderStatus, Settings } from '../preload/types'
 import sample from '../shared/sample-program.json'
 
 if (!('humanstudy' in window)) {
   const listeners = new Set<(e: KernelEvent) => void>()
   const changed = new Set<(dir: string) => void>()
   const emit = (e: KernelEvent) => listeners.forEach((cb) => cb(e))
+  // In-memory conversation threads and scripted permission prompts for the preview kernel.
+  let sessionCounter = 0
+  const threadStore = new Map<string, Thread>()
+  const sessionThread = new Map<string, string>() // session id -> thread id ('' = untracked)
+  const threadChanged = new Set<(e: { dir: string; id: string }) => void>()
+  const pendingPermission = new Map<string, { id: string; rest: Omit<KernelEvent, 'sessionId'>[] }>()
+  const notifyThread = (t: Thread) => {
+    t.updatedAt = new Date().toISOString()
+    threadChanged.forEach((cb) => cb({ dir: snapshot.dir, id: t.id }))
+  }
+  const threadOf = (sessionId: string): Thread | undefined => {
+    let id = sessionThread.get(sessionId)
+    if (id === undefined) return undefined
+    if (!id) {
+      const now = new Date().toISOString()
+      id = `thr_${sessionId}`
+      threadStore.set(id, { id, title: 'New thread', createdAt: now, updatedAt: now, kernel: 'mock', kernelSessionId: sessionId, messages: [], usage: { input: 0, output: 0, cost: 0 } })
+      sessionThread.set(sessionId, id)
+    }
+    return threadStore.get(id)
+  }
+  const recordUser = (sessionId: string, text: string) => {
+    const t = threadOf(sessionId)
+    if (!t) return
+    t.messages.push({ id: `m${t.messages.length}`, role: 'user', parts: [{ kind: 'text', text }], at: new Date().toISOString() })
+    if (t.title === 'New thread') t.title = text.replace(/\s+/g, ' ').trim().slice(0, 60) || t.title
+    notifyThread(t)
+  }
+  const recordEvent = (e: KernelEvent) => {
+    const t = threadOf(e.sessionId)
+    if (!t) return
+    if (e.type === 'usage' && e.usage) {
+      t.usage = { input: t.usage.input + e.usage.input, output: t.usage.output + e.usage.output, cost: t.usage.cost + (e.usage.cost ?? 0) }
+      return notifyThread(t)
+    }
+    if (e.type !== 'text' && e.type !== 'tool' && e.type !== 'error' && e.type !== 'permission') return
+    let m: ThreadMessage | undefined = t.messages[t.messages.length - 1]
+    if (!m || m.role !== 'assistant') t.messages.push((m = { id: `m${t.messages.length}`, role: 'assistant', parts: [], at: new Date().toISOString() }))
+    const tail = m.parts[m.parts.length - 1]
+    if (e.type === 'text') {
+      if (tail?.kind === 'text') tail.text += e.text ?? ''
+      else m.parts.push({ kind: 'text', text: e.text ?? '' })
+    } else if (e.type === 'tool') {
+      if (tail?.kind === 'tool' && tail.tool === e.tool && (tail.state === 'pending' || tail.state === 'running')) Object.assign(tail, { detail: e.detail ?? tail.detail, state: e.text })
+      else m.parts.push({ kind: 'tool', tool: e.tool ?? 'tool', detail: e.detail, state: e.text })
+    } else if (e.type === 'error') m.parts.push({ kind: 'error', text: e.text ?? 'Unknown error' })
+    else if (e.permission) {
+      const p = m.parts.find((x): x is Extract<ThreadPart, { kind: 'permission' }> => x.kind === 'permission' && x.id === e.permission!.id)
+      if (p) p.resolved = e.permission.resolved ?? p.resolved
+      else if (e.permission.type) m.parts.push({ kind: 'permission', id: e.permission.id, type: e.permission.type, title: e.permission.title, patterns: e.permission.patterns, resolved: e.permission.resolved })
+    }
+    if (e.type !== 'text') notifyThread(t)
+  }
+  const emitAndRecord = (e: KernelEvent) => {
+    recordEvent(e)
+    emit(e)
+  }
+  const play = (sessionId: string, steps: Omit<KernelEvent, 'sessionId'>[]) => {
+    const ids = steps.map((e, i) => window.setTimeout(() => emitAndRecord({ sessionId, ...e }), 120 + i * 45))
+    timers.set(sessionId, ids)
+  }
   const timers = new Map<string, number[]>()
   const snapshot: ProjectSnapshot = {
     dir: '/preview/knobe-2003',
@@ -142,6 +203,7 @@ if (!('humanstudy' in window)) {
     ...`This is a browser preview with a scripted agent, so nothing here comes from a model. You asked: “${text.slice(0, 120)}”. In the app, the agent reads the paper and the program, answers with citations, and writes any view or export into the project's artifacts.`
       .split(/(?<= )/)
       .map((w) => ({ type: 'text' as const, text: w })),
+    { type: 'usage', usage: { input: 1800, output: 140, reasoning: 0, cost: 0.004 } },
     { type: 'done' },
   ]
   // Real titles, authors, years and descriptions copied from HumanStudy-Bench's studies_index.json.
@@ -444,16 +506,47 @@ if (!('humanstudy' in window)) {
       },
     },
     kernel: {
-      startSession: async () => 'preview-session',
+      startSession: async () => {
+        const sid = `preview-${++sessionCounter}`
+        sessionThread.set(sid, '')
+        return sid
+      },
       send: async (sessionId, text) => {
         record('agent.turn_start', { metadata: { chars: text.length } })
         record('conversation.user', { metadata: { text } })
-        const ids = script(text).map((e, i) => window.setTimeout(() => emit({ sessionId, ...e }), 120 + i * 45))
-        timers.set(sessionId, ids)
+        recordUser(sessionId, text)
+        let steps = script(text)
+        if (/\brun/i.test(text)) {
+          // Scripted permission prompt: pauses until kernel.reply, like opencode asking before bash.
+          const at = steps.findIndex((e) => e.type === 'tool')
+          const id = `perm-${++sessionCounter}`
+          pendingPermission.set(sessionId, {
+            id,
+            rest: [{ type: 'tool', tool: 'bash', text: 'running', detail: 'python run_simulation.py' }, { type: 'tool', tool: 'bash', text: 'completed', detail: 'python run_simulation.py' }, ...steps.slice(at)],
+          })
+          steps = [
+            ...steps.slice(0, at),
+            { type: 'permission', permission: { id, type: 'bash', title: 'python run_simulation.py', patterns: ['python run_simulation.py'] } },
+          ]
+        }
+        play(sessionId, steps)
       },
       abort: async (sessionId) => {
         timers.get(sessionId)?.forEach((t) => clearTimeout(t))
-        emit({ sessionId, type: 'done' })
+        pendingPermission.delete(sessionId)
+        emitAndRecord({ sessionId, type: 'done' })
+      },
+      reply: async (sessionId, permissionId, response: PermissionReply) => {
+        const p = pendingPermission.get(sessionId)
+        if (!p || p.id !== permissionId) throw new Error('no pending permission')
+        pendingPermission.delete(sessionId)
+        const resolved: Omit<KernelEvent, 'sessionId'> = { type: 'permission', permission: { id: permissionId, type: 'bash', resolved: response } }
+        play(
+          sessionId,
+          response === 'reject'
+            ? [resolved, { type: 'tool', tool: 'bash', text: 'error', detail: 'The user rejected this call' }, { type: 'text', text: 'Understood, I did not run it. ' }, { type: 'done' }]
+            : [resolved, ...p.rest]
+        )
       },
       onEvent: (cb) => {
         listeners.add(cb)
@@ -466,6 +559,49 @@ if (!('humanstudy' in window)) {
     },
     app: { info: async () => ({ version: '0.1.0', platform: 'preview', arch: 'preview' }) },
     menu: { onCommand: () => () => undefined },
+    threads: {
+      list: async () =>
+        [...threadStore.values()]
+          .filter((t) => t.messages.length > 0)
+          .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+          .map((t) => ({ id: t.id, title: t.title, createdAt: t.createdAt, updatedAt: t.updatedAt, messageCount: t.messages.length, usage: { ...t.usage } })),
+      get: async (_dir, id) => {
+        const t = threadStore.get(id)
+        if (!t) throw new Error('no such thread')
+        return structuredClone(t)
+      },
+      create: async () => {
+        const sid = `preview-${++sessionCounter}`
+        const now = new Date().toISOString()
+        const t: Thread = { id: `thr_${sid}`, title: 'New thread', createdAt: now, updatedAt: now, kernel: 'mock', kernelSessionId: sid, messages: [], usage: { input: 0, output: 0, cost: 0 } }
+        threadStore.set(t.id, t)
+        sessionThread.set(sid, t.id)
+        return structuredClone(t)
+      },
+      resume: async (_dir, id) => {
+        const t = threadStore.get(id)
+        if (!t) throw new Error('no such thread')
+        if (!sessionThread.has(t.kernelSessionId)) {
+          // A reload of the preview loses the scripted session: start a new one, keep the transcript.
+          t.kernelSessionId = `preview-${++sessionCounter}`
+          if (t.messages.length) t.resumedWithContext = true
+        }
+        sessionThread.set(t.kernelSessionId, t.id)
+        return structuredClone(t)
+      },
+      rename: async (_dir, id, title) => {
+        const t = threadStore.get(id)
+        if (t) (t.title = title.trim() || t.title), (t.titleSource = 'user'), notifyThread(t)
+      },
+      delete: async (_dir, id) => {
+        threadStore.delete(id)
+        threadChanged.forEach((cb) => cb({ dir: snapshot.dir, id }))
+      },
+      onChanged: (cb) => {
+        threadChanged.add(cb)
+        return () => threadChanged.delete(cb)
+      },
+    },
     telemetry: {
       status: async () => researchStatus(),
       setConsent: async ({ usage, content }) => {

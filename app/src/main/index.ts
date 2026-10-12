@@ -20,6 +20,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
+import { createThreads, threads } from './threads'
 import type { Kernel, KernelEvent } from './kernel-types'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings } from '../preload/types'
 
@@ -50,7 +51,10 @@ function currentKernel(): Kernel {
   if (!kernel) {
     kernel = loadKernel()
     allKernels.add(kernel)
-    kernel.onEvent((e: KernelEvent) => broadcast('kernel:event', e))
+    kernel.onEvent((e: KernelEvent) => {
+      threads().onEvent(e) // record before the renderer hears about it
+      broadcast('kernel:event', e)
+    })
     kernel.onEvent(telemetry.onKernelEvent)
     kernel.onEvent(notify.onKernelEvent)
   }
@@ -195,6 +199,13 @@ function broadcast(channel: string, payload: unknown): void {
   for (const w of BrowserWindow.getAllWindows()) w.webContents.send(channel, payload)
 }
 
+/** Project folder a threads call may touch: under the projects folder or opened with the Open dialog. */
+function threadDir(dir: string): string {
+  const d = resolve(dir)
+  if (!isAllowed(d)) throw new Error('project folder is not under the projects folder and was not opened')
+  return d
+}
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1440,
@@ -314,7 +325,7 @@ app.whenReady().then(() => {
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
     const before = getSettings()
     const next = setSettings(patch)
-    if (next.model !== before.model) markKernelStale()
+    if (next.model !== before.model || next.permission !== before.permission) markKernelStale()
     syncAccess()
     return next
   })
@@ -344,7 +355,8 @@ app.whenReady().then(() => {
     return afterAccount(await acct.unlock(code))
   })
 
-  ipcMain.handle('kernel:startSession', async (_e, dir: string) => {
+  // One place that starts kernel sessions: the legacy kernel:startSession and threads.create/resume.
+  async function startKernelSession(dir: string): Promise<string> {
     syncAccess()
     // No opencode installed: fetch the managed one first, and replace a mock kernel created before it arrived.
     if (process.env.HUMANSTUDY_KERNEL !== 'mock') {
@@ -365,16 +377,46 @@ app.whenReady().then(() => {
     notify.noteSession(id, dir)
     telemetry.trackSessionStart(id, dir, kernelName(k), started)
     return id
+  }
+  createThreads(
+    {
+      kernelName: () => kernelName(currentKernel()),
+      start: startKernelSession,
+      resume: async (dir, sid) => {
+        const k = sessionKernel.get(sid) ?? currentKernel()
+        const alive = await k.resumeSession(dir, sid)
+        if (alive) sessionKernel.set(alive, k)
+        return alive
+      },
+    },
+    (e) => broadcast('threads:changed', e)
+  )
+  ipcMain.handle('kernel:startSession', async (_e, dir: string) => {
+    const id = await startKernelSession(dir)
+    threads().adopt(dir, id) // recorded as a thread once the first message is sent
+    return id
   })
   ipcMain.handle('kernel:send', (_e, id: string, text: string) => {
     const k = kernelFor(id)
     telemetry.trackTurnStart(id, text)
-    return k.send(id, text)
+    return k.send(id, threads().beforeSend(id, text))
   })
   ipcMain.handle('kernel:abort', (_e, id: string) => {
     telemetry.trackTurnAbort(id)
     return kernelFor(id).abort(id)
   })
+  ipcMain.handle('kernel:reply', (_e, id: string, permissionId: string, response: 'once' | 'always' | 'reject') => {
+    if (response !== 'once' && response !== 'always' && response !== 'reject') throw new Error('bad permission response')
+    return kernelFor(id).reply(id, permissionId, response)
+  })
+  ipcMain.handle('threads:list', (_e, dir: string) => threads().list(threadDir(dir)))
+  ipcMain.handle('threads:get', (_e, dir: string, id: string) => threads().get(threadDir(dir), id))
+  ipcMain.handle('threads:create', (_e, dir: string) => threads().create(threadDir(dir)))
+  ipcMain.handle('threads:resume', (_e, dir: string, id: string) => threads().resume(threadDir(dir), id))
+  ipcMain.handle('threads:rename', (_e, dir: string, id: string, title: string) =>
+    threads().rename(threadDir(dir), id, title)
+  )
+  ipcMain.handle('threads:delete', (_e, dir: string, id: string) => threads().delete(threadDir(dir), id))
   telemetry.registerTelemetry()
 
   ipcMain.handle('kernel:installStatus', () => installStatus())
@@ -402,6 +444,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   cancelInstall()
+  void threads().flush().catch(() => undefined)
   for (const k of allKernels) {
     const d = (k as { dispose?: () => Promise<void> }).dispose
     if (d) void d.call(k).catch(() => undefined)

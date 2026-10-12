@@ -1,11 +1,97 @@
 // Types shared between preload and renderer (the window.humanstudy bridge).
-export type KernelEventType = 'text' | 'tool' | 'status' | 'done' | 'error'
+export type KernelEventType = 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title'
+
+export type PermissionReply = 'once' | 'always' | 'reject'
+
+/** A tool permission the agent is waiting on (opencode `permission.asked`). */
+export interface KernelPermission {
+  /** Pass to `kernel.reply`. */
+  id: string
+  /** What is being asked for: bash | edit | write | webfetch | external_directory | ... */
+  type: string
+  /** Short human-readable description (command, file path, URL). */
+  title?: string
+  patterns?: string[]
+  metadata?: Record<string, unknown>
+  /** Set on the follow-up event once the request was answered (by the user, auto-approval or elsewhere). */
+  resolved?: PermissionReply
+}
+
+/** Tokens and cost of one finished assistant message. */
+export interface KernelUsage {
+  input: number
+  output: number
+  reasoning?: number
+  cost?: number
+}
 export interface KernelEvent {
   sessionId: string
   type: KernelEventType
   text?: string
   tool?: string
   detail?: string
+  /** type 'permission' */
+  permission?: KernelPermission
+  /** type 'usage' */
+  usage?: KernelUsage
+}
+
+/** One piece of a thread message; the same shape the agent pane renders. */
+export type ThreadPart =
+  | { kind: 'text'; text: string }
+  | { kind: 'tool'; tool: string; detail?: string; state?: string }
+  | { kind: 'error'; text: string }
+  | {
+      kind: 'permission'
+      id: string
+      type: string
+      title?: string
+      patterns?: string[]
+      /** Absent while the agent is still waiting for an answer. */
+      resolved?: PermissionReply
+    }
+
+export interface ThreadMessage {
+  id: string
+  role: 'user' | 'assistant'
+  parts: ThreadPart[]
+  /** ISO time the message started. */
+  at: string
+}
+
+export interface ThreadUsage {
+  input: number
+  output: number
+  cost: number
+}
+
+/** A conversation with the agent, stored in <project>/.humanstudy/threads/<id>.json. */
+export interface Thread {
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  /** Kernel implementation that holds the session ("opencode" | "mock"). */
+  kernel: string
+  /** Live kernel session; send/abort/reply on it with window.humanstudy.kernel. Empty until started. */
+  kernelSessionId: string
+  messages: ThreadMessage[]
+  usage: ThreadUsage
+  /** Set when the kernel session was lost and a new one was started; the stored transcript is sent as
+   *  context with the next prompt. */
+  resumedWithContext?: boolean
+  /** Who set the title: the first user message, the kernel, or the user. */
+  titleSource?: 'auto' | 'kernel' | 'user'
+}
+
+/** Thread without its messages, for the list. */
+export interface ThreadSummary {
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  messageCount: number
+  usage: ThreadUsage
 }
 
 export interface ProjectFile {
@@ -190,6 +276,8 @@ export interface HumanStudyApi {
     startSession(projectDir: string): Promise<string>
     send(sessionId: string, text: string): Promise<void>
     abort(sessionId: string): Promise<void>
+    /** Answer a `permission` event: once = Allow once, always = Allow for this project, reject = Deny. */
+    reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void>
     onEvent(cb: (e: KernelEvent) => void): () => void
     install: {
       status(): Promise<KernelInstallStatus>
@@ -201,6 +289,19 @@ export interface HumanStudyApi {
   }
   menu: {
     onCommand(cb: (c: MenuCommand) => void): () => void
+  }
+  threads: {
+    /** Newest first; threads without messages are not listed. */
+    list(dir: string): Promise<ThreadSummary[]>
+    get(dir: string, id: string): Promise<Thread>
+    /** Starts a kernel session and returns the (still empty) thread; it is saved with its first message. */
+    create(dir: string): Promise<Thread>
+    /** Re-attaches to the thread's kernel session, or starts a new one (resumedWithContext). Returns the thread with a live kernelSessionId. */
+    resume(dir: string, id: string): Promise<Thread>
+    rename(dir: string, id: string, title: string): Promise<void>
+    delete(dir: string, id: string): Promise<void>
+    /** Fires when a thread is created, changes (new message, title, usage) or is deleted. */
+    onChanged(cb: (e: { dir: string; id: string }) => void): () => void
   }
   updates: {
     status(): Promise<UpdateStatus>

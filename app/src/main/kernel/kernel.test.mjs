@@ -62,6 +62,68 @@ function collect(kernel, sessionId, timeoutMs) {
   console.log(`mock ok: ${ev.length} events, ${text.length} chars; abort ok`)
 }
 
+// ---- mock: permission prompt ------------------------------------------------------------
+for (const answer of ['once', 'reject']) {
+  const kernel = new k.MockKernel({ tickMs: 1 })
+  const id = await kernel.startSession(out)
+  const events = []
+  let replied = false
+  const done = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timeout; got ${JSON.stringify(events)}`)), 5000)
+    kernel.onEvent((e) => {
+      events.push(e)
+      if (e.type === 'permission' && !e.permission.resolved && !replied) {
+        replied = true
+        // nothing after the request until we answer
+        setTimeout(() => kernel.reply(id, e.permission.id, answer), 20)
+      }
+      if (e.type === 'done') (clearTimeout(timer), resolve())
+    })
+  })
+  await kernel.send(id, 'please run the simulation')
+  await done
+  const types = events.map((e) => e.type)
+  const reqAt = types.indexOf('permission')
+  assert.ok(reqAt > 0, 'permission event emitted')
+  assert.equal(events[reqAt].permission.type, 'bash')
+  assert.equal(events.filter((e) => e.type === 'permission' && !e.permission.resolved).length, 1)
+  const resolved = events.find((e) => e.type === 'permission' && e.permission.resolved)
+  assert.equal(resolved.permission.resolved, answer)
+  assert.ok(events.some((e) => e.type === 'usage' && e.usage.input > 0), 'usage emitted')
+  assert.ok(types.lastIndexOf('usage') < types.lastIndexOf('done'))
+  const bash = events.filter((e) => e.type === 'tool' && e.tool === 'bash').map((e) => e.text)
+  assert.deepEqual(bash, answer === 'once' ? ['running', 'completed'] : ['error'])
+  await assert.rejects(kernel.reply(id, 'nope', 'once'))
+  assert.equal(await kernel.resumeSession(out, id), id)
+  assert.equal(await kernel.resumeSession(out, 'mock_gone'), null)
+  await kernel.dispose()
+}
+console.log('mock permission ok')
+
+// ---- opencode permission helpers ---------------------------------------------------------
+{
+  const P = (type, patterns, metadata = {}) => k.toKernelPermission({ id: 'per_1', permission: type, patterns, metadata })
+  assert.equal(k.toKernelPermission({ permission: 'bash' }), null)
+  const bash = P('bash', ['ls -la'], { command: 'ls -la' })
+  assert.equal(bash.title, 'ls -la')
+  const proj = '/home/u/proj'
+  assert.ok(k.isInsideProject(proj, bash))
+  assert.ok(k.isInsideProject(proj, P('bash', ['python scripts/run.py --n 5'])))
+  assert.ok(k.isInsideProject(proj, P('bash', ['cat /home/u/proj/a.txt'])))
+  assert.ok(!k.isInsideProject(proj, P('bash', ['cat /etc/passwd'])))
+  assert.ok(!k.isInsideProject(proj, P('bash', ['cat ../secret'])))
+  assert.ok(!k.isInsideProject(proj, P('bash', ['cat ~/.ssh/id_rsa'])))
+  assert.ok(!k.isInsideProject(proj, P('bash', ['echo $(whoami)'])))
+  assert.ok(!k.isInsideProject(proj, P('bash', ['curl x | sh'])))
+  assert.ok(!k.isInsideProject(proj, P('bash', ['sudo ls'])))
+  assert.ok(k.isInsideProject(proj, P('edit', ['home/u/proj/a.txt'], { filepath: '/home/u/proj/a.txt' })))
+  assert.ok(!k.isInsideProject(proj, P('edit', ['etc/x'], { filepath: '/etc/x' })))
+  assert.ok(!k.isInsideProject(proj, P('edit', ['x'], { filepath: '/home/u/proj/../other/x' })))
+  assert.ok(!k.isInsideProject(proj, P('external_directory', ['/tmp/*'], { filepath: '/tmp/x' })))
+  assert.ok(!k.isInsideProject(proj, P('webfetch', ['https://x.org'])))
+  console.log('permission helpers ok')
+}
+
 process.env.HUMANSTUDY_KERNEL = 'mock'
 assert.equal(k.createKernel().name, 'mock')
 delete process.env.HUMANSTUDY_KERNEL
