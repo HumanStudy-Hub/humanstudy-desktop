@@ -10,7 +10,8 @@
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "preview:web": "vite --config vite.web.config.ts",
-    "dist:mac": "electron-vite build && electron-builder --mac --arm64"
+    "dist:mac": "electron-vite build && node scripts/dist.mjs --mac --publish never",
+    "dist:win": "electron-vite build && node scripts/dist.mjs --win --publish never"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",
@@ -41,20 +42,72 @@
       "out/**",
       "package.json"
     ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "HumanStudy-Hub",
+        "repo": "humanstudy-desktop",
+        "releaseType": "draft"
+      }
+    ],
     "mac": {
       "category": "public.app-category.education",
       "target": [
-        "dmg",
-        "zip"
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ],
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "identity": "Haoyang Shang (ZS2UVBACK8)"
+      "identity": "Haoyang Shang (ZS2UVBACK8)",
+      "icon": "build/icon.icns",
+      "notarize": true,
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     },
     "dmg": {
       "title": "HumanStudy"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-win-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "HumanStudy",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
     }
   }
 }
