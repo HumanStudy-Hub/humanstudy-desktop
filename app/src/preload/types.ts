@@ -27,7 +27,51 @@ export interface ProjectSnapshot {
   pdf: ProjectFile | null
 }
 
+export interface ProjectSummary {
+  dir: string
+  name: string
+  /** ISO time of the most recent change to the project folder. */
+  updatedAt: string
+  hasPaper: boolean
+  hasProgram: boolean
+  artifactCount: number
+}
+
+export type Theme = 'light' | 'dark' | 'system'
+export interface Settings {
+  theme: Theme
+  /** What Enter does while the agent is running. */
+  busyEnter: 'queue' | 'interrupt'
+  /** Default permission for new sessions: ask before running commands, or allow inside the project. */
+  permission: 'ask' | 'project'
+  /** Model id used by the kernel, e.g. anthropic/claude-haiku-5.5. */
+  model: string
+  /** Folder that holds projects. */
+  projectsRoot: string
+}
+export interface ProviderStatus {
+  id: 'openrouter' | 'anthropic' | 'deepseek'
+  label: string
+  configured: boolean
+}
+
 export interface HumanStudyApi {
+  projects: {
+    list(): Promise<ProjectSummary[]>
+    /** Creates a project folder (copying the PDF to paper.pdf when given) and returns its dir. */
+    create(input: { name: string; pdfPath?: string; sample?: boolean }): Promise<string>
+    pickPdf(): Promise<string | null>
+    rename(dir: string, name: string): Promise<string>
+    /** Moves the project folder to the Trash. */
+    trash(dir: string): Promise<void>
+  }
+  settings: {
+    get(): Promise<Settings>
+    set(patch: Partial<Settings>): Promise<Settings>
+    providers(): Promise<ProviderStatus[]>
+    /** Stores the key encrypted with the OS keychain (Electron safeStorage); empty string removes it. */
+    setKey(provider: ProviderStatus['id'], key: string): Promise<ProviderStatus[]>
+  }
   project: {
     open(): Promise<string | null>
     read(dir: string): Promise<ProjectSnapshot>
