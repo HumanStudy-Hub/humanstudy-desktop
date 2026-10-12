@@ -55,6 +55,24 @@ export interface ProviderStatus {
   configured: boolean
 }
 
+/** A study in the community library (HumanStudy-Bench on GitHub). Only real fields; no invented metrics. */
+export interface CommunityStudy {
+  id: string
+  title: string
+  authors: string[]
+  year: number | null
+  description: string
+  contributors: { name: string; github?: string }[]
+}
+export interface CommunityStudyDetail extends CommunityStudy {
+  /** Files in the study folder, e.g. source/materials/*.json, the paper PDF. */
+  files: { path: string; size: number; url: string }[]
+  /** Recent commits touching the study folder. */
+  activity: { sha: string; message: string; author: string; avatarUrl?: string; date: string; url: string }[]
+  repoUrl: string
+  discussionsUrl: string
+}
+
 export interface HumanStudyApi {
   projects: {
     list(): Promise<ProjectSummary[]>
@@ -64,6 +82,14 @@ export interface HumanStudyApi {
     rename(dir: string, name: string): Promise<string>
     /** Moves the project folder to the Trash. */
     trash(dir: string): Promise<void>
+  }
+  community: {
+    /** The library index; cached, refreshed when online. */
+    studies(): Promise<CommunityStudy[]>
+    study(id: string): Promise<CommunityStudyDetail>
+    /** Creates a local project from the study (paper, materials, description) and returns its dir. */
+    fork(id: string): Promise<string>
+    openExternal(url: string): Promise<void>
   }
   settings: {
     get(): Promise<Settings>
