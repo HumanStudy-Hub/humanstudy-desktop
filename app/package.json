@@ -9,7 +9,8 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "preview:web": "vite --config vite.web.config.ts"
+    "preview:web": "vite --config vite.web.config.ts",
+    "dist:mac": "electron-vite build && electron-builder --mac --arm64"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",
@@ -17,6 +18,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^4.7.0",
     "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
     "typescript": "^5.9.3",
     "vite": "^5.4.21"
@@ -25,5 +27,33 @@
     "pdfjs-dist": "^4.10.38",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
+  },
+  "productName": "HumanStudy",
+  "build": {
+    "appId": "org.humanstudy-hub.desktop",
+    "productName": "HumanStudy",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.education",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "identity": "Haoyang Shang (ZS2UVBACK8)"
+    },
+    "dmg": {
+      "title": "HumanStudy"
+    }
   }
 }

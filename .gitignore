@@ -3,4 +3,4 @@ out/
 dist/
 .DS_Store
 *.log
-src/renderer/public/preview/
+app/src/renderer/public/preview/
