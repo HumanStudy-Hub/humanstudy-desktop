@@ -38,6 +38,8 @@ const api: HumanStudyApi = {
     open: () => ipcRenderer.invoke('project:open'),
     read: (dir) => ipcRenderer.invoke('project:read', dir),
     reveal: (path) => ipcRenderer.invoke('project:reveal', path),
+    readText: (path) => ipcRenderer.invoke('project:readText', path),
+    writeText: (path, text) => ipcRenderer.invoke('project:writeText', path, text),
     onChanged: (cb) => listen<string>('project:changed', cb),
   },
   kernel: {

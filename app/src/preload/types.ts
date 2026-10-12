@@ -17,6 +17,20 @@ export interface ProjectFile {
   ext: string
 }
 
+/** One entry of the project file tree (the Program tab). Folders carry children; files carry a url. */
+export interface ProjectEntry {
+  name: string
+  /** Absolute path on disk. */
+  path: string
+  /** Path relative to the project folder, with forward slashes. */
+  rel: string
+  kind: 'file' | 'dir'
+  ext: string
+  url?: string
+  size?: number
+  children?: ProjectEntry[]
+}
+
 export interface ProjectSnapshot {
   dir: string
   name: string
@@ -25,6 +39,8 @@ export interface ProjectSnapshot {
   artifacts: ProjectFile[]
   exports: ProjectFile[]
   pdf: ProjectFile | null
+  /** Everything in the project folder except app/kernel internals (.humanstudy, .opencode, caches). */
+  tree: ProjectEntry[]
 }
 
 export interface ProjectSummary {
@@ -136,6 +152,10 @@ export interface HumanStudyApi {
     open(): Promise<string | null>
     read(dir: string): Promise<ProjectSnapshot>
     reveal(path: string): Promise<void>
+    /** Text of a file inside an opened project (UTF-8, at most 4 MB). */
+    readText(path: string): Promise<string>
+    /** Writes a file inside an opened project, creating folders as needed. program.json must stay valid JSON. */
+    writeText(path: string, text: string): Promise<void>
     onChanged(cb: (dir: string) => void): () => void
   }
   kernel: {

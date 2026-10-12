@@ -7,6 +7,7 @@ import sample from '../shared/sample-program.json'
 
 if (!('humanstudy' in window)) {
   const listeners = new Set<(e: KernelEvent) => void>()
+  const changed = new Set<(dir: string) => void>()
   const emit = (e: KernelEvent) => listeners.forEach((cb) => cb(e))
   const timers = new Map<string, number[]>()
   const snapshot: ProjectSnapshot = {
@@ -16,7 +17,45 @@ if (!('humanstudy' in window)) {
     artifacts: [],
     exports: [],
     pdf: { name: 'paper.pdf', path: '/preview/paper.pdf', url: '/preview/paper.pdf', ext: 'pdf' },
+    tree: [],
   }
+  // Files of the preview project, editable in memory so the Program tab can be tried out.
+  const texts = new Map<string, string>([
+    ['/preview/knobe-2003/program.json', JSON.stringify(sample, null, 2) + '\n'],
+    ['/preview/knobe-2003/AGENTS.md', '# HumanStudy researcher agent\n\n(Preview copy of the pack instructions.)\n'],
+    ['/preview/knobe-2003/artifacts/participant-flow.html', '<!doctype html><meta charset="utf-8"><body style="font:14px system-ui;padding:24px"><h1>Participant flow</h1><p>A view the agent wrote (preview).</p>'],
+    ['/preview/knobe-2003/artifacts/2026-10-11-change.md', '# Changes\n\n- material-1-harm: wording corrected to match p. 2.\n'],
+  ])
+  const buildTree = () => {
+    const root = snapshot.dir
+    const dirs = new Map<string, import('../preload/types').ProjectEntry>()
+    const top: import('../preload/types').ProjectEntry[] = []
+    const folder = (rel: string): import('../preload/types').ProjectEntry[] => {
+      if (!rel) return top
+      let d = dirs.get(rel)
+      if (!d) {
+        const name = rel.split('/').pop()!
+        d = { name, path: `${root}/${rel}`, rel, kind: 'dir', ext: '', children: [] }
+        dirs.set(rel, d)
+        folder(rel.split('/').slice(0, -1).join('/')).push(d)
+      }
+      return d.children!
+    }
+    const files = [...texts.keys(), '/preview/knobe-2003/paper.pdf']
+    for (const path of files) {
+      const rel = path.slice(root.length + 1)
+      const name = rel.split('/').pop()!
+      folder(rel.split('/').slice(0, -1).join('/')).push({ name, path, rel, kind: 'file', ext: name.split('.').pop()!.toLowerCase(), url: name === 'paper.pdf' ? '/preview/paper.pdf' : 'data:text/plain;charset=utf-8,' + encodeURIComponent(texts.get(path) ?? ''), size: (texts.get(path) ?? '').length })
+    }
+    const sortTree = (list: import('../preload/types').ProjectEntry[]) => {
+      list.sort((a, b) => Number(b.kind === 'dir') - Number(a.kind === 'dir') || a.name.localeCompare(b.name))
+      list.forEach((e) => e.children && sortTree(e.children))
+    }
+    sortTree(top)
+    snapshot.tree = top
+    snapshot.artifacts = (dirs.get('artifacts')?.children ?? []).filter((e) => e.kind === 'file').map((e) => ({ name: e.name, path: e.path, url: e.url!, ext: e.ext }))
+  }
+  buildTree()
   const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString()
   const projects: ProjectSummary[] = [
     { dir: snapshot.dir, name: 'Knobe 2003 · side-effect effect', updatedAt: ago(14), hasPaper: true, hasProgram: true, artifactCount: 2 },
@@ -380,10 +419,28 @@ if (!('humanstudy' in window)) {
           artifacts: [],
           exports: [],
           pdf: p?.hasPaper ? snapshot.pdf : null,
+          tree: [],
         }
       },
       reveal: async () => undefined,
-      onChanged: () => () => undefined,
+      readText: async (path) => {
+        const t = texts.get(path)
+        if (t === undefined) throw new Error('no such file in the preview')
+        return t
+      },
+      writeText: async (path, text) => {
+        if (path.endsWith('program.json')) {
+          JSON.parse(text)
+          snapshot.program = JSON.parse(text)
+        }
+        texts.set(path, text)
+        buildTree()
+        changed.forEach((cb) => cb(snapshot.dir))
+      },
+      onChanged: (cb) => {
+        changed.add(cb)
+        return () => changed.delete(cb)
+      },
     },
     kernel: {
       startSession: async () => 'preview-session',

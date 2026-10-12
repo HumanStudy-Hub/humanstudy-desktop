@@ -144,8 +144,11 @@ export class OpencodeKernel implements Kernel {
     const bin = opts.binary ?? findOpencode()
     if (!bin) throw new Error('opencode binary not found')
     this.binary = bin
+    // An empty provider means "do not force a model": opencode then uses the model from the user's
+    // own opencode config, which is the only thing that can work without a key or a Hub account.
     this.provider = opts.provider ?? process.env.HUMANSTUDY_PROVIDER ?? DEFAULT_PROVIDER
     this.model = opts.model ?? process.env.HUMANSTUDY_MODEL ?? DEFAULT_MODEL
+    if (this.provider === 'openrouter' && !process.env.OPENROUTER_API_KEY && !opts.provider) this.provider = ''
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 30_000
     process.once('exit', this.exitHook)
   }
@@ -174,7 +177,7 @@ export class OpencodeKernel implements Kernel {
     try {
       await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
         parts: [{ type: 'text', text }],
-        model: { providerID: this.provider, modelID: this.model },
+        ...(this.provider ? { model: { providerID: this.provider, modelID: this.model } } : {}),
       })
     } catch (err) {
       s.inFlight = false
@@ -238,11 +241,10 @@ export class OpencodeKernel implements Kernel {
   }
 
   private configContent(): string {
-    const model = `${this.provider}/${this.model}`
+    const model = this.provider ? `${this.provider}/${this.model}` : undefined
     const cfg: Record<string, unknown> = {
       $schema: 'https://opencode.ai/config.json',
-      model,
-      small_model: model, // otherwise title generation goes to opencode's own default model
+      ...(model ? { model, small_model: model } : {}), // small_model: otherwise titles go to opencode's own default
       autoupdate: false,
       share: 'disabled',
     }

@@ -88,12 +88,14 @@ export function applyAccount(): string {
     process.env.HUMANSTUDY_HOSTED_MODELS = JSON.stringify(hosted.models)
     process.env.HUMANSTUDY_DESKTOP_KEY = hosted.key
   } else {
-    delete process.env.HUMANSTUDY_PROVIDER
+    // Own OpenRouter key: route through openrouter. Nothing at all: leave the provider empty so the
+    // kernel does not force a model and opencode falls back to the user's own opencode setup.
+    process.env.HUMANSTUDY_PROVIDER = process.env.OPENROUTER_API_KEY ? 'openrouter' : ''
     delete process.env.HUMANSTUDY_HOSTED_BASEURL
     delete process.env.HUMANSTUDY_HOSTED_MODELS
     delete process.env.HUMANSTUDY_DESKTOP_KEY
     process.env.HUMANSTUDY_MODEL = settings.model
   }
   const keyId = hosted ? createHash('sha256').update(hosted.key).digest('hex').slice(0, 12) : ''
-  return hosted ? `hosted|${hosted.model}|${hosted.models.join(',')}|${keyId}` : `own|${settings.model}`
+  return hosted ? `hosted|${hosted.model}|${hosted.models.join(',')}|${keyId}` : `${process.env.HUMANSTUDY_PROVIDER || 'opencode'}|${settings.model}`
 }

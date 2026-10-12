@@ -13,12 +13,12 @@ import { createProject, isInside, listProjects, renameProject, trashProject } fr
 import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
 import { checkForUpdates, installUpdate, startUpdates, updateStatus } from './updates'
 import { existsSync, watch, type FSWatcher } from 'node:fs'
-import { readFile, readdir } from 'node:fs/promises'
-import { basename, extname, join, resolve, sep } from 'node:path'
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
 import type { Kernel, KernelEvent } from './kernel-types'
-import type { ProjectFile, ProjectSnapshot, Settings } from '../preload/types'
+import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings } from '../preload/types'
 
 // ---- kernel: accept a factory, a default export, a class, or an instance -------------
 function loadKernel(): Kernel {
@@ -103,6 +103,41 @@ async function listDir(dir: string): Promise<ProjectFile[]> {
   })
 }
 
+// The Program tab shows the project as files, like an editor's explorer. App and kernel internals
+// stay out of it; the agent's skills live in .opencode and the marker in .humanstudy.
+const HIDDEN_DIRS = new Set(['.humanstudy', '.opencode', 'node_modules', '__pycache__', '.git', '.venv', '.DS_Store'])
+const TREE_LIMIT = 3000
+async function listTree(root: string, dir: string, depth: number, count: { n: number }): Promise<ProjectEntry[]> {
+  if (!existsSync(dir) || depth > 8) return []
+  const entries = (await readdir(dir, { withFileTypes: true })).filter((d) => !HIDDEN_DIRS.has(d.name) && !d.name.startsWith('.'))
+  entries.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
+  const out: ProjectEntry[] = []
+  for (const d of entries) {
+    if (count.n++ > TREE_LIMIT) break
+    const path = join(dir, d.name)
+    const rel = relative(root, path).split(sep).join('/')
+    if (d.isDirectory()) out.push({ name: d.name, path, rel, kind: 'dir', ext: '', children: await listTree(root, path, depth + 1, count) })
+    else if (d.isFile()) {
+      let size: number | undefined
+      try {
+        size = (await stat(path)).size
+      } catch {
+        /* unreadable */
+      }
+      out.push({ name: d.name, path, rel, kind: 'file', ext: extname(d.name).slice(1).toLowerCase(), url: toUrl(path), size })
+    }
+  }
+  return out
+}
+
+const TEXT_LIMIT = 4 * 1024 * 1024
+function ownedPath(p: string): string {
+  const q = resolve(p)
+  if (!isAllowed(q)) throw new Error('that file is outside the opened projects')
+  if (q.split(sep).includes('.humanstudy')) throw new Error('app state is not editable')
+  return q
+}
+
 async function readProject(dir: string): Promise<ProjectSnapshot> {
   dir = resolve(dir)
   if (!isInside(getSettings().projectsRoot, dir) && !allowedRoots.has(dir))
@@ -126,6 +161,7 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
     artifacts: await listDir(join(dir, 'artifacts')),
     exports: await listDir(join(dir, 'exports')),
     pdf: pdfPath ? { name: 'paper.pdf', path: pdfPath, url: toUrl(pdfPath), ext: 'pdf' } : null,
+    tree: await listTree(dir, dir, 0, { n: 0 }),
   }
 }
 
@@ -216,6 +252,19 @@ app.whenReady().then(() => {
     return snap
   })
   ipcMain.handle('project:reveal', (_e, p: string) => shell.showItemInFolder(p))
+  ipcMain.handle('project:readText', async (_e, p: string) => {
+    const q = ownedPath(p)
+    if ((await stat(q)).size > TEXT_LIMIT) throw new Error('file is larger than 4 MB')
+    return readFile(q, 'utf8')
+  })
+  ipcMain.handle('project:writeText', async (_e, p: string, text: string) => {
+    const q = ownedPath(p)
+    if (typeof text !== 'string' || text.length > TEXT_LIMIT) throw new Error('text is too large')
+    if (basename(q) === 'program.json') JSON.parse(text) // never leave the program unreadable
+    await mkdir(dirname(q), { recursive: true })
+    await writeFile(q, text, 'utf8')
+    telemetry.track('file.edited', { target: extname(q).slice(1) || 'file' })
+  })
 
   ipcMain.handle('projects:list', () => listProjects())
   ipcMain.handle('projects:create', async (_e, input: { name: string; pdfPath?: string; sample?: boolean }) => {
