@@ -747,6 +747,9 @@ def intentional(harm: float, help_: float) -> float:
         markSent()
         return researchStatus()
       },
+      sessionId: async () => 'browser-preview-session',
+      replayChunk: async () => false,
+      exportMyData: async () => null,
     },
     files: { pathOf: (file) => file.name },
     updates: {

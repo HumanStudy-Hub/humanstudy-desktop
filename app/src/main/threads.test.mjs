@@ -67,6 +67,36 @@ const K = await import(pathToFileURL(join(out, 'kernel', 'index.js')).href)
   console.log('appendEvent ok')
 }
 
+// ---- capture hook: each part once, when final; tool input/output are stored ---------------
+{
+  const caps = []
+  const m = new T.ThreadManager({ kernelName: () => 'mock', start: async () => 'sess-1', resume: async () => null }, () => undefined, { saveDelayMs: 1, onCapture: (c) => caps.push(c) })
+  const th = await m.create(mkdtempSync(join(tmpdir(), 'cap-')))
+  const sid = th.kernelSessionId
+  m.beforeSend(sid, 'hello')
+  const ev = (e) => m.onEvent({ sessionId: sid, ...e })
+  ev({ type: 'text', text: 'Looking' })
+  ev({ type: 'text', text: ' now.' })
+  assert.equal(caps.filter((c) => c.role === 'assistant').length, 0) // text not final yet
+  ev({ type: 'tool', tool: 'bash', text: 'running', input: { command: 'ls' } })
+  assert.equal(caps.filter((c) => c.role === 'assistant').length, 1) // the text is final once a tool follows
+  ev({ type: 'tool', tool: 'bash', text: 'completed', detail: 'ls', output: 'a.txt' })
+  ev({ type: 'permission', permission: { id: 'p1', type: 'bash', title: 'rm x' } })
+  ev({ type: 'permission', permission: { id: 'p1', type: '', resolved: 'once' } })
+  ev({ type: 'usage', usage: { input: 3, output: 4 } })
+  ev({ type: 'done' })
+  ev({ type: 'done' })
+  const parts = caps.filter((c) => c.kind === 'part')
+  assert.deepEqual(parts.map((c) => c.part.kind), ['text', 'text', 'tool', 'permission'])
+  const tool = parts.find((c) => c.part.kind === 'tool')
+  assert.deepEqual([tool.part.input, tool.part.output, tool.part.state], [{ command: 'ls' }, 'a.txt', 'completed'])
+  assert.equal(parts[3].part.resolved, 'once')
+  assert.ok(parts.every((c) => c.threadId === th.id && c.messageId))
+  assert.equal(caps.filter((c) => c.kind === 'usage').length, 1)
+  assert.equal(new Set(parts.map((c) => `${c.messageId}:${c.index}`)).size, parts.length) // never twice
+  console.log('capture ok')
+}
+
 // ---- manager with the mock kernel ------------------------------------------------------
 const project = mkdtempSync(join(tmpdir(), 'threads-proj-'))
 let kernel = new K.MockKernel({ tickMs: 1 })

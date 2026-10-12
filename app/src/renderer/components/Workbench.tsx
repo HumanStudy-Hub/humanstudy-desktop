@@ -4,7 +4,7 @@ import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState,
 import ProgramDocument, { viewStudies, type ProgramDocumentProps } from '../program/ProgramDocument'
 import { validateHumanProgram, type HumanProgram } from '../../shared/human-program'
 import type { ProjectEntry, ProjectSnapshot } from '../../preload/types'
-import { track } from '../telemetry'
+import { lap, track } from '../telemetry'
 import { FileView } from './FileView'
 import { Explorer, flatten } from './Explorer'
 import type { SelectedItem } from '../program/labels'
@@ -97,6 +97,22 @@ export function Workbench({ ref, project, selectedItems, onClearSelection, onAsk
     })
   }, [studies, fileByPath, dirty, program, update])
 
+  // Tab dwell: when the active tab changes, record how long the previous one was in front.
+  const prevTab = useRef<TabId | null>(null)
+  useEffect(() => {
+    const was = prevTab.current
+    const now = layout.active
+    if (was === now) return
+    const dwell = lap('tab')
+    if (was !== null || now !== null)
+      track('tab.switch', {
+        target: now ? tabKind(now, fileByPath) : 'none',
+        durationMs: was ? dwell : undefined,
+        metadata: { from: was ? tabKind(was, fileByPath) : null },
+      })
+    prevTab.current = now
+  }, [layout.active, fileByPath])
+
   const open = (id: TabId) => {
     track('tab.open', { target: id.startsWith('file:') ? `file.${fileByPath.get(id.slice(5))?.ext ?? ''}` : 'study' })
     update((l) => ({ ...l, tabs: l.tabs.includes(id) ? l.tabs : [...l.tabs, id], active: id }))
@@ -116,6 +132,7 @@ export function Workbench({ ref, project, selectedItems, onClearSelection, onAsk
   }))
   const activate = (id: TabId) => update((l) => (l.active === id ? l : { ...l, active: id }))
   const close = (id: TabId) => {
+    track('tab.close', { target: tabKind(id, fileByPath), metadata: { dirty: id.startsWith('file:') && dirty.has(id.slice(5)) } })
     if (id.startsWith('file:') && dirty.has(id.slice(5)) && !window.confirm('Discard unsaved changes to this file?')) return
     setDirty((d) => {
       if (!d.has(id.slice(5))) return d
@@ -145,6 +162,7 @@ export function Workbench({ ref, project, selectedItems, onClearSelection, onAsk
       docProps.onSource(`file:${e.rel}`, { page: 1, quote: '', verified: true })
       return
     }
+    track('file.open', { target: e.rel, metadata: { ext: e.ext, size: e.size ?? null } })
     open(`file:${e.path}`)
   }
 
@@ -183,7 +201,7 @@ export function Workbench({ ref, project, selectedItems, onClearSelection, onAsk
           aria-pressed={layout.explorer}
           title="Program: the project's files"
           onClick={() => {
-            track(layout.explorer ? 'explorer.hide' : 'explorer.show')
+            track(layout.explorer ? 'explorer.hide' : 'explorer.show', { durationMs: lap('explorer') })
             update((l) => ({ ...l, explorer: !l.explorer }))
           }}
         >
@@ -330,4 +348,9 @@ function Empty({ title, body }: { title: string; body: ReactNode }) {
       <p className="muted">{body}</p>
     </div>
   )
+}
+
+/** Tab label for research events: the kind and extension, never the file name. */
+function tabKind(id: TabId, files: Map<string, ProjectEntry>): string {
+  return id.startsWith('file:') ? `file.${files.get(id.slice(5))?.ext ?? ''}` : 'study'
 }

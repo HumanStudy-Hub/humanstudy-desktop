@@ -30,6 +30,19 @@ const MAX_BACKOFF_MS = 10 * 60_000
 const METADATA_MAX_BYTES = 16_000
 const CONVERSATION_TEXT_MAX = 12_000
 const STRING_MAX = 500
+export { truncateString, truncateValue, VALUE_MAX } from './truncate'
+
+/**
+ * Events whose payload is the researcher's own work (messages, tool calls, program versions,
+ * written files). They need conversation-content consent on top of usage events.
+ */
+export const isContentEvent = (type: string): boolean =>
+  type.startsWith('conversation.') || type === 'project.program_version' || type === 'project.file_written'
+
+/** Long string keys content events may carry (tool input/output JSON); capped, scrubbed like text. */
+const LONG_KEYS = /^(input|output|detail)$/
+const LONG_MAX = 6_000
+
 export const EVENT_TYPE_RE = /^[a-z][a-z0-9_.:-]{1,79}$/
 
 interface StoredConsent {
@@ -125,7 +138,7 @@ function cleanValue(v: unknown, ctx: SanitizeContext, allowText: boolean, depth:
   if (v === null || typeof v === 'boolean') return v
   if (typeof v === 'number') return Number.isFinite(v) ? v : null
   if (typeof v === 'string') return scrubString(v, ctx).slice(0, STRING_MAX)
-  if (depth >= 4) return undefined
+  if (depth >= 6) return undefined
   if (Array.isArray(v))
     return v
       .slice(0, 50)
@@ -135,6 +148,10 @@ function cleanValue(v: unknown, ctx: SanitizeContext, allowText: boolean, depth:
     const out: Record<string, unknown> = {}
     for (const [k, val] of Object.entries(v as Record<string, unknown>).slice(0, 50)) {
       if (FORBIDDEN_KEYS.test(k)) continue
+      if (allowText && depth === 0 && LONG_KEYS.test(k) && typeof val === 'string') {
+        out[k] = scrubString(val, ctx).slice(0, LONG_MAX)
+        continue
+      }
       if (CONTENT_KEYS.test(k)) {
         if (!allowText || depth > 0 || typeof val !== 'string') continue
         out[k] = scrubString(val, ctx).slice(0, CONVERSATION_TEXT_MAX)
@@ -164,7 +181,7 @@ export function sanitizeEvent(
   base: RowBase
 ): TelemetryRow | null {
   if (typeof type !== 'string' || !EVENT_TYPE_RE.test(type)) return null
-  const conversation = type.startsWith('conversation.')
+  const conversation = isContentEvent(type)
   if (conversation && !ctx.content) return null
   const target = typeof opts.target === 'string' && opts.target ? scrubString(opts.target, ctx).slice(0, 160) : null
   const d = opts.durationMs
@@ -194,6 +211,63 @@ export function sanitizeEvent(
     platform: platform as TelemetryRow['platform'],
     consent_version: CONSENT_VERSION,
   }
+}
+
+// ---- program versions ------------------------------------------------------------------
+export interface IdDiff {
+  added: string[]
+  removed: string[]
+  changed: string[]
+}
+export interface ProgramDiff {
+  /** Per top-level array of {id} objects (nodes, steps, studies, ...): ids that differ. Empty sections are left out. */
+  sections: Record<string, IdDiff>
+  /** Top-level keys that are not id lists and changed (title, version, ...). */
+  keys: string[]
+  /** Total number of ids/keys that differ. */
+  total: number
+}
+const ID_LIST_MAX = 100
+function canon(v: unknown): string {
+  return JSON.stringify(v, (_k, x) =>
+    x && typeof x === 'object' && !Array.isArray(x)
+      ? Object.fromEntries(Object.entries(x as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : x
+  )
+}
+const isIdList = (v: unknown): v is Array<{ id: string }> =>
+  Array.isArray(v) && v.length > 0 && v.every((x) => x && typeof x === 'object' && typeof (x as { id?: unknown }).id === 'string')
+
+/** Which nodes/steps (by id) were added, removed or edited between two program.json documents. */
+export function programDiff(prev: unknown, next: unknown): ProgramDiff {
+  const a = (prev && typeof prev === 'object' ? prev : {}) as Record<string, unknown>
+  const b = (next && typeof next === 'object' ? next : {}) as Record<string, unknown>
+  const sections: Record<string, IdDiff> = {}
+  const keys: string[] = []
+  let total = 0
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    const x = a[k]
+    const y = b[k]
+    if (canon(x) === canon(y)) continue
+    if ((isIdList(x) || x === undefined) && (isIdList(y) || y === undefined) && (x !== undefined || y !== undefined)) {
+      const xm = new Map((x ?? []).map((o) => [o.id, canon(o)]))
+      const ym = new Map((y ?? []).map((o) => [o.id, canon(o)]))
+      const d: IdDiff = {
+        added: [...ym.keys()].filter((id) => !xm.has(id)),
+        removed: [...xm.keys()].filter((id) => !ym.has(id)),
+        changed: [...ym.keys()].filter((id) => xm.has(id) && xm.get(id) !== ym.get(id)),
+      }
+      const n = d.added.length + d.removed.length + d.changed.length
+      if (n) {
+        total += n
+        sections[k] = { added: d.added.slice(0, ID_LIST_MAX), removed: d.removed.slice(0, ID_LIST_MAX), changed: d.changed.slice(0, ID_LIST_MAX) }
+      }
+    } else {
+      keys.push(k)
+      total++
+    }
+  }
+  return { sections, keys: keys.slice(0, ID_LIST_MAX), total }
 }
 
 export const accountHash = (email: string): string =>
@@ -297,7 +371,7 @@ export function createTelemetry(deps: TelemetryDeps) {
     const acct = currentAcct()
     const c = consent()
     if (!acct || !c?.usage) return null
-    if (type.startsWith('conversation.') && !c.content) return null
+    if (isContentEvent(type) && !c.content) return null
     const row = build(type, opts, ctx, c.content)
     if (row) enqueue(acct, row)
     return row
@@ -402,7 +476,7 @@ export function createTelemetry(deps: TelemetryDeps) {
       track('consent.granted', { metadata: meta })
     } else if (usage && prev && prev.content !== content) {
       if (!content) {
-        const drop = new Set(queue.filter((e) => e.acct === acct && e.row.event_type.startsWith('conversation.')).map((e) => e.row.id))
+        const drop = new Set(queue.filter((e) => e.acct === acct && isContentEvent(e.row.event_type)).map((e) => e.row.id))
         removeIds(drop, 'dropped')
         saveQueue()
         saveRecent()

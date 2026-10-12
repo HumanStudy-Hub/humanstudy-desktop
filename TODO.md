@@ -30,6 +30,13 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
       "blocked: question wording not printed in the paper" (correct). Fixed on the way: scratch
       files must stay in `.humanstudy/tmp`, PROJECT_FORMAT.md is installed, checker resolves
       relative paths. Simulation not yet run (needs the researcher's decisions). (2026-10-12)
+- [x] **Research data: full replay** — with usage + conversation consent the app records everything
+      needed to replay a session: rrweb DOM chunks (10 s / 500 KB, gzip) uploaded to Storage bucket
+      `desktop-replays`, semantic UI events with dwell times, the complete agent transcript (tool
+      input/output, permissions, usage), `program.json` versions with id diffs and agent-written
+      files. One session id ties them together; Delete my data and `telemetry.exportMyData()` cover
+      all of it. Migration `20261012150000_desktop_replay.sql` (web repo) must be applied before the
+      first upload. See `docs/research-data.md`. (wave H2)
 - [ ] **Notarized Mac build** — Apple agreement accepted at developer.apple.com, then
       `npm run dist:mac` notarizes; publish a draft GitHub release and test auto-update. (lead)
 

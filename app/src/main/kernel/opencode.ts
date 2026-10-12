@@ -46,6 +46,7 @@ import { accessSync, constants } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
 import { delimiter, join, relative, isAbsolute, resolve } from 'node:path'
+import { truncateString, truncateValue } from '../truncate'
 import { Emitter } from './types'
 import type { Kernel, KernelEvent, KernelPermission, PermissionReply } from './types'
 
@@ -570,7 +571,16 @@ export class OpencodeKernel implements Kernel {
           s.toolStatus.set(part.id, status)
           const detail =
             status === 'error' ? String(st.error ?? '') : st.title || summarizeInput(st.input)
-          emit({ type: 'tool', tool: part.tool, text: status, detail })
+          const done = status === 'completed' || status === 'error'
+          const out = status === 'error' ? st.error : st.output
+          emit({
+            type: 'tool',
+            tool: part.tool,
+            text: status,
+            detail,
+            input: st.input === undefined ? undefined : truncateValue(st.input),
+            output: done && out != null ? truncateString(typeof out === 'string' ? out : JSON.stringify(out)) : undefined,
+          })
         }
         return
       }

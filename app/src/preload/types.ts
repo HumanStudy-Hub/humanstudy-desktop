@@ -34,12 +34,16 @@ export interface KernelEvent {
   permission?: KernelPermission
   /** type 'usage' */
   usage?: KernelUsage
+  /** type 'tool': the full tool input (single strings above 20 KB are truncated with a marker). */
+  input?: unknown
+  /** type 'tool', once finished: the tool's output (or error text), truncated like `input`. */
+  output?: string
 }
 
 /** One piece of a thread message; the same shape the agent pane renders. */
 export type ThreadPart =
   | { kind: 'text'; text: string }
-  | { kind: 'tool'; tool: string; detail?: string; state?: string }
+  | { kind: 'tool'; tool: string; detail?: string; state?: string; input?: unknown; output?: string }
   | { kind: 'error'; text: string }
   | {
       kind: 'permission'
@@ -390,6 +394,20 @@ export interface TelemetryApi {
   /** Deletes every desktop_events row owned by the signed-in user and clears the local queue. */
   deleteMyData(): Promise<TelemetryStatus>
   flush(): Promise<TelemetryStatus>
+  /** The one id of this app run: every event's session_id and the replay chunk rows' session_id. */
+  sessionId(): Promise<string>
+  /** One gzipped batch of rrweb events. The main process stores it and uploads it (consent permitting). */
+  replayChunk(chunk: TelemetryReplayChunk): Promise<boolean>
+  /** Save dialog, then a zip of events, threads and replay chunks. Resolves with the path, null when cancelled. */
+  exportMyData(): Promise<string | null>
+}
+export interface TelemetryReplayChunk {
+  sessionId: string
+  seq: number
+  startedAt: number
+  endedAt: number
+  /** gzip of the JSON array of rrweb events */
+  bytes: Uint8Array
 }
 export interface HumanStudyApi {
   telemetry: TelemetryApi

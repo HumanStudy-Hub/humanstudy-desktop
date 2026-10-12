@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { HumanProgram, ProgramField, ProgramNode } from '../../shared/human-program';
 import { conditionSuggestion, fieldText, itemSources, sourceRefs, studyConditions, studyFlow, wordDiff, type Condition, type FlowItem, type SourceRef } from '../../shared/program-view';
 import s from './ProgramDocument.module.css';
+import { track } from '../telemetry';
 
 export type { SourceRef };
 type Props = {
@@ -55,7 +56,7 @@ export default function ProgramDocument(input:ProgramDocumentProps){
  const section=(title:string,body:ReactNode,id?:string)=>{
   if(!body)return null;
   const open=openSections[title]??DEFAULT_OPEN.has(title);
-  return <details id={id} open={open} onToggle={e=>{const next=(e.currentTarget as HTMLDetailsElement).open;if(next!==open)setOpenSections(title,next);}}>
+  return <details id={id} open={open} onToggle={e=>{const next=(e.currentTarget as HTMLDetailsElement).open;if(next!==open){track('study.section_toggle',{target:title,metadata:{open:next}});setOpenSections(title,next);}}}>
    <summary><h2>{title}</h2>{props.onPrefill&&<button className={s.askSection} onClick={e=>{e.preventDefault();e.stopPropagation();props.onPrefill!(`About the ${title.toLowerCase()} of ${studyTitle}: `);}} title={`Ask the agent about ${title.toLowerCase()}`}>Ask ↗</button>}</summary>
    {body}
   </details>;

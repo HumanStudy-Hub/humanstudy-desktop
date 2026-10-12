@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as pdfjs from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { ProjectFile } from '../../preload/types'
+import { lap, track } from '../telemetry'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
 
@@ -57,6 +58,40 @@ export function SourceDrawer({ pdf, source, onClose }: Props) {
     return () => {
       cancelled = true
     }
+  }, [doc])
+
+  // The page in view: the one the app scrolled to, then whatever the reader scrolls to.
+  const shown = useRef(0)
+  const noteShown = (page: number, by: 'citation' | 'scroll') => {
+    if (shown.current === page) return
+    track('source.page', { target: `page.${page}`, durationMs: shown.current ? lap('source.page') : (lap('source.page'), undefined), metadata: { page, from: shown.current || null, by } })
+    shown.current = page
+  }
+  useEffect(() => {
+    if (!source) {
+      shown.current = 0
+      return
+    }
+    if (doc) noteShown(source.page, 'citation')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, doc])
+  useEffect(() => {
+    const host = pages.current
+    if (!doc || !host || typeof IntersectionObserver === 'undefined') return
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) if (e.isIntersecting && e.intersectionRatio >= 0.5) noteShown(Number((e.target as HTMLElement).dataset.page), 'scroll')
+      },
+      { threshold: 0.5 },
+    )
+    const mo = new MutationObserver(() => host.querySelectorAll('canvas[data-page]').forEach((c) => io.observe(c)))
+    mo.observe(host, { childList: true })
+    host.querySelectorAll('canvas[data-page]').forEach((c) => io.observe(c))
+    return () => {
+      io.disconnect()
+      mo.disconnect()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc])
 
   useEffect(() => {

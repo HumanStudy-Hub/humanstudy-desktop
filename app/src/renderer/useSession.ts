@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { lap, track } from './telemetry'
 import type { KernelEvent, KernelUsage, PermissionReply, Thread, ThreadMessage, ThreadSummary } from '../preload/types'
 
 export interface PermissionPart {
@@ -81,6 +82,8 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [usage, setUsage] = useState<SessionUsage>(ZERO)
   const [resumed, setResumed] = useState(false)
+  const messagesRef = useRef<Message[]>([])
+  messagesRef.current = messages
   const idRef = useRef<string | null>(null)
   const threadRef = useRef<string | null>(null)
   const dirRef = useRef<string | null>(null)
@@ -236,6 +239,8 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const reply = useCallback((permissionId: string, response: PermissionReply) => {
     const sid = idRef.current
     if (!sid) return
+    const asked = messagesRef.current.flatMap((m) => m.parts).find((x) => x.kind === 'permission' && x.id === permissionId)
+    track('permission.reply', { target: asked?.kind === 'permission' ? asked.type : undefined, metadata: { type: asked?.kind === 'permission' ? asked.type : null, reply: response } })
     // Collapse the card at once; the follow-up event with `resolved` is idempotent.
     setMessages((ms) => resolvePermission(ms, permissionId, response))
     window.humanstudy.kernel.reply(sid, permissionId, response).catch((e: unknown) => {
@@ -248,12 +253,14 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     if (!dir) return
     // An empty conversation is already a new thread.
     if (!messages.length && idRef.current) return
+    track('thread.switch', { target: 'new', durationMs: lap('thread'), metadata: { from: threadRef.current ? 'thread' : null } })
     window.humanstudy.threads.create(dir).then((t) => dirRef.current === dir && activate(t)).catch((e: unknown) => setError(String(e)))
   }, [messages.length, activate])
   const openThread = useCallback(
     (tid: string) => {
       const dir = dirRef.current
       if (!dir || tid === threadRef.current) return
+      track('thread.switch', { target: 'existing', durationMs: lap('thread'), metadata: { messages: messagesRef.current.length } })
       window.humanstudy.threads.resume(dir, tid).then((t) => dirRef.current === dir && activate(t)).catch((e: unknown) => setError(String(e)))
     },
     [activate],

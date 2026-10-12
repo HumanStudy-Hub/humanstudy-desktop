@@ -1,6 +1,7 @@
 // Program explorer: the project folder as a tree, like an editor's file explorer.
 import { useState } from 'react'
 import type { ProjectEntry } from '../../preload/types'
+import { track } from '../telemetry'
 
 interface Props {
   tree: ProjectEntry[]
@@ -57,7 +58,10 @@ function Folder({ entry, depth, ...rest }: { entry: ProjectEntry; depth: number 
   const [open, setOpen] = useState(depth === 0 && entry.name !== 'schema')
   return (
     <li role="treeitem" aria-expanded={open}>
-      <button className="tree-row" style={{ paddingLeft: 10 + depth * 14 }} onClick={() => setOpen(!open)}>
+      <button className="tree-row" style={{ paddingLeft: 10 + depth * 14 }} onClick={() => {
+        track('explorer.toggle', { target: entry.rel, metadata: { open: !open, depth } })
+        setOpen(!open)
+      }}>
         <span className={`tree-caret ${open ? 'open' : ''}`} aria-hidden>
           ▸
         </span>
