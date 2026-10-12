@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { track } from '../telemetry'
 
 const TEMPLATES = [
   {
@@ -45,6 +46,7 @@ export function VisualizeMenu({ disabled, onSend }: { disabled: boolean; onSend(
               className="menu-item"
               onClick={() => {
                 setOpen(false)
+                track('visualize.template', { target: t.file })
                 onSend(
                   `Use the visualize skill to create ${t.prompt}. Read program.json, cite evidence (page + quote) for every element, and write a self-contained HTML file to artifacts/${t.file}.`,
                 )

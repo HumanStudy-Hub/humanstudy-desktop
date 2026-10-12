@@ -1,6 +1,7 @@
 // Browser preview: when the renderer runs outside Electron, stand in for the preload bridge with
 // the sample program, a local paper and a scripted kernel, so the interface can be reviewed in a
 // normal browser. Electron never loads this path because window.humanstudy already exists.
+import type { TelemetryRecent, TelemetryRow, TelemetryStatus, TelemetryTrackOptions } from '../preload/types'
 import type { AccountStatus, CommunityStudy, CommunityStudyDetail, HumanStudyApi, KernelEvent, ProjectSnapshot, ProjectSummary, ProviderStatus, Settings } from '../preload/types'
 import sample from '../shared/sample-program.json'
 
@@ -48,6 +49,52 @@ if (!('humanstudy' in window)) {
         ? 'hosted'
         : 'none',
   })
+  // Research data: in-memory consent and events, so the consent dialog and Settings → Research data
+  // can be reviewed. Nothing leaves the browser; "sent" is simulated.
+  const research = { decided: false, usage: false, content: false, sent: 0, decidedAt: undefined as string | undefined }
+  const recentEvents: TelemetryRecent[] = []
+  const previewSession = crypto.randomUUID()
+  const researchStatus = (): TelemetryStatus => {
+    const on = account.signedIn && research.decided
+    return {
+      consentVersion: 1,
+      signedIn: account.signedIn,
+      decided: on,
+      usage: on && research.usage,
+      content: on && research.usage && research.content,
+      decidedAt: on ? research.decidedAt : undefined,
+      sent: research.sent,
+      pending: recentEvents.filter((r) => r.status === 'pending').length,
+    }
+  }
+  const record = (type: string, opts: TelemetryTrackOptions = {}, force = false) => {
+    const st = researchStatus()
+    if (!force && (!st.usage || (type.startsWith('conversation.') && !st.content))) return
+    const row: TelemetryRow = {
+      id: crypto.randomUUID(),
+      install_id: 'preview-install',
+      session_id: previewSession,
+      project_id: opts.projectId ?? null,
+      event_type: type,
+      occurred_at: new Date().toISOString(),
+      target: opts.target?.slice(0, 160) ?? null,
+      duration_ms: typeof opts.durationMs === 'number' ? Math.round(opts.durationMs) : null,
+      metadata: opts.metadata ?? {},
+      app_version: '0.0.0-preview',
+      platform: 'darwin',
+      consent_version: 1,
+    }
+    recentEvents.push({ row, status: 'pending' })
+    if (recentEvents.length > 100) recentEvents.shift()
+  }
+  const markSent = () => {
+    for (const r of recentEvents)
+      if (r.status === 'pending') {
+        r.status = 'sent'
+        research.sent++
+      }
+  }
+  globalThis.setInterval(markSent, 15_000)
   const script = (text: string): Omit<KernelEvent, 'sessionId'>[] => [
     { type: 'status', text: 'Reading the project' },
     { type: 'tool', tool: 'read', detail: 'program.json' },
@@ -341,6 +388,8 @@ if (!('humanstudy' in window)) {
     kernel: {
       startSession: async () => 'preview-session',
       send: async (sessionId, text) => {
+        record('agent.turn_start', { metadata: { chars: text.length } })
+        record('conversation.user', { metadata: { text } })
         const ids = script(text).map((e, i) => window.setTimeout(() => emit({ sessionId, ...e }), 120 + i * 45))
         timers.set(sessionId, ids)
       },
@@ -351,6 +400,38 @@ if (!('humanstudy' in window)) {
       onEvent: (cb) => {
         listeners.add(cb)
         return () => listeners.delete(cb)
+      },
+    },
+    telemetry: {
+      status: async () => researchStatus(),
+      setConsent: async ({ usage, content }) => {
+        if (!account.signedIn) throw new Error('Sign in to your HumanStudy Hub account first.')
+        const prev = researchStatus()
+        Object.assign(research, { decided: true, usage, content: usage && content, decidedAt: new Date().toISOString() })
+        const metadata = { usage, content: usage && content, consentVersion: 1 }
+        if (prev.usage && !usage) {
+          recentEvents.forEach((r) => r.status === 'pending' && (r.status = 'dropped'))
+          record('consent.withdrawn', { metadata }, true)
+          markSent()
+        } else if (usage && !prev.usage) record('consent.granted', { metadata })
+        else if (usage && prev.content !== metadata.content) record('consent.changed', { metadata })
+        return researchStatus()
+      },
+      track: async (type, opts) => {
+        if (/^(consent|conversation|kernel|agent)\./.test(type)) return
+        record(type, opts)
+      },
+      projectId: async (dir) => (dir && researchStatus().usage ? `preview-${slug(dir)}`.slice(0, 80) : null),
+      recent: async () => recentEvents.slice().reverse().map((r) => ({ ...r })),
+      deleteMyData: async () => {
+        if (!account.signedIn) throw new Error('Sign in to your HumanStudy Hub account first.')
+        recentEvents.length = 0
+        research.sent = 0
+        return researchStatus()
+      },
+      flush: async () => {
+        markSent()
+        return researchStatus()
       },
     },
     updates: {

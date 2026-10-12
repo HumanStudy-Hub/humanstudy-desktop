@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { AccountStatus, ProviderStatus, Settings } from '../../preload/types'
 import { AboutUpdates } from './Updates'
+import { ResearchDataSection } from './ResearchData'
+import { track } from '../telemetry'
 
-export type SettingsSection = 'account' | 'general' | 'models' | 'about'
+export type SettingsSection = 'account' | 'general' | 'models' | 'research' | 'about'
 
 interface Props {
   initialSection?: SettingsSection | null
@@ -18,6 +20,7 @@ const SECTION_LABEL: Record<Section, string> = {
   account: 'Account',
   general: 'General',
   models: 'Models',
+  research: 'Research data',
   about: 'About & updates',
 }
 
@@ -49,8 +52,15 @@ export function SettingsDialog({ initialSection, settings, onChange, account, on
       <div className="settings" role="dialog" aria-modal="true" aria-label="Settings" tabIndex={-1} ref={dialog}>
         <nav className="settings-nav">
           <strong className="settings-title">Settings</strong>
-          {(['account', 'general', 'models', 'about'] as Section[]).map((s) => (
-            <button key={s} aria-current={section === s ? 'page' : undefined} onClick={() => setSection(s)}>
+          {(['account', 'general', 'models', 'research', 'about'] as Section[]).map((s) => (
+            <button
+              key={s}
+              aria-current={section === s ? 'page' : undefined}
+              onClick={() => {
+                setSection(s)
+                track('settings.section', { target: s })
+              }}
+            >
               {SECTION_LABEL[s]}
             </button>
           ))}
@@ -63,6 +73,8 @@ export function SettingsDialog({ initialSection, settings, onChange, account, on
             <Account account={account} onAccount={onAccount} />
           ) : section === 'about' ? (
             <AboutUpdates />
+          ) : section === 'research' ? (
+            <ResearchDataSection />
           ) : !settings ? (
             <p className="muted">Loading…</p>
           ) : section === 'general' ? (
@@ -176,6 +188,7 @@ function Models({ settings, onChange }: { settings: Settings; onChange(p: Partia
     setError('')
     try {
       setProviders(await window.humanstudy.settings.setKey(id, value))
+      track('settings.key_changed', { target: id, metadata: { action: value ? 'saved' : 'removed' } })
       setEditing(null)
       setKey('')
     } catch (e) {

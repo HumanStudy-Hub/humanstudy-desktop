@@ -2,13 +2,21 @@ import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from
 import ProgramDocument, { viewStudies, type ProgramDocumentProps } from '../program/ProgramDocument'
 import { validateHumanProgram } from '../../shared/human-program'
 import type { ProjectFile, ProjectSnapshot } from '../../preload/types'
+import { track } from '../telemetry'
 
 interface Props extends Pick<ProgramDocumentProps, 'selectedIds' | 'onPick' | 'onSource' | 'onAsk'> {
   project: ProjectSnapshot
 }
 
 export function ArtifactPanel({ project, ...docProps }: Props) {
-  const [tab, setTab] = useState('protocol')
+  const [tab, setTabState] = useState('protocol')
+  const setTab = (id: string) => {
+    if (id !== tab) {
+      const file = project.artifacts.find((a) => a.path === id)
+      track('tab.switch', { target: file ? `artifacts/${file.name}` : id })
+    }
+    setTabState(id)
+  }
   const { program, error } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError }
     try {
@@ -24,7 +32,7 @@ export function ArtifactPanel({ project, ...docProps }: Props) {
   const active = viewable.find((a) => a.path === tab)
 
   useEffect(() => {
-    if (tab !== 'protocol' && tab !== 'exports' && !active) setTab('protocol')
+    if (tab !== 'protocol' && tab !== 'exports' && !active) setTabState('protocol')
   }, [tab, active])
 
   return (
@@ -43,7 +51,14 @@ export function ArtifactPanel({ project, ...docProps }: Props) {
           (program ? (
             <div className="doc-scroll">
               {studies.length > 1 && (
-                <select className="study-select" value={study} onChange={(e) => setStudyId(e.target.value)}>
+                <select
+                  className="study-select"
+                  value={study}
+                  onChange={(e) => {
+                    track('program.study_select', { target: e.target.value })
+                    setStudyId(e.target.value)
+                  }}
+                >
                   {studies.map((st) => (
                     <option key={st.id} value={st.id}>{st.title ?? st.id}</option>
                   ))}

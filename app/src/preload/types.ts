@@ -152,3 +152,72 @@ export interface HumanStudyApi {
     onChange(cb: (s: UpdateStatus) => void): () => void
   }
 }
+
+// ---- research data (telemetry) ---------------------------------------------------------
+/** The two separate consent choices. Conversation content requires usage events. */
+export interface TelemetryConsent {
+  /** Usage events: lifecycle, features and panes used, clicks (ids only), timings, agent turn metadata. */
+  usage: boolean
+  /** Conversation content: the text of messages to and from the agent. */
+  content: boolean
+}
+export interface TelemetryStatus {
+  consentVersion: number
+  signedIn: boolean
+  /** True once the signed-in account has answered the current consent version. */
+  decided: boolean
+  usage: boolean
+  content: boolean
+  decidedAt?: string
+  /** Events uploaded from this computer since the last deletion. */
+  sent: number
+  /** Events waiting to be uploaded for the signed-in account. */
+  pending: number
+  lastSentAt?: string
+  lastError?: string
+}
+/** Exactly the row inserted into public.desktop_events (owner_id is set by the server). */
+export interface TelemetryRow {
+  id: string
+  install_id: string
+  session_id: string
+  project_id: string | null
+  event_type: string
+  occurred_at: string
+  target: string | null
+  duration_ms: number | null
+  metadata: Record<string, unknown>
+  app_version: string
+  platform: 'darwin' | 'win32' | 'linux'
+  consent_version: number
+}
+export interface TelemetryRecent {
+  row: TelemetryRow
+  status: 'pending' | 'sent' | 'dropped'
+}
+export interface TelemetryTrackOptions {
+  target?: string
+  durationMs?: number
+  metadata?: Record<string, unknown>
+  /** Random project id from .humanstudy/project.json (see telemetry.projectId). */
+  projectId?: string
+}
+export interface TelemetryApi {
+  status(): Promise<TelemetryStatus>
+  setConsent(consent: TelemetryConsent): Promise<TelemetryStatus>
+  /** Queued only when consent allows; conversation.* and consent.* are main-process only. */
+  track(type: string, opts?: TelemetryTrackOptions): Promise<void>
+  /**
+   * Marks `dir` as the open project (null: none) and returns its random research id, created in
+   * .humanstudy/project.json when missing; null while usage events are off.
+   */
+  projectId(dir: string | null): Promise<string | null>
+  /** The last 100 events built for upload, newest first, exactly as sent. */
+  recent(): Promise<TelemetryRecent[]>
+  /** Deletes every desktop_events row owned by the signed-in user and clears the local queue. */
+  deleteMyData(): Promise<TelemetryStatus>
+  flush(): Promise<TelemetryStatus>
+}
+export interface HumanStudyApi {
+  telemetry: TelemetryApi
+}

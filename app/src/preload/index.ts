@@ -52,6 +52,15 @@ const api: HumanStudyApi = {
     install: () => ipcRenderer.invoke('updates:install'),
     onChange: (cb) => listen<UpdateStatus>('updates:changed', cb),
   },
+  telemetry: {
+    status: () => ipcRenderer.invoke('telemetry:status'),
+    setConsent: (consent) => ipcRenderer.invoke('telemetry:setConsent', consent),
+    track: (type, opts) => ipcRenderer.invoke('telemetry:track', type, opts),
+    projectId: (dir) => ipcRenderer.invoke('telemetry:projectId', dir),
+    recent: () => ipcRenderer.invoke('telemetry:recent'),
+    deleteMyData: () => ipcRenderer.invoke('telemetry:deleteMyData'),
+    flush: () => ipcRenderer.invoke('telemetry:flush'),
+  },
 }
 
 contextBridge.exposeInMainWorld('humanstudy', api)

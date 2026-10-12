@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useState, type Ref } from 'react'
 import type { CommunityStudy, CommunityStudyDetail } from '../../preload/types'
 import { relativeTime } from './Home'
+import { track } from '../telemetry'
 
 const REPO_URL = 'https://github.com/HumanStudy-Hub/HumanStudy-Bench'
 
@@ -230,6 +231,7 @@ function StudyPage({
   const [tab, setTab] = useState<Tab>('overview')
   const [forking, setForking] = useState(false)
   const [forkError, setForkError] = useState('')
+  useEffect(() => track('community.study_opened', { target: id }), [id])
 
   const load = useCallback(async () => {
     setError('')
@@ -305,7 +307,10 @@ function StudyPage({
             role="tab"
             aria-selected={tab === t}
             className={`tab ${tab === t ? 'active' : ''}`}
-            onClick={() => setTab(t)}
+            onClick={() => {
+              if (t !== tab) track('tab.switch', { target: `study:${t}` })
+              setTab(t)
+            }}
           >
             {t === 'overview' ? 'Overview' : t === 'materials' ? 'Materials' : 'Activity'}
             {t === 'materials' && detail && <span className="tab-count">{detail.files.length}</span>}

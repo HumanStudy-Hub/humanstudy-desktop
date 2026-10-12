@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AccountStatus, ProjectSummary } from '../../preload/types'
 import { Studies, type StudiesHandle } from './Studies'
+import { track } from '../telemetry'
 
 type Section = 'projects' | 'studies'
 const SECTION_KEY = 'hs.homeSection'
@@ -53,6 +54,7 @@ export function Home({ onOpen, onSettings, account, onAccount }: Props) {
     }
   })
   const setSection = (next: Section) => {
+    if (next !== section) track('home.section', { target: next })
     setSectionState(next)
     setQuery('')
     try {

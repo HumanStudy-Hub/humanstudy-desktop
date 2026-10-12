@@ -282,7 +282,38 @@ export function createAccount(deps: AccountDeps) {
     return { server, key: k.key, model, models }
   }
 
-  return { status, signIn, signUp, signOut, unlock, getConfig, hostedAccess }
+  /**
+   * What a PostgREST call on the user's own rows needs (research data): a fresh access token, the
+   * Supabase URL and publishable key, and the user id (the JWT `sub`). Null when signed out.
+   */
+  async function restAuth(): Promise<RestAuth | null> {
+    const token = await accessToken()
+    if (!token) return null
+    const c = await getConfig()
+    return { supabaseUrl: c.supabaseUrl, supabaseKey: c.supabaseKey, accessToken: token, userId: jwtSub(token) }
+  }
+
+  return { status, signIn, signUp, signOut, unlock, getConfig, hostedAccess, restAuth }
 }
 
 export type Account = ReturnType<typeof createAccount>
+
+export interface RestAuth {
+  supabaseUrl: string
+  supabaseKey: string
+  accessToken: string
+  /** auth.uid() of the signed-in user, or '' when the token carries no subject. */
+  userId: string
+}
+
+function jwtSub(token: string): string {
+  try {
+    const part = token.split('.')[1] ?? ''
+    const json = JSON.parse(Buffer.from(part.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')) as {
+      sub?: unknown
+    }
+    return typeof json.sub === 'string' ? json.sub : ''
+  } catch {
+    return ''
+  }
+}

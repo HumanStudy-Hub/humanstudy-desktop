@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AccountStatus, ProjectSnapshot, Settings } from '../preload/types'
+import type { AccountStatus, ProjectSnapshot, Settings, TelemetryStatus } from '../preload/types'
 import { Chat, type ChatHandle } from './components/Chat'
 import { ArtifactPanel } from './components/ArtifactPanel'
 import { SourceDrawer, type SourceRef } from './components/SourceDrawer'
@@ -8,6 +8,8 @@ import { Home } from './components/Home'
 import { SettingsDialog, type SettingsSection } from './components/SettingsDialog'
 import { useSession } from './useSession'
 import { UpdateNotice } from './components/Updates'
+import { ConsentDialog } from './components/ResearchData'
+import { setTelemetryProject, track } from './telemetry'
 
 const PANES_KEY = 'hs.panes'
 type Pane = 'agent' | 'source' | 'program'
@@ -30,7 +32,8 @@ export default function App() {
     }
     return { agent: true, source: false, program: true }
   })
-  const setPane = (pane: Pane, value: boolean) =>
+  const setPane = (pane: Pane, value: boolean) => {
+    if (open[pane] !== value) track(value ? 'pane.unfold' : 'pane.fold', { target: pane })
     setOpen((prev) => {
       const next = { ...prev, [pane]: value }
       if (!Object.values(next).some(Boolean)) return prev
@@ -41,6 +44,7 @@ export default function App() {
       }
       return next
     })
+  }
   const showSource = (ref: SourceRef) => {
     setSource(ref)
     setPane('source', true)
@@ -53,6 +57,20 @@ export default function App() {
     setProject(snap)
     setSelected([])
   }, [])
+  const openProject = useCallback(
+    async (dir: string) => {
+      const started = performance.now()
+      await load(dir)
+      await setTelemetryProject(dir)
+      track('project.opened', { durationMs: performance.now() - started })
+    },
+    [load]
+  )
+  const closeProject = () => {
+    track('project.closed')
+    void setTelemetryProject(null)
+    setProject(null)
+  }
 
   useEffect(() => {
     window.humanstudy.settings.get().then(setSettings).catch(() => undefined)
@@ -62,12 +80,27 @@ export default function App() {
   }, [])
   useEffect(refreshAccount, [refreshAccount])
 
+  // Research data: ask once per account (and per consent version) after sign-in.
+  const [research, setResearch] = useState<TelemetryStatus | null>(null)
+  const [askLater, setAskLater] = useState(false)
+  useEffect(() => {
+    if (!account?.signedIn) return setResearch(null)
+    window.humanstudy.telemetry
+      ?.status()
+      .then(setResearch)
+      .catch(() => undefined)
+  }, [account?.signedIn, account?.email, settingsOpen])
+  const consent = account?.signedIn && research && !research.decided && !askLater && !settingsOpen && (
+    <ConsentDialog onDone={setResearch} onLater={() => setAskLater(true)} />
+  )
+
   // The explicit theme choice wins over the OS preference; 'system' defers to prefers-color-scheme.
   useEffect(() => {
     if (settings) document.documentElement.dataset.theme = settings.theme
   }, [settings])
 
   const updateSettings = useCallback((patch: Partial<Settings>) => {
+    track('settings.changed', { metadata: { names: Object.keys(patch) } })
     setSettings((prev) => (prev ? { ...prev, ...patch } : prev))
     window.humanstudy.settings
       .set(patch)
@@ -86,10 +119,16 @@ export default function App() {
     })
   }, [project, load])
 
-  const pick = (id: string, extend: boolean) =>
+  const openSettings = (section: SettingsSection) => {
+    track('settings.opened', { target: section })
+    setSettingsOpen(section)
+  }
+  const pick = (id: string, extend: boolean) => {
+    track('program.item_pick', { target: id, metadata: { extend } })
     setSelected((s) =>
       extend ? (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]) : s.length === 1 && s[0] === id ? [] : [id],
     )
+  }
 
   const dialog = settingsOpen && (
     <SettingsDialog
@@ -106,12 +145,13 @@ export default function App() {
     return (
       <div className="app">
         <Home
-          onOpen={(dir) => void load(dir)}
-          onSettings={() => setSettingsOpen('general')}
+          onOpen={(dir) => void openProject(dir)}
+          onSettings={() => openSettings('general')}
           account={account}
-          onAccount={() => setSettingsOpen('account')}
+          onAccount={() => openSettings('account')}
         />
         {dialog}
+        {consent}
         <UpdateNotice />
       </div>
     )
@@ -133,10 +173,10 @@ export default function App() {
               </button>
             ))}
           </div>
-          <button className="ghost" onClick={() => setProject(null)} title="Back to all projects">
+          <button className="ghost" onClick={closeProject} title="Back to all projects">
             Projects
           </button>
-          <button className="ghost icon" onClick={() => setSettingsOpen('general')} aria-label="Settings" title="Settings">
+          <button className="ghost icon" onClick={() => openSettings('general')} aria-label="Settings" title="Settings">
             <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden>
               <circle cx="10" cy="10" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.5" />
               <path
@@ -179,8 +219,12 @@ export default function App() {
                 project={project}
                 selectedIds={selected}
                 onPick={pick}
-                onSource={(id, ref) => showSource({ page: ref.page ?? 1, quote: ref.quote, nodeId: id })}
+                onSource={(id, ref) => {
+                  track('citation.click', { target: id, metadata: { page: ref.page ?? null } })
+                  showSource({ page: ref.page ?? 1, quote: ref.quote, nodeId: id })
+                }}
                 onAsk={(id, fieldId, draft) => {
+                  track('program.ask', { target: id, metadata: { field: fieldId ?? null } })
                   setPane('agent', true)
                   requestAnimationFrame(() => chat.current?.ask(id, fieldId, draft))
                 }}
@@ -192,6 +236,7 @@ export default function App() {
         </section>
       </main>
       {dialog}
+      {consent}
       <UpdateNotice />
     </div>
   )

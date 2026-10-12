@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron'
 import { applyCredentials, providers, setKey } from './credentials'
 import { applyAccount, getAccount } from './account'
+import * as telemetry from './telemetry'
 import {
   communityStudies,
   communityStudy,
@@ -47,6 +48,7 @@ function currentKernel(): Kernel {
     kernel = loadKernel()
     allKernels.add(kernel)
     kernel.onEvent((e: KernelEvent) => broadcast('kernel:event', e))
+    kernel.onEvent(telemetry.onKernelEvent)
   }
   return kernel
 }
@@ -63,6 +65,11 @@ function syncAccess(): void {
     appliedAccess = sig
     markKernelStale()
   }
+}
+/** The implementation's name ("opencode" | "mock"); kernel/types.ts declares it, kernel-types.ts does not. */
+function kernelName(k: Kernel): string {
+  const name: unknown = (k as Partial<Record<'name', unknown>>).name
+  return typeof name === 'string' && name ? name.slice(0, 40) : 'unknown'
 }
 function kernelFor(id: string): Kernel {
   const k = sessionKernel.get(id)
@@ -205,14 +212,17 @@ app.whenReady().then(() => {
   ipcMain.handle('project:read', async (_e, dir: string) => {
     const snap = await readProject(dir)
     watchProject(snap.dir)
+    telemetry.noteProjectFiles(snap)
     return snap
   })
   ipcMain.handle('project:reveal', (_e, p: string) => shell.showItemInFolder(p))
 
   ipcMain.handle('projects:list', () => listProjects())
-  ipcMain.handle('projects:create', (_e, input: { name: string; pdfPath?: string; sample?: boolean }) =>
-    createProject(input)
-  )
+  ipcMain.handle('projects:create', async (_e, input: { name: string; pdfPath?: string; sample?: boolean }) => {
+    const dir = await createProject(input)
+    telemetry.track('project.created', { metadata: { sample: Boolean(input?.sample), withPaper: Boolean(input?.pdfPath) } }, dir)
+    return dir
+  })
   ipcMain.handle('projects:pickPdf', async () => {
     const win = BrowserWindow.getFocusedWindow()
     const opts = {
@@ -237,7 +247,11 @@ app.whenReady().then(() => {
   setCommunityCacheDir(app.getPath('userData'))
   ipcMain.handle('community:studies', () => communityStudies())
   ipcMain.handle('community:study', (_e, id: string) => communityStudy(id))
-  ipcMain.handle('community:fork', (_e, id: string) => forkCommunityStudy(id, (input) => createProject(input)))
+  ipcMain.handle('community:fork', async (_e, id: string) => {
+    const dir = await forkCommunityStudy(id, (input) => createProject(input))
+    telemetry.track('project.forked', { target: String(id).slice(0, 80) }, dir)
+    return dir
+  })
   ipcMain.handle('community:openExternal', async (_e, url: string) => {
     if (!isAllowedExternal(url)) throw new Error('refusing to open a URL outside github.com / humanstudy-hub.org')
     await shell.openExternal(url)
@@ -280,12 +294,28 @@ app.whenReady().then(() => {
   ipcMain.handle('kernel:startSession', async (_e, dir: string) => {
     syncAccess()
     const k = currentKernel()
-    const id = await k.startSession(dir)
+    const started = Date.now()
+    let id: string
+    try {
+      id = await k.startSession(dir)
+    } catch (err) {
+      telemetry.trackSessionError(dir, err, started)
+      throw err
+    }
     sessionKernel.set(id, k)
+    telemetry.trackSessionStart(id, dir, kernelName(k), started)
     return id
   })
-  ipcMain.handle('kernel:send', (_e, id: string, text: string) => kernelFor(id).send(id, text))
-  ipcMain.handle('kernel:abort', (_e, id: string) => kernelFor(id).abort(id))
+  ipcMain.handle('kernel:send', (_e, id: string, text: string) => {
+    const k = kernelFor(id)
+    telemetry.trackTurnStart(id, text)
+    return k.send(id, text)
+  })
+  ipcMain.handle('kernel:abort', (_e, id: string) => {
+    telemetry.trackTurnAbort(id)
+    return kernelFor(id).abort(id)
+  })
+  telemetry.registerTelemetry()
 
   ipcMain.handle('updates:status', () => updateStatus())
   ipcMain.handle('updates:check', () => checkForUpdates())

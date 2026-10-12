@@ -411,3 +411,31 @@ button.person:hover { border-color: var(--accent); }
   .repo-head { flex-direction: column; }
   .repo-actions { flex-basis: auto; width: 100%; }
 }
+
+/* research data: consent dialog and settings section */
+.consent-dialog {
+  width: min(600px, 100%); max-height: min(720px, 100%); overflow-y: auto; outline: 0; padding: 26px 30px 22px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 64px rgba(0, 0, 0, 0.22);
+}
+.consent-dialog h2 { font-family: var(--font-serif); font-size: 1.25rem; font-weight: 700; margin: 0 0 12px; }
+.consent-dialog .row-end { margin-top: 14px; }
+.consent-text { font-size: 13px; line-height: 1.55; }
+.consent-text p { margin: 0 0 9px; }
+.consent-choices { display: flex; flex-direction: column; gap: 8px; margin: 14px 0 10px; }
+.consent-choice { display: flex; gap: 10px; align-items: flex-start; padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; }
+.consent-choice > input { margin-top: 3px; flex: none; }
+.consent-choice > span { display: flex; flex-direction: column; gap: 3px; }
+.consent-choice.disabled { opacity: 0.55; cursor: default; }
+.consent-details { margin: 0 0 6px; font-size: 13px; }
+.consent-details summary { cursor: pointer; color: var(--accent); margin-bottom: 8px; }
+.recent-events { margin: 4px 0 8px; }
+.recent-events ul { list-style: none; margin: 6px 0 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); max-height: 320px; overflow-y: auto; }
+.recent-events li { border-bottom: 1px solid var(--line); padding: 6px 10px; font-size: 12.5px; }
+.recent-events li:last-child { border-bottom: 0; }
+.recent-events summary { cursor: pointer; display: flex; align-items: baseline; gap: 6px; }
+.recent-events pre { margin: 6px 0 2px; padding: 8px; background: var(--bg-sunk); border-radius: 6px; font-size: 11.5px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+.recent-status { margin-left: auto; font-size: 11px; padding: 0 6px; border-radius: 999px; background: var(--bg-sunk); color: var(--muted); }
+.recent-status.sent { color: var(--ok); }
+.recent-status.dropped { color: var(--danger); }
+.recent-time { flex: none; }
+.danger-fill { background: var(--danger); }
