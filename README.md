@@ -29,6 +29,10 @@ npm run dist:mac      # signed macOS build (needs a Developer ID certificate)
 
 ## Dogfooding against the dev preview
 
+Nothing to install: on first run the app downloads its agent kernel (opencode, pinned to one
+version, checksum-verified) into its own data folder. An opencode you installed yourself is only
+used when the managed copy is missing.
+
 The `dev` branch of the website deploys to a protected Vercel preview. `npm run dev:dogfood`
 points the app at it and sends the deployment-protection bypass secret, which it reads from the
 macOS Keychain item `humanstudy-dev-bypass` (ask a maintainer for it; it is never committed). Use

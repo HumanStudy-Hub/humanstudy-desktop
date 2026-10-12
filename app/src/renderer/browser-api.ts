@@ -68,6 +68,7 @@ if (!('humanstudy' in window)) {
     permission: 'ask',
     model: 'anthropic/claude-sonnet-5.5',
     projectsRoot: '~/Documents/HumanStudy Projects',
+    notifications: true,
   }
   const providers: ProviderStatus[] = [
     { id: 'openrouter', label: 'OpenRouter', configured: false },
@@ -458,7 +459,13 @@ if (!('humanstudy' in window)) {
         listeners.add(cb)
         return () => listeners.delete(cb)
       },
+      install: {
+        status: async () => ({ state: 'ready', version: '1.18.21', path: '/preview/opencode' }),
+        onProgress: () => () => undefined,
+      },
     },
+    app: { info: async () => ({ version: '0.1.0', platform: 'preview', arch: 'preview' }) },
+    menu: { onCommand: () => () => undefined },
     telemetry: {
       status: async () => researchStatus(),
       setConsent: async ({ usage, content }) => {

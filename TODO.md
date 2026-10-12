@@ -10,8 +10,8 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
       when there is no model access. (wave R1, renderer)
 - [x] **Model error without a key** — never force `openrouter/...` on opencode when no key or
       account exists; fall back to the user's own opencode setup. (ca1438f)
-- [ ] **Bundled agent kernel** — download the matching opencode release into userData on first
-      run (progress UI, checksum, retry); never ask the user to install anything. (wave M1)
+- [x] **Bundled agent kernel** — main side done: pinned opencode 1.18.21 downloads into userData on
+      first run (SHA-256, resume, `kernel.install` IPC). Progress UI still to do in the renderer. (M1)
 - [ ] **Permission prompts** — opencode `permission.asked` → Allow once / Allow for this project /
       Deny in the chat; honour Settings → Default permission. (wave M2 main, R2 renderer)
 - [ ] **Conversation history** — threads per project, restored when a project is reopened; new
@@ -34,9 +34,9 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
 - [ ] **Queue vs interrupt** while the agent runs (the setting exists; implement both). (R2)
 - [ ] **Attach files** — drag a PDF/CSV/image into the chat or project; `@file` mentions from the
       Program tree. (R2)
-- [ ] **Finished notification** — macOS/Windows notification and dock badge when a turn ends
+- [x] **Finished notification** — macOS/Windows notification and dock badge when a turn ends
       while the window is in the background. (M1)
-- [ ] **Native menu + shortcuts** — File (New project ⌘N, Open ⌘O, Close), Edit, View (panes
+- [x] **Native menu + shortcuts** — File (New project ⌘N, Open ⌘O, Close), Edit, View (panes
       ⌘1/⌘2/⌘3, zoom), Help (docs, release notes, report a problem). (M1)
 - [ ] **Token/cost footer** — per-turn tokens and cost from the hosted proxy usage headers. (M2)
 
@@ -55,7 +55,7 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
       Accept / Reject. (R3)
 - [ ] **Open the paper at the quote** from any citation; reverse highlight from a PDF selection
       (web version has this; port `supportedBy`). (R3)
-- [ ] **Multiple windows** — ⌘⇧N opens another window on the same or another project. (M1)
+- [x] **Multiple windows** — ⌘⇧N opens another window on the same or another project. (M1)
 
 ## P1 · Science
 

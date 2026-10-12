@@ -26,6 +26,7 @@ function defaults(): Settings {
     permission: 'ask',
     model: 'anthropic/claude-sonnet-5.5',
     projectsRoot: defaultProjectsRoot(),
+    notifications: true,
   }
 }
 
@@ -34,6 +35,7 @@ function sanitize(raw: Partial<Settings>, base: Settings): Settings {
   if (raw.theme === 'light' || raw.theme === 'dark' || raw.theme === 'system') s.theme = raw.theme
   if (raw.busyEnter === 'queue' || raw.busyEnter === 'interrupt') s.busyEnter = raw.busyEnter
   if (raw.permission === 'ask' || raw.permission === 'project') s.permission = raw.permission
+  if (typeof raw.notifications === 'boolean') s.notifications = raw.notifications
   if (typeof raw.model === 'string' && raw.model.trim()) s.model = raw.model.trim()
   if (typeof raw.projectsRoot === 'string' && raw.projectsRoot.trim()) {
     const root = resolve(expandHome(raw.projectsRoot.trim()))
