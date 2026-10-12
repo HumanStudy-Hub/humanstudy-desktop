@@ -25,7 +25,9 @@ export function SourceDrawer({ pdf, source, onClose }: Props) {
 
   useEffect(() => {
     if (!open || !pdf || doc) return
-    const task = pdfjs.getDocument(pdf.url)
+    // Older papers often leave standard fonts unembedded; pdfjs needs its font data to draw their text.
+    const base = new URL('pdfjs/', document.baseURI).href
+    const task = pdfjs.getDocument({ url: pdf.url, standardFontDataUrl: `${base}standard_fonts/`, cMapUrl: `${base}cmaps/`, cMapPacked: true, useSystemFonts: false })
     task.promise.then(setDoc, (e: unknown) => setErr(String(e)))
   }, [open, pdf, doc])
 
@@ -66,18 +68,12 @@ export function SourceDrawer({ pdf, source, onClose }: Props) {
   }, [source, doc])
 
   return (
-    <aside className={`drawer ${open ? 'open' : ''}`} aria-hidden={!open}>
-      <header className="drawer-head">
-        <div>
-          <div className="drawer-title">{pdf?.name ?? 'Source'}</div>
-          {source && <div className="muted small">Page {source.page}{source.nodeId ? ` · cited by ${source.nodeId}` : ''}</div>}
-        </div>
-        <button className="ghost" onClick={onClose}>Close</button>
-      </header>
+    <div className="source-body">
+      {source?.nodeId && <div className="muted small pad source-cite">Page {source.page} · cited by {source.nodeId} <button className="link" onClick={onClose}>Fold</button></div>}
       {source?.quote && <blockquote className="quote">“{source.quote}”</blockquote>}
       {!pdf && <p className="muted pad">This project has no paper.pdf.</p>}
       {err && <p className="part error pad">{err}</p>}
       <div className="pages" ref={pages} />
-    </aside>
+    </div>
   )
 }

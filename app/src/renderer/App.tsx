@@ -7,11 +7,39 @@ import { VisualizeMenu } from './components/VisualizeMenu'
 import { useSession } from './useSession'
 
 const LAST_KEY = 'hs.lastProject'
+const PANES_KEY = 'hs.panes'
+type Pane = 'agent' | 'source' | 'program'
+const paneLabel: Record<Pane, string> = { agent: 'Study agent', source: 'Original paper', program: 'Human Program' }
 
 export default function App() {
   const [project, setProject] = useState<ProjectSnapshot | null>(null)
   const [selected, setSelected] = useState<string[]>([])
   const [source, setSource] = useState<SourceRef | null>(null)
+  // Three panes, each foldable to a rail; at least one stays open.
+  const [open, setOpen] = useState<Record<Pane, boolean>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(PANES_KEY) || 'null')
+      if (saved && typeof saved.agent === 'boolean') return saved
+    } catch {
+      /* ignore */
+    }
+    return { agent: true, source: false, program: true }
+  })
+  const setPane = (pane: Pane, value: boolean) =>
+    setOpen((prev) => {
+      const next = { ...prev, [pane]: value }
+      if (!Object.values(next).some(Boolean)) return prev
+      try {
+        localStorage.setItem(PANES_KEY, JSON.stringify(next))
+      } catch {
+        /* ignore */
+      }
+      return next
+    })
+  const showSource = (ref: SourceRef) => {
+    setSource(ref)
+    setPane('source', true)
+  }
   const chat = useRef<ChatHandle>(null)
   const session = useSession(project?.dir ?? null)
 
@@ -42,7 +70,7 @@ export default function App() {
     })
   }, [project, load])
 
-  const open = async () => {
+  const openProject = async () => {
     const dir = await window.humanstudy.project.open()
     if (dir) await load(dir)
   }
@@ -64,12 +92,16 @@ export default function App() {
           {project && (
             <VisualizeMenu disabled={!session.id || session.busy} onSend={session.send} />
           )}
-          {project?.pdf && (
-            <button className="ghost" onClick={() => setSource(source ? null : { page: 1 })}>
-              Source
-            </button>
+          {project && (
+            <div className="pane-switch" role="group" aria-label="Panels">
+              {(Object.keys(paneLabel) as Pane[]).map((pane) => (
+                <button key={pane} aria-pressed={open[pane]} onClick={() => setPane(pane, !open[pane])}>
+                  {paneLabel[pane]}
+                </button>
+              ))}
+            </div>
           )}
-          <button className="ghost" onClick={open}>
+          <button className="ghost" onClick={openProject}>
             {project ? 'Switch project' : 'Open project'}
           </button>
         </div>
@@ -82,28 +114,72 @@ export default function App() {
             Open a project folder containing <code>paper.pdf</code> and <code>program.json</code>.
             The agent builds, visualizes and exports the study; every step streams on the left.
           </p>
-          <button className="primary" onClick={open}>
+          <button className="primary" onClick={openProject}>
             Open project
           </button>
         </main>
       ) : (
         <main className="workspace">
-          <Chat
-            ref={chat}
-            session={session}
-            selected={selected}
-            onClearSelection={() => setSelected([])}
-          />
-          <ArtifactPanel
-            project={project}
-            selectedIds={selected}
-            onPick={pick}
-            onSource={(id, ref) => setSource({ page: ref.page ?? 1, quote: ref.quote, nodeId: id })}
-            onAsk={(id, fieldId, draft) => chat.current?.ask(id, fieldId, draft)}
-          />
-          <SourceDrawer pdf={project.pdf} source={source} onClose={() => setSource(null)} />
+          <section className={`pane agent ${open.agent ? '' : 'folded'}`} aria-label={paneLabel.agent}>
+            {open.agent ? (
+              <>
+                <PaneHead title={paneLabel.agent} onFold={() => setPane('agent', false)} />
+                <Chat ref={chat} session={session} selected={selected} onClearSelection={() => setSelected([])} />
+              </>
+            ) : (
+              <Rail label={paneLabel.agent} onOpen={() => setPane('agent', true)} />
+            )}
+          </section>
+          <section className={`pane source ${open.source ? '' : 'folded'}`} aria-label={paneLabel.source}>
+            {open.source ? (
+              <>
+                <PaneHead title={project.pdf?.name ?? paneLabel.source} onFold={() => setPane('source', false)} />
+                <SourceDrawer pdf={project.pdf} source={source ?? { page: 1 }} onClose={() => setPane('source', false)} />
+              </>
+            ) : (
+              <Rail label={paneLabel.source} onOpen={() => setPane('source', true)} />
+            )}
+          </section>
+          <section className={`pane program ${open.program ? '' : 'folded'}`} aria-label={paneLabel.program}>
+            {open.program ? (
+              <>
+                <PaneHead title={paneLabel.program} onFold={() => setPane('program', false)} />
+                <ArtifactPanel
+                  project={project}
+                  selectedIds={selected}
+                  onPick={pick}
+                  onSource={(id, ref) => showSource({ page: ref.page ?? 1, quote: ref.quote, nodeId: id })}
+                  onAsk={(id, fieldId, draft) => {
+                    setPane('agent', true)
+                    requestAnimationFrame(() => chat.current?.ask(id, fieldId, draft))
+                  }}
+                />
+              </>
+            ) : (
+              <Rail label={paneLabel.program} onOpen={() => setPane('program', true)} />
+            )}
+          </section>
         </main>
       )}
     </div>
+  )
+}
+
+function PaneHead({ title, onFold }: { title: string; onFold(): void }) {
+  return (
+    <header className="pane-head">
+      <strong title={title}>{title}</strong>
+      <button className="ghost fold" aria-label={`Fold ${title}`} title="Fold" onClick={onFold}>
+        ‹
+      </button>
+    </header>
+  )
+}
+
+function Rail({ label, onOpen }: { label: string; onOpen(): void }) {
+  return (
+    <button className="rail" onClick={onOpen} title={`Open ${label}`}>
+      <span>{label}</span>
+    </button>
   )
 }
