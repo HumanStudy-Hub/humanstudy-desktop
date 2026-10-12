@@ -65,9 +65,10 @@ export function buildMenu(hooks: MenuHooks): Menu {
     {
       label: 'View',
       submenu: [
-        pane('Show agent', 'agent', 1),
-        pane('Show source', 'source', 2),
-        pane('Show program', 'program', 3),
+        pane('Show chat', 'agent', 1),
+        pane('Study', 'study', 2),
+        pane('Paper', 'paper', 3),
+        { label: 'Show or hide files', accelerator: 'CmdOrCtrl+B', click: () => send({ command: 'pane', arg: 'files' }) },
         { type: 'separator' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },

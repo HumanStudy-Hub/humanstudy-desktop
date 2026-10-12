@@ -5,7 +5,21 @@ import type { TelemetryRecent, TelemetryRow, TelemetryStatus, TelemetryTrackOpti
 import type { AccountStatus, CommunityStudy, CommunityStudyDetail, HumanStudyApi, KernelEvent, KernelInstallStatus, MenuCommand, PermissionReply, Thread, ThreadMessage, ThreadPart, ProjectSnapshot, ProjectSummary, ProviderStatus, Settings } from '../preload/types'
 import sample from '../shared/sample-program.json'
 
+// Preview flags (all optional, combine freely):
+//   ?project=empty    a new project: paper.pdf only, no study yet
+//   ?project=results  the sample study plus artifacts of different kinds (chart with 3 versions, report, table, simulation, draft, docx, figure)
+//   ?build=hold       "Build the study from the paper" stalls while the agent is still reading (to look at the working state)
+//   ?agent=1          signed in, unlocked, agreement accepted, so the agent can be used
+//   ?lang=zh|en       sets the interface language (stored like Settings → Language)
+//   ?fresh=1          no seeded conversations;  ?install=1|error, ?declined=1, ?devkeys=1, ?folderError=1 as before
 if (!('humanstudy' in window)) {
+  try {
+    const l = new URLSearchParams(location.search).get('lang')
+    if (l === 'zh' || l === 'zh-CN') localStorage.setItem('hs.lang', 'zh-CN')
+    else if (l === 'en') localStorage.setItem('hs.lang', 'en')
+  } catch {
+    /* no storage */
+  }
   const listeners = new Set<(e: KernelEvent) => void>()
   const changed = new Set<(dir: string) => void>()
   const emit = (e: KernelEvent) => listeners.forEach((cb) => cb(e))
@@ -66,8 +80,8 @@ if (!('humanstudy' in window)) {
     recordEvent(e)
     emit(e)
   }
-  const play = (sessionId: string, steps: Omit<KernelEvent, 'sessionId'>[]) => {
-    const ids = steps.map((e, i) => window.setTimeout(() => emitAndRecord({ sessionId, ...e }), 120 + i * 45))
+  const play = (sessionId: string, steps: Omit<KernelEvent, 'sessionId'>[], gap = 45) => {
+    const ids = steps.map((e, i) => window.setTimeout(() => emitAndRecord({ sessionId, ...e }), 120 + i * gap))
     timers.set(sessionId, ids)
   }
   const timers = new Map<string, number[]>()
@@ -103,22 +117,50 @@ if (!('humanstudy' in window)) {
   const menuListeners = new Set<(c: MenuCommand) => void>()
   ;(window as unknown as { __menu: (c: MenuCommand) => void }).__menu = (c) => menuListeners.forEach((cb) => cb(c))
   if (installMode) setTimeout(() => runInstall(installMode === 'error'), 0)
+  const mode = new URLSearchParams(location.search).get('project')
+  const buildMode = new URLSearchParams(location.search).get('build')
   const snapshot: ProjectSnapshot = {
     dir: '/preview/knobe-2003',
-    name: 'Knobe 2003 · browser preview',
-    program: sample,
+    name: mode === 'empty' ? 'Untitled study' : 'Knobe 2003 · browser preview',
+    program: mode === 'empty' ? null : sample,
     artifacts: [],
     exports: [],
     pdf: { name: 'paper.pdf', path: '/preview/paper.pdf', url: '/preview/paper.pdf', ext: 'pdf' },
     tree: [],
   }
   // Files of the preview project, editable in memory so the Program tab can be tried out.
-  const texts = new Map<string, string>([
-    ['/preview/knobe-2003/program.json', JSON.stringify(sample, null, 2) + '\n'],
-    ['/preview/knobe-2003/AGENTS.md', '# HumanStudy researcher agent\n\n(Preview copy of the pack instructions.)\n'],
-    ['/preview/knobe-2003/artifacts/participant-flow.html', '<!doctype html><meta charset="utf-8"><body style="font:14px system-ui;padding:24px"><h1>Participant flow</h1><p>A view the agent wrote (preview).</p>'],
-    ['/preview/knobe-2003/artifacts/2026-10-11-change.md', '# Changes\n\n- material-1-harm: wording corrected to match p. 2.\n'],
-  ])
+  const R = '/preview/knobe-2003/'
+  const mins = (m: number) => Date.now() - m * 60_000
+  const texts = new Map<string, string>()
+  const mtimes = new Map<string, number>()
+  const versionStore = new Map<string, { id: string; at: number; text: string }[]>()
+  const put = (rel: string, text: string, minutesAgo = 5) => {
+    texts.set(R + rel, text)
+    mtimes.set(R + rel, mins(minutesAgo))
+  }
+  const html = (title: string, body: string) => `<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font:14px system-ui;padding:24px;color:#263d46">${body}`
+  if (mode !== 'empty') {
+    put('program.json', JSON.stringify(sample, null, 2) + '\n', 30)
+    put('artifacts/participant-flow.html', html('Participant flow', '<h1 style="font-size:22px">Participant flow</h1><div style="display:flex;gap:10px;align-items:center;margin-top:20px"><b style="border:2px solid #247c91;border-radius:8px;padding:12px 16px">Read scenario</b>&rarr;<b style="border:2px solid #247c91;border-radius:8px;padding:12px 16px">Harm / Help</b>&rarr;<b style="border:2px solid #247c91;border-radius:8px;padding:12px 16px">Judge intentionality</b></div><p>A view the agent wrote (preview).</p>'), 12)
+    put('artifacts/2026-10-11-change.md', '# Changes to the study\n\n- material-1-harm: wording corrected to match p. 2.\n- participants: N = 78 now cited.\n', 60 * 20)
+  }
+  if (mode === 'results') {
+    put('artifacts/condition-comparison.html', html('Harm vs. help condition', '<h1 style="font-size:20px">Harm vs. help</h1><div style="display:flex;gap:30px;align-items:flex-end;height:220px;margin-top:16px"><div style="width:90px;height:82%;background:#247c91"></div><div style="width:90px;height:23%;background:#9ec3cd"></div></div><p>Share judging the side effect intentional: 82% vs. 23%.</p>'), 45)
+    put('artifacts/simulations/2026-10-11-1420/report.md', '# Simulation report: side-effect effect\n\nThe model reproduced the asymmetry in both arms.\n\n| Condition | Paper | Simulated |\n| --- | --- | --- |\n| Harm | 82% | 79% |\n| Help | 23% | 31% |\n\n> 60 simulated participants per arm.\n', 25)
+    put('artifacts/descriptives.csv', 'condition,n,intentional,mean_blame\nHarm,39,32,4.7\nHelp,39,9,1.4\nTotal,78,41,3.1\n', 90)
+    put('exports/preregistration-draft.md', '# Preregistration draft\n\n## Hypotheses\n\nPeople judge a harmful side effect as intentional more often than a helpful one.\n\n## Analysis plan\n\nChi-square test on the share judging the side effect intentional. **Missing:** exclusion rule.\n', 8)
+    put('exports/study-summary.docx', 'binary placeholder', 60 * 5)
+    put('artifacts/effect-sizes.svg', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200"><rect width="320" height="200" fill="#fff"/><g fill="#247c91"><rect x="40" y="40" width="50" height="130"/><rect x="130" y="120" width="50" height="50" fill="#9ec3cd"/></g><text x="40" y="26" font-family="sans-serif" font-size="13">Effect of side-effect valence</text></svg>', 60 * 30)
+    const v = (rel: string, texts2: string[]) => versionStore.set(R + rel, texts2.map((tx, i) => ({ id: `2026101${i}T10000000${i}Z.html`, at: mins(300 - i * 80), text: tx })))
+    v('artifacts/participant-flow.html', [
+      html('Participant flow', '<h1>Participant flow</h1><p>First draft: two boxes.</p>'),
+      html('Participant flow', '<h1>Participant flow</h1><p>Second draft: three stages, no arrows.</p>'),
+      texts.get(R + 'artifacts/participant-flow.html')!,
+    ])
+  }
+  const MIME: Record<string, string> = { svg: 'image/svg+xml', html: 'text/html', png: 'image/png' }
+  const bytes = (rel: string) => ((texts.get(R + rel) ?? '').length)
+  void bytes
   const buildTree = () => {
     const root = snapshot.dir
     const dirs = new Map<string, import('../preload/types').ProjectEntry>()
@@ -138,7 +180,7 @@ if (!('humanstudy' in window)) {
     for (const path of files) {
       const rel = path.slice(root.length + 1)
       const name = rel.split('/').pop()!
-      folder(rel.split('/').slice(0, -1).join('/')).push({ name, path, rel, kind: 'file', ext: name.split('.').pop()!.toLowerCase(), url: name === 'paper.pdf' ? '/preview/paper.pdf' : 'data:text/plain;charset=utf-8,' + encodeURIComponent(texts.get(path) ?? ''), size: (texts.get(path) ?? '').length })
+      folder(rel.split('/').slice(0, -1).join('/')).push({ name, path, rel, kind: 'file', ext: name.split('.').pop()!.toLowerCase(), url: name === 'paper.pdf' ? '/preview/paper.pdf' : `data:${MIME[name.split('.').pop()!.toLowerCase()] ?? 'text/plain'};charset=utf-8,` + encodeURIComponent(texts.get(path) ?? ''), size: (texts.get(path) ?? '').length, mtime: mtimes.get(path) ?? mins(3) })
     }
     const sortTree = (list: import('../preload/types').ProjectEntry[]) => {
       list.sort((a, b) => Number(b.kind === 'dir') - Number(a.kind === 'dir') || a.name.localeCompare(b.name))
@@ -151,7 +193,7 @@ if (!('humanstudy' in window)) {
   buildTree()
   const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString()
   const projects: ProjectSummary[] = [
-    { dir: snapshot.dir, name: 'Knobe 2003 · side-effect effect', updatedAt: ago(14), hasPaper: true, hasProgram: true, artifactCount: 2 },
+    { dir: snapshot.dir, name: mode === 'empty' ? 'Untitled study' : 'Knobe 2003 · side-effect effect', updatedAt: ago(14), hasPaper: true, hasProgram: mode !== 'empty', artifactCount: mode === 'results' ? 6 : 2 },
     { dir: '/preview/untitled', name: 'Untitled project', updatedAt: ago(60 * 26), hasPaper: false, hasProgram: false, artifactCount: 0 },
   ]
   const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'project'
@@ -176,6 +218,7 @@ if (!('humanstudy' in window)) {
   }
   const query = new URLSearchParams(location.search)
   // ?declined=1: signed in and unlocked, but "Not now" was chosen, so the agent is locked.
+  if (query.has('agent')) Object.assign(account, { signedIn: true, email: 'researcher@example.edu', unlocked: true, keyExpiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString() })
   if (query.has('declined')) Object.assign(account, { signedIn: true, email: 'researcher@example.edu', unlocked: true, keyExpiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString() })
   let folderBlocked = query.has('folderError')
   const accountStatus = (): AccountStatus => ({
@@ -189,7 +232,7 @@ if (!('humanstudy' in window)) {
   })
   // Research data: in-memory consent and events, so the consent dialog and Settings → Research data
   // can be reviewed. Nothing leaves the browser; "sent" is simulated.
-  const research = { decided: query.has('declined'), usage: false, content: false, sent: 0, decidedAt: undefined as string | undefined }
+  const research = { decided: query.has('declined') || query.has('agent'), usage: query.has('agent'), content: query.has('agent'), sent: 0, decidedAt: undefined as string | undefined }
   const recentEvents: TelemetryRecent[] = []
   const previewSession = crypto.randomUUID()
   const researchStatus = (): TelemetryStatus => {
@@ -268,7 +311,7 @@ def intentional(harm: float, help_: float) -> float:
        "id": "analysis",
 +      "note": "Chi-square on the share judging the side effect intentional",
        "origin": "agent"`
-  if (!new URLSearchParams(location.search).has('fresh')) {
+  if (!new URLSearchParams(location.search).has('fresh') && mode !== 'empty') {
     const ago = (h: number) => new Date(Date.now() - h * 3600_000).toISOString()
     const seed = (id: string, title: string, hours: number, user: string, answer: string, usage: Thread['usage']) =>
       threadStore.set(id, {
@@ -278,9 +321,43 @@ def intentional(harm: float, help_: float) -> float:
           { id: 'm1', role: 'assistant', parts: [{ kind: 'tool', tool: 'read', detail: 'program.json', state: 'completed' }, { kind: 'text', text: answer }], at: ago(hours + 0.19) },
         ],
       })
-    seed('thr_a', 'Build the Human Program from paper.pdf', 3, 'Build the Human Program from paper.pdf', 'I read the paper and wrote **four studies** into `program.json`. Participants and conditions are `reported`; the analysis plan is still `missing`.', { input: 12400, output: 3100, cost: 0.08 })
+    seed('thr_a', 'Build the study from the paper', 3, 'Build the study from the paper', 'I read the paper and wrote **four studies** into `program.json`. Participants and conditions are `reported`; the analysis plan is still `missing`.', { input: 12400, output: 3100, cost: 0.08 })
     seed('thr_b', 'Which items are still missing?', 26, 'Which items are still missing?', 'Three items carry the `missing` label: the exact exclusion rule, the order of vignettes, and the debriefing text.', { input: 4200, output: 610, cost: 0.02 })
     seed('thr_c', 'Export a preregistration draft', 24 * 5, 'Export a preregistration draft', 'The draft is in `exports/preregistration.md`.', { input: 8800, output: 1900, cost: 0 })
+  }
+  // The "Build the study from the paper" run, slowly, so the stage list can be watched.
+  const pdf = (n: number) => ({ type: 'tool' as const, tool: 'bash', detail: `pdftotext -f ${n} -l ${n + 1} paper.pdf -`, input: { command: `pdftotext -f ${n} -l ${n + 1} paper.pdf -` } })
+  const buildScript = (sessionId: string): Omit<KernelEvent, 'sessionId'>[] => {
+    void sessionId
+    const writeStudy = () => {
+      texts.set(R + 'program.json', JSON.stringify(sample, null, 2) + '\n')
+      mtimes.set(R + 'program.json', Date.now())
+      snapshot.program = sample
+      buildTree()
+      changed.forEach((cb) => cb(snapshot.dir))
+    }
+    const early: Omit<KernelEvent, 'sessionId'>[] = [
+      { type: 'status', text: 'Reading the project' },
+      { type: 'tool', tool: 'glob', detail: '**/*', input: { pattern: '**/*' } },
+      { ...pdf(1), text: 'completed' },
+      { ...pdf(3), text: 'completed' },
+      { type: 'text', text: 'The paper reports two experiments with a harm and a help condition. ' },
+    ]
+    if (buildMode === 'hold') return early
+    const write: Omit<KernelEvent, 'sessionId'>[] = [
+      { type: 'tool', tool: 'bash', detail: 'mkdir -p package/knobe-2003', input: { command: 'mkdir -p package/knobe-2003' }, text: 'completed' },
+      { type: 'tool', tool: 'edit', text: 'completed', detail: SAMPLE_DIFF, input: { filePath: R + 'program.json' } },
+      { type: 'text', text: 'I wrote the study document. ' },
+      { type: 'tool', tool: 'read', detail: 'program.json', input: { filePath: R + 'program.json' }, text: 'completed' },
+    ]
+    const late: Omit<KernelEvent, 'sessionId'>[] = [
+      { type: 'tool', tool: 'bash', detail: 'python3 check_package.py package/knobe-2003', input: { command: 'python3 check_package.py package/knobe-2003' }, text: 'completed' },
+      { type: 'text', text: 'The study is built. Three items are still marked **missing** (exclusion rule, vignette order, debriefing text). Open the Study tab to read it.' },
+      { type: 'usage', usage: { input: 9000, output: 1800, reasoning: 0, cost: 0.05 } },
+      { type: 'done' },
+    ]
+    window.setTimeout(writeStudy, early.length * 1100 + 1100)
+    return [...early, ...write, ...late]
   }
   const script = (text: string): Omit<KernelEvent, 'sessionId'>[] => [
     { type: 'status', text: 'Reading the project' },
@@ -581,6 +658,14 @@ def intentional(harm: float, help_: float) -> float:
         }
       },
       reveal: async () => undefined,
+      saveCopy: async (path) => `/Users/preview/Downloads/${path.split('/').pop()}`,
+      versions: async (path) => {
+        if (!texts.has(path)) return []
+        let list = versionStore.get(path)
+        if (!list) versionStore.set(path, (list = [{ id: `20261012T090000000Z.${path.split('.').pop()}`, at: Date.now() - 3_600_000, text: texts.get(path)! }]))
+        return list.map((v) => ({ id: v.id, at: v.at, size: v.text.length }))
+      },
+      readVersion: async (path, id) => versionStore.get(path)?.find((v) => v.id === id)?.text ?? '',
       importFiles: async (dir, paths) =>
         paths.map((p) => {
           const name = p.split(/[\\/]/).pop() ?? p
@@ -598,7 +683,10 @@ def intentional(harm: float, help_: float) -> float:
           JSON.parse(text)
           snapshot.program = JSON.parse(text)
         }
+        const list = versionStore.get(path) ?? []
+        if (list.length && list[list.length - 1].text !== text) list.push({ id: `${Date.now()}.${path.split('.').pop()}`, at: Date.now(), text })
         texts.set(path, text)
+        mtimes.set(path, Date.now())
         buildTree()
         changed.forEach((cb) => cb(snapshot.dir))
       },
@@ -618,7 +706,7 @@ def intentional(harm: float, help_: float) -> float:
         record('agent.turn_start', { metadata: { chars: text.length } })
         record('conversation.user', { metadata: { text } })
         recordUser(sessionId, text)
-        let steps = script(text)
+        let steps = /build the (study|human program)/i.test(text) ? buildScript(sessionId) : script(text)
         if (/\brun/i.test(text)) {
           // Scripted permission prompt: pauses until kernel.reply, like opencode asking before bash.
           const at = steps.findIndex((e) => e.type === 'tool')
@@ -632,7 +720,7 @@ def intentional(harm: float, help_: float) -> float:
             { type: 'permission', permission: { id, type: 'bash', title: 'python run_simulation.py', patterns: ['python run_simulation.py'] } },
           ]
         }
-        play(sessionId, steps)
+        play(sessionId, steps, /build the (study|human program)/i.test(text) ? 1100 : 45)
       },
       abort: async (sessionId) => {
         timers.get(sessionId)?.forEach((t) => clearTimeout(t))

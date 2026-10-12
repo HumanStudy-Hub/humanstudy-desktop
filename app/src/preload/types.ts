@@ -118,7 +118,17 @@ export interface ProjectEntry {
   ext: string
   url?: string
   size?: number
+  /** Last modified, ms since the epoch. */
+  mtime?: number
   children?: ProjectEntry[]
+}
+
+/** One saved version of a file the agent wrote. */
+export interface FileVersion {
+  id: string
+  /** ms since the epoch */
+  at: number
+  size: number
 }
 
 export interface ProjectSnapshot {
@@ -226,7 +236,7 @@ export interface KernelInstallStatus {
 /** A native menu action for the renderer. */
 export interface MenuCommand {
   command: 'newProject' | 'openFolder' | 'pane' | 'settings'
-  /** For 'pane': 'agent' | 'source' | 'program'. */
+  /** For 'pane': 'agent' | 'study' | 'paper' | 'files'. */
   arg?: string
 }
 
@@ -281,6 +291,11 @@ export interface HumanStudyApi {
     open(): Promise<string | null>
     read(dir: string): Promise<ProjectSnapshot>
     reveal(path: string): Promise<void>
+    /** The saved versions of a file under artifacts/, exports/ or program.json, oldest first. */
+    versions(path: string): Promise<FileVersion[]>
+    readVersion(path: string, id: string): Promise<string>
+    /** Save a copy of a file somewhere the researcher chooses; null when cancelled. */
+    saveCopy(path: string): Promise<string | null>
     /** Text of a file inside an opened project (UTF-8, at most 4 MB). */
     readText(path: string): Promise<string>
     /** Writes a file inside an opened project, creating folders as needed. program.json must stay valid JSON. */

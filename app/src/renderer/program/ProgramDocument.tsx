@@ -5,6 +5,7 @@ import { conditionSuggestion, fieldText, itemSources, sourceRefs, studyCondition
 import s from './ProgramDocument.module.css';
 import { SECTIONS, claimedKinds, readiness, resolveSection, type Entry, type ResolvedItem, type Section } from './sections';
 import { track } from '../telemetry';
+import { t } from '../i18n';
 
 export type { SourceRef };
 type Props = {
@@ -61,14 +62,14 @@ export default function ProgramDocument(input:ProgramDocumentProps){
 
  function renderItem(sec:Section,r:ResolvedItem):ReactNode{
   const {item}=r;
-  const notStated=<p key={item.id} className={s.notStated} data-item={item.id}><span className={s.label}>{item.label}. </span><em>not stated</em>{props.onPrefill&&<button onClick={()=>askAbout(sec,item.label)} title={`Ask the agent about ${item.label.toLowerCase()}`}>Ask ↗</button>}</p>;
+  const notStated=<p key={item.id} className={s.notStated} data-item={item.id}><span className={s.label}>{item.label}. </span><em>{t('doc.not_stated')}</em>{props.onPrefill&&<button onClick={()=>askAbout(sec,item.label)} title={t('doc.ask_about',{what:item.label.toLowerCase()})}>{t('doc.ask')}</button>}</p>;
   if(item.special==='steps')return <Fragment key={item.id}>
    {r.entries.map(e=><Entries key={e.key} entries={[e]} ctx={ctx}/>)}
-   {items.length?<ol className={s.steps}>{items.map(it=><Step key={it.step.id} item={it} ctx={ctx}/>)}</ol>:<p className={s.missing}>The participant procedure has not been mapped yet. <button onClick={()=>props.onAsk(scoped(['design'])[0]?.id??program.nodes[0]?.id??'',undefined,'Map the documented participant procedure into explicit steps and next connections. Preserve unknown order and conditions as questions rather than inventing them.')}>Ask the agent to map it ↗</button></p>}
+   {items.length?<ol className={s.steps}>{items.map(it=><Step key={it.step.id} item={it} ctx={ctx}/>)}</ol>:<p className={s.missing}>{t('doc.procedure_unmapped')} <button onClick={()=>props.onAsk(scoped(['design'])[0]?.id??program.nodes[0]?.id??'',undefined,'Map the documented participant procedure into explicit steps and next connections. Preserve unknown order and conditions as questions rather than inventing them.')}>{t('doc.ask_map')}</button></p>}
   </Fragment>;
   if(item.special==='conditions'){
    if(r.present&&r.entries.some(e=>e.node?.kind==='condition'))return <div key={item.id} className={s.conditions}>{conditions.map(c=><span key={c.id} data-tone={c.tone} data-model-id={c.id}><i/>{c.label}<Cite id={c.id} refs={itemSources(program,c.id)} ctx={ctx}/></span>)}</div>;
-   if(suggestion)return <p key={item.id} className={s.suggestion}><b>Conditions are not stated.</b> Possibly {suggestion.labels.join(' / ')} (from {suggestion.basis}). <button onClick={()=>props.onAsk(scoped(['design'])[0]?.id??'',undefined,`The program does not state its experimental conditions. They may be ${suggestion.labels.join(', ')} (from ${suggestion.basis}). Check the paper, add a condition node for each, and set conditionIds on the steps and materials that belong to it. Mark anything the paper does not state as missing.`)}>Ask the agent to confirm ↗</button></p>;
+   if(suggestion)return <p key={item.id} className={s.suggestion}><b>{t('doc.conditions_unstated')}</b> {t('doc.possibly')} {suggestion.labels.join(' / ')} ({t('doc.from')} {suggestion.basis}). <button onClick={()=>props.onAsk(scoped(['design'])[0]?.id??'',undefined,`The program does not state its experimental conditions. They may be ${suggestion.labels.join(', ')} (from ${suggestion.basis}). Check the paper, add a condition node for each, and set conditionIds on the steps and materials that belong to it. Mark anything the paper does not state as missing.`)}>{t('doc.ask_confirm')}</button></p>;
   }
   if(!r.present)return notStated;
   if(item.special==='materials')return <ul key={item.id} className={s.measures}>{r.entries.map(e=><li key={e.key}><Term node={e.node!} ctx={ctx}/>{e.node!.conditionIds?.length?<span className={s.inline}> · {conditions.filter(c=>e.node!.conditionIds!.includes(c.id)).map(c=>c.label).join(', ')}</span>:null}<Issue ids={props.issuesFor(e.node!.id)} ctx={ctx}/></li>)}</ul>;
@@ -81,22 +82,22 @@ export default function ProgramDocument(input:ProgramDocumentProps){
   const heading=`${sec.number} ${sec.title}`;
   const ready=sec.assessment?readiness(program,sec.level==='study'?studyId:undefined):null;
   return <details key={sec.id} id={sec.id==='procedure'?'procedure':`section-${sec.id}`} data-section={sec.id} open={open} onToggle={e=>{const next=(e.currentTarget as HTMLDetailsElement).open;if(next!==open){track('study.section_toggle',{target:sec.id,metadata:{open:next}});setOpenSections(sec.id,next);}}}>
-   <summary><h2 title={sec.titleZh} data-empty={!r.present&&!ready}><span className={s.num}>{sec.number}</span>{sec.title}</h2>{props.onPrefill&&<button className={s.askSection} onClick={e=>{e.preventDefault();e.stopPropagation();askAbout(sec,sec.title);}} title={`Ask the agent about ${sec.title.toLowerCase()}`}>Ask ↗</button>}</summary>
-   {ready&&<p className={s.readiness} data-verdict={ready.tone}><span className={s.label}>Readiness. </span>{ready.text}<em className={s.origin}> agent assessment</em></p>}
+   <summary><h2 title={sec.titleZh} data-empty={!r.present&&!ready}><span className={s.num}>{sec.number}</span>{sec.title}</h2>{props.onPrefill&&<button className={s.askSection} onClick={e=>{e.preventDefault();e.stopPropagation();askAbout(sec,sec.title);}} title={t('doc.ask_about',{what:sec.title.toLowerCase()})}>{t('doc.ask')}</button>}</summary>
+   {ready&&<p className={s.readiness} data-verdict={ready.tone}><span className={s.label}>{t('doc.readiness')}. </span>{ready.text}<em className={s.origin}> {t('doc.assessment')}</em></p>}
    {r.present?<>
     {!(sec.blocks&&r.blocks.length)&&r.items.map(ri=>renderItem(sec,ri))}
     {r.blocks.length>0&&nodes(r.blocks)}
     {r.leftovers.length>0&&<Entries entries={r.leftovers} ctx={ctx} assessment={sec.assessment}/>}
-   </>:<p className={s.nothing}>Nothing stated{props.onPrefill&&<> · <button onClick={()=>askAbout(sec,sec.title)}>Ask ↗</button></>}</p>}
+   </>:<p className={s.nothing}>{t('doc.nothing_stated')}{props.onPrefill&&<> · <button onClick={()=>askAbout(sec,sec.title)}>{t('doc.ask')}</button></>}</p>}
   </details>;
  };
  return <div className={s.doc}>
   <Glance program={program} studyId={studyId} items={items} conditions={conditions}/>
   {items.length>0&&<StepBar items={items} ctx={ctx}/>}
   <article ref={article} className={s.article} onMouseUp={()=>requestAnimationFrame(captureSelection)} onKeyUp={captureSelection}>
-   {ask&&<button className={s.askBar} style={{top:ask.top}} onMouseDown={e=>e.preventDefault()} onClick={()=>{props.onAsk(ask.id,ask.fieldId,`“${ask.quote}”\n\n`);setAsk(null);window.getSelection()?.removeAllRanges();}}>Discuss or change this with the agent ↗</button>}
+   {ask&&<button className={s.askBar} style={{top:ask.top}} onMouseDown={e=>e.preventDefault()} onClick={()=>{props.onAsk(ask.id,ask.fieldId,`“${ask.quote}”\n\n`);setAsk(null);window.getSelection()?.removeAllRanges();}}>{t('doc.discuss')}</button>}
    {SECTIONS.map(renderSection)}
-   {(()=>{const other=nodes(program.nodes.filter(n=>!claimed.has(n.kind)&&(!studyId||!n.studyIds.length||n.studyIds.includes(studyId))));return other&&<details open={openSections.other??false} onToggle={e=>setOpenSections('other',(e.currentTarget as HTMLDetailsElement).open)}><summary><h2>Other details</h2></summary>{other}</details>;})()}
+   {(()=>{const other=nodes(program.nodes.filter(n=>!claimed.has(n.kind)&&(!studyId||!n.studyIds.length||n.studyIds.includes(studyId))));return other&&<details open={openSections.other??false} onToggle={e=>setOpenSections('other',(e.currentTarget as HTMLDetailsElement).open)}><summary><h2>{t('doc.other')}</h2></summary>{other}</details>;})()}
   </article>
  </div>;
 }
@@ -105,7 +106,7 @@ export default function ProgramDocument(input:ProgramDocumentProps){
 const CLAMP=160;
 function Entries({entries,ctx,assessment}:{entries:Entry[];ctx:Ctx;assessment?:boolean}){
  return <>{entries.map(e=>e.field&&e.nodeId
-  ?<Field key={e.key} id={e.nodeId} field={e.field} ctx={ctx} label={e.label} clamp={CLAMP} originLabel={assessment?'agent assessment':undefined}/>
+  ?<Field key={e.key} id={e.nodeId} field={e.field} ctx={ctx} label={e.label} clamp={CLAMP} originLabel={assessment?t('doc.assessment'):undefined}/>
   :<Plain key={e.key} entry={e} ctx={ctx} assessment={assessment}/>)}</>;
 }
 function Plain({entry,ctx,assessment}:{entry:Entry;ctx:Ctx;assessment?:boolean}){
@@ -115,10 +116,10 @@ function Plain({entry,ctx,assessment}:{entry:Entry;ctx:Ctx;assessment?:boolean})
  const node=entry.node;
  return <p data-model-id={node?.id} className={`${s.field} ${s.line} ${node?mark(ctx,node.id):''} ${long?s.expandable:''}`} onClick={toggle}>
   {node&&!text?<button className={s.term} onClick={e=>{e.stopPropagation();ctx.onPick(node.id,e.shiftKey);}}>{entry.label}</button>:<><span className={s.label}>{entry.label}. </span>{long&&!open?`${text.slice(0,CLAMP).trimEnd()}…`:text}</>}
-  {assessment&&<em className={s.origin}> agent assessment</em>}
+  {assessment&&<em className={s.origin}> {t('doc.assessment')}</em>}
   {node&&<Cite id={node.id} refs={itemSources(ctx.program,node.id)} ctx={ctx} quiet/>}
   {node&&<Issue ids={ctx.issuesFor(node.id)} ctx={ctx}/>}
-  {node&&<button className={s.comment} title="Discuss or change this with the agent" aria-label={`Discuss ${entry.label}`} onClick={e=>{e.stopPropagation();ctx.onAsk(node.id);}}>✎</button>}
+  {node&&<button className={s.comment} title={t('doc.discuss_hint')} aria-label={`Discuss ${entry.label}`} onClick={e=>{e.stopPropagation();ctx.onAsk(node.id);}}>✎</button>}
  </p>;
 }
 
@@ -199,7 +200,7 @@ function Field({id,field,ctx,against,labelled=true,quote,label,clamp,originLabel
   {labelled&&<span className={s.label}>{label??fieldLabel(field.id,field.label)}. </span>}{body}
   {!(unresolved&&!text)&&(originLabel??origins[field.origin])&&<em className={s.origin}> {originLabel??origins[field.origin]}</em>}
   {(field.origin==='verbatim'||field.origin==='reported'||field.evidenceIds.length>0)&&<Cite id={id} refs={sourceRefs(ctx.program,field.evidenceIds)} ctx={ctx}/>}
-  <button className={s.comment} title="Discuss or change this with the agent" aria-label={`Discuss ${label??field.label}`} onClick={()=>ctx.onAsk(id,field.id)}>✎</button>
+  <button className={s.comment} title={t('doc.discuss_hint')} aria-label={`Discuss ${label??field.label}`} onClick={()=>ctx.onAsk(id,field.id)}>✎</button>
  </p>;
 }
 function Term({node,ctx}:{node:ProgramNode;ctx:Ctx}){
@@ -263,14 +264,14 @@ function Glance({program,studyId,items,conditions}:{program:HumanProgram;studyId
  const verdict=readiness(program,studyId);
  const stepCount=steps.filter(st=>st.kind!=='sequence'||st.children.length===0).length||items.length;
  const facts:[string,string][]=[
-  ['Studies',String(program.studies.filter(st=>st.type!=='analysis').length||program.studies.length)],
-  ['Participants',participants],
-  ['Conditions',conditions.length?String(conditions.length):'not stated'],
-  ['Steps',String(stepCount)],
-  ['Open issues',issues.length?[blocking&&`${blocking} blocking`,decision&&`${decision} decision`,check&&`${check} check`].filter(Boolean).join(' · '):'none'],
+  [t('glance.studies'),String(program.studies.filter(st=>st.type!=='analysis').length||program.studies.length)],
+  [t('glance.participants'),participants],
+  [t('glance.conditions'),conditions.length?String(conditions.length):t('doc.not_stated')],
+  [t('glance.steps'),String(stepCount)],
+  [t('glance.issues'),issues.length?[blocking&&t('glance.blocking',{n:blocking}),decision&&t('glance.decision',{n:decision}),check&&t('glance.check',{n:check})].filter(Boolean).join(' · '):t('glance.none')],
  ];
- return <dl className={s.glance} aria-label="At a glance">
+ return <dl className={s.glance} aria-label={t('glance.aria')}>
   {facts.map(([k,v])=><div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
-  <div className={s.verdict} data-verdict={verdict.tone}><dt>Enough information to reproduce?</dt><dd>{verdict.text}</dd></div>
+  <div className={s.verdict} data-verdict={verdict.tone}><dt>{t('glance.enough')}</dt><dd>{verdict.text}</dd></div>
  </dl>;
 }

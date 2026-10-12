@@ -1,69 +1,84 @@
-// The right pane: tabs like an editor's. A Study tab reads one study of program.json as a document;
-// file tabs show or edit any file of the project; the Program explorer lists the project folder.
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
+// The right pane: Study (the 12-section document) and Paper, plus any file the researcher or the agent
+// opens as another tab, like an artifact panel. A Files sidebar (hidden by default, ⌘B) lists the folder.
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import ProgramDocument, { viewStudies, type ProgramDocumentProps } from '../program/ProgramDocument'
 import { validateHumanProgram, type HumanProgram } from '../../shared/human-program'
 import type { ProjectEntry, ProjectSnapshot } from '../../preload/types'
 import { lap, track } from '../telemetry'
 import { FileView } from './FileView'
 import { Explorer, flatten } from './Explorer'
+import { SourceDrawer, type SourceRef } from './SourceDrawer'
 import type { SelectedItem } from '../program/labels'
+import { t } from '../i18n'
 
-type TabId = `study:${string}` | `file:${string}`
+export type MainTab = 'study' | 'paper'
+type TabId = MainTab | `file:${string}`
 interface Layout {
-  tabs: TabId[]
-  active: TabId | null
-  explorer: boolean
+  /** Open file tabs, as `file:<path>`. */
+  tabs: `file:${string}`[]
+  active: TabId
+  files: boolean
+  study?: string
 }
+const DEFAULT: Layout = { tabs: [], active: 'study', files: false }
 
 export interface WorkbenchHandle {
-  /** Show the Study tab (the first study of program.json). */
-  openStudy(): void
+  showTab(tab: MainTab): void
   /** Open a project file in a tab by its absolute path. */
   openFile(path: string): void
+  toggleFiles(): void
 }
 
 interface Props extends Pick<ProgramDocumentProps, 'selectedIds' | 'onPick' | 'onSource' | 'onAsk' | 'onPrefill'> {
   ref?: Ref<WorkbenchHandle>
   project: ProjectSnapshot
   selectedItems: SelectedItem[]
+  source: SourceRef | null
   onClearSelection(): void
   /** Focus the composer with the current selection attached. */
   onAskSelection(): void
+  onFold(): void
 }
 
-const key = (dir: string) => `hs.tabs:${dir}`
-function loadLayout(dir: string): Layout | null {
+const key = (dir: string) => `hs.wb2:${dir}`
+function loadLayout(dir: string): Layout {
   try {
     const raw = JSON.parse(localStorage.getItem(key(dir)) || 'null')
-    if (raw && Array.isArray(raw.tabs)) return { tabs: raw.tabs, active: raw.active ?? raw.tabs[0] ?? null, explorer: Boolean(raw.explorer) }
+    if (raw && typeof raw === 'object')
+      return {
+        tabs: Array.isArray(raw.tabs) ? raw.tabs.filter((x: unknown) => typeof x === 'string' && x.startsWith('file:')) : [],
+        active: typeof raw.active === 'string' ? raw.active : 'study',
+        files: Boolean(raw.files),
+        study: typeof raw.study === 'string' ? raw.study : undefined,
+      }
   } catch {
     /* ignore */
   }
-  return null
+  return DEFAULT
 }
 
-export function Workbench({ ref, project, selectedItems, onClearSelection, onAskSelection, ...docProps }: Props) {
+export function Workbench({ ref, project, selectedItems, source, onClearSelection, onAskSelection, onFold, ...docProps }: Props) {
   const { program, error } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError }
     try {
       return { program: validateHumanProgram(project.program), error: undefined }
     } catch (e) {
-      return { program: null, error: `program.json is not a valid Human Program: ${String(e)}` }
+      return { program: null, error: t('study.invalid', { error: String(e) }) }
     }
   }, [project.program, project.programError])
   const studies = useMemo(() => (program ? viewStudies(program) : []), [program])
   const files = useMemo(() => flatten(project.tree), [project.tree])
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
 
-  const [layout, setLayout] = useState<Layout>(() => loadLayout(project.dir) ?? { tabs: [], active: null, explorer: false })
+  const [layout, setLayout] = useState<Layout>(() => loadLayout(project.dir))
   const [dirty, setDirty] = useState<Set<string>>(() => new Set())
   const [editError, setEditError] = useState('')
   const [changed, setChanged] = useState<Set<string>>(() => new Set())
+  const [paperSeen, setPaperSeen] = useState(false)
 
   // Project switch: restore its tabs.
   useEffect(() => {
-    setLayout(loadLayout(project.dir) ?? { tabs: [], active: null, explorer: false })
+    setLayout(loadLayout(project.dir))
     setDirty(new Set())
     setChanged(new Set())
     setEditError('')
@@ -83,57 +98,55 @@ export function Workbench({ ref, project, selectedItems, onClearSelection, onAsk
     [project.dir],
   )
 
-  // Keep the tabs honest: a Study tab needs its study, a file tab its file, and there is always one.
+  // Keep the tabs honest: a file tab needs its file.
   useEffect(() => {
     update((l) => {
-      let tabs = l.tabs.filter((t) =>
-        t.startsWith('study:') ? studies.some((st) => `study:${st.id}` === t) : fileByPath.has(t.slice(5)) || dirty.has(t.slice(5)),
-      )
-      if (!tabs.length && studies[0]) tabs = [`study:${studies[0].id}`]
-      const active = l.active && tabs.includes(l.active) ? l.active : (tabs[0] ?? null)
-      const explorer = l.explorer || (!tabs.length && !program)
-      if (tabs.length === l.tabs.length && active === l.active && explorer === l.explorer && tabs.every((t, i) => t === l.tabs[i])) return l
-      return { tabs, active, explorer }
+      const tabs = l.tabs.filter((tb) => fileByPath.has(tb.slice(5)) || dirty.has(tb.slice(5)))
+      const active = l.active.startsWith('file:') && !tabs.includes(l.active as `file:${string}`) ? 'study' : l.active
+      if (tabs.length === l.tabs.length && active === l.active) return l
+      return { ...l, tabs, active }
     })
-  }, [studies, fileByPath, dirty, program, update])
+  }, [fileByPath, dirty, update])
 
-  // Tab dwell: when the active tab changes, record how long the previous one was in front.
+  // Tab dwell.
   const prevTab = useRef<TabId | null>(null)
   useEffect(() => {
     const was = prevTab.current
     const now = layout.active
     if (was === now) return
     const dwell = lap('tab')
-    if (was !== null || now !== null)
-      track('tab.switch', {
-        target: now ? tabKind(now, fileByPath) : 'none',
-        durationMs: was ? dwell : undefined,
-        metadata: { from: was ? tabKind(was, fileByPath) : null },
-      })
+    track('tab.switch', {
+      target: tabKind(now, fileByPath),
+      durationMs: was ? dwell : undefined,
+      metadata: { from: was ? tabKind(was, fileByPath) : null },
+    })
     prevTab.current = now
   }, [layout.active, fileByPath])
+  useEffect(() => {
+    if (layout.active === 'paper') setPaperSeen(true)
+  }, [layout.active])
 
-  const open = (id: TabId) => {
-    track('tab.open', { target: id.startsWith('file:') ? `file.${fileByPath.get(id.slice(5))?.ext ?? ''}` : 'study' })
+  const activate = (id: TabId) => update((l) => (l.active === id ? l : { ...l, active: id }))
+  const open = (id: `file:${string}`) => {
+    track('tab.open', { target: `file.${fileByPath.get(id.slice(5))?.ext ?? ''}` })
     update((l) => ({ ...l, tabs: l.tabs.includes(id) ? l.tabs : [...l.tabs, id], active: id }))
   }
+  const toggleFiles = useCallback(() => {
+    update((l) => {
+      track('files.toggle', { metadata: { open: !l.files }, durationMs: lap('files') })
+      return { ...l, files: !l.files }
+    })
+  }, [update])
   useImperativeHandle(ref, () => ({
-    openStudy() {
-      const first = studies[0]
-      if (first) open(`study:${first.id}`)
-      else {
-        const f = files.find((x) => x.rel === 'program.json')
-        if (f) open(`file:${f.path}`)
-      }
-    },
+    showTab: (tab) => activate(tab),
     openFile(path) {
       if (fileByPath.has(path)) open(`file:${path}`)
     },
+    toggleFiles,
   }))
-  const activate = (id: TabId) => update((l) => (l.active === id ? l : { ...l, active: id }))
-  const close = (id: TabId) => {
-    track('tab.close', { target: tabKind(id, fileByPath), metadata: { dirty: id.startsWith('file:') && dirty.has(id.slice(5)) } })
-    if (id.startsWith('file:') && dirty.has(id.slice(5)) && !window.confirm('Discard unsaved changes to this file?')) return
+  const close = (id: `file:${string}`) => {
+    track('tab.close', { target: tabKind(id, fileByPath), metadata: { dirty: dirty.has(id.slice(5)) } })
+    if (dirty.has(id.slice(5)) && !window.confirm(t('wb.discard'))) return
     setDirty((d) => {
       if (!d.has(id.slice(5))) return d
       const n = new Set(d)
@@ -141,13 +154,13 @@ export function Workbench({ ref, project, selectedItems, onClearSelection, onAsk
       return n
     })
     update((l) => {
-      const tabs = l.tabs.filter((t) => t !== id)
+      const tabs = l.tabs.filter((x) => x !== id)
       const at = l.tabs.indexOf(id)
-      const active = l.active === id ? (tabs[Math.min(at, tabs.length - 1)] ?? null) : l.active
+      const active = l.active === id ? (tabs[Math.min(at, tabs.length - 1)] ?? 'study') : l.active
       return { ...l, tabs, active }
     })
   }
-  const markDirty = (path: string, isDirty: boolean) =>
+  const markDirty = useCallback((path: string, isDirty: boolean) => {
     setDirty((d) => {
       if (d.has(path) === isDirty) return d
       const n = new Set(d)
@@ -155,25 +168,26 @@ export function Workbench({ ref, project, selectedItems, onClearSelection, onAsk
       else n.delete(path)
       return n
     })
+  }, [])
 
   const openEntry = (e: ProjectEntry) => {
     if (e.kind === 'dir') return
-    if (e.ext === 'pdf') {
+    if (e.ext === 'pdf' && e.rel === 'paper.pdf') {
       docProps.onSource(`file:${e.rel}`, { page: 1, quote: '', verified: true })
+      activate('paper')
       return
     }
     track('file.open', { target: e.rel, metadata: { ext: e.ext, size: e.size ?? null } })
     open(`file:${e.path}`)
   }
-
-  // Human edit of a program field: the researcher's decision, written straight into program.json.
+  // Human edit of a study field: the researcher's decision, written straight into program.json.
   const onEdit = async (id: string, fieldId: string, text: string) => {
     if (!program) return
     const next = structuredClone(program) as HumanProgram
     const field = id.startsWith('flow:')
       ? next.steps.find((s) => s.id === id.slice(5))?.rule
       : next.nodes.find((n) => n.id === id)?.fields.find((f) => f.id === fieldId)
-    if (!field) return setEditError(`Could not find ${id} › ${fieldId} in program.json.`)
+    if (!field) return setEditError(t('study.field_missing', { id, field: fieldId }))
     field.value = text
     field.origin = 'researcher'
     field.state = 'confirmed'
@@ -188,123 +202,111 @@ export function Workbench({ ref, project, selectedItems, onClearSelection, onAsk
     }
   }
 
-  const label = (t: TabId) => (t.startsWith('study:') ? (studies.find((st) => `study:${st.id}` === t)?.title ?? 'Study') : t.split(/[\\/]/).pop()!)
   const active = layout.active
-  const activeFile = active?.startsWith('file:') ? (fileByPath.get(active.slice(5)) ?? null) : null
-  const unopened = studies.filter((st) => !layout.tabs.includes(`study:${st.id}`))
+  const activeFile = active.startsWith('file:') ? (fileByPath.get(active.slice(5)) ?? null) : null
+  const studyId = studies.find((s) => s.id === layout.study)?.id ?? studies[0]?.id ?? ''
+  const label = (tb: `file:${string}`) => tb.split(/[\\/]/).pop()!
+  const tabBtn = (id: MainTab, text: string) => (
+    <div role="tab" aria-selected={active === id} className={`wb-tab main ${active === id ? 'active' : ''}`}>
+      <button className="wb-tab-label" onClick={() => activate(id)}>
+        {text}
+      </button>
+    </div>
+  )
 
   return (
     <section className="wb">
-      <nav className="wb-tabs" aria-label="Open tabs">
-        <button
-          className={`wb-explorer-toggle ${layout.explorer ? 'on' : ''}`}
-          aria-pressed={layout.explorer}
-          title="Program: the project's files"
-          onClick={() => {
-            track(layout.explorer ? 'explorer.hide' : 'explorer.show', { durationMs: lap('explorer') })
-            update((l) => ({ ...l, explorer: !l.explorer }))
-          }}
-        >
+      <nav className="wb-tabs" aria-label={t('wb.tabs_aria')}>
+        <button className={`wb-explorer-toggle ${layout.files ? 'on' : ''}`} aria-pressed={layout.files} aria-label={t('wb.files')} title={t('wb.files_hint')} onClick={toggleFiles}>
           <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden>
             <path d="M2 4.5c0-.8.7-1.5 1.5-1.5h3l1.5 1.5h4.5c.8 0 1.5.7 1.5 1.5v5.5c0 .8-.7 1.5-1.5 1.5h-9c-.8 0-1.5-.7-1.5-1.5z" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
           </svg>
-          Program
         </button>
         <div className="wb-tablist" role="tablist">
-          {layout.tabs.map((t) => {
-            const isDirty = t.startsWith('file:') && dirty.has(t.slice(5))
+          {tabBtn('study', t('wb.study'))}
+          {tabBtn('paper', t('wb.paper'))}
+          {layout.tabs.map((tb) => {
+            const isDirty = dirty.has(tb.slice(5))
             return (
-              <div key={t} role="tab" aria-selected={active === t} className={`wb-tab ${active === t ? 'active' : ''}`} title={t.startsWith('file:') ? t.slice(5) : label(t)}>
-                <button className="wb-tab-label" onClick={() => activate(t)} onAuxClick={(e) => e.button === 1 && close(t)}>
-                  {t.startsWith('study:') && <span className="wb-tab-kind">Study</span>}
-                  {label(t)}
+              <div key={tb} role="tab" aria-selected={active === tb} className={`wb-tab ${active === tb ? 'active' : ''}`} title={tb.slice(5)}>
+                <button className="wb-tab-label" onClick={() => activate(tb)} onAuxClick={(e) => e.button === 1 && close(tb)}>
+                  {label(tb)}
                 </button>
                 {isDirty ? (
-                  <button className="wb-tab-close dirty" aria-label="Unsaved changes · close" onClick={() => close(t)}>
+                  <button className="wb-tab-close dirty" aria-label={t('wb.unsaved_close')} onClick={() => close(tb)}>
                     ●
                   </button>
                 ) : (
-                  <button className="wb-tab-close" aria-label={`Close ${label(t)}`} onClick={() => close(t)}>
+                  <button className="wb-tab-close" aria-label={t('wb.close_named', { name: label(tb) })} onClick={() => close(tb)}>
                     ×
                   </button>
                 )}
               </div>
             )
           })}
-          {unopened.length > 0 && <StudyPicker studies={unopened} onOpen={(id) => open(`study:${id}`)} />}
         </div>
+        <button className="ghost fold" aria-label={t('wb.fold')} title={t('wb.fold')} onClick={onFold}>
+          ‹
+        </button>
       </nav>
       <div className="wb-body">
-        {layout.explorer && <Explorer tree={project.tree} name={project.name} activePath={activeFile?.path ?? null} dirty={dirty} onOpen={openEntry} />}
+        {layout.files && <Explorer tree={project.tree} name={project.name} activePath={activeFile?.path ?? null} dirty={dirty} onOpen={openEntry} />}
         <div className="wb-content">
-          {active?.startsWith('study:') &&
+          {active === 'study' &&
             (program ? (
-              <StudyView
-                program={program}
-                studyId={active.slice(6)}
-                storageKey={project.dir}
-                selectedItems={selectedItems}
-                onClearSelection={onClearSelection}
-                onAskSelection={onAskSelection}
-                editError={editError}
-                changedIds={changed}
-                onEdit={(id, fieldId, text) => void onEdit(id, fieldId, text)}
-                {...docProps}
-              />
+              <>
+                {studies.length > 1 && (
+                  <div className="study-picker">
+                    <label className="muted small">
+                      {t('study.which')}{' '}
+                      <select value={studyId} onChange={(e) => update((l) => ({ ...l, study: e.target.value }))}>
+                        {studies.map((st) => (
+                          <option key={st.id} value={st.id}>
+                            {st.title}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                )}
+                <StudyView
+                  program={program}
+                  studyId={studyId}
+                  storageKey={project.dir}
+                  selectedItems={selectedItems}
+                  onClearSelection={onClearSelection}
+                  onAskSelection={onAskSelection}
+                  editError={editError}
+                  changedIds={changed}
+                  onEdit={(id, fieldId, text) => void onEdit(id, fieldId, text)}
+                  {...docProps}
+                  onSource={(id, ref) => {
+                    docProps.onSource(id, ref)
+                    activate('paper')
+                  }}
+                />
+              </>
             ) : (
-              <Empty title={error ? 'program.json could not be read' : 'No study yet'} body={error ?? 'Ask the agent to build the Human Program from paper.pdf. The study appears here as soon as program.json is written.'} />
+              <Empty title={error ? t('study.unreadable') : t('study.empty_title')} body={error ?? t('study.empty_body')} />
             ))}
-          {active?.startsWith('file:') &&
-            (activeFile ? (
-              <FileView key={activeFile.path} file={activeFile} dir={project.dir} version={project} onDirty={markDirty} />
-            ) : (
-              <Empty title="File removed" body="This file is no longer in the project." />
-            ))}
-          {!active && (
-            <Empty
-              title={program ? 'Nothing open' : 'No study yet'}
-              body={program ? 'Open a study or a file from the Program explorer.' : 'Ask the agent to build the Human Program from paper.pdf, or open a file from the Program explorer.'}
+          {paperSeen && (
+            <div className="wb-paper" hidden={active !== 'paper'}>
+              <SourceDrawer pdf={project.pdf} source={source ?? { page: 1 }} onClose={() => activate('study')} />
+            </div>
+          )}
+          {activeFile && (
+            <FileView
+              key={activeFile.path}
+              file={activeFile}
+              dir={project.dir}
+              version={project}
+              onDirty={markDirty}
             />
           )}
+          {active.startsWith('file:') && !activeFile && <Empty title={t('wb.removed_title')} body={t('wb.removed_body')} />}
         </div>
       </div>
     </section>
-  )
-}
-
-function StudyPicker({ studies, onOpen }: { studies: { id: string; title: string }[]; onOpen(id: string): void }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!open) return
-    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false)
-    window.addEventListener('mousedown', close)
-    return () => window.removeEventListener('mousedown', close)
-  }, [open])
-  return (
-    <div className="menu wb-add" ref={ref}>
-      <button className="wb-add-btn" onClick={() => setOpen(!open)} title="Open another study" aria-haspopup="menu" aria-expanded={open}>
-        + Study
-      </button>
-      {open && (
-        <div className="menu-pop" role="menu" style={{ left: 0, right: 'auto' }}>
-          {studies.map((st) => (
-            <button
-              key={st.id}
-              className="menu-item row"
-              role="menuitem"
-              onClick={() => {
-                setOpen(false)
-                track('program.study_select', { target: st.id })
-                onOpen(st.id)
-              }}
-            >
-              {st.title}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
   )
 }
 
@@ -324,14 +326,14 @@ function StudyView({ program, studyId, selectedItems, onClearSelection, onAskSel
       {n > 0 && (
         <div className="selection-bar" role="status">
           <span>
-            {n} selected
+            {t('study.selected', { n })}
             <span className="selection-names"> · {selectedItems.map((i) => i.title).join(', ')}</span>
           </span>
           <button className="link" onClick={onAskSelection}>
-            Ask the agent ↗
+            {t('study.ask_selection')}
           </button>
           <button className="link muted" onClick={onClearSelection}>
-            Clear
+            {t('chat.clear')}
           </button>
         </div>
       )}
@@ -341,7 +343,7 @@ function StudyView({ program, studyId, selectedItems, onClearSelection, onAskSel
   )
 }
 
-function Empty({ title, body }: { title: string; body: ReactNode }) {
+function Empty({ title, body }: { title: string; body: string }) {
   return (
     <div className="empty-state">
       <h2>{title}</h2>
@@ -352,5 +354,5 @@ function Empty({ title, body }: { title: string; body: ReactNode }) {
 
 /** Tab label for research events: the kind and extension, never the file name. */
 function tabKind(id: TabId, files: Map<string, ProjectEntry>): string {
-  return id.startsWith('file:') ? `file.${files.get(id.slice(5))?.ext ?? ''}` : 'study'
+  return id.startsWith('file:') ? `file.${files.get(id.slice(5))?.ext ?? ''}` : id
 }

@@ -1,6 +1,7 @@
 // Research data: the mandatory research data agreement dialog and the Settings → Research data section.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TelemetryRecent, TelemetryStatus } from '../../preload/types'
+import { t } from '../i18n'
 
 /** Electron prefixes errors from ipcMain handlers; show only the message the main process wrote. */
 function errorText(e: unknown, fallback: string): string {
@@ -11,24 +12,17 @@ function errorText(e: unknown, fallback: string): string {
 export function AgreementText() {
   return (
     <div className="consent-text">
-      <p>
-        HumanStudy Hub is a research platform. To use the study agent you agree that HumanStudy Hub stores
-        everything needed to replay your session, for research on how social scientists work with AI:
-      </p>
+      <p>{t('agree.intro')}</p>
       <ul>
-        <li>your conversation with the agent, in full;</li>
-        <li>the files the agent writes in your projects;</li>
-        <li>your actions in the app: clicks, selections, edits and which panels you open;</li>
-        <li>timings, and your account email.</li>
+        <li>{t('agree.i1')}</li>
+        <li>{t('agree.i2')}</li>
+        <li>{t('agree.i3')}</li>
+        <li>{t('agree.i4')}</li>
       </ul>
       <p>
-        <strong>No paper PDFs are uploaded.</strong> The data is stored by HumanStudy Hub, linked to your account,
-        and only your account and the HumanStudy Hub research team can read it.
+        <strong>{t('agree.nopdf')}</strong> {t('agree.stored')}
       </p>
-      <p>
-        You can download or delete your data at any time in Settings → Research data. A paid plan without data
-        collection is planned for later.
-      </p>
+      <p>{t('agree.delete')}</p>
     </div>
   )
 }
@@ -46,26 +40,26 @@ export function AgreementDialog({ onDone }: { onDone(s: TelemetryStatus): void }
     try {
       onDone(await window.humanstudy.telemetry.setConsent({ usage: agree, content: agree }))
     } catch (e) {
-      setError(errorText(e, 'Could not save your choice.'))
+      setError(errorText(e, t('agree.err')))
       setBusy('')
     }
   }
 
   return (
     <div className="overlay">
-      <div className="consent-dialog" role="dialog" aria-modal="true" aria-label="Research data agreement" tabIndex={-1} ref={box}>
-        <h2>Research data agreement</h2>
+      <div className="consent-dialog" role="dialog" aria-modal="true" aria-label={t('agree.title')} tabIndex={-1} ref={box}>
+        <h2>{t('agree.title')}</h2>
         <AgreementText />
         {error && <p className="home-error">{error}</p>}
         <div className="row-end">
           <button className="ghost" onClick={() => void save(false)} disabled={Boolean(busy)}>
-            Not now
+            {t('agree.not_now')}
           </button>
           <button className="primary" onClick={() => void save(true)} disabled={Boolean(busy)}>
-            {busy === 'agree' ? 'Saving…' : 'I agree'}
+            {busy === 'agree' ? t('agree.saving') : t('agree.agree')}
           </button>
         </div>
-        <p className="muted small">Choosing Not now keeps you signed in, but the agent stays locked until you agree.</p>
+        <p className="muted small">{t('agree.note')}</p>
       </div>
     </div>
   )

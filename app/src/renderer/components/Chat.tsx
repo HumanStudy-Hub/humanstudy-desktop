@@ -6,7 +6,11 @@ import type { SettingsSection } from './SettingsDialog'
 import { Markdown, copyText } from './Markdown'
 import { ModelPicker, shortModelName } from './ModelPicker'
 import { PermissionCard } from './Permission'
-import { ToolView } from './ToolView'
+import { ToolGroup } from './ToolView'
+import { t } from '../i18n'
+import { ArtifactCard } from './ArtifactCard'
+import { classifyTool } from '../toolSentence'
+import { track } from '../telemetry'
 import { KernelBar } from './KernelBar'
 import { compact, money } from '../format'
 import type { KernelInstallStatus } from '../../preload/types'
@@ -16,6 +20,8 @@ export interface ChatHandle {
   /** Replace the draft and focus the composer. */
   prefill(text: string): void
   focus(): void
+  /** Append @-mentions of project files (relative paths) to the draft and focus the composer. */
+  mention(rels: string[]): void
 }
 
 interface Props {
@@ -36,6 +42,8 @@ interface Props {
   kernel: { status: KernelInstallStatus | null; retry(): void }
   /** Open program.json's Study tab in the workbench. */
   onOpenStudy(): void
+  /** Open a project file (absolute path) in the right pane. */
+  onOpenFile(path: string): void
 }
 
 /** Subsequence match on the path; names score higher than folders, prefixes higher still. */
@@ -58,9 +66,12 @@ export function fuzzyScore(query: string, rel: string): number {
 const flatFiles = (tree: ProjectEntry[]): ProjectEntry[] =>
   tree.flatMap((e) => (e.kind === 'dir' ? flatFiles(e.children ?? []) : [e]))
 
+/** What the "Build the study" starter sends: the researcher's words plus the file names the agent needs. */
+const BUILD_REQUEST = 'Build the study from the paper: read paper.pdf and write the study into program.json.'
+
 const MENTION = /(^|\s)@([^\s@]*)$/
 
-export function Chat({ ref, session, selected, onClearSelection, account, onSettings, agreement, onReview, projectDir, tree, model, busyEnter, onModel, kernel, onOpenStudy }: Props) {
+export function Chat({ ref, session, selected, onClearSelection, account, onSettings, agreement, onReview, projectDir, tree, model, busyEnter, onModel, kernel, onOpenStudy, onOpenFile }: Props) {
   const [draft, setDraft] = useState('')
   const [home, setHome] = useState<string>()
   useEffect(() => {
@@ -88,6 +99,11 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
       focus()
     },
     focus,
+    mention(rels) {
+      const refs = rels.map((r) => '@' + r).join(' ')
+      setDraft((d) => (d.trim() ? d.replace(/\s*$/, ' ') : '') + refs + ' ')
+      focus()
+    },
   }))
 
   useEffect(() => {
@@ -138,7 +154,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
       ])
       focus()
     } catch (e) {
-      setAttachError(e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '') : 'Could not attach the files.')
+      setAttachError(e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '') : t('chat.attach_failed'))
     }
   }
 
@@ -160,7 +176,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
   }
   const canSend = (draft.trim().length > 0 || attached.length > 0) && Boolean(session.id)
   const settingUp = kernel.status != null && kernel.status.state !== 'ready'
-  const statusLine = session.waitingForPermission ? 'Waiting for your permission' : session.status
+  const statusLine = session.waitingForPermission ? t('chat.waiting_perm') : session.status
   const u = session.usage
   const lastAssistant = session.messages.length ? session.messages[session.messages.length - 1].id : -1
 
@@ -182,31 +198,46 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
         void attach(Array.from(e.dataTransfer.files))
       }}
     >
-      {dragging && <div className="drop-hint">Drop to add to the project (PDF, data, images)</div>}
+      {dragging && <div className="drop-hint">{t('chat.drop')}</div>}
       <KernelBar kernel={kernel} />
       <div className="messages" ref={scroller}>
         {session.resumedWithContext && session.messages.length > 0 && (
-          <p className="resumed-note small muted">Resumed; the agent will be reminded of the earlier conversation on your next message.</p>
+          <p className="resumed-note small muted">{t('chat.resumed')}</p>
         )}
         {session.messages.length === 0 && (
           <div className="empty">
-            <p className="muted">Ask the agent to build, check or refine this study.</p>
-            {['Build the Human Program from paper.pdf', 'What is still missing from the protocol?', 'Export a preregistration draft'].map((s) => (
-              <button key={s} className="suggestion" disabled={!session.id} onClick={() => session.send(s)}>
-                {s}
+            <p className="muted">{t('chat.empty')}</p>
+            {(['chat.chip_build', 'chat.chip_missing', 'chat.chip_prereg'] as const).map((k) => (
+              <button
+                key={k}
+                className="suggestion"
+                disabled={!session.id}
+                onClick={() => {
+                  if (k === 'chat.chip_build') track('build.start', { target: 'chip' })
+                  session.send(k === 'chat.chip_build' ? BUILD_REQUEST : t(k))
+                }}
+              >
+                {t(k)}
               </button>
             ))}
           </div>
         )}
         {session.messages.map((m) => (
           <div key={m.id} className={`msg ${m.role}`}>
-            {m.parts.map((p, i) => (
-              <PartView key={i} part={p} role={m.role} onReply={session.reply} onOpenStudy={onOpenStudy} projectDir={projectDir} home={home} />
-            ))}
+            {groupParts(m.parts).map((g, i, all) =>
+              g.tools ? (
+                <div key={i}>
+                  <ToolGroup parts={g.tools} live={session.busy && m.id === lastAssistant && i === all.length - 1} onOpenStudy={onOpenStudy} projectDir={projectDir} home={home} />
+                  <WrittenCards parts={g.tools} files={files} projectDir={projectDir} onOpenStudy={onOpenStudy} onOpenFile={onOpenFile} />
+                </div>
+              ) : (
+                <PartView key={i} part={g.part!} role={m.role} onReply={session.reply} />
+              ),
+            )}
             {m.role === 'assistant' && !(session.busy && m.id === lastAssistant) && <CopyMessage message={m.parts} />}
           </div>
         ))}
-        {session.error && <div className="part error">Agent unavailable: {session.error}</div>}
+        {session.error && <div className="part error">{t('chat.unavailable', { error: session.error })}</div>}
         {statusLine && (
           <div className="status">
             <span className="pulse" /> {statusLine}
@@ -216,24 +247,22 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
 
       {account?.modelAccess === 'none' && (
         <div className="signin-card" role="note">
-          <strong>{account.signedIn ? 'Enter your invitation code to use the agent' : 'Sign in to use the agent'}</strong>
+          <strong>{t(account.signedIn ? 'chat.need_code' : 'chat.need_signin')}</strong>
           <p className="muted small">
-            {account.signedIn
-              ? 'Your invitation code unlocks the agent during the beta.'
-              : 'Your HumanStudy Hub account and invitation code unlock it.'}
+            {t(account.signedIn ? 'chat.code_hint' : 'chat.signin_hint')}
           </p>
           <div className="signin-actions">
             <button className="primary" onClick={() => onSettings('account')}>
-              {account.signedIn ? 'Enter code' : 'Sign in'}
+              {t(account.signedIn ? 'chat.enter_code' : 'chat.signin')}
             </button>
           </div>
         </div>
       )}
       {account?.modelAccess !== 'none' && agreement === 'needed' && (
         <div className="agreement-lock" role="note">
-          <span>Agree to the research data agreement to use the agent</span>
+          <span>{t('chat.agree_lock')}</span>
           <span aria-hidden> · </span>
-          <button className="link" onClick={onReview}>Review</button>
+          <button className="link" onClick={onReview}>{t('chat.review')}</button>
         </div>
       )}
       {account?.modelAccess === 'none' || agreement === 'needed' ? null : (
@@ -245,7 +274,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
                 {s.title}
               </span>
             ))}
-            <button className="link" onClick={onClearSelection}>clear</button>
+            <button className="link" onClick={onClearSelection}>{t('chat.clear')}</button>
           </div>
         )}
         {attached.length > 0 && (
@@ -256,7 +285,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
                   <path d="M3 1.5h4l2 2v7H3z" fill="none" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
                 </svg>
                 {a.rel}
-                <button type="button" aria-label={`Remove ${a.name}`} onClick={() => setAttached((l) => l.filter((_, j) => j !== i))}>
+                <button type="button" aria-label={t('chat.remove_named', { name: a.name })} onClick={() => setAttached((l) => l.filter((_, j) => j !== i))}>
                   ×
                 </button>
               </span>
@@ -265,7 +294,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
         )}
         {attachError && <p className="attach-error small">{attachError}</p>}
         {mention && mention.hits.length > 0 && (
-          <div className="mention-menu" role="listbox" aria-label="Project files">
+          <div className="mention-menu" role="listbox" aria-label={t('chat.project_files')}>
             {mention.hits.map((f, i) => (
               <button
                 key={f.rel}
@@ -288,7 +317,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
           ref={input}
           rows={3}
           value={draft}
-          placeholder={session.id ? 'Message the agent…  (@ to mention a file)' : settingUp ? 'Setting up…' : 'Starting agent…'}
+          placeholder={session.id ? t('chat.placeholder') : settingUp ? t('chat.setting_up') : t('chat.starting')}
           onChange={(e) => {
             setDraft(e.target.value)
             setCaret(e.target.selectionStart)
@@ -333,7 +362,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
         <div className="composer-row">
           <div className="composer-tools">
             <ModelPicker model={model} account={account} onChange={onModel} onOther={() => onSettings('models')} />
-            <button type="button" className="ghost icon attach-btn" aria-label="Attach files" title="Attach files" disabled={!session.id} onClick={() => fileInput.current?.click()}>
+            <button type="button" className="ghost icon attach-btn" aria-label={t('chat.attach')} title={t('chat.attach')} disabled={!session.id} onClick={() => fileInput.current?.click()}>
               <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
                 <path d="M11.5 5.5l-5 5a1.4 1.4 0 002 2l5-5a2.8 2.8 0 00-4-4l-5 5a4.2 4.2 0 006 6l4-4" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
               </svg>
@@ -350,13 +379,13 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
             />
           </div>
           <span className="muted small composer-hint">
-            {session.busy ? (busyEnter === 'queue' ? 'Enter queues' : 'Enter interrupts') : 'Enter to send'}
+            {session.busy ? t(busyEnter === 'queue' ? 'chat.enter_queues' : 'chat.enter_interrupts') : t('chat.enter_send')}
           </span>
           {session.busy && !canSend ? (
-            <button className="stop" onClick={session.abort}>Stop</button>
+            <button className="stop" onClick={session.abort}>{t('chat.stop')}</button>
           ) : (
             <button className="primary" disabled={!canSend} onClick={submit}>
-              {session.busy ? (busyEnter === 'queue' ? 'Queue' : 'Interrupt') : 'Send'}
+              {session.busy ? t(busyEnter === 'queue' ? 'chat.queue' : 'chat.interrupt') : t('chat.send')}
             </button>
           )}
         </div>
@@ -371,12 +400,12 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
         </div>
       )}
       {session.queue.length > 0 && (
-        <div className="queue" aria-label="Queued messages">
+        <div className="queue" aria-label={t('chat.queued_aria')}>
           <div className="queue-head small muted">
-            Queued · sent when the agent finishes
+            {t('chat.queued')}
             {session.busy && (
               <button className="link" onClick={session.abort}>
-                stop
+                {t('chat.stop_lower')}
               </button>
             )}
           </div>
@@ -423,8 +452,8 @@ function QueuedItem({ text, onEdit, onRemove }: { text: string; onEdit(t: string
       )}
       {!editing && (
         <>
-          <button className="link" onClick={() => { setValue(text); setEditing(true) }}>edit</button>
-          <button className="link" aria-label="Remove from queue" onClick={onRemove}>remove</button>
+          <button className="link" onClick={() => { setValue(text); setEditing(true) }}>{t('chat.edit')}</button>
+          <button className="link" aria-label={t('chat.remove_queue')} onClick={onRemove}>{t('chat.remove')}</button>
         </>
       )}
     </div>
@@ -444,26 +473,25 @@ function CopyMessage({ message }: { message: Part[] }) {
         window.setTimeout(() => setDone(false), 1400)
       }}
     >
-      {done ? 'Copied' : 'Copy'}
+      {t(done ? 'chat.copied' : 'chat.copy')}
     </button>
   )
 }
 
-function PartView({
-  part,
-  role,
-  onReply,
-  onOpenStudy,
-  projectDir,
-  home,
-}: {
-  part: Part
-  role: 'user' | 'assistant'
-  onReply(id: string, response: PermissionReply): void
-  onOpenStudy(): void
-  projectDir: string
-  home?: string
-}) {
+/** Consecutive tool calls form one group; everything else stands alone. */
+function groupParts(parts: Part[]): { tools?: Extract<Part, { kind: 'tool' }>[]; part?: Part }[] {
+  const out: { tools?: Extract<Part, { kind: 'tool' }>[]; part?: Part }[] = []
+  for (const p of parts) {
+    if (p.kind === 'tool') {
+      const last = out[out.length - 1]
+      if (last?.tools) last.tools.push(p)
+      else out.push({ tools: [p] })
+    } else out.push({ part: p })
+  }
+  return out
+}
+
+function PartView({ part, role, onReply }: { part: Part; role: 'user' | 'assistant'; onReply(id: string, response: PermissionReply): void }) {
   if (part.kind === 'text') {
     return role === 'assistant' ? (
       <div className="part text md-part">
@@ -475,5 +503,37 @@ function PartView({
   }
   if (part.kind === 'error') return <div className="part error">{part.text}</div>
   if (part.kind === 'permission') return <PermissionCard part={part} onReply={onReply} />
-  return <ToolView part={part} onOpenStudy={onOpenStudy} projectDir={projectDir} home={home} />
+  return null
+}
+
+/** Inline cards for what the agent wrote in this run of steps: results, exports, the study document. */
+function WrittenCards({ parts, files, projectDir, onOpenStudy, onOpenFile }: { parts: Extract<Part, { kind: 'tool' }>[]; files: ProjectEntry[]; projectDir: string; onOpenStudy(): void; onOpenFile(path: string): void }) {
+  const seen = new Set<string>()
+  const cards: { entry: ProjectEntry; study: boolean }[] = []
+  for (const p of parts) {
+    const a = classifyTool(p, projectDir)
+    const rel = a.type === 'write-result' ? a.rel : a.type === 'write-study' ? 'program.json' : null
+    if (!rel || seen.has(rel)) continue
+    seen.add(rel)
+    const entry = files.find((f) => f.rel === rel)
+    if (entry) cards.push({ entry, study: rel === 'program.json' })
+  }
+  if (!cards.length) return null
+  return (
+    <div className="acards">
+      {cards.map(({ entry, study }) => (
+        <ArtifactCard
+          key={entry.path}
+          entry={entry}
+          title={study ? t('artifact.study_title') : undefined}
+          kindLabel={study ? t('kind.study') : undefined}
+          onOpen={(e) => {
+            track('artifact.open_from_chat', { target: e.ext })
+            if (study) onOpenStudy()
+            else onOpenFile(e.path)
+          }}
+        />
+      ))}
+    </div>
+  )
 }
