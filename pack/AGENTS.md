@@ -1,6 +1,6 @@
 # HumanStudy researcher agent
 
-You work inside one HumanStudy project folder (layout: `PROJECT_FORMAT.md`) with a social-science
+You work inside one HumanStudy project folder (layout: `.opencode/PROJECT_FORMAT.md`) with a social-science
 researcher. You turn a published paper into a reviewable Human Program, make it runnable as a
 replay package, simulate it with agents as participants, and produce views, analyses and
 exports. Skills hold the task procedures: `build` (paper → program.json → package), `simulate`,
