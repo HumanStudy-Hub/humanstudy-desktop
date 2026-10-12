@@ -46,7 +46,17 @@ const api: HumanStudyApi = {
     startSession: (dir) => ipcRenderer.invoke('kernel:startSession', dir),
     send: (id, text) => ipcRenderer.invoke('kernel:send', id, text),
     abort: (id) => ipcRenderer.invoke('kernel:abort', id),
+    reply: (id, permissionId, response) => ipcRenderer.invoke('kernel:reply', id, permissionId, response),
     onEvent: (cb) => listen<KernelEvent>('kernel:event', cb),
+  },
+  threads: {
+    list: (dir) => ipcRenderer.invoke('threads:list', dir),
+    get: (dir, id) => ipcRenderer.invoke('threads:get', dir, id),
+    create: (dir) => ipcRenderer.invoke('threads:create', dir),
+    resume: (dir, id) => ipcRenderer.invoke('threads:resume', dir, id),
+    rename: (dir, id, title) => ipcRenderer.invoke('threads:rename', dir, id, title),
+    delete: (dir, id) => ipcRenderer.invoke('threads:delete', dir, id),
+    onChanged: (cb) => listen<{ dir: string; id: string }>('threads:changed', cb),
   },
   updates: {
     status: () => ipcRenderer.invoke('updates:status'),
