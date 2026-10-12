@@ -55,8 +55,8 @@ const ROWS: Row[] = [
   // ---- study document
   ['doc.ask', 'Ask ↗', '询问 ↗'],
   ['doc.ask_about', 'Ask the agent about {what}', '就“{what}”询问助手'],
-  ['doc.not_stated', 'not stated', '论文未说明'],
-  ['doc.nothing_stated', 'Nothing stated', '论文未说明'],
+  ['doc.not_stated', 'not recorded yet', '尚未记录'],
+  ['doc.nothing_stated', 'Nothing recorded yet', '尚未记录'],
   ['doc.procedure_unmapped', 'The participant procedure has not been mapped yet.', '被试流程还没有整理出来。'],
   ['doc.ask_map', 'Ask the agent to map it ↗', '请助手整理 ↗'],
   ['doc.conditions_unstated', 'Conditions are not stated.', '论文没有明确说明实验条件。'],
