@@ -1,0 +1,15 @@
+HumanStudy Desktop
+Copyright (c) 2026 HumanStudy-Hub contributors. Licensed under the MIT License.
+
+This software bundles third-party components:
+
+- PDF.js (pdfjs-dist), including its standard font and CMap data in
+  app/src/renderer/public/pdfjs/. Copyright Mozilla Foundation and contributors.
+  Apache License 2.0. The bundled Liberation fonts are licensed under the
+  SIL Open Font License 1.1; Foxit fonts under their own license as distributed
+  with PDF.js.
+- Electron, React and other npm dependencies under their respective licenses
+  (see app/package-lock.json).
+
+The agent kernel uses opencode (https://github.com/anomalyco/opencode, MIT),
+installed separately by the user.
