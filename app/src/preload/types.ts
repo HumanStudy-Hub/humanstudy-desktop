@@ -73,6 +73,19 @@ export interface CommunityStudyDetail extends CommunityStudy {
   discussionsUrl: string
 }
 
+/** The signed-in HumanStudy Hub account and access to hosted models (no API key needed). */
+export interface AccountStatus {
+  signedIn: boolean
+  email?: string
+  /** True once a promo code has been redeemed and a desktop key is held. */
+  unlocked: boolean
+  keyExpiresAt?: string
+  /** Base URL of the HumanStudy Hub server. */
+  server: string
+  /** Which model access new sessions use: hosted (via the Hub), own key, or none. */
+  modelAccess: 'hosted' | 'own-key' | 'none'
+}
+
 export interface HumanStudyApi {
   projects: {
     list(): Promise<ProjectSummary[]>
@@ -90,6 +103,15 @@ export interface HumanStudyApi {
     /** Creates a local project from the study (paper, materials, description) and returns its dir. */
     fork(id: string): Promise<string>
     openExternal(url: string): Promise<void>
+  }
+  account: {
+    status(): Promise<AccountStatus>
+    signIn(email: string, password: string): Promise<AccountStatus>
+    /** Creates the account; the user must confirm by email before signing in. */
+    signUp(email: string, password: string): Promise<{ needsConfirmation: boolean }>
+    signOut(): Promise<AccountStatus>
+    /** Redeems a promo code for a desktop key that unlocks hosted models. */
+    unlock(code: string): Promise<AccountStatus>
   }
   settings: {
     get(): Promise<Settings>
