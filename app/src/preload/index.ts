@@ -1,4 +1,3 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type { HumanStudyApi, KernelEvent, KernelInstallStatus, MenuCommand, UpdateStatus } from './types'
 

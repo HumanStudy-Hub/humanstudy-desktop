@@ -192,7 +192,7 @@ export function createAccount(deps: AccountDeps) {
       keyExpiresAt: unlocked ? k.expiresAt : undefined,
       server,
       modelAccess: deps.hasOwnKey() ? 'own-key' : unlocked ? 'hosted' : 'none',
-      models: cachedConfig()?.models.length ? cachedConfig()?.models : undefined,
+      ...(cachedConfig()?.models.length ? { models: cachedConfig()?.models } : {}),
     }
   }
 
