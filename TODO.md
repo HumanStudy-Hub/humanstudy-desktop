@@ -65,7 +65,10 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
 - [ ] **Simulation results view** — the agent's `report.md` + `results.png` opened automatically
       when a simulation finishes. (R3)
 - [ ] **Import my project from the Hub** (web first build → app). (M3 + web)
-- [ ] **Publish to the community** — PR to HumanStudy-Bench from the app. (M3)
+- [ ] **Publish to the community** — one folder per contribution under `community/<paper-key>/`,
+      same paper by several people is never a conflict, GitHub users author their own PR and
+      everyone else publishes through the Hub bot with full attribution; see
+      `docs/design/community-publishing.md`. (M3)
 
 ## P2
 
