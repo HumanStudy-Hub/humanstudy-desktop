@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { HumanStudyApi, KernelEvent, UpdateStatus } from './types'
+import type { HumanStudyApi, KernelEvent, KernelInstallStatus, MenuCommand, UpdateStatus } from './types'
 
 function listen<T>(channel: string, cb: (v: T) => void): () => void {
   const h = (_: IpcRendererEvent, v: T): void => cb(v)
@@ -47,7 +47,13 @@ const api: HumanStudyApi = {
     send: (id, text) => ipcRenderer.invoke('kernel:send', id, text),
     abort: (id) => ipcRenderer.invoke('kernel:abort', id),
     onEvent: (cb) => listen<KernelEvent>('kernel:event', cb),
+    install: {
+      status: () => ipcRenderer.invoke('kernel:installStatus'),
+      onProgress: (cb) => listen<KernelInstallStatus>('kernel:installProgress', cb),
+    },
   },
+  app: { info: () => ipcRenderer.invoke('app:info') },
+  menu: { onCommand: (cb) => listen<MenuCommand>('menu:command', cb) },
   updates: {
     status: () => ipcRenderer.invoke('updates:status'),
     check: () => ipcRenderer.invoke('updates:check'),

@@ -64,6 +64,8 @@ export interface Settings {
   model: string
   /** Folder that holds projects. */
   projectsRoot: string
+  /** Notify (and bounce the Dock) when the agent finishes while the app is in the background. */
+  notifications: boolean
 }
 export interface ProviderStatus {
   id: 'openrouter' | 'anthropic' | 'deepseek'
@@ -112,6 +114,32 @@ export interface UpdateStatus {
   error?: string
   /** The version being downloaded or ready to install. */
   nextVersion?: string
+}
+
+/** Managed agent kernel (opencode) download state. */
+export interface KernelInstallStatus {
+  state: 'checking' | 'downloading' | 'ready' | 'error'
+  /** Download progress, 0-100. */
+  percent?: number
+  /** The pinned opencode version. */
+  version: string
+  /** Absolute path to the binary once ready. */
+  path?: string
+  error?: string
+}
+
+/** A native menu action for the renderer. */
+export interface MenuCommand {
+  command: 'newProject' | 'openFolder' | 'pane' | 'settings'
+  /** For 'pane': 'agent' | 'source' | 'program'. */
+  arg?: string
+}
+
+export interface AppInfo {
+  version: string
+  platform: string
+  arch: string
+  kernelPath?: string
 }
 
 export interface HumanStudyApi {
@@ -163,6 +191,16 @@ export interface HumanStudyApi {
     send(sessionId: string, text: string): Promise<void>
     abort(sessionId: string): Promise<void>
     onEvent(cb: (e: KernelEvent) => void): () => void
+    install: {
+      status(): Promise<KernelInstallStatus>
+      onProgress(cb: (s: KernelInstallStatus) => void): () => void
+    }
+  }
+  app: {
+    info(): Promise<AppInfo>
+  }
+  menu: {
+    onCommand(cb: (c: MenuCommand) => void): () => void
   }
   updates: {
     status(): Promise<UpdateStatus>

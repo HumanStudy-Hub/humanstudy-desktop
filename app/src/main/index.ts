@@ -2,6 +2,9 @@ import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'elect
 import { applyCredentials, providers, setKey } from './credentials'
 import { applyAccount, getAccount } from './account'
 import * as telemetry from './telemetry'
+import { setupMenu } from './menu'
+import * as notify from './notify'
+import { cancelInstall, ensureOpencode, installStatus, kernelBinary, managedBinary, onInstallProgress } from './opencode-install'
 import {
   communityStudies,
   communityStudy,
@@ -49,6 +52,7 @@ function currentKernel(): Kernel {
     allKernels.add(kernel)
     kernel.onEvent((e: KernelEvent) => broadcast('kernel:event', e))
     kernel.onEvent(telemetry.onKernelEvent)
+    kernel.onEvent(notify.onKernelEvent)
   }
   return kernel
 }
@@ -342,6 +346,11 @@ app.whenReady().then(() => {
 
   ipcMain.handle('kernel:startSession', async (_e, dir: string) => {
     syncAccess()
+    // No opencode installed: fetch the managed one first, and replace a mock kernel created before it arrived.
+    if (process.env.HUMANSTUDY_KERNEL !== 'mock') {
+      await ensureOpencode().catch((err) => console.error('opencode install failed', err))
+      if (kernel && kernelName(kernel) === 'mock' && kernelBinary()) markKernelStale()
+    }
     const k = currentKernel()
     const started = Date.now()
     let id: string
@@ -352,6 +361,7 @@ app.whenReady().then(() => {
       throw err
     }
     sessionKernel.set(id, k)
+    notify.noteSession(id, dir)
     telemetry.trackSessionStart(id, dir, kernelName(k), started)
     return id
   })
@@ -366,11 +376,23 @@ app.whenReady().then(() => {
   })
   telemetry.registerTelemetry()
 
+  ipcMain.handle('kernel:installStatus', () => installStatus())
+  onInstallProgress((s) => broadcast('kernel:installProgress', s))
+  // First run: start the download in the background so it is usually done before the first message.
+  if (process.env.HUMANSTUDY_KERNEL !== 'mock') void ensureOpencode().catch((err) => console.error('opencode install failed', err))
+  ipcMain.handle('app:info', () => ({
+    version: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    kernelPath: managedBinary() ?? kernelBinary() ?? undefined,
+  }))
+
   ipcMain.handle('updates:status', () => updateStatus())
   ipcMain.handle('updates:check', () => checkForUpdates())
   ipcMain.handle('updates:install', () => installUpdate())
   startUpdates((s) => broadcast('updates:changed', s))
 
+  setupMenu({ newWindow: createWindow, checkForUpdates: () => void checkForUpdates() })
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -378,6 +400,7 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', () => {
+  cancelInstall()
   for (const k of allKernels) {
     const d = (k as { dispose?: () => Promise<void> }).dispose
     if (d) void d.call(k).catch(() => undefined)
