@@ -1,5 +1,6 @@
-// Managed agent kernel: when no opencode binary is installed, download the pinned release into
-// userData/opencode/<version>/ (checked against SHA-256, resumable), unzip it and hand back the path.
+// Managed agent kernel: the app only runs the HumanStudy edition of opencode. When it is not installed,
+// download the pinned release from HumanStudy-Hub/opencode into userData/opencode/<tag>/ (checked against
+// the release's SHA256SUMS.txt, resumable), unzip it and hand back the path.
 // The pure parts (asset choice, download, checksum) live in opencode-install-core.ts.
 import { app } from 'electron'
 import { execFile } from 'node:child_process'
@@ -8,20 +9,21 @@ import { chmod, mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { KernelInstallStatus } from '../preload/types'
-import { findOpencode } from './kernel/opencode'
 import {
   InstallCancelled,
-  OPENCODE_VERSION,
+  KERNEL_TAG,
+  KERNEL_VERSION,
   assetUrl,
   binaryName,
   downloadVerified,
+  fetchChecksum,
   percent,
   pickAsset,
 } from './opencode-install-core'
 
 const run = promisify(execFile)
 
-const installDir = (): string => join(app.getPath('userData'), 'opencode', OPENCODE_VERSION)
+const installDir = (): string => join(app.getPath('userData'), 'opencode', KERNEL_TAG)
 const managedPath = (): string => join(installDir(), binaryName(process.platform))
 
 /** The managed binary if it is already installed (sync, for createKernel). */
@@ -30,20 +32,23 @@ export function managedBinary(): string | null {
   return existsSync(p) && existsSync(join(installDir(), '.ok')) ? p : null
 }
 
-/** Whichever binary the kernel would use: managed first, then one the user installed. */
+/** The binary the kernel runs: an explicit HUMANSTUDY_KERNEL_BIN override (developers), else the managed
+ *  HumanStudy kernel. There is deliberately no fallback to an opencode found on PATH. */
 export function kernelBinary(): string | null {
-  // HUMANSTUDY_IGNORE_SYSTEM_OPENCODE=1 forces the managed path (testing the first-run download).
-  const managed = managedBinary()
+  const override = process.env.HUMANSTUDY_KERNEL_BIN?.trim()
+  const bin = override || managedBinary()
   // The kernel factory reads this instead of importing this (electron-dependent) module.
-  if (managed) process.env.HUMANSTUDY_OPENCODE_BIN = managed
+  // Sessions, config and caches of the kernel live in the app's own data folder, never in ~/.config/opencode.
+  process.env.HUMANSTUDY_KERNEL_HOME = join(app.getPath('userData'), 'kernel')
+  if (bin) process.env.HUMANSTUDY_OPENCODE_BIN = bin
   else delete process.env.HUMANSTUDY_OPENCODE_BIN
-  return managed ?? (process.env.HUMANSTUDY_IGNORE_SYSTEM_OPENCODE ? null : findOpencode())
+  return bin
 }
 
-let status: KernelInstallStatus = { state: 'checking', version: OPENCODE_VERSION }
+let status: KernelInstallStatus = { state: 'checking', version: KERNEL_VERSION }
 const listeners = new Set<(s: KernelInstallStatus) => void>()
 function set(patch: Omit<KernelInstallStatus, 'version'>): void {
-  status = { version: OPENCODE_VERSION, ...patch }
+  status = { version: KERNEL_VERSION, ...patch }
   for (const l of listeners) l(status)
 }
 export const installStatus = (): KernelInstallStatus => status
@@ -117,13 +122,13 @@ async function install(): Promise<string> {
     await mkdir(dir, { recursive: true })
     const zip = join(dir, asset.name)
     abort = new AbortController()
+    const sha256 = await fetchChecksum(asset.name, { signal: abort.signal })
     set({ state: 'downloading', percent: 0 })
     let last = -1
     await downloadVerified({
       url: assetUrl(asset),
       dest: zip,
-      size: asset.size,
-      sha256: asset.sha256,
+      sha256,
       signal: abort.signal,
       onProgress: (r, t) => {
         const p = percent(r, t)
@@ -148,8 +153,8 @@ async function install(): Promise<string> {
     await rm(zip, { force: true })
     // Run it once: a wrong-architecture or blocked binary should fail here, not mid-conversation.
     const { stdout } = await run(target, ['--version'], { timeout: 20_000, windowsHide: true })
-    if (!stdout.includes(OPENCODE_VERSION)) throw new Error(`unexpected opencode version: ${stdout.trim().slice(0, 80)}`)
-    await writeFile(join(dir, '.ok'), OPENCODE_VERSION)
+    if (!stdout.includes('opencode-humanstudy') || !stdout.includes(KERNEL_VERSION)) throw new Error(`unexpected opencode version: ${stdout.trim().slice(0, 80)}`)
+    await writeFile(join(dir, '.ok'), KERNEL_TAG)
     set({ state: 'ready', percent: 100, path: target })
     return target
   } catch (e) {

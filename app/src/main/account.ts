@@ -75,27 +75,31 @@ export function getAccount(): Account {
 }
 
 /**
- * Puts the kernel's provider, model and hosted key into process.env (kernels read env when they
- * are created) and returns a signature of that state, so callers can tell when it changed.
+ * Puts what the kernel needs into process.env (it reads env when it is created) and returns a
+ * signature of that state, so callers can tell when it changed. The HumanStudy edition of opencode
+ * bakes in the provider and its models; the app exports only the key, the account's server, the
+ * dogfood bypass and the user's chosen model. HUMANSTUDY_HOSTED_MODELS feeds the model picker.
  */
 export function applyAccount(): string {
   const settings = getSettings()
   const hosted = getAccount().hostedAccess(settings.model)
+  const devKey = process.env.HUMANSTUDY_DEV_KEYS === '1' && Boolean(process.env.OPENROUTER_API_KEY)
   if (hosted) {
     process.env.HUMANSTUDY_PROVIDER = 'humanstudy'
     process.env.HUMANSTUDY_MODEL = hosted.model
     process.env.HUMANSTUDY_HOSTED_BASEURL = `${hosted.server}/api/desktop/v1`
     process.env.HUMANSTUDY_HOSTED_MODELS = JSON.stringify(hosted.models)
     process.env.HUMANSTUDY_DESKTOP_KEY = hosted.key
+    // HUMANSTUDY_SERVER_BYPASS (dogfood against a protected preview) is already in the env, see configureServer().
   } else {
-    // Own OpenRouter key: route through openrouter. Nothing at all: leave the provider empty so the
-    // kernel does not force a model and opencode falls back to the user's own opencode setup.
-    process.env.HUMANSTUDY_PROVIDER = process.env.OPENROUTER_API_KEY ? 'openrouter' : ''
+    // No hosted access: no provider is forced. Only a developer with HUMANSTUDY_DEV_KEYS=1 and an
+    // OpenRouter key reaches a model without an account.
+    process.env.HUMANSTUDY_PROVIDER = devKey ? 'openrouter' : ''
     delete process.env.HUMANSTUDY_HOSTED_BASEURL
     delete process.env.HUMANSTUDY_HOSTED_MODELS
     delete process.env.HUMANSTUDY_DESKTOP_KEY
     process.env.HUMANSTUDY_MODEL = settings.model
   }
   const keyId = hosted ? createHash('sha256').update(hosted.key).digest('hex').slice(0, 12) : ''
-  return hosted ? `hosted|${hosted.model}|${hosted.models.join(',')}|${keyId}` : `${process.env.HUMANSTUDY_PROVIDER || 'opencode'}|${settings.model}`
+  return hosted ? `hosted|${hosted.model}|${hosted.models.join(',')}|${keyId}` : `${process.env.HUMANSTUDY_PROVIDER || 'none'}|${settings.model}`
 }

@@ -46,7 +46,7 @@ export class MockKernel implements Kernel {
     say(
       'The Human Program has 2 conditions and 1 dependent measure. ' +
         'Items without a verbatim source are labelled missing. ' +
-        'Install opencode and set OPENROUTER_API_KEY to talk to a real agent.'
+        'This is the built-in mock agent; the HumanStudy agent kernel is not installed.'
     )
     const tokens = Math.max(1, Math.ceil(text.length / 4))
     const tail: Step[] = [{ type: 'usage', usage: { input: tokens, output: 60, reasoning: 0, cost: 0 } }, { type: 'done' }]

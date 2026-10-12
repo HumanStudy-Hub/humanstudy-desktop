@@ -10,8 +10,12 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
       when there is no model access. (wave R1, renderer)
 - [x] **Model error without a key** — never force `openrouter/...` on opencode when no key or
       account exists. Superseded by H1: no own-key path in the product; signed-out users get a sign-in card and no session starts. (ca1438f)
-- [x] **Bundled agent kernel** — main side done: pinned opencode 1.18.21 downloads into userData on
-      first run (SHA-256, resume, `kernel.install` IPC). Progress UI still to do in the renderer. (M1)
+- [x] **Bundled agent kernel** — the pinned HumanStudy opencode (`hs-v1.18.21`) downloads into userData
+      on first run (SHA256SUMS.txt check, resume, retry, `kernel.install` IPC); no fallback to a system
+      opencode; kernel runs with its own XDG dirs under userData/kernel. (M1, K2)
+- [x] **opencode HumanStudy edition** — fork https://github.com/HumanStudy-Hub/opencode (branch
+      `humanstudy`, releases `hs-v*`): bakes in the `humanstudy` provider, models and safe defaults;
+      the app only exports `HUMANSTUDY_DESKTOP_KEY` / `HUMANSTUDY_HOSTED_BASEURL` / `HUMANSTUDY_SERVER_BYPASS`. (K2)
 - [x] **Permission prompts** — opencode `permission.asked` → Allow once / Allow for this project /
       Deny in the chat; honour Settings → Default permission. (wave M2 main, R2 renderer)
       M2 done: `permission` KernelEvent, `kernel.reply(sessionId, permissionId, once|always|reject)`,
