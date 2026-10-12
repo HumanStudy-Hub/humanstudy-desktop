@@ -1,5 +1,8 @@
 // Wraps electron-builder so macOS notarization is decided by the environment:
-//   APPLE_API_ISSUER set   -> notarize with the App Store Connect API key
+//   APPLE_KEYCHAIN_PROFILE  -> notarize with a notarytool keychain profile (local default:
+//                             "humanstudy-notary", created with `xcrun notarytool store-credentials`),
+//                             so no credential sits in a file or the environment
+//   APPLE_API_ISSUER set   -> notarize with the App Store Connect API key (CI)
 //                             (APPLE_API_KEY defaults to ~/.appstoreconnect/private_keys/AuthKey_<id>.p8,
 //                              APPLE_API_KEY_ID defaults to J3H58NSZJV)
 //   APPLE_API_ISSUER unset -> skip notarization (logged), and drop half-set APPLE_API_* vars,
@@ -26,6 +29,11 @@ if (unsigned) {
   delete env.CSC_LINK
   delete env.CSC_KEY_PASSWORD
   env.CSC_IDENTITY_AUTO_DISCOVERY = 'false'
+} else if (!env.APPLE_API_ISSUER && buildsMac && process.platform === 'darwin' && hasProfile(env.APPLE_KEYCHAIN_PROFILE || 'humanstudy-notary')) {
+  env.APPLE_KEYCHAIN_PROFILE ||= 'humanstudy-notary'
+  delete env.APPLE_API_KEY
+  delete env.APPLE_API_KEY_ID
+  console.log(`[dist] notarizing with keychain profile ${env.APPLE_KEYCHAIN_PROFILE}`)
 } else if (env.APPLE_API_ISSUER) {
   env.APPLE_API_KEY_ID ||= 'J3H58NSZJV'
   env.APPLE_API_KEY ||= join(homedir(), '.appstoreconnect', 'private_keys', `AuthKey_${env.APPLE_API_KEY_ID}.p8`)
@@ -39,6 +47,13 @@ if (unsigned) {
   delete env.APPLE_API_KEY
   delete env.APPLE_API_KEY_ID
   extra.push('-c.mac.notarize=false')
+}
+
+function hasProfile(name) {
+  // notarytool stores profiles where `security` cannot list them; ask notarytool itself.
+  // A missing profile says so; any other answer (including an account error) means it exists.
+  const r = spawnSync('xcrun', ['notarytool', 'history', '--keychain-profile', name], { encoding: 'utf8' })
+  return !/No Keychain password item found/.test(`${r.stdout}${r.stderr}`)
 }
 
 const bin = join(process.cwd(), 'node_modules', '.bin', process.platform === 'win32' ? 'electron-builder.cmd' : 'electron-builder')
