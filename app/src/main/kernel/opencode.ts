@@ -29,7 +29,7 @@ import { Emitter } from './types'
 import type { Kernel, KernelEvent } from './types'
 
 export const DEFAULT_PROVIDER = 'openrouter'
-export const DEFAULT_MODEL = 'anthropic/claude-haiku-5.5'
+export const DEFAULT_MODEL = 'anthropic/claude-sonnet-5.5'
 
 /** Find the opencode binary. Electron started from Finder (or the Start menu) has a minimal PATH,
  *  so also probe the usual install locations. Returns an absolute path or null.

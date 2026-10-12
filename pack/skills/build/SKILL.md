@@ -1,21 +1,22 @@
 ---
 name: build
-description: Turn the project's paper.pdf (and any authorized open materials) into a schema-valid Human Program v2 program.json and, on request, a runnable replay package. Use when a project has a paper but no program, or the researcher asks to (re)build the study.
+description: Turn the project's paper.pdf (and any authorized open materials) into a schema-valid Human Program v2 program.json and a runnable replay package that agents can execute (the HumanStudy-Bench eight-file contract). Use when a project has a paper but no program, or the researcher asks to (re)build the study or make it runnable.
 ---
 
-# Build: paper to program.json and package
+# Build: paper → program.json → runnable package
 
-Follow every rule in `AGENTS.md`. Never invent study facts.
+Follow every rule in `AGENTS.md`. Never invent study facts. The goal is a study that an agent
+can actually run as the original participants did, so the researcher can check it and simulate it.
 
 ## 1. Read the sources
 
-- Extract text from `paper.pdf` page by page (`pdftotext -layout`, OCR if scanned). Keep the
-  physical page number for every passage you may cite.
+- Extract text from `paper.pdf` page by page (`pdftotext -layout paper.pdf -`; OCR if scanned).
+  Keep the physical page number of every passage you may cite.
 - Read `sources/` only if present. Use the network only for URLs the researcher explicitly gave;
-  record each URL consulted.
+  record each URL consulted in `source/paper_metadata.json` → `external_sources`.
 - List every empirical study in the paper before modelling any of them.
 
-## 2. Write program.json
+## 2. Write program.json (the Study document)
 
 Validate against `schema/human-program.schema.json`. Work in this order:
 
@@ -29,32 +30,52 @@ Validate against `schema/human-program.schema.json`. Work in this order:
    responses), `conditionIds` on condition-specific branches and materials, and `next` edges
    only where the paper states order.
 5. Issues: one per `missing`/`decision` field or step rule, with exact ids, `reason`, `impact`,
-   `suggestedAction`. `blocking` only when the missing rule prevents execution.
+   `suggestedAction`. `blocking` only when the missing rule prevents execution. The app derives
+   "Is there enough information to reproduce this study?" from these issues, so be complete and
+   honest here rather than optimistic.
 6. Optional `extensions.presentation` (`open`, `collapsed`).
 
-Self-check before finishing: schema valid; every node, step and paper-derived field has
-`evidenceIds`; every evidence id resolves; every `conditionIds` entry names a condition node of
-the same study; no placeholder text; interactive and sequential structure intact; under 500 KB.
+Self-check: schema valid; every node, step and paper-derived field has `evidenceIds`; every
+evidence id resolves; every `conditionIds` entry names a condition node of the same study; no
+placeholder text; interactive and sequential structure intact; under 500 KB.
 
-## 3. Package (when asked to make the study runnable)
+## 3. Package: make the study runnable
 
-Write `artifacts/package/<paper-slug>/` with exactly these core files:
+Unless the researcher only asked for the program, continue and write `package/<paper-slug>/`
+with exactly these eight core files (the HumanStudy-Bench contract; additional participant
+materials are allowed, no other sidecars):
 
 ```text
-study.json                     overview; study.json.program holds the canonical program
+study.json                     overview; study.json.program is an exact copy of program.json;
+                               readiness: {status: ready|blocked, blocking: [...issue ids]}
 source/paper_metadata.json     bibliography + external_sources (empty if none authorized)
-source/evidence.json           every claim/material -> source, page, label, derivation
-materials/materials.json       participant-visible material by study and condition
+source/evidence.json           every claim/material → source, page, label, derivation
+materials/materials.json       participant-visible material by study and condition, verbatim
 task/task.json                 agents, roles, order, visibility, scripted roles + justification,
-                               conditions, sampling/assignment/observation units
+                               conditions, sampling/assignment/observation units, programBindings
 task/adapter.py                offline; --smoke-test; run_sessions(llm, seed, n, arms=None)
 evaluation/evaluation.py       evaluate(sessions) -> dict; not_ready when a test cannot run
 audit/missing_information.json entries: study, field, reason, impact, suggested_action
 ```
 
-`run_sessions` uses the injected `llm(prompt) -> str` for every original human participant,
-runs all arms the paper's comparisons need when `arms` is None, and tags each session with its
-condition and arm. Run `python task/adapter.py --smoke-test`, parse every JSON file, and repair
-failures. Record any structure you could not preserve in `audit/missing_information.json`.
+Rules the runner depends on:
 
-Report: studies found, counts of nodes/steps/issues, blocking issues, and checks run.
+- `task/task.json.programBindings` = `{programId, stepIds, recordNodeIds, analysisNodeIds}`,
+  exactly the program's id, every step id in order, every `record`/`variable` node id, every
+  `analysis` node id. `audit/missing_information.json` uses the same issue ids as `program.json`.
+- `run_sessions(llm, seed, n, arms=None)`: `llm(prompt) -> str` is injected; call it for every
+  original human participant (never a script, distribution or fixed answer for a role the paper
+  did not script). `n` is the sampling unit stated in `task.json`. `arms=None` runs every arm the
+  paper's comparisons need; each session dict carries `condition` and `arm`. The adapter builds
+  its own prompts from `materials/materials.json`, parses replies into the response format the
+  paper used, and needs nothing from the researcher at run time.
+- `evaluate(sessions)` derives every metric from `sessions` alone and returns the paper's own
+  comparison (test, statistic, effect size) or a structured `not_ready` with what is missing.
+- Then run `python .opencode/skills/build/check_package.py package/<paper-slug>` (eight files,
+  JSON validity, bindings, smoke test) and repair until it passes.
+
+## 4. Report
+
+Reply with: studies found; counts of nodes, steps, conditions, issues (by severity); the
+readiness verdict ("can be run as published" / "blocked by: …"); checks run and their result;
+and the paths written. Reply in the researcher's language.

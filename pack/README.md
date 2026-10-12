@@ -9,7 +9,8 @@ pack/
   AGENTS.md                         researcher-agent contract and scientific rules
   PROJECT_FORMAT.md                 project folder layout
   schema/human-program.schema.json  Human Program v2 JSON Schema
-  skills/<name>/SKILL.md            build, visualize, analyze, export, refine
+  skills/<name>/SKILL.md            build, simulate, visualize, analyze, export, refine
+  skills/build/check_package.py     offline package check (mirrors Bench validate_package.py)
 ```
 
 ## Loading it
@@ -30,8 +31,11 @@ description can surface them without extra configuration. Skills refer to the sc
 ## Provenance
 
 The contract is distilled from the HumanStudy-Bench agent package builder
-(`agent_pipeline/CLAUDE.md`, the Human Program v2 prompt in `agent_pipeline/build_prompt.py`) and
-the humanstudy-hub-web Human Program design notes. The schema is copied from
+(`agent_pipeline/CLAUDE.md`, the Human Program v2 prompt in `agent_pipeline/build_prompt.py`,
+the eight-file package contract with `programBindings` checked by
+`agent_pipeline/validate_package.py`, and the harness interface `run_sessions`/`evaluate` used by
+`playground/run_package.py`) and the humanstudy-hub-web Human Program design notes. A package
+built in the app is therefore the same artefact the website's GitHub Actions pipeline produces. The schema is copied from
 `humanstudy-hub-web/lib/studio/human-program.schema.json`; keep the two in sync.
 
 ## License
