@@ -8,6 +8,19 @@ function listen<T>(channel: string, cb: (v: T) => void): () => void {
 }
 
 const api: HumanStudyApi = {
+  projects: {
+    list: () => ipcRenderer.invoke('projects:list'),
+    create: (input) => ipcRenderer.invoke('projects:create', input),
+    pickPdf: () => ipcRenderer.invoke('projects:pickPdf'),
+    rename: (dir, name) => ipcRenderer.invoke('projects:rename', dir, name),
+    trash: (dir) => ipcRenderer.invoke('projects:trash', dir),
+  },
+  settings: {
+    get: () => ipcRenderer.invoke('settings:get'),
+    set: (patch) => ipcRenderer.invoke('settings:set', patch),
+    providers: () => ipcRenderer.invoke('settings:providers'),
+    setKey: (provider, key) => ipcRenderer.invoke('settings:setKey', provider, key),
+  },
   project: {
     open: () => ipcRenderer.invoke('project:open'),
     read: (dir) => ipcRenderer.invoke('project:read', dir),

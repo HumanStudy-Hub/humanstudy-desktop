@@ -1,11 +1,14 @@
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron'
+import { applyCredentials, providers, setKey } from './credentials'
+import { createProject, isInside, listProjects, renameProject, trashProject } from './projects'
+import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
 import { existsSync, watch, type FSWatcher } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
 import type { Kernel, KernelEvent } from './kernel-types'
-import type { ProjectFile, ProjectSnapshot } from '../preload/types'
+import type { ProjectFile, ProjectSnapshot, Settings } from '../preload/types'
 
 // ---- kernel: accept a factory, a default export, a class, or an instance -------------
 function loadKernel(): Kernel {
@@ -24,13 +27,41 @@ function loadKernel(): Kernel {
   }
   throw new Error('kernel module exports no Kernel (expected createKernel/default)')
 }
-const kernel = loadKernel()
+// Kernels read the model and API keys from process.env when they are created (and opencode
+// servers inherit env at spawn), so a settings/key change marks the current kernel stale and the
+// next session gets a fresh one. Running sessions stay on the kernel that created them.
+let kernel: Kernel | null = null
+const allKernels = new Set<Kernel>()
+const sessionKernel = new Map<string, Kernel>()
+function currentKernel(): Kernel {
+  if (!kernel) {
+    kernel = loadKernel()
+    allKernels.add(kernel)
+    kernel.onEvent((e: KernelEvent) => broadcast('kernel:event', e))
+  }
+  return kernel
+}
+function markKernelStale(): void {
+  kernel = null
+}
+function kernelFor(id: string): Kernel {
+  const k = sessionKernel.get(id)
+  if (!k) throw new Error(`unknown session ${id}`)
+  return k
+}
 
 // ---- project files over a private protocol, limited to opened projects --------------
 protocol.registerSchemesAsPrivileged([
   { scheme: 'hsfile', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ])
+// Folders opened explicitly with the Open dialog; everything under projectsRoot is allowed too.
 const allowedRoots = new Set<string>()
+function isAllowed(p: string): boolean {
+  const q = resolve(p)
+  const root = resolve(getSettings().projectsRoot)
+  if (q === root || q.startsWith(root + sep)) return true
+  return [...allowedRoots].some((r) => q === r || q.startsWith(r + sep))
+}
 const toUrl = (p: string): string => 'hsfile://local/' + encodeURIComponent(p)
 
 async function listDir(dir: string): Promise<ProjectFile[]> {
@@ -47,7 +78,8 @@ async function listDir(dir: string): Promise<ProjectFile[]> {
 
 async function readProject(dir: string): Promise<ProjectSnapshot> {
   dir = resolve(dir)
-  allowedRoots.add(dir)
+  if (!isInside(getSettings().projectsRoot, dir) && !allowedRoots.has(dir))
+    throw new Error('project folder is not under the projects folder and was not opened')
   let program: unknown | null = null
   let programError: string | undefined
   const programPath = join(dir, 'program.json')
@@ -87,6 +119,11 @@ function watchProject(dir: string): void {
   }
 }
 
+function unwatch(dir: string): void {
+  watchers.get(dir)?.close()
+  watchers.delete(dir)
+}
+
 function broadcast(channel: string, payload: unknown): void {
   for (const w of BrowserWindow.getAllWindows()) w.webContents.send(channel, payload)
 }
@@ -114,10 +151,16 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  applyCredentials()
+  try {
+    applySettings()
+  } catch (e) {
+    console.error('settings: could not apply', e)
+  }
+
   protocol.handle('hsfile', (req) => {
     const p = resolve(decodeURIComponent(new URL(req.url).pathname.slice(1)))
-    const ok = [...allowedRoots].some((r) => p === r || p.startsWith(r + sep))
-    if (!ok) return new Response('forbidden', { status: 403 })
+    if (!isAllowed(p)) return new Response('forbidden', { status: 403 })
     return net.fetch(pathToFileURL(p).toString())
   })
 
@@ -125,11 +168,13 @@ app.whenReady().then(() => {
     const win = BrowserWindow.getFocusedWindow()
     const opts = {
       title: 'Open a HumanStudy project',
-      defaultPath: join(app.getPath('home'), 'HumanStudy'),
+      defaultPath: ensureProjectsRoot(),
       properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'>,
     }
     const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
-    return r.canceled ? null : (r.filePaths[0] ?? null)
+    const picked = r.canceled ? null : (r.filePaths[0] ?? null)
+    if (picked) allowedRoots.add(resolve(picked))
+    return picked
   })
   ipcMain.handle('project:read', async (_e, dir: string) => {
     const snap = await readProject(dir)
@@ -138,15 +183,65 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('project:reveal', (_e, p: string) => shell.showItemInFolder(p))
 
-  ipcMain.handle('kernel:startSession', (_e, dir: string) => kernel.startSession(dir))
-  ipcMain.handle('kernel:send', (_e, id: string, text: string) => kernel.send(id, text))
-  ipcMain.handle('kernel:abort', (_e, id: string) => kernel.abort(id))
-  kernel.onEvent((e: KernelEvent) => broadcast('kernel:event', e))
+  ipcMain.handle('projects:list', () => listProjects())
+  ipcMain.handle('projects:create', (_e, input: { name: string; pdfPath?: string; sample?: boolean }) =>
+    createProject(input)
+  )
+  ipcMain.handle('projects:pickPdf', async () => {
+    const win = BrowserWindow.getFocusedWindow()
+    const opts = {
+      title: 'Choose a paper (PDF)',
+      properties: ['openFile'] as Array<'openFile'>,
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    }
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    return r.canceled ? null : (r.filePaths[0] ?? null)
+  })
+  ipcMain.handle('projects:rename', async (_e, dir: string, name: string) => {
+    const from = resolve(dir)
+    const to = await renameProject(from, name)
+    if (to !== from) unwatch(from)
+    return to
+  })
+  ipcMain.handle('projects:trash', async (_e, dir: string) => {
+    unwatch(resolve(dir))
+    await trashProject(dir)
+  })
+
+  ipcMain.handle('settings:get', () => getSettings())
+  ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
+    const before = getSettings()
+    const next = setSettings(patch)
+    if (next.model !== before.model) markKernelStale()
+    return next
+  })
+  ipcMain.handle('settings:providers', () => providers())
+  ipcMain.handle('settings:setKey', (_e, id: 'openrouter' | 'anthropic' | 'deepseek', key: string) => {
+    const r = setKey(id, key)
+    markKernelStale()
+    return r
+  })
+
+  ipcMain.handle('kernel:startSession', async (_e, dir: string) => {
+    const k = currentKernel()
+    const id = await k.startSession(dir)
+    sessionKernel.set(id, k)
+    return id
+  })
+  ipcMain.handle('kernel:send', (_e, id: string, text: string) => kernelFor(id).send(id, text))
+  ipcMain.handle('kernel:abort', (_e, id: string) => kernelFor(id).abort(id))
 
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+app.on('before-quit', () => {
+  for (const k of allKernels) {
+    const d = (k as { dispose?: () => Promise<void> }).dispose
+    if (d) void d.call(k).catch(() => undefined)
+  }
 })
 
 app.on('window-all-closed', () => {

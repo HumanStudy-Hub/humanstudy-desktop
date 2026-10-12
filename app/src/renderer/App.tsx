@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ProjectSnapshot } from '../preload/types'
+import type { ProjectSnapshot, Settings } from '../preload/types'
 import { Chat, type ChatHandle } from './components/Chat'
 import { ArtifactPanel } from './components/ArtifactPanel'
 import { SourceDrawer, type SourceRef } from './components/SourceDrawer'
 import { VisualizeMenu } from './components/VisualizeMenu'
+import { Home } from './components/Home'
+import { SettingsDialog } from './components/SettingsDialog'
 import { useSession } from './useSession'
 
-const LAST_KEY = 'hs.lastProject'
 const PANES_KEY = 'hs.panes'
 type Pane = 'agent' | 'source' | 'program'
 const paneLabel: Record<Pane, string> = { agent: 'Study agent', source: 'Original paper', program: 'Human Program' }
@@ -15,6 +16,8 @@ export default function App() {
   const [project, setProject] = useState<ProjectSnapshot | null>(null)
   const [selected, setSelected] = useState<string[]>([])
   const [source, setSource] = useState<SourceRef | null>(null)
+  const [settings, setSettings] = useState<Settings | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   // Three panes, each foldable to a rail; at least one stays open.
   const [open, setOpen] = useState<Record<Pane, boolean>>(() => {
     try {
@@ -46,22 +49,26 @@ export default function App() {
   const load = useCallback(async (dir: string) => {
     const snap = await window.humanstudy.project.read(dir)
     setProject(snap)
-    try {
-      localStorage.setItem(LAST_KEY, snap.dir)
-    } catch {
-      /* ignore */
-    }
+    setSelected([])
   }, [])
 
   useEffect(() => {
-    let last: string | null = null
-    try {
-      last = localStorage.getItem(LAST_KEY)
-    } catch {
-      /* ignore */
-    }
-    if (last) load(last).catch(() => undefined)
-  }, [load])
+    window.humanstudy.settings.get().then(setSettings).catch(() => undefined)
+  }, [])
+
+  // The explicit theme choice wins over the OS preference; 'system' defers to prefers-color-scheme.
+  useEffect(() => {
+    if (settings) document.documentElement.dataset.theme = settings.theme
+  }, [settings])
+
+  const updateSettings = useCallback((patch: Partial<Settings>) => {
+    setSettings((prev) => (prev ? { ...prev, ...patch } : prev))
+    window.humanstudy.settings
+      .set(patch)
+      .then(setSettings)
+      .catch(() => undefined)
+  }, [])
+  const closeSettings = useCallback(() => setSettingsOpen(false), [])
 
   useEffect(() => {
     if (!project) return
@@ -70,14 +77,21 @@ export default function App() {
     })
   }, [project, load])
 
-  const openProject = async () => {
-    const dir = await window.humanstudy.project.open()
-    if (dir) await load(dir)
-  }
-
   const pick = (id: string, extend: boolean) =>
     setSelected((s) =>
       extend ? (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]) : s.length === 1 && s[0] === id ? [] : [id],
+    )
+
+  const dialog = settingsOpen && (
+    <SettingsDialog settings={settings} onChange={updateSettings} onClose={closeSettings} />
+  )
+
+  if (!project)
+    return (
+      <div className="app">
+        <Home onOpen={(dir) => void load(dir)} onSettings={() => setSettingsOpen(true)} />
+        {dialog}
+      </div>
     )
 
   return (
@@ -86,81 +100,76 @@ export default function App() {
         <div className="brand">
           <span className="brand-mark" aria-hidden />
           HumanStudy
-          {project && <span className="crumb">/ {project.name}</span>}
+          <span className="crumb">/ {project.name}</span>
         </div>
         <div className="titlebar-actions">
-          {project && (
-            <VisualizeMenu disabled={!session.id || session.busy} onSend={session.send} />
-          )}
-          {project && (
-            <div className="pane-switch" role="group" aria-label="Panels">
-              {(Object.keys(paneLabel) as Pane[]).map((pane) => (
-                <button key={pane} aria-pressed={open[pane]} onClick={() => setPane(pane, !open[pane])}>
-                  {paneLabel[pane]}
-                </button>
-              ))}
-            </div>
-          )}
-          <button className="ghost" onClick={openProject}>
-            {project ? 'Switch project' : 'Open project'}
+          <VisualizeMenu disabled={!session.id || session.busy} onSend={session.send} />
+          <div className="pane-switch" role="group" aria-label="Panels">
+            {(Object.keys(paneLabel) as Pane[]).map((pane) => (
+              <button key={pane} aria-pressed={open[pane]} onClick={() => setPane(pane, !open[pane])}>
+                {paneLabel[pane]}
+              </button>
+            ))}
+          </div>
+          <button className="ghost" onClick={() => setProject(null)} title="Back to all projects">
+            Projects
+          </button>
+          <button className="ghost icon" onClick={() => setSettingsOpen(true)} aria-label="Settings" title="Settings">
+            <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden>
+              <circle cx="10" cy="10" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <path
+                d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
           </button>
         </div>
       </header>
 
-      {!project ? (
-        <main className="welcome">
-          <h1>Replay a human study with agents.</h1>
-          <p>
-            Open a project folder containing <code>paper.pdf</code> and <code>program.json</code>.
-            The agent builds, visualizes and exports the study; every step streams on the left.
-          </p>
-          <button className="primary" onClick={openProject}>
-            Open project
-          </button>
-        </main>
-      ) : (
-        <main className="workspace">
-          <section className={`pane agent ${open.agent ? '' : 'folded'}`} aria-label={paneLabel.agent}>
-            {open.agent ? (
-              <>
-                <PaneHead title={paneLabel.agent} onFold={() => setPane('agent', false)} />
-                <Chat ref={chat} session={session} selected={selected} onClearSelection={() => setSelected([])} />
-              </>
-            ) : (
-              <Rail label={paneLabel.agent} onOpen={() => setPane('agent', true)} />
-            )}
-          </section>
-          <section className={`pane source ${open.source ? '' : 'folded'}`} aria-label={paneLabel.source}>
-            {open.source ? (
-              <>
-                <PaneHead title={project.pdf?.name ?? paneLabel.source} onFold={() => setPane('source', false)} />
-                <SourceDrawer pdf={project.pdf} source={source ?? { page: 1 }} onClose={() => setPane('source', false)} />
-              </>
-            ) : (
-              <Rail label={paneLabel.source} onOpen={() => setPane('source', true)} />
-            )}
-          </section>
-          <section className={`pane program ${open.program ? '' : 'folded'}`} aria-label={paneLabel.program}>
-            {open.program ? (
-              <>
-                <PaneHead title={paneLabel.program} onFold={() => setPane('program', false)} />
-                <ArtifactPanel
-                  project={project}
-                  selectedIds={selected}
-                  onPick={pick}
-                  onSource={(id, ref) => showSource({ page: ref.page ?? 1, quote: ref.quote, nodeId: id })}
-                  onAsk={(id, fieldId, draft) => {
-                    setPane('agent', true)
-                    requestAnimationFrame(() => chat.current?.ask(id, fieldId, draft))
-                  }}
-                />
-              </>
-            ) : (
-              <Rail label={paneLabel.program} onOpen={() => setPane('program', true)} />
-            )}
-          </section>
-        </main>
-      )}
+      <main className="workspace">
+        <section className={`pane agent ${open.agent ? '' : 'folded'}`} aria-label={paneLabel.agent}>
+          {open.agent ? (
+            <>
+              <PaneHead title={paneLabel.agent} onFold={() => setPane('agent', false)} />
+              <Chat ref={chat} session={session} selected={selected} onClearSelection={() => setSelected([])} />
+            </>
+          ) : (
+            <Rail label={paneLabel.agent} onOpen={() => setPane('agent', true)} />
+          )}
+        </section>
+        <section className={`pane source ${open.source ? '' : 'folded'}`} aria-label={paneLabel.source}>
+          {open.source ? (
+            <>
+              <PaneHead title={project.pdf?.name ?? paneLabel.source} onFold={() => setPane('source', false)} />
+              <SourceDrawer pdf={project.pdf} source={source ?? { page: 1 }} onClose={() => setPane('source', false)} />
+            </>
+          ) : (
+            <Rail label={paneLabel.source} onOpen={() => setPane('source', true)} />
+          )}
+        </section>
+        <section className={`pane program ${open.program ? '' : 'folded'}`} aria-label={paneLabel.program}>
+          {open.program ? (
+            <>
+              <PaneHead title={paneLabel.program} onFold={() => setPane('program', false)} />
+              <ArtifactPanel
+                project={project}
+                selectedIds={selected}
+                onPick={pick}
+                onSource={(id, ref) => showSource({ page: ref.page ?? 1, quote: ref.quote, nodeId: id })}
+                onAsk={(id, fieldId, draft) => {
+                  setPane('agent', true)
+                  requestAnimationFrame(() => chat.current?.ask(id, fieldId, draft))
+                }}
+              />
+            </>
+          ) : (
+            <Rail label={paneLabel.program} onOpen={() => setPane('program', true)} />
+          )}
+        </section>
+      </main>
+      {dialog}
     </div>
   )
 }
