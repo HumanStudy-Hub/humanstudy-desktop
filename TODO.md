@@ -170,3 +170,5 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
 - [~] Checklist 18: connection and output-limit recovery verified with installed OpenCode + local model fixtures; live hosted-owner dogfood remains pending.
 - [~] Checklist 17: offline sample assets and README guidance complete; full first-use UI walkthrough and real-paper end-to-end owner acceptance remain pending.
 - Validation: 61 regression checks, native kernel fixture runs, TypeScript and build pass. See docs/recovery-sample-2026-10-14.md.
+
+- Release acceptance: 0.5.3-beta.3 Mac arm64 app notarized, stapler validated, Gatekeeper accepted; DMG checksum verified. Local installer prepared under app/dist/beta-2026-10-14-3. No public release or automatic-update rollout, current installed app unchanged.

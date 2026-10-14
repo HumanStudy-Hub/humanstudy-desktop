@@ -54,3 +54,8 @@ PDF zoom/text annotations, a full guided onboarding UI, owner account acceptance
 notification inbox, automatic-update acceptance and broader publishing remain separate work.
 Current installed app is not replaced. This branch is based on local integrated desktop release
 c0b8587; the remote desktop main is older, so it is not silently pushed as a broad release.
+
+Final distribution acceptance: the 0.5.3-beta.3 Mac arm64 app passed notarization,
+stapler validation and Gatekeeper (Notarized Developer ID). The final DMG integrity
+check passed. Installer and test log: app/dist/beta-2026-10-14-3. No public release
+or automatic-update rollout was performed.
