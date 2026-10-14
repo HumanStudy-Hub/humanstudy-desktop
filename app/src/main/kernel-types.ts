@@ -1,10 +1,12 @@
+import type { KernelQuestion } from '../shared/question'
 // Contract for the kernel bridge implemented in ./kernel (owned by another agent).
-export type KernelEventType = 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title'
+export type KernelEventType = 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title' | 'question'
 
 export type PermissionReply = 'once' | 'always' | 'reject'
 
 /** A tool permission the agent is waiting on (opencode `permission.asked`). */
 export interface KernelPermission {
+  automatic?: boolean
   /** Pass to `kernel.reply`. */
   id: string
   /** What is being asked for: bash | edit | write | webfetch | external_directory | ... */
@@ -33,19 +35,24 @@ export interface KernelEvent {
   detail?: string
   /** type 'permission' */
   permission?: KernelPermission
+  question?: KernelQuestion
   /** type 'usage' */
   usage?: KernelUsage
-  /** type 'tool': the full tool input (single strings above 20 KB are truncated with a marker). */
+  /** type 'tool': the complete tool input, without a size-based clipping fallback. */
   input?: unknown
-  /** type 'tool', once finished: the tool's output (or error text), truncated like `input`. */
+  /** type 'tool', once finished: the complete tool output (or error text). */
   output?: string
 }
 
 export interface Kernel {
+  setPermissionMode?(mode: 'ask' | 'project'): void
   startSession(projectDir: string): Promise<string>
   send(sessionId: string, text: string): Promise<void>
   abort(sessionId: string): Promise<void>
   reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void>
+  answerQuestion(sessionId: string, questionId: string, answers: string[][]): Promise<void>
+  rejectQuestion(sessionId: string, questionId: string): Promise<void>
+  questions(sessionId: string): Promise<KernelQuestion[]>
   resumeSession(projectDir: string, sessionId: string): Promise<string | null>
   onEvent(cb: (e: KernelEvent) => void): void | (() => void)
 }

@@ -41,12 +41,12 @@ Validate against `schema/human-program.schema.json`. Work in this order:
 
 **Sections the Study document expects** (kind: field ids). State what the paper states; leave the rest out or `missing`.
 
-- 01 Overview: `source` (optional `doi`, `venue`, `version`); `overview`: `method-type`, `summary`.
+- 01 Overview: `source` (optional `doi`, `venue`, `version`); `overview`: `year`, `method-type`, `summary`.
 - 02 Questions: `background`: `question`, `gap`, `theory`, `concepts`; `hypothesis`: `statement`, `scope`.
 - 03 Study map: `studies[]` (`description`, `dependsOn`), `hypothesis.studyIds`.
 - 04 Participants: `participants`: `setting`, `roles`, `recruitment`, `eligibility`, `n-recruited`, `n-completed`, `n-analysed`, `characteristics`, `unit-of-analysis` (sampling unit), `compensation`, `attrition`.
 - 05 Design: `design`: `type`, `control`, `assignment`, `order`, `blinding`, `manipulation-check`; `condition` nodes.
-- 06 Procedure: `procedure`: `task`, `actions`, `visible`, `feedback`, `payoff`, `stopping`; `steps`; `material` (verbatim).
+- 06 Procedure: `procedure`: `task`, `goal`, `actions`, `visible`, `feedback`, `payoff`, `stopping`; `steps`; `material` (verbatim).
 - 07 Variables: `variable`: `role` (iv/dv/moderator/mediator/covariate), `type`, `definition`, `scale`, `scoring`, `timing`, `observation-unit` (what one data row is); `record`.
 - 08 Analysis: `analysis`: `aim`, `inputs`, `method`, `criterion`, `coding`, `robustness`.
 - 09 Results: `result` (`result_kind = reported`): `descriptives`, `effect`, `uncertainty`, `test`, `heterogeneity`, `themes`.
@@ -58,6 +58,24 @@ Rules: 09 holds what the paper reports (numbers), 10 holds interpretation; never
 assessment, so every field has origin `implementation` and must agree with `readiness` and the
 blocking issues. 11 `replications` records only replications the paper itself reports or cites;
 do no literature search.
+
+Write for a social science researcher: explain the research question, who participated,
+what each group saw and did, what was measured, how comparisons were analysed, and what
+the findings mean. Use familiar methodological language, not software implementation terms.
+Treat these twelve areas as coverage of available information, not twelve boxes to invent
+content for. A study without hypotheses or experimental conditions may still be valid.
+Preserve all source-supported details in fields or referenced resources; the interface can
+collapse detail and the researcher may ask about it later. Distinguish missing extraction,
+facts the paper does not report, and features not applicable to its method.
+
+Scope simulation nodes by `studyIds`. All five fields (`steps`, `roles`, `conditions`,
+`outcomes`, `limits`) describe what is possible, what is excluded, and why. Include physical,
+economic, longitudinal and contextual limitations when relevant. A missing boundary is an
+open question, not implicit permission. This assessment is reviewed in a separate screen
+before any simulation runs; building the package does not authorize a simulation.
+
+For each evidence record, keep the exact resource path in `path` (including when `sourceId`
+is also present), so the interface opens the cited attachment rather than assuming paper.pdf.
 
 Self-check: schema valid; every node, step and paper-derived field has `evidenceIds`; every
 evidence id resolves; every `conditionIds` entry names a condition node of the same study; no
@@ -112,3 +130,11 @@ Rules the runner depends on:
 Reply with: studies found; counts of nodes, steps, conditions, issues (by severity); the
 readiness verdict ("can be run as published" / "blocked by: …"); checks run and their result;
 and the paths written. Reply in the researcher's language.
+
+## Clarifying decisions with the researcher
+
+When missing information or conflicting sources require a researcher decision, use the native
+`question` tool with a few clear alternatives and allow a written answer. Ask only the next
+necessary question in the currently selected study; do not force the same wizard on every
+experiment. Retain the source evidence and label actual user choices `researcher`; never
+convert a suggested default or dismissed question into a confirmed study fact.

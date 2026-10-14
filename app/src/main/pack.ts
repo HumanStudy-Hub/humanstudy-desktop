@@ -4,7 +4,9 @@
 //   PROJECT_FORMAT.md              -> <project>/.opencode/PROJECT_FORMAT.md
 //   schema/*                       -> <project>/schema/*    (skills cite schema/human-program.schema.json)
 //   skills/<name>/**               -> <project>/.opencode/skills/<name>/**  (opencode skill discovery)
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import previousHashes from './previous-pack-hashes.json'
 import { dirname, join } from 'node:path'
 
 const PREFIX = '../../../pack/'
@@ -33,3 +35,18 @@ export async function installPack(projectDir: string): Promise<void> {
 }
 
 export const packFileCount = (): number => Object.keys(files).length
+
+/** Upgrade untouched default prompts in existing projects; never overwrite custom instructions. */
+export async function refreshPack(projectDir: string): Promise<void> {
+  for (const [rel, hash] of Object.entries(previousHashes)) {
+    const dest = target(rel)
+    const content = files[PREFIX + rel]
+    if (!dest || !content) continue
+    const abs = join(projectDir, dest)
+    const old = await readFile(abs, 'utf8').catch(() => null)
+    if (old === null || (Array.isArray(hash) ? hash : [hash]).includes(createHash('sha256').update(old).digest('hex'))) {
+      await mkdir(dirname(abs), { recursive: true })
+      await writeFile(abs, content, 'utf8')
+    }
+  }
+}

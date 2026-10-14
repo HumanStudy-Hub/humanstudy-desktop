@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { AccountStatus, ProjectSnapshot, Settings, TelemetryStatus } from '../preload/types'
+import type { AccountStatus, ProjectSnapshot, Settings, TelemetryStatus, WorkspaceContext } from '../preload/types'
 import { Chat, type ChatHandle } from './components/Chat'
-import { Workbench, type WorkbenchHandle } from './components/Workbench'
+import { Workbench, type WorkbenchHandle, type WorkspaceSnapshot } from './components/Workbench'
 import { labelItems } from './program/labels'
 import type { SourceRef } from './components/SourceDrawer'
 import { Home, type HomeHandle } from './components/Home'
@@ -13,6 +13,7 @@ import { UpdateNotice, useUpdateStatus } from './components/Updates'
 import { AgreementDialog } from './components/ResearchData'
 import { lap, setTelemetryProject, track } from './telemetry'
 import { t, useLang } from './i18n'
+import { requestsSimulation } from '../shared/simulation-scope'
 
 const PANES_KEY = 'hs.panes'
 type Pane = 'agent' | 'program'
@@ -65,6 +66,13 @@ export default function App() {
   const home = useRef<HomeHandle>(null)
   const update = useUpdateStatus()
   const workbench = useRef<WorkbenchHandle>(null)
+  const workspaceCache = useRef<WorkspaceSnapshot | null>(null)
+  const cacheWorkspace = useCallback((snapshot: WorkspaceSnapshot) => { workspaceCache.current = snapshot }, [])
+  const sendInWorkspace = (text: string, send: (text: string, workspace?: WorkspaceContext) => void) => {
+    const snapshot = workbench.current?.getContext() ?? workspaceCache.current
+    const context = snapshot && project && snapshot.projectDir === project.dir ? { ...snapshot.context, panels: { agent: open.agent, workspace: open.program } } : undefined
+    send(text, context)
+  }
   // Research data agreement: asked the moment the account is signed in (also over Settings, where sign-in
   // happens), per account and agreement version. The agent
   // only starts with hosted access (or the hidden developer key path) and an accepted agreement.
@@ -78,6 +86,12 @@ export default function App() {
   const hasAccess = account?.modelAccess === 'hosted' || (devKeys && account?.modelAccess === 'own-key')
   const agentReady = Boolean(hasAccess && agreed)
   const session = useSession(project?.dir ?? null, agentReady)
+  const [simulationRequest, setSimulationRequest] = useState<string | null>(null)
+  useEffect(() => { setSimulationRequest(null); setSource(null) }, [project?.dir])
+  const reviewRun = (text: string, send: (text: string) => void) => {
+    if (requestsSimulation(text)) { setSimulationRequest(text); showTab('simulation') }
+    else send(text)
+  }
   useEffect(() => {
     if (!account?.signedIn) return setResearch(null)
     window.humanstudy.telemetry
@@ -95,7 +109,7 @@ export default function App() {
   )
 
   const kernel = useKernelInstall()
-  const showTab = (tab: 'study' | 'paper') => {
+  const showTab = (tab: 'study' | 'paper' | 'simulation') => {
     setPane('program', true)
     requestAnimationFrame(() => workbench.current?.showTab(tab))
   }
@@ -336,7 +350,7 @@ export default function App() {
               </PaneHead>
               <Chat
                 ref={chat}
-                session={session}
+                session={{ ...session, send: text => reviewRun(text, t => sendInWorkspace(t, session.send)), enqueue: text => reviewRun(text, t => sendInWorkspace(t, session.enqueue)), interruptAndSend: text => reviewRun(text, t => sendInWorkspace(t, session.interruptAndSend)) }}
                 selected={selectedItems}
                 onClearSelection={() => setSelected([])}
                 account={account}
@@ -346,6 +360,8 @@ export default function App() {
                 projectDir={project.dir}
                 tree={project.tree}
                 model={settings?.model ?? ''}
+                auto={settings?.permission !== 'ask'}
+                onAuto={enabled => updateSettings({ permission: enabled ? 'project' : 'ask' })}
                 busyEnter={settings?.busyEnter ?? 'queue'}
                 onModel={(model) => updateSettings({ model })}
                 kernel={kernel}
@@ -363,6 +379,9 @@ export default function App() {
               ref={workbench}
               project={project}
               source={source}
+              onWorkspaceChange={cacheWorkspace}
+              simulationRequest={simulationRequest}
+              onRunSimulation={approval => { track('simulation.scope_approved'); setSimulationRequest(null); sendInWorkspace(approval, session.enqueue); setPane('agent', true) }}
               selectedIds={selected}
               selectedItems={selectedItems}
               onClearSelection={() => setSelected([])}
@@ -373,7 +392,7 @@ export default function App() {
               onFold={() => setPane('program', false)}
               onSource={(id, ref) => {
                 track('citation.click', { target: id, metadata: { page: ref.page ?? null } })
-                showSource({ page: ref.page ?? 1, quote: ref.quote, nodeId: id })
+                showSource({ ...ref, page: ref.page ?? 1, nodeId: id })
               }}
               onAsk={(id, fieldId, draft) => {
                 track('program.ask', { target: id, metadata: { field: fieldId ?? null } })

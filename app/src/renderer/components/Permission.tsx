@@ -36,6 +36,7 @@ const verbKeys: Record<string, string> = {
 
 export function PermissionCard({ part, onReply }: { part: PermissionPart; onReply(id: string, response: PermissionReply): void }) {
   const [showDiff, setShowDiff] = useState(true)
+  if (part.automatic) return null
   const target = permissionTarget(part)
   const diff = str(part.metadata?.diff)
 

@@ -23,8 +23,9 @@ import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
 import { isVersioned, readVersion, relOf, snapshot, versionsOf } from './versions'
 import { createThreads, threads } from './threads'
+import { refreshPack } from './pack'
 import type { Kernel, KernelEvent } from './kernel-types'
-import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings } from '../preload/types'
+import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, WorkspaceContext } from '../preload/types'
 
 // ---- kernel: accept a factory, a default export, a class, or an instance -------------
 function loadKernel(): Kernel {
@@ -408,7 +409,8 @@ app.whenReady().then(() => {
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
     const before = getSettings()
     const next = setSettings(patch)
-    if (next.model !== before.model || next.permission !== before.permission) markKernelStale()
+    if (next.model !== before.model) markKernelStale()
+    if (next.permission !== before.permission) for (const k of allKernels) k.setPermissionMode?.(next.permission)
     syncAccess()
     return next
   })
@@ -454,6 +456,7 @@ app.whenReady().then(() => {
   // One place that starts kernel sessions: the legacy kernel:startSession and threads.create/resume.
   async function startKernelSession(dir: string): Promise<string> {
     syncAccess()
+    if (existsSync(join(dir, '.humanstudy', 'project.json'))) await refreshPack(dir)
     // No opencode installed: fetch the managed one first, and replace a mock kernel created before it arrived.
     if (process.env.HUMANSTUDY_KERNEL !== 'mock') {
       await ensureAssistant().catch((err) => console.error('assistant install failed', err))
@@ -493,10 +496,10 @@ app.whenReady().then(() => {
     threads().adopt(dir, id) // recorded as a thread once the first message is sent
     return id
   })
-  ipcMain.handle('kernel:send', (_e, id: string, text: string) => {
+  ipcMain.handle('kernel:send', (_e, id: string, text: string, workspace?: WorkspaceContext) => {
     const k = kernelFor(id)
     telemetry.trackTurnStart(id, text)
-    return k.send(id, threads().beforeSend(id, text))
+    return k.send(id, threads().beforeSend(id, text, workspace))
   })
   ipcMain.handle('kernel:abort', (_e, id: string) => {
     telemetry.trackTurnAbort(id)
@@ -506,6 +509,9 @@ app.whenReady().then(() => {
     if (response !== 'once' && response !== 'always' && response !== 'reject') throw new Error('bad permission response')
     return kernelFor(id).reply(id, permissionId, response)
   })
+  ipcMain.handle('kernel:questions', (_e, id: string) => kernelFor(id).questions(id))
+  ipcMain.handle('kernel:answerQuestion', (_e, id: string, questionId: string, answers: string[][]) => kernelFor(id).answerQuestion(id, questionId, answers))
+  ipcMain.handle('kernel:rejectQuestion', (_e, id: string, questionId: string) => kernelFor(id).rejectQuestion(id, questionId))
   ipcMain.handle('threads:list', (_e, dir: string) => threads().list(threadDir(dir)))
   ipcMain.handle('threads:get', (_e, dir: string, id: string) => threads().get(threadDir(dir), id))
   ipcMain.handle('threads:create', (_e, dir: string) => threads().create(threadDir(dir)))

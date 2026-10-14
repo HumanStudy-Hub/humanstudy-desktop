@@ -1,3 +1,4 @@
+import { QuestionCard } from './Question'
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import type { Part, Session } from '../useSession'
 import type { AccountStatus, PermissionReply, ProjectEntry } from '../../preload/types'
@@ -9,7 +10,7 @@ import { PermissionCard } from './Permission'
 import { ToolGroup } from './ToolView'
 import { t } from '../i18n'
 import { ArtifactCard } from './ArtifactCard'
-import { classifyTool } from '../toolSentence'
+import { classifyTool, researchActivity } from '../toolSentence'
 import { track } from '../telemetry'
 import { KernelBar } from './KernelBar'
 import { compact, money } from '../format'
@@ -37,6 +38,8 @@ interface Props {
   projectDir: string
   tree: ProjectEntry[]
   model: string
+  auto: boolean
+  onAuto(value: boolean): void
   busyEnter: 'queue' | 'interrupt'
   onModel(model: string): void
   kernel: { status: KernelInstallStatus | null; retry(): void }
@@ -71,7 +74,7 @@ const BUILD_REQUEST = 'Build the study from the paper: read paper.pdf and write 
 
 const MENTION = /(^|\s)@([^\s@]*)$/
 
-export function Chat({ ref, session, selected, onClearSelection, account, onSettings, agreement, onReview, projectDir, tree, model, busyEnter, onModel, kernel, onOpenStudy, onOpenFile }: Props) {
+export function Chat({ ref, session, selected, onClearSelection, account, onSettings, agreement, onReview, projectDir, tree, model, busyEnter, auto, onAuto, onModel, kernel, onOpenStudy, onOpenFile }: Props) {
   const [draft, setDraft] = useState('')
   const [home, setHome] = useState<string>()
   useEffect(() => {
@@ -176,7 +179,10 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
   }
   const canSend = (draft.trim().length > 0 || attached.length > 0) && Boolean(session.id)
   const settingUp = kernel.status != null && kernel.status.state !== 'ready'
-  const statusLine = session.waitingForPermission ? t('chat.waiting_perm') : session.status
+  const tools = session.messages.filter(m => m.role === 'assistant').at(-1)?.parts.filter((p): p is Extract<Part, { kind: 'tool' }> => p.kind === 'tool') ?? []
+  const activity = researchActivity(tools, projectDir)
+  const runningTool = tools.some(p => p.state === 'pending' || p.state === 'running')
+  const statusLine = session.waitingForQuestion ? t('question.waiting') : session.waitingForPermission ? t('chat.waiting_perm') : session.busy ? (session.status === 'recovering' ? t('activity.recovery') : runningTool ? '' : t(activity.key, activity.vars)) : session.status === 'aborted' ? '' : session.status
   const u = session.usage
   const lastAssistant = session.messages.length ? session.messages[session.messages.length - 1].id : -1
 
@@ -231,7 +237,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
                   <WrittenCards parts={g.tools} files={files} projectDir={projectDir} onOpenStudy={onOpenStudy} onOpenFile={onOpenFile} />
                 </div>
               ) : (
-                <PartView key={i} part={g.part!} role={m.role} onReply={session.reply} />
+                <PartView key={i} part={g.part!} role={m.role} onReply={session.reply} onAnswer={session.answerQuestion} onReject={session.rejectQuestion} />
               ),
             )}
             {m.role === 'assistant' && !(session.busy && m.id === lastAssistant) && <CopyMessage message={m.parts} />}
@@ -361,6 +367,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
         />
         <div className="composer-row">
           <div className="composer-tools">
+            <button className="auto-mode" aria-pressed={auto} title={t('settings.permission_hint')} onClick={() => onAuto(!auto)}>{t(auto ? 'chat.auto_on' : 'chat.auto_off')}</button>
             <ModelPicker model={model} account={account} onChange={onModel} onOther={() => onSettings('models')} />
             <button type="button" className="ghost icon attach-btn" aria-label={t('chat.attach')} title={t('chat.attach')} disabled={!session.id} onClick={() => fileInput.current?.click()}>
               <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
@@ -482,6 +489,7 @@ function CopyMessage({ message }: { message: Part[] }) {
 function groupParts(parts: Part[]): { tools?: Extract<Part, { kind: 'tool' }>[]; part?: Part }[] {
   const out: { tools?: Extract<Part, { kind: 'tool' }>[]; part?: Part }[] = []
   for (const p of parts) {
+    if (p.kind === 'tool' && p.tool === 'question' && parts.some(x => x.kind === 'question')) continue
     if (p.kind === 'tool') {
       const last = out[out.length - 1]
       if (last?.tools) last.tools.push(p)
@@ -491,7 +499,7 @@ function groupParts(parts: Part[]): { tools?: Extract<Part, { kind: 'tool' }>[];
   return out
 }
 
-function PartView({ part, role, onReply }: { part: Part; role: 'user' | 'assistant'; onReply(id: string, response: PermissionReply): void }) {
+function PartView({ part, role, onReply, onAnswer, onReject }: { part: Part; role: 'user' | 'assistant'; onReply(id: string, response: PermissionReply): void; onAnswer(id: string, answers: string[][]): Promise<void>; onReject(id: string): Promise<void> }) {
   if (part.kind === 'text') {
     return role === 'assistant' ? (
       <div className="part text md-part">
@@ -502,6 +510,7 @@ function PartView({ part, role, onReply }: { part: Part; role: 'user' | 'assista
     )
   }
   if (part.kind === 'error') return <div className="part error">{part.text}</div>
+  if (part.kind === 'question') return <QuestionCard part={part} onAnswer={onAnswer} onReject={onReject} />
   if (part.kind === 'permission') return <PermissionCard part={part} onReply={onReply} />
   return null
 }

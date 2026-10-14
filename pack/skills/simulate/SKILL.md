@@ -30,7 +30,32 @@ failures in the report instead of retrying forever. Never print, write or pass o
 environment variable; do not call the endpoint any other way. Use the bare `python` /
 `python3` on PATH (the managed runtime with numpy, scipy, pandas, statsmodels, matplotlib).
 
+## Researcher decisions
+
+Use the native `question` tool for consequential choices; its answers return to this same
+agent turn. Ask only what is needed next, rather than a questionnaire about the whole study.
+Read the selected study and tab from workspace context; when a paper has several studies,
+confirm the study only if the user's intent is ambiguous. For participant settings and
+conditions, offer the paper's reported design and a customized alternative, with descriptions
+in social science language. Allow a written answer. A dismissal is not consent.
+If Customize is selected, ask the specific follow-up needed for that design. Preserve the
+original reported design; save researcher choices separately and explain the proposed change.
+A question answer never substitutes for the Simulation Scope approval below.
+
 ## Procedure
+
+Before executing any simulation, show the dedicated Simulation Scope view and ask the
+researcher to confirm it. A user message beginning `[Simulation scope approved]` records
+the program id, SHA-256 of the complete program, selected study id and the five reviewed fields. Re-read `program.json`:
+the approved fields must still match the current study and no blocking issue may remain.
+If the design changed or the approval is absent, do not run even a smoke simulation; explain
+the scope and ask the researcher to review the Simulation Scope tab. Approval of one study
+never approves every other study in the paper. Run only the approved studies, roles, steps,
+conditions and outcomes. Clearly distinguish AI simulation from observations of real people;
+neither agreement of results nor a runnable adapter demonstrates human validity.
+Check the hash of the exact `program.json` file bytes (for example, Python
+`hashlib.sha256(Path('program.json').read_bytes()).hexdigest()`). If the adapter
+cannot isolate the approved scope, stop and explain that limitation instead of running more.
 
 1. Create `artifacts/simulations/<YYYY-MM-DD-HHMM>/` and write `run.py` there. It imports the
    adapter and evaluation by path, builds `llm(prompt) -> str` from `humanstudy_llm.llm` with a

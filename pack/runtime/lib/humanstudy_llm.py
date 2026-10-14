@@ -28,7 +28,7 @@ from pathlib import Path
 
 __all__ = ["llm", "chat", "llm_many", "LLMError", "LLMConfigError", "model_name", "usage_log_path"]
 
-DEFAULT_MODEL = "anthropic/claude-sonnet-5.5"
+DEFAULT_MODEL = "anthropic/claude-haiku-5.5"
 MAX_ATTEMPTS = 6
 RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524}
 

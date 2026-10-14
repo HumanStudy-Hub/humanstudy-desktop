@@ -1,10 +1,12 @@
+import type { KernelQuestion, QuestionPart } from '../shared/question'
 // Types shared between preload and renderer (the window.humanstudy bridge).
-export type KernelEventType = 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title'
+export type KernelEventType = 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title' | 'question'
 
 export type PermissionReply = 'once' | 'always' | 'reject'
 
 /** A tool permission the agent is waiting on (opencode `permission.asked`). */
 export interface KernelPermission {
+  automatic?: boolean
   /** Pass to `kernel.reply`. */
   id: string
   /** What is being asked for: bash | edit | write | webfetch | external_directory | ... */
@@ -32,6 +34,7 @@ export interface KernelEvent {
   detail?: string
   /** type 'permission' */
   permission?: KernelPermission
+  question?: KernelQuestion
   /** type 'usage' */
   usage?: KernelUsage
   /** type 'tool': the full tool input (single strings above 20 KB are truncated with a marker). */
@@ -42,10 +45,12 @@ export interface KernelEvent {
 
 /** One piece of a thread message; the same shape the agent pane renders. */
 export type ThreadPart =
+  | QuestionPart
   | { kind: 'text'; text: string }
   | { kind: 'tool'; tool: string; detail?: string; state?: string; input?: unknown; output?: string }
   | { kind: 'error'; text: string }
   | {
+      automatic?: boolean
       kind: 'permission'
       id: string
       type: string
@@ -61,6 +66,20 @@ export interface ThreadMessage {
   parts: ThreadPart[]
   /** ISO time the message started. */
   at: string
+  workspace?: WorkspaceContext
+}
+
+/** UI focus attached to a user turn; it is not a scientific claim or authorization. */
+export interface WorkspaceContext {
+  project: string
+  programId?: string
+  study?: { id: string; title: string; type: string }
+  visibleViews?: string[]
+  activeTab: 'study' | 'paper' | 'simulation' | 'file'
+  openTabs: string[]
+  file?: { path: string; ext: string; unsaved: boolean }
+  source?: { file?: string; sourceId?: string; page?: number; quote?: string; nodeId?: string; unavailable?: boolean; citation?: { page?: number; quote?: string; nodeId?: string } }
+  panels?: { agent: boolean; workspace: boolean }
 }
 
 export interface ThreadUsage {
@@ -161,7 +180,7 @@ export interface Settings {
   theme: Theme
   /** What Enter does while the agent is running. */
   busyEnter: 'queue' | 'interrupt'
-  /** Default permission for new sessions: ask before running commands, or allow inside the project. */
+  /** Auto mode, applied immediately: ask for project changes, or approve routine work inside the project. */
   permission: 'ask' | 'project'
   /** Model id used by the kernel, e.g. anthropic/claude-haiku-5.5. */
   model: string
@@ -310,10 +329,13 @@ export interface HumanStudyApi {
   }
   kernel: {
     startSession(projectDir: string): Promise<string>
-    send(sessionId: string, text: string): Promise<void>
+    send(sessionId: string, text: string, workspace?: WorkspaceContext): Promise<void>
     abort(sessionId: string): Promise<void>
     /** Answer a `permission` event: once = Allow once, always = Allow for this project, reject = Deny. */
     reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void>
+    answerQuestion(sessionId: string, questionId: string, answers: string[][]): Promise<void>
+    rejectQuestion(sessionId: string, questionId: string): Promise<void>
+    questions(sessionId: string): Promise<KernelQuestion[]>
     onEvent(cb: (e: KernelEvent) => void): () => void
     install: {
       status(): Promise<KernelInstallStatus>

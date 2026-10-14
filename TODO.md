@@ -4,6 +4,16 @@ Feature parity target: the Codex / Claude Code desktop apps, for social scientis
 names its owner wave so several agents can work without touching the same files.
 Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in every PR.
 
+## Next · 2026-10-13 researcher dogfood
+
+Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.md).
+
+- [x] Restore resizable Human Program/source comparison; citations keep extraction visible.
+- [x] Auto on by default with a chat toggle; apply to existing sessions, use one-call grants.
+- [x] Research-oriented activity messages; full technical details stay expandable.
+- [ ] Real-paper owner dogfood, PDF zoom/text annotations/quote highlights, sample attachment repair,
+      and collaborator dev-backend access before sharing. See detailed acceptance criteria.
+
 ## Next · from the 2026-10-12 review (agent-first: no new buttons/tabs)
 
 - [x] Server: desktop_events owner_id default (every event was rejected by RLS). Web dev 1958777.

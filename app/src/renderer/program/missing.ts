@@ -3,16 +3,10 @@
 // Pure: no React, no i18n, so it is unit-tested directly.
 import type { HumanProgram, ProgramField } from '../../shared/human-program';
 import { resolveSection, SECTIONS, type Section } from './sections';
+import { isPlaceholderText } from '../../shared/program-view';
+export { isPlaceholderText } from '../../shared/program-view';
 
 export type Need = 'missing' | 'decision';
-
-const WHOLE = /^\s*(\[填写\]|\[missing\]|missing|tbd|unknown|not available|n\/a)?\s*$/i;
-const MARKER = /\[(填写|missing)\]/i;
-
-/** True when a text carries no real content: empty, a bare placeholder word, or contains a marker. */
-export function isPlaceholderText(raw: string): boolean {
-  return WHOLE.test(raw) || MARKER.test(raw);
-}
 
 /** `decision`, `missing`, or null when the field is settled. A placeholder value counts as missing. */
 export function fieldNeed(f: Pick<ProgramField, 'state' | 'value'>): Need | null {
@@ -28,6 +22,8 @@ export function sectionNeeds(program: HumanProgram, section: Section, studyId: s
   const keys = new Set<string>();
   const add = (nodeId: string, f: ProgramField) => { if (fieldNeed(f)) keys.add(`${nodeId}:${f.id}`); };
   for (const e of [...r.items.flatMap(i => i.entries), ...r.leftovers]) if (e.field && e.nodeId) add(e.nodeId, e.field);
+  for (const item of r.items.filter(i => i.item.special === 'conditions' || i.item.special === 'materials'))
+    for (const e of item.entries) if (e.node) for (const f of e.node.fields) add(e.node.id, f);
   for (const n of r.blocks) for (const f of n.fields) add(n.id, f);
   if (section.id === 'procedure') for (const st of program.steps) if ((!studyId || st.studyId === studyId) && st.rule && fieldNeed(st.rule)) keys.add(`flow:${st.id}:${st.rule.id}`);
   return [...keys];

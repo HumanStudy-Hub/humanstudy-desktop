@@ -55,8 +55,9 @@ function start(sessionId: string): () => void {
       size += JSON.stringify(event).length
       if (size >= CHUNK_BYTES) void flush()
     },
-    maskInputOptions: { password: true },
-    maskInputFn: (text, el) => (el?.matches?.(PRIVATE) ? '*'.repeat(text.length) : text),
+    // rrweb only calls maskInputFn for input types explicitly opted into masking.
+    maskInputOptions: { password: true, text: true, email: true, textarea: true, number: true, tel: true, url: true, search: true },
+    maskInputFn: (text, el) => (el?.matches?.(PRIVATE) || el?.closest?.('[data-private]') ? '*'.repeat(text.length) : text),
     maskTextSelector: PRIVATE,
     blockSelector: 'canvas',
     recordCanvas: false,

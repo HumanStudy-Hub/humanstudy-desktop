@@ -1,12 +1,14 @@
+import type { KernelQuestion } from '../../shared/question'
 // Kernel contract. Structurally identical to ../kernel-types.ts (owned by the app shell);
 // declared here so the kernel folder stands alone.
 
-export type KernelEventType = 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title'
+export type KernelEventType = 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title' | 'question'
 
 export type PermissionReply = 'once' | 'always' | 'reject'
 
 /** A tool permission the agent is waiting on (opencode `permission.asked`). */
 export interface KernelPermission {
+  automatic?: boolean
   /** Pass to `kernel.reply`. */
   id: string
   /** What is being asked for: bash | edit | write | webfetch | external_directory | ... */
@@ -48,15 +50,17 @@ export interface KernelEvent {
   detail?: string
   /** type 'permission' */
   permission?: KernelPermission
+  question?: KernelQuestion
   /** type 'usage' */
   usage?: KernelUsage
-  /** type 'tool': the full tool input (single strings above 20 KB are truncated with a marker). */
+  /** type 'tool': the complete tool input, without a size-based clipping fallback. */
   input?: unknown
-  /** type 'tool', once finished: the tool's output (or error text), truncated like `input`. */
+  /** type 'tool', once finished: the complete tool output (or error text). */
   output?: string
 }
 
 export interface Kernel {
+  setPermissionMode?(mode: 'ask' | 'project'): void
   /** Human-readable name of the implementation ("opencode" or "mock"). */
   readonly name: string
   startSession(projectDir: string): Promise<string>
@@ -64,6 +68,9 @@ export interface Kernel {
   abort(sessionId: string): Promise<void>
   /** Answer a `permission` event. Rejects when the request is gone (already answered, session over). */
   reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void>
+  answerQuestion(sessionId: string, questionId: string, answers: string[][]): Promise<void>
+  rejectQuestion(sessionId: string, questionId: string): Promise<void>
+  questions(sessionId: string): Promise<KernelQuestion[]>
   /**
    * Re-attach to a session started earlier (possibly by a previous run of the app). Resolves with the
    * session id when the kernel still has it, null when it is gone and a new one must be started.

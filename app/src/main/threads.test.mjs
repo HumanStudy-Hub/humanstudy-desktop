@@ -77,7 +77,38 @@ const K = await import(pathToFileURL(join(out, 'kernel', 'index.js')).href)
   console.log('appendEvent ok')
 }
 
+// Session recovery must retain the beginning and end of long conversations and tool outputs.
+{
+  const payload = 'begin ' + 'research detail '.repeat(5000) + ' end'
+  const history = [{ id: 'u', role: 'user', at: 'now', parts: [{ kind: 'text', text: payload }] },
+    { id: 'a', role: 'assistant', at: 'now', parts: [{ kind: 'tool', tool: 'read', detail: payload, input: { path: 'sources/data.csv' }, output: payload, state: 'completed' }] }]
+  const prompt = T.contextPrompt(history, 'Continue')
+  assert.ok(prompt.includes('User: ' + payload))
+  assert.ok(prompt.includes(JSON.stringify({ tool: 'read', detail: payload, input: { path: 'sources/data.csv' }, output: payload, state: 'completed' })))
+  assert.ok(!prompt.includes('[earlier messages omitted]'))
+}
+
 // ---- capture hook: each part once, when final; tool input/output are stored ---------------
+{
+  const dir = mkdtempSync(join(tmpdir(), 'workspace-context-'))
+  const captured = []
+  const manager = new T.ThreadManager({ kernelName: () => 'mock', start: async () => 'ctx-session', resume: async () => null }, () => undefined, { onCapture: c => captured.push(c) })
+  const thread = await manager.create(dir)
+  const focus = { project:'Paper project', programId:'p1', study:{id:'study2',title:'Study 2',type:'empirical'}, activeTab:'file', openTabs:['study','paper','artifacts/report.md'], file:{path:'artifacts/report.md',ext:'md',unsaved:true} }
+  const sent = manager.beforeSend(thread.kernelSessionId, '这里需要改什么？', focus)
+  assert.ok(sent.startsWith('这里需要改什么？'))
+  assert.ok(sent.includes('"id":"study2"') && sent.includes('"unsaved":true'))
+  focus.study.id = 'study3' // A later view switch must not rewrite a past turn's focus.
+  const stored = await manager.get(dir, thread.id)
+  assert.equal(stored.messages[0].parts[0].text, '这里需要改什么？', 'UI metadata must not clutter the chat bubble')
+  assert.equal(stored.messages[0].workspace.study.id, 'study2')
+  assert.equal(captured[0].workspace.study.id, 'study2')
+  await manager.flush()
+  const saved = JSON.parse(readFileSync(join(dir,'.humanstudy','threads',`${thread.id}.json`),'utf8'))
+  assert.equal(saved.messages[0].workspace.file.path,'artifacts/report.md')
+  assert.ok(T.contextPrompt(saved.messages, '继续').includes('"id":"study2"'), 'thread recovery must preserve historic UI focus')
+}
+
 {
   const caps = []
   const m = new T.ThreadManager({ kernelName: () => 'mock', start: async () => 'sess-1', resume: async () => null }, () => undefined, { saveDelayMs: 1, onCapture: (c) => caps.push(c) })
@@ -132,7 +163,7 @@ async function turn(m, sid, text) {
   const prompt = m.beforeSend(sid, text)
   await kernel.send(sid, prompt)
   await done
-  await new Promise((r) => setTimeout(r, 20))
+  await m.flush() // Await persistence rather than assuming disk writes finish within 20 ms.
   return prompt
 }
 

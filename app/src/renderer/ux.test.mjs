@@ -54,9 +54,12 @@ assert.deepEqual(sent({ tool: 'bash', detail: 'ls -la' }), ['tool.looking', null
 assert.deepEqual(sent({ tool: 'bash', detail: 'mkdir -p artifacts' }), ['tool.folders', null])
 assert.deepEqual(sent({ tool: 'bash', detail: 'python3 check_package.py package/x' }), ['tool.checking_package', null])
 assert.deepEqual(sent({ tool: 'bash', detail: 'python3 analyze.py' }), ['tool.running_script', null])
-assert.deepEqual(sent({ tool: 'bash', detail: 'curl example.org' }), ['tool.running_command', 'curl'])
+assert.deepEqual(sent({ tool: 'bash', detail: 'curl example.org' }), ['tool.running_command', null])
 assert.deepEqual(sent({ tool: 'webfetch', input: { url: 'https://doi.org/10.1/x' } }), ['tool.opening', 'doi.org'])
-assert.deepEqual(sent({ tool: 'frobnicate' }), ['tool.working', 'frobnicate'])
+assert.deepEqual(sent({ tool: 'frobnicate' }), ['tool.working', null])
+assert.deepEqual(sent({ tool: 'bash', detail: 'hs-pdf pages paper.pdf --pages 2' }), ['tool.reading_paper_page', 2])
+assert.deepEqual(sent({ tool: 'bash', detail: 'python artifacts/simulations/2026/run.py' }), ['tool.simulating', null])
+assert.equal(T.researchActivity([{tool:'read',input:{filePath:'/p/paper.pdf'},state:'completed'}],dir).key,'activity.design')
 for (const k of T.TOOL_KEYS) assert.ok(D.EN[k] && D.ZH[k], `missing tool key ${k}`)
 
 // ---- i18n

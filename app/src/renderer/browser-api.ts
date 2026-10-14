@@ -1,7 +1,8 @@
+import { validateAnswers, updateQuestion, type KernelQuestion } from '../shared/question'
 // Browser preview: when the renderer runs outside Electron, stand in for the preload bridge with
 // the sample program, a local paper and a scripted kernel, so the interface can be reviewed in a
 // normal browser. Electron never loads this path because window.humanstudy already exists.
-import type { TelemetryRecent, TelemetryRow, TelemetryStatus, TelemetryTrackOptions } from '../preload/types'
+import type { TelemetryRecent, TelemetryRow, TelemetryStatus, TelemetryTrackOptions, WorkspaceContext } from '../preload/types'
 import type { AccountStatus, CommunityStudy, CommunityStudyDetail, HumanStudyApi, KernelEvent, KernelInstallStatus, MenuCommand, PermissionReply, Thread, ThreadMessage, ThreadPart, ProjectSnapshot, ProjectSummary, ProviderStatus, Settings } from '../preload/types'
 import sample from '../shared/sample-program.json'
 import brokenProgram from '../shared/fixtures/fce-broken.json'
@@ -29,6 +30,7 @@ if (!('humanstudy' in window)) {
   const threadStore = new Map<string, Thread>()
   const sessionThread = new Map<string, string>() // session id -> thread id ('' = untracked)
   const threadChanged = new Set<(e: { dir: string; id: string }) => void>()
+  const pendingQuestion = new Map<string, KernelQuestion>()
   const pendingPermission = new Map<string, { id: string; rest: Omit<KernelEvent, 'sessionId'>[] }>()
   const notifyThread = (t: Thread) => {
     t.updatedAt = new Date().toISOString()
@@ -45,10 +47,10 @@ if (!('humanstudy' in window)) {
     }
     return threadStore.get(id)
   }
-  const recordUser = (sessionId: string, text: string) => {
+  const recordUser = (sessionId: string, text: string, workspace?: WorkspaceContext) => {
     const t = threadOf(sessionId)
     if (!t) return
-    t.messages.push({ id: `m${t.messages.length}`, role: 'user', parts: [{ kind: 'text', text }], at: new Date().toISOString() })
+    t.messages.push({ id: `m${t.messages.length}`, role: 'user', parts: [{ kind: 'text', text }], at: new Date().toISOString(), workspace })
     if (t.title === 'New thread') t.title = text.replace(/\s+/g, ' ').trim().slice(0, 60) || t.title
     notifyThread(t)
   }
@@ -59,7 +61,12 @@ if (!('humanstudy' in window)) {
       t.usage = { input: t.usage.input + e.usage.input, output: t.usage.output + e.usage.output, cost: t.usage.cost + (e.usage.cost ?? 0) }
       return notifyThread(t)
     }
-    if (e.type !== 'text' && e.type !== 'tool' && e.type !== 'error' && e.type !== 'permission') return
+    if (e.type !== 'text' && e.type !== 'tool' && e.type !== 'error' && e.type !== 'permission' && e.type !== 'question') return
+    if (e.type === 'question' && e.question) {
+      const updated = updateQuestion(t.messages, e.question)
+      if (updated) { t.messages = updated; return notifyThread(t) }
+      if (!e.question.questions.length && e.question.resolved) return
+    }
     let m: ThreadMessage | undefined = t.messages[t.messages.length - 1]
     if (!m || m.role !== 'assistant') t.messages.push((m = { id: `m${t.messages.length}`, role: 'assistant', parts: [], at: new Date().toISOString() }))
     const tail = m.parts[m.parts.length - 1]
@@ -70,6 +77,7 @@ if (!('humanstudy' in window)) {
       if (tail?.kind === 'tool' && tail.tool === e.tool && (tail.state === 'pending' || tail.state === 'running')) Object.assign(tail, { detail: e.detail ?? tail.detail, state: e.text })
       else m.parts.push({ kind: 'tool', tool: e.tool ?? 'tool', detail: e.detail, state: e.text })
     } else if (e.type === 'error') m.parts.push({ kind: 'error', text: e.text ?? 'Unknown error' })
+    else if (e.type === 'question' && e.question) m.parts.push({ kind: 'question', ...e.question })
     else if (e.permission) {
       const p = m.parts.find((x): x is Extract<ThreadPart, { kind: 'permission' }> => x.kind === 'permission' && x.id === e.permission!.id)
       if (p) p.resolved = e.permission.resolved ?? p.resolved
@@ -201,8 +209,8 @@ if (!('humanstudy' in window)) {
   const settings: Settings = {
     theme: 'system',
     busyEnter: 'queue',
-    permission: 'ask',
-    model: 'anthropic/claude-sonnet-5.5',
+    permission: 'project',
+    model: 'anthropic/claude-haiku-5.5',
     projectsRoot: '~/HumanStudy Hub',
     notifications: true,
   }
@@ -697,16 +705,45 @@ def intentional(harm: float, help_: float) -> float:
       },
     },
     kernel: {
+      questions: async (sid) => pendingQuestion.has(sid) ? [pendingQuestion.get(sid)!] : [],
+      answerQuestion: async (sid, id, answers) => {
+        const q = pendingQuestion.get(sid)
+        if (!q || q.id !== id) throw new Error('This question is no longer pending.')
+        validateAnswers(q, answers)
+        pendingQuestion.delete(sid)
+        play(sid, [{ type: 'question', question: { ...q, answers, resolved: 'answered' } },
+          { type: 'text', text: `(Browser preview) Continuing with ${answers.map(a => a.join(', ')).join('; ')}.` }, { type: 'done' }])
+      },
+      rejectQuestion: async (sid, id) => {
+        const q = pendingQuestion.get(sid)
+        if (!q || q.id !== id) throw new Error('This question is no longer pending.')
+        pendingQuestion.delete(sid)
+        play(sid, [{ type: 'question', question: { ...q, resolved: 'rejected' } }, { type: 'done' }])
+      },
       startSession: async () => {
         await installReady
         const sid = `preview-${++sessionCounter}`
         sessionThread.set(sid, '')
         return sid
       },
-      send: async (sessionId, text) => {
+      send: async (sessionId, text, workspace) => {
         record('agent.turn_start', { metadata: { chars: text.length } })
-        record('conversation.user', { metadata: { text } })
-        recordUser(sessionId, text)
+        record('conversation.user', { metadata: { text, ...(workspace ? { workspace: JSON.stringify(workspace) } : {}) } })
+        recordUser(sessionId, text, workspace)
+        if (/ask question/i.test(text)) {
+          const q: KernelQuestion = { id: `question-${++sessionCounter}`, questions: [
+            { header: 'Participants', question: 'Which participant settings should I use?', options: [
+              { label: 'Default to study', description: 'Use the population reported in the paper.' },
+              { label: 'Customize', description: 'Specify a different population.' },
+            ] },
+            { header: 'Conditions', question: 'Which conditions should I include?', multiple: true, custom: false, options: [
+              { label: 'Control', description: 'Baseline condition.' }, { label: 'Treatment', description: 'Experimental condition.' },
+            ] },
+          ] }
+          pendingQuestion.set(sessionId, q)
+          play(sessionId, [{ type: 'question', question: q }])
+          return
+        }
         let steps = /build the (study|human program)/i.test(text) ? buildScript(sessionId) : script(text)
         if (/\brun/i.test(text)) {
           // Scripted permission prompt: pauses until kernel.reply, like opencode asking before bash.
@@ -726,6 +763,7 @@ def intentional(harm: float, help_: float) -> float:
       abort: async (sessionId) => {
         timers.get(sessionId)?.forEach((t) => clearTimeout(t))
         pendingPermission.delete(sessionId)
+        pendingQuestion.delete(sessionId)
         emitAndRecord({ sessionId, type: 'done' })
       },
       reply: async (sessionId, permissionId, response: PermissionReply) => {

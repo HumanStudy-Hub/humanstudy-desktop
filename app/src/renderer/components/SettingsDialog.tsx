@@ -465,6 +465,8 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
                 <input
                   className="field"
                   placeholder={t('settings.code_placeholder')}
+                  name="code"
+                  data-private
                   autoComplete="off"
                   spellCheck={false}
                   value={code}

@@ -1,3 +1,4 @@
+import { updateQuestion } from '../shared/question'
 // Conversation threads, stored per project in <project>/.humanstudy/threads/<threadId>.json.
 //
 // Electron-free (the kernel is injected as a `ThreadHost`) so it is unit-tested with the mock kernel:
@@ -9,6 +10,7 @@
 // events into one part.
 import { mkdir, readFile, readdir, rename as fsRename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { withWorkspaceContext } from '../shared/workspace-context'
 import type {
   KernelEvent,
   Thread,
@@ -16,11 +18,11 @@ import type {
   ThreadPart,
   ThreadSummary,
   ThreadUsage,
+  WorkspaceContext,
 } from '../preload/types'
 
 export const DEFAULT_TITLE = 'New thread'
 const TITLE_MAX = 60
-const CONTEXT_CHARS = 16_000
 
 export interface ThreadHost {
   /** Name of the kernel that would run a new session ("opencode" | "mock"). */
@@ -41,6 +43,7 @@ export type Capture =
       index: number
       part: ThreadPart
       at: string
+      workspace?: WorkspaceContext
       /** Permission parts only: the turn ended while the request was still unanswered. */
       unresolved?: boolean
     }
@@ -79,7 +82,13 @@ export function appendEvent(
   now: () => string = () => new Date().toISOString(),
   newId: (prefix: string) => string = defaultNewId
 ): ThreadMessage[] {
-  if (e.type !== 'text' && e.type !== 'tool' && e.type !== 'error' && e.type !== 'permission') return ms
+  if (e.type !== 'text' && e.type !== 'tool' && e.type !== 'error' && e.type !== 'permission' && e.type !== 'question') return ms
+  if (e.type === 'question') {
+    if (!e.question) return ms
+    const updated = updateQuestion(ms, e.question)
+    if (updated) return updated
+    if (!e.question.questions.length && e.question.resolved) return ms
+  }
   const last = ms[ms.length - 1]
   const fresh = !last || last.role !== 'assistant'
   const msg: ThreadMessage = fresh
@@ -96,7 +105,7 @@ export function appendEvent(
     const detail = e.detail && e.detail !== '{}' ? e.detail : undefined
     // A permission card may sit between the tool's pending and running events; look past it.
     let at = parts.length - 1
-    while (at >= 0 && parts[at].kind === 'permission') at--
+    while (at >= 0 && (parts[at].kind === 'permission' || parts[at].kind === 'question')) at--
     const open = parts[at]
     if (open?.kind === 'tool' && open.tool === name && (open.state === 'pending' || open.state === 'running')) {
       const tail = open
@@ -106,6 +115,8 @@ export function appendEvent(
     }
   } else if (e.type === 'error') {
     parts.push({ kind: 'error', text: e.text ?? e.detail ?? 'Unknown error' })
+  } else if (e.type === 'question' && e.question) {
+    parts.push({ kind: 'question', ...e.question })
   } else {
     const perm = e.permission
     if (!perm) return ms
@@ -113,7 +124,7 @@ export function appendEvent(
     if (own >= 0) {
       const p = parts[own] as Extract<ThreadPart, { kind: 'permission' }>
       if (!perm.resolved || p.resolved) return ms
-      parts[own] = { ...p, resolved: perm.resolved }
+      parts[own] = { ...p, resolved: perm.resolved, ...(perm.automatic ? { automatic: true } : {}) }
       return fresh ? [...ms, msg] : replaceLast(ms, msg)
     }
     // The follow-up can arrive after the next message started: look a few messages back.
@@ -123,7 +134,7 @@ export function appendEvent(
       const p = ms[i].parts[j] as Extract<ThreadPart, { kind: 'permission' }>
       if (!perm.resolved || p.resolved) return ms
       const np = [...ms[i].parts]
-      np[j] = { ...p, resolved: perm.resolved }
+      np[j] = { ...p, resolved: perm.resolved, ...(perm.automatic ? { automatic: true } : {}) }
       return ms.map((m, k) => (k === i ? { ...m, parts: np } : m))
     }
     // Unknown id: a bare "resolved" follow-up for a request we never saw has nothing to update.
@@ -132,6 +143,7 @@ export function appendEvent(
       kind: 'permission',
       id: perm.id,
       type: perm.type,
+      ...(perm.automatic ? { automatic: true } : {}),
       title: perm.title,
       patterns: perm.patterns,
       ...(perm.resolved ? { resolved: perm.resolved } : {}),
@@ -160,25 +172,24 @@ export function addUsage(total: ThreadUsage, u: { input: number; output: number;
   }
 }
 
-/** Plain-text transcript of earlier messages, newest kept when it has to be cut. */
-export function transcript(ms: ThreadMessage[], maxChars = CONTEXT_CHARS): string {
+/** Complete earlier conversation, including tool inputs and outputs, for session recovery. */
+export function transcript(ms: ThreadMessage[]): string {
   const lines: string[] = []
   for (const m of ms) {
     const who = m.role === 'user' ? 'User' : 'Assistant'
     const body = m.parts
       .map((p) => {
         if (p.kind === 'text') return p.text.trim()
-        if (p.kind === 'tool') return `[${p.tool}${p.detail ? ': ' + p.detail.slice(0, 120) : ''}]`
+        if (p.kind === 'tool') return JSON.stringify({ tool: p.tool, detail: p.detail, input: p.input, output: p.output, state: p.state })
+        if (p.kind === 'question') return JSON.stringify({ question: p.questions, answers: p.answers, status: p.resolved ?? 'unanswered' })
         if (p.kind === 'permission') return `[asked permission for ${p.type}${p.resolved ? ', answered ' + p.resolved : ''}]`
         return ''
       })
       .filter(Boolean)
       .join('\n')
-    if (body) lines.push(`${who}: ${body}`)
+    if (body) lines.push(`${who}: ${withWorkspaceContext(body, m.workspace)}`)
   }
-  let out = lines.join('\n\n')
-  if (out.length > maxChars) out = '[earlier messages omitted]\n\n' + out.slice(out.length - maxChars)
-  return out
+  return lines.join('\n\n')
 }
 
 /** First prompt of a session that replaces a lost one: prior transcript as context, then the new message. */
@@ -361,17 +372,17 @@ export class ThreadManager {
   // ---- fed by the main process ----
 
   /** Record the user's message; returns the text to actually send to the kernel. */
-  beforeSend(sessionId: string, text: string): string {
+  beforeSend(sessionId: string, text: string, workspace?: WorkspaceContext): string {
     const b = this.bySession.get(sessionId)
-    if (!b) return text
+    if (!b) return withWorkspaceContext(text, workspace)
     const t = b.thread
     const prior = t.messages
-    let prompt = text
-    if (this.needsContext.delete(sessionId)) prompt = contextPrompt(prior, text)
+    let prompt = withWorkspaceContext(text, workspace)
+    if (this.needsContext.delete(sessionId)) prompt = contextPrompt(prior, prompt)
     const at = this.now()
-    const user: ThreadMessage = { id: this.newId('m'), role: 'user', parts: [{ kind: 'text', text }], at }
+    const user: ThreadMessage = { id: this.newId('m'), role: 'user', parts: [{ kind: 'text', text }], at, ...(workspace ? { workspace: structuredClone(workspace) } : {}) }
     t.messages = [...prior, user]
-    this.emitCapture({ kind: 'part', dir: b.dir, threadId: t.id, messageId: user.id, role: 'user', index: 0, part: user.parts[0], at })
+    this.emitCapture({ kind: 'part', dir: b.dir, threadId: t.id, messageId: user.id, role: 'user', index: 0, part: user.parts[0], at, workspace: user.workspace })
     this.captured.add(`${t.id}:${user.id}:0`)
     if (!t.titleSource && t.title === DEFAULT_TITLE) {
       t.title = autoTitle(text)
@@ -389,8 +400,8 @@ export class ThreadManager {
     if (e.type === 'usage' && e.usage) {
       const last = b.thread.messages[b.thread.messages.length - 1]
       this.emitCapture({ kind: 'usage', dir: b.dir, threadId: b.thread.id, messageId: last?.role === 'assistant' ? last.id : undefined, usage: e.usage })
-    } else if (['text', 'tool', 'error', 'permission', 'done'].includes(e.type) || (e.type === 'status' && e.text === 'aborted')) {
-      this.capture(b, e.type === 'done' || e.type === 'status')
+    } else if (['text', 'tool', 'error', 'permission', 'question', 'done'].includes(e.type) || (e.type === 'status' && e.text === 'aborted')) {
+      this.capture(b, e.type === 'done' || e.type === 'status', e.question?.id)
     }
   }
 
@@ -403,28 +414,32 @@ export class ThreadManager {
   }
 
   /** Emits each part of the recent assistant messages once it is final (see Capture). */
-  private capture(b: Bound, endOfTurn: boolean): void {
+  private capture(b: Bound, endOfTurn: boolean, questionId?: string): void {
     const t = b.thread
     const ms = t.messages
-    for (let mi = Math.max(0, ms.length - 4); mi < ms.length; mi++) {
+    const recent = Math.max(0, ms.length - 4)
+    const askedAt = questionId ? ms.findIndex(m => m.parts.some(p => p.kind === 'question' && p.id === questionId)) : -1
+    for (let mi = askedAt >= 0 ? Math.min(recent, askedAt) : recent; mi < ms.length; mi++) {
       const m = ms[mi]
       if (m.role !== 'assistant') continue
       const settled = endOfTurn || mi < ms.length - 1
       m.parts.forEach((p, i) => {
+        if (mi < recent && !(p.kind === 'question' && p.id === questionId)) return
         const final =
+          p.kind === 'question' ||
           p.kind === 'error' ||
           settled ||
           (p.kind === 'text' && i < m.parts.length - 1) ||
           (p.kind === 'tool' && (p.state === 'completed' || p.state === 'error')) ||
           (p.kind === 'permission' && Boolean(p.resolved))
         if (!final) return
-        const key = `${t.id}:${m.id}:${i}` + (p.kind === 'permission' ? (p.resolved ? ':r' : ':u') : '')
+        const key = `${t.id}:${m.id}:${i}` + ((p.kind === 'permission' || p.kind === 'question') ? (p.resolved ? ':r' : ':u') : '')
         if (this.captured.has(key)) return
         this.captured.add(key)
         if (p.kind === 'text' && !p.text.trim()) return
         this.emitCapture({
           kind: 'part', dir: b.dir, threadId: t.id, messageId: m.id, role: 'assistant', index: i, part: p, at: m.at,
-          ...(p.kind === 'permission' && !p.resolved ? { unresolved: true } : {}),
+          ...((p.kind === 'permission' || p.kind === 'question') && !p.resolved ? { unresolved: true } : {}),
         })
       })
     }
@@ -467,7 +482,7 @@ export class ThreadManager {
   private bind(dir: string, t: Thread): void {
     // Parts that already exist were captured (or deliberately not) in an earlier run.
     t.messages.forEach((m) =>
-      m.parts.forEach((p, i) => this.captured.add(`${t.id}:${m.id}:${i}` + (p.kind === 'permission' ? (p.resolved ? ':r' : ':u') : '')))
+      m.parts.forEach((p, i) => this.captured.add(`${t.id}:${m.id}:${i}` + ((p.kind === 'permission' || p.kind === 'question') ? (p.resolved ? ':r' : ':u') : '')))
     )
     this.live.set(keyOf(dir, t.id), t)
     this.bySession.set(t.kernelSessionId, { dir, thread: t })

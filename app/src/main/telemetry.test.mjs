@@ -4,6 +4,7 @@
 // 30-day age drop, persistence, withdrawal and "Delete my data".
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
+import { gunzipSync } from 'node:zlib'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -12,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const out = mkdtempSync(join(tmpdir(), 'telemetry-test-'))
 await build({
-  entryPoints: [join(here, 'telemetry-core.ts'), join(here, 'replay-core.ts')],
+  entryPoints: [join(here, 'telemetry-core.ts'), join(here, 'replay-core.ts'), join(here, 'research-content.ts')],
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -20,11 +21,12 @@ await build({
   outdir: out,
   logLevel: 'error',
 })
+const { storeResearchContent } = await import(pathToFileURL(join(out, 'research-content.js')).href)
 const core = await import(pathToFileURL(join(out, 'telemetry-core.js')).href)
 const replayMod = await import(pathToFileURL(join(out, 'replay-core.js')).href)
 rmSync(out, { recursive: true, force: true })
 const { createReplay, DISK_CAP } = replayMod
-const { truncateValue, truncateString, VALUE_MAX, programDiff } = core
+const { programDiff } = core
 const { createTelemetry, sanitizeEvent, CONSENT_VERSION, FLUSH_AT, QUEUE_CAP, MAX_BATCH, FLUSH_INTERVAL_MS } = core
 
 const SB = 'https://sb.test'
@@ -122,7 +124,7 @@ await test('sanitizer removes emails, keys, absolute paths, forbidden keys', () 
   assert.equal(row.project_id, null)
 })
 
-await test('sanitizer: event type, conversation gating, account email, size caps', () => {
+await test('sanitizer: consent and credentials protected without shortening research content', () => {
   const ctx = { content: false, email: EMAIL }
   assert.equal(sanitizeEvent('Bad Type', {}, ctx, base), null)
   assert.equal(sanitizeEvent('x', {}, ctx, base), null)
@@ -130,10 +132,14 @@ await test('sanitizer: event type, conversation gating, account email, size caps
   const conv = sanitizeEvent('conversation.user', { metadata: { text: `mail me at ${EMAIL.toLowerCase()} please` } }, { ...ctx, content: true }, base)
   assert.equal(conv.metadata.text, 'mail me at [email] please')
   const big = sanitizeEvent('conversation.assistant', { metadata: { text: 'x'.repeat(50_000) } }, { ...ctx, content: true }, base)
-  assert.ok(Buffer.byteLength(JSON.stringify(big.metadata)) <= 16_000)
-  const many = sanitizeEvent('ui.test', { target: 'y'.repeat(500), metadata: { list: Array.from({ length: 100 }, (_, i) => 'z'.repeat(400) + i) } }, ctx, base)
+  assert.equal(big.metadata.text, 'x'.repeat(50_000))
+  const digest = 'a1'.repeat(32)
+  const approved = sanitizeEvent('conversation.user', { metadata: { text: `programHash=${digest}` } }, { ...ctx, content: true }, base)
+  assert.equal(approved.metadata.text, `programHash=${digest}`, 'scientific content hashes are not secret credentials')
+  const many = sanitizeEvent('ui.test', { target: 'y'.repeat(500), metadata: { list: Array.from({ length: 100 }, (_, i) => 'z '.repeat(200) + i) } }, ctx, base)
   assert.equal(many.target.length, 160)
-  assert.ok(Buffer.byteLength(JSON.stringify(many.metadata)) <= 16_000)
+  assert.equal(many.metadata.list.length, 100)
+  assert.equal(many.metadata.list[99], 'z '.repeat(200) + 99)
   assert.equal(sanitizeEvent('ui.test', { projectId: 'short' }, ctx, base).project_id, null)
   assert.equal(sanitizeEvent('ui.test', { projectId: 'proj-12345678' }, ctx, base).project_id, 'proj-12345678')
 })
@@ -192,7 +198,7 @@ await test('consent.granted, conversation gating, batching at FLUSH_AT, exact Po
   assert.ok(recent.every((r) => r.status === 'sent'))
 })
 
-await test('retry with backoff on 5xx and network errors; 4xx rejections are dropped', async () => {
+await test('retry with backoff; rejected events remain locally recoverable', async () => {
   const { t, server } = make()
   await t.setConsent({ usage: true, content: false })
   server.status = 503
@@ -219,8 +225,8 @@ await test('retry with backoff on 5xx and network errors; 4xx rejections are dro
   t.track('ui.bad')
   server.status = 400
   await t.flush({ force: true })
-  assert.equal(t.status().pending, 0)
-  assert.equal(t.recent()[0].status, 'dropped')
+  assert.equal(t.status().pending, 1)
+  assert.match(t.status().lastError, /400/)
 })
 
 await test('large queues upload in batches of MAX_BATCH', async () => {
@@ -235,28 +241,29 @@ await test('large queues upload in batches of MAX_BATCH', async () => {
   assert.equal(new Set(posted(server).map((r) => r.id)).size, 2 * MAX_BATCH + 11)
 })
 
-await test('the queue is capped at QUEUE_CAP (oldest dropped) and persists across restarts', async () => {
+await test('large queues retain every event across restarts', async () => {
   const storage = memoryStorage()
   const server = stubServer()
   server.status = 500
   const { t } = make({ storage, server })
   await t.setConsent({ usage: true, content: false })
   for (let i = 0; i < QUEUE_CAP + 25; i++) t.track('ui.click', { target: `c${i}` })
-  assert.equal(t.status().pending, QUEUE_CAP)
+  assert.equal(t.status().pending, QUEUE_CAP + 26)
   // A new process reads the same JSONL queue (including a torn last line).
   storage.s.queue += '{"acct":"torn'
   const again = make({ storage, server: stubServer() })
-  assert.equal(again.t.status().pending, QUEUE_CAP)
+  assert.equal(again.t.status().pending, QUEUE_CAP + 26)
   assert.equal(again.t.status().usage, true)
   await again.t.flush({ force: true })
   const rows = posted(again.server)
-  assert.equal(rows.length, QUEUE_CAP)
-  assert.equal(rows[0].target, 'c25')
+  assert.equal(rows.length, QUEUE_CAP + 26)
+  assert.equal(rows[1].target, 'c0')
+  assert.equal(rows.at(-1).target, `c${QUEUE_CAP + 24}`)
   assert.equal(again.t.status().pending, 0)
   assert.equal(storage.s.queue, '')
 })
 
-await test('events older than 30 days are dropped instead of sent', async () => {
+await test('offline events keep their original timestamp and remain recoverable', async () => {
   const storage = memoryStorage()
   const server = stubServer()
   server.status = 500
@@ -269,13 +276,31 @@ await test('events older than 30 days are dropped instead of sent', async () => 
   server.status = 201
   server.calls.length = 0
   await t.flush({ force: true })
-  assert.deepEqual(posted(server).map((r) => r.event_type), ['ui.recent'])
+  assert.deepEqual(posted(server).map((r) => r.event_type), ['consent.granted', 'ui.old', 'ui.recent'])
   // And on startup, from the persisted queue.
   server.status = 500
   t.track('ui.stale')
   clock += 31 * DAY
   const again = make({ storage })
-  assert.equal(again.t.status().pending, 0)
+  assert.equal(again.t.status().pending, 1)
+})
+
+await test('old timestamp rejection does not block fresh events and never deletes old records', async () => {
+  const server = stubServer()
+  const { t } = make({ server })
+  await t.setConsent({ usage: true, content: false })
+  t.track('ui.offline')
+  clock += 40 * DAY
+  t.track('ui.fresh')
+  const fetch = server.fetch
+  server.fetch = async (url, init) => {
+    server.status = JSON.parse(init.body).some(row => Date.parse(row.occurred_at) < clock - 30 * DAY) ? 403 : 201
+    return fetch(url, init)
+  }
+  await t.flush({ force: true })
+  assert.equal(t.status().pending, 2) // Original consent and old event both remain queued.
+  assert.ok(t.recent().some(e => e.row.event_type === 'ui.fresh' && e.status === 'sent'))
+  assert.ok(t.recent().some(e => e.row.event_type === 'ui.offline' && e.status === 'pending'))
 })
 
 await test('conversation content is sent only under its own consent; turning it off drops pending text', async () => {
@@ -460,21 +485,23 @@ await test('replay: a row failure keeps the file; backoff delays the retry', asy
   bad.r.addChunk({ sessionId: SID, startedAt: 1, endedAt: 2, bytes: bytes(10) })
   bad.server.status = 413
   await bad.r.flush({ force: true })
-  assert.equal(bad.r.pendingFiles(), 0)
-  assert.deepEqual(bad.ctx.dropped.map((d) => d.reason), ['rejected'])
+  assert.equal(bad.r.pendingFiles(), 1)
 })
 
-await test('replay disk cap: oldest files are dropped first and reported', async () => {
-  assert.equal(DISK_CAP, 200 * 1024 * 1024)
+await test('replay disk warning never deletes unuploaded content', () => {
   const { r, disk, ctx } = makeReplay({ capBytes: 1000 })
   for (let i = 0; i < 5; i++) r.addChunk({ sessionId: SID, startedAt: i, endedAt: i + 1, bytes: bytes(300) })
-  assert.ok(r.pendingBytes() <= 1000)
-  assert.equal(r.pendingFiles(), 3) // 5 x 300 B > 1000 B: two oldest dropped
-  assert.ok(!disk.files.has(`${SID}/0.json.gz`) && !disk.files.has(`${SID}/1.json.gz`))
-  assert.ok(disk.files.has(`${SID}/4.json.gz`))
-  assert.ok(!disk.files.has(`${SID}/0.meta.json`)) // sidecar removed with its file
-  assert.equal(ctx.dropped.reduce((n, d) => n + d.files, 0), 2)
-  assert.equal(ctx.dropped[0].reason, 'cap')
+  assert.equal(r.pendingFiles(), 5)
+  assert.equal(r.pendingBytes(), 1500)
+  assert.ok(disk.files.has(`${SID}/0.json.gz`))
+  assert.equal(ctx.dropped.length, 0)
+})
+
+await test('large recordings remain recoverable even above the cloud object limit', () => {
+  const { r, disk } = makeReplay()
+  const large = bytes(9 * 1024 * 1024)
+  assert.equal(r.addChunk({ sessionId: SID, startedAt: 1, endedAt: 2, bytes: large }), 0)
+  assert.deepEqual(disk.files.get(`${SID}/0.json.gz`).data, large)
 })
 
 await test('replay delete: rows, storage objects and local files', async () => {
@@ -485,21 +512,6 @@ await test('replay delete: rows, storage objects and local files', async () => {
   assert.equal(del.url, `${SB}/rest/v1/desktop_replay_chunks?owner_id=eq.${USER_ID}`)
   assert.ok(server.calls.some((c) => c.url.includes('/storage/v1/object/list/desktop-replays')))
   assert.equal(disk.files.size, 0)
-})
-
-await test('truncation: single values above 20 KB are cut with a marker, nested too', () => {
-  assert.equal(VALUE_MAX, 20_000)
-  const big = 'x'.repeat(25_000)
-  const cut = truncateString(big)
-  assert.ok(cut.startsWith('x'.repeat(20_000)))
-  assert.match(cut, /\[truncated 5000 of 25000 characters\]$/)
-  assert.equal(truncateString('short'), 'short')
-  const v = truncateValue({ command: 'ls', nested: { body: big, list: [big, 1] }, n: 3 })
-  assert.equal(v.command, 'ls')
-  assert.equal(v.n, 3)
-  assert.match(v.nested.body, /truncated 5000/)
-  assert.match(v.nested.list[0], /truncated 5000/)
-  assert.equal(v.nested.list[1], 1)
 })
 
 await test('program diff names the nodes and steps that were added, removed or changed', () => {
@@ -540,3 +552,15 @@ await test('program diff names the nodes and steps that were added, removed or c
 })
 
 console.log(`\n${passed} passed`)
+
+await test('large Unicode content reconstructs exactly from ordered gzip parts', () => {
+  const text = 'α🙂 boundary\n'.repeat(400_000)
+  const stored = new Map()
+  const path = storeResearchContent(text, bytes => { const id = `blobs/${stored.size}.gz`; stored.set(id, bytes); return id })
+  const manifest = JSON.parse(gunzipSync(stored.get(path)).toString('utf8'))
+  assert.equal(manifest.format, 'humanstudy-content-parts-v1')
+  assert.ok(manifest.parts.length >= 2)
+  const reconstructed = Buffer.concat(manifest.parts.map(id => gunzipSync(stored.get(id))))
+  assert.equal(reconstructed.length, manifest.bytes)
+  assert.equal(reconstructed.toString('utf8'), text)
+})

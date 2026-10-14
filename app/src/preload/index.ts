@@ -52,9 +52,12 @@ const api: HumanStudyApi = {
   },
   kernel: {
     startSession: (dir) => ipcRenderer.invoke('kernel:startSession', dir),
-    send: (id, text) => ipcRenderer.invoke('kernel:send', id, text),
+    send: (id, text, workspace) => ipcRenderer.invoke('kernel:send', id, text, workspace),
     abort: (id) => ipcRenderer.invoke('kernel:abort', id),
     reply: (id, permissionId, response) => ipcRenderer.invoke('kernel:reply', id, permissionId, response),
+    questions: (id) => ipcRenderer.invoke('kernel:questions', id),
+    answerQuestion: (id, questionId, answers) => ipcRenderer.invoke('kernel:answerQuestion', id, questionId, answers),
+    rejectQuestion: (id, questionId) => ipcRenderer.invoke('kernel:rejectQuestion', id, questionId),
     onEvent: (cb) => listen<KernelEvent>('kernel:event', cb),
     install: {
       status: () => ipcRenderer.invoke('kernel:installStatus'),

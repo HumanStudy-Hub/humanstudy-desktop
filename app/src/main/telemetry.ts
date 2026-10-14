@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve } from 'node:path'
-import { gzipSync } from 'node:zlib'
+import { storeResearchContent } from './research-content'
 import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
 import { accountHash, createTelemetry, FLUSH_INTERVAL_MS, programDiff, scrubString, type StoredState, type Telemetry } from './telemetry-core'
@@ -100,7 +100,12 @@ export function track(type: string, opts: TelemetryTrackOptions = {}, projectDir
     if (!t.status().usage) return
     const projectId = opts.projectId ?? (projectDir ? (projectIdFor(projectDir) ?? undefined) : undefined)
     const dirFor = projectDir ?? (projectId ? projectIds.get(projectId) : undefined)
-    t.track(type, { ...opts, projectId }, { projectDir: dirFor })
+    let metadata = opts.metadata
+    if (metadata && Buffer.byteLength(JSON.stringify(metadata)) > 12_000) {
+      const blob = putBlob(JSON.stringify(metadata), dirFor)
+      if (blob) metadata = { metadata_blob: blob }
+    }
+    t.track(type, { ...opts, metadata, projectId }, { projectDir: dirFor })
   } catch {
     /* research data must never break the app */
   }
@@ -145,8 +150,10 @@ export function onKernelEvent(e: KernelEvent): void {
   const turn = turns.get(e.sessionId)
   if (!turn) return
   const dir = sessionDirs.get(e.sessionId)
-  if (e.type === 'text') {
-    if (getTelemetry().status().content && turn.reply.length < 20_000) turn.reply += e.text ?? ''
+  if (e.type === 'status' && e.text === 'recovering' && e.input) {
+    track('agent.recovery', { metadata: e.input as Record<string, unknown> }, dir)
+  } else if (e.type === 'text') {
+    if (getTelemetry().status().content) turn.reply += e.text ?? ''
   } else if (e.type === 'tool') {
     if (e.tool) turn.tools.add(e.tool.slice(0, 60))
     if (e.text === 'completed' || e.text === 'error') turn.toolSteps++
@@ -165,11 +172,9 @@ const turnMeta = (t: Turn): Record<string, unknown> => ({
   toolErrors: t.toolErrors,
   replyChars: t.reply.length || undefined,
 })
-/** First line of an error, at most 160 chars; the sanitizer removes paths, emails and keys. */
+/** Preserve the full error; the sanitizer removes paths, emails and keys. */
 const errorLine = (err: unknown): string =>
   String(err instanceof Error ? err.message : (err ?? 'error'))
-    .split('\n')[0]
-    .slice(0, 160)
 
 // ---- artifacts and exports ------------------------------------------------------------
 const seenFiles = new Map<string, Set<string>>()
@@ -265,7 +270,7 @@ function putBlob(text: string, projectDir?: string): string | null {
     const t = getTelemetry()
     if (!t.status().content) return null
     const clean = scrubString(text, { projectDir, email: getAccount().status().email })
-    return getReplay().addBlob(t.sessionId, new Uint8Array(gzipSync(Buffer.from(clean, 'utf8')))) ?? null
+    return storeResearchContent(clean, bytes => getReplay().addBlob(t.sessionId, bytes))
   } catch {
     return null
   }
@@ -278,12 +283,11 @@ function fit(out: Record<string, unknown>, key: string, value: string | undefine
     out[key] = value
     return
   }
-  let cut = value.slice(0, maxBytes)
-  while (Buffer.byteLength(cut) > maxBytes) cut = cut.slice(0, -Math.ceil(cut.length / 20))
-  out[key] = cut
-  out[`${key}_chars`] = value.length
   const blob = putBlob(value, projectDir)
+  out[`${key}_chars`] = value.length
   if (blob) out[`${key}_blob`] = blob
+  else out[key] = value // Never lose the payload when local blob storage is unavailable.
+
 }
 
 // ---- agent transcript -------------------------------------------------------------------
@@ -296,6 +300,7 @@ export function onThreadCapture(c: Capture): void {
       return
     }
     const base: Record<string, unknown> = { thread_id: c.threadId, message_id: c.messageId, part: c.index, message_at: c.at }
+    if (c.workspace) fit(base, 'workspace', JSON.stringify(c.workspace), 5_500, c.dir)
     const p = c.part
     if (p.kind === 'text') {
       fit(base, 'text', p.text, 11_000, c.dir)
@@ -306,12 +311,20 @@ export function onThreadCapture(c: Capture): void {
       if (p.input !== undefined) fit(base, 'input', typeof p.input === 'string' ? p.input : JSON.stringify(p.input), 5_500, c.dir)
       fit(base, 'output', p.output, 5_500, c.dir)
       track('conversation.tool', { target: p.tool, metadata: base }, c.dir)
+    } else if (p.kind === 'question') {
+      base.question_id = p.id
+      base.resolved = p.resolved ?? null
+      if (c.unresolved) base.unresolved = true
+      fit(base, 'questions', JSON.stringify(p.questions), 5_500, c.dir)
+      if (p.answers) fit(base, 'answers', JSON.stringify(p.answers), 5_500, c.dir)
+      track('conversation.question', { metadata: base }, c.dir)
     } else if (p.kind === 'permission') {
       base.permission_id = p.id
+      base.automatic = Boolean(p.automatic)
       base.resolved = p.resolved ?? null
       if (c.unresolved) base.unresolved = true
       fit(base, 'detail', p.title, 400, c.dir)
-      base.patterns = p.patterns?.slice(0, 20)
+      base.patterns = p.patterns
       track('conversation.permission', { target: p.type, metadata: base }, c.dir)
     } else {
       fit(base, 'text', p.text, 4_000, c.dir)
@@ -323,8 +336,6 @@ export function onThreadCapture(c: Capture): void {
 }
 
 // ---- project snapshots: program.json versions and agent-written files --------------------
-const PROGRAM_MAX = 500_000
-const FILE_TEXT_MAX = 200_000
 const TEXT_EXTS = new Set(['txt', 'md', 'json', 'csv', 'tsv', 'html', 'htm', 'py', 'r', 'js', 'ts', 'tex', 'bib', 'yaml', 'yml', 'xml', 'svg', 'qmd', 'rmd', 'css', 'sql', 'jl', 'do', 'sps', 'ipynb', 'log', 'toml', 'ini'])
 const WATCHED_DIRS = /^(artifacts|exports|package)\//
 const programState = new Map<string, { hash: string; json: unknown; version: number }>()
@@ -377,10 +388,8 @@ async function snapshotProgram(projectDir: string): Promise<void> {
     hash: hash.slice(0, 12),
   }
   if (prev) metadata.diff = programDiff(prev.json, json)
-  if (Buffer.byteLength(raw) <= PROGRAM_MAX) {
-    const blob = putBlob(raw, projectDir)
-    if (blob) metadata.blob = blob
-  } else metadata.oversize = true
+  const blob = putBlob(raw, projectDir)
+  if (blob) metadata.blob = blob
   track('project.program_version', { target: 'program.json', metadata }, projectDir)
 }
 
@@ -391,7 +400,7 @@ async function snapshotFile(projectDir: string, rel: string): Promise<void> {
   if (!st?.isFile()) return
   const ext = extname(rel).slice(1).toLowerCase()
   const metadata: Record<string, unknown> = { size: st.size, ext, by: byWhom(resolve(path)) }
-  if (TEXT_EXTS.has(ext) && st.size <= FILE_TEXT_MAX) {
+  if (TEXT_EXTS.has(ext)) {
     const text = await readFile(path, 'utf8')
     const hash = createHash('sha1').update(text).digest('hex')
     const key = `${projectDir}\0${rel}`
@@ -400,7 +409,7 @@ async function snapshotFile(projectDir: string, rel: string): Promise<void> {
     const blob = putBlob(text, projectDir)
     if (blob) metadata.blob = blob
     metadata.chars = text.length
-  } else if (TEXT_EXTS.has(ext)) metadata.oversize = true
+  }
   track('project.file_written', { target: rel, metadata }, projectDir)
 }
 
@@ -433,6 +442,12 @@ export async function exportMyData(parent?: BrowserWindow | null): Promise<strin
   await getReplay().flush({ force: true })
   const files: Record<string, Uint8Array> = {}
   files['events.json'] = strToU8(JSON.stringify(await fetchAllEvents(), null, 1))
+  const currentAcct = accountHash(acct.status().email!)
+  const pendingLines = await readFile(join(dir(), 'telemetry-queue.jsonl'), 'utf8').catch(() => '')
+  const pending = pendingLines.split('\n').flatMap(line => {
+    try { const item = JSON.parse(line); return item.acct === currentAcct ? [item.row] : [] } catch { return [] }
+  })
+  files['events-unsent.json'] = strToU8(JSON.stringify(pending, null, 1))
   // Threads of the projects opened in this app run (conversation events carry the rest).
   for (const [id, root] of projectIds) {
     const tdir = join(root, '.humanstudy', 'threads')
@@ -467,6 +482,8 @@ export async function exportMyData(parent?: BrowserWindow | null): Promise<strin
   }
   for (const f of diskFs.list()) {
     if (f.rel.endsWith('.meta.json')) continue
+    const meta = diskFs.read(f.rel.replace(/\.(json\.gz|gz)$/, '.meta.json'))
+    try { if (!meta || JSON.parse(Buffer.from(meta).toString('utf8')).acct !== currentAcct) continue } catch { continue }
     const b = diskFs.read(f.rel)
     if (b) files[`replay-unsent/${f.rel}`] = b
   }
