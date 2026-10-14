@@ -297,6 +297,9 @@ export interface HumanStudyApi {
     signIn(email: string, password: string): Promise<AccountStatus>
     /** Creates the account; the user must confirm by email before signing in. */
     signUp(email: string, password: string): Promise<{ needsConfirmation: boolean }>
+    forgotPassword(email: string): Promise<void>
+    resendConfirmation(email: string): Promise<void>
+    changePassword(currentPassword: string, newPassword: string): Promise<AccountStatus>
     signOut(): Promise<AccountStatus>
     /** Redeems an invitation code for a desktop key that unlocks hosted models. */
     unlock(code: string): Promise<AccountStatus>

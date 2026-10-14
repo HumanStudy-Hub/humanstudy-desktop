@@ -155,3 +155,10 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
 | R3 | proposals review, source tracing, simulation view | Sonnet (after R2) |
 | M3 | Hub import, community publish | later |
 | K3 | `app/src/main/{runtime-core,runtime-install,assistant-install}.ts`, `pack/runtime/**`, kernel PATH env | Opus |
+
+## 2026-10-14 beta account implementation
+
+- [~] Checklist 1–3: desktop forgot/change password and confirmation resend; web callbacks in PR #17. Code and fixture tests complete; live mail acceptance pending.
+- [ ] Checklist 9: Help, problem reports and suggestions; team receiving address pending.
+- [ ] Remaining agreed beta items: see docs/beta-execution-checklist-2026-10-14.md.
+- Owner excludes original items 4, 6, 13, 14, 15; profile/optional ORCID deferred until after beta.

@@ -337,8 +337,11 @@ function accessLine(a: AccountStatus): string {
 function Account({ account, onAccount }: { account: AccountStatus | null; onAccount(a: AccountStatus): void }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [code, setCode] = useState('')
-  const [busy, setBusy] = useState<'' | 'signin' | 'signup' | 'signout' | 'unlock'>('')
+  const [busy, setBusy] = useState<'' | 'signin' | 'signup' | 'signout' | 'unlock' | 'forgot' | 'resend' | 'change'>('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -385,6 +388,29 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
       },
       t('settings.err_code')
     )
+  const sendAccountEmail = (kind: 'forgot' | 'resend') =>
+    run(kind, async () => {
+      if (kind === 'forgot') await window.humanstudy.account.forgotPassword(email.trim())
+      else await window.humanstudy.account.resendConfirmation(email.trim())
+      setNotice(t('settings.email_sent'))
+    }, kind === 'forgot' ? t('settings.err_forgot') : t('settings.err_resend'))
+  const changePassword = () => {
+    if (newPassword.length < 8 || newPassword.length > 128) {
+      setError(t('settings.err_password_length'))
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setError(t('settings.err_password_match'))
+      return
+    }
+    void run('change', async () => {
+      onAccount(await window.humanstudy.account.changePassword(currentPassword, newPassword))
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+      setNotice(t('settings.password_changed'))
+    }, t('settings.err_change_password'))
+  }
 
   if (!account)
     return (
@@ -425,6 +451,8 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
             <input
               className="field"
               type="password"
+              name="password"
+              data-private
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
@@ -443,6 +471,14 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
               {busy === 'signin' ? t('settings.signing_in') : t('chat.signin')}
             </button>
           </div>
+          <div className="row-end">
+            <button type="button" className="ghost" disabled={Boolean(busy) || !email.trim()} onClick={() => sendAccountEmail('forgot')}>
+              {busy === 'forgot' ? t('settings.sending') : t('settings.forgot_password')}
+            </button>
+            <button type="button" className="ghost" disabled={Boolean(busy) || !email.trim()} onClick={() => sendAccountEmail('resend')}>
+              {busy === 'resend' ? t('settings.sending') : t('settings.resend_confirmation')}
+            </button>
+          </div>
         </form>
       ) : (
         <>
@@ -451,6 +487,28 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
               {busy === 'signout' ? t('settings.signing_out') : t('settings.sign_out')}
             </button>
           </Row>
+          <details className="unlock-box">
+            <summary>{t('settings.change_password')}</summary>
+            <form className="account-form" onSubmit={(e) => { e.preventDefault(); changePassword() }}>
+              <label>
+                <span className="setting-label">{t('settings.current_password')}</span>
+                <input className="field" type="password" name="current-password" data-private autoComplete="current-password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
+              </label>
+              <label>
+                <span className="setting-label">{t('settings.new_password')}</span>
+                <input className="field" type="password" name="new-password" data-private autoComplete="new-password" minLength={8} maxLength={128} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+              </label>
+              <label>
+                <span className="setting-label">{t('settings.confirm_password')}</span>
+                <input className="field" type="password" name="confirm-password" data-private autoComplete="new-password" minLength={8} maxLength={128} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
+              </label>
+              <div className="row-end">
+                <button type="submit" className="primary" disabled={Boolean(busy) || !currentPassword || !newPassword || !confirmPassword}>
+                  {busy === 'change' ? t('settings.changing_password') : t('settings.change_password')}
+                </button>
+              </div>
+            </form>
+          </details>
           {!account.unlocked && (
             <div className="unlock-box">
               <div className="setting-label">{t('settings.enter_code')}</div>

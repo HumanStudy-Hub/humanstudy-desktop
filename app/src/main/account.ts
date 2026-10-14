@@ -46,6 +46,7 @@ export function getAccount(): Account {
   if (account) return account
   account = createAccount({
     server: process.env.HUMANSTUDY_SERVER?.trim() || DEFAULT_SERVER,
+    authOrigin: import.meta.env.MAIN_VITE_HUMANSTUDY_AUTH_ORIGIN?.trim() || undefined,
     fetch: (input, init) => fetch(input, withBypass(input, init)),
     readStore: (): AccountStore => {
       try {

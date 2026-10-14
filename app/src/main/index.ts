@@ -456,6 +456,11 @@ app.whenReady().then(() => {
   ipcMain.handle('account:signUp', async (_e, email: string, password: string) =>
     afterAccount(await acct.signUp(email, password))
   )
+  ipcMain.handle('account:forgotPassword', (_e, email: string) => acct.forgotPassword(email))
+  ipcMain.handle('account:resendConfirmation', (_e, email: string) => acct.resendConfirmation(email))
+  ipcMain.handle('account:changePassword', async (_e, currentPassword: string, newPassword: string) =>
+    afterAccount(await acct.changePassword(currentPassword, newPassword))
+  )
   ipcMain.handle('account:signOut', async () => afterAccount(await acct.signOut()))
   ipcMain.handle('account:unlock', async (_e, code: string) => {
     await acct.getConfig().catch(() => undefined) // the hosted model list, if reachable

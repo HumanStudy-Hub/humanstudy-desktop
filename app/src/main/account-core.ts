@@ -11,6 +11,7 @@ export interface DesktopConfig {
   supabaseKey: string
   defaultModel: string
   models: string[]
+  authOrigin?: string
 }
 
 interface Session {
@@ -37,6 +38,8 @@ export interface AccountStore {
 
 export interface AccountDeps {
   server: string
+  /** Trusted build-time email callback origin; model access still uses server. */
+  authOrigin?: string
   fetch: typeof fetch
   readStore(): AccountStore
   writeStore(s: AccountStore): void
@@ -60,6 +63,7 @@ const REFRESH_MARGIN_MS = 60_000
 
 export function createAccount(deps: AccountDeps) {
   const server = deps.server.replace(/\/+$/, '')
+  const authOrigin = deps.authOrigin ? validAuthOrigin(deps.authOrigin) : undefined
   const now = (): number => (deps.now ? deps.now() : Date.now())
   let config: DesktopConfig | null = null
 
@@ -103,6 +107,7 @@ export function createAccount(deps: AccountDeps) {
         supabaseKey: c.supabaseKey,
         defaultModel: typeof c.defaultModel === 'string' ? c.defaultModel : '',
         models: Array.isArray(c.models) ? c.models.filter((m): m is string => typeof m === 'string') : [],
+        ...(typeof c.authOrigin === 'string' ? { authOrigin: validAuthOrigin(c.authOrigin) } : {}),
       }
       const store = deps.readStore()
       store.config = config
@@ -121,16 +126,17 @@ export function createAccount(deps: AccountDeps) {
   const cachedConfig = (): DesktopConfig | null => config ?? deps.readStore().config ?? null
 
   // ---- Supabase REST ------------------------------------------------------------------
-  async function supabase(path: string, body: unknown, bearer?: string): Promise<Record<string, unknown>> {
+  async function supabase(path: string, body: unknown, bearer?: string, method = 'POST'): Promise<Record<string, unknown>> {
     const c = await getConfig()
     const res = await deps.fetch(`${c.supabaseUrl}/auth/v1/${path}`, {
-      method: 'POST',
+      method,
       headers: {
         apikey: c.supabaseKey,
         'content-type': 'application/json',
         ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(15_000),
     })
     const text = await res.text()
     let json: Record<string, unknown> = {}
@@ -213,7 +219,8 @@ export function createAccount(deps: AccountDeps) {
     const e = (email ?? '').trim()
     if (!e || !password) throw new AccountError('Enter your email and password.')
     // The website confirms the address at /auth/confirm (allowed in Supabase Auth redirect URLs).
-    const json = await supabase(`signup?redirect_to=${encodeURIComponent(`${server}/auth/confirm`)}`, { email: e, password })
+    const origin = authOrigin || (await getConfig()).authOrigin || server
+    const json = await supabase(`signup?redirect_to=${encodeURIComponent(`${origin}/auth/confirm`)}`, { email: e, password })
     // With email confirmation on, Supabase returns the user without a session.
     const s = sessionFrom(json, e)
     if (s) {
@@ -221,6 +228,47 @@ export function createAccount(deps: AccountDeps) {
       return { needsConfirmation: false }
     }
     return { needsConfirmation: true }
+  }
+
+  async function accountEmail(email: string, kind: 'recover' | 'resend'): Promise<void> {
+    const e = (email ?? '').trim()
+    if (e.length > 254 || !/^\S+@\S+\.\S+$/.test(e)) throw new AccountError('Enter a valid email address.', 'invalid_email')
+    const origin = authOrigin || (await getConfig()).authOrigin || server
+    const redirect = `${origin}/auth/${kind === 'recover' ? 'reset' : 'confirm'}`
+    try {
+      await supabase(`${kind}?redirect_to=${encodeURIComponent(redirect)}`, { email: e, ...(kind === 'resend' ? { type: 'signup' } : {}) })
+    } catch (err) {
+      // Same response for absent accounts and already-confirmed emails. Real delivery
+      // failures and rate limits stay visible; never pretend a failed request was sent.
+      if (err instanceof AccountError && ['user_not_found', 'email_already_confirmed'].includes(err.code || '')) return
+      throw err
+    }
+  }
+  const forgotPassword = (email: string): Promise<void> => accountEmail(email, 'recover')
+  const resendConfirmation = (email: string): Promise<void> => accountEmail(email, 'resend')
+
+  async function changePassword(currentPassword: string, newPassword: string): Promise<AccountStatus> {
+    const initial = getSession()
+    if (!initial) throw new AccountError('Sign in first.', 'not_signed_in')
+    if (!currentPassword) throw new AccountError('Enter your current password.', 'invalid_current_password')
+    if (typeof newPassword !== 'string' || newPassword.length < 8 || newPassword.length > 128)
+      throw new AccountError('Use a password between 8 and 128 characters.', 'invalid_password')
+    // Explicit reauthentication also works on Auth deployments predating current_password.
+    let verified: Record<string, unknown>
+    try { verified = await supabase('token?grant_type=password', { email: initial.email, password: currentPassword }) }
+    catch (err) {
+      if (err instanceof AccountError && ['invalid_credentials', 'invalid_grant', '400'].includes(err.code || ''))
+        throw new AccountError('Your current password is incorrect.', 'invalid_current_password')
+      throw err
+    }
+    const next = sessionFrom(verified, initial.email)
+    if (!next || next.email.toLowerCase() !== initial.email.toLowerCase()) throw new AccountError('Could not verify your account.', 'authentication_failed')
+    const current = getSession()
+    if (!current || current.accessToken !== initial.accessToken) throw new AccountError('Your account changed. Please try again.', 'account_changed')
+    await supabase('user', { password: newPassword }, next.accessToken, 'PUT')
+    // A concurrent sign-out must never be undone by this asynchronous operation.
+    if (getSession()?.accessToken === initial.accessToken) writeSecret('session', next)
+    return status()
   }
 
   async function signOut(): Promise<AccountStatus> {
@@ -295,7 +343,14 @@ export function createAccount(deps: AccountDeps) {
     return { supabaseUrl: c.supabaseUrl, supabaseKey: c.supabaseKey, accessToken: token, userId: jwtSub(token) }
   }
 
-  return { status, signIn, signUp, signOut, unlock, getConfig, hostedAccess, restAuth }
+  return { status, signIn, signUp, signOut, forgotPassword, resendConfirmation, changePassword, unlock, getConfig, hostedAccess, restAuth }
+}
+
+function validAuthOrigin(raw: string): string {
+  const url = new URL(raw)
+  if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) || url.username || url.password || url.search || url.hash || url.pathname !== '/')
+    throw new Error('Invalid auth origin')
+  return url.origin
 }
 
 export type Account = ReturnType<typeof createAccount>
