@@ -7,8 +7,8 @@ import { open, rename, rm, stat } from 'node:fs/promises'
 // The HumanStudy edition of opencode (github.com/HumanStudy-Hub/opencode, see its HUMANSTUDY.md).
 // KERNEL_TAG is the release tag, KERNEL_VERSION the upstream semver `opencode --version` reports
 // (`opencode-humanstudy <semver>`); they differ for a second build such as hs-v1.18.21-2.
-export const KERNEL_TAG = 'hs-v1.18.21'
-export const KERNEL_VERSION = '1.18.21'
+export const KERNEL_TAG = 'hs-v1.19.0'
+export const KERNEL_VERSION = '1.19.0'
 export const RELEASE_BASE = `https://github.com/HumanStudy-Hub/opencode/releases/download/${KERNEL_TAG}`
 export const CHECKSUM_FILE = 'SHA256SUMS.txt'
 

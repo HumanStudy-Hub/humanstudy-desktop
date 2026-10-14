@@ -88,7 +88,7 @@ if (!('humanstudy' in window)) {
 
   // ?install=1 simulates the first-run kernel download; ?install=error fails it until Retry.
   const installMode = new URLSearchParams(location.search).get('install')
-  let installStatus: KernelInstallStatus = { state: 'ready', version: '1.18.21', path: '/preview/opencode' }
+  let installStatus: KernelInstallStatus = { state: 'ready', version: '1.19.0', path: '/preview/opencode' }
   const installListeners = new Set<(s: KernelInstallStatus) => void>()
   let finishInstall: () => void = () => undefined
   let installReady: Promise<void> = Promise.resolve()
@@ -98,20 +98,20 @@ if (!('humanstudy' in window)) {
   }
   const runInstall = (fail: boolean) => {
     installReady = new Promise<void>((resolve) => (finishInstall = resolve))
-    setInstall({ state: 'checking', version: '1.18.21' })
+    setInstall({ state: 'checking', version: '1.19.0' })
     let pct = 0
     const tick = window.setInterval(() => {
       pct += 7
       if (fail && pct >= 43) {
         window.clearInterval(tick)
-        return setInstall({ state: 'error', version: '1.18.21', error: 'network connection lost (sha256 not checked)' })
+        return setInstall({ state: 'error', version: '1.19.0', error: 'network connection lost (sha256 not checked)' })
       }
       if (pct >= 100) {
         window.clearInterval(tick)
-        setInstall({ state: 'ready', version: '1.18.21', percent: 100, path: '/preview/opencode' })
+        setInstall({ state: 'ready', version: '1.19.0', percent: 100, path: '/preview/opencode' })
         return finishInstall()
       }
-      setInstall({ state: 'downloading', version: '1.18.21', percent: pct })
+      setInstall({ state: 'downloading', version: '1.19.0', percent: pct })
     }, 700)
   }
   const menuListeners = new Set<(c: MenuCommand) => void>()
@@ -752,7 +752,7 @@ def intentional(harm: float, help_: float) -> float:
         retry: async () => runInstall(false),
       },
     },
-    app: { info: async () => ({ version: '0.1.0', platform: 'preview', arch: 'preview', kernelPath: '/preview/kernel/1.18.21/agent', home: '/Users/preview', devKeys: query.has('devkeys') }) },
+    app: { info: async () => ({ version: '0.1.0', platform: 'preview', arch: 'preview', kernelPath: '/preview/kernel/1.19.0/agent', home: '/Users/preview', devKeys: query.has('devkeys') }) },
     menu: {
       onCommand: (cb) => {
         menuListeners.add(cb)
