@@ -40,3 +40,17 @@ export function amberCounts(program: HumanProgram, studyId: string): AmberCounts
   }
   return { bySection, total, first };
 }
+
+export type AmberItem = { key: string; sectionId: string; /** Node id, or `flow:<stepId>` for a step rule. */ entity: string; fieldId: string };
+/** Every open field in document order (each once, under the first section that shows it). */
+export function amberItems(program: HumanProgram, studyId: string, sections: Section[] = SECTIONS): AmberItem[] {
+  const seen = new Set<string>(), out: AmberItem[] = [];
+  for (const sec of sections) for (const key of sectionNeeds(program, sec, studyId)) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const flow = key.startsWith('flow:');
+    const rest = flow ? key.slice(5) : key, cut = rest.lastIndexOf(':');
+    out.push({ key, sectionId: sec.id, entity: flow ? `flow:${rest.slice(0, cut)}` : rest.slice(0, cut), fieldId: rest.slice(cut + 1) });
+  }
+  return out;
+}

@@ -13,6 +13,7 @@ import brokenProgram from '../shared/fixtures/fce-broken.json'
 //   ?build=hold       "Build the study from the paper" stalls while the agent is still reading (to look at the working state)
 //   ?agent=1          signed in, unlocked, agreement accepted, so the agent can be used
 //   ?lang=zh|en       sets the interface language (stored like Settings → Language)
+//   ?program=real     the project in public/preview/real/ (local only; see below)
 //   ?fresh=1          no seeded conversations;  ?install=1|error, ?declined=1, ?devkeys=1, ?folderError=1 as before
 if (!('humanstudy' in window)) {
   try {
@@ -127,14 +128,19 @@ if (!('humanstudy' in window)) {
   ;(window as unknown as { __menu: (c: MenuCommand) => void }).__menu = (c) => menuListeners.forEach((cb) => cb(c))
   if (installMode) setTimeout(() => runInstall(installMode === 'error'), 0)
   const mode = new URLSearchParams(location.search).get('project')
+  // ?program=real: a researcher's own project copied into public/preview/real/ (program.json + paper.pdf,
+  // git-ignored, never committed). Loaded synchronously because the snapshot is built synchronously.
+  const real = new URLSearchParams(location.search).get('program') === 'real' ? (() => {
+    try { const r = new XMLHttpRequest(); r.open('GET', '/preview/real/program.json', false); r.send(); return r.status === 200 ? JSON.parse(r.responseText) : null } catch { return null }
+  })() : null
   const buildMode = new URLSearchParams(location.search).get('build')
   const snapshot: ProjectSnapshot = {
     dir: '/preview/knobe-2003',
     name: mode === 'empty' ? 'Untitled study' : 'Knobe 2003 · browser preview',
-    program: mode === 'empty' ? null : new URLSearchParams(location.search).get('program') === 'broken' ? brokenProgram : sample, // ?program=broken: a program with agent slips
+    program: mode === 'empty' ? null : real ?? (new URLSearchParams(location.search).get('program') === 'broken' ? brokenProgram : sample), // ?program=broken: a program with agent slips
     artifacts: [],
     exports: [],
-    pdf: { name: 'paper.pdf', path: '/preview/paper.pdf', url: '/preview/paper.pdf', ext: 'pdf' },
+    pdf: { name: 'paper.pdf', path: '/preview/paper.pdf', url: real ? '/preview/real/paper.pdf' : '/preview/paper.pdf', ext: 'pdf' },
     tree: [],
   }
   // Files of the preview project, editable in memory so the Program tab can be tried out.
@@ -149,7 +155,7 @@ if (!('humanstudy' in window)) {
   }
   const html = (title: string, body: string) => `<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font:14px system-ui;padding:24px;color:#263d46">${body}`
   if (mode !== 'empty') {
-    put('program.json', JSON.stringify(sample, null, 2) + '\n', 30)
+    put('program.json', JSON.stringify(real ?? sample, null, 2) + '\n', 30)
     put('artifacts/participant-flow.html', html('Participant flow', '<h1 style="font-size:22px">Participant flow</h1><div style="display:flex;gap:10px;align-items:center;margin-top:20px"><b style="border:2px solid #247c91;border-radius:8px;padding:12px 16px">Read scenario</b>&rarr;<b style="border:2px solid #247c91;border-radius:8px;padding:12px 16px">Harm / Help</b>&rarr;<b style="border:2px solid #247c91;border-radius:8px;padding:12px 16px">Judge intentionality</b></div><p>A view the agent wrote (preview).</p>'), 12)
     put('artifacts/2026-10-11-change.md', '# Changes to the study\n\n- material-1-harm: wording corrected to match p. 2.\n- participants: N = 78 now cited.\n', 60 * 20)
   }

@@ -9,7 +9,10 @@ const out = mkdtempSync(join(tmpdir(), 'protocol-review-'))
 await build({ stdin: { contents: `
   import { createElement } from 'react';
   import { renderToStaticMarkup } from 'react-dom/server';
-  import Document, { viewStudies } from './program/ProgramDocument';
+  import Document, { viewStudies } from './program/StudyModel';
+  export { quoteRects, findQuote } from '../shared/source-anchor';
+  export { reviewIssues, stage } from './program/model';
+  export { amberItems } from './program/missing';
   export { viewStudies };
   export { sourceTarget } from '../shared/source-target';
   export { sourceRefs } from '../shared/program-view';
@@ -38,6 +41,7 @@ assert.ok(R.viewStudies(program).some(st => st.id === analysis.id))
 const html = R.render(program, analysis.id, 'study')
 assert.ok(html.includes('The original follow-up finding'), 'analysis results must remain readable without procedure steps')
 assert.ok(!html.includes('data-section="simulation"'), 'scope is separate from the study document')
+for (const n of ['01','02','03','04','05','06','07','08','09','10','11']) assert.ok(html.includes(`>${n}</span>`), `section ${n} is shown as a stage`)
 assert.ok(R.render(program, analysis.id, 'simulation').includes('data-section="simulation"'))
 
 const paper = { path:'/p/paper.pdf', name:'paper.pdf', ext:'pdf', url:'hsfile://paper' }
@@ -68,5 +72,22 @@ assert.equal(R.requestsSimulation('不要模拟'),false)
 const material = {...scoped.nodes[0],id:'material',kind:'material',fields:[{...fields[0],id:'instructions',value:null,state:'missing'}]}
 const p2={...sample,nodes:[material],steps:[]}
 assert.deepEqual(R.sectionNeeds(p2,R.SECTIONS.find(s=>s.id==='procedure'),sample.studies[0].id),['material:instructions'])
+
+// Quote boxes: whitespace, punctuation and line-break hyphens do not hide a quote; nothing is invented.
+const words = 'If susceptibility to anchoring is associated with low confi- dence, the correlation between'.split(' ').map((w,i)=>({t:w,x:i*5,y:10,w:4,h:2}))
+assert.ok(R.quoteRects(words,'associated with low confidence, the correlation').length===1, 'hyphenated quote boxed as one line')
+assert.deepEqual(R.quoteRects(words,'a sentence that is not on this page at all'),[])
+const two=[{page:1,words:[{t:'nothing',x:0,y:0,w:1,h:1}]},{page:2,words}]
+assert.equal(R.findQuote(two,'susceptibility to anchoring is associated',1).page,2, 'a quote on another page is found there')
+assert.equal(R.findQuote(two,'not here at all, anywhere',1),null)
+
+// Review questions: the agent's issues first by severity, then every amber field not already covered.
+const amberProgram={...sample,nodes:[material,...sample.nodes],issues:[{id:'i1',title:'Check',severity:'check',reason:'r',impact:'',suggestedAction:'',evidenceIds:[]},{id:'i2',title:'Block',severity:'blocking',reason:'r',impact:'',suggestedAction:'',evidenceIds:[]}]}
+const qs=R.reviewIssues(amberProgram,sample.studies[0].id,R.SECTIONS)
+assert.equal(qs[0].id,'i2')
+assert.ok(qs.some(q=>q.amber&&q.entity==='material'&&q.fieldId==='instructions'), 'amber field listed as a question to fill')
+assert.deepEqual(R.amberItems(amberProgram,sample.studies[0].id,R.SECTIONS).map(a=>[a.entity,a.fieldId]).filter(([e])=>e==='material'),[['material','instructions']])
+const st=R.stage(sample,R.SECTIONS.find(s=>s.id==='procedure'),sample.studies[0].id)
+assert.ok(st.flow.length>0, 'procedure drawn as a flow')
 rmSync(out,{recursive:true,force:true})
 console.log('protocol, source routing, scope review and full quote regressions passed')

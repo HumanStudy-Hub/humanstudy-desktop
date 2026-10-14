@@ -1,1 +1,1 @@
-export { default as ProgramDocument, viewStudies, defaultIssuesFor, type ProgramDocumentProps, type SourceRef } from './ProgramDocument';
+export { default as StudyModel, viewStudies, type StudyModelProps, type SourceRef, type QuoteStatus } from './StudyModel';

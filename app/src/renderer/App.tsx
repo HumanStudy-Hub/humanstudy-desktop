@@ -186,10 +186,11 @@ export default function App() {
     track('settings.opened', { target: section })
     setSettingsOpen(section)
   }
-  // A click toggles the item in the selection, so several items can be picked and asked about together.
+  // A click selects one item (and opens its details); Shift-click adds or removes it, so several
+  // items can be picked and asked about together (web build-preview study model).
   const pick = (id: string, extend: boolean) => {
     track('program.item_pick', { target: id, metadata: { extend } })
-    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))
+    setSelected((s) => (extend ? (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]) : [id]))
   }
   const firstSelection = useRef(true)
   useEffect(() => {
@@ -383,7 +384,6 @@ export default function App() {
               simulationRequest={simulationRequest}
               onRunSimulation={approval => { track('simulation.scope_approved'); setSimulationRequest(null); sendInWorkspace(approval, session.enqueue); setPane('agent', true) }}
               selectedIds={selected}
-              selectedItems={selectedItems}
               onClearSelection={() => setSelected([])}
               onAskSelection={askSelection}
               onPrefill={prefill}

@@ -1,18 +1,19 @@
 // The right pane: Study (the 12-section document) and Paper, plus any file the researcher or the agent
 // opens as another tab, like an artifact panel. A Files sidebar (hidden by default, ⌘B) lists the folder.
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
-import ProgramDocument, { viewStudies, type ProgramDocumentProps } from '../program/ProgramDocument'
+import StudyModel, { viewStudies, type QuoteStatus, type StudyModelProps } from '../program/StudyModel'
 import { readHumanProgram, validateHumanProgram, type HumanProgram } from '../../shared/human-program'
 import type { ProjectEntry, ProjectSnapshot, WorkspaceContext } from '../../preload/types'
 import { lap, track } from '../telemetry'
 import { FileView } from './FileView'
 import { Explorer, flatten } from './Explorer'
-import { SourceDrawer, type SourceRef } from './SourceDrawer'
-import type { SelectedItem } from '../program/labels'
+import { SourceDrawer, type PassageSelection, type SourceRef } from './SourceDrawer'
 import { t } from '../i18n'
 import { sourceTarget } from '../../shared/source-target'
 import { simulationScope } from '../../shared/simulation-scope'
 import { sourceFocus } from '../../shared/workspace-context'
+import { supportedBy } from '../../shared/program-view'
+import { quoteKey } from '../../shared/source-anchor'
 
 export type MainTab = 'study' | 'paper' | 'simulation'
 type TabId = MainTab | `file:${string}`
@@ -47,10 +48,9 @@ async function approveSimulation(dir: string, program: HumanProgram, studyId: st
   return `[Simulation scope approved]\n${JSON.stringify({ programId: program.id, programHash: hash, hashFormat: 'program.json UTF-8 file bytes', studyId, scope: scope.fields })}\n${request}`
 }
 
-interface Props extends Pick<ProgramDocumentProps, 'selectedIds' | 'onPick' | 'onSource' | 'onAsk' | 'onPrefill'> {
+interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSource' | 'onAsk' | 'onPrefill'> {
   ref?: Ref<WorkbenchHandle>
   project: ProjectSnapshot
-  selectedItems: SelectedItem[]
   source: SourceRef | null
   onClearSelection(): void
   /** Focus the composer with the current selection attached. */
@@ -82,7 +82,7 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, selectedItems, source, onClearSelection, onAskSelection, onFixProgram, onFold, simulationRequest, onRunSimulation, onWorkspaceChange, ...docProps }: Props) {
+export function Workbench({ ref, project, source, onClearSelection, onAskSelection, onFixProgram, onFold, simulationRequest, onRunSimulation, onWorkspaceChange, ...docProps }: Props) {
   // Tolerant: one slip by the agent sets that detail aside and the document still renders.
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
@@ -105,6 +105,10 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
   const sourceFile = source ? sourceTarget(project, source) : project.pdf
   const sourcePdf = sourceFile?.ext === 'pdf' && sourceFile.url ? sourceFile as import('../../preload/types').ProjectFile : null
   const [sourcePage, setSourcePage] = useState<{ path: string; page: number } | null>(null)
+  // What the paper found for each citation it opened, and the passage the reader selected there.
+  const [quoteStatus, setQuoteStatus] = useState<ReadonlyMap<string, QuoteStatus>>(() => new Map())
+  const [passage, setPassage] = useState<PassageSelection | null>(null)
+  const support = useMemo(() => passage && program ? { page: passage.page, ids: supportedBy(program, passage) } : null, [passage, program])
 
   // Project switch: restore its tabs.
   useEffect(() => {
@@ -112,6 +116,8 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
     setDirty(new Set())
     setChanged(new Set())
     setEditError('')
+    setQuoteStatus(new Map())
+    setPassage(null)
   }, [project.dir])
 
   const update = useCallback(
@@ -313,26 +319,14 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
           {(active === 'study' || active === 'simulation') &&
             (program ? (
               <>
-                {studies.length > 1 && (
-                  <div className="study-picker">
-                    <label className="muted small">
-                      {t('study.which')}{' '}
-                      <select value={studyId} onChange={(e) => update((l) => ({ ...l, study: e.target.value }))}>
-                        {studies.map((st) => (
-                          <option key={st.id} value={st.id}>
-                            {st.title}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                )}
                 <StudyView
                   view={active === 'simulation' ? 'simulation' : 'study'}
                   program={program}
                   studyId={studyId}
-                  storageKey={project.dir}
-                  selectedItems={selectedItems}
+                  onStudy={(id) => update((l) => ({ ...l, study: id }))}
+                  support={compare ? support : null}
+                  onClearSupport={() => { window.getSelection()?.removeAllRanges(); setPassage(null) }}
+                  quoteStatus={quoteStatus}
                   onClearSelection={onClearSelection}
                   onAskSelection={onAskSelection}
                   editError={editError}
@@ -348,7 +342,7 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
                 />
                 {active === 'simulation' && (() => {
                   const scope = simulationScope(program, studyId)
-                  return <div className="pad">
+                  return <div className="pad simulation-approve">
                     <p>{t('simulation.boundary')}</p>
                     {!scope.ready && <p className="muted">{t('simulation.incomplete')}</p>}
                     {simulationRequest && <p>{simulationRequest}</p>}
@@ -393,7 +387,13 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
             <div className="wb-paper" hidden={active !== 'paper' && !compare}>
               {sourceFile && sourceFile.ext !== 'pdf' && 'rel' in sourceFile
                 ? <FileView key={sourceFile.path} file={sourceFile} dir={project.dir} version={project.tree} onDirty={markDirty} />
-                : <SourceDrawer pdf={sourcePdf} source={source ?? DEFAULT_SOURCE} closeLabel={compare ? t('wb.close_source') : undefined} onClose={() => update(l => ({ ...l, active: 'study', compare: false }))} onPageChange={page => { if (sourceFile) setSourcePage({ path: sourceFile.path, page }) }} />}
+                : <SourceDrawer pdf={sourcePdf} source={source ?? DEFAULT_SOURCE} closeLabel={compare ? t('wb.close_source') : undefined}
+                    onClose={() => update(l => ({ ...l, active: 'study', compare: false }))}
+                    onPageChange={page => { if (sourceFile) setSourcePage({ path: sourceFile.path, page }) }}
+                    onQuote={(ref, result) => setQuoteStatus(m => new Map(m).set(quoteKey(ref.page, ref.quote), result))}
+                    onSelect={setPassage}
+                    supportCount={program && passage ? support?.ids.length ?? 0 : null}
+                    onAskPassage={sel => docProps.onPrefill?.(t('paper.passage_draft', { n: sel.page, q: sel.text }))} />}
             </div>
           )}
         </div>
@@ -403,43 +403,24 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
   )
 }
 
-type StudyViewProps = Pick<ProgramDocumentProps, 'selectedIds' | 'onPick' | 'onSource' | 'onAsk' | 'onPrefill' | 'onEdit' | 'changedIds' | 'storageKey' | 'view'> & {
-  program: HumanProgram
-  studyId: string
-  selectedItems: SelectedItem[]
-  onClearSelection(): void
-  onAskSelection(): void
+type StudyViewProps = StudyModelProps & {
   editError: string
   problems: string[]
   onFix(): void
 }
 
-function StudyView({ program, studyId, selectedItems, onClearSelection, onAskSelection, editError, problems, onFix, ...docProps }: StudyViewProps) {
-  const n = selectedItems.length
+/** The study model, with the notices about program.json that sit above it. */
+function StudyView({ editError, problems, onFix, ...modelProps }: StudyViewProps) {
   return (
-    <div className="doc-scroll study-scroll">
-      {n > 0 && (
-        <div className="selection-bar" role="status">
-          <span>
-            {t('study.selected', { n })}
-            <span className="selection-names"> · {selectedItems.map((i) => i.title).join(', ')}</span>
-          </span>
-          <button className="link" onClick={onAskSelection}>
-            {t('study.ask_selection')}
-          </button>
-          <button className="link muted" onClick={onClearSelection}>
-            {t('chat.clear')}
-          </button>
-        </div>
-      )}
+    <>
       {problems.length > 0 && (
         <p className="muted small program-notice" role="status" title={problems.join('\n')}>
           {t('study.problems', { n: problems.length })} · <button className="link" onClick={onFix}>{t('study.fix')}</button>
         </p>
       )}
       {editError && <div className="part error edit-error">{editError}</div>}
-      <ProgramDocument program={program} studyId={studyId} {...docProps} />
-    </div>
+      <StudyModel {...modelProps} />
+    </>
   )
 }
 
