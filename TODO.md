@@ -161,3 +161,12 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
 - [~] Checklist 9: Settings / native Help menu, private owner-scoped support queue and UUID receipts implemented; 6 tests pass. App details opt-in only. Team notification email/contact address and live user submission acceptance pending; team can process support_requests in Supabase dashboard.
 - [ ] Remaining agreed beta items: see docs/beta-execution-checklist-2026-10-14.md.
 - Owner excludes original items 4, 6, 14, 15; later authorized Apple notarization (13), now completed for the beta installer. Profile/optional ORCID deferred until after beta.
+
+## 2026-10-14 recovery and sample follow-up
+
+- [x] Repair missed OpenCode events after connection loss from native saved state; no task/tool resubmission for transport recovery. Dedupe text/tool/usage; retain question/permission decisions and Stop.
+- [x] Budget recovery progress gate uses visible text or a completed tool, not token counts alone.
+- [x] Editable desktop sample includes the actual PDF, four exact material JSONs and a short README walkthrough; packaged resource paths tested; preserve existing researcher edits.
+- [~] Checklist 18: connection and output-limit recovery verified with installed OpenCode + local model fixtures; live hosted-owner dogfood remains pending.
+- [~] Checklist 17: offline sample assets and README guidance complete; full first-use UI walkthrough and real-paper end-to-end owner acceptance remain pending.
+- Validation: 61 regression checks, native kernel fixture runs, TypeScript and build pass. See docs/recovery-sample-2026-10-14.md.

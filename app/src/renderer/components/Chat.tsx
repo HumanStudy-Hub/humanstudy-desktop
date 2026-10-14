@@ -182,7 +182,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
   const tools = session.messages.filter(m => m.role === 'assistant').at(-1)?.parts.filter((p): p is Extract<Part, { kind: 'tool' }> => p.kind === 'tool') ?? []
   const activity = researchActivity(tools, projectDir)
   const runningTool = tools.some(p => p.state === 'pending' || p.state === 'running')
-  const statusLine = session.waitingForQuestion ? t('question.waiting') : session.waitingForPermission ? t('chat.waiting_perm') : session.busy ? (session.status === 'recovering' ? t('activity.recovery') : runningTool ? '' : t(activity.key, activity.vars)) : session.status === 'aborted' ? '' : session.status
+  const statusLine = session.waitingForQuestion ? t('question.waiting') : session.waitingForPermission ? t('chat.waiting_perm') : session.busy ? (session.status === 'recovering' ? t('activity.recovery') : session.status === 'reconnecting' ? t('activity.reconnecting') : runningTool ? '' : t(activity.key, activity.vars)) : session.status === 'aborted' ? '' : session.status
   const u = session.usage
   const lastAssistant = session.messages.length ? session.messages[session.messages.length - 1].id : -1
 

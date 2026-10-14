@@ -1,9 +1,10 @@
-import { shell } from 'electron'
+import { app, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import sampleProgram from '../shared/sample-program.json'
 import { installPack } from './pack'
+import { installSampleAssets } from './sample-project'
 import { ensureProjectsRoot, getSettings } from './settings'
 import type { ProjectSummary } from '../preload/types'
 
@@ -107,6 +108,9 @@ export async function listProjects(): Promise<ProjectSummary[]> {
 }
 
 export async function createProject(input: { name: string; pdfPath?: string; sample?: boolean }): Promise<string> {
+  if (input?.sample && input?.pdfPath) {
+    throw new Error('Cannot create a sample project and import a PDF in the same operation; choose one source paper.')
+  }
   const root = ensureProjectsRoot()
   let name = (input?.name ?? '').trim()
   const sample = Boolean(input?.sample)
@@ -117,10 +121,16 @@ export async function createProject(input: { name: string; pdfPath?: string; sam
   await mkdir(join(dir, 'artifacts'), { recursive: true })
   await mkdir(join(dir, 'exports'), { recursive: true })
   await mkdir(join(dir, '.humanstudy'), { recursive: true })
-  await writeFile(join(dir, MARKER), JSON.stringify({ format: 1, createdAt: new Date().toISOString() }, null, 2) + '\n')
   if (input?.pdfPath) await copyFile(resolve(input.pdfPath), join(dir, 'paper.pdf'))
-  if (sample) await writeFile(join(dir, 'program.json'), JSON.stringify(sampleProgram, null, 2) + '\n')
+  if (sample) {
+    const sourceDir = app.isPackaged
+      ? join(process.resourcesPath, 'sample')
+      : join(app.getAppPath(), 'resources', 'sample')
+    await installSampleAssets(sourceDir, dir)
+    await writeFile(join(dir, 'program.json'), JSON.stringify(sampleProgram, null, 2) + '\n')
+  }
   await installPack(dir)
+  await writeFile(join(dir, MARKER), JSON.stringify({ format: 1, createdAt: new Date().toISOString() }, null, 2) + '\n')
   return dir
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "humanstudy-desktop",
-  "version": "0.5.3-beta.2",
+  "version": "0.5.3-beta.3",
   "private": true,
   "description": "HumanStudy Hub desktop app: opencode for social scientists",
   "main": "out/main/index.js",
@@ -48,6 +48,12 @@
     "files": [
       "out/**",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/sample",
+        "to": "sample"
+      }
     ],
     "publish": [
       {

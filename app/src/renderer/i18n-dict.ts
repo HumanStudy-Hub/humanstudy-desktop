@@ -25,6 +25,7 @@ const ROWS: Row[] = [
   ['activity.results', 'Reviewing the analysis outputs', '正在检查分析输出'],
   ['activity.thinking', 'Working through the research question', '正在梳理研究问题'],
   ['activity.recovery', 'Adjusting the plan from saved work', '正在检查已保存内容，调整后续步骤'],
+  ['activity.reconnecting', 'Reconnecting to your saved work', '正在重新连接，恢复已保存内容'],
   ['tool.simulating', 'Running the approved simulation', '正在执行已确认的模拟'],
   ['tool.clarifying', 'Preparing a question for you', '正在整理需要你确认的问题'],
   // ---- app shell
@@ -322,7 +323,7 @@ const ROWS: Row[] = [
   ['home.cancel', 'Cancel', '取消'],
   ['home.create', 'Create', '创建'],
   ['home.sample', 'Sample · Knobe 2003', '示例 · Knobe 2003'],
-  ['home.sample_hint', 'The side-effect effect, ready to explore.', '“副作用效应”，可直接体验。'],
+  ['home.sample_hint', 'An editable study with its paper and materials included.', '包含论文和资料的可编辑研究。'],
   ['home.choose_folder', 'Choose folder…', '选择文件夹…'],
   ['home.results_for', 'Results for “{q}”', '“{q}”的搜索结果'],
   ['home.recent', 'Recent projects', '最近的项目'],

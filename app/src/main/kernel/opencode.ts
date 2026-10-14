@@ -88,6 +88,17 @@ function freePort(): Promise<number> {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
+interface NativeMessage {
+  info: {
+    id: string
+    role: string
+    time?: { created?: number; completed?: number }
+    error?: { name?: string; data?: { message?: string } }
+    [key: string]: unknown
+  }
+  parts?: Array<{ id: string; type: string; [key: string]: unknown }>
+}
+
 interface Server {
   dir: string
   proc: ChildProcess
@@ -97,6 +108,7 @@ interface Server {
   connected: Promise<void>
   exited: boolean
   stderrTail: string
+  eventsOnline: boolean
 }
 
 interface SessionState {
@@ -107,6 +119,10 @@ interface SessionState {
   emitted: Map<string, number> // text partID -> chars already emitted
   toolStatus: Map<string, string> // tool partID -> last emitted status
   usageSent: Set<string> // assistant messageIDs whose usage was already emitted
+  turnBaseline: Set<string>
+  snapshotParts: Set<string>
+  awaitingAssistant: boolean
+  failed: boolean
   pendingPermissions: Map<string, KernelPermission>
   recovery: { epoch: number; attempts: number; pending: boolean; running: boolean; cancelled: boolean; progress: boolean }
   title: string // last session title emitted
@@ -133,6 +149,9 @@ export class OpencodeKernel implements Kernel {
   private live = new Set<Server>()
   private sessions = new Map<string, SessionState>()
   private disposed = false
+  private catchingUp = new Set<Server>()
+  private syncLoops = new Set<Server>()
+  private reconnectIntervalMs = 1000
   private binary: string
   private home: string
   private provider: string
@@ -174,10 +193,17 @@ export class OpencodeKernel implements Kernel {
     const server = await this.serverFor(projectDir)
     const res = await fetch(server.base + `/session/${encodeURIComponent(sessionId)}`, {
       headers: { authorization: server.auth },
+      signal: AbortSignal.timeout(15_000),
     })
     if (res.status === 404 || res.status === 400) return null
     if (!res.ok) throw new Error(`opencode GET /session/${sessionId} -> ${res.status}`)
     this.register(sessionId, server)
+    // The local thread already contains previous turns. Seed their IDs so a later
+    // connection repair cannot append the entire native history as a new answer.
+    const history = await this.request(server, 'GET', `/session/${encodeURIComponent(sessionId)}/message`)
+    const messages = await history.json() as NativeMessage[]
+    const state = this.session(sessionId)
+    for (const { info } of messages) if (info?.id && info.role) state.roles.set(info.id, info.role)
     return sessionId
   }
 
@@ -190,6 +216,10 @@ export class OpencodeKernel implements Kernel {
       emitted: new Map(),
       toolStatus: new Map(),
       usageSent: new Set(),
+      turnBaseline: new Set(),
+      snapshotParts: new Set(),
+      awaitingAssistant: false,
+      failed: false,
       title: '',
       pendingPermissions: new Map(),
       recovery: { epoch: 0, attempts: 0, pending: false, running: false, cancelled: true, progress: false },
@@ -208,6 +238,7 @@ export class OpencodeKernel implements Kernel {
         method: 'POST',
         headers: { authorization: server.auth, 'content-type': 'application/json' },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15_000),
       })
     let res = await post(`/permission/${encodeURIComponent(permissionId)}/reply`, { reply: response })
     if (res.status === 404 || res.status === 405) {
@@ -249,6 +280,9 @@ export class OpencodeKernel implements Kernel {
 
   async send(sessionId: string, text: string): Promise<void> {
     const s = this.session(sessionId)
+    s.turnBaseline = new Set(s.roles.keys())
+    s.awaitingAssistant = true
+    s.failed = false
     s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, pending: false, running: false, cancelled: false, progress: false }
     s.inFlight = true
     try {
@@ -256,6 +290,7 @@ export class OpencodeKernel implements Kernel {
         parts: [{ type: 'text', text }],
         ...(this.provider ? { model: { providerID: this.provider, modelID: this.model } } : {}),
       })
+      if (s.server.eventsOnline === false) this.beginCatchup(s.server)
     } catch (err) {
       s.inFlight = false
       throw err
@@ -266,6 +301,7 @@ export class OpencodeKernel implements Kernel {
     const s = this.session(sessionId)
     s.recovery.cancelled = true
     s.recovery.pending = false
+    s.awaitingAssistant = false
     await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/abort`)
     // Native abort can leave a question in the server's pending list. Explicitly dismiss
     // those requests, otherwise reopening this conversation resurrects a stopped turn.
@@ -275,7 +311,7 @@ export class OpencodeKernel implements Kernel {
       this.emitter.emit({ sessionId, type: 'question', question: { ...q, resolved: 'rejected' } })
     }
     // session.idle normally emits done; clearing a leftover request must not mark it busy again.
-    if (pending.length && s.inFlight) {
+    if (s.inFlight) {
       s.inFlight = false
       this.emitter.emit({ sessionId, type: 'done' })
     }
@@ -294,6 +330,7 @@ export class OpencodeKernel implements Kernel {
     await Promise.resolve()
     if (this.disposed || r.cancelled || s.recovery.epoch !== epoch) { r.running = false; return }
     this.emitter.emit({ sessionId, type: 'status', text: 'recovering', detail: `Recovery ${attempt}/2: checking saved work and splitting the remaining task into smaller steps.`, input: { attempt, reason: 'output_limit', strategy: 'checkpoints_smaller_units', model: this.model, ...(this.provider === HOSTED_PROVIDER ? { reasoningEffort: 'low' } : {}) } })
+    s.awaitingAssistant = true
     try {
       await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
         ...(this.provider ? { model: { providerID: this.provider, modelID: this.model } } : {}),
@@ -450,6 +487,7 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
       connected: Promise.resolve(),
       exited: false,
       stderrTail: '',
+      eventsOnline: false,
     }
     this.live.add(server)
     const keep = (chunk: Buffer): void => {
@@ -511,7 +549,7 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
     }
   }
 
-  private async request(server: Server, method: string, path: string, body?: unknown): Promise<Response> {
+  private async request(server: Server, method: string, path: string, body?: unknown, timeoutMs = 15_000): Promise<Response> {
     const res = await fetch(server.base + path, {
       method,
       headers: {
@@ -519,6 +557,7 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(timeoutMs),
     })
     if (!res.ok) {
       const msg = (await res.text().catch(() => ''))
@@ -528,6 +567,77 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
   }
 
   // ---- SSE ----------------------------------------------------------------------------
+
+  /** Repair observation only. Never retry prompts, tools, uploads or simulations here. */
+  private beginCatchup(server: Server): void {
+    this.catchingUp.add(server)
+    if (this.syncLoops.has(server)) return
+    this.syncLoops.add(server)
+    void (async () => {
+      let failures = 0
+      try {
+        while (!this.disposed && !server.exited && !server.sse?.signal.aborted) {
+          if (![...this.sessions.values()].some(s => s.server === server && s.inFlight)) break
+          try { await this.restoreSnapshot(server); failures = 0 }
+          catch {
+            if (++failures >= 5) {
+              for (const [sessionId, s] of this.sessions) {
+                if (s.server !== server || !s.inFlight) continue
+                s.recovery.cancelled = true
+                s.recovery.pending = false
+                s.inFlight = false
+                this.emitter.emit({ sessionId, type: 'error', text: 'The connection could not be restored. Received messages and saved files are kept. The study may still be running; reopen this conversation to check its state before sending the task again.' })
+                this.emitter.emit({ sessionId, type: 'done' })
+              }
+              break
+            }
+          }
+          if ([...this.sessions.values()].some(s => s.server === server && s.inFlight)) await sleep(this.reconnectIntervalMs)
+        }
+      } finally { this.syncLoops.delete(server); this.catchingUp.delete(server) }
+    })()
+  }
+
+  private async restoreSnapshot(server: Server): Promise<void> {
+    const active = [...this.sessions].filter(([, s]) => s.server === server && s.inFlight)
+      .map(([id, s]) => ({ id, s, epoch: s.recovery.epoch }))
+    const [statusRes, permissionsRes, questionsRes] = await Promise.all([
+      this.request(server, 'GET', '/session/status', undefined, 5000),
+      this.request(server, 'GET', '/permission', undefined, 5000),
+      this.request(server, 'GET', '/question', undefined, 5000),
+    ])
+    const statuses = await statusRes.json() as Record<string, { type?: string; message?: string }>
+    const permissions = await permissionsRes.json() as Array<Record<string, any>>
+    const questions = await questionsRes.json() as Array<{ id: string; sessionID: string; questions: KernelQuestion['questions'] }>
+    for (const { id: sessionId, s, epoch } of active) {
+      const response = await this.request(server, 'GET', `/session/${encodeURIComponent(sessionId)}/message`, undefined, 5000)
+      const messages = await response.json() as NativeMessage[]
+      if (!s.inFlight || this.sessions.get(sessionId) !== s || s.recovery.epoch !== epoch || this.disposed) continue
+      const current = messages.filter(({ info }) => info?.id && !s.turnBaseline.has(info.id))
+      for (const { info, parts } of current) {
+        // Parts must precede completion: the recovery progress gate needs visible
+        // text or a successful tool, and usage must not suppress the final text.
+        this.handle({ type: 'message.updated', properties: { info: { ...info, sessionID: sessionId, time: { ...info.time, completed: undefined } } } })
+        for (const part of parts ?? []) {
+          if (part.type === 'text' && part.id) s.snapshotParts.add(part.id)
+          this.handle({ type: 'message.part.updated', properties: { part: { ...part, sessionID: sessionId, messageID: info.id } } })
+        }
+        this.handle({ type: 'message.updated', properties: { info: { ...info, sessionID: sessionId } } })
+        if (info.error && !s.failed) this.handle({ type: 'session.error', properties: { sessionID: sessionId, error: info.error } })
+      }
+      const pendingPermissions = permissions.filter(p => p.sessionID === sessionId)
+      for (const p of pendingPermissions) if (!s.pendingPermissions.has(String(p.id))) this.handle({ type: 'permission.asked', properties: p })
+      const pendingQuestions = questions.filter(q => q.sessionID === sessionId)
+      for (const q of pendingQuestions) this.handle({ type: 'question.asked', properties: q })
+      const status = statuses[sessionId]
+      const latest = current.filter(m => m.info.role === 'assistant').at(-1)?.info
+      if ((!status || status.type === 'idle') && !pendingPermissions.length && !pendingQuestions.length && !s.awaitingAssistant && (latest?.time?.completed || s.failed)) {
+        this.handle({ type: 'session.idle', properties: { sessionID: sessionId } })
+      } else if (status && status.type !== 'idle') {
+        this.handle({ type: 'session.status', properties: { sessionID: sessionId, status } })
+      }
+    }
+  }
 
   /** Opens /event; resolves once `server.connected` arrives. Reconnects while the server lives. */
   private openEvents(server: Server): Promise<void> {
@@ -544,15 +654,24 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
             if (!res.ok || !res.body) throw new Error(`/event -> ${res.status}`)
             backoff = 250
             await this.readStream(res.body, (data) => {
-              if (data.type === 'server.connected' && first) {
-                first = false
-                resolve()
+              if (data.type === 'server.connected') {
+                server.eventsOnline = true
+                if (first) { first = false; resolve() }
               }
+              // Once a stream has a gap, use absolute saved parts for the rest of
+              // this turn. Replaying relative deltas over a snapshot duplicates text.
+              if (this.catchingUp.has(server) && /^(message\.|session\.(idle|status)$)/.test(data.type)) return
               this.handle(data)
             })
           } catch (err) {
             if (server.sse.signal.aborted) break
             if (first) return reject(err as Error)
+          }
+          if (!server.exited && !this.disposed && !server.sse.signal.aborted) {
+            server.eventsOnline = false
+            for (const [sessionId, s] of this.sessions) if (s.server === server && s.inFlight)
+              this.emitter.emit({ sessionId, type: 'status', text: 'reconnecting' })
+            this.beginCatchup(server)
           }
           await sleep(backoff)
           backoff = Math.min(backoff * 2, 5000)
@@ -570,7 +689,7 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
     for (;;) {
       const { value, done } = await reader.read()
       if (done) return
-      buf += dec.decode(value, { stream: true }).replace(/\r\n/g, '\n')
+      buf = (buf + dec.decode(value, { stream: true })).replace(/\r\n/g, '\n')
       let idx: number
       while ((idx = buf.indexOf('\n\n')) >= 0) {
         const frame = buf.slice(0, idx)
@@ -614,6 +733,7 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
       case 'message.updated': {
         const info = p.info
         if (info?.role === 'assistant' && !s.roles.has(info.id)) {
+          s.awaitingAssistant = false
           s.recovery.running = false
           s.recovery.pending = false // a native next step supersedes the queued adjustment
         }
@@ -631,7 +751,6 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
               cost: typeof info.cost === 'number' ? info.cost : undefined,
             },
           })
-          if (Number(t.output) > 0) s.recovery.progress = true
           // Recover only a known active request, after native idle. Historical events,
           // cancellations and other failure types must not trigger new model calls.
           if (info.finish === 'length' && !info.error) {
@@ -656,6 +775,7 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
 
       case 'message.part.delta': {
         if (p.field !== 'text' || typeof p.delta !== 'string') return
+        if (s.snapshotParts.has(p.partID)) return
         const type = s.partTypes.get(p.partID)
         const role = s.roles.get(p.messageID)
         if (role === 'user') return
@@ -722,12 +842,13 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
         }
         s.inFlight = false
         s.pendingPermissions.clear()
-        s.emitted.clear()
-        s.toolStatus.clear()
+        // Retain offsets/status IDs: late full snapshots must not repeat a finished turn.
         emit({ type: 'done' })
         return
 
       case 'session.error': {
+        s.failed = true
+        s.awaitingAssistant = false
         s.recovery.pending = false
         s.recovery.cancelled = true
         const err = p.error ?? {}

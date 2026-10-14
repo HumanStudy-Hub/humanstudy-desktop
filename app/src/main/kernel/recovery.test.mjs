@@ -19,7 +19,13 @@ async function scenario(name, run) {
     return new Response(path === '/question' ? '[]' : 'true')
   }
   let id = 0
-  const finish = (reason = 'length', output = 0) => k.handle({ type: 'message.updated', properties: { info: { sessionID: 's', id: `${name}-${++id}`, role: 'assistant', finish: reason, time: { completed: 1 }, tokens: { input: 20, output, reasoning: 32000 } } } })
+  const finish = (reason = 'length', output = 0, visible = false) => {
+    const mid = `${name}-${++id}`
+    const info = { sessionID: 's', id: mid, role: 'assistant' }
+    k.handle({ type: 'message.updated', properties: { info } })
+    if (visible) k.handle({ type: 'message.part.updated', properties: { part: { sessionID: 's', messageID: mid, id: 'part-' + mid, type: 'text', text: 'A saved checkpoint.' } } })
+    k.handle({ type: 'message.updated', properties: { info: { ...info, finish: reason, time: { completed: 1 }, tokens: { input: 20, output, reasoning: 32000 } } } })
+  }
   const idle = () => k.handle({ type: 'session.idle', properties: { sessionID: 's' } })
   try { await run({ k, events, requests, finish, idle }) } finally { await k.dispose() }
 }
@@ -48,12 +54,19 @@ await scenario('no-progress', async ({ k, events, requests, finish, idle }) => {
 await scenario('bounded-progress', async ({ k, events, requests, finish, idle }) => {
   await k.send('s', 'Write')
   finish(); idle(); await tick()
-  finish('length', 12); idle(); await tick()
+  finish('length', 12, true); idle(); await tick()
   assert.equal(requests.length, 3)
   assert.match(requests[2].body.parts[0].text, /Further reduce the size/)
-  finish('length', 12); idle(); await tick()
+  finish('length', 12, true); idle(); await tick()
   assert.equal(requests.length, 3, 'at most two adjustments even with progress')
   assert.equal(events.filter(e => e.type === 'error').length, 1)
+})
+await scenario('tokens-without-visible-progress', async ({ k, requests, finish, idle, events }) => {
+  await k.send('s', 'Write')
+  finish(); idle(); await tick()
+  finish('length', 32000); idle(); await tick()
+  assert.equal(requests.length, 2, 'token counts alone must not authorize another recovery attempt')
+  assert.match(events.find(e => e.type === 'error').text, /no visible output/)
 })
 await scenario('abort-before-adjustment', async ({ k, events, requests, finish, idle }) => {
   await k.send('s', 'Write')
