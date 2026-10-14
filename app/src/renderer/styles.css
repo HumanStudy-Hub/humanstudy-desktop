@@ -739,4 +739,31 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
 .file-md { max-width: 820px; }
 .file-old { flex: 1; margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; font-size: 12.5px; }
 .thumb-icon { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--accent); }
+
+/* Native agent question: one prompt at a time in the existing chat column. */
+.agent-question { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--bg-soft); display: flex; flex-direction: column; gap: 12px; font-size: 13px; }
+.agent-question fieldset { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.agent-question legend { font-weight: 600; margin-bottom: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.question-progress { color: var(--muted); font-size: 12px; }
+.question-option { display: flex; align-items: flex-start; gap: 9px; border: 1px solid var(--line); border-radius: 7px; padding: 9px; cursor: pointer; background: var(--bg); }
+.question-option:has(input:checked) { border-color: var(--accent); }
+.question-option input { margin: 3px 0 0; flex: none; accent-color: var(--accent); }
+.question-option > span { display: flex; flex-direction: column; gap: 3px; white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+.question-option span span { color: var(--muted); }
+.question-custom { display: flex; flex-direction: column; gap: 6px; color: var(--muted); }
+.question-custom textarea { width: 100%; resize: vertical; min-height: 54px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--bg); font: inherit; }
+.question-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.question-actions button { font-size: 12.5px; }
+.agent-question.settled { color: var(--muted); }
+.agent-question.settled strong { display: block; color: var(--text); margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.wb-editors { flex: 1; min-width: 0; min-height: 0; display: flex; overflow: auto; }
+.wb-content[hidden] { display: none; }
+.wb-compare { padding: 0 10px; border-left: 1px solid var(--line); font-size: 12px; white-space: nowrap; color: var(--muted); }
+.wb-compare[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+.wb-editors.comparing > .wb-content, .wb-editors.comparing > .wb-paper { min-width: 260px; }
+.wb-separator { width: 6px; flex: none; background: var(--line); cursor: col-resize; touch-action: none; }
+.wb-separator:hover, .wb-separator:focus-visible { background: var(--accent); outline: none; }
+.auto-mode { font-size: 12px; padding: 4px 7px; border-radius: 5px; color: var(--muted); }
+.auto-mode[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
 .program-notice { margin: 0; padding: 6px 28px 0; }

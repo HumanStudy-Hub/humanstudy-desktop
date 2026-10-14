@@ -10,6 +10,8 @@ export interface ToolLike {
 }
 
 export type ToolAction =
+  | { type: 'clarify' }
+  | { type: 'simulate' }
   | { type: 'read-paper'; page?: number }
   | { type: 'read-study' }
   | { type: 'read-file'; file: string }
@@ -19,7 +21,7 @@ export type ToolAction =
   | { type: 'write-file'; rel: string }
   | { type: 'browse' }
   | { type: 'check-package' }
-  | { type: 'run-python' }
+  | { type: 'run-python'; analysis?: boolean }
   | { type: 'install' }
   | { type: 'make-folder' }
   | { type: 'run-command'; cmd: string }
@@ -73,12 +75,13 @@ const READ_CMD = /^(cat|head|tail|less|sed -n|bat)\b/
 
 function classifyBash(cmd: string): ToolAction {
   const c = cmd.trim()
-  if (/\bpdftotext\b|\bpdftoppm\b|\bpdfinfo\b/.test(c) || /\bpdfplumber\b|\bPyPDF|\bfitz\b/.test(c) || (/paper\.pdf/.test(c) && !/^(rm|mv|cp)\b/.test(c)))
+  if (/\bhs-pdf\b|\bpdftotext\b|\bpdftoppm\b|\bpdfinfo\b/.test(c) || /\bpdfplumber\b|\bPyPDF|\bfitz\b/.test(c) || (/paper\.pdf/.test(c) && !/^(rm|mv|cp)\b/.test(c)))
     return { type: 'read-paper', page: pageOf(c) }
   if (/check_package|validate_package|check-package/.test(c)) return { type: 'check-package' }
   if (/^(pip3?|python3? -m pip|npm|pnpm|brew|uv)\s+(install|add)\b/.test(c)) return { type: 'install' }
   if (/^mkdir\b/.test(c)) return { type: 'make-folder' }
-  if (/^(python3?|uv run python|Rscript)\b/.test(c)) return { type: 'run-python' }
+  if (/\b(run_simulation|run_sessions)\b|artifacts\/simulations\//.test(c)) return { type: 'simulate' }
+  if (/^(python3?|uv run python|Rscript)\b/.test(c)) return { type: 'run-python', analysis: /(?:analy[sz]e|analysis|evaluat|regression|anova|statsmodels)/i.test(c) }
   if (READ_CMD.test(c)) {
     const arg = c.split(/\s+/).filter((w) => !w.startsWith('-') && !/^\d+(,\d+)?p?$/.test(w)).pop()
     return { type: 'read-file', file: arg ? base(arg.replace(/['"]/g, '')) : '' }
@@ -90,6 +93,7 @@ function classifyBash(cmd: string): ToolAction {
 export function classifyTool(part: ToolLike, projectDir?: string): ToolAction {
   const tool = part.tool.toLowerCase()
   const i = obj(part.input)
+  if (tool === 'question') return { type: 'clarify' }
   if (tool === 'bash') return classifyBash(str(i.command) ?? firstLine(part.detail ?? ''))
   if (tool === 'read') {
     const f = targetFile(part, projectDir)
@@ -133,6 +137,8 @@ export interface Sentence {
 /** `titleOf` turns a result file path into its human title when known (else the de-slugged name). */
 export function toolSentence(a: ToolAction, titleOf?: (rel: string) => string | undefined): Sentence {
   switch (a.type) {
+    case 'clarify': return { key: 'tool.clarifying' }
+    case 'simulate': return { key: 'tool.simulating' }
     case 'read-paper':
       return a.page ? { key: 'tool.reading_paper_page', vars: { page: a.page } } : { key: 'tool.reading_paper' }
     case 'read-study':
@@ -154,13 +160,13 @@ export function toolSentence(a: ToolAction, titleOf?: (rel: string) => string | 
     case 'check-package':
       return { key: 'tool.checking_package' }
     case 'run-python':
-      return { key: 'tool.running_script' }
+      return { key: a.analysis ? 'tool.running_script' : 'tool.working' }
     case 'install':
       return { key: 'tool.installing' }
     case 'make-folder':
       return { key: 'tool.folders' }
     case 'run-command':
-      return { key: 'tool.running_command', muted: a.cmd || undefined }
+      return { key: 'tool.running_command' }
     case 'open-web':
       return { key: 'tool.opening', vars: { host: a.host } }
     case 'search-web':
@@ -170,9 +176,9 @@ export function toolSentence(a: ToolAction, titleOf?: (rel: string) => string | 
     case 'plan':
       return { key: 'tool.planning' }
     case 'use-skill':
-      return { key: 'tool.skill', vars: { name: a.name || '…' } }
+      return { key: a.name === 'build' ? 'tool.updating_study' : a.name === 'simulate' ? 'tool.checking_package' : 'tool.skill' }
     default:
-      return { key: 'tool.working', muted: a.tool }
+      return { key: 'tool.working' }
   }
 }
 
@@ -181,5 +187,17 @@ export const TOOL_KEYS = [
   'tool.reading_paper', 'tool.reading_paper_page', 'tool.reading_study', 'tool.reading_file', 'tool.updating_study', 'tool.creating',
   'tool.updating', 'tool.writing_package', 'tool.writing_file', 'tool.looking', 'tool.checking_package', 'tool.running_script',
   'tool.installing', 'tool.folders', 'tool.running_command', 'tool.opening', 'tool.searching', 'tool.delegating', 'tool.planning',
-  'tool.skill', 'tool.working',
+  'tool.skill', 'tool.working', 'tool.simulating', 'tool.clarifying',
 ] as const
+
+/** A broad stage inferred from visible activity, never a claim about hidden reasoning. */
+export function researchActivity(parts: ToolLike[], projectDir?: string): Sentence {
+  const last = parts[parts.length - 1]
+  if (!last) return { key: 'activity.thinking' }
+  const action = classifyTool(last, projectDir)
+  if (last.state === 'pending' || last.state === 'running') return toolSentence(action)
+  if (action.type === 'read-paper' || action.type === 'read-study') return { key: 'activity.design' }
+  if ((action.type === 'run-python' && action.analysis) || action.type === 'simulate') return { key: 'activity.results' }
+  if (action.type === 'write-study' || action.type === 'check-package') return { key: 'activity.review' }
+  return { key: 'activity.thinking' }
+}

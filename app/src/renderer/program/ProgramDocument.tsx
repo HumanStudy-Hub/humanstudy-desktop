@@ -23,10 +23,12 @@ type Props = {
  onEdit?:(id:string,fieldId:string,text:string)=>void;
  /** Remembers which sections are open; sections.ts says which start open. */
  storageKey?:string;
+ /** Simulation scope is reviewed separately before a run. */
+ view?:'study'|'simulation';
 };
 
-/** Studies that have a procedure. Analysis-only studies have nothing to read. */
-export function viewStudies(program:HumanProgram){ return program.studies.filter(st=>program.steps.some(step=>step.studyId===st.id)); }
+/** All research units remain readable, including analyses and incomplete extractions. */
+export function viewStudies(program:HumanProgram){ return program.studies; }
 
 /** The Human Program as a document to read: a methods-style protocol in which every sentence is a
  * program field and ends with its citation. Headings are the only text the view adds. A step bar
@@ -43,6 +45,7 @@ export default function ProgramDocument(input:ProgramDocumentProps){
  const scoped=(kinds:string[])=>program.nodes.filter(n=>kinds.includes(n.kind)&&(!studyId||!n.studyIds.length||n.studyIds.includes(studyId)));
  const conditions=studyConditions(program,studyId),suggestion=conditionSuggestion(program,studyId);
  const items=studyFlow(program,studyId);
+ const analysisOnly=program.studies.find(st=>st.id===studyId)?.type==='analysis';
  const claimed=claimedKinds();
  const article=useRef<HTMLElement>(null);
  const [ask,setAsk]=useState<{id:string;fieldId?:string;quote:string;top:number}|null>(null);
@@ -52,7 +55,7 @@ export default function ProgramDocument(input:ProgramDocumentProps){
   const el=(sel.anchorNode instanceof Element?sel.anchorNode:sel.anchorNode?.parentElement)?.closest<HTMLElement>('[data-model-id]');
   if(!el){setAsk(null);return;}
   const box=sel.getRangeAt(0).getBoundingClientRect(),base=root.getBoundingClientRect();
-  setAsk({id:el.dataset.modelId!,fieldId:el.closest<HTMLElement>('[data-field-id]')?.dataset.fieldId,quote:sel.toString().trim().slice(0,2000),top:box.bottom-base.top+root.scrollTop+6});
+  setAsk({id:el.dataset.modelId!,fieldId:el.closest<HTMLElement>('[data-field-id]')?.dataset.fieldId,quote:sel.toString().trim(),top:box.bottom-base.top+root.scrollTop+6});
  }
  const ctx:Ctx={...props,conditions};
  const studyTitle=program.studies.find(st=>st.id===studyId)?.title??program.title;
@@ -66,14 +69,14 @@ export default function ProgramDocument(input:ProgramDocumentProps){
   const notStated=<p key={item.id} className={s.notStated} data-item={item.id}><span className={s.label}>{item.label}. </span><em>{t('doc.not_stated')}</em>{props.onPrefill&&<button onClick={()=>askAbout(sec,item.label)} title={t('doc.ask_about',{what:item.label.toLowerCase()})}>{t('doc.ask')}</button>}</p>;
   if(item.special==='steps')return <Fragment key={item.id}>
    {r.entries.map(e=><Entries key={e.key} entries={[e]} ctx={ctx}/>)}
-   {items.length?<ol className={s.steps}>{items.map(it=><Step key={it.step.id} item={it} ctx={ctx}/>)}</ol>:<p className={s.missing}>{t('doc.procedure_unmapped')} <button onClick={()=>props.onAsk(scoped(['design'])[0]?.id??program.nodes[0]?.id??'',undefined,'Map the documented participant procedure into explicit steps and next connections. Preserve unknown order and conditions as questions rather than inventing them.')}>{t('doc.ask_map')}</button></p>}
+   {items.length?<ol className={s.steps}>{items.map(it=><Step key={it.step.id} item={it} ctx={ctx}/>)}</ol>:analysisOnly?<p className={s.notStated}>{t('doc.analysis_only')}</p>:<p className={s.missing}>{t('doc.procedure_unmapped')} <button onClick={()=>props.onAsk(scoped(['design'])[0]?.id??program.nodes[0]?.id??'',undefined,'Map the documented participant procedure into explicit steps and next connections. Preserve unknown order and conditions as questions rather than inventing them.')}>{t('doc.ask_map')}</button></p>}
   </Fragment>;
   if(item.special==='conditions'){
-   if(r.present&&r.entries.some(e=>e.node?.kind==='condition'))return <div key={item.id} className={s.conditions}>{conditions.map(c=><span key={c.id} data-tone={c.tone} data-model-id={c.id}><i/>{c.label}<Cite id={c.id} refs={itemSources(program,c.id)} ctx={ctx}/></span>)}</div>;
+   if(r.present&&r.entries.some(e=>e.node?.kind==='condition'))return <div key={item.id}><div className={s.conditions}>{conditions.map(c=><span key={c.id} data-tone={c.tone} data-model-id={c.id}><i/>{c.label}<Cite id={c.id} refs={itemSources(program,c.id)} ctx={ctx}/></span>)}</div>{r.entries.filter(e=>e.node).map(e=><details key={e.key}><summary>{e.node!.title}</summary><NodeBlock node={e.node!} ctx={ctx}/></details>)}</div>;
    if(suggestion)return <p key={item.id} className={s.suggestion}><b>{t('doc.conditions_unstated')}</b> {t('doc.possibly')} {suggestion.labels.join(' / ')} ({t('doc.from')} {suggestion.basis}). <button onClick={()=>props.onAsk(scoped(['design'])[0]?.id??'',undefined,`The program does not state its experimental conditions. They may be ${suggestion.labels.join(', ')} (from ${suggestion.basis}). Check the paper, add a condition node for each, and set conditionIds on the steps and materials that belong to it. Mark anything the paper does not state as missing.`)}>{t('doc.ask_confirm')}</button></p>;
   }
   if(!r.present)return notStated;
-  if(item.special==='materials')return <ul key={item.id} className={s.measures}>{r.entries.map(e=><li key={e.key}><Term node={e.node!} ctx={ctx}/>{e.node!.conditionIds?.length?<span className={s.inline}> · {conditions.filter(c=>e.node!.conditionIds!.includes(c.id)).map(c=>c.label).join(', ')}</span>:null}<Issue ids={props.issuesFor(e.node!.id)} ctx={ctx}/></li>)}</ul>;
+  if(item.special==='materials')return <ul key={item.id} className={s.measures}>{r.entries.map(e=><li key={e.key}><details><summary><Term node={e.node!} ctx={ctx}/>{e.node!.conditionIds?.length?<span className={s.inline}> · {conditions.filter(c=>e.node!.conditionIds!.includes(c.id)).map(c=>c.label).join(', ')}</span>:null}<Issue ids={props.issuesFor(e.node!.id)} ctx={ctx}/></summary><NodeBlock node={e.node!} ctx={ctx}/></details></li>)}</ul>;
   return <Entries key={item.id} entries={r.entries} ctx={ctx} assessment={sec.assessment}/>;
  }
 
@@ -99,12 +102,12 @@ export default function ProgramDocument(input:ProgramDocumentProps){
   </details>;
  };
  return <div className={s.doc}>
-  <Glance program={program} studyId={studyId} items={items} conditions={conditions} toFill={amber.total} onJump={jump}/>
-  {items.length>0&&<StepBar items={items} ctx={ctx}/>}
+  {props.view!=='simulation'&&<Glance program={program} studyId={studyId} items={items} conditions={conditions} toFill={amber.total} onJump={jump}/>}
+  {props.view!=='simulation'&&items.length>0&&<StepBar items={items} ctx={ctx}/>}
   <article ref={article} className={s.article} onMouseUp={()=>requestAnimationFrame(captureSelection)} onKeyUp={captureSelection}>
    {ask&&<button className={s.askBar} style={{top:ask.top}} onMouseDown={e=>e.preventDefault()} onClick={()=>{props.onAsk(ask.id,ask.fieldId,`“${ask.quote}”\n\n`);setAsk(null);window.getSelection()?.removeAllRanges();}}>{t('doc.discuss')}</button>}
-   {SECTIONS.map(renderSection)}
-   {(()=>{const other=nodes(program.nodes.filter(n=>!claimed.has(n.kind)&&(!studyId||!n.studyIds.length||n.studyIds.includes(studyId))));return other&&<details open={openSections.other??false} onToggle={e=>setOpenSections('other',(e.currentTarget as HTMLDetailsElement).open)}><summary><h2>{t('doc.other')}</h2></summary>{other}</details>;})()}
+   {SECTIONS.filter(sec=>props.view==='simulation'?sec.id==='simulation':sec.id!=='simulation').map(renderSection)}
+   {props.view!=='simulation'&&(()=>{const other=nodes(program.nodes.filter(n=>!claimed.has(n.kind)&&(!studyId||!n.studyIds.length||n.studyIds.includes(studyId))));return other&&<details open={openSections.other??false} onToggle={e=>setOpenSections('other',(e.currentTarget as HTMLDetailsElement).open)}><summary><h2>{t('doc.other')}</h2></summary>{other}</details>;})()}
   </article>
  </div>;
 }

@@ -8,7 +8,7 @@
 //   Losing consent clears every pending local file.
 // - A local file is deleted only after the server confirmed it (object stored and, for chunks,
 //   row inserted). Failures back off exponentially; transient errors never drop data.
-// - Disk use is capped (200 MB); the oldest pending files go first and the loss is reported.
+// - Disk use above 200 MB is reported; unuploaded content is never deleted to meet a cap.
 import { randomUUID } from 'node:crypto'
 import type { TelemetryAuth } from './telemetry-core'
 
@@ -109,17 +109,9 @@ export function createReplay(deps: ReplayDeps) {
 
   function enforceCap(): void {
     const files = dataFiles().sort((a, b) => a.mtimeMs - b.mtimeMs || (a.rel < b.rel ? -1 : 1))
-    let total = files.reduce((n, f) => n + f.size, 0)
-    let dropped = 0
-    let bytes = 0
-    for (const f of files) {
-      if (total <= cap) break
-      removeBoth(f.rel)
-      total -= f.size
-      dropped++
-      bytes += f.size
-    }
-    if (dropped) deps.onDropped?.({ files: dropped, bytes, reason: 'cap' })
+    const total = files.reduce((n, f) => n + f.size, 0)
+    if (total > cap) lastError = 'Research data is kept locally; upload is pending and disk usage exceeds the warning threshold.'
+
   }
 
   function seqFor(sessionId: string): number {
@@ -139,7 +131,7 @@ export function createReplay(deps: ReplayDeps) {
   function addChunk(c: ChunkInput): number | null {
     const acct = deps.acct()
     if (!deps.allowed() || !acct) return null
-    if (!SESSION_RE.test(c.sessionId) || !(c.bytes instanceof Uint8Array) || !c.bytes.length || c.bytes.length > MAX_CHUNK_BYTES) return null
+    if (!SESSION_RE.test(c.sessionId) || !(c.bytes instanceof Uint8Array) || !c.bytes.length) return null
     const seq = seqFor(c.sessionId)
     const rel = `${c.sessionId}/${seq}.json.gz`
     const meta: Meta = {
@@ -159,7 +151,7 @@ export function createReplay(deps: ReplayDeps) {
   /** Stores a large payload (gzipped) next to the replay; returns its session-relative path or null. */
   function addBlob(sessionId: string, bytes: Uint8Array): string | null {
     const acct = deps.acct()
-    if (!deps.allowed() || !acct || !SESSION_RE.test(sessionId) || !bytes.length || bytes.length > MAX_CHUNK_BYTES) return null
+    if (!deps.allowed() || !acct || !SESSION_RE.test(sessionId) || !bytes.length) return null
     const name = `blobs/${randomUUID()}.gz`
     const rel = `${sessionId}/${name}`
     fs.write(rel, bytes)
@@ -206,8 +198,7 @@ export function createReplay(deps: ReplayDeps) {
       return fail((e as Error).message || 'offline')
     }
     if (!auth || !auth.userId) return
-    let rejected = 0
-    let rejectedBytes = 0
+    const rejected: string[] = []
     for (const f of pending) {
       const meta = readMeta(f.rel)
       if (!meta || meta.acct !== acct) continue
@@ -226,12 +217,9 @@ export function createReplay(deps: ReplayDeps) {
         return fail((e as Error).message || 'network error')
       }
       if (!res.ok) {
-        if (retryable(res.status)) return fail(`storage returned ${res.status}`)
-        removeBoth(f.rel) // the server will never accept this file (too large, bad type)
-        rejected++
-        rejectedBytes += f.size
-        lastError = `storage rejected a file (${res.status})`
-        continue
+        if (retryable(res.status)) return fail(`storage returned ${res.status}; local data retained`)
+        rejected.push(`storage returned ${res.status}; local data retained`)
+        continue // Keep this file, but do not block other pending recordings.
       }
       if (meta.kind === 'chunk') {
         const [sessionId, file] = f.rel.split('/')
@@ -257,11 +245,8 @@ export function createReplay(deps: ReplayDeps) {
           return fail((e as Error).message || 'network error')
         }
         if (!r2.ok) {
-          if (retryable(r2.status)) return fail(`server returned ${r2.status}`)
-          removeBoth(f.rel)
-          rejected++
-          rejectedBytes += f.size
-          lastError = `server rejected a replay chunk (${r2.status})`
+          if (retryable(r2.status)) return fail(`server returned ${r2.status}; local data retained`)
+          rejected.push(`server returned ${r2.status}; local data retained`)
           continue
         }
       }
@@ -270,7 +255,7 @@ export function createReplay(deps: ReplayDeps) {
       nextAttemptAt = 0
       lastError = undefined
     }
-    if (rejected) deps.onDropped?.({ files: rejected, bytes: rejectedBytes, reason: 'rejected' })
+    if (rejected.length) fail(rejected[0])
   }
 
   function flush(opts: { force?: boolean } = {}): Promise<void> {

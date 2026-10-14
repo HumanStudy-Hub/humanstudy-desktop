@@ -1,3 +1,4 @@
+import { validateAnswers, type KernelQuestion } from '../../shared/question'
 // Mock kernel: streams a plausible reply with one tool step, for UI work without opencode.
 import { Emitter } from './types'
 import type { Kernel, KernelEvent, PermissionReply } from './types'
@@ -14,7 +15,7 @@ export class MockKernel implements Kernel {
   private emitter = new Emitter()
   private sessions = new Map<
     string,
-    { dir: string; timers: Set<NodeJS.Timeout>; busy: boolean; pending?: { id: string; rest: Step[] } }
+    { dir: string; timers: Set<NodeJS.Timeout>; busy: boolean; pending?: { id: string; rest: Step[] }; question?: { request: KernelQuestion; rest: Step[] } }
   >()
   private counter = 0
   private tickMs: number
@@ -51,6 +52,20 @@ export class MockKernel implements Kernel {
     const tokens = Math.max(1, Math.ceil(text.length / 4))
     const tail: Step[] = [{ type: 'usage', usage: { input: tokens, output: 60, reasoning: 0, cost: 0 } }, { type: 'done' }]
 
+    if (/ask question/i.test(text)) {
+      const request: KernelQuestion = { id: `mockquestion_${++this.counter}`, questions: [
+        { header: 'Participants', question: 'Which participant settings should I use?', options: [
+          { label: 'Default to study', description: 'Use the population reported in the paper.' },
+          { label: 'Customize', description: 'Specify a different population.' },
+        ] },
+        { header: 'Conditions', question: 'Which conditions?', multiple: true, custom: false, options: [
+          { label: 'Control', description: 'Baseline condition.' }, { label: 'Treatment', description: 'Experimental condition.' },
+        ] },
+      ] }
+      s.question = { request, rest: tail }
+      this.play(sessionId, [{ type: 'status', text: 'busy' }, { type: 'question', question: request }])
+      return
+    }
     // A resumed thread prefixes the old transcript; only the new message decides.
     if (/\brun/i.test(text.split('</transcript>').pop() ?? text)) {
       // Pause for approval, like a bash call under opencode's "ask" permission.
@@ -85,6 +100,29 @@ export class MockKernel implements Kernel {
     this.play(sessionId, steps)
   }
 
+  async questions(sessionId: string): Promise<KernelQuestion[]> {
+    const s = this.sessions.get(sessionId)
+    if (!s) throw new Error('Unknown session')
+    return s.question ? [s.question.request] : []
+  }
+  async answerQuestion(sessionId: string, questionId: string, answers: string[][]): Promise<void> {
+    const s = this.sessions.get(sessionId)
+    if (!s?.question || s.question.request.id !== questionId) throw new Error('This question is no longer pending.')
+    validateAnswers(s.question.request, answers)
+    const { request, rest } = s.question
+    s.question = undefined
+    this.play(sessionId, [{ type: 'question', question: { ...request, answers, resolved: 'answered' } },
+      { type: 'text', text: `Continuing with ${answers.map(a => a.join(', ')).join('; ')}.` }, ...rest])
+  }
+  async rejectQuestion(sessionId: string, questionId: string): Promise<void> {
+    const s = this.sessions.get(sessionId)
+    if (!s?.question || s.question.request.id !== questionId) throw new Error('This question is no longer pending.')
+    const { request, rest } = s.question
+    s.question = undefined
+    this.play(sessionId, [{ type: 'question', question: { ...request, resolved: 'rejected' } },
+      ...rest])
+  }
+
   async resumeSession(_projectDir: string, sessionId: string): Promise<string | null> {
     return this.sessions.has(sessionId) ? sessionId : null
   }
@@ -110,6 +148,7 @@ export class MockKernel implements Kernel {
     for (const t of s.timers) clearTimeout(t)
     s.timers.clear()
     s.pending = undefined
+    s.question = undefined
     s.busy = false
     this.emitter.emit({ sessionId, type: 'status', text: 'aborted' })
     this.emitter.emit({ sessionId, type: 'done' })

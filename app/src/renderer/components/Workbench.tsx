@@ -3,30 +3,48 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import ProgramDocument, { viewStudies, type ProgramDocumentProps } from '../program/ProgramDocument'
 import { readHumanProgram, validateHumanProgram, type HumanProgram } from '../../shared/human-program'
-import type { ProjectEntry, ProjectSnapshot } from '../../preload/types'
+import type { ProjectEntry, ProjectSnapshot, WorkspaceContext } from '../../preload/types'
 import { lap, track } from '../telemetry'
 import { FileView } from './FileView'
 import { Explorer, flatten } from './Explorer'
 import { SourceDrawer, type SourceRef } from './SourceDrawer'
 import type { SelectedItem } from '../program/labels'
 import { t } from '../i18n'
+import { sourceTarget } from '../../shared/source-target'
+import { simulationScope } from '../../shared/simulation-scope'
+import { sourceFocus } from '../../shared/workspace-context'
 
-export type MainTab = 'study' | 'paper'
+export type MainTab = 'study' | 'paper' | 'simulation'
 type TabId = MainTab | `file:${string}`
 interface Layout {
   /** Open file tabs, as `file:<path>`. */
   tabs: `file:${string}`[]
   active: TabId
   files: boolean
+  compare?: boolean
+  ratio?: number
   study?: string
 }
 const DEFAULT: Layout = { tabs: [], active: 'study', files: false }
+const DEFAULT_SOURCE: SourceRef = { page: 1 }
 
 export interface WorkbenchHandle {
   showTab(tab: MainTab): void
   /** Open a project file in a tab by its absolute path. */
   openFile(path: string): void
   toggleFiles(): void
+  getContext(): WorkspaceSnapshot
+}
+
+export interface WorkspaceSnapshot { projectDir: string; context: WorkspaceContext }
+
+async function approveSimulation(dir: string, program: HumanProgram, studyId: string, request: string): Promise<string> {
+  const scope = simulationScope(program, studyId)
+  const raw = await window.humanstudy.project.readText(`${dir}/program.json`)
+  if (JSON.stringify(JSON.parse(raw)) !== JSON.stringify(program)) throw new Error(t('simulation.changed'))
+  const bytes = new TextEncoder().encode(raw)
+  const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('')
+  return `[Simulation scope approved]\n${JSON.stringify({ programId: program.id, programHash: hash, hashFormat: 'program.json UTF-8 file bytes', studyId, scope: scope.fields })}\n${request}`
 }
 
 interface Props extends Pick<ProgramDocumentProps, 'selectedIds' | 'onPick' | 'onSource' | 'onAsk' | 'onPrefill'> {
@@ -40,6 +58,9 @@ interface Props extends Pick<ProgramDocumentProps, 'selectedIds' | 'onPick' | 'o
   /** Send the agent a message about a program.json that needs fixing. */
   onFixProgram?(text: string): void
   onFold(): void
+  simulationRequest?: string | null
+  onRunSimulation?(approval: string): void
+  onWorkspaceChange?(snapshot: WorkspaceSnapshot): void
 }
 
 const key = (dir: string) => `hs.wb2:${dir}`
@@ -51,6 +72,8 @@ function loadLayout(dir: string): Layout {
         tabs: Array.isArray(raw.tabs) ? raw.tabs.filter((x: unknown) => typeof x === 'string' && x.startsWith('file:')) : [],
         active: typeof raw.active === 'string' ? raw.active : 'study',
         files: Boolean(raw.files),
+        compare: Boolean(raw.compare),
+        ratio: typeof raw.ratio === 'number' ? Math.min(75, Math.max(25, raw.ratio)) : 50,
         study: typeof raw.study === 'string' ? raw.study : undefined,
       }
   } catch {
@@ -59,7 +82,7 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, selectedItems, source, onClearSelection, onAskSelection, onFixProgram, onFold, ...docProps }: Props) {
+export function Workbench({ ref, project, selectedItems, source, onClearSelection, onAskSelection, onFixProgram, onFold, simulationRequest, onRunSimulation, onWorkspaceChange, ...docProps }: Props) {
   // Tolerant: one slip by the agent sets that detail aside and the document still renders.
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
@@ -79,6 +102,9 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
   const [editError, setEditError] = useState('')
   const [changed, setChanged] = useState<Set<string>>(() => new Set())
   const [paperSeen, setPaperSeen] = useState(false)
+  const sourceFile = source ? sourceTarget(project, source) : project.pdf
+  const sourcePdf = sourceFile?.ext === 'pdf' && sourceFile.url ? sourceFile as import('../../preload/types').ProjectFile : null
+  const [sourcePage, setSourcePage] = useState<{ path: string; page: number } | null>(null)
 
   // Project switch: restore its tabs.
   useEffect(() => {
@@ -127,8 +153,8 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
     prevTab.current = now
   }, [layout.active, fileByPath])
   useEffect(() => {
-    if (layout.active === 'paper') setPaperSeen(true)
-  }, [layout.active])
+    if (layout.active === 'paper' || layout.compare) setPaperSeen(true)
+  }, [layout.active, layout.compare])
 
   const activate = (id: TabId) => update((l) => (l.active === id ? l : { ...l, active: id }))
   const open = (id: `file:${string}`) => {
@@ -147,6 +173,7 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
       if (fileByPath.has(path)) open(`file:${path}`)
     },
     toggleFiles,
+    getContext: () => workspaceSnapshot,
   }))
   const close = (id: `file:${string}`) => {
     track('tab.close', { target: tabKind(id, fileByPath), metadata: { dirty: dirty.has(id.slice(5)) } })
@@ -206,13 +233,34 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
     }
   }
 
+  const compare = Boolean(layout.compare && layout.active === 'study')
+  const editors = useRef<HTMLDivElement>(null)
+  const ratio = layout.ratio ?? 50
   const active = layout.active
   const activeFile = active.startsWith('file:') ? (fileByPath.get(active.slice(5)) ?? null) : null
   const studyId = studies.find((s) => s.id === layout.study)?.id ?? studies[0]?.id ?? ''
+  const workspaceSnapshot = useMemo<WorkspaceSnapshot>(() => {
+    const st = studies.find(s => s.id === studyId)
+    return { projectDir: project.dir, context: {
+      project: project.name,
+      programId: program?.id,
+      ...(st ? { study: { id: st.id, title: st.title, type: st.type } } : {}),
+      activeTab: active.startsWith('file:') ? 'file' : active as MainTab,
+      visibleViews: compare ? ['study', 'paper'] : [active.startsWith('file:') ? 'file' : active],
+      openTabs: ['study', 'paper', ...(program ? ['simulation'] : []), ...layout.tabs.map(tab => fileByPath.get(tab.slice(5))?.rel).filter((p): p is string => Boolean(p))],
+      ...(activeFile ? { file: { path: activeFile.rel, ext: activeFile.ext, unsaved: dirty.has(activeFile.path) } } : {}),
+      ...(active === 'paper' || compare ? { source: sourceFocus(sourceFile, source, sourcePage) } : {}),
+    } }
+  }, [project.dir, project.name, program?.id, studies, studyId, active, activeFile, layout.tabs, fileByPath, dirty, source, sourceFile, sourcePage, compare])
+  useEffect(() => { onWorkspaceChange?.(workspaceSnapshot) }, [workspaceSnapshot, onWorkspaceChange])
   const label = (tb: `file:${string}`) => tb.split(/[\\/]/).pop()!
   const tabBtn = (id: MainTab, text: string) => (
     <div role="tab" aria-selected={active === id} className={`wb-tab main ${active === id ? 'active' : ''}`}>
-      <button className="wb-tab-label" onClick={() => activate(id)}>
+      <button className="wb-tab-label" onClick={() => {
+        if (id === 'paper' && (source?.file || source?.sourceId) && sourceFile?.path !== project.pdf?.path) docProps.onSource('file:paper.pdf', { page: 1, quote: '', verified: true })
+        activate(id)
+      }}>
+
         {text}
       </button>
     </div>
@@ -229,6 +277,7 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
         <div className="wb-tablist" role="tablist">
           {tabBtn('study', t('wb.study'))}
           {tabBtn('paper', t('wb.paper'))}
+          {program && tabBtn('simulation', t('sec.simulation'))}
           {layout.tabs.map((tb) => {
             const isDirty = dirty.has(tb.slice(5))
             return (
@@ -249,14 +298,19 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
             )
           })}
         </div>
+        <button className="wb-compare" aria-pressed={compare} disabled={!program} onClick={() => {
+          track('source.compare', { metadata: { open: !compare } })
+          update(l => ({ ...l, active: 'study', compare: !compare }))
+        }}>{t('wb.compare')}</button>
         <button className="ghost fold" aria-label={t('wb.fold')} title={t('wb.fold')} onClick={onFold}>
           ‹
         </button>
       </nav>
       <div className="wb-body">
         {layout.files && <Explorer tree={project.tree} name={project.name} activePath={activeFile?.path ?? null} dirty={dirty} onOpen={openEntry} />}
-        <div className="wb-content">
-          {active === 'study' &&
+        <div className={`wb-editors${compare ? " comparing" : ""}`} ref={editors}>
+        <div className="wb-content" hidden={active === "paper"} style={compare ? { flex: `0 0 ${ratio}%` } : undefined}>
+          {(active === 'study' || active === 'simulation') &&
             (program ? (
               <>
                 {studies.length > 1 && (
@@ -274,6 +328,7 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
                   </div>
                 )}
                 <StudyView
+                  view={active === 'simulation' ? 'simulation' : 'study'}
                   program={program}
                   studyId={studyId}
                   storageKey={project.dir}
@@ -288,20 +343,25 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
                   {...docProps}
                   onSource={(id, ref) => {
                     docProps.onSource(id, ref)
-                    activate('paper')
+                    update(l => ({ ...l, active: 'study', compare: true }))
                   }}
                 />
+                {active === 'simulation' && (() => {
+                  const scope = simulationScope(program, studyId)
+                  return <div className="pad">
+                    <p>{t('simulation.boundary')}</p>
+                    {!scope.ready && <p className="muted">{t('simulation.incomplete')}</p>}
+                    {simulationRequest && <p>{simulationRequest}</p>}
+                    <button className="primary" disabled={!scope.ready} onClick={() => { void approveSimulation(project.dir, program, studyId, simulationRequest ?? 'Run a simulation of this study within the approved scope.').then(approval => onRunSimulation?.(approval)).catch(e => setEditError(String(e))) }}>{t('simulation.approve')}</button>
+                    {!scope.ready && <button className="link" onClick={() => docProps.onPrefill?.('Review the five simulation scope fields (steps, roles, conditions, outcomes, limits) for this study, explain what can and cannot be simulated, and resolve the blocking gaps with me. Do not run a simulation yet.')}>{t('doc.ask')}</button>}
+                  </div>
+                })()}
               </>
             ) : (
               <Empty title={error ? t('study.unreadable') : t('study.empty_title')} body={error ?? t('study.empty_body')}>
                 {error && onFixProgram && <button className="link" onClick={fixProgram}>{t('study.fix')}</button>}
               </Empty>
             ))}
-          {paperSeen && (
-            <div className="wb-paper" hidden={active !== 'paper'}>
-              <SourceDrawer pdf={project.pdf} source={source ?? { page: 1 }} onClose={() => activate('study')} />
-            </div>
-          )}
           {activeFile && (
             <FileView
               key={activeFile.path}
@@ -313,12 +373,37 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
           )}
           {active.startsWith('file:') && !activeFile && <Empty title={t('wb.removed_title')} body={t('wb.removed_body')} />}
         </div>
+        {compare && <div className="wb-separator" role="separator" tabIndex={0} aria-label={t('wb.resize_compare')}
+          aria-orientation="vertical" aria-valuemin={25} aria-valuemax={75} aria-valuenow={Math.round(ratio)}
+          onPointerDown={e => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId) }}
+          onPointerMove={e => {
+            if (!e.currentTarget.hasPointerCapture(e.pointerId) || !editors.current) return
+            const rect = editors.current.getBoundingClientRect()
+            const value = Math.min(75, Math.max(25, 100 * (e.clientX - rect.left) / rect.width))
+            setLayout(l => ({ ...l, ratio: value }))
+          }}
+          onPointerUp={e => { e.currentTarget.releasePointerCapture(e.pointerId); update(l => ({ ...l })); track('source.compare_resized', { metadata: { ratio } }) }}
+          onDoubleClick={() => update(l => ({ ...l, ratio: 50 }))}
+          onKeyDown={e => {
+            const value = e.key === 'ArrowLeft' ? ratio - 5 : e.key === 'ArrowRight' ? ratio + 5 : e.key === 'Home' ? 25 : e.key === 'End' ? 75 : null
+            if (value === null) return
+            e.preventDefault(); update(l => ({ ...l, ratio: Math.min(75, Math.max(25, value)) }))
+          }} />}
+          {paperSeen && (
+            <div className="wb-paper" hidden={active !== 'paper' && !compare}>
+              {sourceFile && sourceFile.ext !== 'pdf' && 'rel' in sourceFile
+                ? <FileView key={sourceFile.path} file={sourceFile} dir={project.dir} version={project.tree} onDirty={markDirty} />
+                : <SourceDrawer pdf={sourcePdf} source={source ?? DEFAULT_SOURCE} closeLabel={compare ? t('wb.close_source') : undefined} onClose={() => update(l => ({ ...l, active: 'study', compare: false }))} onPageChange={page => { if (sourceFile) setSourcePage({ path: sourceFile.path, page }) }} />}
+            </div>
+          )}
+        </div>
+
       </div>
     </section>
   )
 }
 
-type StudyViewProps = Pick<ProgramDocumentProps, 'selectedIds' | 'onPick' | 'onSource' | 'onAsk' | 'onPrefill' | 'onEdit' | 'changedIds' | 'storageKey'> & {
+type StudyViewProps = Pick<ProgramDocumentProps, 'selectedIds' | 'onPick' | 'onSource' | 'onAsk' | 'onPrefill' | 'onEdit' | 'changedIds' | 'storageKey' | 'view'> & {
   program: HumanProgram
   studyId: string
   selectedItems: SelectedItem[]

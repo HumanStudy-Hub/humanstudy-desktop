@@ -24,8 +24,8 @@ function defaults(): Settings {
   return {
     theme: 'system',
     busyEnter: 'queue',
-    permission: 'ask',
-    model: 'anthropic/claude-sonnet-5.5',
+    permission: 'project',
+    model: 'anthropic/claude-haiku-5.5',
     projectsRoot: defaultProjectsRoot(),
     notifications: true,
   }

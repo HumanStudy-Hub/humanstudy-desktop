@@ -22,6 +22,10 @@ export type PresentationPlan = { open:string[]; collapsed:string[] };
 
 const isRecord=(v:unknown):v is Record<string,JsonValue>=>Boolean(v)&&typeof v==='object'&&!Array.isArray(v);
 const inStudy=(n:{studyIds:string[]},studyId:string)=>!n.studyIds.length||n.studyIds.includes(studyId);
+/** Placeholder text is an unresolved gap even if a producer marked the field confirmed. */
+export function isPlaceholderText(raw:string):boolean {
+ return /^\s*(\[填写\]|\[missing\]|missing|tbd|unknown|not available|n\/a)?\s*$/i.test(raw)||/\[(填写|missing)\]/i.test(raw);
+}
 
 /** Conditions are nodes of kind `condition`. Steps and nodes join one through `conditionIds`;
  * sharing an id across phases is what states that two steps run in the same condition. */
@@ -90,7 +94,7 @@ export function flowActors(program:HumanProgram,items:FlowItem[]):ProgramNode[] 
 /** Source locations for evidence ids, verified first. */
 export function sourceRefs(program:HumanProgram,ids:string[]):SourceRef[] {
  return ids.map(id=>program.evidence.find(e=>e.id===id)).filter((e):e is HumanProgram['evidence'][number]=>Boolean(e&&(e.sourceId||e.path)))
-  .map(e=>({...(e.sourceId?{sourceId:e.sourceId}:{}),...(e.locator.page&&e.locator.page<=10000?{page:e.locator.page}:{}),...(!e.sourceId&&e.path?{file:e.path}:{}),quote:[...(e.quote??'')].slice(0,8000).join(''),verified:e.verification==='verified'}))
+  .map(e=>({...(e.sourceId?{sourceId:e.sourceId}:{}),...(e.locator.page&&e.locator.page<=10000?{page:e.locator.page}:{}),...(e.path?{file:e.path}:{}),quote:e.quote??'',verified:e.verification==='verified'}))
   .sort((a,b)=>Number(b.verified)-Number(a.verified));
 }
 const entityEvidence=(program:HumanProgram,id:string)=>{

@@ -1,3 +1,4 @@
+import { validateAnswers, type KernelQuestion } from '../../shared/question'
 // opencode kernel: one `opencode serve` process per project directory, driven over HTTP + SSE.
 //
 // API shapes below were checked against the live OpenAPI spec (`GET /doc`) of opencode 1.18.21
@@ -47,7 +48,6 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, relative, isAbsolute, resolve } from 'node:path'
 import { kernelRuntimeEnv } from '../runtime-core'
-import { truncateString, truncateValue } from '../truncate'
 import { Emitter } from './types'
 import type { Kernel, KernelEvent, KernelPermission, PermissionReply } from './types'
 
@@ -67,7 +67,7 @@ export const BASH_PERMISSION: Record<string, 'ask' | 'allow'> = {
 }
 
 export const DEFAULT_PROVIDER = 'humanstudy'
-export const DEFAULT_MODEL = 'anthropic/claude-sonnet-5.5'
+export const DEFAULT_MODEL = 'anthropic/claude-haiku-5.5'
 /** Models the HumanStudy edition of opencode already declares under provider.humanstudy
  *  (packages/opencode/src/config/humanstudy.ts in HumanStudy-Hub/opencode). Any other hosted model
  *  the server offers is declared in the inline config. */
@@ -107,6 +107,8 @@ interface SessionState {
   emitted: Map<string, number> // text partID -> chars already emitted
   toolStatus: Map<string, string> // tool partID -> last emitted status
   usageSent: Set<string> // assistant messageIDs whose usage was already emitted
+  pendingPermissions: Map<string, KernelPermission>
+  recovery: { epoch: number; attempts: number; pending: boolean; running: boolean; cancelled: boolean; progress: boolean }
   title: string // last session title emitted
 }
 
@@ -119,7 +121,7 @@ export interface OpencodeOptions {
   provider?: string
   model?: string
   /** 'ask': every edit/bash call goes to the renderer. 'project': those inside the project folder are
-   *  approved automatically. Default: HUMANSTUDY_PERMISSION env (set from Settings), else 'ask'. */
+   *  approved automatically. Default: HUMANSTUDY_PERMISSION env (set from Settings), else 'project'. */
   permission?: 'ask' | 'project'
   readyTimeoutMs?: number
 }
@@ -189,11 +191,15 @@ export class OpencodeKernel implements Kernel {
       toolStatus: new Map(),
       usageSent: new Set(),
       title: '',
+      pendingPermissions: new Map(),
+      recovery: { epoch: 0, attempts: 0, pending: false, running: false, cancelled: true, progress: false },
     })
   }
 
   async reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void> {
-    await this.replyTo(this.session(sessionId).server, sessionId, permissionId, response)
+    const s = this.session(sessionId)
+    await this.replyTo(s.server, sessionId, permissionId, response)
+    s.pendingPermissions.delete(permissionId)
   }
 
   private async replyTo(server: Server, sessionId: string, permissionId: string, response: PermissionReply): Promise<void> {
@@ -210,11 +216,40 @@ export class OpencodeKernel implements Kernel {
       if (!text.includes('PermissionNotFound'))
         res = await post(`/session/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}`, { response })
     }
-    if (!res.ok) throw new Error(`opencode permission reply -> ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`)
+    if (!res.ok) throw new Error(`opencode permission reply -> ${res.status} ${(await res.text().catch(() => ''))}`)
+  }
+
+  async questions(sessionId: string): Promise<KernelQuestion[]> {
+    const pending = await this.listQuestions(sessionId)
+    if (pending.length) this.session(sessionId).inFlight = true
+    return pending
+  }
+
+  private async listQuestions(sessionId: string): Promise<KernelQuestion[]> {
+    const res = await this.request(this.session(sessionId).server, 'GET', '/question')
+    const requests = await res.json() as { id: string; sessionID: string; questions: KernelQuestion['questions'] }[]
+    const pending = requests.filter(q => q.sessionID === sessionId).map(q => ({ id: q.id, questions: q.questions }))
+    return pending
+  }
+
+  async answerQuestion(sessionId: string, questionId: string, answers: string[][]): Promise<void> {
+    const question = (await this.questions(sessionId)).find(q => q.id === questionId)
+    if (!question) throw new Error('This question is no longer pending.')
+    validateAnswers(question, answers)
+    await this.request(this.session(sessionId).server, 'POST', `/question/${encodeURIComponent(questionId)}/reply`, { answers })
+    this.emitter.emit({ sessionId, type: 'question', question: { ...question, answers, resolved: 'answered' } })
+  }
+
+  async rejectQuestion(sessionId: string, questionId: string): Promise<void> {
+    const question = (await this.questions(sessionId)).find(q => q.id === questionId)
+    if (!question) throw new Error('This question is no longer pending.')
+    await this.request(this.session(sessionId).server, 'POST', `/question/${encodeURIComponent(questionId)}/reject`)
+    this.emitter.emit({ sessionId, type: 'question', question: { ...question, resolved: 'rejected' } })
   }
 
   async send(sessionId: string, text: string): Promise<void> {
     const s = this.session(sessionId)
+    s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, pending: false, running: false, cancelled: false, progress: false }
     s.inFlight = true
     try {
       await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
@@ -229,12 +264,52 @@ export class OpencodeKernel implements Kernel {
 
   async abort(sessionId: string): Promise<void> {
     const s = this.session(sessionId)
+    s.recovery.cancelled = true
+    s.recovery.pending = false
     await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/abort`)
-    // opencode follows an abort with session.idle, which emits `done`.
+    // Native abort can leave a question in the server's pending list. Explicitly dismiss
+    // those requests, otherwise reopening this conversation resurrects a stopped turn.
+    const pending = await this.listQuestions(sessionId)
+    for (const q of pending) {
+      await this.request(s.server, 'POST', `/question/${encodeURIComponent(q.id)}/reject`)
+      this.emitter.emit({ sessionId, type: 'question', question: { ...q, resolved: 'rejected' } })
+    }
+    // session.idle normally emits done; clearing a leftover request must not mark it busy again.
+    if (pending.length && s.inFlight) {
+      s.inFlight = false
+      this.emitter.emit({ sessionId, type: 'done' })
+    }
   }
 
   onEvent(cb: (e: KernelEvent) => void): () => void {
     return this.emitter.on(cb)
+  }
+
+  private async recover(sessionId: string, s: SessionState): Promise<void> {
+    const r = s.recovery
+    const epoch = r.epoch
+    const attempt = ++r.attempts
+    r.progress = false
+    // Defer beyond the idle callback; never submit while the native turn is still active.
+    await Promise.resolve()
+    if (this.disposed || r.cancelled || s.recovery.epoch !== epoch) { r.running = false; return }
+    this.emitter.emit({ sessionId, type: 'status', text: 'recovering', detail: `Recovery ${attempt}/2: checking saved work and splitting the remaining task into smaller steps.`, input: { attempt, reason: 'output_limit', strategy: 'checkpoints_smaller_units', model: this.model, ...(this.provider === HOSTED_PROVIDER ? { reasoningEffort: 'low' } : {}) } })
+    try {
+      await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
+        ...(this.provider ? { model: { providerID: this.provider, modelID: this.model } } : {}),
+        ...(this.provider === HOSTED_PROVIDER ? { variant: 'humanstudy-recovery' } : {}),
+        parts: [{ type: 'text', text: `[HumanStudy automatic recovery ${attempt}/2: the previous model response exhausted its generation budget; this is not a new research request.]
+Keep the original user's task and all scientific requirements. First inspect existing files and validation results to establish what actually completed. Do not assume an interrupted tool call wrote a file. Do not repeat completed actions or rerun simulations, submissions, uploads or other external actions. Existing permission and simulation approval requirements still apply.
+Adjust the execution plan: finish the smallest coherent pending unit, save and validate it, then advance one unit at a time. For a large human program, use separate complete intermediate files per study/section and assemble the final schema-valid program.json from those files. Preserve every required detail, verbatim quotation and source reference; split the work rather than shorten or omit content. Do not overwrite valid existing work unnecessarily or announce a plan and ask permission to start again. Act on the task already authorized; ask only for genuinely missing research decisions. If a tool invocation was incomplete, construct a smaller valid invocation after checking the filesystem.
+${attempt === 2 ? 'The first adjusted attempt still reached the limit but made progress. Further reduce the size of each write/tool call and complete the remaining units from saved checkpoints.' : 'Avoid spending the whole response thinking through the entire paper before making the first checkpoint.'}` }],
+      })
+    } catch (err) {
+      if (!this.disposed && !r.cancelled && s.recovery.epoch === epoch) {
+        this.emitter.emit({ sessionId, type: 'error', text: `Automatic recovery could not start: ${String(err)}. Saved work has been kept.` })
+        s.inFlight = false
+        this.emitter.emit({ sessionId, type: 'done' })
+      }
+    } finally { r.running = false }
   }
 
   async dispose(): Promise<void> {
@@ -265,8 +340,28 @@ export class OpencodeKernel implements Kernel {
 
   // ---- server lifecycle ---------------------------------------------------------------
 
+  private autoReplies = new Set<string>()
+  setPermissionMode(mode: 'ask' | 'project'): void {
+    this.permission = mode
+    if (mode !== 'project') return
+    for (const [sid, s] of this.sessions) for (const p of s.pendingPermissions.values()) {
+      if (isInsideProject(s.server.dir, p)) this.autoApprove(sid, s, p)
+    }
+  }
+  private autoApprove(sessionId: string, s: SessionState, perm: KernelPermission): void {
+    if (this.autoReplies.has(perm.id)) return
+    this.autoReplies.add(perm.id)
+    // One call only: an Auto approval must not become a permanent native permission
+    // grant that would silently survive switching Auto off.
+    this.replyTo(s.server, sessionId, perm.id, 'once').then(() => {
+      s.pendingPermissions.delete(perm.id)
+      this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'once' } })
+    }, () => this.emitter.emit({ sessionId, type: 'permission', permission: perm }))
+      .finally(() => this.autoReplies.delete(perm.id))
+  }
+
   private permissionMode(): 'ask' | 'project' {
-    return this.permission ?? (process.env.HUMANSTUDY_PERMISSION === 'project' ? 'project' : 'ask')
+    return this.permission ?? (process.env.HUMANSTUDY_PERMISSION === 'ask' ? 'ask' : 'project')
   }
 
   private session(id: string): SessionState {
@@ -296,8 +391,11 @@ export class OpencodeKernel implements Kernel {
       ...(model ? { model, small_model: model } : {}), // small_model: otherwise titles go to opencode's own default
       permission: { edit: 'ask', bash: BASH_PERMISSION, external_directory: 'ask' },
     }
-    if (this.provider === HOSTED_PROVIDER && !BAKED_HOSTED_MODELS.includes(this.model)) {
-      cfg.provider = { [HOSTED_PROVIDER]: { models: { [this.model]: { name: this.model, tool_call: true } } } }
+    if (this.provider === HOSTED_PROVIDER) {
+      cfg.provider = { [HOSTED_PROVIDER]: { models: { [this.model]: {
+        ...(!BAKED_HOSTED_MODELS.includes(this.model) ? { name: this.model, tool_call: true } : {}),
+        variants: { 'humanstudy-recovery': { reasoningEffort: 'low' } },
+      } } } }
     }
     // Developer path only (HUMANSTUDY_DEV_KEYS=1): the key stays in the env, opencode substitutes it.
     if (this.provider === 'openrouter') cfg.provider = { openrouter: { options: { apiKey: '{env:OPENROUTER_API_KEY}' } } }
@@ -423,7 +521,7 @@ export class OpencodeKernel implements Kernel {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     })
     if (!res.ok) {
-      const msg = (await res.text().catch(() => '')).slice(0, 300)
+      const msg = (await res.text().catch(() => ''))
       throw new Error(`opencode ${method} ${path} -> ${res.status} ${msg}`)
     }
     return res
@@ -502,8 +600,23 @@ export class OpencodeKernel implements Kernel {
     const emit = (e: Omit<KernelEvent, 'sessionId'>): void => this.emitter.emit({ sessionId, ...e })
 
     switch (ev.type) {
+      case 'question.asked':
+        s.inFlight = true
+        emit({ type: 'question', question: { id: p.id, questions: p.questions ?? [] } })
+        return
+      case 'question.replied':
+        emit({ type: 'question', question: { id: p.requestID, questions: [], answers: p.answers, resolved: 'answered' } })
+        return
+      case 'question.rejected':
+        emit({ type: 'question', question: { id: p.requestID, questions: [], resolved: 'rejected' } })
+        return
+
       case 'message.updated': {
         const info = p.info
+        if (info?.role === 'assistant' && !s.roles.has(info.id)) {
+          s.recovery.running = false
+          s.recovery.pending = false // a native next step supersedes the queued adjustment
+        }
         if (info?.id && info.role) s.roles.set(info.id, info.role)
         // Once an assistant message is complete, report its tokens/cost (one `usage` per message).
         if (info?.role === 'assistant' && info.time?.completed && !s.usageSent.has(info.id)) {
@@ -518,6 +631,16 @@ export class OpencodeKernel implements Kernel {
               cost: typeof info.cost === 'number' ? info.cost : undefined,
             },
           })
+          if (Number(t.output) > 0) s.recovery.progress = true
+          // Recover only a known active request, after native idle. Historical events,
+          // cancellations and other failure types must not trigger new model calls.
+          if (info.finish === 'length' && !info.error) {
+            const r = s.recovery
+            if (s.inFlight && !r.cancelled && r.attempts < 2 && (r.attempts === 0 || r.progress)) r.pending = true
+            else emit({ type: 'error', text: r.attempts > 0
+              ? `The model reached its response limit again after ${r.attempts} adjusted recovery attempt(s). ${!r.progress ? 'The adjusted attempt produced no visible output or successful tool action. ' : ''}All received output and saved files have been kept. Try another model; no further automatic requests will be sent.`
+              : 'The model reached its response limit. All received output and saved files have been kept. This inactive or stopped request was not retried.' })
+          }
         }
         return
       }
@@ -538,6 +661,7 @@ export class OpencodeKernel implements Kernel {
         if (role === 'user') return
         if (type ? type !== 'text' : role !== 'assistant') return // skip reasoning etc.
         s.emitted.set(p.partID, (s.emitted.get(p.partID) ?? 0) + p.delta.length)
+        if (p.delta.trim()) s.recovery.progress = true
         emit({ type: 'text', text: p.delta })
         return
       }
@@ -553,6 +677,7 @@ export class OpencodeKernel implements Kernel {
           const full: string = part.text ?? ''
           if (full.length > shown) {
             s.emitted.set(part.id, full.length)
+            if (full.slice(shown).trim()) s.recovery.progress = true
             emit({ type: 'text', text: full.slice(shown) })
           }
         } else if (part.type === 'tool') {
@@ -565,14 +690,15 @@ export class OpencodeKernel implements Kernel {
           if (s.toolStatus.get(part.id) === key) return
           s.toolStatus.set(part.id, key)
           const done = status === 'completed' || status === 'error'
+          if (status === 'completed') s.recovery.progress = true
           const out = status === 'error' ? st.error : st.output
           emit({
             type: 'tool',
             tool: part.tool,
             text: status,
             detail,
-            input: st.input === undefined ? undefined : truncateValue(st.input),
-            output: done && out != null ? truncateString(typeof out === 'string' ? out : JSON.stringify(out)) : undefined,
+            input: st.input,
+            output: done && out != null ? (typeof out === 'string' ? out : JSON.stringify(out)) : undefined,
           })
         }
         return
@@ -581,19 +707,29 @@ export class OpencodeKernel implements Kernel {
       case 'session.status': {
         const st = p.status ?? {}
         if (st.type === 'idle') return // session.idle handles completion
-        emit({ type: 'status', text: st.type, detail: st.message })
+        emit({ type: 'status', text: s.recovery.attempts > 0 && !s.recovery.cancelled ? 'recovering' : st.type, detail: st.message })
         return
       }
 
       case 'session.idle':
         if (!s.inFlight) return // opencode repeats idle; only one `done` per turn
+        if (s.recovery.running && !s.recovery.cancelled) return
+        if (s.recovery.pending && !s.recovery.cancelled) {
+          s.recovery.pending = false
+          s.recovery.running = true
+          void this.recover(sessionId, s)
+          return
+        }
         s.inFlight = false
+        s.pendingPermissions.clear()
         s.emitted.clear()
         s.toolStatus.clear()
         emit({ type: 'done' })
         return
 
       case 'session.error': {
+        s.recovery.pending = false
+        s.recovery.cancelled = true
         const err = p.error ?? {}
         if (err.name === 'MessageAbortedError') emit({ type: 'status', text: 'aborted' })
         else emit({ type: 'error', text: err.data?.message ?? err.name ?? 'unknown error' })
@@ -603,12 +739,9 @@ export class OpencodeKernel implements Kernel {
       case 'permission.asked': {
         const perm = toKernelPermission(p)
         if (!perm) return
+        s.pendingPermissions.set(perm.id, perm)
         if (this.permissionMode() === 'project' && isInsideProject(s.server.dir, perm)) {
-          // Settings -> "allow inside the project": answer without bothering the user.
-          this.replyTo(s.server, sessionId, perm.id, 'always').then(
-            () => emit({ type: 'permission', permission: { ...perm, resolved: 'always' } }),
-            () => emit({ type: 'permission', permission: perm }) // could not auto-reply: ask the user
-          )
+          this.autoApprove(sessionId, s, perm)
           return
         }
         emit({ type: 'permission', permission: perm })
@@ -616,9 +749,10 @@ export class OpencodeKernel implements Kernel {
       }
 
       case 'permission.replied': {
+        if (p.requestID) s.pendingPermissions.delete(p.requestID)
         const reply = p.reply ?? p.response
         if (p.requestID && (reply === 'once' || reply === 'always' || reply === 'reject'))
-          emit({ type: 'permission', permission: { id: p.requestID, type: '', resolved: reply } })
+          emit({ type: 'permission', permission: { id: p.requestID, type: '', resolved: reply, ...(this.autoReplies.has(p.requestID) ? { automatic: true } : {}) } })
         return
       }
     }
@@ -642,7 +776,7 @@ export function toKernelPermission(p: {
   const md = p.metadata ?? {}
   const pick = (k: string): string | undefined => (typeof md[k] === 'string' && md[k] ? (md[k] as string) : undefined)
   const title = pick('command') ?? pick('filepath') ?? pick('filePath') ?? pick('description') ?? (patterns.join(' ') || undefined)
-  return { id: p.id, type: p.permission ?? 'unknown', title: title?.slice(0, 300), patterns, metadata: md }
+  return { id: p.id, type: p.permission ?? 'unknown', title, patterns, metadata: md }
 }
 
 /** Tool permissions that are safe to auto-approve when "inside the project": edit/write patterns that
@@ -680,7 +814,7 @@ export function isInsideProject(dir: string, perm: KernelPermission): boolean {
 export function toolDetail(tool: string, title: unknown, input: unknown): string {
   if (tool === 'bash' && input && typeof input === 'object') {
     const c = (input as Record<string, unknown>).command
-    if (typeof c === 'string' && c.trim()) return c.trim().slice(0, 200)
+    if (typeof c === 'string' && c.trim()) return c.trim()
   }
   return (typeof title === 'string' && title) || summarizeInput(input)
 }
@@ -689,9 +823,9 @@ function summarizeInput(input: unknown): string {
   if (!input || typeof input !== 'object' || Object.keys(input).length === 0) return ''
   const o = input as Record<string, unknown>
   for (const k of ['filePath', 'path', 'command', 'pattern', 'url', 'description']) {
-    if (typeof o[k] === 'string') return (o[k] as string).slice(0, 200)
+    if (typeof o[k] === 'string') return (o[k] as string)
   }
-  return JSON.stringify(o).slice(0, 200)
+  return JSON.stringify(o)
 }
 
 function redact(s: string): string {

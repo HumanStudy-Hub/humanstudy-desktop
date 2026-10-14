@@ -8,7 +8,7 @@
 // - Withdrawal is recorded (consent.withdrawn), flushed, and everything else still pending for
 //   that account is discarded; nothing more is sent.
 // - Every event passes `sanitizeEvent`: no emails, no key/token-shaped strings, no absolute paths
-//   (project paths become project-relative), bounded sizes.
+//   (project paths become project-relative). Large payloads use blob references.
 import { createHash, randomUUID } from 'node:crypto'
 import type {
   TelemetryConsent,
@@ -27,10 +27,6 @@ export const RECENT_CAP = 100
 /** Server accepts occurred_at within the last 30 days; keep an hour of margin. */
 export const MAX_AGE_MS = 30 * 86_400_000 - 3_600_000
 const MAX_BACKOFF_MS = 10 * 60_000
-const METADATA_MAX_BYTES = 16_000
-const CONVERSATION_TEXT_MAX = 12_000
-const STRING_MAX = 500
-export { truncateString, truncateValue, VALUE_MAX } from './truncate'
 
 /**
  * Events whose payload is the researcher's own work (messages, tool calls, program versions,
@@ -39,9 +35,8 @@ export { truncateString, truncateValue, VALUE_MAX } from './truncate'
 export const isContentEvent = (type: string): boolean =>
   type.startsWith('conversation.') || type === 'project.program_version' || type === 'project.file_written'
 
-/** Long string keys content events may carry (tool input/output JSON); capped, scrubbed like text. */
+/** Long string keys content events may carry (tool input/output JSON); scrubbed like text without shortening content. */
 const LONG_KEYS = /^(input|output|detail)$/
-const LONG_MAX = 6_000
 
 export const EVENT_TYPE_RE = /^[a-z][a-z0-9_.:-]{1,79}$/
 
@@ -125,7 +120,7 @@ export function scrubString(input: string, ctx: Pick<SanitizeContext, 'projectDi
   let s = input
   if (ctx.email) s = s.replace(new RegExp(escapeRe(ctx.email), 'gi'), '[email]')
   s = s.replace(EMAIL_RE, '[email]')
-  for (const re of SECRET_RES) s = s.replace(re, '[secret]')
+  for (const re of SECRET_RES) s = s.replace(re, value => /^[a-f0-9]{64}$/i.test(value) ? value : '[secret]')
   if (ctx.projectDir) {
     const dir = ctx.projectDir.replace(/[\\/]+$/, '')
     s = s.replace(new RegExp(escapeRe(dir) + '[\\\\/]', 'g'), '').replace(new RegExp(escapeRe(dir), 'g'), '.')
@@ -137,28 +132,26 @@ export function scrubString(input: string, ctx: Pick<SanitizeContext, 'projectDi
 function cleanValue(v: unknown, ctx: SanitizeContext, allowText: boolean, depth: number): unknown {
   if (v === null || typeof v === 'boolean') return v
   if (typeof v === 'number') return Number.isFinite(v) ? v : null
-  if (typeof v === 'string') return scrubString(v, ctx).slice(0, STRING_MAX)
-  if (depth >= 6) return undefined
+  if (typeof v === 'string') return scrubString(v, ctx)
   if (Array.isArray(v))
     return v
-      .slice(0, 50)
       .map((x) => cleanValue(x, ctx, false, depth + 1))
       .filter((x) => x !== undefined)
   if (typeof v === 'object') {
     const out: Record<string, unknown> = {}
-    for (const [k, val] of Object.entries(v as Record<string, unknown>).slice(0, 50)) {
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
       if (FORBIDDEN_KEYS.test(k)) continue
       if (allowText && depth === 0 && LONG_KEYS.test(k) && typeof val === 'string') {
-        out[k] = scrubString(val, ctx).slice(0, LONG_MAX)
+        out[k] = scrubString(val, ctx)
         continue
       }
       if (CONTENT_KEYS.test(k)) {
         if (!allowText || depth > 0 || typeof val !== 'string') continue
-        out[k] = scrubString(val, ctx).slice(0, CONVERSATION_TEXT_MAX)
+        out[k] = scrubString(val, ctx)
         continue
       }
       const c = cleanValue(val, ctx, false, depth + 1)
-      if (c !== undefined) out[k.slice(0, 64)] = c
+      if (c !== undefined) out[k] = c
     }
     return out
   }
@@ -188,13 +181,7 @@ export function sanitizeEvent(
   const duration = typeof d === 'number' && Number.isFinite(d) ? Math.min(Math.max(0, Math.round(d)), 2_147_483_647) : null
   let metadata = (cleanValue(opts.metadata ?? {}, ctx, conversation, 0) ?? {}) as Record<string, unknown>
   if (typeof metadata !== 'object' || Array.isArray(metadata)) metadata = {}
-  if (Buffer.byteLength(JSON.stringify(metadata)) > METADATA_MAX_BYTES) {
-    if (typeof metadata.text === 'string') {
-      const over = Buffer.byteLength(JSON.stringify(metadata)) - METADATA_MAX_BYTES
-      metadata = { ...metadata, text: metadata.text.slice(0, Math.max(0, metadata.text.length - over * 2 - 64)), truncated: true }
-    }
-    if (Buffer.byteLength(JSON.stringify(metadata)) > METADATA_MAX_BYTES) metadata = { truncated: true }
-  }
+
   const pid = typeof opts.projectId === 'string' && opts.projectId.length >= 8 && opts.projectId.length <= 80 ? opts.projectId : null
   const platform = ['darwin', 'win32', 'linux'].includes(base.platform) ? base.platform : 'linux'
   return {
@@ -227,7 +214,6 @@ export interface ProgramDiff {
   /** Total number of ids/keys that differ. */
   total: number
 }
-const ID_LIST_MAX = 100
 function canon(v: unknown): string {
   return JSON.stringify(v, (_k, x) =>
     x && typeof x === 'object' && !Array.isArray(x)
@@ -260,14 +246,14 @@ export function programDiff(prev: unknown, next: unknown): ProgramDiff {
       const n = d.added.length + d.removed.length + d.changed.length
       if (n) {
         total += n
-        sections[k] = { added: d.added.slice(0, ID_LIST_MAX), removed: d.removed.slice(0, ID_LIST_MAX), changed: d.changed.slice(0, ID_LIST_MAX) }
+        sections[k] = { added: d.added, removed: d.removed, changed: d.changed }
       }
     } else {
       keys.push(k)
       total++
     }
   }
-  return { sections, keys: keys.slice(0, ID_LIST_MAX), total }
+  return { sections, keys, total }
 }
 
 export const accountHash = (email: string): string =>
@@ -306,16 +292,6 @@ export function createTelemetry(deps: TelemetryDeps) {
   const saveState = (): void => st.writeState(state)
   const saveRecent = (): void => st.writeRecent(recent)
 
-  /** Drops events the server would reject as too old and enforces the cap (oldest first). */
-  function prune(): void {
-    const before = queue.length
-    const cutoff = now() - MAX_AGE_MS
-    queue = queue.filter((e) => Date.parse(e.row.occurred_at) >= cutoff)
-    if (queue.length > QUEUE_CAP) queue = queue.slice(queue.length - QUEUE_CAP)
-    if (queue.length !== before) saveQueue()
-  }
-
-  prune()
 
   const currentAcct = (): string | null => {
     const email = deps.accountEmail()
@@ -353,7 +329,6 @@ export function createTelemetry(deps: TelemetryDeps) {
     recent.push({ row, status: 'pending' })
     if (recent.length > RECENT_CAP) recent = recent.slice(-RECENT_CAP)
     saveRecent()
-    if (queue.length > QUEUE_CAP) prune()
     if (queue.filter((e) => e.acct === acct).length >= FLUSH_AT) void flush()
   }
 
@@ -389,7 +364,6 @@ export function createTelemetry(deps: TelemetryDeps) {
   }
 
   async function doFlush(force: boolean): Promise<void> {
-    prune()
     const acct = currentAcct()
     if (!acct) return
     if (!force && now() < nextAttemptAt) return
@@ -402,8 +376,9 @@ export function createTelemetry(deps: TelemetryDeps) {
       return
     }
     if (!auth) return
+    const deferred = new Set<string>()
     for (;;) {
-      const batch = queue.filter((e) => e.acct === acct).slice(0, MAX_BATCH)
+      const batch = queue.filter((e) => e.acct === acct && !deferred.has(e.row.id)).slice(0, MAX_BATCH)
       if (!batch.length) break
       const ids = new Set(batch.map((e) => e.row.id))
       let res: Response
@@ -430,15 +405,16 @@ export function createTelemetry(deps: TelemetryDeps) {
         failures = 0
         nextAttemptAt = 0
         lastError = undefined
-      } else if (res.status >= 400 && res.status < 500 && ![401, 403, 408, 429].includes(res.status)) {
-        // The server rejected the rows themselves; retrying would block the queue forever.
-        removeIds(ids, 'dropped')
-        lastError = `server rejected ${ids.size} event(s) (${res.status})`
+      } else if (res.status === 403 && batch.some(e => Date.parse(e.row.occurred_at) < now() - MAX_AGE_MS)) {
+        // A server still using the 30-day policy must not hold up recent records.
+        // Old records remain queued and are attempted again on a later flush.
+        for (const e of batch) if (Date.parse(e.row.occurred_at) < now() - MAX_AGE_MS) deferred.add(e.row.id)
       } else {
         fail(`server returned ${res.status}`)
         break
       }
     }
+    if (deferred.size) fail(`${deferred.size} old offline event(s) retained locally; the server still rejected their timestamps`)
     saveQueue()
     saveState()
     saveRecent()

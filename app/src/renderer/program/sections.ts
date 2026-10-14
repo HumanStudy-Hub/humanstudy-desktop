@@ -45,20 +45,21 @@ export const SECTIONS: Section[] = [
   { id: 'overview', number: '01', title: 'Paper overview', titleZh: '论文概览', level: 'paper', openByDefault: true, items: [
     { id: 'title', label: 'Title', kinds: [], sourceKey: 'title' },
     { id: 'authors', label: 'Authors', kinds: [], sourceKey: 'authors' },
+    { id: 'year', label: 'Publication year', kinds: ['overview'], fieldIds: ['year'] },
     { id: 'venue', label: 'Venue', kinds: [], sourceKey: 'venue' },
     { id: 'doi', label: 'DOI', kinds: [], sourceKey: 'doi' },
     { id: 'version', label: 'Version read', kinds: [], sourceKey: 'version' },
     { id: 'method-type', label: 'Method type', kinds: ['overview'], fieldIds: ['method-type'] },
     { id: 'summary', label: 'Summary', kinds: ['overview'], fieldIds: ['summary'] },
   ] },
-  { id: 'question', number: '02', title: 'Research questions & hypotheses', titleZh: '研究问题与假设', level: 'paper', openByDefault: false, items: [
+  { id: 'question', number: '02', title: 'Research questions & hypotheses', titleZh: '研究问题与假设', level: 'paper', openByDefault: true, items: [
     { id: 'question', label: 'Research question', kinds: ['background'], fieldIds: ['question'] },
     { id: 'gap', label: 'Background and gap', kinds: ['background'], fieldIds: ['gap'] },
     { id: 'theory', label: 'Theory and key concepts', kinds: ['background'], fieldIds: ['theory', 'concepts'] },
     { id: 'hypotheses', label: 'Hypotheses', kinds: ['hypothesis'], fieldIds: ['statement', 'hypothesis'] },
     { id: 'scope', label: 'Scope conditions', kinds: ['hypothesis'], fieldIds: ['scope'] },
   ] },
-  { id: 'map', number: '03', title: 'Study map', titleZh: '研究地图', level: 'paper', openByDefault: true, items: [
+  { id: 'map', number: '03', title: 'Studies in this paper', titleZh: '研究地图', level: 'paper', openByDefault: true, items: [
     { id: 'aim', label: 'Aim', kinds: [], derived: 'study-aim' },
     { id: 'relations', label: 'Relations', kinds: [], derived: 'study-relations' },
     { id: 'tests', label: 'Tests', kinds: [], derived: 'study-tests' },
@@ -98,7 +99,7 @@ export const SECTIONS: Section[] = [
     { id: 'scale', label: 'Scales and scoring', kinds: ['variable'], fieldIds: ['scale', 'scoring'] },
     { id: 'timing', label: 'Timing and record unit', kinds: ['variable', 'record'], fieldIds: ['timing', 'observation-unit', 'columns'] },
   ] },
-  { id: 'analysis', number: '08', title: 'Analysis', titleZh: '分析', level: 'study', openByDefault: false, items: [
+  { id: 'analysis', number: '08', title: 'Analysis method', titleZh: '分析', level: 'study', openByDefault: false, items: [
     { id: 'aim', label: 'Aim and comparison', kinds: ['analysis'], fieldIds: ['aim'] },
     { id: 'inputs', label: 'Data included and exclusions', kinds: ['analysis'], fieldIds: ['inputs'] },
     { id: 'method', label: 'Statistical method', kinds: ['analysis'], fieldIds: ['method'] },
@@ -129,7 +130,7 @@ export const SECTIONS: Section[] = [
     { id: 'replications', label: 'Replications reported by the paper', kinds: ['limitation'], fieldIds: ['replications'] },
     { id: 'openness', label: 'Materials, data, code, preregistration', kinds: ['limitation'], fieldIds: ['openness'] },
   ] },
-  { id: 'simulation', number: '12', title: 'Simulation scope', titleZh: '模拟范围', level: 'paper', openByDefault: true, assessment: true, items: [
+  { id: 'simulation', number: '12', title: 'Simulation scope', titleZh: '可模拟范围', level: 'study', openByDefault: true, assessment: true, items: [
     { id: 'steps', label: 'Steps an agent can perform', kinds: ['simulation'], fieldIds: ['steps'] },
     { id: 'roles', label: 'Roles that can be simulated', kinds: ['simulation'], fieldIds: ['roles'] },
     { id: 'conditions', label: 'Conditions that can be expressed', kinds: ['simulation'], fieldIds: ['conditions'] },

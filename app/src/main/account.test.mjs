@@ -123,12 +123,13 @@ assert.ok(calls.some((c) => c.url.endsWith('/auth/v1/logout') && c.headers.autho
 assert.equal(store.session, undefined)
 assert.equal(store.desktopKey, undefined)
 
-// Kernel inline config: the fork bakes in the provider, so only model + permission are passed.
+// Kernel inline config adds recovery controls without redefining provider credentials.
 const k = new oc.OpencodeKernel({ binary: '/bin/true', provider: 'humanstudy', model: 'anthropic/claude-haiku-5.5' })
 let content = JSON.parse(k.configContent())
 assert.equal(content.model, 'humanstudy/anthropic/claude-haiku-5.5')
 assert.equal(content.small_model, content.model)
-assert.equal(content.provider, undefined)
+assert.deepEqual(content.provider, { humanstudy: { models: { 'anthropic/claude-haiku-5.5': { variants: { 'humanstudy-recovery': { reasoningEffort: 'low' } } } } } })
+assert.equal(JSON.stringify(content).includes('apiKey'), false, 'recovery configuration contains no credential')
 assert.equal(content.permission.edit, 'ask')
 const bash = content.permission.bash
 assert.equal(bash['*'], 'ask')
