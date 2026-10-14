@@ -10,7 +10,8 @@ shows the whole folder as the **Program** explorer and `program.json` as the **S
   program.json              Human Program v2 (canonical design; schema/human-program.schema.json)
   package/<paper-slug>/     runnable replay package, the HumanStudy-Bench eight-file contract (build)
   artifacts/                agent outputs; every file appears in the app
-    *.html                  self-contained views (visualize)
+    *.html                  self-contained interactive views (visualize; kit inlined by
+                            .opencode/artifact-kit/inline.py)
     *.md, *.py, *.png       analysis reports with their code and figures (analyze)
     simulations/<stamp>/    run.py, sessions.jsonl, evaluation.json, report.md (simulate)
   exports/                  files for leaving the app: *.docx, *.pdf, *.zip (export)

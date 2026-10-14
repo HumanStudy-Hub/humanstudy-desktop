@@ -14,6 +14,8 @@ import { AgreementDialog } from './components/ResearchData'
 import { lap, setTelemetryProject, track } from './telemetry'
 import { t, useLang } from './i18n'
 import { requestsSimulation } from '../shared/simulation-scope'
+import { onAsk as onArtifactAsk, onOpenSource as onArtifactOpenSource } from './bridge'
+import { artifactSourceRef } from './artifact-source'
 
 const PANES_KEY = 'hs.panes'
 type Pane = 'agent' | 'program'
@@ -210,6 +212,25 @@ export default function App() {
     setPane('agent', true)
     requestAnimationFrame(() => chat.current?.prefill(text))
   }
+
+  // Artifact views (bridge.ts): a click on a cited mark opens the paper there; "ask" prefills the chat.
+  const bridgeState = useRef({ program: project?.program as unknown, showSource, prefill })
+  bridgeState.current = { program: project?.program, showSource, prefill }
+  useEffect(() => {
+    const offOpen = onArtifactOpenSource((req) => {
+      const st = bridgeState.current
+      track('artifact.source_click', { target: req.programId ?? '', metadata: { page: req.page ?? null } })
+      st.showSource(artifactSourceRef(st.program, req))
+    })
+    const offAsk = onArtifactAsk(({ text }) => {
+      track('artifact.ask')
+      bridgeState.current.prefill(text)
+    })
+    return () => {
+      offOpen()
+      offAsk()
+    }
+  }, [])
 
   // Commands: shortcuts below and the native menu both go through runCommand.
   const state = useRef({ project, open, settingsOpen })
@@ -431,3 +452,4 @@ function Rail({ label, onOpen }: { label: string; onOpen(): void }) {
     </button>
   )
 }
+
