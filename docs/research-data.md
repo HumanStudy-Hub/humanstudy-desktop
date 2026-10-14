@@ -94,8 +94,9 @@ The live server still rejects event timestamps older than 30 days until the owne
 
 ## Control
 
-- `telemetry.deleteMyData()` deletes the user's `desktop_events` and `desktop_replay_chunks` rows,
-  every object under `<owner_id>/` in the bucket, and the local replay files.
+- Self-service deletion is disabled during the beta (2026-10-13): no UI or IPC, and the server has
+  no delete policy on `desktop_events`, `desktop_replay_chunks` or the `desktop-replays` bucket
+  (web migration `20261013120000`). Deletion requests go to the team (service role).
 - `telemetry.exportMyData()` opens a save dialog and writes a zip: `events.json`, `threads/` (of
   projects opened in this run), `replay/index.json` + `replay/<session>/<seq>.json.gz` + blobs,
   and `replay-unsent/` (not yet uploaded). Resolves with the path, `null` if cancelled.

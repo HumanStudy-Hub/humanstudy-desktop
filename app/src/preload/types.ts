@@ -438,7 +438,6 @@ export interface TelemetryApi {
   /** The last 100 events built for upload, newest first, exactly as sent. */
   recent(): Promise<TelemetryRecent[]>
   /** Deletes every desktop_events row owned by the signed-in user and clears the local queue. */
-  deleteMyData(): Promise<TelemetryStatus>
   flush(): Promise<TelemetryStatus>
   /** The one id of this app run: every event's session_id and the replay chunk rows' session_id. */
   sessionId(): Promise<string>

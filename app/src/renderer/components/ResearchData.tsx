@@ -68,7 +68,6 @@ export function AgreementDialog({ onDone }: { onDone(s: TelemetryStatus): void }
 export function ResearchDataSection({ onReview }: { onReview(): void }) {
   const [status, setStatus] = useState<TelemetryStatus | null>(null)
   const [recent, setRecent] = useState<TelemetryRecent[] | null>(null)
-  const [confirmDelete, setConfirmDelete] = useState(false)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -120,17 +119,6 @@ export function ResearchDataSection({ onReview }: { onReview(): void }) {
         if (recent) setRecent(await window.humanstudy.telemetry.recent())
       },
       'Could not send.'
-    )
-  const del = () =>
-    run(
-      'delete',
-      async () => {
-        apply(await window.humanstudy.telemetry.deleteMyData())
-        setRecent(recent ? [] : null)
-        setConfirmDelete(false)
-        setNotice('Deleted. Every research event stored for your account has been removed from HumanStudy Hub.')
-      },
-      'Could not delete your data.'
     )
 
   if (!status)
@@ -240,26 +228,6 @@ export function ResearchDataSection({ onReview }: { onReview(): void }) {
             </div>
           )}
 
-          <h3>Delete my data</h3>
-          <p className="muted small">
-            Removes every research event stored for your account on HumanStudy Hub, and clears the events waiting
-            on this computer. This cannot be undone. Your agreement stays as it is.
-          </p>
-          {confirmDelete ? (
-            <div className="row-end">
-              <span className="small">Delete all research data for this account?</span>
-              <button className="ghost" disabled={Boolean(busy)} onClick={() => setConfirmDelete(false)}>
-                Cancel
-              </button>
-              <button className="primary danger-fill" disabled={Boolean(busy)} onClick={() => void del()}>
-                {busy === 'delete' ? 'Deleting…' : 'Delete everything'}
-              </button>
-            </div>
-          ) : (
-            <button className="ghost danger" disabled={Boolean(busy)} onClick={() => setConfirmDelete(true)}>
-              Delete my data…
-            </button>
-          )}
         </>
       )}
     </section>

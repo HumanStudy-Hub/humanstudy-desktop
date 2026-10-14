@@ -870,12 +870,6 @@ def intentional(harm: float, help_: float) -> float:
       },
       projectId: async (dir) => (dir && researchStatus().usage ? `preview-${slug(dir)}`.slice(0, 80) : null),
       recent: async () => recentEvents.slice().reverse().map((r) => ({ ...r })),
-      deleteMyData: async () => {
-        if (!account.signedIn) throw new Error('Sign in to your HumanStudy Hub account first.')
-        recentEvents.length = 0
-        research.sent = 0
-        return researchStatus()
-      },
       flush: async () => {
         markSent()
         return researchStatus()

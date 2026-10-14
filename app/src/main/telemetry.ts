@@ -561,10 +561,6 @@ export function registerTelemetry(): void {
     return projectIdFor(rendererProjectDir)
   })
   ipcMain.handle('telemetry:recent', () => t.recent())
-  ipcMain.handle('telemetry:deleteMyData', async () => {
-    await getReplay().deleteAll() // chunk rows, storage objects and local replay files first
-    return t.deleteMyData()
-  })
   ipcMain.handle('telemetry:flush', async () => {
     await t.flush({ force: true })
     return t.status()
