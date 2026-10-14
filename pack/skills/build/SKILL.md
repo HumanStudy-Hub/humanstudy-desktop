@@ -125,11 +125,30 @@ Rules the runner depends on:
 - Run `python .opencode/skills/build/check_program.py program.json` (it also runs inside check_package.py), then `python .opencode/skills/build/check_package.py package/<paper-slug>` (eight files,
   JSON validity, bindings, smoke test) and repair until it passes.
 
-## 4. Report
+## 4. Views: two artifacts, automatically
+
+After the program check prints `PASS` (and the package check, if you built the package), write
+two views with the `visualize` skill's kit, without being asked; each must pass
+`python .opencode/artifact-kit/inline.py <file>`:
+
+- `artifacts/study-overview.html`: a title naming the paper, a two-sentence takeaway (what was
+  studied, who took part, the design), then `HS.overview('#app')` (sample sizes, procedure flow,
+  conditions, open questions per study).
+- `artifacts/reported-results.html`, only when `09 Results` holds reported numbers (means,
+  percentages, proportions, effect sizes): one `HS.results` or `HS.forest` chart per comparison the
+  paper reports, using the paper's numbers exactly, each mark with its `id` and `page` (the table
+  or text it comes from); spread exactly as reported (SD, SE or CI) or left out so the kit marks it
+  "spread not reported". Test statistics without descriptives (only F, t, p) go in the chart's
+  `hs-sub` line or a cited stat tile, not invented bars. Skip this file when no numbers are
+  reported, and say so in the report.
+
+A view failing its check is fixed, not dropped. Do not add new study facts in a view.
+
+## 5. Report
 
 Reply with: studies found; counts of nodes, steps, conditions, issues (by severity); the
 readiness verdict ("can be run as published" / "blocked by: …"); checks run and their result;
-and the paths written. Reply in the researcher's language.
+and the paths written (including the two views). Reply in the researcher's language.
 
 ## Clarifying decisions with the researcher
 

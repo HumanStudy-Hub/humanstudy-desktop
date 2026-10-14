@@ -10,6 +10,7 @@ import { Markdown } from './Markdown'
 import { CsvTable, useVersions } from './Previews'
 import { copyText } from './Markdown'
 import { resultTitle } from '../results'
+import { listenToArtifact, withArtifactCsp } from '../bridge'
 
 const TEXT = new Set(['md', 'txt', 'json', 'py', 'html', 'htm', 'css', 'js', 'ts', 'mjs', 'csv', 'tsv', 'yaml', 'yml', 'r', 'sh', 'tex', 'bib', 'xml', 'toml', ''])
 const IMAGE = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'])
@@ -40,6 +41,9 @@ export function FileView({ file, version, onDirty }: Props) {
   const [viewing, setViewing] = useState<{ id: string; text: string } | null>(null)
   const [copied, setCopied] = useState(false)
   const latest = versions[versions.length - 1]
+  // Artifact views may ask the app to open a cited page or prefill the chat (see bridge.ts).
+  const frame = useRef<HTMLIFrameElement>(null)
+  useEffect(() => (isHtml ? listenToArtifact(() => frame.current) : undefined), [isHtml])
 
   const dirty = saved !== null && text !== saved
 
@@ -212,7 +216,7 @@ export function FileView({ file, version, onDirty }: Props) {
         isMd ? (
           <div className="file-md"><Markdown text={viewing.text} /></div>
         ) : isHtml && mode === 'preview' ? (
-          <iframe className="artifact-frame" src={`data:text/html;charset=utf-8,${encodeURIComponent(viewing.text)}`} sandbox="allow-scripts" title={file.name} />
+          <iframe ref={frame} className="artifact-frame" src={`data:text/html;charset=utf-8,${encodeURIComponent(withArtifactCsp(viewing.text))}`} sandbox="allow-scripts" title={file.name} />
         ) : (
           <pre className="file-old">{viewing.text}</pre>
         )
@@ -221,7 +225,7 @@ export function FileView({ file, version, onDirty }: Props) {
       ) : mode === 'preview' && isCsv ? (
         <div className="file-csv">{saved === null ? <p className="muted">{t('common.loading')}</p> : <CsvTable text={text} rows={200} cols={30} />}</div>
       ) : mode === 'preview' ? (
-        <iframe key={file.mtime ?? 0} className="artifact-frame" src={dirty ? `data:text/html;charset=utf-8,${encodeURIComponent(text)}` : file.url} sandbox="allow-scripts" title={file.name} />
+        <iframe ref={frame} key={file.mtime ?? 0} className="artifact-frame" src={dirty ? `data:text/html;charset=utf-8,${encodeURIComponent(withArtifactCsp(text))}` : file.url} sandbox="allow-scripts" title={file.name} />
       ) : saved === null && !error ? (
         <p className="muted pad">{t('common.loading')}</p>
       ) : (

@@ -12,6 +12,9 @@ pack/
   skills/<name>/SKILL.md            build, simulate, visualize, analyze, export, refine
   skills/build/check_package.py     offline package check (mirrors Bench validate_package.py)
   skills/build/check_program.py     program.json rule check (mirrors the app validator; lists every problem)
+  artifact-kit/                     offline HTML view kit: hs-kit.js/css (flow, conditions, results charts, citation
+                                    chips, click bridge), Chart.js 4.4.1 (MIT, sha256 in kit.json), inline.py
+                                    (inlines the kit into an artifact and checks it); copied to .opencode/artifact-kit/
   runtime/                          research runtime: requirements.lock (hash-pinned wheels), lib/ (pdftotext /
                                     pdfinfo / hs-pdf shims, humanstudy_llm), tests/; installed by the desktop app
 ```

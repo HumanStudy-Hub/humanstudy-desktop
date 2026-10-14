@@ -101,6 +101,8 @@ function isAllowed(p: string): boolean {
   return [...allowedRoots].some((r) => q === r || q.startsWith(r + sep))
 }
 const toUrl = (p: string): string => 'hsfile://local/' + encodeURIComponent(p)
+const ARTIFACT_CSP =
+  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob: hsfile:; font-src data:; media-src data: blob: hsfile:; connect-src 'none'; base-uri 'none'; form-action 'none'"
 
 async function listDir(dir: string): Promise<ProjectFile[]> {
   if (!existsSync(dir)) return []
@@ -271,7 +273,14 @@ app.whenReady().then(() => {
   protocol.handle('hsfile', (req) => {
     const p = resolve(decodeURIComponent(new URL(req.url).pathname.slice(1)))
     if (!isAllowed(p)) return new Response('forbidden', { status: 403 })
-    return net.fetch(pathToFileURL(p).toString())
+    if (!/\.html?$/i.test(p)) return net.fetch(pathToFileURL(p).toString())
+    // Project HTML is an agent-made artifact: inline code only, no network (see renderer/bridge.ts).
+    return net.fetch(pathToFileURL(p).toString()).then((res) => {
+      const headers = new Headers(res.headers)
+      headers.set('Content-Security-Policy', ARTIFACT_CSP)
+      headers.set('Content-Type', 'text/html; charset=utf-8')
+      return new Response(res.body, { status: res.status, headers })
+    })
   })
 
   ipcMain.handle('project:open', async () => {

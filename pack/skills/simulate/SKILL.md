@@ -72,7 +72,18 @@ cannot isolate the approved scope, stop and explain that limitation instead of r
    the finding replicated by the paper's own criterion; and limitations (parsing failures,
    missing arms, LLM-replay adaptations). Save a figure (`matplotlib`, labelled axes, n per
    group) as `results.png`.
-4. Never present an observed number as reported, and never adjust prompts to steer results.
+4. Write `artifacts/simulations/<run>/results.html` with the `visualize` skill's kit and run
+   `python .opencode/artifact-kit/inline.py` on it until `PASS`:
+   - an `hs-banner` line "Simulation — not human data" (the kit label, `HS.simLabel()`) at the top,
+     and the one-sentence outcome by the paper's own criterion;
+   - `HS.results` (or `HS.forest` for effect sizes) with, per condition/group, `human` = the
+     paper's reported value (`id` of the result node, `page`) and `sim` = the observed value with
+     `values: [...]` (one per session or sampling unit, from `sessions.jsonl`) so the spread and
+     95% CI are drawn; never put an observed number in `human`;
+   - `HS.manifest` with model, temperature, seed, n per condition, arms run, number of calls,
+     parse failures, date, and the `program.json` SHA-256 the run approved;
+   - a short limitations list (`hs-card`), and a link-free reference to `report.md`.
+5. Never present an observed number as reported, and never adjust prompts to steer results.
 
-Reply with the path of `report.md`, the one-sentence outcome (replicated / not replicated / not
+Reply with the paths of `report.md` and `results.html`, the one-sentence outcome (replicated / not replicated / not
 ready, with the key numbers), and the number of model calls (from `.humanstudy/tmp/llm-usage.jsonl`). Reply in the researcher's language.
