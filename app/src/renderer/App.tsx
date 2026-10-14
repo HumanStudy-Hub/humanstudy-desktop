@@ -368,7 +368,7 @@ export default function App() {
               onClearSelection={() => setSelected([])}
               onAskSelection={askSelection}
               onPrefill={prefill}
-              onFixProgram={text => { track('program.fix_requested'); setPane('agent', true); sendInWorkspace(text, session.enqueue) }}
+              onFixProgram={text => { track('program.fix_requested'); prefill(text) }}
               onPick={pick}
               onFold={() => setPane('program', false)}
               onSource={(id, ref) => {
