@@ -1,6 +1,6 @@
 // opencode kernel: one `opencode serve` process per project directory, driven over HTTP + SSE.
 //
-// API shapes below were checked against the live OpenAPI spec (`GET /doc`) of opencode 1.18.21
+// API shapes below were checked against the live OpenAPI spec (`GET /doc`) of opencode 1.18.21, re-verified live on 1.19.0
 // and against https://opencode.ai/docs/server/ + /docs/config/:
 //   - auth: HTTP basic, user `opencode`, password from OPENCODE_SERVER_PASSWORD   (docs + live)
 //   - GET  /global/health -> {healthy:true, version}                                (live spec)

@@ -23,7 +23,7 @@ Status: `[ ]` open · `[~]` in progress · `[x]` done. Keep this file current in
       when there is no model access. (wave R1, renderer)
 - [x] **Model error without a key** — never force `openrouter/...` on opencode when no key or
       account exists. Superseded by H1: no own-key path in the product; signed-out users get a sign-in card and no session starts. (ca1438f)
-- [x] **Bundled agent kernel** — the pinned HumanStudy opencode (`hs-v1.18.21`) downloads into userData
+- [x] **Bundled agent kernel** — the pinned HumanStudy opencode (`hs-v1.19.0`) downloads into userData
       on first run (SHA256SUMS.txt check, resume, retry, `kernel.install` IPC); no fallback to a system
       opencode; kernel runs with its own XDG dirs under userData/kernel. (M1, K2)
 - [x] **opencode HumanStudy edition** — fork https://github.com/HumanStudy-Hub/opencode (branch

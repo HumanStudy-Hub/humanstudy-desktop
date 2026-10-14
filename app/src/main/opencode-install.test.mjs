@@ -40,9 +40,9 @@ test('asset selection', () => {
   assert.equal(core.pickAsset('win32', 'arm64', true).name, 'opencode-humanstudy-windows-arm64.zip')
   assert.equal(core.pickAsset('linux', 'x64', true), null)
   assert.equal(core.binaryName('win32'), 'opencode.exe')
-  assert.equal(core.KERNEL_TAG, 'hs-v1.18.21')
-  assert.equal(core.KERNEL_VERSION, '1.18.21')
-  assert.equal(core.RELEASE_BASE, 'https://github.com/HumanStudy-Hub/opencode/releases/download/hs-v1.18.21')
+  assert.equal(core.KERNEL_TAG, 'hs-v1.19.0')
+  assert.equal(core.KERNEL_VERSION, '1.19.0')
+  assert.equal(core.RELEASE_BASE, 'https://github.com/HumanStudy-Hub/opencode/releases/download/hs-v1.19.0')
   assert.equal(core.assetUrl({ name: 'a.zip' }), `${core.RELEASE_BASE}/a.zip`)
 })
 
