@@ -1,0 +1,1621 @@
+{
+  "schemaVersion": 2,
+  "id": "fce_ross_1977",
+  "title": "The False Consensus Effect: An Egocentric Bias in Social Perception and Attribution Processes",
+  "intent": "reconstruct",
+  "source": {
+    "title": "The False Consensus Effect: An Egocentric Bias in Social Perception and Attribution Processes",
+    "authors": "Lee Ross, David Greene, Pamela House",
+    "filename": "paper.pdf",
+    "venue": "Journal of Experimental Social Psychology (1977)"
+  },
+  "studies": [
+    {
+      "id": "study1",
+      "title": "Study 1: Hypothetical stories, consensus estimates and trait ratings",
+      "type": "empirical",
+      "description": "Questionnaire study. Each participant read one of four brief stories, estimated peer consensus for two options, indicated their own choice and rated a typical person who would choose each option.",
+      "dependsOn": []
+    },
+    {
+      "id": "study2",
+      "title": "Study 2: Personal description items and perceived commonness",
+      "type": "empirical",
+      "description": "Questionnaire study. Participants categorised themselves on 35 person description items and estimated the percentage of college students in general in each category (34 items analysed).",
+      "dependsOn": []
+    },
+    {
+      "id": "study3",
+      "title": "Study 3: Hypothetical sandwich-board conflict",
+      "type": "empirical",
+      "description": "Questionnaire study. Participants read a hypothetical request to wear a sandwich board sign, indicated their own choice, estimated peer consensus and rated typical individuals who agreed or refused.",
+      "dependsOn": []
+    },
+    {
+      "id": "study4",
+      "title": "Study 4: Real sandwich-board conflict",
+      "type": "empirical",
+      "description": "Field study. Participants were actually asked to wear a sandwich board sign, made a private choice, estimated peer consensus and rated two supposedly real previous participants.",
+      "dependsOn": []
+    }
+  ],
+  "nodes": [
+    {
+      "id": "overview",
+      "kind": "overview",
+      "title": "Paper overview",
+      "studyIds": [],
+      "summary": "Four studies on the false consensus effect: raters’ own choices bias their estimates of peer consensus and their trait inferences about actors.",
+      "fields": [
+        {
+          "id": "method-type",
+          "label": "Method type",
+          "value": "Questionnaire studies (Studies 1–3) and one authentic conflict field study (Study 4)",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_abstract"
+          ]
+        },
+        {
+          "id": "summary",
+          "label": "Summary",
+          "value": "Evidence from four studies demonstrates that social observers tend to perceive a “false consensus” with respect to the relative commonness of their own responses.",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_abstract"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_title",
+        "ev_abstract"
+      ]
+    },
+    {
+      "id": "hyp-main",
+      "kind": "hypothesis",
+      "title": "Hypothesis 1: own choice and perceived consensus",
+      "studyIds": [
+        "study1",
+        "study3",
+        "study4",
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "statement",
+          "label": "Statement",
+          "value": "Subjects who “choose” a particular hypothetical response will rate that response as more probable for “people in general” than will subjects who “choose” the alternative response.",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_hyp"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_hyp",
+        "ev_s3_hyp"
+      ]
+    },
+    {
+      "id": "hyp-trait",
+      "kind": "hypothesis",
+      "title": "Hypothesis 2: own choice and trait inference",
+      "studyIds": [
+        "study1",
+        "study3",
+        "study4"
+      ],
+      "fields": [
+        {
+          "id": "statement",
+          "label": "Statement",
+          "value": "Subjects who “choose” a specified response will use less extreme and less confident trait ratings in characterizing a “typical” person making that response than will subjects who “choose” the alternative response.",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_hyp2"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_hyp2"
+      ]
+    },
+    {
+      "id": "cond-s1-supermarket",
+      "kind": "condition",
+      "title": "Study 1: Supermarket story",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "assignment",
+          "label": "Assignment",
+          "value": "Between subjects: 80 Stanford undergraduates read this story",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_n"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_n"
+      ],
+      "conditionIds": [
+        "cond-s1-supermarket"
+      ]
+    },
+    {
+      "id": "cond-s1-termpaper",
+      "kind": "condition",
+      "title": "Study 1: Term paper story",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "assignment",
+          "label": "Assignment",
+          "value": "Between subjects: 80 Stanford undergraduates read this story",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_n"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_n"
+      ],
+      "conditionIds": [
+        "cond-s1-termpaper"
+      ]
+    },
+    {
+      "id": "cond-s1-traffic",
+      "kind": "condition",
+      "title": "Study 1: Traffic ticket story",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "assignment",
+          "label": "Assignment",
+          "value": "Between subjects: 80 Stanford undergraduates read this story",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_n"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_n"
+      ],
+      "conditionIds": [
+        "cond-s1-traffic"
+      ]
+    },
+    {
+      "id": "cond-s1-space",
+      "kind": "condition",
+      "title": "Study 1: Space program referendum story",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "assignment",
+          "label": "Assignment",
+          "value": "Between subjects: 80 Stanford undergraduates read this story",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_n"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_n"
+      ],
+      "conditionIds": [
+        "cond-s1-space"
+      ]
+    },
+    {
+      "id": "cond-s3-eat",
+      "kind": "condition",
+      "title": "Study 3: “Eat at Joe’s” sign",
+      "studyIds": [
+        "study3"
+      ],
+      "fields": [
+        {
+          "id": "assignment",
+          "label": "Assignment",
+          "value": "One of two sign versions; the assignment rule is not stated",
+          "origin": "reported",
+          "state": "missing",
+          "evidenceIds": [
+            "ev_s3_repent"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s3_repent"
+      ],
+      "conditionIds": [
+        "cond-s3-eat"
+      ]
+    },
+    {
+      "id": "cond-s3-repent",
+      "kind": "condition",
+      "title": "Study 3: “Repent” sign",
+      "studyIds": [
+        "study3"
+      ],
+      "fields": [
+        {
+          "id": "assignment",
+          "label": "Assignment",
+          "value": "One of two sign versions; the assignment rule is not stated",
+          "origin": "reported",
+          "state": "missing",
+          "evidenceIds": [
+            "ev_s3_repent"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s3_repent"
+      ],
+      "conditionIds": [
+        "cond-s3-repent"
+      ]
+    },
+    {
+      "id": "cond-s4-eat",
+      "kind": "condition",
+      "title": "Study 4: “Eat at Joe’s” sign",
+      "studyIds": [
+        "study4"
+      ],
+      "fields": [
+        {
+          "id": "assignment",
+          "label": "Assignment",
+          "value": "Sign version as in the field conflict; participants were asked to wear it or withdraw",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s4_n",
+            "ev_s4_privately"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s4_n"
+      ],
+      "conditionIds": [
+        "cond-s4-eat"
+      ]
+    },
+    {
+      "id": "cond-s4-repent",
+      "kind": "condition",
+      "title": "Study 4: “Repent” sign",
+      "studyIds": [
+        "study4"
+      ],
+      "fields": [
+        {
+          "id": "assignment",
+          "label": "Assignment",
+          "value": "Sign version as in the field conflict; participants were asked to wear it or withdraw",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s4_n",
+            "ev_s4_privately"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s4_n"
+      ],
+      "conditionIds": [
+        "cond-s4-repent"
+      ]
+    },
+    {
+      "id": "participants-s1",
+      "kind": "participants",
+      "title": "Study 1 participants",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "setting",
+          "label": "Setting",
+          "value": "Stanford undergraduates",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_n"
+          ]
+        },
+        {
+          "id": "n-recruited",
+          "label": "Sample (randomised/recruited)",
+          "value": 320,
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_n"
+          ]
+        },
+        {
+          "id": "n-analysed",
+          "label": "Sample analysed",
+          "value": "320 (80 per story); Table 1 n for choices range 16–64 per option",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_table1"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_n",
+        "ev_s1_table1"
+      ]
+    },
+    {
+      "id": "participants-s2",
+      "kind": "participants",
+      "title": "Study 2 participants",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "setting",
+          "label": "Setting",
+          "value": "Stanford undergraduates",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s2_method"
+          ]
+        },
+        {
+          "id": "n-recruited",
+          "label": "Sample",
+          "value": 80,
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s2_method"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s2_method"
+      ]
+    },
+    {
+      "id": "participants-s3",
+      "kind": "participants",
+      "title": "Study 3 participants",
+      "studyIds": [
+        "study3"
+      ],
+      "fields": [
+        {
+          "id": "setting",
+          "label": "Setting",
+          "value": "Stanford undergraduates",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s3_n"
+          ]
+        },
+        {
+          "id": "n-recruited",
+          "label": "Sample",
+          "value": 104,
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s3_n"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s3_n"
+      ]
+    },
+    {
+      "id": "participants-s4",
+      "kind": "participants",
+      "title": "Study 4 participants",
+      "studyIds": [
+        "study4"
+      ],
+      "fields": [
+        {
+          "id": "setting",
+          "label": "Setting",
+          "value": "Stanford undergraduates who volunteered for an experiment on communication techniques, in groups of two to five",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s4_n"
+          ]
+        },
+        {
+          "id": "n-recruited",
+          "label": "Sample",
+          "value": 80,
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s4_n"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s4_n"
+      ]
+    },
+    {
+      "id": "material-s1-stories",
+      "kind": "material",
+      "title": "Study 1 stories and consensus questions",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "transcription",
+          "label": "Transcription",
+          "value": "Full verbatim text in sources/materials/study_1_hypothetical_stories.json (four items). Printed in the paper at pages 3–4.",
+          "origin": "verbatim",
+          "state": "check",
+          "evidenceIds": [
+            "ev_s1_method"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_method"
+      ]
+    },
+    {
+      "id": "material-s3-sandwich",
+      "kind": "material",
+      "title": "Study 3 sandwich-board story and consensus question",
+      "studyIds": [
+        "study3"
+      ],
+      "fields": [
+        {
+          "id": "consensus-question",
+          "label": "Consensus question",
+          "value": "What % of your peers do you estimate would agree to carry the sandwich board around campus?-% What % would refuse to carry it?-% (Total should be 100%)",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s3_sandwich_q"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s3_sandwich_q"
+      ]
+    },
+    {
+      "id": "variable-consensus",
+      "kind": "variable",
+      "title": "Perceived consensus (percent of peers choosing each option)",
+      "studyIds": [
+        "study1",
+        "study2",
+        "study3",
+        "study4"
+      ],
+      "fields": [
+        {
+          "id": "role",
+          "label": "Role",
+          "value": "dv",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_hyp"
+          ]
+        },
+        {
+          "id": "type",
+          "label": "Type",
+          "value": "continuous percentage estimate",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_method"
+          ]
+        },
+        {
+          "id": "observation-unit",
+          "label": "Observation unit",
+          "value": "one rater (one data row per participant per story or item)",
+          "origin": "derived",
+          "state": "check",
+          "evidenceIds": [
+            "ev_s1_method"
+          ],
+          "derivation": "Each participant gives estimates for one story (Studies 1, 3, 4) or for each item (Study 2)."
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_method",
+        "ev_s1_hyp"
+      ]
+    },
+    {
+      "id": "variable-trait",
+      "kind": "variable",
+      "title": "Trait inference rating of a typical person",
+      "studyIds": [
+        "study1",
+        "study3",
+        "study4"
+      ],
+      "fields": [
+        {
+          "id": "role",
+          "label": "Role",
+          "value": "dv",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_trait"
+          ]
+        },
+        {
+          "id": "type",
+          "label": "Type",
+          "value": "100-point Likert-type rating scale centred on 0; analysed as absolute discrepancy from the midpoint",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_scale"
+          ]
+        },
+        {
+          "id": "observation-unit",
+          "label": "Observation unit",
+          "value": "one rater x one typical actor x trait",
+          "origin": "derived",
+          "state": "check",
+          "evidenceIds": [
+            "ev_s1_scale"
+          ],
+          "derivation": "Study 1 averages four trait ratings per story per option; Study 3 averages eight traits."
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_scale",
+        "ev_s1_trait"
+      ]
+    },
+    {
+      "id": "variable-own-choice",
+      "kind": "variable",
+      "title": "Rater’s own choice",
+      "studyIds": [
+        "study1",
+        "study3",
+        "study4"
+      ],
+      "fields": [
+        {
+          "id": "role",
+          "label": "Role",
+          "value": "iv",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_hyp"
+          ]
+        },
+        {
+          "id": "type",
+          "label": "Type",
+          "value": "categorical (two options)",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_method"
+          ]
+        },
+        {
+          "id": "observation-unit",
+          "label": "Observation unit",
+          "value": "one rater",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_method"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_method"
+      ]
+    },
+    {
+      "id": "record-s1",
+      "kind": "record",
+      "title": "Study 1 record: one rater per story",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "observation-unit",
+          "label": "Observation unit",
+          "value": "rater",
+          "origin": "derived",
+          "state": "check",
+          "evidenceIds": [
+            "ev_s1_method"
+          ],
+          "derivation": "One questionnaire per participant."
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_method"
+      ]
+    },
+    {
+      "id": "analysis-s1-consensus",
+      "kind": "analysis",
+      "title": "Study 1: ANOVA of consensus estimate by own choice",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "aim",
+          "label": "Aim",
+          "value": "Test whether own choice predicts perceived consensus",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_hyp"
+          ]
+        },
+        {
+          "id": "method",
+          "label": "Method",
+          "value": "ANOVA with story as fixed variable; main effect of rater’s choice",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_f_consensus"
+          ]
+        },
+        {
+          "id": "robustness",
+          "label": "Robustness",
+          "value": "Story treated as random variable reduces F to 10.1 (p = .05)",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_random"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_f_consensus",
+        "ev_s1_random"
+      ]
+    },
+    {
+      "id": "analysis-s1-trait",
+      "kind": "analysis",
+      "title": "Study 1: ANOVA of trait-rating difference by own choice",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "aim",
+          "label": "Aim",
+          "value": "Test whether own choice predicts trait-inference difference",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_hyp2"
+          ]
+        },
+        {
+          "id": "method",
+          "label": "Method",
+          "value": "ANOVA with story as fixed variable on the difference in trait ratings between options",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_trait"
+          ]
+        },
+        {
+          "id": "robustness",
+          "label": "Robustness",
+          "value": "Covariance analysis with consensus estimates as covariate reduces the effect (reported for two stories only)",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_cov"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_trait",
+        "ev_s1_cov"
+      ]
+    },
+    {
+      "id": "analysis-s2",
+      "kind": "analysis",
+      "title": "Study 2: item-wise comparisons of consensus estimates",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "aim",
+          "label": "Aim",
+          "value": "Test the false consensus hypothesis for each person description item",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s2_hyp"
+          ]
+        },
+        {
+          "id": "method",
+          "label": "Method",
+          "value": "Difference in mean estimates between raters placing themselves in category 1 vs category 2, per item; test statistic not restated in text",
+          "origin": "reported",
+          "state": "check",
+          "evidenceIds": [
+            "ev_s2_hyp"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s2_hyp"
+      ]
+    },
+    {
+      "id": "analysis-s3s4",
+      "kind": "analysis",
+      "title": "Studies 3 and 4: ANOVA of consensus and trait ratings by own choice",
+      "studyIds": [
+        "study3",
+        "study4"
+      ],
+      "fields": [
+        {
+          "id": "aim",
+          "label": "Aim",
+          "value": "Test the two hypotheses in the hypothetical (Study 3) and real (Study 4) conflict",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s34_hyp"
+          ]
+        },
+        {
+          "id": "method",
+          "label": "Method",
+          "value": "Consensus estimates (Table 4) and trait ratings (Table 5) compared by rater’s own choice, per sign and combined",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s34_table4",
+            "ev_s34_table5"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s34_table4",
+        "ev_s34_table5"
+      ]
+    },
+    {
+      "id": "result-s1-consensus",
+      "kind": "result",
+      "title": "Study 1 consensus: main effect of rater’s choice",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "result_kind",
+          "label": "Result kind",
+          "value": "reported",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_f_consensus"
+          ]
+        },
+        {
+          "id": "effect",
+          "label": "Effect",
+          "value": "F(1,312) = 49.1, p < .001; story × choice interaction trivial, F(1,312) = 1.37, p > .10",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_f_consensus"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_f_consensus"
+      ]
+    },
+    {
+      "id": "result-s1-trait",
+      "kind": "result",
+      "title": "Study 1 trait ratings: main effect of own choice",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "result_kind",
+          "label": "Result kind",
+          "value": "reported",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_trait"
+          ]
+        },
+        {
+          "id": "effect",
+          "label": "Effect",
+          "value": "F(1,312) = 37.40, p < .001; Story × choice interaction F(3,312) = 3.71, p < .05",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_trait"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_trait"
+      ]
+    },
+    {
+      "id": "result-s2",
+      "kind": "result",
+      "title": "Study 2: direction of predicted effect across 34 items",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "result_kind",
+          "label": "Result kind",
+          "value": "reported",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s2_result"
+          ]
+        },
+        {
+          "id": "effect",
+          "label": "Effect",
+          "value": "Predicted direction in 32 of 34 items; 17 significant at p < .10, 11 at p < .01",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s2_result",
+            "ev_s2_sig"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s2_result",
+        "ev_s2_sig"
+      ]
+    },
+    {
+      "id": "result-s34-consensus",
+      "kind": "result",
+      "title": "Studies 3 and 4 consensus estimates (Table 4)",
+      "studyIds": [
+        "study3",
+        "study4"
+      ],
+      "fields": [
+        {
+          "id": "result_kind",
+          "label": "Result kind",
+          "value": "reported",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s34_table4"
+          ]
+        },
+        {
+          "id": "effect",
+          "label": "Effect",
+          "value": "Study 3 combined: wear-sign raters 61.4% vs not-wear raters 30.4% for wear-sign estimate (F = 56.2); Study 4 combined: 62.2% vs 33.0% (F = 26.47)",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s34_table4"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s34_table4"
+      ]
+    },
+    {
+      "id": "result-s34-trait",
+      "kind": "result",
+      "title": "Studies 3 and 4 trait ratings (Table 5)",
+      "studyIds": [
+        "study3",
+        "study4"
+      ],
+      "fields": [
+        {
+          "id": "result_kind",
+          "label": "Result kind",
+          "value": "reported",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s34_table5"
+          ]
+        },
+        {
+          "id": "effect",
+          "label": "Effect",
+          "value": "Study 3 combined difference +60.4 (t = 17.79); Study 4 combined difference +32.9 for not-wear raters (t = 8.93)",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s34_table5"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s34_table5"
+      ]
+    },
+    {
+      "id": "finding-main",
+      "kind": "finding",
+      "title": "Finding: own choices bias perceived consensus and trait inference",
+      "studyIds": [],
+      "fields": [
+        {
+          "id": "answer",
+          "label": "Answer",
+          "value": "Raters’ perceptions of consensus and their trait inferences reflect their own behavioural choices across questionnaire and authentic conflict situations.",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s34_discussion"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s34_discussion"
+      ]
+    },
+    {
+      "id": "limit-main",
+      "kind": "limitation",
+      "title": "Validity and limitations reported by the authors",
+      "studyIds": [],
+      "fields": [
+        {
+          "id": "limitations",
+          "label": "Limitations",
+          "value": "Trait-rating effects were not independent of consensus estimates; covariance analyses reduced the F ratios and the effect was no longer significant for most stories and both final studies.",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "ev_s1_cov"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_cov"
+      ]
+    },
+    {
+      "id": "sim-scope",
+      "kind": "simulation",
+      "title": "Simulation scope (implementation assessment)",
+      "studyIds": [],
+      "fields": [
+        {
+          "id": "steps",
+          "label": "Steps",
+          "value": "Each original participant replays the story, consensus estimate, own choice and trait ratings",
+          "origin": "implementation",
+          "state": "check",
+          "evidenceIds": [
+            "ev_s1_method"
+          ]
+        },
+        {
+          "id": "readiness",
+          "label": "Readiness",
+          "value": "blocked until rating scale anchors and assignment rules are provided",
+          "origin": "implementation",
+          "state": "missing",
+          "evidenceIds": []
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_method"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "s1-read-story",
+      "studyId": "study1",
+      "kind": "sequence",
+      "title": "Study 1: read story and estimate peer consensus",
+      "actorIds": [
+        "participants-s1"
+      ],
+      "inputIds": [
+        "material-s1-stories"
+      ],
+      "outputIds": [
+        "variable-consensus"
+      ],
+      "visibleIds": [
+        "material-s1-stories"
+      ],
+      "children": [],
+      "next": [
+        {
+          "to": "s1-own-choice"
+        }
+      ],
+      "evidenceIds": [
+        "ev_s1_method"
+      ],
+      "conditionIds": [
+        "cond-s1-supermarket",
+        "cond-s1-termpaper",
+        "cond-s1-traffic",
+        "cond-s1-space"
+      ]
+    },
+    {
+      "id": "s1-own-choice",
+      "studyId": "study1",
+      "kind": "action",
+      "title": "Study 1: indicate own choice, self-ratings and typical-person ratings (order varied)",
+      "actorIds": [
+        "participants-s1"
+      ],
+      "inputIds": [
+        "variable-own-choice"
+      ],
+      "outputIds": [
+        "variable-trait"
+      ],
+      "visibleIds": [
+        "material-s1-stories"
+      ],
+      "children": [],
+      "next": [],
+      "evidenceIds": [
+        "ev_s1_order"
+      ],
+      "conditionIds": [
+        "cond-s1-supermarket",
+        "cond-s1-termpaper",
+        "cond-s1-traffic",
+        "cond-s1-space"
+      ]
+    },
+    {
+      "id": "s2-categorise",
+      "studyId": "study2",
+      "kind": "action",
+      "title": "Study 2: categorise self and estimate college students in general for each item",
+      "actorIds": [
+        "participants-s2"
+      ],
+      "inputIds": [],
+      "outputIds": [
+        "variable-consensus"
+      ],
+      "visibleIds": [],
+      "children": [],
+      "next": [],
+      "evidenceIds": [
+        "ev_s2_method"
+      ]
+    },
+    {
+      "id": "s3-sandwich-choice",
+      "studyId": "study3",
+      "kind": "sequence",
+      "title": "Study 3: read sandwich board story, estimate consensus, choose own response",
+      "actorIds": [
+        "participants-s3"
+      ],
+      "inputIds": [
+        "material-s3-sandwich"
+      ],
+      "outputIds": [
+        "variable-consensus",
+        "variable-own-choice"
+      ],
+      "visibleIds": [
+        "material-s3-sandwich"
+      ],
+      "children": [],
+      "next": [
+        {
+          "to": "s3-trait-ratings"
+        }
+      ],
+      "evidenceIds": [
+        "ev_s3_sandwich_q"
+      ],
+      "conditionIds": [
+        "cond-s3-eat",
+        "cond-s3-repent"
+      ]
+    },
+    {
+      "id": "s3-trait-ratings",
+      "studyId": "study3",
+      "kind": "action",
+      "title": "Study 3: rate self, typical agreeing person and typical refusing person (order counterbalanced)",
+      "actorIds": [
+        "participants-s3"
+      ],
+      "inputIds": [],
+      "outputIds": [
+        "variable-trait"
+      ],
+      "visibleIds": [],
+      "children": [],
+      "next": [],
+      "evidenceIds": [
+        "ev_s3_n"
+      ],
+      "conditionIds": [
+        "cond-s3-eat",
+        "cond-s3-repent"
+      ]
+    },
+    {
+      "id": "s4-field-request",
+      "studyId": "study4",
+      "kind": "interaction",
+      "title": "Study 4: experimenter requests sandwich board wearing; participant chooses privately",
+      "actorIds": [
+        "participants-s4"
+      ],
+      "inputIds": [],
+      "outputIds": [
+        "variable-own-choice"
+      ],
+      "visibleIds": [],
+      "children": [],
+      "next": [
+        {
+          "to": "s4-consensus-traits"
+        }
+      ],
+      "evidenceIds": [
+        "ev_s4_privately"
+      ],
+      "conditionIds": [
+        "cond-s4-eat",
+        "cond-s4-repent"
+      ]
+    },
+    {
+      "id": "s4-consensus-traits",
+      "studyId": "study4",
+      "kind": "action",
+      "title": "Study 4: estimate peer consensus and rate two supposedly real previous participants",
+      "actorIds": [
+        "participants-s4"
+      ],
+      "inputIds": [],
+      "outputIds": [
+        "variable-consensus",
+        "variable-trait"
+      ],
+      "visibleIds": [],
+      "children": [],
+      "next": [],
+      "evidenceIds": [
+        "ev_s4_targets"
+      ],
+      "conditionIds": [
+        "cond-s4-eat",
+        "cond-s4-repent"
+      ]
+    }
+  ],
+  "relations": [],
+  "evidence": [
+    {
+      "id": "ev_title",
+      "sourceId": "paper",
+      "locator": {
+        "page": 1
+      },
+      "quote": "The “False Consensus Effect”: An Egocentric Bias",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_abstract",
+      "sourceId": "paper",
+      "locator": {
+        "page": 1
+      },
+      "quote": "Evidence from four studies demonstrates that social observers tend to perceive a",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s1_method",
+      "sourceId": "paper",
+      "locator": {
+        "page": 3
+      },
+      "quote": "Study 1 presented subjects with questionnaires containing one of four brief stories",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s1_n",
+      "sourceId": "paper",
+      "locator": {
+        "page": 3
+      },
+      "quote": "A total of 320 Stanford undergraduates (80 for each of",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s1_hyp",
+      "sourceId": "paper",
+      "locator": {
+        "page": 5
+      },
+      "quote": "Subjects who “choose” a particular hypothetical response will rate that response as",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s1_hyp2",
+      "sourceId": "paper",
+      "locator": {
+        "page": 5
+      },
+      "quote": "Subjects who “choose” a specified response will use less extreme and less confident",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s1_scale",
+      "sourceId": "paper",
+      "locator": {
+        "page": 5
+      },
+      "quote": "For each trait a IOO-point rating scale was used",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s1_order",
+      "sourceId": "paper",
+      "locator": {
+        "page": 4
+      },
+      "quote": "The order of these three rating sheets was systematically",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s1_f_consensus",
+      "sourceId": "paper",
+      "locator": {
+        "page": 6
+      },
+      "quote": "the main effect of Rater’s Choice was highly significant",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s1_table1",
+      "sourceId": "paper",
+      "locator": {
+        "page": 5
+      },
+      "quote": "PERCEIVED CONSENSUS: ESTIMATED COMMONNESS OF OWN AND ALTERNATIVE",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s1_random",
+      "sourceId": "paper",
+      "locator": {
+        "page": 7
+      },
+      "quote": "the F ratio for the main effect of Rater’s Choice is reduced to 10.1",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s1_trait",
+      "sourceId": "paper",
+      "locator": {
+        "page": 7
+      },
+      "quote": "subject’s own behavioral choice upon the difference in trait ratings is highly",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s1_cov",
+      "sourceId": "paper",
+      "locator": {
+        "page": 18
+      },
+      "quote": "the effects were clearly significant for analyses of covariance",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s2_method",
+      "sourceId": "paper",
+      "locator": {
+        "page": 8
+      },
+      "quote": "A total of 80 Stanford undergraduates completed a questionnaire dealing with 35 person description items",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s2_hyp",
+      "sourceId": "paper",
+      "locator": {
+        "page": 8
+      },
+      "quote": "The hypothesis in Study 2 was simply that subjects who placed themselves in a given",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s2_result",
+      "sourceId": "paper",
+      "locator": {
+        "page": 8
+      },
+      "quote": "the difference in percentage estimates was in the predicted direction for 32 of the 34 items",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s2_sig",
+      "sourceId": "paper",
+      "locator": {
+        "page": 8
+      },
+      "quote": "Of the items showing the predicted effect, 17 produced differences significant",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s3_n",
+      "sourceId": "paper",
+      "locator": {
+        "page": 11
+      },
+      "quote": "In Study 3 a total of 104 Stanford undergraduates read one of two",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s3_sandwich_q",
+      "sourceId": "paper",
+      "locator": {
+        "page": 12
+      },
+      "quote": "What % of your peers do you estimate would agree to carry the sandwich board",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s3_repent",
+      "sourceId": "paper",
+      "locator": {
+        "page": 12
+      },
+      "quote": "The second version of the story differed only in that the relevant sign read “Repent,” rather",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s3_hyp",
+      "sourceId": "paper",
+      "locator": {
+        "page": 14
+      },
+      "quote": "It was predicted first that subjects would perceive a false consensus for",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s4_n",
+      "sourceId": "paper",
+      "locator": {
+        "page": 12
+      },
+      "quote": "A total of 80 Stanford undergraduates, participating in groups of two",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s4_privately",
+      "sourceId": "paper",
+      "locator": {
+        "page": 13
+      },
+      "quote": "Subjects were then asked to indicate, privately, their choice to wear the sign as the",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s4_targets",
+      "sourceId": "paper",
+      "locator": {
+        "page": 13
+      },
+      "quote": "instead they were asked tojudge the traits of two supposedly real individuals",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s34_table4",
+      "sourceId": "paper",
+      "locator": {
+        "page": 14
+      },
+      "quote": "PERCEIVED CONSENSUS: ESTIMATED COMMONNESS OF OWN AND ALTERNATIVE",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s34_table5",
+      "sourceId": "paper",
+      "locator": {
+        "page": 16
+      },
+      "quote": "TRAIT RATINGS: RATERS’ INFERENCES ABOUT PERSONAL DISPOSITIONS OF “TYPICAL",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s34_discussion",
+      "sourceId": "paper",
+      "locator": {
+        "page": 16
+      },
+      "quote": "Considered together, Studies 1, 3, and 4 offer strong support for the",
+      "verification": "verified"
+    },
+    {
+      "id": "ev_s34_hyp",
+      "sourceId": "paper",
+      "locator": {
+        "page": 14
+      },
+      "quote": "It was predicted first that subjects would perceive a false consensus for",
+      "verification": "verified"
+    }
+  ],
+  "issues": [
+    {
+      "id": "iss-s3-assignment",
+      "title": "Study 3 assignment to sign version",
+      "severity": "decision",
+      "reason": "The paper says subjects read one of two versions but does not state how versions were assigned.",
+      "impact": "Condition sample sizes cannot be replayed without a rule.",
+      "suggestedAction": "Researcher to supply the assignment rule or confirm it was unspecified.",
+      "studyId": "study3",
+      "nodeId": "cond-s3-eat",
+      "evidenceIds": [
+        "ev_s3_repent"
+      ]
+    },
+    {
+      "id": "iss-s3-scales",
+      "title": "Study 3 trait scale anchors",
+      "severity": "check",
+      "reason": "The paper states the scales were essentially similar to Study 1 and lists the eight traits, but does not print the anchors.",
+      "impact": "Trait rating prompts are incomplete.",
+      "suggestedAction": "Confirm anchors match Study 1 anchors.",
+      "studyId": "study3",
+      "evidenceIds": [
+        "ev_s3_n"
+      ]
+    },
+    {
+      "id": "iss-s4-script",
+      "title": "Study 4 experimenter script",
+      "severity": "check",
+      "reason": "The paper gives a slightly expanded version of the experimenter script rather than the full wording.",
+      "impact": "Verbatim replay of the field request is incomplete.",
+      "suggestedAction": "Researcher to supply the exact script if available.",
+      "studyId": "study4",
+      "evidenceIds": [
+        "ev_s4_privately"
+      ],
+      "stepId": "s4-field-request"
+    },
+    {
+      "id": "iss-s1-order",
+      "title": "Study 1 questionnaire order",
+      "severity": "check",
+      "reason": "The order of the three rating sheets was systematically varied; the order rule is not described further.",
+      "impact": "Replay order of sheets is not fixed by the paper.",
+      "suggestedAction": "Keep order as a counterbalanced factor.",
+      "studyId": "study1",
+      "stepId": "s1-own-choice",
+      "evidenceIds": [
+        "ev_s1_order"
+      ]
+    },
+    {
+      "id": "iss-s2-test",
+      "title": "Study 2 test statistic",
+      "severity": "check",
+      "reason": "The item-wise significance is reported but the test statistic per item is not restated in the text.",
+      "impact": "Analysis step cannot be fully specified.",
+      "suggestedAction": "Use item-wise test as reported.",
+      "studyId": "study2",
+      "nodeId": "analysis-s2",
+      "evidenceIds": [
+        "ev_s2_hyp"
+      ]
+    },
+    {
+      "id": "auto-cond-s3-repent-assignment",
+      "severity": "check",
+      "evidenceIds": [],
+      "title": "Review: Assignment",
+      "reason": "\"Assignment\" is missing from the source.",
+      "impact": "The replay cannot rely on this value until a researcher resolves it.",
+      "suggestedAction": "Supply or confirm the value.",
+      "nodeId": "cond-s3-repent",
+      "fieldId": "assignment"
+    },
+    {
+      "id": "auto-sim-scope-readiness",
+      "severity": "check",
+      "evidenceIds": [],
+      "title": "Review: Readiness",
+      "reason": "\"Readiness\" is missing from the source.",
+      "impact": "The replay cannot rely on this value until a researcher resolves it.",
+      "suggestedAction": "Supply or confirm the value.",
+      "nodeId": "sim-scope",
+      "fieldId": "readiness"
+    }
+  ]
+}

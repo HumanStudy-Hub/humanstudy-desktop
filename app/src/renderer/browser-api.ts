@@ -4,6 +4,7 @@
 import type { TelemetryRecent, TelemetryRow, TelemetryStatus, TelemetryTrackOptions } from '../preload/types'
 import type { AccountStatus, CommunityStudy, CommunityStudyDetail, HumanStudyApi, KernelEvent, KernelInstallStatus, MenuCommand, PermissionReply, Thread, ThreadMessage, ThreadPart, ProjectSnapshot, ProjectSummary, ProviderStatus, Settings } from '../preload/types'
 import sample from '../shared/sample-program.json'
+import brokenProgram from '../shared/fixtures/fce-broken.json'
 
 // Preview flags (all optional, combine freely):
 //   ?project=empty    a new project: paper.pdf only, no study yet
@@ -122,7 +123,7 @@ if (!('humanstudy' in window)) {
   const snapshot: ProjectSnapshot = {
     dir: '/preview/knobe-2003',
     name: mode === 'empty' ? 'Untitled study' : 'Knobe 2003 · browser preview',
-    program: mode === 'empty' ? null : sample,
+    program: mode === 'empty' ? null : new URLSearchParams(location.search).get('program') === 'broken' ? brokenProgram : sample, // ?program=broken: a program with agent slips
     artifacts: [],
     exports: [],
     pdf: { name: 'paper.pdf', path: '/preview/paper.pdf', url: '/preview/paper.pdf', ext: 'pdf' },

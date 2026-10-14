@@ -107,6 +107,11 @@ holds scientific information only, never layout coordinates. Root: `schemaVersio
 - Limit: 500 KB UTF-8. Keep large instruments and raw data in resource files under `sources/`
   and reference them; never clip them.
 
+**Program self-check.** After ANY write to `program.json` (build, refine, an edit on request) run
+`python .opencode/skills/build/check_program.py program.json` and fix until it prints `PASS`.
+It reports every problem with a fix hint (ids that do not exist, a step id in an issue's
+`nodeId`, an unresolved field or rule without a review issue).
+
 ## Intent
 
 - `reconstruct`: preserve the published design.

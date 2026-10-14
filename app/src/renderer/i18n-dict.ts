@@ -43,6 +43,8 @@ const ROWS: Row[] = [
   // ---- study tab
   ['study.empty_title', 'No study yet', '还没有研究'],
   ['study.empty_body', 'Ask the agent in the chat to build the study from the paper. It appears here as soon as it is written.', '在左侧聊天中让助手根据论文构建研究，写好后会立刻显示在这里。'],
+  ['study.problems', 'The study file has {n} formatting problems; they were set aside.', '研究文件有 {n} 处格式问题，已暂时忽略'],
+  ['study.fix', 'Ask the agent to fix', '让助手修复'],
   ['study.unreadable', 'The study document could not be read', '无法读取研究文档'],
   ['file.reveal', 'Show in Finder', '在访达中显示'],
   ['artifact.open_named', 'Open {title} on the right', '在右侧打开“{title}”'],

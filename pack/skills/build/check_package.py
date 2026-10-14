@@ -58,6 +58,13 @@ def main() -> None:
     program = study.get("program")
     if not isinstance(program, dict):
         fail("study.json has no program object (study.json.program must hold the Human Program)")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from check_program import check as check_program  # same rules as the app's validateHumanProgram
+
+    bad = check_program(program)
+    if bad:
+        fail("program has problems:\n" + "\n".join(f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
+    print("ok   program passes check_program.py")
     if args.program is not None:
         canonical = json.loads(args.program.read_text(encoding="utf-8"))
         if canonical != program:

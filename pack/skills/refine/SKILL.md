@@ -11,7 +11,9 @@ Never edit the accepted file in place. Write a proposal beside it and let the re
 
 1. Read `program.json` and the item(s) the researcher refers to (ids, selected text, page).
 2. Write the complete revised program to `program.proposed.json`. Validate it against
-   `schema/human-program.schema.json`.
+   `schema/human-program.schema.json` and run
+   `python .opencode/skills/build/check_program.py program.proposed.json` until it passes; after
+   accepting, run it again on `program.json`.
 3. Change only what was asked. Keep every unaffected id, field and evidence record identical.
 4. Classify each change:
    - **Correction to match the source** (`reconstruct`): fix the field, keep or add evidence with

@@ -1,0 +1,2147 @@
+{
+  "schemaVersion": 2,
+  "id": "knobe-2003-intentional-action",
+  "title": "Intentional Action and Side-Effects in Ordinary Language",
+  "intent": "reconstruct",
+  "source": {
+    "title": "Intentional Action and Side-Effects in Ordinary Language",
+    "authors": "Joshua Knobe",
+    "filename": "paper.pdf"
+  },
+  "studies": [
+    {
+      "id": "study1",
+      "title": "Experiment 1: chairman and the environment (N = 78)",
+      "type": "empirical",
+      "description": "Corporate vignette; harm vs help, between subjects."
+    },
+    {
+      "id": "study2",
+      "title": "Experiment 2: lieutenant and the squad (N = 42)",
+      "type": "empirical",
+      "description": "Military vignette; harm vs help, between subjects."
+    },
+    {
+      "id": "study3",
+      "title": "Pooled analysis of praise and blame ratings",
+      "type": "analysis",
+      "description": "Ratings from both experiments combined.",
+      "dependsOn": [
+        "study1",
+        "study2"
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": "bg_question",
+      "kind": "background",
+      "title": "Question: are side-effects brought about intentionally?",
+      "studyIds": [],
+      "fields": [
+        {
+          "id": "question",
+          "label": "Question addressed",
+          "value": "The question I want to address here is: Shall we say that the chairman brought about this side-effect intentionally?",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_question"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_question"
+      ]
+    },
+    {
+      "id": "hyp_valence",
+      "kind": "hypothesis",
+      "title": "Judgements depend on whether the side-effect is good or bad",
+      "studyIds": [],
+      "fields": [
+        {
+          "id": "statement",
+          "label": "Hypothesis as stated",
+          "value": "People’s judgements will depend in a crucial way on what x happens to be. In particular, it will make a great deal of difference whether they think that x is something good or something bad.",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_hyp"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_hyp"
+      ]
+    },
+    {
+      "id": "des_s1",
+      "kind": "design",
+      "title": "Experiment 1 design",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "design_type",
+          "label": "Design",
+          "value": "Between-subjects; each subject randomly assigned to the harm condition or the help condition",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_assign"
+          ]
+        },
+        {
+          "id": "setting",
+          "label": "Story setting",
+          "value": "Corporate: a chairman of the board and the environment",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_harm_vig"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_assign"
+      ]
+    },
+    {
+      "id": "part_s1",
+      "kind": "participants",
+      "title": "Experiment 1 participants",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "population",
+          "label": "Population",
+          "value": "Subjects were 78 people spending time in a Manhattan public park.",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_n"
+          ]
+        },
+        {
+          "id": "n_total",
+          "label": "Number of subjects",
+          "value": 78,
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_n",
+            "e_s1_chi"
+          ],
+          "derivation": "The text gives 78 subjects and the chi-square test reports N = 78, so randomized and analysed numbers are both reported as 78; no exclusions are mentioned."
+        },
+        {
+          "id": "composition",
+          "label": "Subjects per condition, demographics, exclusions",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": [
+            "e_s1_n"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_n"
+      ]
+    },
+    {
+      "id": "c_s1_harm",
+      "kind": "condition",
+      "title": "Experiment 1: harm condition",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "definition",
+          "label": "Definition",
+          "value": "Chairman’s program will harm the environment; subjects judge blame and whether the chairman intentionally harmed the environment",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_harm_vig",
+            "e_s1_harm_dv"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_harm_vig",
+        "e_s1_harm_dv"
+      ]
+    },
+    {
+      "id": "c_s1_help",
+      "kind": "condition",
+      "title": "Experiment 1: help condition",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "definition",
+          "label": "Definition",
+          "value": "Same vignette with ‘harm’ replaced by ‘help’; subjects judge praise and whether the chairman intentionally helped the environment",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_help_def",
+            "e_s1_help_dv"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_help_def",
+        "e_s1_help_dv"
+      ]
+    },
+    {
+      "id": "mat_s1_harm",
+      "kind": "material",
+      "title": "Experiment 1 vignette, harm condition",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "vignette",
+          "label": "Vignette text",
+          "value": "The vice-president of a company went to the chairman of the board\n\nand said, ‘We are thinking of starting a new program. It will help us\n\nincrease profits, but it will also harm the environment.’\n\nThe chairman of the board answered, ‘I don’t care at all about\n\nharming the environment. I just want to make as much profit as I\n\ncan. Let’s start the new program.’\n\nThey started the new program. Sure enough, the environment was\n\nharmed.",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_harm_vig"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_harm_vig"
+      ],
+      "conditionIds": [
+        "c_s1_harm"
+      ]
+    },
+    {
+      "id": "mat_s1_help",
+      "kind": "material",
+      "title": "Experiment 1 vignette, help condition",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "vignette",
+          "label": "Vignette text",
+          "value": "The vice-president of a company went to the chairman of the board\n\nand said, ‘We are thinking of starting a new program. It will help us\n\nincrease profits, and it will also help the environment.’\n\nThe chairman of the board answered, ‘I don’t care at all about\n\nhelping the environment. I just want to make as much profit as I\n\ncan. Let’s start the new program.’\n\nThey started the new program. Sure enough, the environment was\n\nhelped.",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_help_vig"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_help_vig"
+      ],
+      "conditionIds": [
+        "c_s1_help"
+      ]
+    },
+    {
+      "id": "dv_s1",
+      "kind": "material",
+      "title": "Experiment 1 questions asked after the vignette",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "rating_description",
+          "label": "Rating question (as described in the paper)",
+          "value": "Harm condition: how much blame the chairman deserved for what he did (scale 0 to 6). Help condition: how much praise the chairman deserved (scale 0 to 6).",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_harm_dv",
+            "e_s1_help_dv"
+          ]
+        },
+        {
+          "id": "intentional_description",
+          "label": "Intentionality question (as described in the paper)",
+          "value": "Harm condition: whether they thought the chairman intentionally harmed the environment. Help condition: whether they thought the chairman intentionally helped the environment.",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_harm_dv",
+            "e_s1_help_dv"
+          ]
+        },
+        {
+          "id": "question_wording",
+          "label": "Exact wording of both questions and response options shown to subjects",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": [
+            "e_s1_harm_dv",
+            "e_s1_help_dv"
+          ]
+        },
+        {
+          "id": "question_order",
+          "label": "Order in which the two questions were presented",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": [
+            "e_s1_harm_dv",
+            "e_s1_help_dv"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_harm_dv",
+        "e_s1_help_dv"
+      ]
+    },
+    {
+      "id": "var_s1_cond",
+      "kind": "variable",
+      "title": "Experiment 1 condition",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "role",
+          "label": "Role",
+          "value": "independent",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_assign"
+          ]
+        },
+        {
+          "id": "type",
+          "label": "Type",
+          "value": "categorical: harm, help",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_assign"
+          ]
+        },
+        {
+          "id": "observation-unit",
+          "label": "Observation unit",
+          "value": "participant",
+          "origin": "derived",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_assign"
+          ],
+          "derivation": "Each subject was assigned to one condition."
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_assign"
+      ]
+    },
+    {
+      "id": "var_s1_rating",
+      "kind": "variable",
+      "title": "Experiment 1 blame/praise rating",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "role",
+          "label": "Role",
+          "value": "dependent",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_harm_dv"
+          ]
+        },
+        {
+          "id": "type",
+          "label": "Type",
+          "value": "rating scale",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_harm_dv",
+            "e_s1_help_dv"
+          ]
+        },
+        {
+          "id": "observation-unit",
+          "label": "Observation unit",
+          "value": "participant",
+          "origin": "derived",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_harm_dv"
+          ],
+          "derivation": "One rating per subject."
+        },
+        {
+          "id": "definition",
+          "label": "Definition",
+          "value": "Blame deserved by the chairman (harm condition) or praise deserved (help condition)",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_harm_dv",
+            "e_s1_help_dv"
+          ]
+        },
+        {
+          "id": "range",
+          "label": "Scale range",
+          "value": "from 0 to 6",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_harm_dv",
+            "e_s1_help_dv"
+          ]
+        },
+        {
+          "id": "anchors",
+          "label": "Scale endpoint labels and whether only integers were allowed",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": [
+            "e_s1_harm_dv"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_harm_dv",
+        "e_s1_help_dv"
+      ]
+    },
+    {
+      "id": "var_s1_intent",
+      "kind": "variable",
+      "title": "Experiment 1 intentionality judgement",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "role",
+          "label": "Role",
+          "value": "dependent",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_pct"
+          ]
+        },
+        {
+          "id": "type",
+          "label": "Type",
+          "value": "dichotomous: said the side-effect was brought about intentionally / said it was not",
+          "origin": "derived",
+          "state": "check",
+          "evidenceIds": [
+            "e_s1_pct"
+          ],
+          "derivation": "The paper reports the percentage who said the agent did, and the percentage who said the agent did not, bring about the side-effect intentionally; the response options themselves are not printed."
+        },
+        {
+          "id": "observation-unit",
+          "label": "Observation unit",
+          "value": "participant",
+          "origin": "derived",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_pct"
+          ],
+          "derivation": "One judgement per subject."
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_pct",
+        "e_s1_harm_dv"
+      ]
+    },
+    {
+      "id": "des_s2",
+      "kind": "design",
+      "title": "Experiment 2 design",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "design_type",
+          "label": "Design",
+          "value": "Between-subjects; each subject randomly assigned to the harm condition or the help condition",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_assign"
+          ]
+        },
+        {
+          "id": "setting",
+          "label": "Story setting",
+          "value": "Military: a lieutenant, a sergeant and a squad of soldiers",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_struct"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_struct",
+        "e_s2_assign"
+      ]
+    },
+    {
+      "id": "part_s2",
+      "kind": "participants",
+      "title": "Experiment 2 participants",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "population",
+          "label": "Population",
+          "value": "Subjects were 42 people spending time in a Manhattan public park.",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_n"
+          ]
+        },
+        {
+          "id": "n_total",
+          "label": "Number of subjects",
+          "value": 42,
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_n",
+            "e_s2_chi"
+          ],
+          "derivation": "The text gives 42 subjects and the chi-square test reports N = 42; no exclusions are mentioned."
+        },
+        {
+          "id": "composition",
+          "label": "Subjects per condition, demographics, exclusions, and whether Experiment 2 subjects differ from Experiment 1 subjects",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": [
+            "e_s2_n"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_n"
+      ]
+    },
+    {
+      "id": "c_s2_harm",
+      "kind": "condition",
+      "title": "Experiment 2: harm condition",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "definition",
+          "label": "Definition",
+          "value": "Lieutenant’s order moves soldiers into the line of fire; subjects judge blame and whether he intentionally put the soldiers in the line of fire",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_harm_vig",
+            "e_s2_harm_dv"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_harm_vig",
+        "e_s2_harm_dv"
+      ]
+    },
+    {
+      "id": "c_s2_help",
+      "kind": "condition",
+      "title": "Experiment 2: help condition",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "definition",
+          "label": "Definition",
+          "value": "Lieutenant’s order takes soldiers out of the line of fire; subjects judge praise and whether he intentionally took the soldiers out of the line of fire",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_help_def",
+            "e_s2_help_dv"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_help_def",
+        "e_s2_help_dv"
+      ]
+    },
+    {
+      "id": "mat_s2_harm",
+      "kind": "material",
+      "title": "Experiment 2 vignette, harm condition",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "vignette",
+          "label": "Vignette text (source spelling and typographical slips retained)",
+          "value": "A lieutenant was talking with a sergeant. The lieutenant gave the\n\norder: ‘Send your squad to the top of Thompson Hill.’\n\nThe seargent said: ‘But if I send my the squad to the top of\n\nThompson Hill, we’ll be moving the men directly into the enemy’s\n\nline of fire. Some of them will surely be killed!’\n\nThe lieutenant answered: ‘Look, I know that they’ll be in the line of\n\nfire, and I know that some of them will be killed. But I don’t care at\n\nall about what happens to our soldiers. All I care about is taking\n\ncontrol of Thompson Hill.’\n\nThe squad was sent to the top of Thompson Hill. As expected, the\n\nsoldiers were moved into the enemy’s line of fire, and some of them\n\nwere killed.",
+          "origin": "verbatim",
+          "state": "check",
+          "evidenceIds": [
+            "e_s2_harm_vig"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_harm_vig"
+      ],
+      "conditionIds": [
+        "c_s2_harm"
+      ]
+    },
+    {
+      "id": "mat_s2_help",
+      "kind": "material",
+      "title": "Experiment 2 vignette, help condition",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "vignette",
+          "label": "Vignette text (source spelling retained)",
+          "value": "A lieutenant was talking with a seargent. The lieutenant gave the\n\norder: ‘Send your squad to the top of Thompson Hill.’\n\nThe seargent said: ‘If I send my squad to the top of Thompson Hill,\n\nwe’ll be taking the men out of the enemy’s line of fire. They’ll be\n\nrescued!’\n\nThe lieutenant answered: ‘Look, I know that we’ll be taking them out\n\nof the line of fire, and I know that some of them would have been\n\nkilled otherwise. But I don’t care at all about what happens to our\n\nsoldiers. All I care about is taking control of Thompson Hill.’\n\nThe squad was sent to the top of Thompson Hill. As expected, the\n\nsoldiers were taken out of the enemy’s line of fire, and they thereby\n\nescaped getting killed.",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_help_vig"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_help_vig"
+      ],
+      "conditionIds": [
+        "c_s2_help"
+      ]
+    },
+    {
+      "id": "dv_s2",
+      "kind": "material",
+      "title": "Experiment 2 questions asked after the vignette",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "rating_description",
+          "label": "Rating question (as described in the paper)",
+          "value": "Harm condition: how much blame the lieutenant deserved for what he did. Help condition: how much praise the lieutenant deserved for what he did.",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_harm_dv",
+            "e_s2_help_dv"
+          ]
+        },
+        {
+          "id": "intentional_description",
+          "label": "Intentionality question (as described in the paper)",
+          "value": "Harm condition: whether or not he intentionally put the soldiers in the line of fire. Help condition: whether or not he intentionally took the soldiers out of the line of fire.",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_harm_dv",
+            "e_s2_help_dv"
+          ]
+        },
+        {
+          "id": "question_wording",
+          "label": "Exact wording of both questions and response options shown to subjects",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": [
+            "e_s2_harm_dv",
+            "e_s2_help_dv"
+          ]
+        },
+        {
+          "id": "question_order",
+          "label": "Order in which the two questions were presented",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": [
+            "e_s2_harm_dv",
+            "e_s2_help_dv"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_harm_dv",
+        "e_s2_help_dv"
+      ]
+    },
+    {
+      "id": "var_s2_cond",
+      "kind": "variable",
+      "title": "Experiment 2 condition",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "role",
+          "label": "Role",
+          "value": "independent",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_assign"
+          ]
+        },
+        {
+          "id": "type",
+          "label": "Type",
+          "value": "categorical: harm, help",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_assign"
+          ]
+        },
+        {
+          "id": "observation-unit",
+          "label": "Observation unit",
+          "value": "participant",
+          "origin": "derived",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_assign"
+          ],
+          "derivation": "Each subject was assigned to one condition."
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_assign"
+      ]
+    },
+    {
+      "id": "var_s2_rating",
+      "kind": "variable",
+      "title": "Experiment 2 blame/praise rating",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "role",
+          "label": "Role",
+          "value": "dependent",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_harm_dv"
+          ]
+        },
+        {
+          "id": "type",
+          "label": "Type",
+          "value": "rating",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_harm_dv",
+            "e_s2_help_dv"
+          ]
+        },
+        {
+          "id": "observation-unit",
+          "label": "Observation unit",
+          "value": "participant",
+          "origin": "derived",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_harm_dv"
+          ],
+          "derivation": "One rating per subject."
+        },
+        {
+          "id": "definition",
+          "label": "Definition",
+          "value": "Blame deserved by the lieutenant (harm condition) or praise deserved (help condition)",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_harm_dv",
+            "e_s2_help_dv"
+          ]
+        },
+        {
+          "id": "scale",
+          "label": "Scale range, endpoint labels and integer constraint for Experiment 2",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": [
+            "e_s2_harm_dv",
+            "e_s3_comb"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_harm_dv",
+        "e_s2_help_dv"
+      ]
+    },
+    {
+      "id": "var_s2_intent",
+      "kind": "variable",
+      "title": "Experiment 2 intentionality judgement",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "role",
+          "label": "Role",
+          "value": "dependent",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_pct"
+          ]
+        },
+        {
+          "id": "type",
+          "label": "Type",
+          "value": "dichotomous: said the side-effect was brought about intentionally / said it was not",
+          "origin": "derived",
+          "state": "check",
+          "evidenceIds": [
+            "e_s2_pct"
+          ],
+          "derivation": "The paper reports the percentage who said the agent did, and the percentage who said the agent did not, bring about the side-effect intentionally; the response options themselves are not printed."
+        },
+        {
+          "id": "observation-unit",
+          "label": "Observation unit",
+          "value": "participant",
+          "origin": "derived",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_pct"
+          ],
+          "derivation": "One judgement per subject."
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_pct",
+        "e_s2_harm_dv"
+      ]
+    },
+    {
+      "id": "instr",
+      "kind": "material",
+      "title": "Instructions and presentation format",
+      "studyIds": [
+        "study1",
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "instructions",
+          "label": "Instructions given to subjects and how the vignette and questions were presented (paper, interview, screen)",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": [
+            "e_s1_harm_vig",
+            "e_s2_harm_vig"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_harm_vig",
+        "e_s2_harm_vig"
+      ]
+    },
+    {
+      "id": "an_s1_chi2",
+      "kind": "analysis",
+      "title": "Experiment 1: harm vs help on intentionality (chi-square)",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "test",
+          "label": "Test",
+          "value": "χ2(1, N = 78): share saying the side-effect was brought about intentionally, harm vs help",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_chi"
+          ]
+        },
+        {
+          "id": "correction",
+          "label": "Continuity correction",
+          "value": "Not stated. The reported χ2 = 27.2 is consistent with an uncorrected test on equal cells of 39 (32/39 vs 9/39 saying intentional).",
+          "origin": "derived",
+          "state": "check",
+          "evidenceIds": [
+            "e_s1_pct",
+            "e_s1_chi"
+          ],
+          "derivation": "Computed from 82% and 77% (not) intentional with N = 78 under an assumed equal split; the cell sizes are not reported."
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_chi",
+        "e_s1_pct"
+      ]
+    },
+    {
+      "id": "an_s2_chi2",
+      "kind": "analysis",
+      "title": "Experiment 2: harm vs help on intentionality (chi-square)",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "test",
+          "label": "Test",
+          "value": "χ2(1, N = 42): share saying the side-effect was brought about intentionally, harm vs help",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_chi"
+          ]
+        },
+        {
+          "id": "correction",
+          "label": "Continuity correction",
+          "value": "Not stated. The reported χ2 = 9.5 is consistent with an uncorrected test on equal cells of 21 (16/21 vs 6/21 saying intentional).",
+          "origin": "derived",
+          "state": "check",
+          "evidenceIds": [
+            "e_s2_pct",
+            "e_s2_chi"
+          ],
+          "derivation": "Computed from 77% and 70% (not) intentional with N = 42 under an assumed equal split; the cell sizes are not reported and the printed percentages are only approximately consistent with it."
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_chi",
+        "e_s2_pct"
+      ]
+    },
+    {
+      "id": "an_s3_t",
+      "kind": "analysis",
+      "title": "Pooled: blame in harm condition vs praise in help condition (t test)",
+      "studyIds": [
+        "study3"
+      ],
+      "fields": [
+        {
+          "id": "test",
+          "label": "Test",
+          "value": "t(120) comparing blame ratings (harm condition) with praise ratings (help condition), ratings from the two experiments combined",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s3_comb",
+            "e_s3_t"
+          ]
+        },
+        {
+          "id": "variant",
+          "label": "Form of the t test (independent samples, variance assumption) and the reason the reported df is 120",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": [
+            "e_s3_t"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s3_comb",
+        "e_s3_t"
+      ]
+    },
+    {
+      "id": "an_s3_r",
+      "kind": "analysis",
+      "title": "Pooled: correlation of praise/blame with intentionality judgement",
+      "studyIds": [
+        "study3"
+      ],
+      "fields": [
+        {
+          "id": "test",
+          "label": "Test",
+          "value": "r(120): correlation between the total amount of praise or blame offered and the judgement about whether the side-effect was brought about intentionally",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s3_r"
+          ]
+        },
+        {
+          "id": "coding",
+          "label": "Coding of the intentionality judgement and kind of correlation",
+          "value": null,
+          "origin": "unknown",
+          "state": "missing",
+          "evidenceIds": [
+            "e_s3_r"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s3_r"
+      ]
+    },
+    {
+      "id": "res_s1",
+      "kind": "result",
+      "title": "Experiment 1 reported result",
+      "studyIds": [
+        "study1"
+      ],
+      "fields": [
+        {
+          "id": "result_kind",
+          "label": "Result kind",
+          "value": "reported",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_pct",
+            "e_s1_chi"
+          ]
+        },
+        {
+          "id": "harm_intentional",
+          "label": "Harm condition: said intentional",
+          "value": "82%",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_pct"
+          ]
+        },
+        {
+          "id": "help_not_intentional",
+          "label": "Help condition: said not intentional",
+          "value": "77%",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_pct"
+          ]
+        },
+        {
+          "id": "help_intentional",
+          "label": "Help condition: said intentional",
+          "value": "23%",
+          "origin": "derived",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_pct"
+          ],
+          "derivation": "100% − 77%, assuming every subject answered yes or no."
+        },
+        {
+          "id": "statistic",
+          "label": "Statistic",
+          "value": "χ2(1, N = 78) = 27.2, p < .001",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s1_chi"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_pct",
+        "e_s1_chi"
+      ]
+    },
+    {
+      "id": "res_s2",
+      "kind": "result",
+      "title": "Experiment 2 reported result",
+      "studyIds": [
+        "study2"
+      ],
+      "fields": [
+        {
+          "id": "result_kind",
+          "label": "Result kind",
+          "value": "reported",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_pct",
+            "e_s2_chi"
+          ]
+        },
+        {
+          "id": "harm_intentional",
+          "label": "Harm condition: said intentional",
+          "value": "77%",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_pct"
+          ]
+        },
+        {
+          "id": "help_not_intentional",
+          "label": "Help condition: said not intentional",
+          "value": "70%",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_pct"
+          ]
+        },
+        {
+          "id": "help_intentional",
+          "label": "Help condition: said intentional",
+          "value": "30%",
+          "origin": "derived",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_pct"
+          ],
+          "derivation": "100% − 70%, assuming every subject answered yes or no."
+        },
+        {
+          "id": "statistic",
+          "label": "Statistic",
+          "value": "χ2(1, N = 42) = 9.5, p < .01",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s2_chi"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_pct",
+        "e_s2_chi"
+      ]
+    },
+    {
+      "id": "res_s3_t",
+      "kind": "result",
+      "title": "Pooled reported result: blame vs praise",
+      "studyIds": [
+        "study3"
+      ],
+      "fields": [
+        {
+          "id": "result_kind",
+          "label": "Result kind",
+          "value": "reported",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s3_t"
+          ]
+        },
+        {
+          "id": "means",
+          "label": "Means",
+          "value": "blame in harm condition M = 4.8; praise in help condition M = 1.4",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s3_t"
+          ]
+        },
+        {
+          "id": "statistic",
+          "label": "Statistic",
+          "value": "t (120)= 8.4, p < .001",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s3_t"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s3_t"
+      ]
+    },
+    {
+      "id": "res_s3_r",
+      "kind": "result",
+      "title": "Pooled reported result: praise/blame and intentionality",
+      "studyIds": [
+        "study3"
+      ],
+      "fields": [
+        {
+          "id": "result_kind",
+          "label": "Result kind",
+          "value": "reported",
+          "origin": "reported",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s3_r"
+          ]
+        },
+        {
+          "id": "statistic",
+          "label": "Statistic",
+          "value": "r (120) = .53, p < .001",
+          "origin": "verbatim",
+          "state": "confirmed",
+          "evidenceIds": [
+            "e_s3_r"
+          ]
+        }
+      ],
+      "evidenceIds": [
+        "e_s3_r"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "s1_assign",
+      "studyId": "study1",
+      "kind": "branch",
+      "title": "Random assignment to harm or help condition",
+      "actorIds": [
+        "part_s1"
+      ],
+      "inputIds": [
+        "des_s1"
+      ],
+      "outputIds": [
+        "var_s1_cond"
+      ],
+      "visibleIds": [],
+      "children": [],
+      "next": [
+        {
+          "to": "s1_read_harm",
+          "when": "assigned to the harm condition"
+        },
+        {
+          "to": "s1_read_help",
+          "when": "assigned to the help condition"
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_assign"
+      ]
+    },
+    {
+      "id": "s1_read_harm",
+      "studyId": "study1",
+      "kind": "action",
+      "title": "Subject reads the harm-condition vignette",
+      "actorIds": [
+        "part_s1"
+      ],
+      "inputIds": [
+        "mat_s1_harm"
+      ],
+      "outputIds": [],
+      "visibleIds": [
+        "mat_s1_harm"
+      ],
+      "children": [],
+      "next": [
+        {
+          "to": "s1_respond_harm"
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_harm_vig"
+      ],
+      "conditionIds": [
+        "c_s1_harm"
+      ]
+    },
+    {
+      "id": "s1_respond_harm",
+      "studyId": "study1",
+      "kind": "action",
+      "title": "Subject gives blame/praise rating and intentionality judgement (harm)",
+      "actorIds": [
+        "part_s1"
+      ],
+      "inputIds": [
+        "dv_s1"
+      ],
+      "outputIds": [
+        "var_s1_rating",
+        "var_s1_intent"
+      ],
+      "visibleIds": [
+        "mat_s1_harm",
+        "dv_s1"
+      ],
+      "children": [],
+      "next": [],
+      "evidenceIds": [
+        "e_s1_harm_dv"
+      ],
+      "conditionIds": [
+        "c_s1_harm"
+      ]
+    },
+    {
+      "id": "s1_read_help",
+      "studyId": "study1",
+      "kind": "action",
+      "title": "Subject reads the help-condition vignette",
+      "actorIds": [
+        "part_s1"
+      ],
+      "inputIds": [
+        "mat_s1_help"
+      ],
+      "outputIds": [],
+      "visibleIds": [
+        "mat_s1_help"
+      ],
+      "children": [],
+      "next": [
+        {
+          "to": "s1_respond_help"
+        }
+      ],
+      "evidenceIds": [
+        "e_s1_help_vig"
+      ],
+      "conditionIds": [
+        "c_s1_help"
+      ]
+    },
+    {
+      "id": "s1_respond_help",
+      "studyId": "study1",
+      "kind": "action",
+      "title": "Subject gives blame/praise rating and intentionality judgement (help)",
+      "actorIds": [
+        "part_s1"
+      ],
+      "inputIds": [
+        "dv_s1"
+      ],
+      "outputIds": [
+        "var_s1_rating",
+        "var_s1_intent"
+      ],
+      "visibleIds": [
+        "mat_s1_help",
+        "dv_s1"
+      ],
+      "children": [],
+      "next": [],
+      "evidenceIds": [
+        "e_s1_help_dv"
+      ],
+      "conditionIds": [
+        "c_s1_help"
+      ]
+    },
+    {
+      "id": "s2_assign",
+      "studyId": "study2",
+      "kind": "branch",
+      "title": "Random assignment to harm or help condition",
+      "actorIds": [
+        "part_s2"
+      ],
+      "inputIds": [
+        "des_s2"
+      ],
+      "outputIds": [
+        "var_s2_cond"
+      ],
+      "visibleIds": [],
+      "children": [],
+      "next": [
+        {
+          "to": "s2_read_harm",
+          "when": "assigned to the harm condition"
+        },
+        {
+          "to": "s2_read_help",
+          "when": "assigned to the help condition"
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_assign"
+      ]
+    },
+    {
+      "id": "s2_read_harm",
+      "studyId": "study2",
+      "kind": "action",
+      "title": "Subject reads the harm-condition vignette",
+      "actorIds": [
+        "part_s2"
+      ],
+      "inputIds": [
+        "mat_s2_harm"
+      ],
+      "outputIds": [],
+      "visibleIds": [
+        "mat_s2_harm"
+      ],
+      "children": [],
+      "next": [
+        {
+          "to": "s2_respond_harm"
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_harm_vig"
+      ],
+      "conditionIds": [
+        "c_s2_harm"
+      ]
+    },
+    {
+      "id": "s2_respond_harm",
+      "studyId": "study2",
+      "kind": "action",
+      "title": "Subject gives blame/praise rating and intentionality judgement (harm)",
+      "actorIds": [
+        "part_s2"
+      ],
+      "inputIds": [
+        "dv_s2"
+      ],
+      "outputIds": [
+        "var_s2_rating",
+        "var_s2_intent"
+      ],
+      "visibleIds": [
+        "mat_s2_harm",
+        "dv_s2"
+      ],
+      "children": [],
+      "next": [],
+      "evidenceIds": [
+        "e_s2_harm_dv"
+      ],
+      "conditionIds": [
+        "c_s2_harm"
+      ]
+    },
+    {
+      "id": "s2_read_help",
+      "studyId": "study2",
+      "kind": "action",
+      "title": "Subject reads the help-condition vignette",
+      "actorIds": [
+        "part_s2"
+      ],
+      "inputIds": [
+        "mat_s2_help"
+      ],
+      "outputIds": [],
+      "visibleIds": [
+        "mat_s2_help"
+      ],
+      "children": [],
+      "next": [
+        {
+          "to": "s2_respond_help"
+        }
+      ],
+      "evidenceIds": [
+        "e_s2_help_vig"
+      ],
+      "conditionIds": [
+        "c_s2_help"
+      ]
+    },
+    {
+      "id": "s2_respond_help",
+      "studyId": "study2",
+      "kind": "action",
+      "title": "Subject gives blame/praise rating and intentionality judgement (help)",
+      "actorIds": [
+        "part_s2"
+      ],
+      "inputIds": [
+        "dv_s2"
+      ],
+      "outputIds": [
+        "var_s2_rating",
+        "var_s2_intent"
+      ],
+      "visibleIds": [
+        "mat_s2_help",
+        "dv_s2"
+      ],
+      "children": [],
+      "next": [],
+      "evidenceIds": [
+        "e_s2_help_dv"
+      ],
+      "conditionIds": [
+        "c_s2_help"
+      ]
+    },
+    {
+      "id": "s1_analyse",
+      "studyId": "study1",
+      "kind": "action",
+      "title": "Compare harm and help on intentionality",
+      "actorIds": [],
+      "inputIds": [
+        "var_s1_cond",
+        "var_s1_intent"
+      ],
+      "outputIds": [
+        "an_s1_chi2"
+      ],
+      "visibleIds": [],
+      "children": [],
+      "next": [],
+      "evidenceIds": [
+        "e_s1_chi"
+      ]
+    },
+    {
+      "id": "s2_analyse",
+      "studyId": "study2",
+      "kind": "action",
+      "title": "Compare harm and help on intentionality",
+      "actorIds": [],
+      "inputIds": [
+        "var_s2_cond",
+        "var_s2_intent"
+      ],
+      "outputIds": [
+        "an_s2_chi2"
+      ],
+      "visibleIds": [],
+      "children": [],
+      "next": [],
+      "evidenceIds": [
+        "e_s2_chi"
+      ]
+    },
+    {
+      "id": "s3_combine",
+      "studyId": "study3",
+      "kind": "action",
+      "title": "Combine ratings from both experiments and test",
+      "actorIds": [],
+      "inputIds": [
+        "var_s1_cond",
+        "var_s1_rating",
+        "var_s1_intent",
+        "var_s2_cond",
+        "var_s2_rating",
+        "var_s2_intent"
+      ],
+      "outputIds": [
+        "an_s3_t",
+        "an_s3_r"
+      ],
+      "visibleIds": [],
+      "children": [],
+      "next": [],
+      "evidenceIds": [
+        "e_s3_comb",
+        "e_s3_t",
+        "e_s3_r"
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "id": "rel1",
+      "from": "an_s1_chi2",
+      "to": "res_s1",
+      "type": "reports"
+    },
+    {
+      "id": "rel2",
+      "from": "an_s1_chi2",
+      "to": "var_s1_cond",
+      "type": "uses"
+    },
+    {
+      "id": "rel3",
+      "from": "an_s1_chi2",
+      "to": "var_s1_intent",
+      "type": "uses"
+    },
+    {
+      "id": "rel4",
+      "from": "hyp_valence",
+      "to": "an_s1_chi2",
+      "type": "tested_by"
+    },
+    {
+      "id": "rel5",
+      "from": "an_s2_chi2",
+      "to": "res_s2",
+      "type": "reports"
+    },
+    {
+      "id": "rel6",
+      "from": "an_s2_chi2",
+      "to": "var_s2_cond",
+      "type": "uses"
+    },
+    {
+      "id": "rel7",
+      "from": "an_s2_chi2",
+      "to": "var_s2_intent",
+      "type": "uses"
+    },
+    {
+      "id": "rel8",
+      "from": "hyp_valence",
+      "to": "an_s2_chi2",
+      "type": "tested_by"
+    },
+    {
+      "id": "rel9",
+      "from": "an_s3_t",
+      "to": "res_s3_t",
+      "type": "reports"
+    },
+    {
+      "id": "rel10",
+      "from": "an_s3_t",
+      "to": "var_s1_rating",
+      "type": "uses"
+    },
+    {
+      "id": "rel11",
+      "from": "an_s3_t",
+      "to": "var_s2_rating",
+      "type": "uses"
+    },
+    {
+      "id": "rel12",
+      "from": "an_s3_t",
+      "to": "var_s1_cond",
+      "type": "uses"
+    },
+    {
+      "id": "rel13",
+      "from": "an_s3_t",
+      "to": "var_s2_cond",
+      "type": "uses"
+    },
+    {
+      "id": "rel14",
+      "from": "hyp_valence",
+      "to": "an_s3_t",
+      "type": "tested_by"
+    },
+    {
+      "id": "rel15",
+      "from": "an_s3_r",
+      "to": "res_s3_r",
+      "type": "reports"
+    },
+    {
+      "id": "rel16",
+      "from": "an_s3_r",
+      "to": "var_s1_rating",
+      "type": "uses"
+    },
+    {
+      "id": "rel17",
+      "from": "an_s3_r",
+      "to": "var_s2_rating",
+      "type": "uses"
+    },
+    {
+      "id": "rel18",
+      "from": "an_s3_r",
+      "to": "var_s1_intent",
+      "type": "uses"
+    },
+    {
+      "id": "rel19",
+      "from": "an_s3_r",
+      "to": "var_s2_intent",
+      "type": "uses"
+    },
+    {
+      "id": "rel20",
+      "from": "hyp_valence",
+      "to": "an_s3_r",
+      "type": "tested_by"
+    }
+  ],
+  "evidence": [
+    {
+      "id": "e_question",
+      "locator": {
+        "page": 1
+      },
+      "quote": "The question I want to address here is: Shall we say that the chairman brought about this side-effect intentionally?",
+      "verification": "verified"
+    },
+    {
+      "id": "e_hyp",
+      "locator": {
+        "page": 3
+      },
+      "quote": "People’s judgements will depend in a crucial way on what x happens to be. In particular, it will make a great deal of difference whether they think that x is something good or something bad.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s1_n",
+      "locator": {
+        "page": 3
+      },
+      "quote": "Subjects were 78 people spending time in a Manhattan public park.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s1_assign",
+      "locator": {
+        "page": 3
+      },
+      "quote": "Each subject was randomly assigned to either the ‘harm condition’ or the ‘help condition’.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s1_harm_vig",
+      "locator": {
+        "page": 3
+      },
+      "quote": "The vice-president of a company went to the chairman of the board and said, ‘We are thinking of starting a new program. It will help us increase profits, but it will also harm the environment.’ The chairman of the board answered, ‘I don’t care at all about harming the environment. I just want to make as much profit as I can. Let’s start the new program.’ They started the new program. Sure enough, the environment was harmed.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s1_harm_dv",
+      "locator": {
+        "page": 3
+      },
+      "quote": "These subjects were then asked to determine how much blame the chairman deserved for what he did (on a scale from 0 to 6) and to say whether they thought the chairman intentionally harmed the environment.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s1_help_def",
+      "locator": {
+        "page": 3
+      },
+      "quote": "Subjects in the help condition received a vignette that was exactly the same, except that the word ‘harm’ was replaced by ‘help’:",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s1_help_vig",
+      "locator": {
+        "page": 4
+      },
+      "quote": "The vice-president of a company went to the chairman of the board and said, ‘We are thinking of starting a new program. It will help us increase profits, and it will also help the environment.’ The chairman of the board answered, ‘I don’t care at all about helping the environment. I just want to make as much profit as I can. Let’s start the new program.’ They started the new program. Sure enough, the environment was helped.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s1_help_dv",
+      "locator": {
+        "page": 4
+      },
+      "quote": "These subjects were then asked to determine how much praise the chairman deserved (on a scale from 0 to 6) and whether they thought the chairman intentionally helped the environment.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s1_pct",
+      "locator": {
+        "page": 4
+      },
+      "quote": "In the harm condition, most subjects (82%) said that the agent brought about the side-effect intentionally, whereas in the help condition, most subjects (77%) said that the agent did not bring about the side-effect intentionally.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s1_chi",
+      "locator": {
+        "page": 4
+      },
+      "quote": "This difference was highly statistically significant χ2(1, N = 78) = 27.2, p < .001.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s2_intro",
+      "locator": {
+        "page": 4
+      },
+      "quote": "To test the generality of the effect, I therefore ran a second experiment.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s2_struct",
+      "locator": {
+        "page": 5
+      },
+      "quote": "second experiment had the same basic structure as those used in experiment 1, but the story was transposed from a corporate setting (with a chairman affecting the environment) to a military setting (with a lieutenant affecting a squad of soldiers).",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s2_n",
+      "locator": {
+        "page": 5
+      },
+      "quote": "Subjects were 42 people spending time in a Manhattan public park.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s2_assign",
+      "locator": {
+        "page": 5
+      },
+      "quote": "Once again, subjects were randomly assigned to either a ‘harm condition’ or a ‘help condition.’",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s2_harm_vig",
+      "locator": {
+        "page": 5
+      },
+      "quote": "A lieutenant was talking with a sergeant. The lieutenant gave the order: ‘Send your squad to the top of Thompson Hill.’ The seargent said: ‘But if I send my the squad to the top of Thompson Hill, we’ll be moving the men directly into the enemy’s line of fire. Some of them will surely be killed!’ The lieutenant answered: ‘Look, I know that they’ll be in the line of fire, and I know that some of them will be killed. But I don’t care at all about what happens to our soldiers. All I care about is taking control of Thompson Hill.’ The squad was sent to the top of Thompson Hill. As expected, the soldiers were moved into the enemy’s line of fire, and some of them were killed.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s2_harm_dv",
+      "locator": {
+        "page": 5
+      },
+      "quote": "These subjects were then asked to determine how much blame the lieutenant deserved for what he did and whether or not he intentionally put the soldiers in the line of fire.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s2_help_def",
+      "locator": {
+        "page": 5
+      },
+      "quote": "Subjects in the help condition received a quite similar vignette:",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s2_help_vig",
+      "locator": {
+        "page": 6
+      },
+      "quote": "A lieutenant was talking with a seargent. The lieutenant gave the order: ‘Send your squad to the top of Thompson Hill.’ The seargent said: ‘If I send my squad to the top of Thompson Hill, we’ll be taking the men out of the enemy’s line of fire. They’ll be rescued!’ The lieutenant answered: ‘Look, I know that we’ll be taking them out of the line of fire, and I know that some of them would have been killed otherwise. But I don’t care at all about what happens to our soldiers. All I care about is taking control of Thompson Hill.’ The squad was sent to the top of Thompson Hill. As expected, the soldiers were taken out of the enemy’s line of fire, and they thereby escaped getting killed.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s2_help_dv",
+      "locator": {
+        "page": 6
+      },
+      "quote": "These subjects were then asked to determine how much praise the lieutenant deserved for what he did and whether or not he intentionally took the soldiers out of the line of fire.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s2_pct",
+      "locator": {
+        "page": 6
+      },
+      "quote": "In the harm condition, most (77%) subjects said that the agent brought about the side-effect intentionally, whereas in the help condition most (70%) subjects said that the agent did not bring about the side-effect intentionally.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s2_chi",
+      "locator": {
+        "page": 6
+      },
+      "quote": "This difference was statistically significant, χ2(1, N = 42) = 9.5, p < .01.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s3_comb",
+      "locator": {
+        "page": 7
+      },
+      "quote": "combined the praise and blame ratings from the two experiments and ran a new series of tests.",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s3_t",
+      "locator": {
+        "page": 7
+      },
+      "quote": "Overall, subjects said that the agent deserved a lot of blame in the harm condition (M = 4.8) but very little praise in the help condition (M = 1.4), t (120)= 8.4, p < .001",
+      "verification": "verified"
+    },
+    {
+      "id": "e_s3_r",
+      "locator": {
+        "page": 7
+      },
+      "quote": "the total amount of praise or blame that subjects offered was correlated with their judgements about whether or not the side-effect was brought about intentionally, r (120) = .53, p < .001.",
+      "verification": "verified"
+    }
+  ],
+  "issues": [
+    {
+      "id": "iss_wording_s1",
+      "title": "Experiment 1: exact question wording and response options not printed",
+      "severity": "blocking",
+      "reason": "The paper only describes the questions (“determine how much blame the chairman deserved … (on a scale from 0 to 6) and to say whether they thought the chairman intentionally harmed the environment”). The wording shown to subjects, and the response options of the intentionality question, are not given.",
+      "impact": "Agent participants cannot be asked the original questions without inventing an instrument; the replay cannot run.",
+      "suggestedAction": "Supply the printed question texts and response options for the harm and help conditions (for example from Knobe’s materials) as verbatim text.",
+      "evidenceIds": [
+        "e_s1_harm_dv",
+        "e_s1_help_dv"
+      ],
+      "studyId": "study1",
+      "nodeId": "dv_s1",
+      "fieldId": "question_wording"
+    },
+    {
+      "id": "iss_wording_s2",
+      "title": "Experiment 2: exact question wording and response options not printed",
+      "severity": "blocking",
+      "reason": "The paper only describes the questions (“how much blame the lieutenant deserved for what he did and whether or not he intentionally put the soldiers in the line of fire”). The wording shown to subjects and the response options are not given.",
+      "impact": "Agent participants cannot be asked the original questions without inventing an instrument; the replay cannot run.",
+      "suggestedAction": "Supply the printed question texts and response options for the harm and help conditions as verbatim text.",
+      "evidenceIds": [
+        "e_s2_harm_dv",
+        "e_s2_help_dv"
+      ],
+      "studyId": "study2",
+      "nodeId": "dv_s2",
+      "fieldId": "question_wording"
+    },
+    {
+      "id": "iss_order_s1",
+      "title": "Experiment 1: order of the two questions not stated",
+      "severity": "decision",
+      "reason": "The text mentions the blame/praise question before the intentionality question but does not say this was the presentation order, or whether it was fixed or varied.",
+      "impact": "Question order could affect responses; no execution order is stated.",
+      "suggestedAction": "Supply the original order, or decide on a replay order and record it as a researcher decision.",
+      "evidenceIds": [
+        "e_s1_harm_dv"
+      ],
+      "studyId": "study1",
+      "nodeId": "dv_s1",
+      "fieldId": "question_order"
+    },
+    {
+      "id": "iss_order_s2",
+      "title": "Experiment 2: order of the two questions not stated",
+      "severity": "decision",
+      "reason": "Same as Experiment 1: the order of the blame/praise and intentionality questions is not stated.",
+      "impact": "Question order could affect responses; no execution order is stated.",
+      "suggestedAction": "Supply the original order, or decide on a replay order and record it as a researcher decision.",
+      "evidenceIds": [
+        "e_s2_harm_dv"
+      ],
+      "studyId": "study2",
+      "nodeId": "dv_s2",
+      "fieldId": "question_order"
+    },
+    {
+      "id": "iss_anchors_s1",
+      "title": "Experiment 1: blame/praise scale endpoint labels not given",
+      "severity": "decision",
+      "reason": "Only “on a scale from 0 to 6” is stated. Labels for 0 and 6, and whether only whole numbers were allowed, are not given.",
+      "impact": "The response format of the rating cannot be reproduced exactly.",
+      "suggestedAction": "Supply the printed scale with its anchors.",
+      "evidenceIds": [
+        "e_s1_harm_dv"
+      ],
+      "studyId": "study1",
+      "nodeId": "var_s1_rating",
+      "fieldId": "anchors"
+    },
+    {
+      "id": "iss_scale_s2",
+      "title": "Experiment 2: blame/praise scale not stated",
+      "severity": "decision",
+      "reason": "The Experiment 2 text does not state a scale for blame or praise. The pooled analysis combines ratings from both experiments, which suggests the same 0 to 6 scale, but the paper does not say so.",
+      "impact": "The response format of the Experiment 2 rating cannot be reproduced without an assumption.",
+      "suggestedAction": "Confirm whether Experiment 2 used the same 0 to 6 scale and supply the anchors.",
+      "evidenceIds": [
+        "e_s2_harm_dv",
+        "e_s3_comb"
+      ],
+      "studyId": "study2",
+      "nodeId": "var_s2_rating",
+      "fieldId": "scale"
+    },
+    {
+      "id": "iss_instr",
+      "title": "Instructions and mode of presentation not reported",
+      "severity": "decision",
+      "reason": "The paper does not report any instructions to subjects, or whether the vignette and questions were presented on paper, orally or on screen, or whether the vignette stayed visible while answering.",
+      "impact": "The replay prompt needs framing text that the paper does not provide; it is added as an implementation adaptation (see package task.json) rather than as a source fact.",
+      "suggestedAction": "Supply the original instructions and presentation, or approve the minimal replay framing.",
+      "evidenceIds": [
+        "e_s1_harm_vig"
+      ],
+      "studyId": "study1",
+      "nodeId": "instr",
+      "fieldId": "instructions"
+    },
+    {
+      "id": "iss_comp_s1",
+      "title": "Experiment 1: subjects per condition and demographics not reported",
+      "severity": "check",
+      "reason": "Only the total of 78 is given. Cell sizes, age, gender and exclusions are not reported.",
+      "impact": "The replay uses equal cell sizes by adaptation; the original split is unknown.",
+      "suggestedAction": "Supply cell sizes and demographics if available.",
+      "evidenceIds": [
+        "e_s1_n"
+      ],
+      "studyId": "study1",
+      "nodeId": "part_s1",
+      "fieldId": "composition"
+    },
+    {
+      "id": "iss_comp_s2",
+      "title": "Experiment 2: subjects per condition and demographics not reported",
+      "severity": "check",
+      "reason": "Only the total of 42 is given. Cell sizes, age, gender and exclusions are not reported, and the paper does not say whether any subjects also took part in Experiment 1.",
+      "impact": "The replay uses equal cell sizes by adaptation; the original split is unknown.",
+      "suggestedAction": "Supply cell sizes, demographics and whether samples overlapped, if available.",
+      "evidenceIds": [
+        "e_s2_n"
+      ],
+      "studyId": "study2",
+      "nodeId": "part_s2",
+      "fieldId": "composition"
+    },
+    {
+      "id": "iss_typos_s2",
+      "title": "Experiment 2 harm vignette contains source typographical slips",
+      "severity": "check",
+      "reason": "The printed harm vignette mixes “sergeant” (first sentence) with “seargent”, and contains “if I send my the squad”; the printed help vignette uses “seargent” throughout. They are kept exactly as printed.",
+      "impact": "Participants in the original may have read a corrected version; the printed text is the only evidence.",
+      "suggestedAction": "Confirm that the printed text should be used unchanged, or supply the intended text.",
+      "evidenceIds": [
+        "e_s2_harm_vig",
+        "e_s2_help_vig"
+      ],
+      "studyId": "study2",
+      "nodeId": "mat_s2_harm",
+      "fieldId": "vignette"
+    },
+    {
+      "id": "iss_chi_s1",
+      "title": "Experiment 1: chi-square variant not stated",
+      "severity": "check",
+      "reason": "Whether a continuity correction was used is not stated; the reported value matches an uncorrected test on equal cells of 39 under an assumption about the split.",
+      "impact": "The replay evaluation may differ slightly from the paper’s statistic depending on the variant.",
+      "suggestedAction": "Confirm the test variant.",
+      "evidenceIds": [
+        "e_s1_chi"
+      ],
+      "studyId": "study1",
+      "nodeId": "an_s1_chi2",
+      "fieldId": "correction"
+    },
+    {
+      "id": "iss_chi_s2",
+      "title": "Experiment 2: chi-square variant not stated",
+      "severity": "check",
+      "reason": "Whether a continuity correction was used is not stated; the reported value matches an uncorrected test on equal cells of 21 under an assumption about the split, although the printed percentages (77%, 70%) are only approximately consistent with 21 per cell.",
+      "impact": "The replay evaluation may differ slightly from the paper’s statistic depending on the variant.",
+      "suggestedAction": "Confirm the test variant.",
+      "evidenceIds": [
+        "e_s2_chi"
+      ],
+      "studyId": "study2",
+      "nodeId": "an_s2_chi2",
+      "fieldId": "correction"
+    },
+    {
+      "id": "iss_t",
+      "title": "Pooled t test: form of test and degrees of freedom",
+      "severity": "decision",
+      "reason": "The paper reports t(120) but does not say which t test was used. With 78 + 42 = 120 subjects an independent-samples test has 118 df, so the reported 120 is not explained.",
+      "impact": "The evaluation must choose a test form; the choice is not from the paper.",
+      "suggestedAction": "Confirm the test form and the df, or accept the replay choice (pooled-variance independent-samples t) as a researcher decision.",
+      "evidenceIds": [
+        "e_s3_t"
+      ],
+      "studyId": "study3",
+      "nodeId": "an_s3_t",
+      "fieldId": "variant"
+    },
+    {
+      "id": "iss_r",
+      "title": "Pooled correlation: coding of the intentionality judgement",
+      "severity": "decision",
+      "reason": "The paper reports r(120) = .53 between the “total amount of praise or blame” and the intentionality judgement but does not say how the judgement was coded or which correlation was used. The df of 120 also does not follow the usual N − 2 for N = 120.",
+      "impact": "The evaluation must choose a coding; the choice is not from the paper.",
+      "suggestedAction": "Confirm the coding, or accept the replay choice (point-biserial, intentional = 1) as a researcher decision.",
+      "evidenceIds": [
+        "e_s3_r"
+      ],
+      "studyId": "study3",
+      "nodeId": "an_s3_r",
+      "fieldId": "coding"
+    }
+  ],
+  "extensions": {
+    "presentation": {
+      "open": [
+        "des_s1",
+        "des_s2"
+      ],
+      "collapsed": [
+        "an_s3_t",
+        "an_s3_r"
+      ]
+    }
+  }
+}

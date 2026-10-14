@@ -63,6 +63,15 @@ Self-check: schema valid; every node, step and paper-derived field has `evidence
 evidence id resolves; every `conditionIds` entry names a condition node of the same study; no
 placeholder text; interactive and sequential structure intact; under 500 KB.
 
+### Self-check (mandatory)
+
+After every write to `program.json` run `python .opencode/skills/build/check_program.py program.json`
+and fix every printed problem until it prints `PASS`. It lists all problems at once, each with a
+fix. Typical slips: a step id placed in an issue's `nodeId` (use `stepId`), a `missing`/`decision`
+field or rule with no review issue naming its `nodeId`/`fieldId` (or `stepId`), an id in a list
+that does not exist. The app tolerates a few slips by setting them aside, but it warns the
+researcher; a clean check is the standard.
+
 ## 3. Package: make the study runnable
 
 Unless the researcher only asked for the program, continue and write `package/<paper-slug>/`
@@ -95,7 +104,7 @@ Rules the runner depends on:
   paper used, and needs nothing from the researcher at run time.
 - `evaluate(sessions)` derives every metric from `sessions` alone and returns the paper's own
   comparison (test, statistic, effect size) or a structured `not_ready` with what is missing.
-- Then run `python .opencode/skills/build/check_package.py package/<paper-slug>` (eight files,
+- Run `python .opencode/skills/build/check_program.py program.json` (it also runs inside check_package.py), then `python .opencode/skills/build/check_package.py package/<paper-slug>` (eight files,
   JSON validity, bindings, smoke test) and repair until it passes.
 
 ## 4. Report

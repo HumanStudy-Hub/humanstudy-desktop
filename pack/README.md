@@ -11,6 +11,7 @@ pack/
   schema/human-program.schema.json  Human Program v2 JSON Schema
   skills/<name>/SKILL.md            build, simulate, visualize, analyze, export, refine
   skills/build/check_package.py     offline package check (mirrors Bench validate_package.py)
+  skills/build/check_program.py     program.json rule check (mirrors the app validator; lists every problem)
   runtime/                          research runtime: requirements.lock (hash-pinned wheels), lib/ (pdftotext /
                                     pdfinfo / hs-pdf shims, humanstudy_llm), tests/; installed by the desktop app
 ```

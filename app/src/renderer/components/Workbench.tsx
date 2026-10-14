@@ -2,7 +2,7 @@
 // opens as another tab, like an artifact panel. A Files sidebar (hidden by default, ⌘B) lists the folder.
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import ProgramDocument, { viewStudies, type ProgramDocumentProps } from '../program/ProgramDocument'
-import { validateHumanProgram, type HumanProgram } from '../../shared/human-program'
+import { readHumanProgram, validateHumanProgram, type HumanProgram } from '../../shared/human-program'
 import type { ProjectEntry, ProjectSnapshot } from '../../preload/types'
 import { lap, track } from '../telemetry'
 import { FileView } from './FileView'
@@ -37,6 +37,8 @@ interface Props extends Pick<ProgramDocumentProps, 'selectedIds' | 'onPick' | 'o
   onClearSelection(): void
   /** Focus the composer with the current selection attached. */
   onAskSelection(): void
+  /** Send the agent a message about a program.json that needs fixing. */
+  onFixProgram?(text: string): void
   onFold(): void
 }
 
@@ -57,15 +59,17 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, selectedItems, source, onClearSelection, onAskSelection, onFold, ...docProps }: Props) {
-  const { program, error } = useMemo(() => {
-    if (!project.program) return { program: null, error: project.programError }
+export function Workbench({ ref, project, selectedItems, source, onClearSelection, onAskSelection, onFixProgram, onFold, ...docProps }: Props) {
+  // Tolerant: one slip by the agent sets that detail aside and the document still renders.
+  const { program, error, problems } = useMemo(() => {
+    if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
     try {
-      return { program: validateHumanProgram(project.program), error: undefined }
+      return { ...readHumanProgram(project.program), error: undefined }
     } catch (e) {
-      return { program: null, error: t('study.invalid', { error: String(e) }) }
+      return { program: null, error: t('study.invalid', { error: String(e) }), problems: [] as string[] }
     }
   }, [project.program, project.programError])
+  const fixProgram = () => onFixProgram?.(fixProgramMessage(problems, error))
   const studies = useMemo(() => (program ? viewStudies(program) : []), [program])
   const files = useMemo(() => flatten(project.tree), [project.tree])
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
@@ -277,6 +281,8 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
                   onClearSelection={onClearSelection}
                   onAskSelection={onAskSelection}
                   editError={editError}
+                  problems={problems}
+                  onFix={fixProgram}
                   changedIds={changed}
                   onEdit={(id, fieldId, text) => void onEdit(id, fieldId, text)}
                   {...docProps}
@@ -287,7 +293,9 @@ export function Workbench({ ref, project, selectedItems, source, onClearSelectio
                 />
               </>
             ) : (
-              <Empty title={error ? t('study.unreadable') : t('study.empty_title')} body={error ?? t('study.empty_body')} />
+              <Empty title={error ? t('study.unreadable') : t('study.empty_title')} body={error ?? t('study.empty_body')}>
+                {error && onFixProgram && <button className="link" onClick={fixProgram}>{t('study.fix')}</button>}
+              </Empty>
             ))}
           {paperSeen && (
             <div className="wb-paper" hidden={active !== 'paper'}>
@@ -317,9 +325,11 @@ type StudyViewProps = Pick<ProgramDocumentProps, 'selectedIds' | 'onPick' | 'onS
   onClearSelection(): void
   onAskSelection(): void
   editError: string
+  problems: string[]
+  onFix(): void
 }
 
-function StudyView({ program, studyId, selectedItems, onClearSelection, onAskSelection, editError, ...docProps }: StudyViewProps) {
+function StudyView({ program, studyId, selectedItems, onClearSelection, onAskSelection, editError, problems, onFix, ...docProps }: StudyViewProps) {
   const n = selectedItems.length
   return (
     <div className="doc-scroll study-scroll">
@@ -337,17 +347,28 @@ function StudyView({ program, studyId, selectedItems, onClearSelection, onAskSel
           </button>
         </div>
       )}
+      {problems.length > 0 && (
+        <p className="muted small program-notice" role="status" title={problems.join('\n')}>
+          {t('study.problems', { n: problems.length })} · <button className="link" onClick={onFix}>{t('study.fix')}</button>
+        </p>
+      )}
       {editError && <div className="part error edit-error">{editError}</div>}
       <ProgramDocument program={program} studyId={studyId} {...docProps} />
     </div>
   )
 }
 
-function Empty({ title, body }: { title: string; body: string }) {
+function fixProgramMessage(problems: string[], error?: string): string {
+  const list = problems.length ? problems.slice(0, 30).map((x) => `- ${x}`).join('\n') : `- ${error ?? 'program.json could not be read'}`
+  return `program.json has formatting problems that the app set aside:\n${list}\n\nPlease fix program.json, then run \`python .opencode/skills/build/check_program.py program.json\` until it prints PASS.`
+}
+
+function Empty({ title, body, children }: { title: string; body: string; children?: React.ReactNode }) {
   return (
     <div className="empty-state">
       <h2>{title}</h2>
       <p className="muted">{body}</p>
+      {children}
     </div>
   )
 }
