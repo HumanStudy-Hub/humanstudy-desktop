@@ -221,6 +221,8 @@ export default function App() {
       const st = bridgeState.current
       track('artifact.source_click', { target: req.programId ?? '', metadata: { page: req.page ?? null } })
       st.showSource(artifactSourceRef(st.program, req))
+      // The split view belongs to the Study tab; from an artifact tab the paper opens as its own tab.
+      workbench.current?.showTab('paper')
     })
     const offAsk = onArtifactAsk(({ text }) => {
       track('artifact.ask')
