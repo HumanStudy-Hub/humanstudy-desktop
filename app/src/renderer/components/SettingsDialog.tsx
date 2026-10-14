@@ -2,10 +2,11 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { AccountStatus, ProviderStatus, Settings } from '../../preload/types'
 import { AboutUpdates } from './Updates'
 import { ResearchDataSection } from './ResearchData'
+import { HelpFeedback } from './HelpFeedback'
 import { track } from '../telemetry'
 import { t, getLangPref, setLangPref, type LangPref } from '../i18n'
 
-export type SettingsSection = 'account' | 'general' | 'models' | 'research' | 'about'
+export type SettingsSection = 'account' | 'general' | 'models' | 'research' | 'help' | 'about'
 
 interface Props {
   initialSection?: SettingsSection | null
@@ -54,7 +55,7 @@ export function SettingsDialog({ initialSection, settings, onChange, account, on
       <div className="settings" role="dialog" aria-modal="true" aria-label={t('settings.title')} tabIndex={-1} ref={dialog}>
         <nav className="settings-nav">
           <strong className="settings-title">{t('settings.title')}</strong>
-          {(['account', 'general', 'models', 'research', 'about'] as Section[]).map((s) => (
+          {(['account', 'general', 'models', 'research', 'help', 'about'] as Section[]).map((s) => (
             <button
               key={s}
               aria-current={section === s ? 'page' : undefined}
@@ -77,6 +78,8 @@ export function SettingsDialog({ initialSection, settings, onChange, account, on
             <AboutUpdates />
           ) : section === 'research' ? (
             <ResearchDataSection onReview={onReviewAgreement} />
+          ) : section === 'help' ? (
+            <HelpFeedback account={account} />
           ) : !settings ? (
             <p className="muted">{t('common.loading')}</p>
           ) : section === 'general' ? (

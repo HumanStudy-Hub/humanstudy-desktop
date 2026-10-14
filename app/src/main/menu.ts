@@ -10,7 +10,6 @@ export interface MenuHooks {
 
 const DOCS = 'https://humanstudy-hub.com'
 const RELEASES = 'https://github.com/HumanStudy-Hub/humanstudy-desktop/releases'
-const ISSUES = 'https://github.com/HumanStudy-Hub/humanstudy-desktop/issues'
 
 function send(c: MenuCommand): void {
   const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
@@ -86,7 +85,7 @@ export function buildMenu(hooks: MenuHooks): Menu {
       submenu: [
         { label: 'Documentation', click: () => void shell.openExternal(DOCS) },
         { label: 'Release notes', click: () => void shell.openExternal(RELEASES) },
-        { label: 'Report a problem', click: () => void shell.openExternal(ISSUES) },
+        { label: 'Help & feedback…', click: () => send({ command: 'settings', arg: 'help' }) },
         { type: 'separator' },
         { label: 'Check for updates…', click: () => void hooks.checkForUpdates() },
       ],

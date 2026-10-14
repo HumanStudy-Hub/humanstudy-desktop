@@ -3,6 +3,7 @@ import { applyCredentials, providers, setKey } from './credentials'
 import { applyAccount, getAccount } from './account'
 import * as telemetry from './telemetry'
 import { setupMenu } from './menu'
+import { createSupport } from './support-core'
 import * as notify from './notify'
 import { cancelAssistantInstall, ensureAssistant, installStatus, onInstallProgress } from './assistant-install'
 import { kernelBinary, managedBinary } from './opencode-install'
@@ -413,6 +414,14 @@ app.whenReady().then(() => {
     if (!isAllowedExternal(url)) throw new Error('refusing to open a URL outside github.com / humanstudy-hub.org')
     await shell.openExternal(url)
   })
+
+  const support = createSupport({
+    auth: () => getAccount().restAuth(), fetch,
+    diagnostics: { version: app.getVersion(), platform: process.platform, arch: process.arch },
+    contactEmail: import.meta.env.MAIN_VITE_HUMANSTUDY_SUPPORT_EMAIL?.trim(),
+  })
+  ipcMain.handle('support:status', () => support.status())
+  ipcMain.handle('support:submit', (_e, input) => support.submit(input))
 
   ipcMain.handle('settings:get', () => getSettings())
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {

@@ -567,6 +567,10 @@ def intentional(harm: float, help_: float) -> float:
     }
   }
   const api: HumanStudyApi = {
+    support: {
+      status: async () => ({ available: false }),
+      submit: async () => { throw new Error('Browser preview cannot send support requests.') },
+    },
     projects: {
       list: async () => {
         if (folderBlocked) throw new Error(`macOS did not allow the app to read ${settings.projectsRoot}. Allow it under System Settings → Privacy & Security → Files and Folders, or choose another projects folder.`)

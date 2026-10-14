@@ -400,6 +400,16 @@ button.tile:hover:not(:disabled) { border-color: var(--accent); box-shadow: var(
 .key-form { display: flex; gap: 6px; align-items: center; margin-top: 10px; }
 .key-form .field { flex: 1; }
 .account-form { display: flex; flex-direction: column; gap: 12px; max-width: 380px; }
+.help-form { display: flex; flex-direction: column; gap: 10px; max-width: 520px; }
+.help-form > label { display: flex; flex-direction: column; gap: 5px; }
+.help-control { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; }
+.help-message { min-height: 100px; resize: vertical; }
+.help-form > .help-check { flex-direction: row; align-items: flex-start; gap: 9px; }
+.help-check input { margin: 3px 0 0; }
+.help-check span span { display: block; }
+.help-preview { display: flex; flex-direction: column; gap: 5px; padding: 10px 12px; border-radius: 8px; background: var(--bg-soft); }
+.help-preview code { color: var(--muted); white-space: normal; }
+.help-over-limit { color: var(--danger, #b42318); }
 .account-form label { display: flex; flex-direction: column; gap: 5px; }
 .account-form .row-end { margin-top: 4px; }
 .account-notice { color: var(--accent); background: var(--accent-soft); padding: 8px 12px; border-radius: 8px; font-size: 13px; }

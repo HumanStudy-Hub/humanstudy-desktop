@@ -267,7 +267,7 @@ export default function App() {
           else if (c.arg === 'files') runCommand('files.toggle')
           else runCommand('tab.show', c.arg)
         }
-        else if (c.command === 'settings') runCommand('settings.open', 'general')
+        else if (c.command === 'settings') runCommand('settings.open', c.arg === 'help' ? 'help' : 'general')
       }),
     [],
   )

@@ -8,6 +8,10 @@ function listen<T>(channel: string, cb: (v: T) => void): () => void {
 }
 
 const api: HumanStudyApi = {
+  support: {
+    status: () => ipcRenderer.invoke('support:status'),
+    submit: (input) => ipcRenderer.invoke('support:submit', input),
+  },
   projects: {
     list: () => ipcRenderer.invoke('projects:list'),
     create: (input) => ipcRenderer.invoke('projects:create', input),

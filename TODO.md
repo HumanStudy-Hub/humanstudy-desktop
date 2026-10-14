@@ -76,8 +76,7 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
       runtime share one `kernel.install` progress stream (`phase`, `runtimeVersion` added, backward
       compatible). See `docs/runtime.md`. Open: Windows untested on real hardware; Intel-Mac wheel gaps on
       new releases (run `pack/runtime/relock.sh`); OCR for scanned PDFs; disk use (~0.55 GB). (wave K3)
-- [ ] **Notarized Mac build** — Apple agreement accepted at developer.apple.com, then
-      `npm run dist:mac` notarizes; publish a draft GitHub release and test auto-update. (lead)
+- [~] **Notarized Mac build** — 0.5.3-beta.1 installer and 0.5.3-beta.2 application notarized (Accepted), ticket stapled; app Gatekeeper accepted as Notarized Developer ID. Draft release and auto-update acceptance remain open. Submission: 6438b055-58b6-4f56-9367-f41c373fcfc8.
 
 - [x] **Hosted-only product (H1)** — no API keys, no provider choice (C17 "own keys" is not a product
       feature; `HUMANSTUDY_DEV_KEYS=1` keeps a hidden developer path). Sign in + invitation code unlocks
@@ -158,7 +157,7 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
 
 ## 2026-10-14 beta account implementation
 
-- [~] Checklist 1–3: desktop forgot/change password and confirmation resend; web callbacks in PR #17. Code and fixture tests complete; live mail acceptance pending.
-- [ ] Checklist 9: Help, problem reports and suggestions; team receiving address pending.
+- [~] Checklist 1–3: desktop forgot/change password and confirmation resend; web callbacks in PR #17. Code and tests complete (49 desktop / 192 web); PR #17 merged; public /auth/reset + production authOrigin verified 200; production recovery email Delivered. Owner password reset + re-login and full signup confirmation acceptance remain open. Included in the 0.5.3-beta.2 build, with production email callback; installed app unchanged.
+- [~] Checklist 9: Settings / native Help menu, private owner-scoped support queue and UUID receipts implemented; 6 tests pass. App details opt-in only. Team notification email/contact address and live user submission acceptance pending; team can process support_requests in Supabase dashboard.
 - [ ] Remaining agreed beta items: see docs/beta-execution-checklist-2026-10-14.md.
-- Owner excludes original items 4, 6, 13, 14, 15; profile/optional ORCID deferred until after beta.
+- Owner excludes original items 4, 6, 14, 15; later authorized Apple notarization (13), now completed for the beta installer. Profile/optional ORCID deferred until after beta.

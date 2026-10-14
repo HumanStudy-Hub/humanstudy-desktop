@@ -274,7 +274,20 @@ export interface AppInfo {
   devKeys?: boolean
 }
 
+export interface SupportRequest {
+  id: string
+  kind: 'help' | 'problem' | 'suggestion'
+  message: string
+  replyEmail?: string
+  includeDiagnostics: boolean
+}
+export interface SupportStatus { available: boolean; contactEmail?: string }
+
 export interface HumanStudyApi {
+  support: {
+    status(): Promise<SupportStatus>
+    submit(input: SupportRequest): Promise<{ id: string }>
+  }
   projects: {
     list(): Promise<ProjectSummary[]>
     /** Creates a project folder (copying the PDF to paper.pdf when given) and returns its dir. */
