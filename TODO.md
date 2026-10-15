@@ -172,3 +172,13 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
 - Validation: 61 regression checks, native kernel fixture runs, TypeScript and build pass. See docs/recovery-sample-2026-10-14.md.
 
 - Release acceptance: 0.5.3-beta.3 Mac arm64 app notarized, stapler validated, Gatekeeper accepted; DMG checksum verified. Local installer prepared under app/dist/beta-2026-10-14-3. No public release or automatic-update rollout, current installed app unchanged.
+
+
+### 2026-10-15 source reading / first-use follow-up
+- [~] PDF zoom and persisted passage highlights: implemented for paper and auxiliary PDF tabs;
+  sidecar JSON preserves exact selected text and page-relative boxes, feeds existing left chat.
+  Removed selection/quote/page-text/quote-box clipping. Three data regressions and renderer typecheck pass;
+  native mouse interaction and next notarized installer still pending.
+- [~] Editable sample first-use guide: implemented by GPT-6 Luna, short and skippable, remembers dismissal.
+- [ ] Release decision: reconcile unpublished desktop integration on a draft branch before automatic updates;
+  owner choice requested, no public release performed.

@@ -13,7 +13,7 @@ type Section = 'projects' | 'studies'
 const SECTION_KEY = 'hs.homeSection'
 
 interface Props {
-  onOpen(dir: string): void
+  onOpen(dir: string, sample?: boolean): void
   onSettings(): void
   account: AccountStatus | null
   /** Opens Settings → Account. */
@@ -118,7 +118,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
     if (!name) return
     void run(async () => onOpen(await window.humanstudy.projects.create({ name })))
   }
-  const sample = () => run(async () => onOpen(await window.humanstudy.projects.create({ name: '', sample: true })))
+  const sample = () => run(async () => onOpen(await window.humanstudy.projects.create({ name: '', sample: true }), true))
   const openFolder = () =>
     run(async () => {
       const dir = await window.humanstudy.project.open()

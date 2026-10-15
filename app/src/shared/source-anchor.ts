@@ -57,7 +57,7 @@ function merge(boxes: Rect[]): Rect[] {
       prev.h = Math.max(prev.h, box.y + box.h - prev.y)
     } else result.push(box)
   }
-  return result.slice(0, 64)
+  return result
 }
 
 export type QuoteHit = { page: number; rects: Rect[] }

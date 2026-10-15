@@ -8,6 +8,7 @@ import * as pdfjs from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { ProjectFile } from '../../preload/types'
 import { findQuote, type Rect, type Word } from '../../shared/source-anchor'
+import { readPdfAnnotations, type PdfAnnotation } from '../../shared/pdf-annotations'
 import { makeWords } from './pdf-words'
 import { lap, track } from '../telemetry'
 import { t } from '../i18n'
@@ -41,17 +42,60 @@ interface Props {
 }
 
 type PageInfo = { n: number; w: number; h: number; words: Word[] }
-const MAX_TEXT_PAGES = 80
 
 export function SourceDrawer({ pdf, source, onClose, onPageChange, closeLabel, onQuote, onSelect, supportCount, onAskPassage }: Props) {
   const open = source !== null
   const host = useRef<HTMLDivElement>(null)
+  const [zoom, setZoom] = useState(1)
+  const [annotations, setAnnotations] = useState<PdfAnnotation[]>([])
+  const [annotationError, setAnnotationError] = useState('')
+  const [annotationsReady, setAnnotationsReady] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const annotationRaw = useRef<string | null>(null)
   const [doc, setDoc] = useState<pdfjs.PDFDocumentProxy | null>(null)
   const [pages, setPages] = useState<PageInfo[]>([])
   const [err, setErr] = useState<string | null>(null)
   const [hit, setHit] = useState<{ page: number; rects: Rect[] } | null>(null)
   const [verdict, setVerdict] = useState<QuoteResult | null>(null)
-  const [selection, setSelection] = useState<(PassageSelection & { top: number; left: number }) | null>(null)
+  const [selection, setSelection] = useState<(PassageSelection & { top: number; left: number; pages: PdfAnnotation['pages']; annotationId?: string }) | null>(null)
+
+  useEffect(() => {
+    let live = true
+    setAnnotations([]); setAnnotationsReady(false); setAnnotationError(''); setSelection(null); setZoom(1)
+    annotationRaw.current = null
+    if (!pdf) return
+    void window.humanstudy.project.readText(`${pdf.path}.annotations.json`).then(raw => {
+      const parsed = readPdfAnnotations(raw)
+      if (live) { annotationRaw.current = raw; setAnnotations(parsed.annotations); setAnnotationsReady(true) }
+    }).catch(e => {
+      if (!live) return
+      if (/ENOENT|no such file/i.test(String(e))) setAnnotationsReady(true)
+      else setAnnotationError(String(e))
+    })
+    return () => { live = false }
+  }, [pdf?.path])
+
+  async function saveAnnotation(remove = false) {
+    if (!pdf || !selection || !annotationsReady || saving) return
+    setSaving(true); setAnnotationError('')
+    try {
+      // Refuse to overwrite changes made by the agent or another open window.
+      let current: string | null = null
+      try { current = await window.humanstudy.project.readText(`${pdf.path}.annotations.json`) }
+      catch (e) { if (!/ENOENT|no such file/i.test(String(e))) throw e }
+      if (current !== annotationRaw.current) throw new Error(t('paper.notes_changed'))
+      const next = remove ? annotations.filter(a => a.id !== selection.annotationId) : [...annotations, {
+        id: crypto.randomUUID(), text: selection.text, pages: selection.pages, createdAt: new Date().toISOString(),
+      }]
+      const raw = JSON.stringify({ version: 1, annotations: next }, null, 2) + '\n'
+      readPdfAnnotations(raw)
+      await window.humanstudy.project.writeText(`${pdf.path}.annotations.json`, raw)
+      annotationRaw.current = raw; setAnnotations(next); setSelection(null); onSelect?.(null)
+      window.getSelection()?.removeAllRanges()
+      track(remove ? 'source.annotation_removed' : 'source.annotated', { metadata: { pages: selection.pages.map(p => p.page), chars: selection.text.length } })
+    } catch (e) { setAnnotationError(String(e)) }
+    finally { setSaving(false) }
+  }
 
   useEffect(() => {
     setDoc(null)
@@ -77,14 +121,14 @@ export function SourceDrawer({ pdf, source, onClose, onPageChange, closeLabel, o
         const page = await doc.getPage(n)
         const vp = page.getViewport({ scale: 1 })
         let words: Word[] = []
-        if (n <= MAX_TEXT_PAGES) {
+        {
           const content = await page.getTextContent()
           const items = content.items.filter((i): i is Extract<typeof i, { str: string }> => 'str' in i)
           words = makeWords(items, content.styles, vp, measure, pdfjs.Util.transform)
         }
         out.push({ n, w: vp.width, h: vp.height, words })
         // The first pages appear at once; the rest follow in one update.
-        if (n === Math.min(2, doc.numPages) && !cancelled) setPages([...out])
+        if ((n <= 2 || n % 10 === 0) && !cancelled) setPages([...out])
       }
       if (!cancelled) setPages(out)
     })().catch(e => { if (!cancelled) setErr(String(e)) })
@@ -150,12 +194,33 @@ export function SourceDrawer({ pdf, source, onClose, onPageChange, closeLabel, o
       if (selection) { setSelection(null); onSelect?.(null) }
       return
     }
-    const text = sel.toString().replace(/\s+/g, ' ').trim().slice(0, 2000)
+    const text = sel.toString().trim()
     const anchor = sel.anchorNode instanceof Element ? sel.anchorNode : sel.anchorNode?.parentElement
     const page = Number(anchor?.closest<HTMLElement>('[data-page]')?.dataset.page)
     if (!text || !page) return
     const box = sel.getRangeAt(0).getBoundingClientRect(), base = el.getBoundingClientRect()
-    const next = { page, text, top: box.top - base.top + el.scrollTop, left: Math.min(Math.max(8, box.left - base.left), Math.max(8, el.clientWidth - 260)) }
+    const range = sel.getRangeAt(0)
+    const selectedPages: PdfAnnotation['pages'] = []
+    for (const pageEl of el.querySelectorAll<HTMLElement>('.pdf-page')) {
+      const bounds = pageEl.getBoundingClientRect()
+      const rects: Rect[] = []
+      const boxes = [...pageEl.querySelectorAll('.pdf-text span')].flatMap(span => {
+        if (!range.intersectsNode(span)) return []
+        const part = document.createRange()
+        part.selectNodeContents(span)
+        if (span.contains(range.startContainer)) part.setStart(range.startContainer, range.startOffset)
+        if (span.contains(range.endContainer)) part.setEnd(range.endContainer, range.endOffset)
+        return part.toString().length ? [...part.getClientRects()] : []
+      })
+      for (const r of boxes) {
+        const x = Math.max(bounds.left, r.left), y = Math.max(bounds.top, r.top)
+        const right = Math.min(bounds.right, r.right), bottom = Math.min(bounds.bottom, r.bottom)
+        if (right > x && bottom > y) rects.push({ x: (x - bounds.left) / bounds.width * 100, y: (y - bounds.top) / bounds.height * 100, w: (right - x) / bounds.width * 100, h: (bottom - y) / bounds.height * 100 })
+      }
+      if (rects.length) selectedPages.push({ page: Number(pageEl.dataset.page), rects })
+    }
+    if (!selectedPages.length) return
+    const next = { page, text, pages: selectedPages, top: box.top - base.top + el.scrollTop, left: Math.min(Math.max(8, box.left - base.left), Math.max(8, el.clientWidth - 260)) }
     setSelection(next)
     onSelect?.({ page, text })
     track('source.select', { target: `page.${page}`, metadata: { page, chars: text.length } })
@@ -164,21 +229,31 @@ export function SourceDrawer({ pdf, source, onClose, onPageChange, closeLabel, o
   const cited = source?.nodeId ? source : null
   return (
     <div className="source-body">
+      {pdf && <div className="paper-tools" aria-label={t('paper.zoom')}>
+        <button className="ghost" aria-label={t('paper.zoom_out')} disabled={zoom <= 0.5} onClick={() => setZoom(z => Math.max(0.5, z - 0.25))}>−</button>
+        <button className="ghost" title={t('paper.fit')} onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button>
+        <button className="ghost" aria-label={t('paper.zoom_in')} disabled={zoom >= 3} onClick={() => setZoom(z => Math.min(3, z + 0.25))}>+</button>
+      </div>}
+      {annotationError && <p role="alert" className="part error pad">{annotationError}</p>}
       {cited && <div className={`paper-cite ${verdict && (!verdict.found || verdict.page !== cited.page) ? 'warn' : ''}`} role="status">
         <span className="paper-cite-page">{t('doc.cite_page', { n: cited.page })}</span>
         {verdict && !verdict.found && <span>{t('model.quote_missing', { n: cited.page })}</span>}
         {verdict?.found && verdict.page !== cited.page && <span>{t('model.quote_moved', { n: cited.page, m: verdict.page ?? '' })}</span>}
-        {cited.quote && (!verdict || !verdict.found) && <q>{cited.quote.length > 140 ? `${cited.quote.slice(0, 140)}…` : cited.quote}</q>}
+        {cited.quote && (!verdict || !verdict.found) && <q>{cited.quote}</q>}
         {!cited.quote && <span className="muted">{t('paper.page_only', { page: cited.page })}</span>}
         <button className="link" onClick={onClose}>{closeLabel ?? t('paper.back')}</button>
       </div>}
       {!pdf && <p className="muted pad">{source?.file || source?.sourceId ? t('paper.source_unavailable', { file: source.file ?? source.sourceId ?? '' }) : t('paper.none')}</p>}
       {err && <p className="part error pad">{err}</p>}
-      <div className="pages" ref={host} onMouseUp={() => requestAnimationFrame(capture)} onKeyUp={capture}>
-        {doc && pages.map(p => <PdfPage key={p.n} doc={doc} info={p} root={host} rects={hit?.page === p.n ? hit.rects : []} />)}
-        {selection && onAskPassage && <div className="paper-ask" style={{ top: Math.max(0, selection.top - 40), left: selection.left }} onMouseDown={e => e.preventDefault()}>
+      <div className="pages" ref={host} onMouseUp={e => { if (!(e.target as Element).closest('button')) requestAnimationFrame(capture) }} onKeyUp={e => { if (!(e.target as Element).closest('button')) capture() }}>
+        {doc && pages.map(p => <PdfPage key={p.n} doc={doc} info={p} root={host} zoom={zoom} rects={hit?.page === p.n ? hit.rects : []}
+          annotations={annotations.filter(a => a.pages.some(pn => pn.page === p.n))}
+          onAnnotation={(a) => { window.getSelection()?.removeAllRanges(); setSelection({ page: a.pages[0].page, text: a.text, pages: a.pages, annotationId: a.id, top: host.current?.scrollTop ?? 0, left: 8 }); onSelect?.({ page: a.pages[0].page, text: a.text }) }} />)}
+        {selection && <div className="paper-ask" style={{ top: Math.max(host.current?.scrollTop ?? 0, selection.top - 40), left: selection.left }} onMouseDown={e => e.preventDefault()}>
           {supportCount != null && <span>{supportCount ? t('paper.cited_by', { n: supportCount }) : t('paper.cited_none')}</span>}
-          <button onClick={() => { onAskPassage({ page: selection.page, text: selection.text }); window.getSelection()?.removeAllRanges(); setSelection(null) }}>{t('paper.ask')}</button>
+          <button disabled={!annotationsReady || saving} onClick={() => void saveAnnotation(Boolean(selection.annotationId))}>{selection.annotationId ? t('paper.unmark') : t('paper.highlight')}</button>
+          {onAskPassage && <button onClick={() => { onAskPassage({ page: selection.page, text: selection.text }); window.getSelection()?.removeAllRanges(); setSelection(null); onSelect?.(null) }}>{t('paper.ask')}</button>}
+          <button aria-label={t('paper.dismiss')} onClick={() => { setSelection(null); onSelect?.(null); window.getSelection()?.removeAllRanges() }}>×</button>
         </div>}
       </div>
     </div>
@@ -186,9 +261,16 @@ export function SourceDrawer({ pdf, source, onClose, onPageChange, closeLabel, o
 }
 
 /** One page: the canvas (drawn once it is near the viewport), its words and the citation box. */
-function PdfPage({ doc, info, root, rects }: { doc: pdfjs.PDFDocumentProxy; info: PageInfo; root: React.RefObject<HTMLDivElement | null>; rects: Rect[] }) {
+function PdfPage({ doc, info, root, rects, zoom, annotations, onAnnotation }: { zoom: number; annotations: PdfAnnotation[]; onAnnotation(a: PdfAnnotation): void; doc: pdfjs.PDFDocumentProxy; info: PageInfo; root: React.RefObject<HTMLDivElement | null>; rects: Rect[] }) {
   const el = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
+  const [width, setWidth] = useState(0)
+  useEffect(() => {
+    if (!el.current) return
+    const observer = new ResizeObserver(entries => setWidth(entries[0].contentRect.width))
+    observer.observe(el.current)
+    return () => observer.disconnect()
+  }, [])
   const [near, setNear] = useState(false)
   useEffect(() => {
     if (!el.current || typeof IntersectionObserver === 'undefined') return setNear(true)
@@ -209,12 +291,13 @@ function PdfPage({ doc, info, root, rects }: { doc: pdfjs.PDFDocumentProxy; info
       return task.promise
     }).catch(() => undefined)
     return () => { cancelled = true; task?.cancel() }
-  }, [near, doc, info.n, info.w])
+  }, [near, doc, info.n, info.w, width])
   const ratio = info.h / info.w
   return (
-    <div ref={el} className="pdf-page" data-page={info.n} style={{ aspectRatio: `${info.w} / ${info.h}` }}>
+    <div ref={el} className="pdf-page" data-page={info.n} style={{ width: `${zoom * 100}%`, maxWidth: `${980 * zoom}px`, alignSelf: zoom > 1 ? 'flex-start' : 'center', aspectRatio: `${info.w} / ${info.h}` }}>
       <canvas ref={canvas} aria-label={t('paper.page_aria', { n: info.n })} />
       {near && <div className="pdf-text">{info.words.map((w, i) => <span key={i} style={{ left: `${w.x}%`, top: `${w.y}%`, width: `${w.w}%`, height: `${w.h}%`, fontSize: `${w.h * ratio * 0.88}cqw` }}>{w.t} </span>)}</div>}
+      {annotations.flatMap(a => a.pages.filter(p => p.page === info.n).flatMap(p => p.rects.map((r, i) => <button key={`${a.id}-${i}`} className="pdf-mark" aria-label={t('paper.saved_highlight')} title={a.text} onClick={() => onAnnotation(a)} style={{ left: `${r.x}%`, top: `${r.y}%`, width: `${r.w}%`, height: `${r.h}%` }} />)))}
       {rects.map((r, i) => <div key={`${info.n}-${i}-${r.x}-${r.y}`} className="pdf-box" style={{ left: `${r.x}%`, top: `${r.y}%`, width: `${r.w}%`, height: `${r.h}%` }} />)}
     </div>
   )

@@ -16,6 +16,7 @@ import { t, useLang } from './i18n'
 import { requestsSimulation } from '../shared/simulation-scope'
 import { onAsk as onArtifactAsk, onOpenSource as onArtifactOpenSource } from './bridge'
 import { artifactSourceRef } from './artifact-source'
+import { SampleOnboarding } from './components/SampleOnboarding'
 
 const PANES_KEY = 'hs.panes'
 type Pane = 'agent' | 'program'
@@ -31,6 +32,7 @@ export function runCommand(command: AppCommand, arg?: string): void {
 export default function App() {
   useLang() // re-render the whole tree when the language changes
   const [project, setProject] = useState<ProjectSnapshot | null>(null)
+  const [showSampleOnboarding, setShowSampleOnboarding] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
   const [source, setSource] = useState<SourceRef | null>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -326,7 +328,14 @@ export default function App() {
       <div className="app">
         <Home
           ref={home}
-          onOpen={(dir) => void openProject(dir)}
+          onOpen={(dir, sample) => {
+            if (sample) {
+              let seen = false
+              try { seen = localStorage.getItem('hs.sampleOnboarding.v1') === 'done' } catch { /* ignore */ }
+              setShowSampleOnboarding(!seen)
+            }
+            void openProject(dir)
+          }}
           onSettings={() => openSettings('general')}
           account={account}
           onAccount={() => openSettings('account')}
@@ -430,6 +439,10 @@ export default function App() {
       </main>
       {dialog}
       {consent}
+      {showSampleOnboarding && <SampleOnboarding onClose={() => {
+        try { localStorage.setItem('hs.sampleOnboarding.v1', 'done') } catch { /* ignore */ }
+        setShowSampleOnboarding(false)
+      }} />}
       <UpdateNotice />
     </div>
   )
@@ -454,4 +467,3 @@ function Rail({ label, onOpen }: { label: string; onOpen(): void }) {
     </button>
   )
 }
-

@@ -285,7 +285,7 @@ code, pre { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 1
 .paper-cite { flex: none; display: flex; align-items: baseline; gap: 10px; padding: 6px 14px; border-bottom: 1px solid var(--line); background: var(--bg); font-size: 12px; min-width: 0; }
 .paper-cite.warn { background: var(--warning-bg); color: var(--warning); border-bottom-color: var(--warning-line); }
 .paper-cite-page { font-weight: 600; white-space: nowrap; }
-.paper-cite q { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.paper-cite q { flex: 1; min-width: 0; color: var(--muted); white-space: normal; overflow-wrap: anywhere; }
 .paper-cite .link { margin-left: auto; white-space: nowrap; }
 .paper-ask { position: absolute; z-index: 5; display: flex; align-items: center; gap: 10px; padding: 5px 10px; background: var(--bg); border: 1px solid var(--accent-line); border-radius: 8px; box-shadow: var(--shadow); font-size: 12px; color: var(--muted); white-space: nowrap; }
 .paper-ask button { color: var(--accent); font-weight: 600; }
@@ -373,6 +373,17 @@ button.tile:hover:not(:disabled) { border-color: var(--accent); box-shadow: var(
   width: min(760px, 100%); height: min(560px, 100%); display: flex; overflow: hidden; outline: 0;
   background: var(--bg); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 64px rgba(0, 0, 0, 0.22);
 }
+.sample-onboarding-overlay { z-index: 60; }
+.sample-onboarding {
+  position: relative; width: min(460px, 100%); padding: 28px 30px 22px; outline: 0;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 16px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.22);
+}
+.sample-onboarding h2 { font-family: var(--font-serif); font-size: 1.25rem; margin: 0 32px 8px 0; }
+.sample-guide-lead { margin: 0 0 16px; }
+.sample-guide-steps { padding-left: 22px; margin: 0; color: var(--text); }
+.sample-guide-steps li { padding: 4px 0 4px 3px; }
+.sample-guide-actions { margin-top: 20px; }
 .settings-nav { width: 188px; flex: none; background: var(--bg-soft); border-right: 1px solid var(--line); padding: 18px 10px; display: flex; flex-direction: column; gap: 2px; }
 .settings-title { font-size: 13px; font-weight: 600; padding: 0 10px 12px; }
 .settings-nav button { text-align: left; padding: 7px 10px; border-radius: 8px; color: var(--muted); }
@@ -788,3 +799,9 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
 .auto-mode { font-size: 12px; padding: 4px 7px; border-radius: 5px; color: var(--muted); }
 .auto-mode[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
 .program-notice { margin: 0; padding: 6px 20px; flex: none; border-bottom: 1px solid var(--line); }
+
+.paper-tools { display: flex; justify-content: flex-end; gap: 2px; padding: 3px 10px; border-bottom: 1px solid var(--line); }
+.paper-tools .ghost { padding: 3px 8px; font-size: 12px; }
+.pdf-mark { position: absolute; z-index: 3; padding: 0; border: 0; border-radius: 1px; background: #ecc35255; cursor: pointer; mix-blend-mode: multiply; }
+.pdf-mark:hover, .pdf-mark:focus-visible { outline: 1px solid var(--accent); background: #ecc35280; }
+.paper-ask { flex-wrap: wrap; white-space: normal; max-width: calc(100% - 16px); }
