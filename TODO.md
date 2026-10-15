@@ -1,3 +1,5 @@
+> **Start here (2026-10-15):** `docs/handoff-2026-10-15.md` — current state, P0 CPU runaway, 0.6.1 release steps.
+
 # HumanStudy Hub desktop · backlog
 
 Feature parity target: the Codex / Claude Code desktop apps, for social scientists. Each item
