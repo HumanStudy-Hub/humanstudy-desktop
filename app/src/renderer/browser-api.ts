@@ -6,6 +6,12 @@ import type { TelemetryRecent, TelemetryRow, TelemetryStatus, TelemetryTrackOpti
 import type { AccountStatus, CommunityStudy, CommunityStudyDetail, HumanStudyApi, KernelEvent, KernelInstallStatus, MenuCommand, PermissionReply, Thread, ThreadMessage, ThreadPart, ProjectSnapshot, ProjectSummary, ProviderStatus, Settings } from '../preload/types'
 import sample from '../shared/sample-program.json'
 import brokenProgram from '../shared/fixtures/fce-broken.json'
+import exampleResults from '../../resources/sample/example-simulation/results.html?raw'
+import exampleResultsUrl from '../../resources/sample/example-simulation/results.html?url'
+import exampleSummary from '../../resources/sample/example-simulation/summary.json?raw'
+import exampleProgress from '../../resources/sample/example-simulation/progress.json?raw'
+import exampleReport from '../../resources/sample/example-simulation/report.md?raw'
+import { EXAMPLE_RUN } from '../shared/simulation-run'
 
 // Preview flags (all optional, combine freely):
 //   ?project=empty    a new project: paper.pdf only, no study yet
@@ -14,6 +20,8 @@ import brokenProgram from '../shared/fixtures/fce-broken.json'
 //   ?agent=1          signed in, unlocked, agreement accepted, so the agent can be used
 //   ?lang=zh|en       sets the interface language (stored like Settings → Language)
 //   ?program=real     the project in public/preview/real/ (local only; see below)
+//   ?sim=built        the runnable study package exists (Simulation tab: ready to run); default: not built yet
+//   ?sim=running      ...and a simulation is running (progress ticks, never finishes);  ?sim=done: a finished run of your own
 //   ?fresh=1          no seeded conversations;  ?install=1|error, ?declined=1, ?devkeys=1, ?folderError=1 as before
 if (!('humanstudy' in window)) {
   try {
@@ -173,6 +181,60 @@ if (!('humanstudy' in window)) {
       texts.get(R + 'artifacts/participant-flow.html')!,
     ])
   }
+  // Simulation tab: the example run every sample project ships with, and scripted runs of your own.
+  const simMode = new URLSearchParams(location.search).get('sim')
+  const putPackage = () => {
+    put('package/knobe-2003-intentional-action/study.json', '{"title": "Knobe (2003)"}\n', 30)
+    put('package/knobe-2003-intentional-action/task/adapter.py', '# Replay adapter (browser preview)\n', 30)
+  }
+  if (mode !== 'empty') {
+    put(`${EXAMPLE_RUN}/results.html`, exampleResults, 60 * 24 * 3)
+    put(`${EXAMPLE_RUN}/summary.json`, exampleSummary, 60 * 24 * 3)
+    put(`${EXAMPLE_RUN}/progress.json`, exampleProgress, 60 * 24 * 3)
+    put(`${EXAMPLE_RUN}/report.md`, exampleReport, 60 * 24 * 3)
+    if (simMode && simMode !== 'unbuilt') putPackage()
+  }
+  const stampOf = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`
+  const touched = () => { buildTree(); changed.forEach((cb) => cb(snapshot.dir)) }
+  /** A scripted run: progress.json ticks like simkit writes it; with `finish`, results and summary follow. */
+  const simulateRun = (perCondition: number, opts: { startDone?: number; finish: boolean; minutesAgo?: number; onEnd?: () => void }) => {
+    const rel = `artifacts/simulations/${stampOf(new Date(Date.now() - (opts.minutesAgo ?? 0) * 60_000))}`
+    const total = perCondition * 2
+    const startedAt = new Date(Date.now() - (opts.minutesAgo ?? 0) * 60_000).toISOString()
+    let done = opts.startDone ?? 0
+    let stage = done ? 'running' : 'preparing'
+    const write = (message?: string) => {
+      const half = (k: number) => Math.min(perCondition, Math.ceil(done / 2) - (k ? (done % 2) : 0))
+      texts.set(R + rel + '/progress.json', JSON.stringify({ stage, done, total, failed: 0, conditions: [{ id: 'condition-harm', done: half(0), total: perCondition }, { id: 'condition-help', done: Math.max(0, done - half(0)), total: perCondition }], model: 'anthropic/claude-haiku-5.5', startedAt, updatedAt: new Date().toISOString(), ...(message ? { message } : {}) }))
+      mtimes.set(R + rel + '/progress.json', Date.now())
+      touched()
+    }
+    const steps: [number, () => void][] = []
+    if (!done) steps.push([2500, () => { stage = 'trial'; write() }], [3500, () => { stage = 'running'; write() }])
+    const tick = () => {
+      if (texts.has(R + rel + '/STOP')) { stage = 'stopped'; write('Stopped by the researcher'); opts.onEnd?.(); return }
+      if (done < total) { done = Math.min(total, done + 2); write(); window.setTimeout(tick, opts.finish ? 700 : 2600); return }
+      if (!opts.finish) return
+      stage = 'scoring'; write()
+      window.setTimeout(() => { stage = 'writing'; write() }, 1500)
+      window.setTimeout(() => {
+        put(`${rel}/results.html`, exampleResults, 0)
+        put(`${rel}/summary.json`, exampleSummary.replace('"example": true', '"example": false'), 0)
+        stage = 'done'; write(); opts.onEnd?.()
+      }, 3200)
+    }
+    let at = 0
+    for (const [ms, fn] of steps) { at += ms; window.setTimeout(fn, at) }
+    window.setTimeout(tick, at + 900)
+    write()
+  }
+  if (mode !== 'empty' && simMode === 'running') setTimeout(() => simulateRun(20, { startDone: 12, finish: false, minutesAgo: 3 }), 0)
+  if (mode !== 'empty' && simMode === 'done') {
+    const rel = `artifacts/simulations/${stampOf(new Date(Date.now() - 40 * 60_000))}`
+    put(`${rel}/results.html`, exampleResults, 40)
+    put(`${rel}/summary.json`, exampleSummary.replace('"example": true', '"example": false'), 40)
+    put(`${rel}/progress.json`, exampleProgress, 40)
+  }
   const MIME: Record<string, string> = { svg: 'image/svg+xml', html: 'text/html', png: 'image/png' }
   const bytes = (rel: string) => ((texts.get(R + rel) ?? '').length)
   void bytes
@@ -195,7 +257,7 @@ if (!('humanstudy' in window)) {
     for (const path of files) {
       const rel = path.slice(root.length + 1)
       const name = rel.split('/').pop()!
-      folder(rel.split('/').slice(0, -1).join('/')).push({ name, path, rel, kind: 'file', ext: name.split('.').pop()!.toLowerCase(), url: name === 'paper.pdf' ? '/preview/paper.pdf' : `data:${MIME[name.split('.').pop()!.toLowerCase()] ?? 'text/plain'};charset=utf-8,` + encodeURIComponent(texts.get(path) ?? ''), size: (texts.get(path) ?? '').length, mtime: mtimes.get(path) ?? mins(3) })
+      folder(rel.split('/').slice(0, -1).join('/')).push({ name, path, rel, kind: 'file', ext: name.split('.').pop()!.toLowerCase(), url: name === 'paper.pdf' ? '/preview/paper.pdf' : texts.get(path) === exampleResults ? exampleResultsUrl : `data:${MIME[name.split('.').pop()!.toLowerCase()] ?? 'text/plain'};charset=utf-8,` + encodeURIComponent(texts.get(path) ?? ''), size: (texts.get(path) ?? '').length, mtime: mtimes.get(path) ?? mins(3) })
     }
     const sortTree = (list: import('../preload/types').ProjectEntry[]) => {
       list.sort((a, b) => Number(b.kind === 'dir') - Number(a.kind === 'dir') || a.name.localeCompare(b.name))
@@ -755,6 +817,17 @@ def intentional(harm: float, help_: float) -> float:
           ] }
           pendingQuestion.set(sessionId, q)
           play(sessionId, [{ type: 'question', question: q }])
+          return
+        }
+        if (text.startsWith('[Simulation scope approved]')) {
+          const per = Number(/"perCondition":(\d+)/.exec(text)?.[1] ?? 20)
+          play(sessionId, [{ type: 'text', text: 'The approved study matches program.json. I will run a trial with two AI participants, then the full run.\n\n' }, { type: 'tool', tool: 'bash', text: 'running', detail: 'python artifacts/simulations/run.py' }], 300)
+          simulateRun(per, { finish: true, onEnd: () => play(sessionId, [{ type: 'tool', tool: 'bash', text: 'completed', detail: 'python artifacts/simulations/run.py' }, { type: 'text', text: '(Browser preview) The simulated participants showed the effect; the result is in the Simulation tab.' }, { type: 'done' }]) })
+          return
+        }
+        if (/^Make the study runnable/.test(text) || /^请把研究做成可运行的/.test(text)) {
+          play(sessionId, [{ type: 'text', text: 'I will write the runnable study package from program.json.\n\n' }, { type: 'tool', tool: 'write', text: 'running', detail: 'package/knobe-2003-intentional-action/task/adapter.py' }], 300)
+          window.setTimeout(() => { putPackage(); touched(); play(sessionId, [{ type: 'tool', tool: 'write', text: 'completed', detail: 'package/knobe-2003-intentional-action/task/adapter.py' }, { type: 'text', text: 'The study is runnable; the package check passed.' }, { type: 'done' }]) }, 6000)
           return
         }
         let steps = /build the (study|human program)/i.test(text) ? buildScript(sessionId) : script(text)

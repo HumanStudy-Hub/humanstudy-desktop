@@ -40,8 +40,7 @@ const program = { ...sample, studies: [...sample.studies, analysis], nodes: [...
 assert.ok(R.viewStudies(program).some(st => st.id === analysis.id))
 const html = R.render(program, analysis.id, 'study')
 assert.ok(html.includes('The original follow-up finding'), 'analysis results must remain readable without procedure steps')
-assert.ok(!html.includes('data-section="simulation"'), 'scope is separate from the study document')
-for (const n of ['01','02','03','04','05','06','07','08','09','10','11']) assert.ok(html.includes(`>${n}</span>`), `section ${n} is shown as a stage`)
+for (const n of ['01','02','03','04','05','06','07','08','09','10','11','12']) assert.ok(html.includes(`>${n}</span>`), `section ${n} is shown as a stage`)
 assert.ok(R.render(program, analysis.id, 'simulation').includes('data-section="simulation"'))
 
 const paper = { path:'/p/paper.pdf', name:'paper.pdf', ext:'pdf', url:'hsfile://paper' }

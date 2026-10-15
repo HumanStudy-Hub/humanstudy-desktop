@@ -23,6 +23,10 @@ test('installs the original paper and all exact evidence resources with resolvab
     assert.deepEqual(readFileSync(join(project, 'paper.pdf')).subarray(0, 5), Buffer.from('%PDF-'))
     assert.deepEqual(readFileSync(join(project, 'KNOBE.pdf')), readFileSync(join(assets, 'KNOBE.pdf')))
     assert.equal(program.source.filename, 'KNOBE.pdf')
+    const example = join(project, 'artifacts/simulations/2026-10-15-1329-example')
+    for (const f of ['results.html', 'summary.json', 'progress.json', 'report.md']) assert.ok(existsSync(join(example, f)), `example run lacks ${f}`)
+    assert.equal(JSON.parse(readFileSync(join(example, 'summary.json'), 'utf8')).example, true)
+    assert.match(readFileSync(join(example, 'results.html'), 'utf8'), /not human data/i)
     assert.ok(existsSync(join(project, program.source.filename)))
     for (const evidence of program.evidence) {
       const filename = evidence.path

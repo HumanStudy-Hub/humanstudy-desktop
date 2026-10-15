@@ -1,0 +1,327 @@
+// The Simulation tab: AI participants go through the paper's procedure, and the result is compared
+// with what the paper reports. One screen per state — not runnable yet, ready, running, finished —
+// with the agent doing the work. The approval message (the researcher's confirmation) is unchanged:
+// pressing "Run simulation" is the confirmation of exactly what this screen shows.
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { HumanProgram } from '../../shared/human-program'
+import type { ProjectEntry, ProjectSnapshot } from '../../preload/types'
+import { simulationScope, simulationLimits } from '../../shared/simulation-scope'
+import { estimateRun, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
+import { shortModelName } from './ModelPicker'
+import { listenToArtifact } from '../bridge'
+import { getLang, t } from '../i18n'
+import { track } from '../telemetry'
+import { formatDuration } from '../format'
+
+interface Props {
+  project: ProjectSnapshot
+  program: HumanProgram
+  studyId: string
+  studies: { id: string; title: string }[]
+  onStudy(id: string): void
+  /** The model selected in the app; AI participants use it too. */
+  model: string
+  agentBusy: boolean
+  /** What the agent is doing right now, in plain words (from the chat's activity line). */
+  agentActivity?: string
+  /** A run request typed in the chat, waiting for this screen's confirmation. */
+  request?: string | null
+  onRun(perCondition: number): Promise<void>
+  onBuild(): void
+  onStop(): void
+  onAsk(draft: string): void
+  onOpenFile(path: string): void
+}
+
+const PENDING_KEY = (dir: string) => `hs.sim.pending:${dir}`
+interface Pending { at: number; kind: 'run' | 'build' }
+const readPending = (dir: string): Pending | null => {
+  try { const p = JSON.parse(sessionStorage.getItem(PENDING_KEY(dir)) || 'null'); return p && typeof p.at === 'number' ? p : null } catch { return null }
+}
+const writePending = (dir: string, p: Pending | null) => {
+  try { if (p) sessionStorage.setItem(PENDING_KEY(dir), JSON.stringify(p)); else sessionStorage.removeItem(PENDING_KEY(dir)) } catch { /* no storage */ }
+}
+
+const hasPackage = (tree: ProjectEntry[]): boolean => {
+  const pkg = tree.find((e) => e.kind === 'dir' && e.rel === 'package')
+  return Boolean(pkg?.children?.some((d) => d.kind === 'dir' && d.children?.some((c) => c.name === 'task' && c.children?.some((f) => f.name === 'adapter.py'))))
+}
+const fileUrl = (tree: ProjectEntry[], path?: string): string | undefined => {
+  if (!path) return undefined
+  for (const e of tree) {
+    if (e.path === path) return e.url
+    if (e.children && path.startsWith(e.path + '/')) { const u = fileUrl(e.children, path); if (u) return u }
+  }
+  return undefined
+}
+
+const STEPS: SimStage[] = ['preparing', 'trial', 'running', 'scoring', 'writing']
+
+export function SimulationPanel(props: Props) {
+  const { project, program, studyId, studies, model, agentBusy } = props
+  const dir = project.dir
+  const plan = useMemo(() => simulationPlan(program, studyId), [program, studyId])
+  const scope = useMemo(() => simulationScope(program, studyId), [program, studyId])
+  const limits = useMemo(() => simulationLimits(program, studyId), [program, studyId])
+  const built = hasPackage(project.tree)
+  const [perCondition, setPerCondition] = useState(plan.defaultPerCondition)
+  useEffect(() => setPerCondition(plan.defaultPerCondition), [plan.defaultPerCondition])
+  const estimate = estimateRun({ conditions: plan.conditions.length, perCondition, model, needsBuild: !built })
+
+  // Run folders and the two small files each one writes while and after it runs.
+  const runs = useMemo(() => runFolders(project.tree), [project.tree])
+  const [texts, setTexts] = useState<Record<string, { progress: SimProgress | null; summary: SimSummary | null }>>({})
+  const stamp = runs.map((r) => `${r.id}:${r.mtime}`).join('|') + getLang()
+  useEffect(() => {
+    let live = true
+    void Promise.all(runs.map(async (r) => {
+      const read = (p?: string) => (p ? window.humanstudy.project.readText(p).catch(() => null) : Promise.resolve(null))
+      const [pr, su] = await Promise.all([read(r.progress), read(r.summary)])
+      return [r.id, { progress: parseProgress(pr), summary: parseSummary(su, getLang()) }] as const
+    })).then((rows) => { if (live) setTexts(Object.fromEntries(rows)) })
+    return () => { live = false }
+  }, [stamp]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const [pending, setPendingState] = useState<Pending | null>(() => readPending(dir))
+  useEffect(() => setPendingState(readPending(dir)), [dir])
+  const setPending = (p: Pending | null) => { writePending(dir, p); setPendingState(p) }
+  const [now, setNow] = useState(() => Date.now())
+  const states = new Map(runs.map((r) => [r.id, runState(r, texts[r.id]?.progress ?? null, agentBusy, now, r.mtime)]))
+  const newRun = pending?.kind === 'run' ? runs.find((r) => r.mtime >= pending.at - 5_000 && !texts[r.id]?.summary?.example) : undefined
+  const active = runs.find((r) => states.get(r.id) === 'running' && !texts[r.id]?.summary?.example && now - r.mtime < 6 * 3600_000)
+  const running = Boolean(active) || (pending?.kind === 'run' && agentBusy && !newRun) || (pending?.kind === 'run' && newRun && states.get(newRun.id) === 'running')
+  const building = pending?.kind === 'build' && agentBusy
+  // A pending request ends when its run folder finished, or the agent went quiet without starting one.
+  const quietMiss = pending?.kind === 'run' && !agentBusy && !newRun && now - pending.at > 8_000
+  useEffect(() => {
+    if (pending?.kind === 'build' && !agentBusy && now - pending.at > 5_000) setPending(null)
+    if (pending?.kind === 'run' && newRun && states.get(newRun.id) !== 'running') setPending(null)
+  }) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!running && !building) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [running, building])
+
+  const finished = runs.filter((r) => r.results && states.get(r.id) !== 'running')
+  const [shown, setShown] = useState<string | null>(null)
+  const current = (shown && runs.find((r) => r.id === shown)) || (newRun && states.get(newRun.id) !== 'running' ? newRun : undefined) || finished.find((r) => !texts[r.id]?.summary?.example) || finished[0]
+  const failedRun = newRun && states.get(newRun.id) === 'failed' ? newRun : undefined
+
+  const viewed = useRef(false)
+  useEffect(() => {
+    if (viewed.current) return
+    viewed.current = true
+    track('simulation.view', { metadata: { built, ready: scope.ready, runs: runs.length, conditions: plan.conditions.length } })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const run = async () => {
+    setPending({ at: Date.now(), kind: 'run' })
+    setShown(null)
+    track('simulation.run', { metadata: { perCondition, conditions: plan.conditions.length, model, built } })
+    try { await props.onRun(perCondition) } catch { setPending(null) }
+  }
+  const build = () => {
+    setPending({ at: Date.now(), kind: 'build' })
+    track('simulation.build', { metadata: { conditions: plan.conditions.length } })
+    props.onBuild()
+  }
+  const stop = () => {
+    track('simulation.stop', { metadata: { done: activeProgress?.done ?? 0, total: activeProgress?.total ?? 0 } })
+    props.onStop()
+    setPending(null)
+  }
+  const activeRun = active ?? (newRun && states.get(newRun.id) === 'running' ? newRun : undefined)
+  const activeProgress = activeRun ? texts[activeRun.id]?.progress ?? null : null
+  const studyTitle = studies.find((s) => s.id === studyId)?.title ?? ''
+  const modelName = shortModelName(model)
+
+  const isExample = Boolean(current && texts[current.id]?.summary?.example)
+  // Your own finished run comes first; the shipped example sits below the plan, and nothing old
+  // distracts from a run in progress.
+  const resultFirst = Boolean(current?.results && !isExample && !running && !building)
+  const result = current && current.results ? (
+    <Result run={current} tree={project.tree} summary={texts[current.id]?.summary ?? null} progress={texts[current.id]?.progress ?? null}
+      onOpen={() => { track('simulation.result_open', { metadata: { how: 'tab', example: isExample } }); props.onOpenFile(current.results!) }}
+      onAsk={() => props.onAsk(t('sim.discuss_prompt', { run: current.rel }))} />
+  ) : null
+  return (
+    <div className="sim">
+      <header className="sim-head">
+        <h2>{t('sim.title')}</h2>
+        <p>{t('sim.what')}</p>
+      </header>
+
+      {resultFirst && result}
+      {running ? (
+        <Progress progress={activeProgress} startedAt={activeProgress?.startedAt ?? pending?.at ?? activeRun?.mtime ?? now} now={now} plan={plan} built={built} activity={props.agentActivity} model={activeProgress?.model ?? model} onStop={stop} />
+      ) : building ? (
+        <section className="sim-card sim-live" aria-live="polite">
+          <p className="sim-stage-now">{t('sim.building')}</p>
+          <p className="muted small">{props.agentActivity || t('sim.building_hint')} · {formatDuration(now - (pending?.at ?? now))}</p>
+          <button className="ghost small-btn sim-stop" onClick={stop}>{t('sim.stop')}</button>
+        </section>
+      ) : (
+        <>
+          {(failedRun || quietMiss) && (
+            <section className="sim-card sim-problem" role="alert">
+              <p>{failedRun ? t('sim.failed', { reason: texts[failedRun.id]?.progress?.message ?? t('sim.failed_unknown') }) : t('sim.no_run')}</p>
+              <button className="link" onClick={() => { setPending(null); props.onAsk(failedRun ? t('sim.fix_prompt', { run: failedRun.rel }) : t('sim.why_prompt')) }}>{t('sim.ask_fix')}</button>
+            </section>
+          )}
+          {!built ? (
+            <section className="sim-card">
+              <p>{t('sim.not_built')}</p>
+              <div className="sim-actions">
+                <button className="primary" onClick={build} disabled={agentBusy}>{t('sim.build')}</button>
+                <span className="muted small">{t('sim.build_time')}</span>
+              </div>
+            </section>
+          ) : (
+            <section className="sim-card" aria-label={t('sim.will_run')}>
+              <h3>{resultFirst ? t('sim.run_again') : t('sim.will_run')}</h3>
+              <dl className="sim-plan">
+                {studies.length > 1 && (<>
+                  <dt>{t('sim.study')}</dt>
+                  <dd><select value={studyId} onChange={(e) => props.onStudy(e.target.value)}>{studies.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}</select></dd>
+                </>)}
+                {studies.length <= 1 && studyTitle && (<><dt>{t('sim.study')}</dt><dd>{studyTitle}</dd></>)}
+                <dt>{t('sim.conditions')}</dt>
+                <dd>{plan.conditions.length ? plan.conditions.map((c) => c.label).join(t('sim.list_sep')) : t('sim.one_group')}</dd>
+                <dt>{t('sim.participants')}</dt>
+                <dd>
+                  <select aria-label={t('sim.participants')} value={perCondition} onChange={(e) => setPerCondition(Number(e.target.value))}>
+                    {[...new Set([5, 10, 20, plan.defaultPerCondition, 40, 60].filter((n) => n <= 60))].sort((a, b) => a - b).map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>{' '}
+                  {t(plan.conditions.length > 1 ? 'sim.per_condition' : 'sim.in_total_one', { total: estimate.participants })}
+                  {plan.paperPerCondition && <span className="muted small"> · {plan.paperPerCondition === perCondition ? t('sim.same_as_paper') : t('sim.paper_had', { n: plan.paperPerCondition })}</span>}
+                </dd>
+                <dt>{t('sim.model')}</dt>
+                <dd>{modelName}</dd>
+                <dt>{t('sim.estimate')}</dt>
+                <dd>{t('sim.estimate_value', { lo: estimate.minutes[0], hi: estimate.minutes[1], cost: costText(estimate.cost) })}</dd>
+              </dl>
+              {props.request && <p className="sim-request"><span className="muted">{t('sim.your_request')}</span> {props.request}</p>}
+              {(limits.text.length > 0 || limits.decisions.length > 0) && (
+                <div className="sim-limits">
+                  <h3>{t('sim.cannot')}</h3>
+                  <ul>
+                    {limits.text.map((x, i) => <li key={`l${i}`}>{x}</li>)}
+                    {limits.decisions.map((d) => <li key={d.id}>{d.title}<span className="muted"> — {t('sim.decision_default')}</span></li>)}
+                  </ul>
+                </div>
+              )}
+              {!scope.ready && <p className="sim-blocked">{t('sim.blocked', { what: [...scope.missing.map((m) => t(`sim.need.${m}`)), ...scope.blocking.map((b) => b.title)].join(t('sim.list_sep')) })}</p>}
+              <div className="sim-actions">
+                <button className="primary" disabled={!scope.ready || agentBusy} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
+                <button className="ghost" onClick={() => props.onAsk(scope.ready ? t('sim.ask_prompt', { study: studyTitle }) : t('sim.resolve_prompt', { study: studyTitle }))}>{t('sim.ask')}</button>
+              </div>
+              <p className="muted small sim-note">{t('sim.note')}</p>
+            </section>
+          )}
+        </>
+      )}
+
+      {!resultFirst && !running && !building && result}
+      {runs.length > 1 && (
+        <section className="sim-history">
+          <h3>{t('sim.earlier')}</h3>
+          <ul>
+            {runs.map((r) => {
+              const s = texts[r.id]?.summary, p = texts[r.id]?.progress, st = states.get(r.id)
+              const when = runDate(r.id) ?? r.mtime
+              return (
+                <li key={r.id}>
+                  <button className={`sim-run-row${current?.id === r.id ? ' on' : ''}`} disabled={!r.results} onClick={() => { setShown(r.id); track('simulation.result_open', { metadata: { how: 'history', example: Boolean(s?.example) } }) }}>
+                    <span>{new Date(when).toLocaleString(getLang(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}{s?.example ? ` · ${t('sim.example')}` : ''}</span>
+                    <span className="muted">{shortModelName(s?.model ?? p?.model ?? '') || '—'}</span>
+                    <span className="muted">{s?.perCondition ? t('sim.n_each', { n: s.perCondition }) : p?.total ? t('sim.n_total', { n: p.total }) : ''}</span>
+                    <span className={`sim-outcome o-${st === 'done' ? s?.outcome ?? 'unknown' : st}`}>{st === 'done' ? (s ? t(`sim.outcome.${s.outcome}`) : t('sim.state.done')) : t(`sim.state.${st}`)}</span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+      )}
+    </div>
+  )
+}
+
+function costText(range: [number, number]): string {
+  const c = costRange(range)
+  return c.kind === 'under' ? t('sim.cost_under', { a: c.a }) : c.kind === 'about' ? t('sim.cost_about', { a: c.a }) : t('sim.cost_range', { a: c.a, b: c.b })
+}
+
+function Progress({ progress, startedAt, now, plan, built, activity, model, onStop }: {
+  progress: SimProgress | null; startedAt: number; now: number; plan: ReturnType<typeof simulationPlan>; built: boolean; activity?: string; model: string; onStop(): void
+}) {
+  const stage: SimStage = progress?.stage ?? 'preparing'
+  const total = progress?.total ?? 0
+  const done = progress?.done ?? 0
+  const at = STEPS.indexOf(stage === 'done' ? 'writing' : stage)
+  // One mark per AI participant, grouped by condition: the run made visible as people, not a percentage.
+  const groups = progress?.conditions.length ? progress.conditions : total ? [{ id: '', done, total }] : []
+  const label = (id: string) => plan.conditions.find((c) => c.id === id || c.label.toLowerCase() === id.toLowerCase() || c.id.endsWith(`-${id}`))?.label ?? id
+  return (
+    <section className="sim-card sim-live" aria-live="polite">
+      <div className="sim-live-top">
+        <p className="sim-stage-now">{stage === 'preparing' && !built ? t('sim.stage.building') : t(`sim.stage.${stage}`)}</p>
+        <span className="muted small">{t('sim.elapsed', { time: formatDuration(now - startedAt) })}</span>
+        <button className="ghost small-btn sim-stop" onClick={onStop}>{t('sim.stop')}</button>
+      </div>
+      <ol className="sim-steps">
+        {STEPS.map((s, i) => <li key={s} className={i < at ? 'past' : i === at ? 'now' : ''}>{t(`sim.step.${s}`)}</li>)}
+      </ol>
+      {total > 0 ? (
+        <>
+          <p className="sim-count"><strong>{t('sim.count', { done, total })}</strong>{progress?.failed ? <span className="muted small"> · {t('sim.unusable', { n: progress.failed })}</span> : null}</p>
+          <div className="sim-people">
+            {groups.map((g) => (
+              <div key={g.id || 'all'} className="sim-group">
+                {g.id && <span className="small">{label(g.id)} <span className="muted">{g.done}/{g.total}</span></span>}
+                <div className="sim-dots" role="img" aria-label={t('sim.count', { done: g.done, total: g.total })}>
+                  {Array.from({ length: Math.min(g.total, 120) }, (_, i) => <i key={i} className={i < g.done ? 'on' : ''} />)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <p className="muted small">{t(stage === 'trial' ? 'sim.trial_hint' : 'sim.preparing_hint')}</p>
+      )}
+      <p className="muted small sim-activity">{progress?.message ?? activity ?? ''}{progress?.message || activity ? ' · ' : ''}{shortModelName(model)}</p>
+    </section>
+  )
+}
+
+function Result({ run, tree, summary, progress, onOpen, onAsk }: { run: SimRunFiles; tree: ProjectEntry[]; summary: SimSummary | null; progress: SimProgress | null; onOpen(): void; onAsk(): void }) {
+  const frame = useRef<HTMLIFrameElement>(null)
+  useEffect(() => listenToArtifact(() => frame.current), [])
+  const url = fileUrl(tree, run.results)
+  const when = runDate(run.id) ?? run.mtime
+  const model = shortModelName(summary?.model ?? progress?.model ?? '')
+  const n = summary?.perCondition ? t('sim.n_each', { n: summary.perCondition }) : progress?.total ? t('sim.n_total', { n: progress.total }) : ''
+  return (
+    <section className="sim-result">
+      <div className="sim-result-head">
+        <h3>{summary?.example ? t('sim.example_title') : t('sim.result_title')}</h3>
+        <span className="muted small">{[new Date(when).toLocaleDateString(getLang(), { month: 'short', day: 'numeric', year: 'numeric' }), model, n].filter(Boolean).join(t('sim.list_sep'))}</span>
+      </div>
+      {summary?.example && <p className="sim-example-note">{t('sim.example_note')}</p>}
+      {summary ? (
+        <div className={`sim-summary o-${summary.outcome}`}>
+          <p className="sim-verdict">{t(`sim.outcome.${summary.outcome}`)}</p>
+          <p>{summary.paragraph}</p>
+        </div>
+      ) : (
+        <p className="muted small">{t('sim.no_summary')}</p>
+      )}
+      {url && <iframe ref={frame} key={url} className="sim-frame" src={url} sandbox="allow-scripts" title={t('sim.result_title')} />}
+      <div className="sim-actions">
+        <button className="ghost small-btn" onClick={onOpen}>{t('sim.open_tab')}</button>
+        <button className="ghost small-btn" onClick={onAsk}>{t('sim.discuss')}</button>
+      </div>
+    </section>
+  )
+}

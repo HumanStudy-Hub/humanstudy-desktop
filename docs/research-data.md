@@ -109,9 +109,14 @@ Part paths are relative to the same session directory. Gunzip each part, concate
 in manifest order, then decode as UTF-8 (a Unicode character may cross the byte boundary).
 This is splitting, not shortening. ZIP exports include manifests and parts.
 
-Scope review is recorded as `simulation.scope_approved`; the researcher confirmation is also
-part of the conversation, with the selected study, full program SHA-256 and five approved
-boundaries. Simulation assessments are implementation judgments, not observations of people.
+The Simulation tab records `simulation.view` (once per opening: package built, runnable, number
+of runs and conditions), `simulation.build` ("Build the study first"), `simulation.run` (AI
+participants per condition, number of conditions, model), `simulation.stop` (participants done of
+planned) and `simulation.result_open` (from the tab or the run list; whether it was the shipped
+example). No study text is attached. The researcher's confirmation is also part of the
+conversation, with the selected study, full program SHA-256, the five section-12 fields and the
+plan (`perCondition`, conditions, model). Simulation assessments are implementation judgments,
+not observations of people.
 
 Native OpenCode `question` interactions are stored as `question` parts in each local thread,
 with complete prompt text, offered options and exact selected/custom answers. With content

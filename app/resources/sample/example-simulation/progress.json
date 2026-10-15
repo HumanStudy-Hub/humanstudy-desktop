@@ -1,0 +1,22 @@
+{
+ "stage": "done",
+ "done": 40,
+ "total": 40,
+ "failed": 0,
+ "conditions": [
+  {
+   "id": "condition-harm",
+   "done": 20,
+   "total": 20
+  },
+  {
+   "id": "condition-help",
+   "done": 20,
+   "total": 20
+  }
+ ],
+ "model": "anthropic/claude-haiku-5.5",
+ "startedAt": "2026-10-15T21:02:50Z",
+ "updatedAt": "2026-10-15T21:24:13Z",
+ "message": "Simulation finished: 20 AI participants per condition, Corporate Chairman vignette."
+}

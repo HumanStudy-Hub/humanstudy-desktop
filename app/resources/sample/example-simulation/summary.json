@@ -1,0 +1,9 @@
+{
+  "outcome": "replicated",
+  "paragraph": "In the Corporate Chairman vignette, all 20 AI participants in the harm condition said the chairman intentionally harmed the environment, and none of the 20 in the help condition said he intentionally helped it. The paper reports 82% and 23% for the same comparison (p. 4), so the direction matches, but the AI answers were far more uniform than people's: every AI participant in a condition gave the same answer. Blame averaged 5.7 (harm) and praise 0.7 (help) on the 0-6 scale, against the paper's 4.8 and 1.4, which pool both experiments (p. 7). Caveats: one model at one temperature, 20 AI participants per condition; the question order and random assignment were taken from the paper's text.",
+  "paragraph_zh": "在“公司董事长”情境中，伤害条件下的 20 名 AI 参与者全部认为董事长是故意伤害环境的，而帮助条件下的 20 名中没有一人认为他是故意帮助环境的。论文报告同一比较的比例为 82% 和 23%（第 4 页），方向一致，但 AI 的回答比真人整齐得多：同一条件下所有 AI 参与者的回答都相同。在 0–6 量表上，责备平均为 5.7（伤害），赞扬平均为 0.7（帮助）；论文为 4.8 和 1.4，且合并了两个实验（第 7 页）。注意：只用了一个模型和一个温度，每个条件 20 名 AI 参与者；问题顺序与随机分配取自论文正文。",
+  "model": "anthropic/claude-haiku-5.5",
+  "perCondition": 20,
+  "calls": 42,
+  "example": true
+}

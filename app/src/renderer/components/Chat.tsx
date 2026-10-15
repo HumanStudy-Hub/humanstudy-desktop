@@ -11,6 +11,7 @@ import { ToolGroup } from './ToolView'
 import { t } from '../i18n'
 import { ArtifactCard } from './ArtifactCard'
 import { classifyTool, researchActivity } from '../toolSentence'
+import { approvalRequest } from '../../shared/simulation-scope'
 import { track } from '../telemetry'
 import { KernelBar } from './KernelBar'
 import { compact, money } from '../format'
@@ -505,6 +506,8 @@ function PartView({ part, role, onReply, onAnswer, onReject }: { part: Part; rol
       <div className="part text md-part">
         <Markdown text={part.text} />
       </div>
+    ) : approvalRequest(part.text) !== null ? (
+      <div className="part text"><strong className="sim-confirmed">{t('sim.confirmed')}</strong>{approvalRequest(part.text) ? <> {approvalRequest(part.text)}</> : null}</div>
     ) : (
       <div className="part text">{part.text}</div>
     )

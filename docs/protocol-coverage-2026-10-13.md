@@ -19,7 +19,7 @@ every existing extracted paper.
 | 09 Results | Descriptives, effects, uncertainty, tests, heterogeneity and qualitative themes. The build contract requires reported results to stay distinct from simulated observations. |
 | 10 Findings and contributions | Answers, hypothesis support, tested/proposed mechanisms, contributions and design principles. |
 | 11 Credibility, limitations and replication | Validity, generalisation, limitations, replications cited by the paper, and availability of materials/data/code/preregistration. No unsolicited literature search. |
-| 12 Simulation scope | Separate review view with eligible steps, roles, conditions, observable outcomes and boundaries. Confirmation is disabled for incomplete scope or blocking issues. |
+| 12 Simulation scope (UI: "Can it be simulated?") | Section 12 of the Study document; the Simulation tab shows what will run and what cannot be simulated. Run is disabled for missing/undecided fields or blocking issues; pressing it is the confirmation. |
 
 The document uses familiar research terms, progressive disclosure and a selected study;
 it does not require eleven expanded panels at once. Unknown details remain available in the

@@ -23,3 +23,11 @@ export function relativeTime(iso: string | number, now = Date.now()): string {
   if (s < 7 * 86400) return t('time.days', { n: Math.floor(s / 86400) })
   return new Date(ms).toLocaleDateString(getLang(), { day: 'numeric', month: 'short' })
 }
+
+/** "45 s", "3 min 12 s" (dur.* keys) */
+export function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return t('dur.sec', { sec: s })
+  const min = Math.floor(s / 60)
+  return s % 60 ? t('dur.min_sec', { min, sec: s % 60 }) : t('dur.min', { min })
+}

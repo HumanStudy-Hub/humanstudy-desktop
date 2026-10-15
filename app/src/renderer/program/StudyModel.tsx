@@ -37,7 +37,7 @@ export type StudyModelProps = {
   onPrefill?(draft: string): void;
   /** Human edit of a field's text. Absent: fields are read-only. */
   onEdit?(id: string, fieldId: string, text: string): void;
-  /** Simulation scope is reviewed separately before a run. */
+  /** 'simulation': only section 12 ("Can it be simulated?"); the study view shows all twelve. */
   view?: 'study' | 'simulation';
 };
 
@@ -46,15 +46,15 @@ export function viewStudies(program: HumanProgram) { return program.studies; }
 
 type Focus = { id: string; fieldId?: string; edit?: boolean };
 type Ctx = StudyModelProps & { open(id: string, fieldId?: string, extend?: boolean, edit?: boolean): void; focus: Focus | null };
-const sectionsFor = (view: StudyModelProps['view']) => SECTIONS.filter(sec => view === 'simulation' ? sec.id === 'simulation' : sec.id !== 'simulation');
+const sectionsFor = (view: StudyModelProps['view']) => SECTIONS.filter(sec => view !== 'simulation' || sec.id === 'simulation');
 
 export default function StudyModel(props: StudyModelProps) {
   const { program, studyId, selectedIds, view = 'study' } = props;
   const sections = sectionsFor(view);
   const stages = useMemo(() => sections.map(sec => stage(program, sec, studyId)), [program, studyId, view]); // eslint-disable-line react-hooks/exhaustive-deps
   const other = useMemo(() => view === 'study' ? otherCards(program, studyId) : [], [program, studyId, view]);
-  // The scope review lists only what concerns the scope; the study view everything else.
-  const issues = useMemo(() => reviewIssues(program, studyId, sections).filter(i => (view === 'simulation') === (program.nodes.find(n => n.id === i.entity)?.kind === 'simulation')), [program, studyId, view]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The section-12 view lists only what concerns simulation; the study view everything.
+  const issues = useMemo(() => reviewIssues(program, studyId, sections).filter(i => view !== 'simulation' || program.nodes.find(n => n.id === i.entity)?.kind === 'simulation'), [program, studyId, view]); // eslint-disable-line react-hooks/exhaustive-deps
   const amber = useMemo(() => amberItems(program, studyId, sections), [program, studyId, view]); // eslint-disable-line react-hooks/exhaustive-deps
   const scroll = useRef<HTMLDivElement>(null);
   const [focus, setFocus] = useState<Focus | null>(null);

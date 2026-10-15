@@ -130,12 +130,12 @@ export const SECTIONS: Section[] = [
     { id: 'replications', label: 'Replications reported by the paper', kinds: ['limitation'], fieldIds: ['replications'] },
     { id: 'openness', label: 'Materials, data, code, preregistration', kinds: ['limitation'], fieldIds: ['openness'] },
   ] },
-  { id: 'simulation', number: '12', title: 'Simulation scope', titleZh: '可模拟范围', level: 'study', openByDefault: true, assessment: true, items: [
-    { id: 'steps', label: 'Steps an agent can perform', kinds: ['simulation'], fieldIds: ['steps'] },
-    { id: 'roles', label: 'Roles that can be simulated', kinds: ['simulation'], fieldIds: ['roles'] },
-    { id: 'conditions', label: 'Conditions that can be expressed', kinds: ['simulation'], fieldIds: ['conditions'] },
-    { id: 'outcomes', label: 'Outcomes that are observable', kinds: ['simulation'], fieldIds: ['outcomes'] },
-    { id: 'limits', label: 'Limits', kinds: ['simulation'], fieldIds: ['limits'] },
+  { id: 'simulation', number: '12', title: 'Can it be simulated?', titleZh: '能否模拟', level: 'study', openByDefault: true, assessment: true, items: [
+    { id: 'steps', label: 'Steps AI participants can perform', kinds: ['simulation'], fieldIds: ['steps'] },
+    { id: 'roles', label: 'Participants who can be simulated', kinds: ['simulation'], fieldIds: ['roles'] },
+    { id: 'conditions', label: 'Conditions that can be given', kinds: ['simulation'], fieldIds: ['conditions'] },
+    { id: 'outcomes', label: 'Outcomes that can be measured', kinds: ['simulation'], fieldIds: ['outcomes'] },
+    { id: 'limits', label: 'What cannot be simulated', kinds: ['simulation'], fieldIds: ['limits'] },
   ] },
 ];
 

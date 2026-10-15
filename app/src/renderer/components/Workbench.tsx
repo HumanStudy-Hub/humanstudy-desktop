@@ -11,6 +11,8 @@ import { SourceDrawer, type PassageSelection, type SourceRef } from './SourceDra
 import { t } from '../i18n'
 import { sourceTarget } from '../../shared/source-target'
 import { simulationScope } from '../../shared/simulation-scope'
+import { simulationPlan } from '../../shared/simulation-run'
+import { SimulationPanel } from './SimulationPanel'
 import { sourceFocus } from '../../shared/workspace-context'
 import { supportedBy } from '../../shared/program-view'
 import { quoteKey } from '../../shared/source-anchor'
@@ -39,13 +41,16 @@ export interface WorkbenchHandle {
 
 export interface WorkspaceSnapshot { projectDir: string; context: WorkspaceContext }
 
-async function approveSimulation(dir: string, program: HumanProgram, studyId: string, request: string): Promise<string> {
+/** The researcher's confirmation, sent as the agent message: the program's hash at the moment of the
+ *  click, the study, the five section-12 fields and the plan the Simulation tab showed. */
+async function approveSimulation(dir: string, program: HumanProgram, studyId: string, request: string, plan: { perCondition: number; model: string }): Promise<string> {
   const scope = simulationScope(program, studyId)
   const raw = await window.humanstudy.project.readText(`${dir}/program.json`)
   if (JSON.stringify(JSON.parse(raw)) !== JSON.stringify(program)) throw new Error(t('simulation.changed'))
   const bytes = new TextEncoder().encode(raw)
   const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('')
-  return `[Simulation scope approved]\n${JSON.stringify({ programId: program.id, programHash: hash, hashFormat: 'program.json UTF-8 file bytes', studyId, scope: scope.fields })}\n${request}`
+  const conditions = simulationPlan(program, studyId).conditions.map(c => c.id)
+  return `[Simulation scope approved]\n${JSON.stringify({ programId: program.id, programHash: hash, hashFormat: 'program.json UTF-8 file bytes', studyId, scope: scope.fields, plan: { perCondition: plan.perCondition, conditions, model: plan.model } })}\n${request}`
 }
 
 interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSource' | 'onAsk' | 'onPrefill'> {
@@ -60,6 +65,13 @@ interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSour
   onFold(): void
   simulationRequest?: string | null
   onRunSimulation?(approval: string): void
+  /** Send the agent a message right away (the Simulation tab's "Build the study first"). */
+  onSendAgent?(text: string): void
+  onStopAgent?(): void
+  /** The model selected in the app, whether the agent is working, and what it is doing. */
+  model?: string
+  agentBusy?: boolean
+  agentActivity?: string
   onWorkspaceChange?(snapshot: WorkspaceSnapshot): void
 }
 
@@ -82,7 +94,7 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, source, onClearSelection, onAskSelection, onFixProgram, onFold, simulationRequest, onRunSimulation, onWorkspaceChange, ...docProps }: Props) {
+export function Workbench({ ref, project, source, onClearSelection, onAskSelection, onFixProgram, onFold, simulationRequest, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentActivity, onWorkspaceChange, ...docProps }: Props) {
   // Tolerant: one slip by the agent sets that detail aside and the document still renders.
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
@@ -316,11 +328,44 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
         {layout.files && <Explorer tree={project.tree} name={project.name} activePath={activeFile?.path ?? null} dirty={dirty} onOpen={openEntry} />}
         <div className={`wb-editors${compare ? " comparing" : ""}`} ref={editors}>
         <div className="wb-content" hidden={active === "paper"} style={compare ? { flex: `0 0 ${ratio}%` } : undefined}>
-          {(active === 'study' || active === 'simulation') &&
+          {active === 'simulation' && program && (
+            <SimulationPanel
+              project={project}
+              program={program}
+              studyId={studyId}
+              studies={studies.map(st => ({ id: st.id, title: st.title }))}
+              onStudy={(id) => update((l) => ({ ...l, study: id }))}
+              model={model}
+              agentBusy={agentBusy}
+              agentActivity={agentActivity}
+              request={simulationRequest}
+              onRun={async (perCondition) => {
+                const study = studies.find(st => st.id === studyId)?.title ?? studyId
+                const request = simulationRequest ?? t('sim.request', { study, n: perCondition, model: model || 'selected in the app' })
+                try {
+                  onRunSimulation?.(await approveSimulation(project.dir, program, studyId, request, { perCondition, model }))
+                } catch (e) {
+                  setEditError(e instanceof Error ? e.message : String(e))
+                  throw e
+                }
+              }}
+              onBuild={() => onSendAgent?.(t('sim.build_prompt'))}
+              onStop={() => {
+                onStopAgent?.()
+                // The run itself is a background process; simkit ends it after the participants in flight.
+                const live = project.tree.length ? findRunning(project.tree) : null
+                if (live) void window.humanstudy.project.writeText(`${live}/STOP`, 'Stopped by the researcher\n').catch(() => undefined)
+              }}
+              onAsk={(draft) => docProps.onPrefill?.(draft)}
+              onOpenFile={(path) => { const e = fileByPath.get(path); if (e) openEntry(e) }}
+            />
+          )}
+          {active === 'simulation' && program && editError && <div className="part error edit-error">{editError}</div>}
+          {active === 'study' &&
             (program ? (
               <>
                 <StudyView
-                  view={active === 'simulation' ? 'simulation' : 'study'}
+                  view="study"
                   program={program}
                   studyId={studyId}
                   onStudy={(id) => update((l) => ({ ...l, study: id }))}
@@ -340,16 +385,6 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
                     update(l => ({ ...l, active: 'study', compare: true }))
                   }}
                 />
-                {active === 'simulation' && (() => {
-                  const scope = simulationScope(program, studyId)
-                  return <div className="pad simulation-approve">
-                    <p>{t('simulation.boundary')}</p>
-                    {!scope.ready && <p className="muted">{t('simulation.incomplete')}</p>}
-                    {simulationRequest && <p>{simulationRequest}</p>}
-                    <button className="primary" disabled={!scope.ready} onClick={() => { void approveSimulation(project.dir, program, studyId, simulationRequest ?? 'Run a simulation of this study within the approved scope.').then(approval => onRunSimulation?.(approval)).catch(e => setEditError(String(e))) }}>{t('simulation.approve')}</button>
-                    {!scope.ready && <button className="link" onClick={() => docProps.onPrefill?.('Review the five simulation scope fields (steps, roles, conditions, outcomes, limits) for this study, explain what can and cannot be simulated, and resolve the blocking gaps with me. Do not run a simulation yet.')}>{t('doc.ask')}</button>}
-                  </div>
-                })()}
               </>
             ) : (
               <Empty title={error ? t('study.unreadable') : t('study.empty_title')} body={error ?? t('study.empty_body')}>
@@ -426,6 +461,13 @@ function StudyView({ editError, problems, onFix, ...modelProps }: StudyViewProps
       <StudyModel {...modelProps} />
     </>
   )
+}
+
+/** The newest run folder whose progress says it is still running (absolute path), for Stop. */
+function findRunning(tree: ProjectEntry[]): string | null {
+  const sims = tree.find(e => e.rel === 'artifacts')?.children?.find(e => e.rel === 'artifacts/simulations')?.children ?? []
+  const runs = sims.filter(e => e.kind === 'dir').sort((a, b) => b.name.localeCompare(a.name))
+  return runs.find(r => !r.children?.some(f => f.name === 'results.html' || f.name === 'STOP'))?.path ?? null
 }
 
 function fixProgramMessage(problems: string[], error?: string): string {

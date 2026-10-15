@@ -14,6 +14,7 @@ import { AgreementDialog } from './components/ResearchData'
 import { lap, setTelemetryProject, track } from './telemetry'
 import { t, useLang } from './i18n'
 import { requestsSimulation } from '../shared/simulation-scope'
+import { classifyTool, researchActivity, toolSentence } from './toolSentence'
 import { onAsk as onArtifactAsk, onOpenSource as onArtifactOpenSource } from './bridge'
 import { artifactSourceRef } from './artifact-source'
 import { SampleOnboarding } from './components/SampleOnboarding'
@@ -92,6 +93,14 @@ export default function App() {
   const session = useSession(project?.dir ?? null, agentReady)
   const [simulationRequest, setSimulationRequest] = useState<string | null>(null)
   useEffect(() => { setSimulationRequest(null); setSource(null) }, [project?.dir])
+  // What the agent is doing, in the chat's own words, for the Simulation tab's live line.
+  const agentActivity = useMemo(() => {
+    if (!session.busy) return ''
+    const tools = (session.messages.filter(m => m.role === 'assistant').at(-1)?.parts ?? []).filter(p => p.kind === 'tool') as Parameters<typeof researchActivity>[0]
+    const last = tools[tools.length - 1]
+    const s = last && (last.state === 'pending' || last.state === 'running') ? toolSentence(classifyTool(last, project?.dir)) : researchActivity(tools, project?.dir)
+    return t(s.key, s.vars)
+  }, [session.busy, session.messages, project?.dir])
   const reviewRun = (text: string, send: (text: string) => void) => {
     if (requestsSimulation(text)) { setSimulationRequest(text); showTab('simulation') }
     else send(text)
@@ -414,7 +423,12 @@ export default function App() {
               source={source}
               onWorkspaceChange={cacheWorkspace}
               simulationRequest={simulationRequest}
-              onRunSimulation={approval => { track('simulation.scope_approved'); setSimulationRequest(null); sendInWorkspace(approval, session.enqueue); setPane('agent', true) }}
+              onRunSimulation={approval => { setSimulationRequest(null); sendInWorkspace(approval, session.busy ? session.enqueue : session.send) }}
+              onSendAgent={text => sendInWorkspace(text, session.busy ? session.enqueue : session.send)}
+              onStopAgent={() => void session.abort()}
+              model={settings?.model ?? ''}
+              agentBusy={session.busy}
+              agentActivity={agentActivity}
               selectedIds={selected}
               onClearSelection={() => setSelected([])}
               onAskSelection={askSelection}

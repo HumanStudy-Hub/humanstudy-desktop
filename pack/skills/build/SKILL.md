@@ -120,6 +120,9 @@ Rules the runner depends on:
   paper's comparisons need; each session dict carries `condition` and `arm`. The adapter builds
   its own prompts from `materials/materials.json`, parses replies into the response format the
   paper used, and needs nothing from the researcher at run time.
+  Keep the prompt for one participant and the reply parser as module-level functions (for example
+  `build_prompt(study, condition)` and `parse_reply(study, condition, reply)`), so a simulation can run
+  an exact number of AI participants per condition in parallel (`simulate` skill).
 - `evaluate(sessions)` derives every metric from `sessions` alone and returns the paper's own
   comparison (test, statistic, effect size) or a structured `not_ready` with what is missing.
 - Run `python .opencode/skills/build/check_program.py program.json` (it also runs inside check_package.py), then `python .opencode/skills/build/check_package.py package/<paper-slug>` (eight files,

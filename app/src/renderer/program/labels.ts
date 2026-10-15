@@ -31,7 +31,7 @@ export const KIND_LABELS: Record<string, string> = {
   overview: 'Overview',
   finding: 'Findings and contributions',
   limitation: 'Validity, limitations and replication',
-  simulation: 'Simulation scope',
+  simulation: 'Can it be simulated?',
 }
 
 /** Display names for the field ids the Study document expects (used when a field carries no label). */
@@ -56,7 +56,7 @@ export const FIELD_LABELS: Record<string, string> = {
   // 11 limitations
   validity: 'Credibility of the inference', scope: 'Generalisability', limitations: 'Limitations', replications: 'Replications reported by the paper', openness: 'Materials, data, code, preregistration',
   // 12 simulation
-  steps: 'Steps an agent can perform', outcomes: 'Observable outcomes', limits: 'Limits', conditions: 'Conditions',
+  steps: 'Steps AI participants can perform', outcomes: 'Outcomes that can be measured', limits: 'What cannot be simulated', conditions: 'Conditions',
 }
 
 export const kindLabel = (kind: string): string => KIND_LABELS[kind] ?? kind

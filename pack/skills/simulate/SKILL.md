@@ -3,23 +3,27 @@ name: simulate
 description: Run the study's replay package with a language model playing every original participant, then compare the observed results with the paper's reported results. Use when the researcher asks to simulate, replay, run, pilot or test the study, or asks whether agents reproduce the finding.
 ---
 
-# Simulate: agents as participants
+# Simulate: AI participants take part in the study
 
-A simulation runs `package/<paper-slug>/task/adapter.py` → `run_sessions(llm, seed, n, arms)`
-and scores it with `evaluation/evaluation.py` → `evaluate(sessions)`. If there is no package yet,
-run the `build` skill first. If `study.json.readiness.status` is `blocked`, stop and tell the
-researcher which decisions are needed; never fill them in to make the run possible.
+A simulation runs the participants of `package/<paper-slug>/` (prompts and reply parsing in
+`task/adapter.py`) and scores them with `evaluation/evaluation.py` → `evaluate(sessions)`. If there
+is no package yet, run the `build` skill first (section 3). If `study.json.readiness.status` is
+`blocked`, stop and tell the researcher which decisions are needed; never fill them in to make the
+run possible.
+
+The researcher follows the run in the app's **Simulation** tab, which reads the files below while
+you work. They do not read code: every sentence you write for them (progress messages, the
+summary) is plain language about participants, conditions and results.
 
 ## Model access
 
-Use the runtime's `humanstudy_llm` module; it is importable from the bundled `python`, and needs no
-key handling and no package install:
+Use the runtime's `humanstudy_llm` module. It is importable as is from the bundled `python` (never
+add a `sys.path` entry for it), and needs no key handling and no package install:
 
 ```python
-from humanstudy_llm import llm, chat, llm_many
+from humanstudy_llm import llm, chat, model_name
 reply = llm(prompt, temperature=1.0)                       # str; prompt may carry system=...
 reply = chat([{"role": "system", "content": s}, {"role": "user", "content": u}], seed=7)
-replies = llm_many(prompts)                                # parallel, order kept
 ```
 
 It calls the HumanStudy Hub hosted models of the signed-in account (model from
@@ -27,63 +31,117 @@ It calls the HumanStudy Hub hosted models of the signed-in account (model from
 concurrent calls (`HUMANSTUDY_LLM_CONCURRENCY`, default 8) and appends token usage (no prompt text)
 to `.humanstudy/tmp/llm-usage.jsonl`. It raises `LLMError` when a call fails for good; count such
 failures in the report instead of retrying forever. Never print, write or pass on any key or
-environment variable; do not call the endpoint any other way. Use the bare `python` /
-`python3` on PATH (the managed runtime with numpy, scipy, pandas, statsmodels, matplotlib).
+environment variable; do not call the endpoint any other way.
 
-## Researcher decisions
+## Approval
 
-Use the native `question` tool for consequential choices; its answers return to this same
-agent turn. Ask only what is needed next, rather than a questionnaire about the whole study.
-Read the selected study and tab from workspace context; when a paper has several studies,
-confirm the study only if the user's intent is ambiguous. For participant settings and
-conditions, offer the paper's reported design and a customized alternative, with descriptions
-in social science language. Allow a written answer. A dismissal is not consent.
-If Customize is selected, ask the specific follow-up needed for that design. Preserve the
-original reported design; save researcher choices separately and explain the proposed change.
-A question answer never substitutes for the Simulation Scope approval below.
+The Simulation tab shows the researcher what will run (study, conditions, AI participants per
+condition, model, what cannot be simulated) and its **Run simulation** button sends a message
+beginning `[Simulation scope approved]` with JSON: program id, SHA-256 of the complete
+`program.json`, the study id, the five section-12 fields, and `plan` (`perCondition`, the condition
+ids, the model). That message is the researcher's confirmation; nothing else is.
+
+- Re-read `program.json` and check the hash of the exact file bytes
+  (`hashlib.sha256(Path('program.json').read_bytes()).hexdigest()`). If it differs, or a blocking
+  issue remains, or there is no approval, do not run even a trial: explain in two plain sentences
+  and ask the researcher to press Run simulation again in the Simulation tab.
+- Run only the approved study, with `plan.perCondition` AI participants in each condition (if
+  absent: the paper's per-condition sample size, capped at 60; state the cap). Approval of one study
+  never approves another.
+- Open decisions of the study (`decision` issues) are settled with the paper's reported design when
+  it states one; otherwise ask with the native `question` tool (a few options in social-science
+  language plus a written answer). A dismissed question is not consent. Never change `program.json`
+  during a run.
+- Clearly distinguish AI simulation from observations of people; neither agreement of results nor a
+  runnable adapter demonstrates human validity.
 
 ## Procedure
 
-Before executing any simulation, show the dedicated Simulation Scope view and ask the
-researcher to confirm it. A user message beginning `[Simulation scope approved]` records
-the program id, SHA-256 of the complete program, selected study id and the five reviewed fields. Re-read `program.json`:
-the approved fields must still match the current study and no blocking issue may remain.
-If the design changed or the approval is absent, do not run even a smoke simulation; explain
-the scope and ask the researcher to review the Simulation Scope tab. Approval of one study
-never approves every other study in the paper. Run only the approved studies, roles, steps,
-conditions and outcomes. Clearly distinguish AI simulation from observations of real people;
-neither agreement of results nor a runnable adapter demonstrates human validity.
-Check the hash of the exact `program.json` file bytes (for example, Python
-`hashlib.sha256(Path('program.json').read_bytes()).hexdigest()`). If the adapter
-cannot isolate the approved scope, stop and explain that limitation instead of running more.
+Create `artifacts/simulations/<YYYY-MM-DD-HHMM>/` (the run folder) and work inside it.
 
-1. Create `artifacts/simulations/<YYYY-MM-DD-HHMM>/` and write `run.py` there. It imports the
-   adapter and evaluation by path, builds `llm(prompt) -> str` from `humanstudy_llm.llm` with a
-   fixed temperature (state it) and a per-prompt cache in `cache.json`, runs `run_sessions(llm, seed, n, arms)`,
-   appends every session to `sessions.jsonl` as it completes, then writes `evaluation.json`.
-2. **Smoke first**: run with `n=2` (or the smallest unit the design allows) and check that the
-   replies parse into the paper's response format. Fix the adapter's prompt or parser if they
-   do not; record the fix in `report.md`. Then run the requested `n` (default: the paper's own
-   per-condition sample size, capped at 60 per condition unless the researcher asks for more;
-   state the cap).
-3. Write `report.md`: the model, temperature, seed, n per condition and arms run; how many calls
-   were made; the paper's **reported** results (from `result` nodes, cited `p. N`), the
-   **observed** results from `evaluate`, side by side, with effect sizes and direction; whether
-   the finding replicated by the paper's own criterion; and limitations (parsing failures,
-   missing arms, LLM-replay adaptations). Save a figure (`matplotlib`, labelled axes, n per
-   group) as `results.png`.
-4. Write `artifacts/simulations/<run>/results.html` with the `visualize` skill's kit and run
-   `python .opencode/artifact-kit/inline.py` on it until `PASS`:
-   - an `hs-banner` line "Simulation — not human data" (the kit label, `HS.simLabel()`) at the top,
-     and the one-sentence outcome by the paper's own criterion;
-   - `HS.results` (or `HS.forest` for effect sizes) with, per condition/group, `human` = the
-     paper's reported value (`id` of the result node, `page`) and `sim` = the observed value with
-     `values: [...]` (one per session or sampling unit, from `sessions.jsonl`) so the spread and
-     95% CI are drawn; never put an observed number in `human`;
-   - `HS.manifest` with model, temperature, seed, n per condition, arms run, number of calls,
-     parse failures, date, and the `program.json` SHA-256 the run approved;
+1. **run.py** uses `.opencode/skills/simulate/simkit.py`, which runs participants in parallel,
+   writes `progress.json` (what the app shows), appends `sessions.jsonl` as each participant
+   finishes, resumes after an interruption, and honours the researcher's Stop button:
+
+   ```python
+   import sys, json, importlib.util
+   from pathlib import Path
+   RUN = Path(__file__).resolve().parent
+   PROJECT = RUN.parents[2]
+   sys.path.insert(0, str(PROJECT / ".opencode/skills/simulate"))
+   from simkit import SimRun
+   from humanstudy_llm import llm, model_name
+   def load(name, path):
+       spec = importlib.util.spec_from_file_location(name, path); m = importlib.util.module_from_spec(spec)
+       spec.loader.exec_module(m); return m
+   PKG = PROJECT / "package/<paper-slug>"
+   adapter = load("adapter", PKG / "task/adapter.py"); evaluation = load("evaluation", PKG / "evaluation/evaluation.py")
+   TEMPERATURE, SEED = 1.0, 20261015
+   run = SimRun(RUN, plan={"<condition-id>": N, ...}, model=model_name(), seed=SEED)
+
+   def one(condition, index, rng):          # one AI participant, one independent model call (or turn sequence)
+       prompt = adapter.<build the prompt for condition>       # the adapter's own prompt builder
+       reply = llm(prompt, temperature=TEMPERATURE)
+       return {"condition": condition, "arm": ..., "reply": reply, "answers": adapter.<parse>(..., reply)}
+
+   if "--trial" in sys.argv:
+       print(json.dumps(run.participants(one, trial=1), ensure_ascii=False)[:3000]); sys.exit()
+   sessions = run.participants(one)
+   run.stage("scoring")
+   (RUN / "evaluation.json").write_text(json.dumps(evaluation.evaluate(sessions), indent=2, default=str))
+   run.stage("writing")
+   ```
+
+   Assignment is balanced: exactly `N` per condition (the plan), in the adapter's own prompt and
+   reply format. If the adapter has no separate prompt/parse functions, call
+   `adapter.run_sessions(llm, seed, n, arms=[...])` inside `one` for a single participant and arm.
+   Never cache replies across participants: two participants with the same prompt must get two
+   independent model calls (a cache would make them identical copies).
+
+2. **Trial first**: `python run.py --trial` (one participant per condition; a few seconds). Check that
+   every reply parses into the paper's response format. Fix the adapter's prompt or parser if not, and
+   record the fix in `report.md`. Never adjust prompts to steer results.
+
+3. **The full run, in the background** (the shell tool stops commands after 2 minutes, and may end
+   processes it started; `start` detaches run.py so it keeps running):
+
+   ```bash
+   python .opencode/skills/simulate/simkit.py start artifacts/simulations/<run>
+   ```
+
+   Then check every 20–60 seconds with a short command (`sleep 30; cat artifacts/simulations/<run>/progress.json`)
+   until `progress.json` says `scoring`, `writing`, `failed` or `stopped`. If it failed, read `run.log`,
+   fix the cause and start again (finished participants are kept, so no model call is repeated). If it says `stopped`, the researcher
+   pressed Stop: do not restart; report what was finished.
+
+4. **report.md**: the model, temperature, seed, AI participants per condition and arms run; number
+   of model calls and failed/unreadable replies; the paper's **reported** results (from `result` nodes,
+   cited `p. N`) and the **observed** results from `evaluate`, side by side, with effect sizes and
+   direction; whether the finding replicated by the paper's own criterion; limitations (parsing
+   failures, missing arms, adaptations for AI participants).
+
+5. **results.html** with the `visualize` skill's kit, then `python .opencode/artifact-kit/inline.py
+   artifacts/simulations/<run>/results.html` until `PASS`:
+   - an `hs-banner` "Simulation — not human data" (`HS.simLabel()`) at the top and the one-sentence
+     outcome by the paper's own criterion as the title;
+   - `HS.results` (or `HS.forest` for effect sizes) with, per condition, `human` = the paper's reported
+     value (`id` of the result node, `page`) and `sim` = the observed value with `values: [...]` (one per
+     session, from `sessions.jsonl`) so spread and 95% CI are drawn; never an observed number in `human`;
+   - `HS.manifest` with model, temperature, seed, n per condition, arms run, number of calls, unreadable
+     replies, date, and the approved `program.json` SHA-256;
    - a short limitations list (`hs-card`), and a link-free reference to `report.md`.
-5. Never present an observed number as reported, and never adjust prompts to steer results.
 
-Reply with the paths of `report.md` and `results.html`, the one-sentence outcome (replicated / not replicated / not
-ready, with the key numbers), and the number of model calls (from `.humanstudy/tmp/llm-usage.jsonl`). Reply in the researcher's language.
+6. **summary.json**, read by the Simulation tab above the chart, in the researcher's language:
+
+   ```json
+   {"outcome": "replicated | partly | not_replicated | not_ready",
+    "paragraph": "4-6 plain sentences: did the AI participants show the paper's effect (by the paper's own criterion), how big it was compared with the paper (the key numbers side by side), and the main caveats. No code, file names or statistics jargon beyond what the paper itself uses.",
+    "model": "<model id>", "perCondition": N, "calls": <model calls>}
+   ```
+
+7. Finally `python .opencode/skills/simulate/simkit.py stage artifacts/simulations/<run> done`.
+   On any failure you cannot fix: `... stage <run> failed "<one plain sentence: what went wrong>"`.
+
+Reply with the one-sentence outcome (replicated / not replicated / not ready, with the key numbers),
+the number of model calls (from `.humanstudy/tmp/llm-usage.jsonl`), and that the result is in the
+Simulation tab. Reply in the researcher's language.
