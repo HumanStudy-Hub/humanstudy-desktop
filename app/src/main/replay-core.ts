@@ -43,6 +43,8 @@ export interface ReplayDeps {
   /** Hash of the signed-in account; files are uploaded only for the account that recorded them. */
   acct(): string | null
   appVersion: string
+  /** Retire DOM recordings while preserving complete transcript/artifact blobs and historical exports. */
+  interactionOnly?: boolean
   now?(): number
   capBytes?: number
   /** Called when files were removed to stay under the cap (feeds the `replay.dropped` event). */
@@ -130,7 +132,7 @@ export function createReplay(deps: ReplayDeps) {
   /** Stores one rrweb chunk (already gzipped). Returns its seq, or null when not allowed/invalid. */
   function addChunk(c: ChunkInput): number | null {
     const acct = deps.acct()
-    if (!deps.allowed() || !acct) return null
+    if (deps.interactionOnly || !deps.allowed() || !acct) return null
     if (!SESSION_RE.test(c.sessionId) || !(c.bytes instanceof Uint8Array) || !c.bytes.length) return null
     const seq = seqFor(c.sessionId)
     const rel = `${c.sessionId}/${seq}.json.gz`
@@ -201,7 +203,7 @@ export function createReplay(deps: ReplayDeps) {
     const rejected: string[] = []
     for (const f of pending) {
       const meta = readMeta(f.rel)
-      if (!meta || meta.acct !== acct) continue
+      if (!meta || meta.acct !== acct || (deps.interactionOnly && meta.kind === 'chunk')) continue
       const body = fs.read(f.rel)
       if (!body) continue
       const objectPath = `${auth.userId}/${f.rel}`

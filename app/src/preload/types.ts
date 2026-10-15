@@ -457,7 +457,7 @@ export interface TelemetryApi {
   flush(): Promise<TelemetryStatus>
   /** The one id of this app run: every event's session_id and the replay chunk rows' session_id. */
   sessionId(): Promise<string>
-  /** One gzipped batch of rrweb events. The main process stores it and uploads it (consent permitting). */
+  /** Retired compatibility method. Always false; no DOM or mouse recording is accepted. */
   replayChunk(chunk: TelemetryReplayChunk): Promise<boolean>
   /** Save dialog, then a zip of events, threads and replay chunks. Resolves with the path, null when cancelled. */
   exportMyData(): Promise<string | null>
