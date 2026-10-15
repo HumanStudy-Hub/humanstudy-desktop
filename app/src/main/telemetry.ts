@@ -259,6 +259,7 @@ export function getReplay(): Replay {
       return email ? accountHash(email) : null
     },
     appVersion: app.getVersion(),
+    interactionOnly: true,
     onDropped: (info) => track('replay.dropped', { metadata: info }),
   })
   return replay
@@ -502,8 +503,8 @@ export function registerTelemetry(): void {
   const logSessionStart = (late: boolean): void => {
     if (sessionStartLogged || !t.status().usage) return
     sessionStartLogged = true
-    // replay_session_id equals every event's session_id and the session_id of the replay chunk rows.
-    track('app.session_start', { metadata: { arch: process.arch, replay_session_id: t.sessionId, ...(late ? { late: true } : {}) } })
+    // Events, conversations and artifacts share one session; no page recording is captured.
+    track('app.session_start', { metadata: { arch: process.arch, collection_mode: 'interaction-events', ...(late ? { late: true } : {}) } })
   }
   ipcMain.handle('telemetry:setConsent', async (_e, c: unknown) => {
     const v = c && typeof c === 'object' ? (c as Record<string, unknown>) : {}
@@ -516,18 +517,8 @@ export function registerTelemetry(): void {
     return st
   })
   ipcMain.handle('telemetry:sessionId', () => t.sessionId)
-  ipcMain.handle('telemetry:replayChunk', (e, c: unknown) => {
-    const v = c && typeof c === 'object' ? (c as Record<string, unknown>) : null
-    if (!v || v.sessionId !== t.sessionId || !(v.bytes instanceof Uint8Array)) return false
-    const seq = getReplay().addChunk({
-      sessionId: v.sessionId,
-      startedAt: Number(v.startedAt),
-      endedAt: Number(v.endedAt),
-      bytes: v.bytes,
-      windowId: e.sender.id,
-    })
-    return seq !== null
-  })
+  // Compatibility for an older renderer: recordings are no longer accepted or persisted.
+  ipcMain.handle('telemetry:replayChunk', () => false)
   ipcMain.handle('telemetry:exportMyData', (e) => exportMyData(BrowserWindow.fromWebContents(e.sender)))
   ipcMain.handle('telemetry:saveExport', async (e, json: unknown) => {
     if (typeof json !== 'string') throw new Error('Nothing to save.')

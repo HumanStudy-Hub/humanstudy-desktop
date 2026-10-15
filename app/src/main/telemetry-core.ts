@@ -174,6 +174,8 @@ export function sanitizeEvent(
   base: RowBase
 ): TelemetryRow | null {
   if (typeof type !== 'string' || !EVENT_TYPE_RE.test(type)) return null
+  // Research uses discrete interactions, never a continuous movement/input stream.
+  if (/(?:^|[_.:-])(?:mousemove|pointermove|mouse_move|pointer_move|trajectory|keystroke)(?:$|[_.:-])/.test(type) || /^(?:mouse|pointer)\.move(?:$|\.)/.test(type)) return null
   const conversation = isContentEvent(type)
   if (conversation && !ctx.content) return null
   const target = typeof opts.target === 'string' && opts.target ? scrubString(opts.target, ctx).slice(0, 160) : null

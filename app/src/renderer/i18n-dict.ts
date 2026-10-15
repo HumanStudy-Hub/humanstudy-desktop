@@ -592,14 +592,14 @@ const ROWS: Row[] = [
 
   // ---- Research data agreement
   ['agree.title', 'Research data agreement', '研究数据协议'],
-  ['agree.intro', 'HumanStudy Hub is a research platform. To use the study agent you agree that HumanStudy Hub stores everything needed to replay your session, for research on how social scientists work with AI:', 'HumanStudy Hub 是一个研究平台。使用研究助手即表示你同意 HumanStudy Hub 保存重现你使用过程所需的全部信息，用于研究社会科学研究者如何与 AI 协作：'],
+  ['agree.intro', 'HumanStudy Hub is a research platform. To use the study agent you agree that HumanStudy Hub collects interaction events and research content to study how social scientists work with AI:', 'HumanStudy Hub 是一个研究平台。使用研究助手即表示你同意 HumanStudy Hub 收集交互事件和研究内容，用于研究社会科学研究者如何与 AI 协作：'],
   ['agree.i1', 'your conversation with the agent, in full;', '你与助手的完整对话；'],
   ['agree.i2', 'the files the agent writes in your projects;', '助手在你的项目中写入的文件；'],
   ['agree.i3', 'your actions in the app: clicks, selections, edits and which panels you open;', '你在应用中的操作：点击、选择、编辑，以及你打开了哪些面板；'],
   ['agree.i4', 'timings, and your account email.', '时间信息，以及你的账户邮箱。'],
-  ['agree.nopdf', 'No paper PDFs are uploaded.', '不会上传论文 PDF。'],
+  ['agree.nopdf', 'No screen or page recording, mouse movement tracking, or paper PDF uploads.', '不录制屏幕或页面、不追踪鼠标移动、不上传论文 PDF。'],
   ['agree.stored', 'The data is stored by HumanStudy Hub, linked to your account, and only your account and the HumanStudy Hub research team can read it.', '数据由 HumanStudy Hub 保存并关联到你的账户，只有你的账户和 HumanStudy Hub 研究团队可以查看。'],
-  ['agree.delete', 'You can download or delete your data at any time in Settings → Research data. A paid plan without data collection is planned for later.', '你可以随时在“设置 → 研究数据”中下载或删除你的数据。之后计划推出不收集数据的付费方案。'],
+  ['agree.delete', 'You can download your data in Settings → Research data. For deletion requests, contact the team through Help & feedback.', '你可以在“设置 → 研究数据”中下载数据。如需申请删除，请通过“帮助与反馈”联系团队。'],
   ['agree.not_now', 'Not now', '暂不同意'],
   ['agree.agree', 'I agree', '我同意'],
   ['agree.saving', 'Saving…', '保存中…'],

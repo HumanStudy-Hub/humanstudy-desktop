@@ -388,7 +388,7 @@ function replayServer() {
   }
   return srv
 }
-function makeReplay({ allowed = true, capBytes, email = EMAIL } = {}) {
+function makeReplay({ allowed = true, capBytes, email = EMAIL, interactionOnly = false } = {}) {
   const disk = memoryDisk()
   const server = replayServer()
   const ctx = { allowed, dropped: [] }
@@ -399,6 +399,7 @@ function makeReplay({ allowed = true, capBytes, email = EMAIL } = {}) {
     allowed: () => ctx.allowed,
     acct: () => (email ? 'acct1' : null),
     appVersion: '0.2.0',
+    interactionOnly,
     now: () => clock,
     capBytes,
     onDropped: (i) => ctx.dropped.push(i),
@@ -563,4 +564,36 @@ await test('large Unicode content reconstructs exactly from ordered gzip parts',
   const reconstructed = Buffer.concat(manifest.parts.map(id => gunzipSync(stored.get(id))))
   assert.equal(reconstructed.length, manifest.bytes)
   assert.equal(reconstructed.toString('utf8'), text)
+})
+
+
+await test('interaction-only collection rejects recordings and preserves complete research blobs', async () => {
+  const { r, disk, server } = makeReplay({ interactionOnly: true })
+  assert.equal(r.addChunk({ sessionId: SID, startedAt: 1, endedAt: 2, bytes: bytes(10) }), null)
+  assert.equal(disk.files.size, 0)
+  const blob = r.addBlob(SID, bytes(100))
+  assert.ok(blob)
+  await r.flush({ force: true })
+  assert.equal(server.calls.length, 1)
+  assert.ok(server.calls[0].url.includes('/blobs/'))
+  assert.equal(server.calls[0].body.length, 100)
+})
+await test('interaction-only collection keeps old recordings local without uploading or deleting them', async () => {
+  const { r, disk, server } = makeReplay({ interactionOnly: true })
+  const path = `${SID}/0.json.gz`
+  disk.write(path, bytes(20))
+  disk.write(`${SID}/0.meta.json`, JSON.stringify({ kind: 'chunk', acct: 'acct1', bytes: 20 }))
+  r.addBlob(SID, bytes(50))
+  await r.flush({ force: true })
+  assert.ok(disk.read(path))
+  assert.ok(disk.read(`${SID}/0.meta.json`))
+  assert.equal(server.calls.length, 1)
+  assert.ok(server.calls[0].url.includes('/blobs/'))
+})
+
+await test('movement and keystroke streams are rejected while semantic actions remain available', async () => {
+  const { t } = make()
+  await t.setConsent({ usage: true, content: true })
+  for (const type of ['mousemove', 'pointermove', 'mouse.move', 'pointer.move', 'input.keystroke', 'mouse.trajectory']) assert.equal(t.track(type), null, type)
+  for (const type of ['tab.switch', 'source.select', 'composer.send', 'source.page', 'permission.reply']) assert.ok(t.track(type), type)
 })
