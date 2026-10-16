@@ -98,3 +98,57 @@ export function waitForNativeUpdate(client: {
     client.on('error', failed)
   })
 }
+
+/** Keep restart preparation reversible until the application actually begins exiting. */
+export function createUpdateInstaller(options: {
+  ready: () => boolean
+  waitForNative: () => Promise<void>
+  prepare: () => Promise<boolean>
+  rollback: () => void
+  launch: () => void
+  report: (error: unknown) => void
+  schedule?: (fn: () => void, delay: number) => () => void
+}) {
+  const schedule = options.schedule ?? ((fn, delay) => {
+    const timer = setTimeout(fn, delay)
+    timer.unref?.()
+    return () => clearTimeout(timer)
+  })
+  let phase: 'idle' | 'preparing' | 'launching' = 'idle'
+  let prepared = false
+  let failure: unknown
+  let cancelWatchdog: (() => void) | undefined
+  function restore(error: unknown) {
+    if (phase === 'idle') return
+    cancelWatchdog?.(); cancelWatchdog = undefined
+    if (prepared) options.rollback()
+    prepared = false
+    phase = 'idle'
+    options.report(error)
+  }
+  async function run(): Promise<void> {
+    if (phase !== 'idle' || !options.ready()) return
+    phase = 'preparing'
+    failure = undefined
+    prepared = false
+    try {
+      await options.waitForNative()
+      if (failure) throw failure
+      prepared = await options.prepare()
+      if (failure) throw failure
+      if (!prepared) { phase = 'idle'; return }
+      phase = 'launching'
+      // Some updater implementations emit an error and return false internally instead of throwing.
+      cancelWatchdog = schedule(() => restore(new Error('The update could not restart the app. You can keep working and retry the update later.')), 15_000)
+      options.launch()
+    } catch (error) { restore(error) }
+  }
+  return {
+    run,
+    failed: (error: unknown) => {
+      if (phase === 'preparing') failure = error // Do not unblock new turns during a pending save.
+      else if (phase === 'launching') restore(error)
+    },
+    exiting: () => { cancelWatchdog?.(); cancelWatchdog = undefined },
+  }
+}

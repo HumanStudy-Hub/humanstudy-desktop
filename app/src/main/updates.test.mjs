@@ -40,15 +40,15 @@ bad.run=()=>({downloadPromise:new Promise(r=>resolveDownload=r)})
 const checking=b.check();await new Promise(r=>setImmediate(r));await b.check();assert.equal(bad.count,3)
 resolveDownload();await checking
 let save,disposed=0,faults=0
-const q=S.createShutdown({busy:()=>true,confirm:async()=>false,flush:async()=>{},dispose:async()=>disposed++,failed:()=>faults++})
+const q=S.createShutdown({busy:()=>true,confirm:async()=>false,flush:async()=>{},quiesce:async()=>disposed++,failed:()=>faults++})
 assert.equal(await q.prepare(true),false);assert.equal(disposed,0);assert.equal(q.closing(),false)
 const order=[]
-const gate=S.createShutdown({busy:()=>false,confirm:async()=>true,flush:()=>new Promise(r=>{order.push('save');save=r}),dispose:async()=>{order.push('dispose')},failed:()=>faults++})
+const gate=S.createShutdown({busy:()=>false,confirm:async()=>true,flush:()=>new Promise(r=>{order.push('save');save=r}),quiesce:async()=>{order.push('stop turn')},failed:()=>faults++})
 const quit=gate.prepare(false),duplicate=gate.prepare(true)
 assert.equal(quit,duplicate);assert.ok(gate.closing());assert.deepEqual(order,['save'])
-save();await new Promise(r=>setImmediate(r));assert.deepEqual(order,['save','dispose','save'])
+save();await new Promise(r=>setImmediate(r));assert.deepEqual(order,['save','stop turn','save'])
 assert.equal(gate.ready(),false);save();assert.equal(await quit,true);assert.ok(gate.ready())
-const failing=S.createShutdown({busy:()=>false,confirm:async()=>true,flush:async()=>{throw Error('disk full')},dispose:async()=>disposed++,failed:()=>faults++})
+const failing=S.createShutdown({busy:()=>false,confirm:async()=>true,flush:async()=>{throw Error('disk full')},quiesce:async()=>disposed++,failed:()=>faults++})
 assert.equal(await failing.prepare(false),false);assert.equal(disposed,0);assert.equal(faults,1);assert.equal(failing.closing(),false)
 assert.equal(await failing.prepare(false),false);assert.equal(faults,2)
 console.log('update recovery and safe shutdown ok')
@@ -62,3 +62,32 @@ native.emit('error',Error('Native verification failed'));await assert.rejects(st
 await assert.rejects(U.waitForNativeUpdate(native,5),/still being prepared/)
 assert.equal(native.listenerCount('update-downloaded'),0)
 console.log('native staging readiness and cleanup ok')
+
+// The second save can fail after stopping a turn; its session must remain usable.
+let saves=0, stopped=false, saveFaults=0
+const reversible=S.createShutdown({busy:()=>!stopped,confirm:async()=>true,quiesce:async()=>{stopped=true},flush:async()=>{if(++saves===2)throw Error('second save failed')},failed:()=>saveFaults++})
+assert.equal(await reversible.prepare(true),false)
+assert.equal(stopped,true);assert.equal(reversible.closing(),false);assert.equal(saveFaults,1)
+assert.equal(await reversible.prepare(true),true)
+assert.equal(reversible.reset(),true);assert.equal(reversible.closing(),false);assert.equal(reversible.ready(),false)
+
+const launchTimers=[],installErrors=[]
+let launched=0,rollbacks=0,throwInstall=true
+const barrier=S.createShutdown({busy:()=>false,confirm:async()=>true,quiesce:async()=>{},flush:async()=>{},failed:()=>assert.fail('unexpected save error')})
+const launch=U.createUpdateInstaller({ready:()=>true,waitForNative:async()=>{},prepare:()=>barrier.prepare(true),rollback:()=>{rollbacks++;barrier.reset()},launch:()=>{launched++;if(throwInstall)throw Error('installer failed')},report:e=>installErrors.push(e),schedule:(fn,delay)=>{const t={fn,delay,cancelled:false};launchTimers.push(t);return()=>t.cancelled=true}})
+await launch.run()
+assert.equal(barrier.closing(),false);assert.equal(barrier.ready(),false);assert.equal(rollbacks,1)
+throwInstall=false
+await launch.run();await launch.run();assert.equal(launched,2,'duplicate install requests stay serialized')
+launch.failed(Error('async native error'));assert.equal(rollbacks,2);assert.equal(barrier.closing(),false)
+await launch.run();launchTimers.at(-1).fn();assert.equal(rollbacks,3);assert.equal(barrier.closing(),false)
+await launch.run();launch.exiting();assert.equal(launchTimers.at(-1).cancelled,true)
+assert.equal(installErrors.length,3)
+
+// An error during saving must not unblock sends until that save barrier completes.
+let finishPrepare,rollbackDuringSave=0,lateLaunches=0
+const delayed=U.createUpdateInstaller({ready:()=>true,waitForNative:async()=>{},prepare:()=>new Promise(r=>finishPrepare=r),rollback:()=>rollbackDuringSave++,launch:()=>lateLaunches++,report:()=>{}})
+const waiting=delayed.run();await new Promise(r=>setImmediate(r))
+delayed.failed(Error('native error while saving'));assert.equal(rollbackDuringSave,0)
+finishPrepare(true);await waiting;assert.equal(rollbackDuringSave,1);assert.equal(lateLaunches,0)
+console.log('second-save and installer failure rollback/retry ok')

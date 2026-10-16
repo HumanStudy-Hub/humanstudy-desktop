@@ -2,7 +2,7 @@
 import { app, autoUpdater as nativeUpdater } from 'electron'
 import electronUpdater from 'electron-updater'
 import type { UpdateStatus } from '../preload/types'
-import { createUpdateController, waitForNativeUpdate } from './updates-core'
+import { createUpdateController, createUpdateInstaller, waitForNativeUpdate } from './updates-core'
 
 const { autoUpdater } = electronUpdater
 let notify: (s: UpdateStatus) => void = () => undefined
@@ -11,6 +11,7 @@ let started = false
 let firstTimer: NodeJS.Timeout | undefined
 let interval: NodeJS.Timeout | undefined
 let prepareInstall: () => Promise<boolean> = async () => false
+let rollbackInstall: () => void = () => undefined
 
 export const updateStatus = controller.status
 export async function checkForUpdates(): Promise<void> {
@@ -18,29 +19,30 @@ export async function checkForUpdates(): Promise<void> {
 }
 
 let nativeReady = false
-let installing = false
-export async function installUpdate(): Promise<void> {
-  if (controller.status().state !== 'ready' || installing) return
-  installing = true
-  try {
+const installer = createUpdateInstaller({
+  ready: () => controller.status().state === 'ready',
+  waitForNative: async () => {
     if (process.platform === 'darwin' && !nativeReady) await waitForNativeUpdate(nativeUpdater)
-    if (await prepareInstall()) {
-      // The shutdown coordinator already saved and quiesced the agent.
-      autoUpdater.quitAndInstall(false, true)
-    }
-  } catch (error) { controller.reportError(error) }
-  finally { installing = false }
-}
+  },
+  prepare: () => prepareInstall(),
+  rollback: () => rollbackInstall(),
+  launch: () => autoUpdater.quitAndInstall(false, true),
+  report: error => controller.reportError(error),
+})
+autoUpdater.on('error', error => installer.failed(error))
+export const installUpdate = installer.run
 
 export function stopUpdates(): void {
+  installer.exiting()
   clearTimeout(firstTimer)
   clearInterval(interval)
   controller.stop()
 }
 
-export function startUpdates(onChange: (s: UpdateStatus) => void, beforeInstall: () => Promise<boolean>): void {
+export function startUpdates(onChange: (s: UpdateStatus) => void, beforeInstall: () => Promise<boolean>, onFailedInstall: () => void): void {
   notify = onChange
   prepareInstall = beforeInstall
+  rollbackInstall = onFailedInstall
   if (started) return
   started = true
   if (!app.isPackaged) return

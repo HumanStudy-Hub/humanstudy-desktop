@@ -196,7 +196,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
       if (e.type === 'done') {
         questionEpoch.current++
         // A turn that was stopped by hand has already cleared busy; its queue waits for the user.
-        const wasRunning = busyRef.current
+        const wasRunning = busyRef.current && e.detail !== 'shutdown'
         setBusyBoth(false)
         setStatus('')
         setMessages((ms) => expirePermissions(ms))
