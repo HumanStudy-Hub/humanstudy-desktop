@@ -45,16 +45,22 @@ jobs:
 
       # macOS signing and notarization use repository secrets when they exist.
       - name: Prepare Apple API key
-        if: runner.os == 'macOS' && env.APPLE_API_KEY_BASE64 != ''
+        if: runner.os == 'macOS' && env.CSC_LINK != '' && env.APPLE_API_KEY_BASE64 != '' && env.APPLE_API_KEY_ID != '' && env.APPLE_API_ISSUER != ''
         run: |
           mkdir -p "$RUNNER_TEMP/apple"
           echo "$APPLE_API_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/apple/AuthKey.p8"
           echo "APPLE_API_KEY=$RUNNER_TEMP/apple/AuthKey.p8" >> "$GITHUB_ENV"
 
       - name: Build and publish (signed)
-        if: runner.os == 'macOS' && env.CSC_LINK != ''
+        if: runner.os == 'macOS' && env.CSC_LINK != '' && env.APPLE_API_KEY_BASE64 != '' && env.APPLE_API_KEY_ID != '' && env.APPLE_API_ISSUER != ''
         run: node scripts/dist.mjs ${{ matrix.target }} --publish always
 
-      - name: Build and publish (unsigned)
-        if: runner.os != 'macOS' || env.CSC_LINK == ''
+      # Never attach an unsigned Mac build to the update channel. When CI credentials
+      # are absent, attach locally notarized Mac artifacts before publishing the draft.
+      - name: Explain manual Mac release
+        if: runner.os == 'macOS' && (env.CSC_LINK == '' || env.APPLE_API_KEY_BASE64 == '' || env.APPLE_API_KEY_ID == '' || env.APPLE_API_ISSUER == '')
+        run: echo 'Mac signing/notarization credentials incomplete. Upload verified notarized Mac artifacts before publishing this draft.'
+
+      - name: Build and publish (Windows preview)
+        if: runner.os == 'Windows'
         run: node scripts/dist.mjs ${{ matrix.target }} --unsigned --publish always
