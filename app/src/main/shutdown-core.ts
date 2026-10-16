@@ -3,7 +3,7 @@ export function createShutdown(options: {
   busy: () => boolean
   confirm: (restart: boolean) => Promise<boolean>
   flush: () => Promise<void>
-  dispose: () => Promise<void>
+  quiesce: () => Promise<void>
   failed: (error: unknown) => void
 }) {
   let closing = false
@@ -16,9 +16,9 @@ export function createShutdown(options: {
     pending = (async () => {
       try {
         if (options.busy() && !await options.confirm(restart)) return false
-        // Check disk before stopping the agent; then save its last events after shutdown.
+        // Stop the turn, not the session/server: a failed save or installer must be reversible.
         await options.flush()
-        await options.dispose()
+        await options.quiesce()
         await options.flush()
         ready = true
         return true
@@ -32,5 +32,16 @@ export function createShutdown(options: {
     })()
     return pending
   }
-  return { prepare, ready: () => ready, closing: () => closing }
+  return {
+    prepare,
+    ready: () => ready,
+    closing: () => closing,
+    reset: () => {
+      // A launch failure can roll back only after the save barrier has finished.
+      if (pending) return false
+      ready = false
+      closing = false
+      return true
+    },
+  }
 }

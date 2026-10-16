@@ -67,13 +67,9 @@ const shutdown = createShutdown({
     return result.response === 1
   },
   flush: async () => { if (threadsInitialized) await threads().flush() },
-  dispose: async () => {
-    cancelAssistantInstall()
-    await Promise.all([...allKernels].map(k => (k as Kernel & { dispose?: () => Promise<void> }).dispose?.()))
-    allKernels.clear()
-    sessionKernel.clear()
-    activeTurns.clear()
-    markKernelStale()
+  quiesce: async () => {
+    // Preserve kernel/session bindings until exit so an unsuccessful quit remains usable.
+    await Promise.all([...activeTurns].map(id => kernelFor(id).abort(id)))
   },
   failed: error => {
     console.error('shutdown: could not save', error)
@@ -85,6 +81,9 @@ function currentKernel(): Kernel {
     kernel = loadKernel()
     allKernels.add(kernel)
     kernel.onEvent((e: KernelEvent) => {
+      // A cancelled quit must leave queued prompts in place rather than dispatching them
+      // into the closing gate when the interrupted turn reports completion.
+      if (shutdown.closing() && e.type === 'done') e = { ...e, detail: 'shutdown' }
       if (e.type === 'done') activeTurns.delete(e.sessionId)
       else if (e.type === 'text' || e.type === 'tool' || (e.type === 'status' && e.text === 'busy') || (e.type === 'question' && !e.question?.resolved) || (e.type === 'permission' && !e.permission?.resolved)) activeTurns.add(e.sessionId)
       threads().onEvent(e) // record before the renderer hears about it
@@ -622,11 +621,7 @@ app.whenReady().then(() => {
   ipcMain.handle('updates:status', () => updateStatus())
   ipcMain.handle('updates:check', () => checkForUpdates())
   ipcMain.handle('updates:install', () => installUpdate())
-  startUpdates((s) => broadcast('updates:changed', s), async () => {
-    const ready = await shutdown.prepare(true)
-    if (ready) stopUpdates()
-    return ready
-  })
+  startUpdates((s) => broadcast('updates:changed', s), () => shutdown.prepare(true), () => { shutdown.reset() })
 
   setupMenu({ newWindow: createWindow, checkForUpdates: () => void checkForUpdates() })
   createWindow()
@@ -639,10 +634,14 @@ app.on('before-quit', event => {
   if (!primaryInstance || shutdown.ready()) return
   event.preventDefault()
   void shutdown.prepare(false).then(ready => {
-    if (ready) { stopUpdates(); app.quit() }
+    if (ready) app.quit()
     else if (app.isReady() && BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
+
+// Native kernels already have a synchronous SIGKILL process-exit hook. Keep that
+// hook/session alive during preparation; only cancel downloads once quit is committed.
+app.on('will-quit', () => { cancelAssistantInstall(); stopUpdates() })
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
