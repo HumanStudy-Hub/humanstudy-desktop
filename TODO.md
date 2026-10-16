@@ -183,4 +183,4 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
   native mouse interaction and next notarized installer still pending.
 - [~] Editable sample first-use guide: implemented by GPT-6 Luna, short and skippable, remembers dismissal.
 - [x] Release integration: desktop fixes merged and 0.6.1 automatic updates published;
-  owner choice requested, no public release performed.
+  signed/notarized Mac assets verified, with real arm64 quit-to-install acceptance.
