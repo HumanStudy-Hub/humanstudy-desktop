@@ -78,7 +78,7 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
       runtime share one `kernel.install` progress stream (`phase`, `runtimeVersion` added, backward
       compatible). See `docs/runtime.md`. Open: Windows untested on real hardware; Intel-Mac wheel gaps on
       new releases (run `pack/runtime/relock.sh`); OCR for scanned PDFs; disk use (~0.55 GB). (wave K3)
-- [~] **Notarized Mac build** — 0.5.3-beta.1 installer and 0.5.3-beta.2 application notarized (Accepted), ticket stapled; app Gatekeeper accepted as Notarized Developer ID. Draft release and auto-update acceptance remain open. Submission: 6438b055-58b6-4f56-9367-f41c373fcfc8.
+- [x] **Notarized Mac release** — 0.6.1 Apple Silicon/Intel installers signed, notarized and stapled; public automatic-update channel published. Real arm64 0.6.0→0.6.1 download, quit-to-install and reopening passed. Windows real-device acceptance remains open. See docs/verification/auto-update-2026-10-15.md.
 
 - [x] **Hosted-only product (H1)** — no API keys, no provider choice (C17 "own keys" is not a product
       feature; `HUMANSTUDY_DEV_KEYS=1` keeps a hidden developer path). Sign in + invitation code unlocks
@@ -182,5 +182,5 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
   Removed selection/quote/page-text/quote-box clipping. Three data regressions and renderer typecheck pass;
   native mouse interaction and next notarized installer still pending.
 - [~] Editable sample first-use guide: implemented by GPT-6 Luna, short and skippable, remembers dismissal.
-- [ ] Release decision: reconcile unpublished desktop integration on a draft branch before automatic updates;
+- [x] Release integration: desktop fixes merged and 0.6.1 automatic updates published;
   owner choice requested, no public release performed.
