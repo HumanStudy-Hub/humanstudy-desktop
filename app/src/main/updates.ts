@@ -1,82 +1,54 @@
-// Auto-update through electron-updater against GitHub Releases (HumanStudy-Hub/humanstudy-desktop,
-// public, so no token). Packaged builds only: check 10 s after launch and every 6 hours, download
-// in the background, and tell the renderer when an update is ready to install on restart.
-import { app } from 'electron'
+// Public GitHub updates; downloaded releases are installed only after the main process saves.
+import { app, autoUpdater as nativeUpdater } from 'electron'
 import electronUpdater from 'electron-updater'
 import type { UpdateStatus } from '../preload/types'
-import { isNoReleaseError, shortError } from './updates-core'
+import { createUpdateController, waitForNativeUpdate } from './updates-core'
 
 const { autoUpdater } = electronUpdater
-
-const FIRST_CHECK_MS = 10_000
-const INTERVAL_MS = 6 * 60 * 60 * 1000
-
-let status: UpdateStatus = { version: app.getVersion(), state: 'idle' }
 let notify: (s: UpdateStatus) => void = () => undefined
+const controller = createUpdateController({ client: autoUpdater, version: app.getVersion(), notify: s => notify(s) })
 let started = false
+let firstTimer: NodeJS.Timeout | undefined
+let interval: NodeJS.Timeout | undefined
+let prepareInstall: () => Promise<boolean> = async () => false
 
-function set(patch: Partial<UpdateStatus>): void {
-  status = { version: app.getVersion(), ...patch } as UpdateStatus
-  notify(status)
-}
-
-export function updateStatus(): UpdateStatus {
-  return status
-}
-
+export const updateStatus = controller.status
 export async function checkForUpdates(): Promise<void> {
-  if (!app.isPackaged) {
-    set({ state: 'none', error: undefined })
-    return
-  }
-  // Already downloading or downloaded: a new check would only restart the work.
-  if (status.state === 'downloading' || status.state === 'ready' || status.state === 'checking') return
+  if (app.isPackaged) await controller.check()
+}
+
+let nativeReady = false
+let installing = false
+export async function installUpdate(): Promise<void> {
+  if (controller.status().state !== 'ready' || installing) return
+  installing = true
   try {
-    await autoUpdater.checkForUpdates()
-  } catch (e) {
-    fail(e instanceof Error ? e.message : String(e))
-  }
+    if (process.platform === 'darwin' && !nativeReady) await waitForNativeUpdate(nativeUpdater)
+    if (await prepareInstall()) {
+      // The shutdown coordinator already saved and quiesced the agent.
+      autoUpdater.quitAndInstall(false, true)
+    }
+  } catch (error) { controller.reportError(error) }
+  finally { installing = false }
 }
 
-/** No published release is "up to date"; a real failure keeps a short message. */
-function fail(message: string): void {
-  if (isNoReleaseError(message)) {
-    console.info('updates: no published release on GitHub yet, treating as up to date')
-    set({ state: 'none', error: undefined })
-    return
-  }
-  console.warn(`updates: check failed: ${message.split('\n')[0]}`)
-  set({ state: 'error', nextVersion: status.nextVersion, error: shortError(message) })
+export function stopUpdates(): void {
+  clearTimeout(firstTimer)
+  clearInterval(interval)
+  controller.stop()
 }
 
-export function installUpdate(): void {
-  if (status.state !== 'ready') return
-  // isSilent=false shows the Windows installer progress; isForceRunAfter=true relaunches the app.
-  setImmediate(() => autoUpdater.quitAndInstall(false, true))
-}
-
-/** Wire events and start the schedule. `onChange` receives every status change. */
-export function startUpdates(onChange: (s: UpdateStatus) => void): void {
+export function startUpdates(onChange: (s: UpdateStatus) => void, beforeInstall: () => Promise<boolean>): void {
   notify = onChange
+  prepareInstall = beforeInstall
   if (started) return
   started = true
-  if (!app.isPackaged) {
-    console.log('updates: not packaged, auto-update disabled')
-    return
-  }
+  if (!app.isPackaged) return
+  if (process.platform === 'darwin') nativeUpdater.on('update-downloaded', () => { nativeReady = true })
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
   autoUpdater.logger = console
-
-  autoUpdater.on('checking-for-update', () => set({ state: 'checking' }))
-  autoUpdater.on('update-available', (info) => set({ state: 'available', nextVersion: info.version }))
-  autoUpdater.on('update-not-available', () => set({ state: 'none' }))
-  autoUpdater.on('download-progress', (p) =>
-    set({ state: 'downloading', nextVersion: status.nextVersion, progress: Math.round(p.percent) })
-  )
-  autoUpdater.on('update-downloaded', (info) => set({ state: 'ready', nextVersion: info.version, progress: 100 }))
-  autoUpdater.on('error', (e) => fail(e?.message ?? String(e)))
-
-  setTimeout(() => void checkForUpdates(), FIRST_CHECK_MS)
-  setInterval(() => void checkForUpdates(), INTERVAL_MS).unref?.()
+  firstTimer = setTimeout(() => void controller.check(false), 10_000)
+  interval = setInterval(() => void controller.check(false), 6 * 60 * 60 * 1000)
+  interval.unref?.()
 }

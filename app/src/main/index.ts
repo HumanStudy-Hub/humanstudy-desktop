@@ -16,7 +16,7 @@ import {
 } from './community'
 import { createProject, isInside, listProjects, renameProject, trashProject } from './projects'
 import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
-import { checkForUpdates, installUpdate, startUpdates, updateStatus } from './updates'
+import { checkForUpdates, installUpdate, startUpdates, stopUpdates, updateStatus } from './updates'
 import { existsSync, watch, type FSWatcher } from 'node:fs'
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
@@ -24,6 +24,7 @@ import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
 import { isVersioned, readVersion, relOf, snapshot, versionsOf } from './versions'
 import { createThreads, threads } from './threads'
+import { createShutdown } from './shutdown-core'
 import { refreshPack } from './pack'
 import type { Kernel, KernelEvent } from './kernel-types'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, WorkspaceContext } from '../preload/types'
@@ -51,11 +52,41 @@ function loadKernel(): Kernel {
 let kernel: Kernel | null = null
 const allKernels = new Set<Kernel>()
 const sessionKernel = new Map<string, Kernel>()
+const activeTurns = new Set<string>()
+let threadsInitialized = false
+const shutdown = createShutdown({
+  busy: () => activeTurns.size > 0,
+  confirm: async restart => {
+    const result = await dialog.showMessageBox({
+      type: 'question',
+      message: 'The study agent is still working.',
+      detail: 'Stopping now will interrupt the current work. Your conversation will be saved.',
+      buttons: ['Keep working', restart ? 'Stop and restart' : 'Stop and quit'],
+      defaultId: 0, cancelId: 0, noLink: true,
+    })
+    return result.response === 1
+  },
+  flush: async () => { if (threadsInitialized) await threads().flush() },
+  dispose: async () => {
+    cancelAssistantInstall()
+    await Promise.all([...allKernels].map(k => (k as Kernel & { dispose?: () => Promise<void> }).dispose?.()))
+    allKernels.clear()
+    sessionKernel.clear()
+    activeTurns.clear()
+    markKernelStale()
+  },
+  failed: error => {
+    console.error('shutdown: could not save', error)
+    dialog.showErrorBox('Your conversation could not be saved', 'The app stayed open. Check free disk space and project folder access, then try quitting again.')
+  },
+})
 function currentKernel(): Kernel {
   if (!kernel) {
     kernel = loadKernel()
     allKernels.add(kernel)
     kernel.onEvent((e: KernelEvent) => {
+      if (e.type === 'done') activeTurns.delete(e.sessionId)
+      else if (e.type === 'text' || e.type === 'tool' || (e.type === 'status' && e.text === 'busy') || (e.type === 'question' && !e.question?.resolved) || (e.type === 'permission' && !e.permission?.resolved)) activeTurns.add(e.sessionId)
       threads().onEvent(e) // record before the renderer hears about it
       broadcast('kernel:event', e)
     })
@@ -490,6 +521,7 @@ app.whenReady().then(() => {
 
   // One place that starts kernel sessions: the legacy kernel:startSession and threads.create/resume.
   async function startKernelSession(dir: string): Promise<string> {
+    if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
     syncAccess()
     if (existsSync(join(dir, '.humanstudy', 'project.json'))) await refreshPack(dir)
     // No opencode installed: fetch the managed one first, and replace a mock kernel created before it arrived.
@@ -531,21 +563,35 @@ app.whenReady().then(() => {
     threads().adopt(dir, id) // recorded as a thread once the first message is sent
     return id
   })
-  ipcMain.handle('kernel:send', (_e, id: string, text: string, workspace?: WorkspaceContext) => {
+  threadsInitialized = true
+  ipcMain.handle('kernel:send', async (_e, id: string, text: string, workspace?: WorkspaceContext) => {
+    if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
     const k = kernelFor(id)
     telemetry.trackTurnStart(id, text)
-    return k.send(id, threads().beforeSend(id, text, workspace))
+    const prompt = threads().beforeSend(id, text, workspace)
+    const alreadyActive = activeTurns.has(id)
+    activeTurns.add(id)
+    try { await k.send(id, prompt) }
+    catch (error) { if (!alreadyActive) activeTurns.delete(id); throw error }
   })
   ipcMain.handle('kernel:abort', (_e, id: string) => {
     telemetry.trackTurnAbort(id)
     return kernelFor(id).abort(id)
   })
   ipcMain.handle('kernel:reply', (_e, id: string, permissionId: string, response: 'once' | 'always' | 'reject') => {
+    if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
     if (response !== 'once' && response !== 'always' && response !== 'reject') throw new Error('bad permission response')
     return kernelFor(id).reply(id, permissionId, response)
   })
-  ipcMain.handle('kernel:questions', (_e, id: string) => kernelFor(id).questions(id))
-  ipcMain.handle('kernel:answerQuestion', (_e, id: string, questionId: string, answers: string[][]) => kernelFor(id).answerQuestion(id, questionId, answers))
+  ipcMain.handle('kernel:questions', async (_e, id: string) => {
+    const pending = await kernelFor(id).questions(id)
+    if (pending.length) activeTurns.add(id)
+    return pending
+  })
+  ipcMain.handle('kernel:answerQuestion', (_e, id: string, questionId: string, answers: string[][]) => {
+    if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
+    return kernelFor(id).answerQuestion(id, questionId, answers)
+  })
   ipcMain.handle('kernel:rejectQuestion', (_e, id: string, questionId: string) => kernelFor(id).rejectQuestion(id, questionId))
   ipcMain.handle('threads:list', (_e, dir: string) => threads().list(threadDir(dir)))
   ipcMain.handle('threads:get', (_e, dir: string, id: string) => threads().get(threadDir(dir), id))
@@ -576,7 +622,11 @@ app.whenReady().then(() => {
   ipcMain.handle('updates:status', () => updateStatus())
   ipcMain.handle('updates:check', () => checkForUpdates())
   ipcMain.handle('updates:install', () => installUpdate())
-  startUpdates((s) => broadcast('updates:changed', s))
+  startUpdates((s) => broadcast('updates:changed', s), async () => {
+    const ready = await shutdown.prepare(true)
+    if (ready) stopUpdates()
+    return ready
+  })
 
   setupMenu({ newWindow: createWindow, checkForUpdates: () => void checkForUpdates() })
   createWindow()
@@ -585,13 +635,13 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => {
-  cancelAssistantInstall()
-  void threads().flush().catch(() => undefined)
-  for (const k of allKernels) {
-    const d = (k as { dispose?: () => Promise<void> }).dispose
-    if (d) void d.call(k).catch(() => undefined)
-  }
+app.on('before-quit', event => {
+  if (!primaryInstance || shutdown.ready()) return
+  event.preventDefault()
+  void shutdown.prepare(false).then(ready => {
+    if (ready) { stopUpdates(); app.quit() }
+    else if (app.isReady() && BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
 })
 
 app.on('window-all-closed', () => {

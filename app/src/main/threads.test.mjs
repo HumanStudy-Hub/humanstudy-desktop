@@ -2,7 +2,7 @@
 //   node src/main/threads.test.mjs
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -263,6 +263,25 @@ assert.ok(!(await mgr.list(project)).some((x) => x.id === t2.id))
 await assert.rejects(mgr.get(project, '../etc/passwd'))
 await assert.rejects(mgr.delete(project, '../x'))
 assert.equal(readdirSync(join(project, '.humanstudy', 'threads')).filter((f) => f.endsWith('.tmp')).length, 0)
+
+// Real filesystem failure blocks quit; retry preserves the complete final reply.
+const failDir = mkdtempSync(join(tmpdir(), 'threads-disk-failure-'))
+const failing = new T.ThreadManager({kernelName:()=> 'mock',start:async()=> 'failed-session',resume:async()=>null},()=>{}, {saveDelayMs:60_000})
+const unsaved = await failing.create(failDir)
+writeFileSync(join(failDir, '.humanstudy'), 'blocks directory creation')
+failing.beforeSend(unsaved.kernelSessionId, 'Keep the complete reply')
+const lastReply = 'complete content '.repeat(10000) + 'FINAL SENTENCE'
+failing.onEvent({sessionId:unsaved.kernelSessionId,type:'text',text:lastReply})
+const oldError=console.error
+try {
+  console.error=()=>{}
+  await assert.rejects(failing.flush(), /Could not save conversations/)
+} finally { console.error=oldError }
+unlinkSync(join(failDir,'.humanstudy'))
+await failing.flush()
+const saved=JSON.parse(readFileSync(join(failDir,'.humanstudy','threads',unsaved.id+'.json'),'utf8'))
+assert.equal(saved.messages.at(-1).parts[0].text,lastReply)
+rmSync(failDir,{recursive:true,force:true})
 
 await mgr.flush()
 await kernel.dispose()

@@ -243,6 +243,7 @@ export class ThreadManager {
   private bySession = new Map<string, Bound>()
   private needsContext = new Set<string>() // kernel session ids whose next prompt carries the transcript
   private timers = new Map<string, NodeJS.Timeout>()
+  private writeFailures = new Map<string, unknown>()
   private writes = new Map<string, Promise<void>>()
   private now: () => string
   private newId: (prefix: string) => string
@@ -365,6 +366,8 @@ export class ThreadManager {
     clearTimeout(this.timers.get(key))
     this.timers.delete(key)
     await (this.writes.get(key) ?? Promise.resolve())
+    this.writeFailures.delete(key)
+    this.writes.delete(key)
     await unlink(join(threadsDir(dir), id + '.json')).catch(() => undefined)
     this.notify({ dir, id })
   }
@@ -468,13 +471,14 @@ export class ThreadManager {
 
   /** Write everything pending (before quit). */
   async flush(): Promise<void> {
-    for (const [key, timer] of this.timers) {
-      clearTimeout(timer)
-      this.timers.delete(key)
-      const t = this.live.get(key)
-      if (t) await this.write(key, dirOf(key), t)
+    for (const timer of this.timers.values()) clearTimeout(timer)
+    this.timers.clear()
+    // Retry failed writes too, even when their debounce timer already fired.
+    for (const [key, t] of this.live) {
+      if (t.messages.length > 0) void this.write(key, dirOf(key), t)
     }
     await Promise.all([...this.writes.values()])
+    if (this.writeFailures.size) throw new AggregateError([...this.writeFailures.values()], 'Could not save conversations')
   }
 
   // ---- internals ----
@@ -525,9 +529,10 @@ export class ThreadManager {
         const tmp = file + '.tmp'
         await writeFile(tmp, JSON.stringify(t, null, 2), 'utf8')
         await fsRename(tmp, file)
+        this.writeFailures.delete(key)
         this.notify({ dir, id: t.id })
       })
-      .catch((err) => console.error('threads: could not save', err))
+      .catch((err) => { this.writeFailures.set(key, err); console.error('threads: could not save', err) })
     this.writes.set(key, next)
     return next
   }
