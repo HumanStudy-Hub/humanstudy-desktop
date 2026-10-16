@@ -30,3 +30,27 @@ Validation:
 No owner-installed application or project was replaced in these tests. Intel and Windows real
 hardware acceptance remains open. The original multi-day CPU incident remains historically
 unproven; this patch addresses shutdown/update reliability, not a new CPU-root-cause claim.
+
+## Public release acceptance
+
+Published v0.6.2 as latest at 2026-10-16T03:37:48Z (2026-10-15 Vancouver):
+https://github.com/HumanStudy-Hub/humanstudy-desktop/releases/tag/v0.6.2
+PR #4 merged; source tag b6c37da. Release CI run 38846033699 succeeded. Both local Mac apps
+passed notarization and Gatekeeper, both packed main bundles matched the tested source, all
+four installer SHA-512 values matched latest-mac.yml, and GitHub SHA-256 digests/sizes matched
+all nine uploaded Mac/update artifacts. Windows preview assets and latest.yml are present.
+Stable local artifacts: app/dist/v0.6.2/ (includes SHA256SUMS).
+
+Real arm64 upgrade: an isolated signed 0.6.1 app downloaded the public 0.6.2 ZIP; native
+Squirrel.Mac verified/staged it, installed on ordinary quit, and the app reopened as 0.6.2.
+All 34 existing sample project/source/chat files retained identical SHA-256 hashes. The reopened
+app's IPC returned identical conversation messages and the original temporary settings. The
+upgraded app passed Gatekeeper and subsequently quit normally using the new save barrier.
+No owner-installed app, real account or real project was modified. Raw isolated acceptance:
+/private/tmp/hs-update-e2e-061/{release-062-verification.json,preservation-before-062.json,
+preservation-after-062.json,upgrade-062.log,after-062.log}.
+
+Remaining: real signed-in account preservation, Intel and Windows hardware, and a native
+Restart-button automatic relaunch test. Quit/install plus reopening was exercised; no claim
+that the Restart-button relaunch itself was observed. Download-page ISR may lag a new release
+by five minutes; the public updater channel resolves v0.6.2 immediately.
