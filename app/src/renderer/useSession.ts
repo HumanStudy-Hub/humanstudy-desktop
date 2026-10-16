@@ -1,3 +1,4 @@
+import { createTextBatcher } from './text-batcher'
 import { updateQuestion, type QuestionPart } from '../shared/question'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { lap, track } from './telemetry'
@@ -92,6 +93,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [usage, setUsage] = useState<SessionUsage>(ZERO)
   const [resumed, setResumed] = useState(false)
+  const textBatch = useRef<ReturnType<typeof createTextBatcher> | null>(null)
   const messagesRef = useRef<Message[]>([])
   messagesRef.current = messages
   const idRef = useRef<string | null>(null)
@@ -113,6 +115,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
 
   /** Make `t` (with a live kernel session) the open conversation. */
   const activate = useCallback((t: Thread) => {
+    textBatch.current?.cancel()
     idRef.current = t.kernelSessionId
     threadRef.current = t.id
     setId(t.kernelSessionId)
@@ -146,6 +149,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   }, [])
 
   useEffect(() => {
+    textBatch.current?.cancel()
     setQueueBoth(() => [])
     setId(null)
     setThreadId(null)
@@ -181,47 +185,51 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     [refreshThreads],
   )
 
-  useEffect(
-    () =>
-      window.humanstudy.kernel.onEvent((e: KernelEvent) => {
-        if (e.sessionId !== idRef.current) return
-        if (e.type === 'status') return setStatus(e.text ?? e.detail ?? '')
-        if (e.type === 'question') {
-          questionEpoch.current++
-          if (!e.question?.resolved) setBusyBoth(true)
+  useEffect(() => {
+    const batch = createTextBatcher((e: KernelEvent) => {
+      if (e.sessionId !== idRef.current) return
+      if (e.type === 'status') return setStatus(e.text ?? e.detail ?? '')
+      if (e.type === 'question') {
+        questionEpoch.current++
+        if (!e.question?.resolved) setBusyBoth(true)
+      }
+      if (e.type === 'done') {
+        questionEpoch.current++
+        // A turn that was stopped by hand has already cleared busy; its queue waits for the user.
+        const wasRunning = busyRef.current
+        setBusyBoth(false)
+        setStatus('')
+        setMessages((ms) => expirePermissions(ms))
+        const next = queueRef.current[0]
+        if (wasRunning && next) {
+          setQueueBoth((q) => q.slice(1))
+          sendRef.current(next.text, next.workspace)
         }
-        if (e.type === 'done') {
-          questionEpoch.current++
-          // A turn that was stopped by hand has already cleared busy; its queue waits for the user.
-          const wasRunning = busyRef.current
-          setBusyBoth(false)
-          setStatus('')
-          setMessages((ms) => expirePermissions(ms))
-          const next = queueRef.current[0]
-          if (wasRunning && next) {
-            setQueueBoth((q) => q.slice(1))
-            sendRef.current(next.text, next.workspace)
-          }
-          return
-        }
-        if (e.type === 'usage') {
-          const u: KernelUsage | undefined = e.usage
-          if (u)
-            setUsage((p) => ({ input: p.input + u.input, output: p.output + u.output, reasoning: p.reasoning + (u.reasoning ?? 0), cost: p.cost + (u.cost ?? 0) }))
-          return
-        }
-        if (e.type === 'title') return void refreshThreads()
-        setMessages((ms) => appendEvent(ms, e))
-        if (e.type === 'error') {
-          questionEpoch.current++
-          setBusyBoth(false)
-          setMessages(expirePermissions)
-        }
-      }),
-    [refreshThreads],
-  )
+        return
+      }
+      if (e.type === 'usage') {
+        const u: KernelUsage | undefined = e.usage
+        if (u)
+          setUsage((p) => ({ input: p.input + u.input, output: p.output + u.output, reasoning: p.reasoning + (u.reasoning ?? 0), cost: p.cost + (u.cost ?? 0) }))
+        return
+      }
+      if (e.type === 'title') return void refreshThreads()
+      setMessages((ms) => appendEvent(ms, e))
+      if (e.type === 'error') {
+        questionEpoch.current++
+        setBusyBoth(false)
+        setMessages(expirePermissions)
+      }
+    })
+    textBatch.current = batch
+    const off = window.humanstudy.kernel.onEvent(e => {
+      if (e.sessionId === idRef.current) batch.push(e)
+    })
+    return () => { off(); batch.cancel(); if (textBatch.current === batch) textBatch.current = null }
+  }, [refreshThreads])
 
   const send = useCallback((text: string, workspace?: WorkspaceContext) => {
+    textBatch.current?.flush()
     const sid = idRef.current
     if (!sid || !text.trim()) return
     setMessages((ms) => [...ms, { id: nextId++, role: 'user', parts: [{ kind: 'text', text }], at: Date.now() }])
@@ -235,6 +243,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   sendRef.current = send
 
   const abort = useCallback(() => {
+    textBatch.current?.flush()
     busyRef.current = false
     const sid = idRef.current
     if (sid) void window.humanstudy.kernel.abort(sid).catch((e: unknown) => {

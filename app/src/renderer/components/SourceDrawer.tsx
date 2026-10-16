@@ -9,6 +9,7 @@ import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { ProjectFile } from '../../preload/types'
 import { findQuote, type Rect, type Word } from '../../shared/source-anchor'
 import { readPdfAnnotations, type PdfAnnotation } from '../../shared/pdf-annotations'
+import { observeSettledWidth } from '../settled-width'
 import { makeWords } from './pdf-words'
 import { lap, track } from '../telemetry'
 import { t } from '../i18n'
@@ -267,23 +268,27 @@ function PdfPage({ doc, info, root, rects, zoom, annotations, onAnnotation }: { 
   const [width, setWidth] = useState(0)
   useEffect(() => {
     if (!el.current) return
-    const observer = new ResizeObserver(entries => setWidth(entries[0].contentRect.width))
-    observer.observe(el.current)
-    return () => observer.disconnect()
+    return observeSettledWidth(el.current, setWidth)
   }, [])
   const [near, setNear] = useState(false)
+  const [textReady, setTextReady] = useState(false)
   useEffect(() => {
-    if (!el.current || typeof IntersectionObserver === 'undefined') return setNear(true)
-    const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) { setNear(true); io.disconnect() } }, { root: root.current, rootMargin: '900px 0px' })
+    if (!el.current || typeof IntersectionObserver === 'undefined') { setNear(true); setTextReady(true); return }
+    const io = new IntersectionObserver(es => {
+      const visible = es.some(e => e.isIntersecting)
+      setNear(visible)
+      // Keep visited text layers mounted so scrolling cannot destroy a multi-page selection.
+      if (visible) setTextReady(true)
+    }, { root: root.current, rootMargin: '900px 0px' })
     io.observe(el.current)
     return () => io.disconnect()
   }, [root])
   useEffect(() => {
-    if (!near || !canvas.current || !el.current) return
+    if (!near || width <= 0 || !canvas.current || !el.current) return
     let task: pdfjs.RenderTask | null = null, cancelled = false
     void doc.getPage(info.n).then(page => {
       if (cancelled || !canvas.current || !el.current) return
-      const scale = Math.min(3, (el.current.clientWidth || 600) * devicePixelRatio / info.w)
+      const scale = Math.min(3, width * devicePixelRatio / info.w)
       const vp = page.getViewport({ scale })
       canvas.current.width = Math.ceil(vp.width)
       canvas.current.height = Math.ceil(vp.height)
@@ -296,7 +301,7 @@ function PdfPage({ doc, info, root, rects, zoom, annotations, onAnnotation }: { 
   return (
     <div ref={el} className="pdf-page" data-page={info.n} style={{ width: `${zoom * 100}%`, maxWidth: `${980 * zoom}px`, alignSelf: zoom > 1 ? 'flex-start' : 'center', aspectRatio: `${info.w} / ${info.h}` }}>
       <canvas ref={canvas} aria-label={t('paper.page_aria', { n: info.n })} />
-      {near && <div className="pdf-text">{info.words.map((w, i) => <span key={i} style={{ left: `${w.x}%`, top: `${w.y}%`, width: `${w.w}%`, height: `${w.h}%`, fontSize: `${w.h * ratio * 0.88}cqw` }}>{w.t} </span>)}</div>}
+      {textReady && <div className="pdf-text">{info.words.map((w, i) => <span key={i} style={{ left: `${w.x}%`, top: `${w.y}%`, width: `${w.w}%`, height: `${w.h}%`, fontSize: `${w.h * ratio * 0.88}cqw` }}>{w.t} </span>)}</div>}
       {annotations.flatMap(a => a.pages.filter(p => p.page === info.n).flatMap(p => p.rects.map((r, i) => <button key={`${a.id}-${i}`} className="pdf-mark" aria-label={t('paper.saved_highlight')} title={a.text} onClick={() => onAnnotation(a)} style={{ left: `${r.x}%`, top: `${r.y}%`, width: `${r.w}%`, height: `${r.h}%` }} />)))}
       {rects.map((r, i) => <div key={`${info.n}-${i}-${r.x}-${r.y}`} className="pdf-box" style={{ left: `${r.x}%`, top: `${r.y}%`, width: `${r.w}%`, height: `${r.h}%` }} />)}
     </div>
