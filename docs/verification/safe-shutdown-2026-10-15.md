@@ -25,7 +25,7 @@ Validation:
   and projects, no external network: quit during a turn asks and can be cancelled; a real
   filesystem obstruction blocks quit with an error; after restoring the folder the app exits
   only after the complete in-memory conversation matches the on-disk JSON. Final build result:
-  /private/tmp/hs-062-native-quit.log, fixture /private/tmp/hs-safe-quit-fixture.cjs.
+  /private/tmp/hs-062-native-quit.log, repeatable fixture app/scripts/verify-shutdown.cjs.
 
 No owner-installed application or project was replaced in these tests. Intel and Windows real
 hardware acceptance remains open. The original multi-day CPU incident remains historically

@@ -1,0 +1,22 @@
+// Run with the Electron executable after building. Isolated data and no external network.
+const {app,BrowserWindow,ipcMain,dialog}=require('electron');
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+const root=fs.mkdtempSync(path.join(require('node:os').tmpdir(),'hs-safe-quit-'));
+app.setPath('userData',root);fs.writeFileSync(path.join(root,'settings.json'),JSON.stringify({projectsRoot:path.join(root,'projects'),notifications:false}));
+process.env.HUMANSTUDY_KERNEL='mock';process.env.HUMANSTUDY_SERVER='http://127.0.0.1:1';global.fetch=async()=>{throw Error('Fixture network disabled')};BrowserWindow.prototype.show=function(){};BrowserWindow.prototype.focus=function(){};
+const handles=new Map(),original=ipcMain.handle.bind(ipcMain);ipcMain.handle=(channel,fn)=>{handles.set(channel,fn);return original(channel,fn)};
+let confirmed=0,errors=0;dialog.showMessageBox=async()=>{confirmed++;return{response:0}};dialog.showErrorBox=()=>{errors++};
+const invoke=(name,...args)=>handles.get(name)({},...args);const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let dir,thread,expected,done=false;
+process.on('exit',()=>{if(!done)process.exitCode=1;else {assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir,'.humanstudy','threads',thread.id+'.json'))).messages,expected);console.log(JSON.stringify({root,busyQuitCancelled:confirmed===1,failedSaveBlocked:errors===1,completeConversationSaved:true}));}});
+setTimeout(()=>{console.error('Native quit test timed out');process.exit(1)},20000).unref();
+require(path.join(__dirname,'../out/main/index.js'));
+app.whenReady().then(async()=>{await sleep(200);dir=await invoke('projects:create',{name:'Safe quit fixture'});thread=await invoke('threads:create',dir);
+ await invoke('kernel:send',thread.kernelSessionId,'Untruncated user message '.repeat(5000)+' FINAL');
+ app.quit();await sleep(100);assert.equal(confirmed,1);assert.equal(errors,0);
+ await invoke('kernel:abort',thread.kernelSessionId);await sleep(80);
+ const store=path.join(dir,'.humanstudy');fs.renameSync(store,store+'.backup');fs.writeFileSync(store,'blocked directory');
+ app.quit();await sleep(200);assert.equal(errors,1,'save failure must leave app running');
+ fs.unlinkSync(store);fs.renameSync(store+'.backup',store);
+ expected=(await invoke('threads:get',dir,thread.id)).messages;done=true;app.quit();
+}).catch(e=>{console.error(e);process.exit(1)});
