@@ -30,3 +30,25 @@ Validation:
 Raw logs: /private/tmp/hs-063-{regression,recovery,quit,kernel-exit,build}.log.
 No owner-installed application, real account or real project is used by these fixtures.
 Windows/Intel hardware and a native Restart-button relaunch remain separate acceptance items.
+
+## Published acceptance
+
+v0.6.3 published as latest at 2026-10-16T06:26:54Z (2026-10-15 Vancouver):
+https://github.com/HumanStudy-Hub/humanstudy-desktop/releases/tag/v0.6.3
+PR #5 merged; tag source 634a29e. Release CI run 38860754409 succeeded. Both Mac apps are
+notarized and Gatekeeper accepted; packed main AND renderer bytes match the tested build.
+All installer SHA-512 values and nine uploaded Mac/update asset SHA-256 digests/sizes verified.
+Local installers/manifest: app/dist/v0.6.3/.
+
+Actual arm64 0.6.2→0.6.3 public-channel download, native staging, quit-to-install and reopening
+passed. All 34 existing isolated project/source/chat files retained identical SHA-256 hashes.
+The reopened app returned version 0.6.3, identical messages/settings and update state=none;
+its Gatekeeper assessment passed and it quit normally using the new preparation logic.
+No owner-installed app or real project was replaced. Evidence:
+/private/tmp/hs-update-e2e-061/{release-063-verification.json,preservation-before-063.json,
+preservation-after-063.json,upgrade-063.log,after-063.log}.
+
+Failure injection uses the real built main/preload code with a mock agent/updater; actual
+public-channel upgrade uses the signed packaged app. These are distinct tests, not claims of
+reproducing a real OS installer failure. Native Restart-button relaunch and Windows/Intel
+hardware remain untested; real hosted-model research and long-duration CPU acceptance remain open.

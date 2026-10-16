@@ -59,13 +59,10 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
       "blocked: question wording not printed in the paper" (correct). Fixed on the way: scratch
       files must stay in `.humanstudy/tmp`, PROJECT_FORMAT.md is installed, checker resolves
       relative paths. Simulation not yet run (needs the researcher's decisions). (2026-10-12)
-- [x] **Research data: full replay** — with usage + conversation consent the app records everything
-      needed to replay a session: rrweb DOM chunks (10 s / 500 KB, gzip) uploaded to Storage bucket
-      `desktop-replays`, semantic UI events with dwell times, the complete agent transcript (tool
-      input/output, permissions, usage), `program.json` versions with id diffs and agent-written
-      files. One session id ties them together; Delete my data and `telemetry.exportMyData()` cover
-      all of it. Migration `20261012150000_desktop_replay.sql` (web repo) must be applied before the
-      first upload. See `docs/research-data.md`. (wave H2)
+- [x] **Research data: interactions and research records** — semantic actions and dwell times,
+      plus separately consented complete conversations, tool input/output and study artifacts.
+      Full page/DOM replay and mouse-movement recording were retired in 0.6.1; historical data
+      stays recoverable. See `docs/research-data.md`; no self-service deletion promise.
 - [x] **Research runtime (K3)** — clean Macs/PCs have no Python or poppler (`python3` even opens the Xcode
       installer). First run now also installs a private runtime beside the kernel into
       `userData/runtime/<version>/`: python-build-standalone CPython 3.12.15 (pinned URL + SHA-256) and a
@@ -78,7 +75,7 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
       runtime share one `kernel.install` progress stream (`phase`, `runtimeVersion` added, backward
       compatible). See `docs/runtime.md`. Open: Windows untested on real hardware; Intel-Mac wheel gaps on
       new releases (run `pack/runtime/relock.sh`); OCR for scanned PDFs; disk use (~0.55 GB). (wave K3)
-- [x] **Notarized Mac release** — 0.6.1 Apple Silicon/Intel installers signed, notarized and stapled; public automatic-update channel published. Real arm64 0.6.0→0.6.1 download, quit-to-install and reopening passed. Windows real-device acceptance remains open. See docs/verification/auto-update-2026-10-15.md.
+- [x] **Notarized Mac release** — 0.6.3 Apple Silicon/Intel installers signed, notarized and stapled; public automatic updates published. Real arm64 upgrades through 0.6.3 preserve isolated project/source/chat files and settings. Failed quit/update rollback verified with native fixtures. Windows real-device acceptance remains open. See docs/verification/shutdown-recovery-2026-10-15.md.
 
 - [x] **Hosted-only product (H1)** — no API keys, no provider choice (C17 "own keys" is not a product
       feature; `HUMANSTUDY_DEV_KEYS=1` keeps a hidden developer path). Sign in + invitation code unlocks
