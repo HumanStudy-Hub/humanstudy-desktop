@@ -1,7 +1,7 @@
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -118,7 +118,73 @@ await scenario('abort-during-dispatch', async ({ k, events, finish, idle }) => {
   release(); await tick()
   assert.equal(events.filter(e => e.type === 'error').length, 0)
 })
-console.log('Adjusted recovery, budget, progress gate, cancellation, native continuation and failed dispatch passed')
+const invalid = (k, mid, id = 'broken') => k.handle({ type: 'message.part.updated', properties: { part: {
+  sessionID: 's', messageID: mid, id, type: 'tool', tool: 'invalid',
+  state: { status: 'completed', input: { tool: 'write', error: 'JSON parsing failed: Unterminated string' }, output: 'Invalid Tool' },
+} } })
+const assistant = (k, id) => k.handle({ type: 'message.updated', properties: { info: { sessionID: 's', id, role: 'assistant' } } })
+await scenario('invalid-tool', async ({ k, events, requests, finish, idle }) => {
+  await k.send('s', 'Build from the paper')
+  assistant(k, 'bad'); invalid(k, 'bad')
+  idle(); idle(); await tick()
+  assert.equal(requests.length, 2, 'one adjusted request for a malformed tool call')
+  assert.match(requests[1].body.parts[0].text, /malformed arguments/)
+  assert.match(requests[1].body.parts[0].text, /Do not assume an interrupted tool call wrote a file/)
+  assert.match(requests[1].body.parts[0].text, /program_io.py/)
+  assert.equal(events.find(e => e.type === 'status' && e.text === 'recovering').input.reason, 'invalid_tool_call')
+  finish('stop', 20); idle()
+  assert.equal(events.filter(e => e.type === 'done').length, 1)
+})
+await scenario('invalid-not-progress', async ({ k, requests, finish, idle, events }) => {
+  await k.send('s', 'Build')
+  finish(); idle(); await tick()
+  assistant(k, 'bad-again'); invalid(k, 'bad-again'); idle(); await tick()
+  assert.equal(requests.length, 2, 'synthetic invalid tool is not a successful action')
+  assert.match(events.find(e => e.type === 'error').text, /no visible output or successful tool action/)
+})
+await scenario('native-promises-only', async ({ k, requests, finish, idle }) => {
+  await k.send('s', 'Build')
+  assistant(k, 'bad'); invalid(k, 'bad')
+  finish('stop', 20, true); idle(); await tick()
+  assert.equal(requests.length, 2, 'a native promise without repairing the tool does not hide the failure')
+})
+await scenario('native-repairs-invalid', async ({ k, requests, finish, idle }) => {
+  await k.send('s', 'Build')
+  assistant(k, 'bad'); invalid(k, 'bad')
+  assistant(k, 'repair')
+  k.handle({ type: 'message.part.updated', properties: { part: { sessionID: 's', messageID: 'repair', id: 'valid-write', type: 'tool', tool: 'write', state: { status: 'completed', output: 'Wrote file successfully' } } } })
+  finish('stop', 20); idle(); await tick()
+  assert.equal(requests.length, 1, 'a successful native repair must not be repeated')
+})
+await scenario('native-starts-before-dispatch', async ({ k, requests, finish, idle }) => {
+  await k.send('s', 'Build'); finish(); idle()
+  assistant(k, 'native-caught-up'); await tick()
+  assert.equal(requests.length, 1, 'native continuation between idle and dispatch supersedes the queued request')
+})
+await scenario('late-finish-metadata', async ({ k, requests, idle }) => {
+  await k.send('s', 'Build')
+  const info = { sessionID: 's', id: 'late', role: 'assistant', time: { completed: 1 }, tokens: { output: 32000 } }
+  k.handle({ type: 'message.updated', properties: { info } })
+  k.handle({ type: 'message.updated', properties: { info: { ...info, finish: 'length' } } })
+  idle(); await tick()
+  assert.equal(requests.length, 2, 'usage metadata cannot swallow a later output-limit signal')
+})
+for (const wait of ['question', 'permission']) await scenario('waiting-' + wait, async ({ k, requests, finish, idle }) => {
+  await k.send('s', 'Build')
+  finish()
+  k.handle({ type: wait + '.asked', properties: { sessionID: 's', id: 'needs-user', permission: 'external_directory', patterns: ['/outside-project'], questions: [{ question: 'Which condition?', header: 'Condition', options: [{ label: 'A', description: 'A' }] }] } })
+  idle(); await tick()
+  assert.equal(requests.length, 1, 'never dispatch through an unanswered ' + wait)
+  k.handle({ type: wait === 'question' ? 'question.rejected' : 'permission.replied', properties: { sessionID: 's', requestID: 'needs-user', reply: 'reject' } })
+  idle(); await tick()
+  assert.equal(requests.length, 1, 'a rejection is not permission to retry')
+})
+await scenario('invalid-after-stop', async ({ k, requests, idle }) => {
+  await k.send('s', 'Build'); assistant(k, 'bad')
+  await k.abort('s'); invalid(k, 'bad'); idle(); await tick()
+  assert.equal(requests.filter(r => r.path.endsWith('prompt_async')).length, 1)
+})
+console.log('Output limits, malformed tools, late finish, native repairs, researcher waits and stop guards passed')
 
 if (process.env.HUMANSTUDY_KERNEL_BIN) {
   let count = 0
@@ -156,5 +222,42 @@ if (process.env.HUMANSTUDY_KERNEL_BIN) {
     assert.equal(events.some(e => e.type === 'error'), false)
     console.log('Real installed OpenCode length → adjusted prompt/low effort → output passed (localhost fixture, no hosted quota)')
   } finally { await k.dispose(); await new Promise(r => model.close(r)) }
+}
+if (process.env.HUMANSTUDY_KERNEL_BIN) {
+  let count = 0
+  // Bun canonicalizes macOS /var aliases differently; a real workspace path keeps
+  // the write inside the native project's permission boundary.
+  const project = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), '.native-recovery-'))
+  const checkpoint = join(project, 'repaired-checkpoint.txt')
+  const model = createServer(async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString())
+    const main = Boolean(body.tools?.length), n = main ? ++count : 0
+    const delta = n === 1 ? { tool_calls: [{ index: 0, id: 'broken_write', type: 'function', function: { name: 'write', arguments: '{"filePath":"unfinished' } }] }
+      : n === 3 ? { tool_calls: [{ index: 0, id: 'fixed_write', type: 'function', function: { name: 'write', arguments: JSON.stringify({ filePath: checkpoint, content: '完整原文 retained\nFINAL EVIDENCE' }) } }] }
+      : { content: n === 2 ? "I'll write a smaller valid call next." : 'Saved and checked the checkpoint.' }
+    const chunk = { id: 'fixture-' + n, object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta, finish_reason: null }] }
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.write(`data: ${JSON.stringify(chunk)}\n\n`)
+    res.end(`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: {}, finish_reason: n === 1 || n === 3 ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 20 } })}\n\ndata: [DONE]\n\n`)
+  })
+  await new Promise(r => model.listen(0, '127.0.0.1', r))
+  const k = new OpencodeKernel({ binary: process.env.HUMANSTUDY_KERNEL_BIN, home: join(out, 'malformed-home'), provider: 'humanstudy', model: 'anthropic/claude-haiku-5.5' })
+  const cfg = JSON.parse(k.configContent())
+  k.configContent = () => JSON.stringify({ ...cfg, provider: { humanstudy: { npm: '@ai-sdk/openai-compatible', options: { baseURL: `http://127.0.0.1:${model.address().port}/v1`, apiKey: 'fixture-only' }, models: { 'anthropic/claude-haiku-5.5': { name: 'Fixture', tool_call: true, limit: { context: 200000, output: 32000 }, variants: { 'humanstudy-recovery': { reasoningEffort: 'low' } } } } } } })
+  try {
+    const sid = await k.startSession(project), events = []
+    const done = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Malformed-call recovery timed out: ' + JSON.stringify(events))), 45000)
+      k.onEvent(e => { if (e.sessionId === sid) { events.push(e); if (e.type === 'done') { clearTimeout(timer); resolve() } } })
+    })
+    await k.send(sid, 'Save the complete checkpoint inside this project. Do not run simulations.')
+    await done
+    assert.equal(count, 4, 'native invalid → promise-only stop → adjusted valid write → final answer')
+    assert.equal(readFileSync(checkpoint, 'utf8'), '完整原文 retained\nFINAL EVIDENCE')
+    assert.equal(events.filter(e => e.type === 'status' && e.text === 'recovering' && e.input?.reason === 'invalid_tool_call').length, 1)
+    assert.equal(events.some(e => e.type === 'error'), false)
+    console.log('Real installed OpenCode malformed JSON → native stop → automatic repair → actual file saved passed')
+  } finally { await k.dispose(); await new Promise(r => model.close(r)); rmSync(project, { recursive: true, force: true }) }
 }
 rmSync(out, { recursive: true, force: true })
