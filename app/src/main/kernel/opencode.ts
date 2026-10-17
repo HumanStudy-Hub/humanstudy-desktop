@@ -118,13 +118,15 @@ interface SessionState {
   partTypes: Map<string, string> // partID -> part type
   emitted: Map<string, number> // text partID -> chars already emitted
   toolStatus: Map<string, string> // tool partID -> last emitted status
+  finishSent: Set<string> // completion metadata may arrive after the usage snapshot
+  pendingQuestions: Set<string>
   usageSent: Set<string> // assistant messageIDs whose usage was already emitted
   turnBaseline: Set<string>
   snapshotParts: Set<string>
   awaitingAssistant: boolean
   failed: boolean
   pendingPermissions: Map<string, KernelPermission>
-  recovery: { epoch: number; attempts: number; pending: boolean; running: boolean; cancelled: boolean; progress: boolean }
+  recovery: { epoch: number; attempts: number; pending: boolean; running: boolean; cancelled: boolean; progress: boolean; reason?: 'output_limit' | 'invalid_tool_call'; assistantId?: string }
   title: string // last session title emitted
 }
 
@@ -216,6 +218,8 @@ export class OpencodeKernel implements Kernel {
       emitted: new Map(),
       toolStatus: new Map(),
       usageSent: new Set(),
+      finishSent: new Set(),
+      pendingQuestions: new Set(),
       turnBaseline: new Set(),
       snapshotParts: new Set(),
       awaitingAssistant: false,
@@ -230,6 +234,7 @@ export class OpencodeKernel implements Kernel {
     const s = this.session(sessionId)
     await this.replyTo(s.server, sessionId, permissionId, response)
     s.pendingPermissions.delete(permissionId)
+    if (response === 'reject') { s.recovery.cancelled = true; s.recovery.pending = false }
   }
 
   private async replyTo(server: Server, sessionId: string, permissionId: string, response: PermissionReply): Promise<void> {
@@ -252,7 +257,9 @@ export class OpencodeKernel implements Kernel {
 
   async questions(sessionId: string): Promise<KernelQuestion[]> {
     const pending = await this.listQuestions(sessionId)
-    if (pending.length) this.session(sessionId).inFlight = true
+    const s = this.session(sessionId)
+    s.pendingQuestions = new Set(pending.map(q => q.id))
+    if (pending.length) s.inFlight = true
     return pending
   }
 
@@ -268,6 +275,7 @@ export class OpencodeKernel implements Kernel {
     if (!question) throw new Error('This question is no longer pending.')
     validateAnswers(question, answers)
     await this.request(this.session(sessionId).server, 'POST', `/question/${encodeURIComponent(questionId)}/reply`, { answers })
+    this.session(sessionId).pendingQuestions.delete(questionId)
     this.emitter.emit({ sessionId, type: 'question', question: { ...question, answers, resolved: 'answered' } })
   }
 
@@ -275,6 +283,9 @@ export class OpencodeKernel implements Kernel {
     const question = (await this.questions(sessionId)).find(q => q.id === questionId)
     if (!question) throw new Error('This question is no longer pending.')
     await this.request(this.session(sessionId).server, 'POST', `/question/${encodeURIComponent(questionId)}/reject`)
+    const s = this.session(sessionId)
+    s.pendingQuestions.delete(questionId)
+    s.recovery.cancelled = true; s.recovery.pending = false
     this.emitter.emit({ sessionId, type: 'question', question: { ...question, resolved: 'rejected' } })
   }
 
@@ -306,6 +317,7 @@ export class OpencodeKernel implements Kernel {
     // Native abort can leave a question in the server's pending list. Explicitly dismiss
     // those requests, otherwise reopening this conversation resurrects a stopped turn.
     const pending = await this.listQuestions(sessionId)
+    s.pendingQuestions.clear()
     for (const q of pending) {
       await this.request(s.server, 'POST', `/question/${encodeURIComponent(q.id)}/reject`)
       this.emitter.emit({ sessionId, type: 'question', question: { ...q, resolved: 'rejected' } })
@@ -324,21 +336,23 @@ export class OpencodeKernel implements Kernel {
   private async recover(sessionId: string, s: SessionState): Promise<void> {
     const r = s.recovery
     const epoch = r.epoch
-    const attempt = ++r.attempts
-    r.progress = false
+    const reason = r.reason ?? 'output_limit'
     // Defer beyond the idle callback; never submit while the native turn is still active.
     await Promise.resolve()
-    if (this.disposed || r.cancelled || s.recovery.epoch !== epoch) { r.running = false; return }
-    this.emitter.emit({ sessionId, type: 'status', text: 'recovering', detail: `Recovery ${attempt}/2: checking saved work and splitting the remaining task into smaller steps.`, input: { attempt, reason: 'output_limit', strategy: 'checkpoints_smaller_units', model: this.model, ...(this.provider === HOSTED_PROVIDER ? { reasoningEffort: 'low' } : {}) } })
+    if (this.disposed || r.cancelled || s.recovery.epoch !== epoch || !r.running) { r.running = false; return }
+    if (s.pendingPermissions.size || s.pendingQuestions.size) { r.pending = true; r.running = false; return }
+    const attempt = ++r.attempts
+    r.progress = false
+    this.emitter.emit({ sessionId, type: 'status', text: 'recovering', detail: `Recovery ${attempt}/2: checking saved work and splitting the remaining task into smaller steps.`, input: { attempt, reason, strategy: 'checkpoints_smaller_units', model: this.model, ...(this.provider === HOSTED_PROVIDER ? { reasoningEffort: 'low' } : {}) } })
     s.awaitingAssistant = true
     try {
       await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
         ...(this.provider ? { model: { providerID: this.provider, modelID: this.model } } : {}),
         ...(this.provider === HOSTED_PROVIDER ? { variant: 'humanstudy-recovery' } : {}),
-        parts: [{ type: 'text', text: `[HumanStudy automatic recovery ${attempt}/2: the previous model response exhausted its generation budget; this is not a new research request.]
+        parts: [{ type: 'text', text: `[HumanStudy automatic recovery ${attempt}/2: ${reason === 'invalid_tool_call' ? 'the previous tool call had malformed arguments and may not have executed' : 'the previous model response exhausted its generation budget'}; this is not a new research request.]
 Keep the original user's task and all scientific requirements. First inspect existing files and validation results to establish what actually completed. Do not assume an interrupted tool call wrote a file. Do not repeat completed actions or rerun simulations, submissions, uploads or other external actions. Existing permission and simulation approval requirements still apply.
-Adjust the execution plan: finish the smallest coherent pending unit, save and validate it, then advance one unit at a time. For a large human program, use separate complete intermediate files per study/section and assemble the final schema-valid program.json from those files. Preserve every required detail, verbatim quotation and source reference; split the work rather than shorten or omit content. Do not overwrite valid existing work unnecessarily or announce a plan and ask permission to start again. Act on the task already authorized; ask only for genuinely missing research decisions. If a tool invocation was incomplete, construct a smaller valid invocation after checking the filesystem.
-${attempt === 2 ? 'The first adjusted attempt still reached the limit but made progress. Further reduce the size of each write/tool call and complete the remaining units from saved checkpoints.' : 'Avoid spending the whole response thinking through the entire paper before making the first checkpoint.'}` }],
+Adjust the execution plan: finish the smallest coherent pending unit, save and validate it, then advance one unit at a time. For a large human program, use small complete JSON batches and program_io.py when available, or separate complete intermediate files per study/section, and assemble the final schema-valid program.json from those files. Preserve every required detail, verbatim quotation and source reference; split the work rather than shorten or omit content. Do not overwrite valid existing work unnecessarily or announce a plan and ask permission to start again. Act on the task already authorized; ask only for genuinely missing research decisions. If a tool invocation was incomplete, construct a smaller valid invocation after checking the filesystem.
+${attempt === 2 ? 'The first adjusted attempt was interrupted again but made progress. Further reduce the size of each write/tool call and complete the remaining units from saved checkpoints.' : 'Avoid spending the whole response thinking through the entire paper before making the first checkpoint.'}` }],
       })
     } catch (err) {
       if (!this.disposed && !r.cancelled && s.recovery.epoch === epoch) {
@@ -720,13 +734,17 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
 
     switch (ev.type) {
       case 'question.asked':
+        s.pendingQuestions.add(p.id)
         s.inFlight = true
         emit({ type: 'question', question: { id: p.id, questions: p.questions ?? [] } })
         return
       case 'question.replied':
+        s.pendingQuestions.delete(p.requestID)
         emit({ type: 'question', question: { id: p.requestID, questions: [], answers: p.answers, resolved: 'answered' } })
         return
       case 'question.rejected':
+        s.pendingQuestions.delete(p.requestID)
+        s.recovery.cancelled = true; s.recovery.pending = false
         emit({ type: 'question', question: { id: p.requestID, questions: [], resolved: 'rejected' } })
         return
 
@@ -735,7 +753,10 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
         if (info?.role === 'assistant' && !s.roles.has(info.id)) {
           s.awaitingAssistant = false
           s.recovery.running = false
-          s.recovery.pending = false // a native next step supersedes the queued adjustment
+          // Native may repair a malformed call itself. Keep that failure pending until
+          // a real tool succeeds, rather than mistaking another promise to act for a repair.
+          if (s.recovery.reason !== 'invalid_tool_call') s.recovery.pending = false
+          s.recovery.assistantId = info.id
         }
         if (info?.id && info.role) s.roles.set(info.id, info.role)
         // Once an assistant message is complete, report its tokens/cost (one `usage` per message).
@@ -751,14 +772,18 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
               cost: typeof info.cost === 'number' ? info.cost : undefined,
             },
           })
-          // Recover only a known active request, after native idle. Historical events,
-          // cancellations and other failure types must not trigger new model calls.
+        }
+        // Usage and finish can arrive separately; deduplicating usage must not hide a late limit.
+        if (info?.role === 'assistant' && info.time?.completed && info.finish && !s.finishSent.has(info.id)) {
+          s.finishSent.add(info.id)
           if (info.finish === 'length' && !info.error) {
             const r = s.recovery
-            if (s.inFlight && !r.cancelled && r.attempts < 2 && (r.attempts === 0 || r.progress)) r.pending = true
-            else emit({ type: 'error', text: r.attempts > 0
-              ? `The model reached its response limit again after ${r.attempts} adjusted recovery attempt(s). ${!r.progress ? 'The adjusted attempt produced no visible output or successful tool action. ' : ''}All received output and saved files have been kept. Try another model; no further automatic requests will be sent.`
-              : 'The model reached its response limit. All received output and saved files have been kept. This inactive or stopped request was not retried.' })
+            if (s.inFlight && !r.cancelled && info.id === r.assistantId && !s.turnBaseline.has(info.id)) {
+              r.pending = true
+              r.reason = 'output_limit'
+            } else if (!s.inFlight || r.cancelled) {
+              emit({ type: 'error', text: 'The model reached its response limit. All received output and saved files have been kept. This inactive or stopped request was not retried.' })
+            }
           }
         }
         return
@@ -810,7 +835,16 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
           if (s.toolStatus.get(part.id) === key) return
           s.toolStatus.set(part.id, key)
           const done = status === 'completed' || status === 'error'
-          if (status === 'completed') s.recovery.progress = true
+          // `invalid` is OpenCode's synthetic tool for a malformed model invocation; it
+          // did not perform the requested write. Recover only if native stops here.
+          const malformed = part.tool === 'invalid' && done
+          if (malformed && s.inFlight && !s.recovery.cancelled && part.messageID === s.recovery.assistantId) {
+            s.recovery.reason = 'invalid_tool_call'
+            s.recovery.pending = true
+          } else if (status === 'completed' && part.tool !== 'invalid' && !s.turnBaseline.has(part.messageID)) {
+            s.recovery.progress = true
+            if (s.recovery.reason === 'invalid_tool_call') s.recovery.pending = false
+          }
           const out = status === 'error' ? st.error : st.output
           emit({
             type: 'tool',
@@ -835,6 +869,16 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
         if (!s.inFlight) return // opencode repeats idle; only one `done` per turn
         if (s.recovery.running && !s.recovery.cancelled) return
         if (s.recovery.pending && !s.recovery.cancelled) {
+          // Waiting for a researcher is not a model failure. Never auto-answer or bypass it.
+          if (s.pendingPermissions.size || s.pendingQuestions.size) return
+          const r = s.recovery
+          if (r.attempts >= 2 || (r.attempts > 0 && !r.progress)) {
+            r.pending = false
+            emit({ type: 'error', text: `Automatic recovery stopped after ${r.attempts} adjusted attempt(s). ${!r.progress ? 'The adjusted attempt produced no visible output or successful tool action. ' : ''}All received output and saved files have been kept. No further automatic requests will be sent.` })
+            s.inFlight = false
+            emit({ type: 'done' })
+            return
+          }
           s.recovery.pending = false
           s.recovery.running = true
           void this.recover(sessionId, s)
@@ -871,6 +915,7 @@ ${attempt === 2 ? 'The first adjusted attempt still reached the limit but made p
 
       case 'permission.replied': {
         if (p.requestID) s.pendingPermissions.delete(p.requestID)
+        if ((p.reply ?? p.response) === 'reject') { s.recovery.cancelled = true; s.recovery.pending = false }
         const reply = p.reply ?? p.response
         if (p.requestID && (reply === 'once' || reply === 'always' || reply === 'reject'))
           emit({ type: 'permission', permission: { id: p.requestID, type: '', resolved: reply, ...(this.autoReplies.has(p.requestID) ? { automatic: true } : {}) } })
