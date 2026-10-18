@@ -46,6 +46,9 @@ public release still 0.6.4. Do not overwrite the running owner application durin
   selected, conditional provider prompts reached authorization, MCP callback used its own route.
   Measured typing and chat-pane resizing p95 about 17–18 ms, including two animation frames.
   Timings are reported, not hard CI thresholds that fail when the machine is busy.
+- Packaged file-origin PTY handshake initially failed with 403; added explicit file:// origin
+  permission while retaining authenticated single-use tickets. Actual Electron file-page PTY
+  read/write then passed; unrelated origins and ticket reuse are regression checked.
 - Modal focus stays within the dialog; terminal keyboard input is excluded from app shortcuts.
 - Fixed terminal resize/reconnect timer interference, bounded reconnect attempts, stale catalog and
   panel response guards, share preview loading guard, and required VCS diff query parameters.

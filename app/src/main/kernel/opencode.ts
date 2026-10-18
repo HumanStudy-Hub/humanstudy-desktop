@@ -588,7 +588,9 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     if (this.disposed) throw new Error('kernel disposed')
     const port = await freePort()
     const password = randomBytes(24).toString('base64url')
-    const proc = spawn(this.binary, ['serve', '--port', String(port), '--hostname', '127.0.0.1'], {
+    // Packaged Electron pages send file:// as their WebSocket origin. PTY access still
+    // requires a single-use ticket issued through the authenticated main process.
+    const proc = spawn(this.binary, ['serve', '--port', String(port), '--hostname', '127.0.0.1', '--cors', 'file://'], {
       cwd: dir,
       env: this.kernelEnv(password),
       stdio: ['ignore', 'pipe', 'pipe'],

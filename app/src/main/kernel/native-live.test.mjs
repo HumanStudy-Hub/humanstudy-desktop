@@ -6,7 +6,7 @@ import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join,dirname} from 'node:path'
 import {fileURLToPath,pathToFileURL} from 'node:url'
-import {execFileSync} from 'node:child_process'
+import {execFileSync,spawn} from 'node:child_process'
 import {createRequire} from 'node:module'
 const binary=process.env.HUMANSTUDY_KERNEL_BIN
 if(!binary)throw Error('Set HUMANSTUDY_KERNEL_BIN to test the actual installed kernel.')
@@ -42,7 +42,18 @@ try{
  await action('archive');assert.ok((await action('session')).time.archived>0);await action('open',{id:sid});assert.equal((await action('session')).time.archived,0)
  const terminal=await action('terminalCreate',{command:'/bin/sh',args:['-i']});const link=await action('terminalConnect',{id:terminal.id});assert.ok(link.url.includes('ticket='));assert.ok(!link.url.includes('password'))
  const require=createRequire(import.meta.url),{WebSocket}=require('ws')
- await new Promise((resolve,reject)=>{const ws=new WebSocket(link.url);const timer=setTimeout(()=>{ws.close();reject(Error('PTY timeout'))},10000);let seen='';ws.on('open',()=>ws.send("printf 'NATIVE_PTY_OK\\n'\n"));ws.on('message',(data,binary)=>{if(binary)return;seen+=data.toString();if(seen.includes('NATIVE_PTY_OK')){clearTimeout(timer);ws.close();resolve()}});ws.on('error',reject)})
+ await new Promise((resolve,reject)=>{const ws=new WebSocket(link.url,{origin:'file://'});const timer=setTimeout(()=>{ws.close();reject(Error('PTY timeout'))},10000);let seen='';ws.on('open',()=>ws.send("printf 'NATIVE_PTY_OK\\n'\n"));ws.on('message',(data,binary)=>{if(binary)return;seen+=data.toString();if(seen.includes('NATIVE_PTY_OK')){clearTimeout(timer);ws.close();resolve()}});ws.on('error',reject)})
+ const deniedLink=await action('terminalConnect',{id:terminal.id})
+ await assert.rejects(new Promise((resolve,reject)=>{const ws=new WebSocket(deniedLink.url,{origin:'https://untrusted.example.invalid'});ws.once('error',reject);ws.once('open',()=>{ws.close();resolve()})}),/403/)
+ await assert.rejects(new Promise((resolve,reject)=>{const ws=new WebSocket(link.url,{origin:'file://'});ws.once('error',reject);ws.once('open',()=>{ws.close();resolve()})}),/403/,'terminal tickets cannot be reused')
+ if(process.env.HUMANSTUDY_TEST_ELECTRON==='1'){
+  const browserLink=await action('terminalConnect',{id:terminal.id})
+  const html=join(root,'terminal.html'),runner=join(root,'terminal-ui.cjs');writeFileSync(html,'<meta http-equiv="Content-Security-Policy" content="default-src \'self\'; connect-src ws:"><p>Isolated terminal fixture</p>')
+  const script='new Promise((resolve,reject)=>{const socket=new WebSocket('+JSON.stringify(browserLink.url)+');const timer=setTimeout(()=>{socket.close();reject(Error("Browser PTY timed out"))},10000);let seen="";socket.onopen=()=>socket.send('+JSON.stringify("printf '%s%s\\n' 'NATIVE_BROWSER_' 'PTY_OK'\n")+');socket.onerror=()=>{clearTimeout(timer);reject(Error("Browser PTY refused"))};socket.onmessage=e=>{if(typeof e.data!=="string")return;seen+=e.data;if(seen.includes("NATIVE_BROWSER_PTY_OK")){clearTimeout(timer);socket.close();resolve(true)}}})'
+  writeFileSync(runner,`const {app,BrowserWindow}=require('electron');app.setPath('userData',${JSON.stringify(join(root,'ui-profile'))});app.whenReady().then(async()=>{const w=new BrowserWindow({show:false});try{await w.loadFile(${JSON.stringify(html)});if(!await w.webContents.executeJavaScript(${JSON.stringify(script)}))throw Error('No terminal output');console.log('Actual Electron file-origin PTY read/write passed');app.exit(0)}catch(e){console.error(e);app.exit(1)}})`)
+  const env={...process.env};delete env.ELECTRON_RUN_AS_NODE
+  const code=await new Promise((resolve,reject)=>{const child=spawn(require('electron'),[runner],{stdio:'inherit',env});const timer=setTimeout(()=>{child.kill('SIGTERM');reject(Error('Browser PTY harness timed out'))},30000);child.on('error',e=>{clearTimeout(timer);reject(e)});child.on('exit',code=>{clearTimeout(timer);resolve(code)})});assert.equal(code,0)
+ }
  await action('terminalResize',{id:terminal.id,cols:100,rows:30});await action('terminalRemove',{id:terminal.id})
  const mcp=join(root,'mcp.cjs');writeFileSync(mcp,`require('readline').createInterface({input:process.stdin}).on('line',line=>{const r=JSON.parse(line);if(r.id===undefined)return;const result=r.method==='initialize'?{protocolVersion:r.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}}:r.method==='tools/list'?{tools:[]}:{};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result})+'\\n')}).on('close',()=>process.exit())`)
  await action('mcpAdd',{name:'fixture-tools',config:{type:'local',command:[process.execPath,mcp]}});assert.equal((await action('mcp'))['fixture-tools'].status,'connected');await action('mcpDisconnect',{name:'fixture-tools'});await action('mcpConnect',{name:'fixture-tools'})
