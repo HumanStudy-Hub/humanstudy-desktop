@@ -1,0 +1,35 @@
+import {build} from 'esbuild'
+import assert from 'node:assert/strict'
+import {mkdtempSync,rmSync} from 'node:fs'
+import {tmpdir} from 'node:os'
+import {join,dirname} from 'node:path'
+import {fileURLToPath,pathToFileURL} from 'node:url'
+const here=dirname(fileURLToPath(import.meta.url)),out=mkdtempSync(join(tmpdir(),'native-route-'))
+await build({entryPoints:[join(here,'native-api.ts')],bundle:true,platform:'node',format:'esm',outfile:join(out,'route.mjs'),logLevel:'error'})
+await build({entryPoints:[join(here,'../../renderer/native-commands.ts')],bundle:true,platform:'node',format:'esm',outfile:join(out,'commands.mjs'),logLevel:'error'})
+await build({entryPoints:[join(here,'../native-history.ts')],bundle:true,platform:'node',format:'esm',outfile:join(out,'history.mjs'),logLevel:'error'})
+const {nativeMessages}=await import(pathToFileURL(join(out,'history.mjs')))
+const {nativeRoute:R,hideCredentials}=await import(pathToFileURL(join(out,'route.mjs')))
+const {parseSlash,UI_COMMANDS}=await import(pathToFileURL(join(out,'commands.mjs')))
+const d={providerID:'humanstudy',modelID:'test'},r=(operation,input)=>R('ses_1',{operation,input},{agent:'plan',variant:'low'},d)
+assert.deepEqual(r('compact').body,{...d,auto:false})
+assert.equal(r('command',{command:'fixture',arguments:'完整原文\nFINAL'}).body.arguments,'完整原文\nFINAL')
+assert.equal(r('command',{command:'fixture'}).body.agent,'plan')
+assert.equal(r('command',{command:'fixture'}).path,'/session/ses_1/command')
+assert.equal(r('undo',{messageID:'msg_1'}).path,'/session/ses_1/revert')
+assert.equal(r('redo').path,'/session/ses_1/unrevert')
+assert.equal(r('mcpConnect',{name:'../../auth'}).path,'/mcp/..%2F..%2Fauth/connect')
+assert.equal(r('terminalConnect',{id:'pty_1'}).path,'/pty/pty_1/connect-token')
+assert.equal(r('gitDiff',{mode:'branch'}).path,'/vcs/diff?mode=branch')
+assert.equal(r('configUpdate',{provider:{apiKey:'secret'}}).redact,true)
+assert.equal(r('terminalResize',{id:'pty_1',rows:22,cols:88}).body.size.cols,88)
+assert.throws(()=>r('NOT_AN_OPERATION'),/Unsupported/)
+const text='complete content '.repeat(10000)+'FINAL';const hidden=hideCredentials({apiKey:'secret',headers:{Authorization:'Bearer private'},models:{name:'Research',description:text}})
+assert.equal(hidden.apiKey,'[hidden]');assert.equal(hidden.headers,'[hidden]');assert.equal(hidden.models.description,text)
+assert.deepEqual(parseSlash('/compact'),{name:'compact',args:''})
+assert.deepEqual(parseSlash('/build quoted words\n完整原文'),{name:'build',args:'quoted words\n完整原文'})
+assert.equal(parseSlash('Please /compact later'),null)
+assert.equal(new Set(UI_COMMANDS.map(c=>c.name)).size,UI_COMMANDS.length)
+const history=[{info:{id:'u',role:'user',time:{created:1}},parts:[{type:'text',text}]},{info:{id:'a',role:'assistant',time:{created:2}},parts:[{type:'tool',tool:'read',state:{status:'completed',input:{filePath:'paper.txt'},output:text}},{type:'future-native-part',data:text}]}];const converted=nativeMessages(history);assert.equal(converted[0].nativeId,'u');assert.equal(converted[1].parts[0].output,text);assert.equal(converted[1].parts[1].data.data,text);assert.equal(nativeMessages(history,'u').length,0);assert.equal(history.length,2)
+console.log('Native action routing, complete arguments, scoped IDs, credential redaction and slash parsing passed')
+rmSync(out,{recursive:true,force:true})

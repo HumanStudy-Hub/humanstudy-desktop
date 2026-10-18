@@ -1,6 +1,7 @@
+import type { NativeRequest } from '../shared/native'
 import type { KernelQuestion } from '../shared/question'
 // Contract for the kernel bridge implemented in ./kernel (owned by another agent).
-export type KernelEventType = 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title' | 'question'
+export type KernelEventType = 'identity' | 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title' | 'question'
 
 export type PermissionReply = 'once' | 'always' | 'reject'
 
@@ -45,6 +46,9 @@ export interface KernelEvent {
 }
 
 export interface Kernel {
+  directory?(sessionId: string): string
+  native?(sessionId: string, request: NativeRequest): Promise<unknown>
+
   setPermissionMode?(mode: 'ask' | 'project'): void
   startSession(projectDir: string): Promise<string>
   send(sessionId: string, text: string): Promise<void>

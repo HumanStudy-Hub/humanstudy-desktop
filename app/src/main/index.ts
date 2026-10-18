@@ -1,3 +1,5 @@
+import { NATIVE_TURNS, NATIVE_MUTATIONS, type NativeRequest, type NativeSelection } from '../shared/native'
+import { nativeMessages } from './native-history'
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron'
 import { applyCredentials, providers, setKey } from './credentials'
 import { applyAccount, getAccount } from './account'
@@ -280,7 +282,7 @@ function createWindow(): void {
   })
   win.once('ready-to-show', () => win.show())
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    if (/^(https?:|mailto:)/i.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
   if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -546,6 +548,7 @@ app.whenReady().then(() => {
   createThreads(
     {
       kernelName: () => kernelName(currentKernel()),
+      restore: async (sid,selection) => {const k=kernelFor(sid);if(k.native)await k.native(sid,{operation:'select',input:selection as Record<string,unknown>})},
       start: startKernelSession,
       resume: async (dir, sid) => {
         const k = sessionKernel.get(sid) ?? currentKernel()
@@ -572,6 +575,64 @@ app.whenReady().then(() => {
     activeTurns.add(id)
     try { await k.send(id, prompt) }
     catch (error) { if (!alreadyActive) activeTurns.delete(id); throw error }
+  })
+  ipcMain.handle('kernel:export', async (_e,sid:string) => {
+    const k=kernelFor(sid)
+    if(!k.native)throw Error('OpenCode is unavailable.')
+    const [session,messages]=await Promise.all([k.native(sid,{operation:'session'}),k.native(sid,{operation:'history'})])
+    const choice=await dialog.showSaveDialog({title:'Export complete conversation',defaultPath:'conversation-'+sid+'.json',filters:[{name:'JSON',extensions:['json']},{name:'Markdown',extensions:['md']}]})
+    if(choice.canceled||!choice.filePath)return null
+    const content=JSON.stringify({session,messages},null,2)+'\n'
+    await writeFile(choice.filePath,choice.filePath.endsWith('.md')?'# Conversation\n\n```json\n'+content+'```\n':content,'utf8')
+    return choice.filePath
+  })
+  ipcMain.handle('kernel:native', async (_e, sid: string, request: NativeRequest) => {
+    if (!request || typeof request.operation !== 'string') throw Error('Choose an OpenCode action.')
+    if (shutdown.closing() && NATIVE_MUTATIONS.has(request.operation)) throw Error('The app is saving before closing.')
+    const k=kernelFor(sid)
+    if (!k.native) throw Error('This action needs the OpenCode kernel. It is unavailable in mock mode.')
+    let operation=request
+    if(request.operation==='undo' && !request.input?.messageID){
+      const history=await k.native(sid,{operation:'history'}) as Array<{info:{id:string;role:string}}>
+      const info=await k.native(sid,{operation:'session'}) as {revert?:{messageID:string}}
+      const boundary=info.revert?history.findIndex(m=>m.info.id===info.revert!.messageID):history.length
+      const last=history.slice(0,boundary<0?history.length:boundary).filter(m=>m.info.role==='user').at(-1)
+      if(!last)throw Error('There is no earlier user turn to undo.')
+      operation={...request,input:{...request.input,messageID:last.info.id}}
+    }
+    if(NATIVE_TURNS.has(request.operation)){
+      activeTurns.add(sid)
+      if(request.operation!=='compact')threads().beforeSend(sid, request.operation==='shell' ? '!'+String(request.input?.command??'') : '/'+String(request.input?.command??'')+' '+String(request.input?.arguments??''))
+      telemetry.trackTurnStart(sid,'/'+request.operation)
+    }
+    telemetry.track('agent.native_action',{target:request.operation})
+    const result=await k.native(sid,operation)
+    if(request.operation==='select'){threads().rememberSelection(sid,result as NativeSelection);telemetry.track('agent.configuration',{metadata:result as Record<string,unknown>})}
+    if(['open','fork','undo','redo'].includes(request.operation)){
+      const next=['open','fork'].includes(request.operation)?(result as {id:string}).id:sid
+      const current=await k.native(next,{operation:'session'}) as {title:string;directory:string;revert?:{messageID:string}}
+      const history=await k.native(next,{operation:'history'}) as any[]
+      const dir=ownedPath(k.directory?.(next)??current.directory)
+      if(['open','fork'].includes(request.operation)){sessionKernel.set(next,k);notify.noteSession(next,dir);telemetry.trackSessionStart(next,dir,kernelName(k),Date.now())}
+      const thread=await threads().fromNative(dir,next,nativeMessages(history,current.revert?.messageID),current.title,!['open','fork'].includes(request.operation))
+      if(request.operation==='fork'){
+        const catalog=await k.native(next,{operation:'catalog'}) as {selection:NativeSelection}
+        threads().rememberSelection(next,catalog.selection)
+        return threads().get(dir,thread.id)
+      }
+      if(request.operation==='open'&&thread.nativeSelection){
+        try{await k.native(next,{operation:'select',input:thread.nativeSelection as Record<string,unknown>})}
+        catch(error){thread.nativeSelectionWarning='Previous agent/model settings could not be restored: '+String(error)}
+      }
+      return thread
+    }
+    if(request.operation==='archive')threads().archiveSession(sid)
+    if(request.operation==='rename'){
+      const binding=await k.native(sid,{operation:'session'}) as {directory:string;title:string}
+      const list=await threads().list(ownedPath(binding.directory))
+      for(const t of list){const full=await threads().get(binding.directory,t.id);if(full.kernelSessionId===sid)await threads().rename(binding.directory,t.id,binding.title)}
+    }
+    return result
   })
   ipcMain.handle('kernel:abort', (_e, id: string) => {
     telemetry.trackTurnAbort(id)

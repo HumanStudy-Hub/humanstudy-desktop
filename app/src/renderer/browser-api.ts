@@ -780,6 +780,8 @@ def intentional(harm: float, help_: float) -> float:
       },
     },
     kernel: {
+    export: async () => null,
+    native: async () => { throw Error('Native OpenCode functions are unavailable in browser preview.') },
       questions: async (sid) => pendingQuestion.has(sid) ? [pendingQuestion.get(sid)!] : [],
       answerQuestion: async (sid, id, answers) => {
         const q = pendingQuestion.get(sid)

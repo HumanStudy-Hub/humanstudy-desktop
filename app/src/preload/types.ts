@@ -1,6 +1,7 @@
+import type { NativeRequest, NativeSelection } from '../shared/native'
 import type { KernelQuestion, QuestionPart } from '../shared/question'
 // Types shared between preload and renderer (the window.humanstudy bridge).
-export type KernelEventType = 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title' | 'question'
+export type KernelEventType = 'identity' | 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title' | 'question'
 
 export type PermissionReply = 'once' | 'always' | 'reject'
 
@@ -37,9 +38,9 @@ export interface KernelEvent {
   question?: KernelQuestion
   /** type 'usage' */
   usage?: KernelUsage
-  /** type 'tool': the full tool input (single strings above 20 KB are truncated with a marker). */
+  /** type 'tool': the complete tool input, without size-based clipping. */
   input?: unknown
-  /** type 'tool', once finished: the tool's output (or error text), truncated like `input`. */
+  /** type 'tool', once finished: the complete tool output (or error text). */
   output?: string
 }
 
@@ -47,6 +48,8 @@ export interface KernelEvent {
 export type ThreadPart =
   | QuestionPart
   | { kind: 'text'; text: string }
+  | { kind: 'reasoning'; text: string }
+  | { kind: 'native'; type: string; data: unknown }
   | { kind: 'tool'; tool: string; detail?: string; state?: string; input?: unknown; output?: string }
   | { kind: 'error'; text: string }
   | {
@@ -61,6 +64,7 @@ export type ThreadPart =
     }
 
 export interface ThreadMessage {
+  nativeId?: string
   id: string
   role: 'user' | 'assistant'
   parts: ThreadPart[]
@@ -90,6 +94,9 @@ export interface ThreadUsage {
 
 /** A conversation with the agent, stored in <project>/.humanstudy/threads/<id>.json. */
 export interface Thread {
+  archived?: boolean
+  nativeSelection?: NativeSelection
+  nativeSelectionWarning?: string
   id: string
   title: string
   createdAt: string
@@ -344,6 +351,8 @@ export interface HumanStudyApi {
     onChanged(cb: (dir: string) => void): () => void
   }
   kernel: {
+    native(sessionId: string, request: NativeRequest): Promise<unknown>
+    export(sessionId: string): Promise<string | null>
     startSession(projectDir: string): Promise<string>
     send(sessionId: string, text: string, workspace?: WorkspaceContext): Promise<void>
     abort(sessionId: string): Promise<void>

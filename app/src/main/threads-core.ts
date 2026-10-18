@@ -1,3 +1,4 @@
+import type { NativeSelection } from '../shared/native'
 import { updateQuestion } from '../shared/question'
 // Conversation threads, stored per project in <project>/.humanstudy/threads/<threadId>.json.
 //
@@ -30,6 +31,7 @@ export interface ThreadHost {
   start(dir: string): Promise<string>
   /** Session id when the kernel still has the session, else null. */
   resume(dir: string, kernelSessionId: string): Promise<string | null>
+  restore?(sessionId:string,selection:NativeSelection):Promise<void>
 }
 
 /** What the research-data layer sees: every part once it is final, and per-message usage. */
@@ -179,7 +181,8 @@ export function transcript(ms: ThreadMessage[]): string {
     const who = m.role === 'user' ? 'User' : 'Assistant'
     const body = m.parts
       .map((p) => {
-        if (p.kind === 'text') return p.text.trim()
+        if (p.kind === 'text' || p.kind === 'reasoning') return p.text
+        if (p.kind === 'native') return JSON.stringify(p.data)
         if (p.kind === 'tool') return JSON.stringify({ tool: p.tool, detail: p.detail, input: p.input, output: p.output, state: p.state })
         if (p.kind === 'question') return JSON.stringify({ question: p.questions, answers: p.answers, status: p.resolved ?? 'unanswered' })
         if (p.kind === 'permission') return `[asked permission for ${p.type}${p.resolved ? ', answered ' + p.resolved : ''}]`
@@ -227,6 +230,8 @@ function normalize(raw: unknown, id: string): Thread {
     usage: { input: num(u.input), output: num(u.output), cost: num(u.cost) },
   }
   if (o.resumedWithContext === true) t.resumedWithContext = true
+  if (o.archived === true) t.archived = true
+  if (o.nativeSelection && typeof o.nativeSelection === 'object') t.nativeSelection = structuredClone(o.nativeSelection) as NativeSelection
   if (o.titleSource === 'auto' || o.titleSource === 'kernel' || o.titleSource === 'user') t.titleSource = o.titleSource
   return t
 }
@@ -264,7 +269,7 @@ export class ThreadManager {
 
   // ---- public API (IPC) ----
 
-  async list(dir: string): Promise<ThreadSummary[]> {
+  async list(dir: string, includeHidden = false): Promise<ThreadSummary[]> {
     const folder = threadsDir(dir)
     let names: string[] = []
     try {
@@ -278,7 +283,7 @@ export class ThreadManager {
       const id = n.slice(0, -5)
       if (!ID_RE.test(id)) continue
       const t = await this.load(dir, id).catch(() => null)
-      if (!t || t.messages.length === 0) continue
+      if (!t || (!includeHidden && (t.messages.length === 0 || t.archived))) continue
       out.push({
         id,
         title: t.title,
@@ -344,6 +349,10 @@ export class ThreadManager {
     t.kernelSessionId = sid
     t.kernel = this.host.kernelName()
     this.bind(dir, t)
+    if(t.nativeSelection&&this.host.restore){
+      try{await this.host.restore(sid,t.nativeSelection);delete t.nativeSelectionWarning}
+      catch(error){t.nativeSelectionWarning='Previous agent/model settings could not be restored: '+String(error)}
+    }
     if (t.messages.length > 0) void this.write(keyOf(dir, t.id), dir, t)
     return clone(t)
   }
@@ -372,6 +381,51 @@ export class ThreadManager {
     this.notify({ dir, id })
   }
 
+  rememberSelection(sessionId:string,selection:NativeSelection):void {
+    const b=this.bySession.get(sessionId)
+    if(!b)return
+    b.thread.nativeSelection=structuredClone(selection)
+    delete b.thread.nativeSelectionWarning
+    this.persist(b.dir,b.thread,true)
+  }
+
+  archiveSession(sessionId:string):void {
+    const b=this.bySession.get(sessionId)
+    if(!b)return
+    b.thread.archived=true
+    this.persist(b.dir,b.thread,true)
+  }
+
+  /** Import a native fork or replace the visible history after native undo/redo. */
+  async fromNative(dir: string, sessionId: string, messages: ThreadMessage[], title: string, replace = false): Promise<Thread> {
+    let bound = this.bySession.get(sessionId)
+    if(!bound){
+      for(const summary of await this.list(dir,true)){
+        const existing=await this.load(dir,summary.id)
+        if(existing.kernelSessionId===sessionId){this.bind(dir,existing);bound=this.bySession.get(sessionId);break}
+      }
+    }
+    if (bound && !replace) {bound.thread.archived=false;this.persist(dir,bound.thread,true);return clone(bound.thread)}
+    let t: Thread
+    if (replace && bound) {
+      if (bound.dir !== dir) throw Error('Session belongs to a different project.')
+      t = bound.thread
+      // Undo changes visibility and files; the original conversation is retained in full.
+      const archive = join(dir,'.humanstudy','thread-history',t.id)
+      await mkdir(archive,{recursive:true})
+      await writeFile(join(archive,this.newId('history')+'.json'),JSON.stringify(t,null,2)+'\n','utf8')
+      t.messages = messages
+    } else {
+      const at=this.now()
+      t={id:this.newId('thr'),title,createdAt:at,updatedAt:at,kernel:this.host.kernelName(),kernelSessionId:sessionId,messages,usage:{input:0,output:0,cost:0},titleSource:'kernel'}
+      this.bind(dir,t)
+    }
+    this.persist(dir,t,true)
+    await this.write(keyOf(dir,t.id),dir,t)
+    await this.flush()
+    return clone(t)
+  }
+
   // ---- fed by the main process ----
 
   /** Record the user's message; returns the text to actually send to the kernel. */
@@ -398,6 +452,11 @@ export class ThreadManager {
   onEvent(e: KernelEvent): void {
     const b = this.bySession.get(e.sessionId)
     if (!b) return
+    if(e.type==='identity'){
+      const user=[...b.thread.messages].reverse().find(m=>m.role==='user')
+      if(user&&e.detail){user.nativeId=e.detail;this.persist(b.dir,b.thread,true)}
+      return
+    }
     this.apply(e, b)
     if (!this.onCapture) return
     if (e.type === 'usage' && e.usage) {
@@ -475,7 +534,7 @@ export class ThreadManager {
     this.timers.clear()
     // Retry failed writes too, even when their debounce timer already fired.
     for (const [key, t] of this.live) {
-      if (t.messages.length > 0) void this.write(key, dirOf(key), t)
+      if (t.messages.length > 0 || t.nativeSelection || t.archived !== undefined) void this.write(key, dirOf(key), t)
     }
     await Promise.all([...this.writes.values()])
     if (this.writeFailures.size) throw new AggregateError([...this.writeFailures.values()], 'Could not save conversations')
@@ -505,7 +564,7 @@ export class ThreadManager {
     t.updatedAt = this.now()
     this.live.set(keyOf(dir, t.id), t)
     const key = keyOf(dir, t.id)
-    if (t.messages.length === 0) return
+    if (t.messages.length === 0 && !t.nativeSelection && t.archived === undefined) return
     clearTimeout(this.timers.get(key))
     this.timers.delete(key)
     if (immediately) void this.write(key, dir, t)

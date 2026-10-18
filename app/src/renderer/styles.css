@@ -860,3 +860,22 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
 .pdf-mark { position: absolute; z-index: 3; padding: 0; border: 0; border-radius: 1px; background: #ecc35255; cursor: pointer; mix-blend-mode: multiply; }
 .pdf-mark:hover, .pdf-mark:focus-visible { outline: 1px solid var(--accent); background: #ecc35280; }
 .paper-ask { flex-wrap: wrap; white-space: normal; max-width: calc(100% - 16px); }
+
+/* OpenCode capabilities live behind /, rather than permanent starter buttons. */
+.command-menu{max-height:340px;overflow:auto;border:1px solid var(--line,#dce4e7);border-radius:10px;padding:4px;margin-bottom:8px;background:var(--bg,#fff)}
+.command-menu>button{display:grid;grid-template-columns:110px 1fr;gap:3px 10px;text-align:left;width:100%;border:0;background:none;padding:8px;border-radius:6px;color:inherit;font:inherit}
+.command-menu>button[aria-selected=true],.command-menu>button:hover{background:var(--accent-soft,#e8f3f5)}
+.command-menu small{grid-column:2;color:var(--muted,#6a7881)}
+.native-notice{font-size:12px;color:var(--muted,#6a7881)}
+.native-panel-backdrop{position:fixed;inset:0;background:#0004;z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px}
+.native-panel{display:flex;flex-direction:column;width:min(820px,94vw);height:min(720px,90vh);background:var(--bg,#fff);color:var(--text,#182d35);border:1px solid var(--line,#dce4e7);border-radius:12px;box-shadow:0 12px 60px #0003;overflow:hidden}
+.native-panel header{display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--line,#dce4e7);padding:12px 18px}.native-panel header span{flex:1}
+.native-panel-body{overflow:auto;min-height:0;padding:16px 20px;flex:1}
+.native-panel article{padding:12px 0;border-bottom:1px solid var(--line,#dce4e7)}
+.native-panel button{font:inherit;color:inherit;cursor:pointer;margin:3px;padding:5px 9px}.native-panel p{margin:6px 0}.native-panel input,.native-panel textarea,.native-panel select{box-sizing:border-box;width:100%;font:inherit;padding:8px;margin:5px 0;background:var(--bg,#fff);color:inherit;border:1px solid var(--line,#dce4e7);border-radius:5px}
+.native-panel .native-search{margin:10px 18px;width:calc(100% - 36px)}
+.native-value{font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%}.native-value>div{padding-left:15px;border-left:1px solid var(--line,#dce4e7)}
+.native-terminal{height:360px;padding:10px;background:#172328;border-radius:6px;overflow:hidden}.native-share{padding:12px 20px}
+.messages>.msg{content-visibility:auto;contain-intrinsic-size:auto 140px}
+
+.native-edit{opacity:0;font-size:11px}.msg:hover .native-edit,.native-edit:focus-visible{opacity:1}

@@ -1,3 +1,5 @@
+import { nativeRoute, hideCredentials } from './native-api'
+import { NATIVE_SESSION_MUTATIONS, NATIVE_TURNS, type NativeRequest, type NativeSelection } from '../../shared/native'
 import { validateAnswers, type KernelQuestion } from '../../shared/question'
 // opencode kernel: one `opencode serve` process per project directory, driven over HTTP + SSE.
 //
@@ -42,11 +44,11 @@ import { validateAnswers, type KernelQuestion } from '../../shared/question'
 // to diffing `message.part.updated` text), and the real OpenRouter / hosted proxy token counts.
 
 import { spawn, type ChildProcess } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import { mkdirSync, realpathSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join, relative, isAbsolute, resolve } from 'node:path'
+import { join, relative, isAbsolute, resolve, sep } from 'node:path'
 import { kernelRuntimeEnv } from '../runtime-core'
 import { Emitter } from './types'
 import type { Kernel, KernelEvent, KernelPermission, PermissionReply } from './types'
@@ -127,6 +129,8 @@ interface SessionState {
   failed: boolean
   pendingPermissions: Map<string, KernelPermission>
   recovery: { epoch: number; attempts: number; pending: boolean; running: boolean; cancelled: boolean; progress: boolean; reason?: 'output_limit' | 'invalid_tool_call'; assistantId?: string }
+  expectUserIdentity?: boolean
+  selection?: NativeSelection
   title: string // last session title emitted
 }
 
@@ -202,11 +206,14 @@ export class OpencodeKernel implements Kernel {
     this.register(sessionId, server)
     // The local thread already contains previous turns. Seed their IDs so a later
     // connection repair cannot append the entire native history as a new answer.
-    const history = await this.request(server, 'GET', `/session/${encodeURIComponent(sessionId)}/message`)
-    const messages = await history.json() as NativeMessage[]
-    const state = this.session(sessionId)
-    for (const { info } of messages) if (info?.id && info.role) state.roles.set(info.id, info.role)
+    await this.seedHistory(sessionId)
     return sessionId
+  }
+
+  private async seedHistory(sessionId:string):Promise<void>{
+    const state=this.session(sessionId)
+    const messages=await (await this.request(state.server,'GET','/session/'+encodeURIComponent(sessionId)+'/message')).json() as NativeMessage[]
+    for(const {info} of messages)if(info?.id&&info.role)state.roles.set(info.id,info.summary?'summary':info.role)
   }
 
   private register(id: string, server: Server): void {
@@ -293,18 +300,109 @@ export class OpencodeKernel implements Kernel {
     const s = this.session(sessionId)
     s.turnBaseline = new Set(s.roles.keys())
     s.awaitingAssistant = true
+    s.expectUserIdentity = true
     s.failed = false
     s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, pending: false, running: false, cancelled: false, progress: false }
     s.inFlight = true
     try {
       await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
         parts: [{ type: 'text', text }],
-        ...(this.provider ? { model: { providerID: this.provider, modelID: this.model } } : {}),
+        ...(s.selection?.agent ? {agent:s.selection.agent} : {}),
+        ...(s.selection?.variant ? {variant:s.selection.variant} : {}),
+        ...(s.selection?.model ? {model:s.selection.model} : this.provider ? { model: { providerID: this.provider, modelID: this.model } } : {}),
       })
       if (s.server.eventsOnline === false) this.beginCatchup(s.server)
     } catch (err) {
       s.inFlight = false
       throw err
+    }
+  }
+
+  directory(sessionId:string):string { return this.session(sessionId).server.dir }
+
+  /** Native OpenCode functions, scoped to a session already owned by this app. */
+  async native(sessionId: string, request: NativeRequest): Promise<unknown> {
+    const s = this.session(sessionId)
+    if (NATIVE_SESSION_MUTATIONS.has(request.operation) && s.inFlight) throw Error('Stop the current response before changing this session.')
+    if (request.operation === 'select') {
+      const input = request.input ?? {}, next: NativeSelection = { ...s.selection }
+      if ('agent' in input) {
+        const agents = await (await this.request(s.server, 'GET', '/agent')).json() as Array<{name:string;hidden?:boolean;mode?:string}>
+        if (typeof input.agent !== 'string' || !agents.some(a => a.name === input.agent && !a.hidden && a.mode!=='subagent')) throw Error('Unknown agent.')
+        next.agent = input.agent
+      }
+      if ('variant' in input) {
+        if (typeof input.variant !== 'string') throw Error('Invalid model variant.')
+        next.variant = input.variant || undefined
+      }
+      if ('model' in input) {
+        const model = input.model as NativeSelection['model']
+        if (!model || typeof model.providerID !== 'string' || typeof model.modelID !== 'string') throw Error('Choose a provider and model.')
+        const providers = await (await this.request(s.server, 'GET', '/provider')).json() as { all:Array<{id:string;models:Record<string,unknown>}>; connected:string[] }
+        if (!providers.connected.includes(model.providerID) || !providers.all.some(p => p.id === model.providerID && p.models[model.modelID])) throw Error('Connect this provider before selecting its model.')
+        next.model = model
+        if(!('variant' in input))delete next.variant
+      }
+      if(next.variant){
+        const model=next.model??{providerID:this.provider,modelID:this.model}
+        const providers=await (await this.request(s.server,'GET','/provider')).json() as {all:Array<{id:string;models:Record<string,{variants?:Record<string,unknown>}>}>}
+        const variants=providers.all.find(p=>p.id===model.providerID)?.models[model.modelID]?.variants??{}
+        if(!(next.variant in variants))throw Error('This model does not offer that reasoning variant.')
+      }
+      s.selection = next
+      return next
+    }
+    if (request.operation === 'catalog') {
+      const [commands,agents,skills] = await Promise.all(['/command','/agent','/skill'].map(async path => (await this.request(s.server,'GET',path)).json()))
+      return {commands,agents,skills,selection:{model:{providerID:this.provider,modelID:this.model},...s.selection}}
+    }
+    if (request.operation === 'open') {
+      const id=String(request.input?.id??'')
+      const info=await (await this.request(s.server,'GET','/session/'+encodeURIComponent(id))).json() as {directory:string}
+      if (realpathSync(info.directory)!==realpathSync(s.server.dir)) throw Error('Open this session from its own project.')
+      if (!this.sessions.has(id)) this.register(id,s.server)
+      await this.seedHistory(id)
+      await this.request(s.server,'PATCH','/session/'+encodeURIComponent(id),{time:{archived:0}})
+      return {id}
+    }
+    if (request.operation === 'file' || request.operation === 'files') {
+      const target=realpathSync(resolve(s.server.dir,String(request.input?.path??'.'))),root=realpathSync(s.server.dir)
+      const rel=relative(root,target)
+      if(rel==='..'||rel.startsWith('..'+sep)||isAbsolute(rel))throw Error('Files must stay inside this project.')
+    }
+    if(request.operation==='share'){
+      const history=await (await this.request(s.server,'GET','/session/'+encodeURIComponent(sessionId)+'/message')).json()
+      const hash=createHash('sha256').update(JSON.stringify(history)).digest('hex')
+      if(request.input?.previewHash!==hash)throw Error('Review the current conversation before sharing. It may have changed since the preview opened.')
+    }
+    const defaults = { providerID: this.provider, modelID: this.model }
+    const route = nativeRoute(sessionId, request, s.selection ?? {}, defaults)
+    const turn = NATIVE_TURNS.has(request.operation)
+    if (turn) {
+      s.turnBaseline = new Set(s.roles.keys()); s.inFlight = true; s.awaitingAssistant = true; s.expectUserIdentity = request.operation!=='compact'; s.failed = false
+      s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, pending: false, running: false, cancelled: request.operation === 'compact', progress: false }
+      this.emitter.emit({sessionId,type:'status',text:request.operation === 'compact' ? 'compacting' : 'busy'})
+    }
+    try {
+      const result = await (await this.request(s.server, route.method, route.path, route.body, turn || ['mcpAuthenticate','providerCallback'].includes(request.operation) ? 10 * 60_000 : 15_000, request.operation==='terminalConnect'?{'x-opencode-ticket':'1'}:undefined)).json()
+      if (request.operation === 'fork') {
+        const id = (result as {id?:string}).id
+        if (!id) throw Error('OpenCode did not return a forked session.')
+        this.register(id,s.server); this.session(id).selection = { ...s.selection }
+        await this.seedHistory(id)
+      }
+      if (request.operation === 'terminalConnect') {
+        const token = (result as {ticket?:string}).ticket
+        if (!token) throw Error('The terminal connection token is unavailable.')
+        return {url:s.server.base.replace(/^http/,'ws')+'/pty/'+encodeURIComponent(String(request.input?.id))+'/connect?ticket='+encodeURIComponent(token)}
+      }
+      return route.redact ? hideCredentials(result) : result
+    } catch (error) {
+      if(turn)this.emitter.emit({sessionId,type:'error',text:String(error)})
+      throw error
+    } finally {
+      // These endpoints await the native operation. SSE normally sends idle first.
+      if(turn && s.inFlight && !s.recovery.pending && !s.recovery.running) this.beginCatchup(s.server)
     }
   }
 
@@ -337,18 +435,21 @@ export class OpencodeKernel implements Kernel {
     const r = s.recovery
     const epoch = r.epoch
     const reason = r.reason ?? 'output_limit'
+    const recoveryProvider=s.selection?.model?.providerID??this.provider
+    s.expectUserIdentity=false
     // Defer beyond the idle callback; never submit while the native turn is still active.
     await Promise.resolve()
     if (this.disposed || r.cancelled || s.recovery.epoch !== epoch || !r.running) { r.running = false; return }
     if (s.pendingPermissions.size || s.pendingQuestions.size) { r.pending = true; r.running = false; return }
     const attempt = ++r.attempts
     r.progress = false
-    this.emitter.emit({ sessionId, type: 'status', text: 'recovering', detail: `Recovery ${attempt}/2: checking saved work and splitting the remaining task into smaller steps.`, input: { attempt, reason, strategy: 'checkpoints_smaller_units', model: this.model, ...(this.provider === HOSTED_PROVIDER ? { reasoningEffort: 'low' } : {}) } })
+    this.emitter.emit({ sessionId, type: 'status', text: 'recovering', detail: `Recovery ${attempt}/2: checking saved work and splitting the remaining task into smaller steps.`, input: { attempt, reason, strategy: 'checkpoints_smaller_units', model: s.selection?.model?.modelID??this.model, ...(recoveryProvider === HOSTED_PROVIDER ? { reasoningEffort: 'low' } : {}) } })
     s.awaitingAssistant = true
     try {
       await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
-        ...(this.provider ? { model: { providerID: this.provider, modelID: this.model } } : {}),
-        ...(this.provider === HOSTED_PROVIDER ? { variant: 'humanstudy-recovery' } : {}),
+        ...(s.selection?.model ? {model:s.selection.model} : this.provider ? { model: { providerID: this.provider, modelID: this.model } } : {}),
+        ...(s.selection?.agent?{agent:s.selection.agent}:{}),
+        ...(recoveryProvider === HOSTED_PROVIDER ? { variant: 'humanstudy-recovery' } : s.selection?.variant?{variant:s.selection.variant}:{}),
         parts: [{ type: 'text', text: `[HumanStudy automatic recovery ${attempt}/2: ${reason === 'invalid_tool_call' ? 'the previous tool call had malformed arguments and may not have executed' : 'the previous model response exhausted its generation budget'}; this is not a new research request.]
 Keep the original user's task and all scientific requirements. First inspect existing files and validation results to establish what actually completed. Do not assume an interrupted tool call wrote a file. Do not repeat completed actions or rerun simulations, submissions, uploads or other external actions. Existing permission and simulation approval requirements still apply.
 Adjust the execution plan: finish the smallest coherent pending unit, save and validate it, then advance one unit at a time. For a large human program, use small complete JSON batches and program_io.py when available, or separate complete intermediate files per study/section, and assemble the final schema-valid program.json from those files. Preserve every required detail, verbatim quotation and source reference; split the work rather than shorten or omit content. Do not overwrite valid existing work unnecessarily or announce a plan and ask permission to start again. Act on the task already authorized; ask only for genuinely missing research decisions. If a tool invocation was incomplete, construct a smaller valid invocation after checking the filesystem.
@@ -563,11 +664,12 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     }
   }
 
-  private async request(server: Server, method: string, path: string, body?: unknown, timeoutMs = 15_000): Promise<Response> {
+  private async request(server: Server, method: string, path: string, body?: unknown, timeoutMs = 15_000, extraHeaders?: Record<string,string>): Promise<Response> {
     const res = await fetch(server.base + path, {
       method,
       headers: {
         authorization: server.auth,
+        ...extraHeaders,
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -750,6 +852,10 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
       case 'message.updated': {
         const info = p.info
+        if(info?.role==='user'&&s.expectUserIdentity&&s.inFlight&&!s.roles.has(info.id)){
+          s.expectUserIdentity=false
+          emit({type:'identity',detail:info.id})
+        }
         if (info?.role === 'assistant' && !s.roles.has(info.id)) {
           s.awaitingAssistant = false
           s.recovery.running = false
@@ -758,7 +864,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
           if (s.recovery.reason !== 'invalid_tool_call') s.recovery.pending = false
           s.recovery.assistantId = info.id
         }
-        if (info?.id && info.role) s.roles.set(info.id, info.role)
+        if (info?.id && info.role) s.roles.set(info.id, info.summary ? 'summary' : info.role)
         // Once an assistant message is complete, report its tokens/cost (one `usage` per message).
         if (info?.role === 'assistant' && info.time?.completed && !s.usageSent.has(info.id)) {
           s.usageSent.add(info.id)
@@ -803,7 +909,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         if (s.snapshotParts.has(p.partID)) return
         const type = s.partTypes.get(p.partID)
         const role = s.roles.get(p.messageID)
-        if (role === 'user') return
+        if (role === 'user' || role === 'summary') return
         if (type ? type !== 'text' : role !== 'assistant') return // skip reasoning etc.
         s.emitted.set(p.partID, (s.emitted.get(p.partID) ?? 0) + p.delta.length)
         if (p.delta.trim()) s.recovery.progress = true

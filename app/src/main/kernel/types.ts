@@ -1,8 +1,9 @@
+import type { NativeRequest } from '../../shared/native'
 import type { KernelQuestion } from '../../shared/question'
 // Kernel contract. Structurally identical to ../kernel-types.ts (owned by the app shell);
 // declared here so the kernel folder stands alone.
 
-export type KernelEventType = 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title' | 'question'
+export type KernelEventType = 'identity' | 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title' | 'question'
 
 export type PermissionReply = 'once' | 'always' | 'reject'
 
@@ -60,6 +61,9 @@ export interface KernelEvent {
 }
 
 export interface Kernel {
+  directory?(sessionId: string): string
+  native?(sessionId: string, request: NativeRequest): Promise<unknown>
+
   setPermissionMode?(mode: 'ask' | 'project'): void
   /** Human-readable name of the implementation ("opencode" or "mock"). */
   readonly name: string

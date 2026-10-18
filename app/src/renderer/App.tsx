@@ -284,6 +284,7 @@ export default function App() {
   )
   useEffect(() => {
     const keys = (e: KeyboardEvent) => {
+      if((e.target as HTMLElement)?.closest?.('.native-terminal'))return
       if (e.isComposing) return
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 't') {
         e.preventDefault()

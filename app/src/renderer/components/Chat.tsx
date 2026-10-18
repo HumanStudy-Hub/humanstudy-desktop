@@ -1,5 +1,8 @@
+import { useNativeControls } from './NativeControls'
+import { NativeValue } from './NativePanel'
+import { parseSlash } from '../native-commands'
 import { QuestionCard } from './Question'
-import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
+import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import type { Part, Session } from '../useSession'
 import type { AccountStatus, PermissionReply, ProjectEntry } from '../../preload/types'
 import { selectionContext, type SelectedItem } from '../program/labels'
@@ -70,13 +73,14 @@ export function fuzzyScore(query: string, rel: string): number {
 const flatFiles = (tree: ProjectEntry[]): ProjectEntry[] =>
   tree.flatMap((e) => (e.kind === 'dir' ? flatFiles(e.children ?? []) : [e]))
 
-/** What the "Build the study" starter sends: the researcher's words plus the file names the agent needs. */
-const BUILD_REQUEST = 'Build the study from the paper: read paper.pdf and write the study into program.json.'
-
 const MENTION = /(^|\s)@([^\s@]*)$/
 
 export function Chat({ ref, session, selected, onClearSelection, account, onSettings, agreement, onReview, projectDir, tree, model, busyEnter, auto, onAuto, onModel, kernel, onOpenStudy, onOpenFile }: Props) {
   const [draft, setDraft] = useState('')
+  const native = useNativeControls(session,()=>onSettings('general'))
+  const [commandPick,setCommandPick] = useState(0)
+  const slash = /^\/[^\s]*$/.test(draft) ? draft.slice(1).toLowerCase() : null
+  const commands = slash===null ? [] : native.items.filter(c=>(c.name+' '+c.label+' '+c.description).toLowerCase().includes(slash))
   const [home, setHome] = useState<string>()
   useEffect(() => {
     window.humanstudy.app.info().then((i) => setHome(i.home)).catch(() => undefined)
@@ -110,10 +114,16 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
     },
   }))
 
+  const follow = useRef(true)
   useEffect(() => {
-    const el = scroller.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [session.messages, session.status])
+    if(!follow.current)return
+    const frame=requestAnimationFrame(()=>{const el=scroller.current;if(el)el.scrollTop=el.scrollHeight})
+    return()=>cancelAnimationFrame(frame)
+  }, [session.messages,session.busy])
+  useEffect(()=>{
+    const command=(e:KeyboardEvent)=>{if((e.metaKey||e.ctrlKey)&&e.shiftKey&&e.key.toLowerCase()==='p'){e.preventDefault();setDraft('/');focus()}}
+    window.addEventListener('keydown',command);return()=>window.removeEventListener('keydown',command)
+  },[])
 
   const files = useMemo(() => flatFiles(tree), [tree])
   const mention = useMemo(() => {
@@ -169,8 +179,11 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
     return selectionContext(selected) + prefix + text
   }
   const submit = () => {
+    if(draft.trim().startsWith('!')&&draft.trim().length>1){void session.native({operation:'shell',input:{command:draft.trim().slice(1)}}).catch(()=>undefined);setDraft('');return}
+    if(parseSlash(draft)){void native.execute(draft);setDraft('');return}
     const full = compose()
     if (!full || !session.id) return
+    follow.current=true
     if (session.busy) {
       if (busyEnter === 'interrupt') session.interruptAndSend(full)
       else session.enqueue(full)
@@ -178,12 +191,16 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
     setDraft('')
     setAttached([])
   }
+  const editTurn=useCallback(async(message:Session['messages'][number])=>{
+    if(!message.nativeId)return
+    try{await session.native({operation:'undo',input:{messageID:message.nativeId}});setDraft(message.parts.filter(p=>p.kind==='text').map(p=>p.text).join('\n'));requestAnimationFrame(()=>input.current?.focus())}catch(error){setAttachError(String(error))}
+  },[session.native])
   const canSend = (draft.trim().length > 0 || attached.length > 0) && Boolean(session.id)
   const settingUp = kernel.status != null && kernel.status.state !== 'ready'
-  const tools = session.messages.filter(m => m.role === 'assistant').at(-1)?.parts.filter((p): p is Extract<Part, { kind: 'tool' }> => p.kind === 'tool') ?? []
-  const activity = researchActivity(tools, projectDir)
+  const tools = useMemo(()=>session.messages.filter(m => m.role === 'assistant').at(-1)?.parts.filter((p): p is Extract<Part, { kind: 'tool' }> => p.kind === 'tool') ?? [],[session.messages])
+  const activity = useMemo(()=>researchActivity(tools,projectDir),[tools,projectDir])
   const runningTool = tools.some(p => p.state === 'pending' || p.state === 'running')
-  const statusLine = session.waitingForQuestion ? t('question.waiting') : session.waitingForPermission ? t('chat.waiting_perm') : session.busy ? (session.status === 'recovering' ? t('activity.recovery') : session.status === 'reconnecting' ? t('activity.reconnecting') : runningTool ? '' : t(activity.key, activity.vars)) : session.status === 'aborted' ? '' : session.status
+  const statusLine = session.status==='compacting'?'Organizing conversation context…':session.waitingForQuestion ? t('question.waiting') : session.waitingForPermission ? t('chat.waiting_perm') : session.busy ? (session.status === 'recovering' ? t('activity.recovery') : session.status === 'reconnecting' ? t('activity.reconnecting') : runningTool ? '' : t(activity.key, activity.vars)) : session.status === 'aborted' ? '' : session.status
   const u = session.usage
   const lastAssistant = session.messages.length ? session.messages[session.messages.length - 1].id : -1
 
@@ -207,43 +224,12 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
     >
       {dragging && <div className="drop-hint">{t('chat.drop')}</div>}
       <KernelBar kernel={kernel} />
-      <div className="messages" ref={scroller}>
+      {native.panel}
+      <div className="messages" ref={scroller} onScroll={()=>{const el=scroller.current;if(el)follow.current=el.scrollHeight-el.scrollTop-el.clientHeight<100}}>
         {session.resumedWithContext && session.messages.length > 0 && (
           <p className="resumed-note small muted">{t('chat.resumed')}</p>
         )}
-        {session.messages.length === 0 && (
-          <div className="empty">
-            <p className="muted">{t('chat.empty')}</p>
-            {(['chat.chip_build', 'chat.chip_missing', 'chat.chip_prereg'] as const).map((k) => (
-              <button
-                key={k}
-                className="suggestion"
-                disabled={!session.id}
-                onClick={() => {
-                  if (k === 'chat.chip_build') track('build.start', { target: 'chip' })
-                  session.send(k === 'chat.chip_build' ? BUILD_REQUEST : t(k))
-                }}
-              >
-                {t(k)}
-              </button>
-            ))}
-          </div>
-        )}
-        {session.messages.map((m) => (
-          <div key={m.id} className={`msg ${m.role}`}>
-            {groupParts(m.parts).map((g, i, all) =>
-              g.tools ? (
-                <div key={i}>
-                  <ToolGroup parts={g.tools} live={session.busy && m.id === lastAssistant && i === all.length - 1} onOpenStudy={onOpenStudy} projectDir={projectDir} home={home} />
-                  <WrittenCards parts={g.tools} files={files} projectDir={projectDir} onOpenStudy={onOpenStudy} onOpenFile={onOpenFile} />
-                </div>
-              ) : (
-                <PartView key={i} part={g.part!} role={m.role} onReply={session.reply} onAnswer={session.answerQuestion} onReject={session.rejectQuestion} />
-              ),
-            )}
-            {m.role === 'assistant' && !(session.busy && m.id === lastAssistant) && <CopyMessage message={m.parts} />}
-          </div>
-        ))}
+        {session.messages.map(m=><MessageRow key={m.id} message={m} live={session.busy&&m.id===lastAssistant} files={files} projectDir={projectDir} home={home} onOpenStudy={onOpenStudy} onOpenFile={onOpenFile} onReply={session.reply} onAnswer={session.answerQuestion} onReject={session.rejectQuestion} timestamps={native.timestamps} editable={!session.busy} onEdit={editTurn}/>)}
         {session.error && <div className="part error">{t('chat.unavailable', { error: session.error })}</div>}
         {statusLine && (
           <div className="status">
@@ -274,6 +260,8 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
       )}
       {account?.modelAccess === 'none' || agreement === 'needed' ? null : (
       <div className="composer">
+        {native.notice&&<p className="native-notice" role="status">{native.notice}</p>}
+        {slash!==null&&<div className="command-menu" role="listbox" aria-label="OpenCode commands">{commands.map((c,i)=><button type="button" role="option" aria-selected={i===commandPick} key={c.name} onMouseDown={e=>e.preventDefault()} onClick={()=>{if(c.name==='help'){setDraft('/');focus();return}void native.execute('/'+c.name);setDraft('')}}><strong>/{c.name}</strong><span>{c.label}</span><small>{c.description}</small></button>)}{!commands.length&&<p>No matching command</p>}</div>}
         {selected.length > 0 && (
           <div className="chips">
             {selected.map((s) => (
@@ -327,6 +315,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
           placeholder={session.id ? t('chat.placeholder') : settingUp ? t('chat.setting_up') : t('chat.starting')}
           onChange={(e) => {
             setDraft(e.target.value)
+            setCommandPick(0)
             setCaret(e.target.selectionStart)
             setPick(0)
             setMentionOff(false)
@@ -341,6 +330,12 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
           }}
           onKeyDown={(e) => {
             if (e.nativeEvent.isComposing) return
+            if(slash!==null&&commands.length){
+              if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();setCommandPick(p=>(p+(e.key==='ArrowDown'?1:commands.length-1))%commands.length);return}
+              if(e.key==='Escape'){e.preventDefault();e.stopPropagation();setDraft('');return}
+              if(e.key==='Tab'){e.preventDefault();setDraft('/'+commands[Math.min(commandPick,commands.length-1)].name+' ');return}
+              if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();const name=commands[Math.min(commandPick,commands.length-1)].name;if(name==='help'){setDraft('/');return}void native.execute('/'+name);setDraft('');return}
+            }
             if (mention && mention.hits.length > 0) {
               if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                 e.preventDefault()
@@ -369,7 +364,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
         <div className="composer-row">
           <div className="composer-tools">
             <button className="auto-mode" aria-pressed={auto} title={t('settings.permission_hint')} onClick={() => onAuto(!auto)}>{t(auto ? 'chat.auto_on' : 'chat.auto_off')}</button>
-            <ModelPicker model={model} account={account} onChange={onModel} onOther={() => onSettings('models')} />
+            {!native.selection ? <ModelPicker model={model} account={account} onChange={onModel} onOther={() => onSettings('models')} /> : <button className="model-btn" disabled={session.busy} onClick={()=>void native.execute('/models')} title="Choose model and reasoning variant">{shortModelName(native.selection?.model?.modelID??model)}</button>}
             <button type="button" className="ghost icon attach-btn" aria-label={t('chat.attach')} title={t('chat.attach')} disabled={!session.id} onClick={() => fileInput.current?.click()}>
               <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
                 <path d="M11.5 5.5l-5 5a1.4 1.4 0 002 2l5-5a2.8 2.8 0 00-4-4l-5 5a4.2 4.2 0 006 6l4-4" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
@@ -404,7 +399,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
           className="usage-line small muted"
           title={`Input ${u.input.toLocaleString()} tokens\nOutput ${u.output.toLocaleString()} tokens\nReasoning ${u.reasoning.toLocaleString()} tokens${u.cost > 0 ? `\nCost ${money(u.cost)}` : ''}`}
         >
-          {shortModelName(model)} · {compact(u.input)} in · {compact(u.output)} out{u.cost > 0 ? ` · ${money(u.cost)} this thread` : ''}
+          {native.selection?.agent&&<>{native.selection.agent} · </>}{shortModelName(native.selection?.model?.modelID??model)} · {compact(u.input)} in · {compact(u.output)} out{u.cost > 0 ? ` · ${money(u.cost)} this thread` : ''}
         </div>
       )}
       {session.queue.length > 0 && (
@@ -425,6 +420,15 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
     </section>
   )
 }
+
+const MessageRow = memo(function MessageRow({message:m,live,files,projectDir,home,onOpenStudy,onOpenFile,onReply,onAnswer,onReject,timestamps,editable,onEdit}:{editable:boolean;onEdit(message:Session['messages'][number]):void;message:Session['messages'][number];live:boolean;files:ProjectEntry[];projectDir:string;home?:string;onOpenStudy():void;onOpenFile(path:string):void;onReply(id:string,response:PermissionReply):void;onAnswer(id:string,answers:string[][]):Promise<void>;onReject(id:string):Promise<void>;timestamps:boolean}){
+  return <div className={`msg ${m.role}`}>
+    {timestamps&&m.at&&<time className="muted small">{new Date(m.at).toLocaleString()}</time>}
+    {groupParts(m.parts).map((g,i,all)=>g.tools?<div key={i}><ToolGroup parts={g.tools} live={live&&i===all.length-1} onOpenStudy={onOpenStudy} projectDir={projectDir} home={home}/><WrittenCards parts={g.tools} files={files} projectDir={projectDir} onOpenStudy={onOpenStudy} onOpenFile={onOpenFile}/></div>:<PartView key={i} part={g.part!} role={m.role} onReply={onReply} onAnswer={onAnswer} onReject={onReject}/>)}
+    {m.role==='assistant'&&!live&&<CopyMessage message={m.parts}/>}
+    {m.role==='user'&&m.nativeId&&<button className="link native-edit" disabled={!editable} title="Edit from this turn; later tracked changes are undone" onClick={()=>onEdit(m)}>Edit / retry</button>}
+  </div>
+})
 
 function QueuedItem({ text, onEdit, onRemove }: { text: string; onEdit(t: string): void; onRemove(): void }) {
   const [editing, setEditing] = useState(false)
@@ -512,6 +516,8 @@ function PartView({ part, role, onReply, onAnswer, onReject }: { part: Part; rol
       <div className="part text">{part.text}</div>
     )
   }
+  if (part.kind === 'reasoning') return <details><summary>Reasoning</summary><Markdown text={part.text}/></details>
+  if (part.kind === 'native') return <NativeValue value={part.data} label={part.type}/>
   if (part.kind === 'error') return <div className="part error">{part.text}</div>
   if (part.kind === 'question') return <QuestionCard part={part} onAnswer={onAnswer} onReject={onReject} />
   if (part.kind === 'permission') return <PermissionCard part={part} onReply={onReply} />
