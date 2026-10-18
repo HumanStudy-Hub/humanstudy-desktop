@@ -182,6 +182,41 @@ assert.equal(got.messages[1].role, 'assistant')
 assert.match(got.messages[1].parts[0].text, /You asked/)
 assert.ok(got.messages[1].parts.some((p) => p.kind === 'tool' && p.tool === 'read' && p.state === 'completed'))
 assert.ok(got.usage.input > 0 && got.usage.output > 0)
+// Native IDs, undo snapshots, archives and per-thread model choices survive restarts.
+{
+  const dir=mkdtempSync(join(tmpdir(),'native-threads-'))
+  const restored=[]
+  const host={kernelName:()=> 'opencode',start:async()=> 'native-session',resume:async(_dir,sid)=>sid,restore:async(sid,selection)=>restored.push({sid,selection})}
+  const native=new T.ThreadManager(host,()=>{})
+  const thread=await native.create(dir)
+  const sid=thread.kernelSessionId,long='完整研究原文 '.repeat(12000)+'FINAL'
+  native.beforeSend(sid,long)
+  native.onEvent({sessionId:sid,type:'identity',detail:'msg_native_1'})
+  native.onEvent({sessionId:sid,type:'text',text:long})
+  const selection={agent:'plan',model:{providerID:'fixture',modelID:'research'},variant:'low'}
+  native.rememberSelection(sid,selection)
+  await native.flush()
+  assert.equal((await native.get(dir,thread.id)).messages[0].nativeId,'msg_native_1')
+  const undone=await native.fromNative(dir,sid,[],'Native title',true)
+  assert.equal(undone.id,thread.id)
+  const snapshots=readdirSync(join(dir,'.humanstudy','thread-history',thread.id))
+  const snapshot=JSON.parse(readFileSync(join(dir,'.humanstudy','thread-history',thread.id,snapshots[0]),'utf8'))
+  assert.equal(snapshot.messages[0].parts[0].text,long)
+  assert.equal(snapshot.messages[1].parts[0].text,long)
+  native.archiveSession(sid);await native.flush()
+  assert.equal((await native.list(dir)).length,0)
+  const restarted=new T.ThreadManager(host,()=>{})
+  const opened=await restarted.fromNative(dir,sid,[],'Native title')
+  assert.equal(opened.id,thread.id,'opening an archived native session must reuse its local thread')
+  assert.equal(opened.archived,false)
+  const resumed=await restarted.resume(dir,thread.id)
+  assert.deepEqual(resumed.nativeSelection,selection)
+  assert.deepEqual(restored.at(-1),{sid,selection})
+  await restarted.flush()
+  assert.equal(readdirSync(join(dir,'.humanstudy','threads')).filter(n=>n.endsWith('.json')).length,1)
+  rmSync(dir,{recursive:true,force:true})
+}
+
 await mgr.flush()
 const file = join(project, '.humanstudy', 'threads', `${t.id}.json`)
 assert.ok(existsSync(file))

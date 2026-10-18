@@ -327,6 +327,9 @@ export function onThreadCapture(c: Capture): void {
       fit(base, 'detail', p.title, 400, c.dir)
       base.patterns = p.patterns
       track('conversation.permission', { target: p.type, metadata: base }, c.dir)
+    } else if (p.kind === 'native' || p.kind === 'reasoning') {
+      fit(base, 'content', JSON.stringify(p), 11_000, c.dir)
+      track('conversation.'+p.kind, {metadata:base}, c.dir)
     } else {
       fit(base, 'text', p.text, 4_000, c.dir)
       track('conversation.error', { metadata: base }, c.dir)

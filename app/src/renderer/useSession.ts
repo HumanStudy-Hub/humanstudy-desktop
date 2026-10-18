@@ -1,3 +1,4 @@
+import { NATIVE_TURNS, NATIVE_SESSION_MUTATIONS, type NativeRequest } from '../shared/native'
 import { createTextBatcher } from './text-batcher'
 import { updateQuestion, type QuestionPart } from '../shared/question'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -18,6 +19,8 @@ export interface PermissionPart {
 }
 export type Part =
   | { kind: 'text'; text: string }
+  | { kind: 'reasoning'; text: string }
+  | { kind: 'native'; type: string; data: unknown }
   | { kind: 'tool'; tool: string; detail?: string; state?: string; input?: unknown; output?: string; at?: number; endedAt?: number }
   | { kind: 'error'; text: string }
   | QuestionPart
@@ -31,6 +34,8 @@ export interface SessionUsage {
 }
 
 export interface Message {
+  nativeId?: string
+  workspace?: WorkspaceContext
   id: number
   role: 'user' | 'assistant'
   parts: Part[]
@@ -67,7 +72,9 @@ export interface Session {
   usage: SessionUsage
   /** The kernel session was lost; the stored transcript is sent as context with the next message. */
   resumedWithContext: boolean
-  newThread(): void
+  native(request: NativeRequest): Promise<unknown>
+  adoptThread(thread: Thread): void
+  newThread(force?: boolean): void
   openThread(id: string): void
   renameThread(id: string, title: string): void
   deleteThread(id: string): void
@@ -125,7 +132,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     setResumed(Boolean(t.resumedWithContext))
     setQueueBoth(() => [])
     setBusyBoth(false)
-    setError(null)
+    setError(t.nativeSelectionWarning??null)
     setStatus('')
     const sid = t.kernelSessionId
     const epoch = ++questionEpoch.current
@@ -137,6 +144,27 @@ export function useSession(projectDir: string | null, enabled = true): Session {
       if (idRef.current === sid && questionEpoch.current === epoch) setError(`Could not restore agent questions: ${String(e)}`)
     })
   }, [])
+  const native = useCallback(async (request: NativeRequest) => {
+    const sid=idRef.current
+    if(!sid)throw Error('Open a conversation first.')
+    if(NATIVE_SESSION_MUTATIONS.has(request.operation)&&busyRef.current)throw Error('Stop the current response before changing this session.')
+    if(NATIVE_TURNS.has(request.operation)){
+      textBatch.current?.flush();setError(null);setBusyBoth(true)
+      if(request.operation!=='compact'){
+        const text=request.operation==='shell'?'!'+String(request.input?.command??''):'/'+String(request.input?.command??'')+' '+String(request.input?.arguments??'')
+        setMessages(ms=>[...ms,{id:nextId++,role:'user',parts:[{kind:'text',text}],at:Date.now()}])
+      }
+    }
+    try {
+      const result=await window.humanstudy.kernel.native(sid,request)
+      if(idRef.current===sid && result && typeof result==='object' && 'kernelSessionId' in result)activate(result as Thread)
+      return result
+    } catch(error){
+      if(idRef.current===sid){setError(String(error));if(NATIVE_TURNS.has(request.operation))setBusyBoth(false)}
+      throw error
+    }
+  },[activate])
+
   const refreshThreads = useCallback(async () => {
     const dir = dirRef.current
     if (!dir) return
@@ -188,7 +216,13 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   useEffect(() => {
     const batch = createTextBatcher((e: KernelEvent) => {
       if (e.sessionId !== idRef.current) return
-      if (e.type === 'status') return setStatus(e.text ?? e.detail ?? '')
+      if(e.type==='identity'){
+        setMessages(ms=>{const user=[...ms].reverse().find(m=>m.role==='user');return user?ms.map(m=>m===user?{...m,nativeId:e.detail}:m):ms});return
+      }
+      if (e.type === 'status') {
+        if (['busy','compacting','recovering','reconnecting'].includes(e.text??'')) setBusyBoth(true)
+        return setStatus(e.text ?? e.detail ?? '')
+      }
       if (e.type === 'question') {
         questionEpoch.current++
         if (!e.question?.resolved) setBusyBoth(true)
@@ -319,11 +353,11 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     track('question.reject', { metadata: { question_id: questionId } })
   }, [])
 
-  const newThread = useCallback(() => {
+  const newThread = useCallback((force = false) => {
     const dir = dirRef.current
     if (!dir) return
     // An empty conversation is already a new thread.
-    if (!messages.length && idRef.current) return
+    if (!force && !messages.length && idRef.current) return
     track('thread.switch', { target: 'new', durationMs: lap('thread'), metadata: { from: threadRef.current ? 'thread' : null } })
     window.humanstudy.threads.create(dir).then((t) => dirRef.current === dir && activate(t)).catch((e: unknown) => setError(String(e)))
   }, [messages.length, activate])
@@ -360,7 +394,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
 
   return {
     id, messages, busy, status, error, queue, send, enqueue, editQueued, removeQueued, interruptAndSend, abort,
-    reply, waitingForPermission, answerQuestion, rejectQuestion, waitingForQuestion, threadId, threads, usage, resumedWithContext: resumed, newThread, openThread, renameThread, deleteThread,
+    reply, waitingForPermission, answerQuestion, rejectQuestion, waitingForQuestion, threadId, threads, usage, resumedWithContext: resumed, native, adoptThread: activate, newThread, openThread, renameThread, deleteThread,
   }
 }
 const ZERO: SessionUsage = { input: 0, output: 0, reasoning: 0, cost: 0 }
@@ -368,6 +402,8 @@ const ZERO: SessionUsage = { input: 0, output: 0, reasoning: 0, cost: 0 }
 function fromStored(m: ThreadMessage): Message {
   return {
     id: nextId++,
+    nativeId:m.nativeId,
+    workspace:m.workspace,
     role: m.role,
     parts: m.parts.map((p): Part =>
       p.kind === 'question' ? { ...p, expired: !p.resolved } : p.kind === 'permission' ? { kind: 'permission', automatic: p.automatic, id: p.id, type: p.type, title: p.title, resolved: p.resolved, expired: !p.resolved } : p,

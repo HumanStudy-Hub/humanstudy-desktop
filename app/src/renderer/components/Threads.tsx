@@ -41,7 +41,7 @@ export function ThreadMenu({ session }: { session: Session }) {
         </svg>
         {tr('threads.history')}
       </button>
-      <button className="ghost thread-new" onClick={session.newThread} title={tr('threads.new_hint')} aria-label={tr('threads.new')} disabled={!session.id}>
+      <button className="ghost thread-new" onClick={() => session.newThread()} title={tr('threads.new_hint')} aria-label={tr('threads.new')} disabled={!session.id}>
         +
       </button>
       {open && (

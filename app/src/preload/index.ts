@@ -58,6 +58,8 @@ const api: HumanStudyApi = {
     pathOf: (file) => webUtils.getPathForFile(file),
   },
   kernel: {
+    export: id => ipcRenderer.invoke('kernel:export', id),
+    native: (id, request) => ipcRenderer.invoke('kernel:native', id, request),
     startSession: (dir) => ipcRenderer.invoke('kernel:startSession', dir),
     send: (id, text, workspace) => ipcRenderer.invoke('kernel:send', id, text, workspace),
     abort: (id) => ipcRenderer.invoke('kernel:abort', id),
