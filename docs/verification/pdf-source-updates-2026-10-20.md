@@ -48,5 +48,35 @@
   chooser escapes clipped cards, “Later” persists for the same version, newer
   versions still appear, and Restart invokes the installer action.
 
-Release/signature/notarization and real public updater acceptance are recorded below
-after completion. Windows remains a preview pending hardware verification.
+## Published release and actual upgrade
+
+- PR #8 merged as `177a4210ca9f8a4217f1f93dc3c3eb67006aeebf`, tag `v0.6.6`.
+  Release: https://github.com/HumanStudy-Hub/humanstudy-desktop/releases/tag/v0.6.6
+- Release workflow `39542596372` passed. Both Mac architectures are signed,
+  notarized and stapled; deep codesign verification, Gatekeeper and stapler validation
+  passed. Packaged main/preload/renderer bytes match the tested production build.
+- All nine Mac/update asset SHA-256 digests and sizes match GitHub's uploaded files;
+  all four installer SHA-512 entries in `latest-mac.yml` were checked before publishing.
+  Five Windows preview assets are present. No Windows or Intel hardware installation
+  test was performed.
+- An isolated signed 0.6.5 arm64 copy downloaded 0.6.6 from the public update channel,
+  completed native Squirrel staging, installed on normal quit, and reopened as 0.6.6.
+  The reopened app reported `state=none` after checking updates. Codesign and Gatekeeper
+  accepted the actual installed copy.
+- All 35 sample/project/source/chat/settings files were byte-identical after installation.
+  The reopened app read the existing thread with both saved messages. No owner app or
+  research project was replaced, restarted or edited. The old temporary fixture's data
+  files were no longer present, so a fresh temporary sample/profile was created through
+  the 0.6.5 app APIs before taking the baseline; this is not recovery of that old fixture.
+- Test paths: `/private/tmp/hs-update-e2e-066` (profile, sample, hashes and logs),
+  `/private/tmp/hs-update-e2e-061/old/HumanStudy Hub.app` (isolated upgraded executable),
+  `/private/tmp/humanstudy-0.6.6-final` (verified installers and asset checksums).
+- Tested normal quit/install plus manual reopening with isolated profile flags. The
+  Restart action is covered in UI/controller tests; automatic native relaunch was not
+  exercised here because it drops the fixture's custom profile flags.
+- Production `/download` still returned cached 0.6.5 links immediately after publication;
+  the public GitHub release and actual updater already served 0.6.6.
+
+A same-version upgrade loop and all real-paper UI stalls remain unproven as general root
+causes. The concrete eager PDF work and false-positive/hidden source behavior are fixed;
+existing short stored evidence requires agent re-extraction rather than fabricated expansion.
