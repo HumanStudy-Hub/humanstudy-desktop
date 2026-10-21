@@ -91,16 +91,19 @@ export default function App() {
   const hasAccess = account?.modelAccess === 'hosted' || (devKeys && account?.modelAccess === 'own-key')
   const agentReady = Boolean(hasAccess && agreed)
   const session = useSession(project?.dir ?? null, agentReady)
+  const lastUser = session.messages.filter(m => m.role === 'user').at(-1)
+  const agentTurnKey = lastUser ? `${session.threadId ?? session.id ?? ''}:${lastUser.id}` : null
   const [simulationRequest, setSimulationRequest] = useState<string | null>(null)
   useEffect(() => { setSimulationRequest(null); setSource(null) }, [project?.dir])
   // What the agent is doing, in the chat's own words, for the Simulation tab's live line.
   const agentActivity = useMemo(() => {
     if (!session.busy) return ''
+    if (session.status === 'stalled') return t('activity.stalled')
     const tools = (session.messages.filter(m => m.role === 'assistant').at(-1)?.parts ?? []).filter(p => p.kind === 'tool') as Parameters<typeof researchActivity>[0]
     const last = tools[tools.length - 1]
     const s = last && (last.state === 'pending' || last.state === 'running') ? toolSentence(classifyTool(last, project?.dir)) : researchActivity(tools, project?.dir)
     return t(s.key, s.vars)
-  }, [session.busy, session.messages, project?.dir])
+  }, [session.busy, session.status, session.messages, project?.dir])
   const reviewRun = (text: string, send: (text: string) => void) => {
     if (requestsSimulation(text)) { setSimulationRequest(text); showTab('simulation') }
     else send(text)
@@ -429,6 +432,8 @@ export default function App() {
               onStopAgent={() => void session.abort()}
               model={settings?.model ?? ''}
               agentBusy={session.busy}
+              agentThreadId={session.threadId ?? session.id ?? ''}
+              agentTurnKey={agentTurnKey}
               agentActivity={agentActivity}
               selectedIds={selected}
               onClearSelection={() => setSelected([])}

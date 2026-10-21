@@ -22,6 +22,8 @@ interface Props {
   /** The model selected in the app; AI participants use it too. */
   model: string
   agentBusy: boolean
+  agentThreadId?: string
+  agentTurnKey?: string | null
   /** What the agent is doing right now, in plain words (from the chat's activity line). */
   agentActivity?: string
   /** A run request typed in the chat, waiting for this screen's confirmation. */
@@ -34,9 +36,9 @@ interface Props {
 }
 
 const PENDING_KEY = (dir: string) => `hs.sim.pending:${dir}`
-interface Pending { at: number; kind: 'run' | 'build' }
+interface Pending { at: number; kind: 'run' | 'build'; owner: string; before: string | null; turn?: string }
 const readPending = (dir: string): Pending | null => {
-  try { const p = JSON.parse(sessionStorage.getItem(PENDING_KEY(dir)) || 'null'); return p && typeof p.at === 'number' ? p : null } catch { return null }
+  try { const p = JSON.parse(sessionStorage.getItem(PENDING_KEY(dir)) || 'null'); return p && Number.isFinite(p.at) && ['build','run'].includes(p.kind) && typeof p.owner === 'string' && (p.before === null || typeof p.before === 'string') && (p.turn === undefined || typeof p.turn === 'string') ? p : null } catch { return null }
 }
 const writePending = (dir: string, p: Pending | null) => {
   try { if (p) sessionStorage.setItem(PENDING_KEY(dir), JSON.stringify(p)); else sessionStorage.removeItem(PENDING_KEY(dir)) } catch { /* no storage */ }
@@ -58,8 +60,9 @@ const fileUrl = (tree: ProjectEntry[], path?: string): string | undefined => {
 const STEPS: SimStage[] = ['preparing', 'trial', 'running', 'scoring', 'writing']
 
 export function SimulationPanel(props: Props) {
-  const { project, program, studyId, studies, model, agentBusy } = props
+  const { project, program, studyId, studies, model, agentBusy, agentThreadId = '', agentTurnKey = null } = props
   const dir = project.dir
+  const owner = `${dir}:${agentThreadId}`
   const plan = useMemo(() => simulationPlan(program, studyId), [program, studyId])
   const scope = useMemo(() => simulationScope(program, studyId), [program, studyId])
   const limits = useMemo(() => simulationLimits(program, studyId), [program, studyId])
@@ -85,23 +88,41 @@ export function SimulationPanel(props: Props) {
   const [pending, setPendingState] = useState<Pending | null>(() => readPending(dir))
   useEffect(() => setPendingState(readPending(dir)), [dir])
   const setPending = (p: Pending | null) => { writePending(dir, p); setPendingState(p) }
+  const [buildProblem, setBuildProblem] = useState(false)
+  const [runProblem, setRunProblem] = useState(false)
+  useEffect(() => { setBuildProblem(false); setRunProblem(false) }, [owner])
+  const requestBusy = pending?.owner === owner && agentBusy && Boolean(agentTurnKey) && (pending.turn ? pending.turn === agentTurnKey : pending.before !== agentTurnKey)
   const [now, setNow] = useState(() => Date.now())
   const states = new Map(runs.map((r) => [r.id, runState(r, texts[r.id]?.progress ?? null, agentBusy, now, r.mtime)]))
   const newRun = pending?.kind === 'run' ? runs.find((r) => r.mtime >= pending.at - 5_000 && !texts[r.id]?.summary?.example) : undefined
   const active = runs.find((r) => states.get(r.id) === 'running' && !texts[r.id]?.summary?.example && now - r.mtime < 6 * 3600_000)
-  const running = Boolean(active) || (pending?.kind === 'run' && agentBusy && !newRun) || (pending?.kind === 'run' && newRun && states.get(newRun.id) === 'running')
-  const building = pending?.kind === 'build' && agentBusy
-  // A pending request ends when its run folder finished, or the agent went quiet without starting one.
-  const quietMiss = pending?.kind === 'run' && !agentBusy && !newRun && now - pending.at > 8_000
+  const running = Boolean(active) || (pending?.kind === 'run' && requestBusy && !newRun) || (pending?.kind === 'run' && newRun && states.get(newRun.id) === 'running')
+  const building = pending?.kind === 'build' && requestBusy
+  // Bind the request to its actual chat turn. A different conversation or later
+  // question must never resurrect a project-level "building" flag.
+  const quietMiss = runProblem || (pending?.kind === 'run' && !requestBusy && !newRun && now - pending.at > 8_000)
   useEffect(() => {
-    if (pending?.kind === 'build' && !agentBusy && now - pending.at > 5_000) setPending(null)
-    if (pending?.kind === 'run' && newRun && states.get(newRun.id) !== 'running') setPending(null)
+    if (!pending) return
+    if (pending.owner !== owner) { setPending(null); setBuildProblem(false); return }
+    if (!pending.turn && requestBusy && agentTurnKey) {
+      setPending({ ...pending, turn: agentTurnKey }); return
+    }
+    const turnEnded = Boolean(pending.turn) && (!agentBusy || pending.turn !== agentTurnKey)
+    const notStarted = !pending.turn && !requestBusy && now - pending.at > 8_000
+    if (pending.kind === 'build' && (turnEnded || notStarted)) {
+      setBuildProblem(!built && (!pending.turn || pending.turn === agentTurnKey))
+      setPending(null)
+    }
+    if (pending.kind === 'run' && quietMiss && !newRun) { setRunProblem(true); setPending(null) }
+    if (pending.kind === 'run' && newRun && states.get(newRun.id) !== 'running') setPending(null)
   }) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (built) setBuildProblem(false) }, [built])
   useEffect(() => {
-    if (!running && !building) return
+    // Keep the dispatch grace period ticking even when the agent hasn't started.
+    if (!running && !building && (!pending || quietMiss)) return
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
-  }, [running, building])
+  }, [running, building, Boolean(pending), quietMiss])
 
   const finished = runs.filter((r) => r.results && states.get(r.id) !== 'running')
   const [shown, setShown] = useState<string | null>(null)
@@ -116,13 +137,13 @@ export function SimulationPanel(props: Props) {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = async () => {
-    setPending({ at: Date.now(), kind: 'run' })
+    setRunProblem(false); setNow(Date.now()); setPending({ at: Date.now(), kind: 'run', owner, before: agentTurnKey })
     setShown(null)
     track('simulation.run', { metadata: { perCondition, conditions: plan.conditions.length, model, built } })
     try { await props.onRun(perCondition) } catch { setPending(null) }
   }
   const build = () => {
-    setPending({ at: Date.now(), kind: 'build' })
+    setBuildProblem(false); setNow(Date.now()); setPending({ at: Date.now(), kind: 'build', owner, before: agentTurnKey })
     track('simulation.build', { metadata: { conditions: plan.conditions.length } })
     props.onBuild()
   }
@@ -163,10 +184,10 @@ export function SimulationPanel(props: Props) {
         </section>
       ) : (
         <>
-          {(failedRun || quietMiss) && (
+          {(failedRun || quietMiss || buildProblem) && (
             <section className="sim-card sim-problem" role="alert">
-              <p>{failedRun ? t('sim.failed', { reason: texts[failedRun.id]?.progress?.message ?? t('sim.failed_unknown') }) : t('sim.no_run')}</p>
-              <button className="link" onClick={() => { setPending(null); props.onAsk(failedRun ? t('sim.fix_prompt', { run: failedRun.rel }) : t('sim.why_prompt')) }}>{t('sim.ask_fix')}</button>
+              <p>{failedRun ? t('sim.failed', { reason: texts[failedRun.id]?.progress?.message ?? t('sim.failed_unknown') }) : t(buildProblem ? 'sim.no_build' : 'sim.no_run')}</p>
+              <button className="link" onClick={() => { setPending(null); setBuildProblem(false); setRunProblem(false); props.onAsk(failedRun ? t('sim.fix_prompt', { run: failedRun.rel }) : t(buildProblem ? 'sim.why_build_prompt' : 'sim.why_prompt')) }}>{t('sim.ask_fix')}</button>
             </section>
           )}
           {!built ? (

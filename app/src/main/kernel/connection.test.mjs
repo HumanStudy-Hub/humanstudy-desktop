@@ -93,6 +93,66 @@ test('SSE handles CRLF and Unicode even when every byte arrives separately',()=>
  const events=[];await k.readStream(stream,e=>events.push(e));assert.equal(events[0].properties.text,'研究')
 }))
 
+test('a healthy but silent event connection still reconciles a lost completion',()=>fixture(async({k,server,state,events,requests})=>{
+ let now=0;k.clock=()=>now
+ await k.send('s','Build once');state.messages=[assistant('Saved the complete program.')]
+ now=60_001;await k.checkLiveness()
+ assert.equal(events.filter(e=>e.type==='done').length,1)
+ assert.equal(events.filter(e=>e.type==='text').map(e=>e.text).join(''),'Saved the complete program.')
+ assert.equal(requests.filter(r=>r.method==='POST').length,1,'observation repair must not rerun a task')
+}))
+test('accepted request with no assistant and repeatedly idle native state cannot spin forever',()=>fixture(async({k,state,events,requests})=>{
+ let now=0;k.clock=()=>now;await k.send('s','Build')
+ now=60_001;await k.checkLiveness();assert.equal(events.some(e=>e.type==='error'),false,'allow dispatch grace')
+ now=120_002;await k.checkLiveness()
+ assert.equal(events.filter(e=>e.type==='error').length,1)
+ assert.match(events.find(e=>e.type==='error').text,/no longer running/)
+ assert.equal(events.filter(e=>e.type==='done').length,1)
+ assert.equal(requests.filter(r=>r.method==='POST').length,1)
+}))
+test('quiet probes do not swallow future live deltas from an unfinished response',()=>fixture(async({k,state,events})=>{
+ let now=0;k.clock=()=>now;await k.send('s','Build');state.statuses={s:{type:'busy'}};state.messages=[assistant('Full',false)]
+ now=60_001;await k.checkLiveness();assert.equal(events.filter(e=>e.type==='text').length,0)
+ k.handle({type:'message.updated',properties:{info:{sessionID:'s',id:'a',role:'assistant'}}})
+ k.handle({type:'message.part.delta',properties:{sessionID:'s',messageID:'a',partID:'part-a',field:'text',delta:'Full live response'}})
+ assert.equal(events.filter(e=>e.type==='text').map(e=>e.text).join(''),'Full live response')
+ state.statuses={};state.messages=[assistant('Full live response')];now=120_002;await k.checkLiveness()
+ assert.equal(events.filter(e=>e.type==='text').map(e=>e.text).join(''),'Full live response')
+ assert.equal(events.filter(e=>e.type==='done').length,1)
+}))
+test('a long-running native job warns without aborting, replaying or pretending completion',()=>fixture(async({k,state,events,requests})=>{
+ let now=0;k.clock=()=>now;await k.send('s','Run the approved job');state.statuses={s:{type:'busy'}}
+ now=60_001;await k.checkLiveness();assert.equal(events.some(e=>e.text==='stalled'),false)
+ now=300_001;await k.checkLiveness();assert.ok(events.some(e=>e.type==='status'&&e.text==='stalled'))
+ assert.equal(events.some(e=>e.type==='error'||e.type==='done'),false)
+ assert.equal(k.sessions.get('s').inFlight,true)
+ assert.equal(requests.filter(r=>r.method==='POST').length,1)
+ k.handle({type:'message.updated',properties:{info:{sessionID:'s',id:'progress',role:'assistant'}}})
+ k.handle({type:'message.part.updated',properties:{part:{sessionID:'s',messageID:'progress',id:'progress-text',type:'text',text:'A new saved checkpoint.'}}})
+ assert.equal(k.sessions.get('s').stalled,false,'new visible progress clears the warning')
+}))
+for(const kind of ['question','permission'])test('liveness never times out an unanswered '+kind,()=>fixture(async({k,events,requests})=>{
+ let now=0;k.clock=()=>now;await k.send('s','Build')
+ k.handle({type:kind+'.asked',properties:{sessionID:'s',id:'waiting',permission:'bash',patterns:['python'],questions:[]}})
+ now=109*60000;await k.checkLiveness()
+ assert.equal(events.some(e=>e.type==='error'||e.type==='done'||e.text==='stalled'),false)
+ assert.equal(requests.filter(r=>r.method==='POST').length,1)
+}))
+test('Stop during a liveness probe excludes its late snapshot and prevents task replay',()=>fixture(async({k,state,events,requests})=>{
+ let now=0;k.clock=()=>now;await k.send('s','Build');state.messages=[assistant('Late response')]
+ let release;state.hold=new Promise(r=>{release=r});now=60_001
+ const probing=k.checkLiveness();await new Promise(r=>setImmediate(r));await k.abort('s');release();await probing
+ assert.equal(events.filter(e=>e.type==='text').length,0)
+ assert.equal(events.filter(e=>e.type==='done').length,1)
+ assert.equal(requests.filter(r=>r.path.endsWith('prompt_async')).length,1)
+}))
+test('late busy notifications cannot revive a stopped chat',()=>fixture(async({k,events})=>{
+ await k.send('s','Build');await k.abort('s');const count=events.length
+ k.handle({type:'session.status',properties:{sessionID:'s',status:{type:'busy'}}})
+ assert.equal(events.length,count,'late busy would leave the renderer waiting forever')
+ assert.equal(k.sessions.get('s').inFlight,false)
+}))
+
 test('an actual dropped SSE connection restores the final reply through read-only HTTP',async()=>{
  const {createServer}=await import('node:http')
  let stream,postCount=0
@@ -115,6 +175,28 @@ test('an actual dropped SSE connection restores the final reply through read-onl
   assert.equal(events.filter(e=>e.type==='text').map(e=>e.text).join(''),'Recovered complete response.')
   assert.equal(postCount,1,'transport repair must never resend prompt_async')
   assert.ok(events.some(e=>e.type==='status'&&e.text==='reconnecting'))
+ }finally{server.sse.abort();server.exited=true;await k.dispose();for(const s of sockets)s.destroy();await new Promise(r=>http.close(r))}
+})
+
+test('actual HTTP reconciliation finds completion while SSE stays open and silent',async()=>{
+ const {createServer}=await import('node:http');let postCount=0
+ const sockets=new Set()
+ const http=createServer((req,res)=>{
+  if(req.url==='/event'){res.writeHead(200,{'content-type':'text/event-stream'});res.write('data: {"type":"server.connected"}\n\n');return}
+  if(req.method==='POST'){postCount++;res.writeHead(204);res.end();return}
+  res.setHeader('content-type','application/json')
+  res.end(req.url==='/session/s/message'?JSON.stringify([assistant('Complete original result.')]):req.url==='/session/status'?'{}':'[]')
+ });http.on('connection',s=>{sockets.add(s);s.on('close',()=>sockets.delete(s))})
+ await new Promise(r=>http.listen(0,'127.0.0.1',r))
+ const k=new OpencodeKernel({binary:'/bin/true',provider:'humanstudy'}),events=[]
+ let now=0;k.clock=()=>now
+ const server={dir:out,base:`http://127.0.0.1:${http.address().port}`,auth:'fixture',sse:new AbortController(),eventsOnline:false,exited:false}
+ try{
+  await k.openEvents(server);k.register('s',server);k.onEvent(e=>events.push(e));await k.send('s','Build once')
+  now=60_001;await k.checkLiveness()
+  assert.equal(server.eventsOnline,true,'the SSE stream never disconnected')
+  assert.equal(events.filter(e=>e.type==='text').map(e=>e.text).join(''),'Complete original result.')
+  assert.equal(events.filter(e=>e.type==='done').length,1);assert.equal(postCount,1)
  }finally{server.sse.abort();server.exited=true;await k.dispose();for(const s of sockets)s.destroy();await new Promise(r=>http.close(r))}
 })
 
