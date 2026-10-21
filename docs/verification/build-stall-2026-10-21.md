@@ -37,7 +37,10 @@ the existing Stop control remains available. New visible progress clears the war
 Unanswered questions/permissions are excluded from the inactivity checks. The observer
 does not answer questions, grant permissions, replay uploads, or rerun simulations.
 Quiet probes avoid replacing unfinished text parts so subsequent live deltas remain
-visible and complete. This behavior has a specific regression test.
+visible and complete. Busy probes read only status/questions/permissions; full messages
+are reconciled once native is idle, avoiding repeated large-history parsing and stale
+output-limit metadata during a legitimate running job. This behavior has a specific
+regression test.
 
 No new buttons, model defaults, simulation approvals, schema rules or source truncation
 were introduced. No owner/friend project or installed app was modified or restarted.

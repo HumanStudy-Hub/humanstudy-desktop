@@ -788,17 +788,15 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     const permissions = await permissionsRes.json() as Array<Record<string, any>>
     const questions = await questionsRes.json() as Array<{ id: string; sessionID: string; questions: KernelQuestion['questions'] }>
     for (const { id: sessionId, s, epoch } of active) {
-      const response = await this.request(server, 'GET', `/session/${encodeURIComponent(sessionId)}/message`, undefined, 5000)
-      const messages = await response.json() as NativeMessage[]
+      const status = statuses[sessionId]
+      const busyProbe = quietProbe && status && status.type !== 'idle'
+      // While native is busy, only observe status/questions/permissions. Replaying
+      // old completion metadata could mistake a previous limit for a new failure;
+      // re-reading a large history would also add work to a long-running job.
+      const messages = busyProbe ? [] : await (await this.request(server, 'GET', `/session/${encodeURIComponent(sessionId)}/message`, undefined, 5000)).json() as NativeMessage[]
       if (!s.inFlight || this.sessions.get(sessionId) !== s || s.recovery.epoch !== epoch || this.disposed) continue
       const current = messages.filter(({ info }) => info?.id && !s.turnBaseline.has(info.id))
-      // With a healthy event stream, do not replace an active partial text part:
-      // its future live deltas must remain visible. Completed steps and an idle
-      // session can be reconciled without racing an ongoing text stream.
-      const status = statuses[sessionId]
-      const observed = quietProbe && status && status.type !== 'idle'
-        ? current.filter(({ info }) => info.time?.completed) : current
-      for (const { info, parts } of observed) {
+      for (const { info, parts } of current) {
         // Parts must precede completion: the recovery progress gate needs visible
         // text or a successful tool, and usage must not suppress the final text.
         this.handle({ type: 'message.updated', properties: { info: { ...info, sessionID: sessionId, time: { ...info.time, completed: undefined } } } })
