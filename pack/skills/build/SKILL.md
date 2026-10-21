@@ -84,7 +84,8 @@ is also present), so the interface opens the cited attachment rather than assumi
 
 Self-check: schema valid; every node, step and paper-derived field has `evidenceIds`; every
 evidence id resolves; every `conditionIds` entry names a condition node of the same study; no
-placeholder text; interactive and sequential structure intact; under 500 KB.
+placeholder text; interactive and sequential structure intact; all source-supported content preserved.
+Write in complete stages and use referenced resources for long materials; never truncate scientific content.
 
 ### Self-check (mandatory)
 

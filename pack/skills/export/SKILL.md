@@ -19,6 +19,12 @@ Exports are derived from `program.json` and existing artifacts; they add no fact
 - **Analysis (.pdf / .docx)**: convert an `artifacts/*.md` report with its figures.
 - **Package (.zip)**: zip `artifacts/package/<paper-slug>/` plus `program.json`. Exclude
   `.humanstudy/`, caches and `__pycache__`.
+- **Community contribution (.zip)**: run `python .opencode/skills/export/community.py --output exports/community-<date>.zip`.
+  This includes the complete program, `package/`, research `artifacts/` and `sources/`, records
+  the original paper ID and baseline revision, and excludes chat, credentials and local state.
+  Never manufacture a new baseline or substitute the current recommendation for the version
+  actually forked. PDF redistribution is off by default; `--include-paper` requires the researcher's
+  explicit permission and the right to redistribute it. Before export run the build checks.
 
 ## Rules
 

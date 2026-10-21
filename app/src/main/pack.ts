@@ -45,6 +45,16 @@ export const packFileCount = (): number => Object.keys(files).length
 
 /** Upgrade untouched default prompts in existing projects; never overwrite custom instructions. */
 export async function refreshPack(projectDir: string): Promise<void> {
+  // New shipped skills become available in existing projects too. Never replace a researcher file.
+  for (const [key, content] of Object.entries(files)) {
+    if (!key.startsWith(PREFIX)) continue
+    const dest = target(key.slice(PREFIX.length))
+    if (!dest) continue
+    const abs = join(projectDir, dest)
+    if (await readFile(abs, 'utf8').then(() => true).catch(() => false)) continue
+    await mkdir(dirname(abs), { recursive: true })
+    await writeFile(abs, content, 'utf8')
+  }
   for (const [rel, hash] of Object.entries(previousHashes)) {
     const dest = target(rel)
     const content = files[PREFIX + rel]

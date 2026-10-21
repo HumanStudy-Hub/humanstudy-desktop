@@ -210,6 +210,16 @@ export interface CommunityStudy {
   year: number | null
   description: string
   contributors: { name: string; github?: string }[]
+  aliases?: string[]
+  legacyStudyId?: string
+  searchText?: string
+  conceptLabels?: string[]
+  searchAliases?: string[]
+  currentRevision?: string | null
+  assetRoot?: string
+  assetFiles?: { path: string; sha256: string; bytes: number }[]
+  capabilities?: Record<string, boolean>
+  resources?: { id: string; kind: string; url?: string; access: string }[]
 }
 export interface CommunityStudyDetail extends CommunityStudy {
   /** Files in the study folder, e.g. source/materials/*.json, the paper PDF. */
@@ -218,6 +228,7 @@ export interface CommunityStudyDetail extends CommunityStudy {
   activity: { sha: string; message: string; author: string; avatarUrl?: string; date: string; url: string }[]
   repoUrl: string
   discussionsUrl: string
+  sourceCommit?: string
 }
 
 /** The signed-in HumanStudy Hub account and access to hosted models (no API key needed). */

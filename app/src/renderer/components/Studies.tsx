@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useState, type Ref } from 'react'
 import type { CommunityStudy, CommunityStudyDetail } from '../../preload/types'
+import { matchesResearch } from '../../shared/research-search'
 import { relativeTime } from './Home'
 import { track } from '../telemetry'
 
@@ -102,9 +103,7 @@ export function Studies({ query, onOpenProject, ref }: Props) {
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!list || !q) return list ?? []
-    return list.filter((s) =>
-      [s.title, s.description, s.authors.join(' '), String(s.year ?? '')].some((f) => f.toLowerCase().includes(q)),
-    )
+    return list.filter((s) => matchesResearch(s, q))
   }, [list, query])
 
   useImperativeHandle(ref, () => ({ openFirst: () => shown[0] && setOpenId(shown[0].id) }), [shown])

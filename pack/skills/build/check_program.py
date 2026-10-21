@@ -33,9 +33,6 @@ def problems_for(p: dict) -> list[tuple[str, str]]:
     for key, items in (("studies", studies_l), ("nodes", nodes_l), ("steps", steps_l), ("relations", rels), ("evidence", evid_l), ("issues", issues)):
         if dups([i.get("id") for i in items]):
             add(f"{key}: duplicate ID", f"give every entry in {key} its own id: {', '.join(map(str, dups([i.get('id') for i in items])))}")
-    conns = len(rels) + sum(len(s.get("next") or []) + len(s.get("children") or []) for s in steps_l)
-    if conns > 1200:
-        add("Human Program exceeds 1200 display connections", "merge or drop connections")
     nodes = {n.get("id"): n for n in nodes_l}
     studies = {s.get("id") for s in studies_l}
     steps = {s.get("id"): s for s in steps_l}
