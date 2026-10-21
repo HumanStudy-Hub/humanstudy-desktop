@@ -20,6 +20,17 @@ class Client extends EventEmitter {
   run=()=>Promise.resolve(null)
 }
 const client=new Client(),timers=[]
+{
+ const stale=new Client(),states=[]
+ const controller=U.createUpdateController({client:stale,version:'0.6.5',notify:s=>states.push(s)})
+ stale.emit('update-available',{version:'v0.6.5'})
+ assert.equal(controller.status().state,'none')
+ stale.emit('update-downloaded',{version:'0.6.5'})
+ assert.equal(controller.status().state,'none','a completion for the installed version must not prompt another installation')
+ stale.emit('update-downloaded',{version:'0.6.6'})
+ assert.equal(controller.status().state,'ready','a genuinely newer version must still be installable')
+ controller.stop()
+}
 const c=U.createUpdateController({client,version:'0.6.1',notify:()=>{},schedule:(fn,delay)=>{const t={fn,delay,cancelled:false};timers.push(t);return()=>t.cancelled=true}})
 client.run=()=>({downloadPromise:Promise.reject(Error('net::ERR_NETWORK_CHANGED'))})
 await c.check()

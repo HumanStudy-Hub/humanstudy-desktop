@@ -19,22 +19,22 @@ export function useUpdateStatus(): UpdateStatus | null {
   return status
 }
 
-/** A quiet corner notice once an update has been downloaded. Dismissable until the next launch. */
+/** A quiet corner notice once an update has been downloaded. Dismissal is remembered for this version across launches. */
 export function UpdateNotice() {
   const status = useUpdateStatus()
-  const [dismissed, setDismissed] = useState<string | null>(null)
+  const [dismissed, setDismissed] = useState<string | null>(()=>{try{return localStorage.getItem('hs.update.dismissed')}catch{return null}})
   if (!status || status.state !== 'ready' || dismissed === (status.nextVersion ?? '')) return null
   return (
     <div className="update-notice" role="status">
       <span className="update-dot" aria-hidden />
       <span>
-        Update ready — restart to install
-        {status.nextVersion && <span className="muted"> · {status.nextVersion}</span>}
+        Update downloaded — restart to finish
+        {status.nextVersion && <span className="muted"> · {status.version} → {status.nextVersion}</span>}
       </span>
       <button className="primary" onClick={() => void window.humanstudy.updates.install()}>
         Restart
       </button>
-      <button className="ghost" aria-label="Later" title="Later" onClick={() => setDismissed(status.nextVersion ?? '')}>
+      <button className="ghost" aria-label="Later" title="Later" onClick={() => {const version=status.nextVersion??'';setDismissed(version);try{localStorage.setItem('hs.update.dismissed',version)}catch{}}}>
         Later
       </button>
     </div>
@@ -50,7 +50,7 @@ function stateLine(s: UpdateStatus): string {
     case 'downloading':
       return `Downloading ${s.nextVersion ?? 'update'}${s.progress != null ? ` · ${s.progress}%` : ''}`
     case 'ready':
-      return `Version ${s.nextVersion ?? ''} is ready. Restart to install.`
+      return `Downloaded ${s.nextVersion ?? ''}. This copy is still ${s.version}; restart to finish installing.`
     case 'none':
       return "You're on the latest version."
     case 'error':

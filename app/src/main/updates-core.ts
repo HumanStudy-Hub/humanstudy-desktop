@@ -48,10 +48,11 @@ export function createUpdateController(options: {
     set({ state: 'error', nextVersion: status.nextVersion, error: shortError(message) })
   }
   client.on('checking-for-update', () => set({ state: 'checking' }))
-  client.on('update-available', info => set({ state: 'available', nextVersion: info.version }))
+  const alreadyInstalled = (next: unknown) => typeof next === 'string' && next.replace(/^v/, '') === version.replace(/^v/, '')
+  client.on('update-available', info => set(alreadyInstalled(info.version) ? {state:'none'} : { state: 'available', nextVersion: info.version }))
   client.on('update-not-available', () => set({ state: 'none' }))
   client.on('download-progress', p => set({ state: 'downloading', nextVersion: status.nextVersion, progress: Math.round(p.percent) }))
-  client.on('update-downloaded', info => { clearRetry(); retries = 0; set({ state: 'ready', nextVersion: info.version, progress: 100 }) })
+  client.on('update-downloaded', info => { clearRetry(); retries = 0; set(alreadyInstalled(info.version) ? {state:'none'} : { state: 'ready', nextVersion: info.version, progress: 100 }) })
   // Handles native installer errors too; retry scheduling belongs to the awaited operation.
   client.on('error', fail)
 

@@ -426,10 +426,10 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
             <div className="wb-paper" hidden={active !== 'paper' && !compare}>
               {sourceFile && sourceFile.ext !== 'pdf' && 'rel' in sourceFile
                 ? <FileView key={sourceFile.path} file={sourceFile} dir={project.dir} version={project.tree} onDirty={markDirty} />
-                : <SourceDrawer key={sourcePdf?.path ?? 'no-source'} pdf={sourcePdf} source={source ?? DEFAULT_SOURCE} closeLabel={compare ? t('wb.close_source') : undefined}
+                : <SourceDrawer key={sourcePdf?.path ?? 'no-source'} pdf={sourcePdf} source={source ?? DEFAULT_SOURCE} active={active === 'paper' || compare} closeLabel={compare ? t('wb.close_source') : undefined}
                     onClose={() => update(l => ({ ...l, active: 'study', compare: false }))}
                     onPageChange={page => { if (sourceFile) setSourcePage({ path: sourceFile.path, page }) }}
-                    onQuote={(ref, result) => setQuoteStatus(m => new Map(m).set(quoteKey(ref.page, ref.quote), result))}
+                    onQuote={(ref, result) => setQuoteStatus(m => new Map(m).set(quoteKey(ref.page, ref.quote, ref.file ?? ref.sourceId), result))}
                     onSelect={setPassage}
                     supportCount={program && passage ? support?.ids.length ?? 0 : null}
                     onAskPassage={sel => docProps.onPrefill?.(`${sourceFile && 'rel' in sourceFile ? sourceFile.rel : sourceFile?.path ?? ''}\n${t('paper.passage_draft', { n: sel.page, q: sel.text })}`)} />}
