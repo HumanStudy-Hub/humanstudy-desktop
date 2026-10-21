@@ -26,7 +26,12 @@ Validate against `schema/human-program.schema.json`. Work in this order:
 
 1. `source`, `studies` (with `dependsOn` where a study consumes another's outputs), `intent`.
 2. `evidence`: one record per cited passage, `locator.page` + exact `quote` copied from the
-   extracted text. Verify each quote occurs on that page.
+   extracted text. Preserve the complete relevant sentence(s), or the whole paragraph when its
+   conditions, qualifications or context are needed to support the claim. A short keyword fragment
+   is a locator, not sufficient evidence for a research decision. Do not shorten quotations to save
+   tokens. Use several evidence records when a claim depends on separate passages, and attach every
+   relevant record to that field/step. Verify each complete quote occurs on its physical PDF page;
+   do not mark it verified merely because an opening phrase matches.
 3. Nodes: participants, design, `condition` nodes (one per condition), materials, variables,
    analyses, `result` nodes (`result_kind = reported`). Transcribe printed instruments exactly
    as `verbatim` fields; put long instruments in `sources/` and reference them.

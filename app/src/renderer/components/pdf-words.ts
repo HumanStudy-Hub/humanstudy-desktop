@@ -3,7 +3,6 @@
 // a cited quote can be boxed (shared/source-anchor.ts). Browser-only: it measures with a canvas.
 import type { Word } from '../../shared/source-anchor'
 
-const MAX_WORDS_PER_PAGE = 5000
 const clampPercent = (v: number) => Math.max(0, Math.min(100, v))
 
 export function makeWords(
@@ -15,7 +14,6 @@ export function makeWords(
 ): Word[] {
   const words: Word[] = []
   for (const item of items) {
-    if (words.length >= MAX_WORDS_PER_PAGE) break
     if (!item.str.trim() || !item.transform || item.transform.length < 6) continue
     const tx = transform(viewport.transform, item.transform)
     const fontHeight = Math.hypot(tx[2], tx[3])
@@ -23,17 +21,26 @@ export function makeWords(
     const itemWidth = item.width * viewport.scale
     if (!fontHeight || !axisLength || !itemWidth) continue
     measure.font = `${fontHeight}px ${styles[item.fontName ?? '']?.fontFamily || 'sans-serif'}`
-    const measuredWidth = measure.measureText(item.str).width || 1
-    const ux = tx[0] / axisLength, uy = tx[1] / axisLength
-    const vx = tx[2] / fontHeight, vy = tx[3] / fontHeight
+    const chunks = [...item.str.matchAll(/\s+|\S+/gu)].map((m) => ({
+      text: m[0],
+      width: measure.measureText(m[0]).width,
+    }))
+    const measuredWidth = chunks.reduce((sum, c) => sum + c.width, 0) || 1
+    let advance = 0
+    const ux = tx[0] / axisLength,
+      uy = tx[1] / axisLength
+    const vx = tx[2] / fontHeight,
+      vy = tx[3] / fontHeight
     const rtl = item.dir === 'rtl'
-    for (const match of item.str.matchAll(/\S+/gu)) {
-      if (words.length >= MAX_WORDS_PER_PAGE) break
-      const token = match[0]
-      const offset = measure.measureText(item.str.slice(0, match.index)).width / measuredWidth
-      const width = measure.measureText(token).width / measuredWidth * itemWidth
+    for (const chunk of chunks) {
+      const token = chunk.text,
+        offset = advance / measuredWidth
+      advance += chunk.width
+      if (!token.trim()) continue
+      const width = (chunk.width / measuredWidth) * itemWidth
       const along = (rtl ? 1 - offset - width / itemWidth : offset) * itemWidth
-      const bx = tx[4] + ux * along, by = tx[5] + uy * along
+      const bx = tx[4] + ux * along,
+        by = tx[5] + uy * along
       // A conservative font box around the baseline; also handles rotated text.
       const corners = [
         [bx - vx * fontHeight * 0.2, by - vy * fontHeight * 0.2],
@@ -46,7 +53,13 @@ export function makeWords(
       const right = Math.min(viewport.width, Math.max(...corners.map(([x]) => x)))
       const bottom = Math.min(viewport.height, Math.max(...corners.map(([, y]) => y)))
       if (right > left && bottom > top)
-        words.push({ t: token, x: clampPercent(left / viewport.width * 100), y: clampPercent(top / viewport.height * 100), w: clampPercent((right - left) / viewport.width * 100), h: clampPercent((bottom - top) / viewport.height * 100) })
+        words.push({
+          t: token,
+          x: clampPercent((left / viewport.width) * 100),
+          y: clampPercent((top / viewport.height) * 100),
+          w: clampPercent(((right - left) / viewport.width) * 100),
+          h: clampPercent(((bottom - top) / viewport.height) * 100),
+        })
     }
   }
   return words

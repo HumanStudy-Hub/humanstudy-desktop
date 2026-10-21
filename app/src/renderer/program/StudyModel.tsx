@@ -4,6 +4,7 @@
 // details in the dock (web: program-details.tsx); the review guide (web: review-guide.tsx) lists
 // what needs a decision. Citations open the paper beside the study with the quote boxed.
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { HumanProgram, ProgramField, ProgramNode } from '../../shared/human-program';
 import { conditionSuggestion, fieldText, itemSources, sourceRefs, studyConditions, wordDiff, type FlowItem, type SourceRef } from '../../shared/program-view';
 import { quoteKey } from '../../shared/source-anchor';
@@ -301,14 +302,19 @@ function StepBox({ item, n, ctx, conditions }: { item: FlowItem; n?: number; ctx
 
 /** A citation chip. Once the paper pane has looked for the quote, a miss shows here in amber. */
 function Cite({ id, refs, ctx }: { id: string; refs: SourceRef[]; ctx: Ctx }) {
-  const ref = refs[0];
-  if (!ref) return null;
-  const status = ref.page ? ctx.quoteStatus?.get(quoteKey(ref.page, ref.quote)) : undefined;
-  const missing = status && !status.found, moved = status?.found && status.page !== undefined && status.page !== ref.page;
-  const title = missing ? t('model.quote_missing', { n: ref.page ?? '' }) : moved ? t('model.quote_moved', { n: ref.page ?? '', m: status!.page! }) : `${ref.verified ? t('doc.cite_open') : t('doc.cite_unmatched')}${ref.quote ? `: “${ref.quote.slice(0, 160)}${ref.quote.length > 160 ? '…' : ''}”` : ''}${ref.file ? ` (${ref.file})` : ''}`;
-  return <button className={`${s.cite} ${missing || moved ? s.citeWarn : ''}`} title={title} onClick={e => { e.stopPropagation(); ctx.onSource(id, ref); }}>
-    {ref.page ? t('doc.cite_page', { n: ref.page }) : t('doc.cite_file')}{moved ? ` → ${status!.page}` : ''}{missing ? ' ?' : ''} <span aria-hidden>↗</span>
-  </button>;
+  const [expanded,setExpanded]=useState(false);
+  const anchor=useRef<HTMLButtonElement>(null),list=useRef<HTMLSpanElement>(null);
+  const [point,setPoint]=useState({left:8,top:8});
+  useEffect(()=>{if(!expanded)return;const close=(e:MouseEvent)=>{if(!anchor.current?.contains(e.target as Node)&&!list.current?.contains(e.target as Node))setExpanded(false)};const key=(e:KeyboardEvent)=>{if(e.key==='Escape'){e.stopPropagation();setExpanded(false);anchor.current?.focus()}};window.addEventListener('mousedown',close);window.addEventListener('keydown',key);return()=>{window.removeEventListener('mousedown',close);window.removeEventListener('keydown',key)}},[expanded]);
+  const ref=refs[0];if(!ref)return null;
+  const label=(r:SourceRef)=>r.page?t('doc.cite_page',{n:r.page}):t('doc.cite_file');
+  const status=ref.page?ctx.quoteStatus?.get(quoteKey(ref.page,ref.quote,ref.file??ref.sourceId)):undefined;
+  const missing=status&&!status.found,moved=status?.found&&status.page!==ref.page;
+  return <span className={s.citeGroup}>
+    <button ref={anchor} className={`${s.cite} ${missing||moved||!ref.verified?s.citeWarn:''}`} title={`${missing?t('model.quote_missing',{n:ref.page??''}):moved?t('model.quote_moved',{n:ref.page??'',m:status!.page!}):t(ref.verified?'doc.cite_open':'doc.cite_unmatched')}\n${ref.quote??''}`} aria-expanded={refs.length>1?expanded:undefined} onClick={e=>{e.stopPropagation();if(refs.length>1){const r=e.currentTarget.getBoundingClientRect();setPoint({left:Math.max(8,Math.min(r.right-380,window.innerWidth-396)),top:Math.max(8,Math.min(r.bottom+4,window.innerHeight-340))});setExpanded(v=>!v)}else ctx.onSource(id,ref)}}>{label(ref)}{refs.length>1?` +${refs.length-1}`:''}{moved?` → ${status!.page}`:''}{missing?' ?':''} <span aria-hidden>↗</span></button>
+    {expanded&&createPortal(<span ref={list} className={s.citeList} style={point}>{refs.map((r,i)=><button key={i} onClick={e=>{e.stopPropagation();setExpanded(false);ctx.onSource(id,r)}}><strong>{label(r)}{r.file?` · ${r.file}`:''}</strong><q>{r.quote}</q></button>)}</span>,document.body)}
+  </span>;
+
 }
 
 /* ---- the dock: selection and details (web: study-model dock + program-details.tsx) ---- */
