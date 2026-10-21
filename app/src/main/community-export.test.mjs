@@ -11,7 +11,8 @@ test('community export includes all research artifacts and the real baseline, ex
  const root=mkdtempSync(join(tmpdir(),'community-export-'))
  try{
   for(const dir of ['sources','package/test','artifacts','exports','.humanstudy'])mkdirSync(join(root,dir),{recursive:true})
-  writeFileSync(join(root,'program.json'),JSON.stringify({source:{title:'Paper',authors:['Author'],year:2026},nodes:[]}))
+  writeFileSync(join(root,'program.json'),JSON.stringify({source:{title:'Paper',authors:['Author'],year:2026},nodes:[],evidence:[{path:'verbatim.txt'}]}))
+  writeFileSync(join(root,'verbatim.txt'),'Complete legacy material END')
   writeFileSync(join(root,'sources/study.json'),JSON.stringify({id:'paper_'+'a'.repeat(24),baseRevision:'b'.repeat(64),year:2026}))
   writeFileSync(join(root,'sources/material.txt'),'FULL MATERIAL END')
   writeFileSync(join(root,'sources/paper.pdf'),'%PDF-test')
@@ -24,8 +25,13 @@ test('community export includes all research artifacts and the real baseline, ex
   assert.ok(files['program.json']&&files['sources/material.txt']&&files['artifacts/overview.html'])
   assert.ok(!Object.keys(files).some(p=>p.includes('.env')||p.includes('.humanstudy')||p.endsWith('.pdf')))
   assert.equal(strFromU8(files['sources/material.txt']),'FULL MATERIAL END')
+  assert.equal(strFromU8(files['sources/attached/verbatim.txt']),'Complete legacy material END')
   const metadata=JSON.parse(strFromU8(files['CONTRIBUTION.json']))
   assert.equal(metadata.baseRevision,'b'.repeat(64));assert.equal(metadata.paperId,'paper_'+'a'.repeat(24))
+  assert.equal(metadata.includesPdf,false)
+  assert.equal(spawnSync('python3',[script,'--output','exports/with-paper.zip','--include-paper'],{cwd:root}).status,0)
+  const withPaper=unzipSync(readFileSync(join(root,'exports/with-paper.zip')))
+  assert.ok(withPaper['sources/paper.pdf']);assert.equal(JSON.parse(strFromU8(withPaper['CONTRIBUTION.json'])).includesPdf,true)
   assert.equal(spawnSync('python3',[script,'--output','exports/community.zip'],{cwd:root}).status,1,'existing exports are never overwritten')
  }finally{rmSync(root,{recursive:true,force:true})}
 })
