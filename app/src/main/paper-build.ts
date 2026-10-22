@@ -83,7 +83,7 @@ export function createPaperBuilds(changed: (dir: string) => void) {
       return next
     }
     // Finished by hand after a failure (in the chat or another conversation): nothing is left to retry.
-    if (state?.status === 'error' && programComplete(dir)) {
+    if (state?.status === 'error' && state.checked && programComplete(dir)) {
       const next: PaperBuildState = { status: 'complete', phase: state.phase }
       try { writePaperBuild(dir, next) } catch { /* shown either way */ }
       return next
@@ -135,20 +135,26 @@ export function createPaperBuilds(changed: (dir: string) => void) {
       const state = readPaperBuild(dir)
       if (!state) return
       // A build that failed and was then finished in the chat by hand counts as built.
+      // The program check passing after the last write is what makes a study complete; a first
+      // checkpoint already has a study, a node and evidence.
+      const check = e.type === 'tool' ? checkResult(e) : null
+      if (check !== null && (state.status === 'running' || state.status === 'error') && Boolean(state.checked) !== check)
+        save(dir, { ...state, checked: check })
+      const checked = check ?? state.checked
       if (state.status === 'error' && e.type === 'done' && e.detail !== 'shutdown') {
-        if (programComplete(dir)) save(dir, { status: 'complete', phase: state.phase })
+        if (checked && programComplete(dir)) save(dir, { status: 'complete', phase: state.phase })
         return
       }
       if (state.status !== 'running' || state.sessionId !== e.sessionId) return
       if (e.type === 'error') lastError.set(e.sessionId, e.text ?? '')
       else if (e.type === 'tool') {
         const phase = buildPhase(e.input ?? e.detail)
-        if (phase && phase !== state.phase) save(dir, { ...state, phase })
+        if (phase && phase !== state.phase) save(dir, { ...state, checked, phase })
       } else if (e.type === 'done') {
         const error = lastError.get(e.sessionId)
         lastError.delete(e.sessionId)
         if (e.detail === 'shutdown') return fail(dir, state, 'closed')
-        if (programComplete(dir)) {
+        if (checked && programComplete(dir)) {
           live.delete(e.sessionId)
           return save(dir, { status: 'complete', phase: state.phase })
         }
@@ -156,6 +162,19 @@ export function createPaperBuilds(changed: (dir: string) => void) {
       }
     },
   }
+}
+
+/** A finished program or package check: true when it printed PASS, false when it failed; a write to
+ *  program.json is false too (it needs checking again). null: says nothing about the check. */
+export function checkResult(e: Pick<KernelEvent, 'tool' | 'input' | 'detail' | 'output'>): boolean | null {
+  let text: string
+  try { text = typeof e.input === 'string' ? e.input : JSON.stringify(e.input ?? e.detail ?? '') } catch { return null }
+  if (/check_program|check_package/.test(text)) {
+    if (e.output === undefined) return null
+    return /^PASS\b/m.test(e.output) && !/^FAIL\b/m.test(e.output)
+  }
+  if (/program_io/.test(text) || (/^(write|edit|patch|multiedit)$/i.test(e.tool ?? '') && /program\.json/.test(text))) return false
+  return null
 }
 
 const tooLarge = (text: string): boolean => /\b413\b|entity too large|payload too large|request too large/i.test(text)

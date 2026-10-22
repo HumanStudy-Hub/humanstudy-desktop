@@ -174,6 +174,8 @@ export interface PaperBuildState {
   error?: PaperBuildError
   /** The conversation that runs (or ran) the build. */
   sessionId?: string
+  /** The program check printed PASS after the last write to program.json. */
+  checked?: boolean
 }
 
 export interface ProjectSnapshot {
@@ -379,8 +381,11 @@ export interface HumanStudyApi {
     saveCopy(path: string): Promise<string | null>
     /** Text of a file inside an opened project (UTF-8, at most 4 MB). */
     readText(path: string): Promise<string>
-    /** Writes a file inside an opened project, creating folders as needed. program.json must stay valid JSON. */
-    writeText(path: string, text: string): Promise<void>
+    /** Writes a file inside an opened project, creating folders as needed. program.json must stay valid JSON.
+     *  With `ifUnchanged`, the write happens only if the file still holds exactly that text (a patch read
+     *  from disk is not written over a newer save, e.g. the agent's checkpoint); otherwise it rejects
+     *  with an error whose message starts with "changed on disk". */
+    writeText(path: string, text: string, ifUnchanged?: string): Promise<void>
     /** Copies files into the project (sources/, or paper.pdf for a first PDF). Never overwrites; returns the copies. */
     importFiles(dir: string, paths: string[]): Promise<ProjectFile[]>
     onChanged(cb: (dir: string) => void): () => void
