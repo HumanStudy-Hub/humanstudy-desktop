@@ -28,6 +28,7 @@ import { isVersioned, readVersion, relOf, snapshot, versionsOf } from './version
 import { createThreads, threads } from './threads'
 import { createShutdown } from './shutdown-core'
 import { refreshPack } from './pack'
+import { assertRunnablePackage } from './package-readiness'
 import type { Kernel, KernelEvent } from './kernel-types'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, WorkspaceContext } from '../preload/types'
 
@@ -54,6 +55,8 @@ function loadKernel(): Kernel {
 let kernel: Kernel | null = null
 const allKernels = new Set<Kernel>()
 const sessionKernel = new Map<string, Kernel>()
+/** The project folder of each session (for checks that need it before the kernel sees a message). */
+const sessionProject = new Map<string, string>()
 const activeTurns = new Set<string>()
 let threadsInitialized = false
 const shutdown = createShutdown({
@@ -541,6 +544,7 @@ app.whenReady().then(() => {
       throw err
     }
     sessionKernel.set(id, k)
+    sessionProject.set(id, dir)
     notify.noteSession(id, dir)
     telemetry.trackSessionStart(id, dir, kernelName(k), started)
     return id
@@ -553,7 +557,7 @@ app.whenReady().then(() => {
       resume: async (dir, sid) => {
         const k = sessionKernel.get(sid) ?? currentKernel()
         const alive = await k.resumeSession(dir, sid)
-        if (alive) sessionKernel.set(alive, k)
+        if (alive) { sessionKernel.set(alive, k); sessionProject.set(alive, dir) }
         return alive
       },
     },
@@ -569,6 +573,11 @@ app.whenReady().then(() => {
   ipcMain.handle('kernel:send', async (_e, id: string, text: string, workspace?: WorkspaceContext) => {
     if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
     const k = kernelFor(id)
+    // A simulation approval only reaches the agent when the package can run (the Simulation tab checks
+    // the same; this is the second line of defence).
+    let projectDir = sessionProject.get(id)
+    try { projectDir ??= k.directory?.(id) } catch { /* unknown to the kernel; it will refuse the send itself */ }
+    await assertRunnablePackage(projectDir, text)
     telemetry.trackTurnStart(id, text)
     const prompt = threads().beforeSend(id, text, workspace)
     const alreadyActive = activeTurns.has(id)
@@ -613,7 +622,7 @@ app.whenReady().then(() => {
       const current=await k.native(next,{operation:'session'}) as {title:string;directory:string;revert?:{messageID:string}}
       const history=await k.native(next,{operation:'history'}) as any[]
       const dir=ownedPath(k.directory?.(next)??current.directory)
-      if(['open','fork'].includes(request.operation)){sessionKernel.set(next,k);notify.noteSession(next,dir);telemetry.trackSessionStart(next,dir,kernelName(k),Date.now())}
+      if(['open','fork'].includes(request.operation)){sessionKernel.set(next,k);sessionProject.set(next,dir);notify.noteSession(next,dir);telemetry.trackSessionStart(next,dir,kernelName(k),Date.now())}
       const thread=await threads().fromNative(dir,next,nativeMessages(history,current.revert?.messageID),current.title,!['open','fork'].includes(request.operation))
       if(request.operation==='fork'){
         const catalog=await k.native(next,{operation:'catalog'}) as {selection:NativeSelection}
