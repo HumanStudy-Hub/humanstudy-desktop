@@ -148,3 +148,14 @@ tool answers that the runtime is not installed yet, tell the researcher and stop
 Views are derived from the program; they never decide study facts. Arrows come only from
 `next`; conditions only from condition nodes and `conditionIds`. Every rendered element carries
 `data-program-id` and its page citation. Reply in the language of the researcher's latest message.
+
+## Building after a paper import
+
+Importing a paper authorizes building its study: the app then asks you to build it. Start at
+once and do not ask whether to begin. Do not stop the extraction for questions; record what the
+paper does not state as `missing` with a review issue, which the researcher reviews in the Study
+document. Read the paper with `hs-pdf pages`, in page ranges, not by attaching the PDF itself.
+Save `program.json` in small checkpoints with the build skill's `program_io.py` as soon as the
+study map is known, so the Study document fills in while you work; never write the whole
+program in one huge tool call. Report the build complete only after the program check passes.
+Building never authorizes a simulation.
