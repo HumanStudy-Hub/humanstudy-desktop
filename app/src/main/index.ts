@@ -676,7 +676,7 @@ app.whenReady().then(() => {
       const current=await k.native(next,{operation:'session'}) as {title:string;directory:string;revert?:{messageID:string}}
       const history=await k.native(next,{operation:'history'}) as any[]
       const dir=ownedPath(k.directory?.(next)??current.directory)
-      if(['open','fork'].includes(request.operation)){sessionKernel.set(next,k);sessionProject.set(next,dir);notify.noteSession(next,dir);telemetry.trackSessionStart(next,dir,kernelName(k),Date.now())}
+      if(['open','fork'].includes(request.operation)){sessionKernel.set(next,k);sessionProject.set(next,dir);paperBuilds.bind(next,dir);notify.noteSession(next,dir);telemetry.trackSessionStart(next,dir,kernelName(k),Date.now())}
       const thread=await threads().fromNative(dir,next,nativeMessages(history,current.revert?.messageID),current.title,!['open','fork'].includes(request.operation))
       if(request.operation==='fork'){
         const catalog=await k.native(next,{operation:'catalog'}) as {selection:NativeSelection}

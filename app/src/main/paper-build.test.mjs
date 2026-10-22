@@ -174,3 +174,15 @@ test('an older project with a paper but no study is offered a build, never start
   writeFileSync(join(done, 'paper.pdf'), '%PDF-1.4'); writeFileSync(join(done, 'program.json'), sample)
   assert.equal(builds.retry(done), false, 'a project that already has a study is left alone')
 })
+
+test('every conversation the main process attaches to a project can claim its build', () => {
+  // A conversation opened or forked from history must be bound like a new or resumed one; otherwise
+  // project:startBuild throws "belongs to a different project" and the pending build never starts.
+  const main = readFileSync(join(here, 'index.ts'), 'utf8')
+  const records = main.match(/sessionProject\.set\(([^)]+)\)/g) ?? []
+  assert.ok(records.length >= 3, 'start, resume and native open/fork record the project')
+  for (const r of records) {
+    const [sid, dir] = r.slice('sessionProject.set('.length, -1).split(',').map((s) => s.trim())
+    assert.ok(main.includes(`paperBuilds.bind(${sid}, ${dir})`) || main.includes(`paperBuilds.bind(${sid},${dir})`), `${r} without paperBuilds.bind`)
+  }
+})
