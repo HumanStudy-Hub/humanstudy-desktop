@@ -5,7 +5,7 @@
  * headless OpenCode worker) and used by the web collector. It must stay dependency-free: no Next,
  * no Node or browser APIs, no imports. Change it here first, bump CONTRACT_VERSION, then re-vendor.
  *
- * The database (supabase/migrations/20261022120000_research_data_contract_v1.sql) enforces the
+ * The database (supabase/migrations/20261022223132_research_data_contract_v1.sql) enforces the
  * structural rules again; this file adds the event catalog and per-type requirements.
  */
 

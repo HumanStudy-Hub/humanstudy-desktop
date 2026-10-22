@@ -16,7 +16,7 @@ export function packPath(value) {
   throw Error('Invalid pack path.')
 }
 
-export async function controlAssets({kernel, project, session, input, output, logDir, timeoutMs=30*60_000, stallMs=5*60_000}) {
+export async function controlAssets({kernel, project, session, input, output, logDir, timeoutMs=30*60_000, stallMs=5*60_000,onEvent=()=>{},onRequest=()=>{},onSession=()=>{},onOperation=()=>{}}) {
   mkdirSync(logDir, {recursive:true})
   const eventPath=join(logDir,'events.jsonl'), transcript=join(logDir,'assistant.txt'), resultPath=join(logDir,'result.json')
   const pendingPermissions=new Set(), pendingQuestions=new Set()
@@ -38,6 +38,7 @@ export async function controlAssets({kernel, project, session, input, output, lo
   }
   const off=kernel.onEvent(event=>{
     if(sid&&event.sessionId!==sid)return
+    onEvent(event)
     appendFileSync(eventPath,JSON.stringify({at:new Date().toISOString(),event})+'\n');line++
     if(event.type==='text'&&event.text){appendFileSync(transcript,event.text);progress=Date.now()}
     if(event.type==='tool'&&event.text==='completed')progress=Date.now()
@@ -71,10 +72,12 @@ export async function controlAssets({kernel, project, session, input, output, lo
   },Math.min(20_000,Math.max(20,Math.min(timeoutMs,stallMs)/2)))
   const command=async request=>{
     if(closed)throw Error('Bridge is closed.')
+    onOperation(sid,request)
     if(request.op==='send'||request.op==='build'){
       if(active)throw Error('A turn is active. Wait or abort before sending another request.')
       const text=request.op==='build'?readFileSync(join(project,'CONVERT.md'),'utf8'):request.text
       if(typeof text!=='string'||!text.trim())throw Error('A non-empty text is required.')
+      onRequest(sid,{...request,text})
       active=true;failed=false;started=progress=Date.now();lastTurn='running'
       appendFileSync(eventPath,JSON.stringify({at:new Date().toISOString(),request:{op:request.op,text}})+'\n');line++
       try{await kernel.send(sid,text)}catch(error){active=false;lastTurn='error';throw error}
@@ -84,7 +87,7 @@ export async function controlAssets({kernel, project, session, input, output, lo
     }else if(request.op==='answer')await kernel.answerQuestion(sid,request.questionId,request.answers)
     else if(request.op==='reject-question')await kernel.rejectQuestion(sid,request.questionId)
     else if(request.op==='questions')return await kernel.questions(sid)
-    else if(request.op==='abort'){await kernel.abort(sid);active=false;lastTurn='aborted'}
+    else if(request.op==='abort'){onRequest(sid,request);await kernel.abort(sid);active=false;lastTurn='aborted'}
     else if(request.op==='auto'){
       if(!['on','off'].includes(request.mode))throw Error('Auto must be on or off.')
       kernel.setPermissionMode(request.mode==='on'?'project':'ask')
@@ -94,7 +97,7 @@ export async function controlAssets({kernel, project, session, input, output, lo
       if(request.operation==='compact'){active=true;failed=false;lastTurn='running';started=progress=Date.now()}
       try{
         const value=await kernel.native(sid,{operation:request.operation,input:request.input??{}})
-        if(request.operation==='fork'&&value?.id){sid=value.id;active=false}
+        if(request.operation==='fork'&&value?.id){sid=value.id;onSession(sid);active=false}
         return value
       }catch(error){if(request.operation==='compact'){active=false;failed=true;lastTurn='error'};throw error}
     }else if(request.op==='quit'){await stop('closed');return}
@@ -118,6 +121,7 @@ export async function controlAssets({kernel, project, session, input, output, lo
   })
   try{
     sid=session?await kernel.resumeSession(project,session):await kernel.startSession(project)
+    if(sid)onSession(sid)
     if(!sid)throw Error('The requested session cannot be resumed. Do not silently create a replacement.')
     save()
     emit({type:'ready',sessionId:sid,eventPath,transcript,resultPath})

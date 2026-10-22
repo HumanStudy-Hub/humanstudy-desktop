@@ -873,6 +873,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
           const t = info.tokens ?? {}
           emit({
             type: 'usage',
+            messageId: info.id,
             usage: {
               input: Number(t.input) || 0,
               output: Number(t.output) || 0,
@@ -956,6 +957,8 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
           const out = status === 'error' ? st.error : st.output
           emit({
             type: 'tool',
+            toolCallId: part.callID ?? part.id,
+            messageId: part.messageID,
             tool: part.tool,
             text: status,
             detail,
