@@ -47,6 +47,13 @@ class PrepareConversionTests(unittest.TestCase):
             helper.prepare(self.project, None, [self.resources])
         self.assertEqual(target.read_text(), "existing custom instructions")
 
+    def test_opencode_worker_uses_desktop_instructions_without_direct_agent_override(self):
+        helper.prepare(self.project, None, [self.resources], engine="opencode")
+        self.assertEqual((self.project / "AGENTS.md").read_bytes(), (ROOT / "pack/AGENTS.md").read_bytes())
+        manifest = json.loads((self.project / ".humanstudy/conversion-pack.json").read_text())
+        self.assertEqual(manifest["engine"], "opencode")
+        self.assertIn("program-only", (self.project / "CONVERT.md").read_text())
+
     def test_symlink_and_recursive_input_fail_before_creating_project(self):
         (self.resources / "linked.json").symlink_to(self.resources / "design.json")
         with self.assertRaisesRegex(ValueError, "Symlink"):

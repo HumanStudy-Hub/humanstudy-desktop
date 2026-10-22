@@ -102,12 +102,14 @@ def files_under(path: Path):
         raise ValueError(f"Input is not a regular file or directory: {path.name}")
 
 
-def prepare(project: Path, paper: Path | None, resources: list[Path]) -> dict:
+def prepare(project: Path, paper: Path | None, resources: list[Path], engine: str = "direct") -> dict:
     # Preflight before creating anything; existing projects are never overwritten.
     if project.exists() or project.is_symlink():
         raise ValueError("Project already exists; choose a new directory. Nothing was overwritten.")
     if not paper and not resources:
         raise ValueError("Supply --paper and/or at least one --resource.")
+    if engine not in {"direct", "opencode"}:
+        raise ValueError("Unknown conversion engine.")
     if paper and (paper.suffix.lower() != ".pdf" or not paper.is_file() or paper.is_symlink()):
         raise ValueError("--paper must be a regular PDF file.")
     names = set()
@@ -125,7 +127,7 @@ def prepare(project: Path, paper: Path | None, resources: list[Path]) -> dict:
                           for f in files_under(PACK / name))
     pack_files.extend([(PACK / "AGENTS.md", Path(".opencode/HUMANSTUDY_AGENT.md")),
                        (PACK / "PROJECT_FORMAT.md", Path(".opencode/PROJECT_FORMAT.md"))])
-    manifest = {"format": 1, "files": {str(dest): hashlib.sha256(src.read_bytes()).hexdigest()
+    manifest = {"format": 1, "files": {dest.as_posix(): hashlib.sha256(src.read_bytes()).hexdigest()
                 for src, dest in pack_files}}
     project.mkdir(parents=True)
     for src, dest in pack_files:
@@ -142,12 +144,16 @@ def prepare(project: Path, paper: Path | None, resources: list[Path]) -> dict:
             target = project / "sources" / resource.name / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, target)
-    (project / "AGENTS.md").write_text(INSTRUCTIONS, encoding="utf-8")
+    (project / "AGENTS.md").write_text((PACK / "AGENTS.md").read_text(encoding="utf-8") if engine == "opencode" else INSTRUCTIONS, encoding="utf-8")
     (project / "CLAUDE.md").write_text("# HumanStudy conversion\n\nRead and follow AGENTS.md and CONVERT.md before working.\n", encoding="utf-8")
-    (project / "CONVERT.md").write_text(TASK, encoding="utf-8")
+    task = TASK
+    if engine == "opencode":
+        task += "\nOpenCode worker mode: execute the shared build skill yourself. The parent Codex controls this session. Read all supplied digital resources even when no paper.pdf exists. This is program-only initial conversion: preserve missing issues, do not ask the parent to invent scientific choices, and do not start simulations or execute contributed research code. Use the provided managed runtime. Save the program and applicable views before reporting completion.\n"
+    (project / "CONVERT.md").write_text(task, encoding="utf-8")
+    manifest["engine"] = engine
     (project / ".humanstudy/conversion-pack.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return {"project": str(project.resolve()), "packFiles": len(pack_files), "status": "prepared",
-            "next": "Open this project in Claude Code or Codex and ask it to follow CONVERT.md."}
+            "next": "Use the Codex humanstudy-opencode-assets skill to control the OpenCode worker." if engine == "opencode" else "Open this project in Claude Code or Codex and ask it to follow CONVERT.md."}
 
 
 def main():
@@ -155,9 +161,10 @@ def main():
     parser.add_argument("--project", type=Path, required=True, help="New output project directory")
     parser.add_argument("--paper", type=Path, help="Optional source PDF")
     parser.add_argument("--resource", type=Path, action="append", default=[], help="Source file, ZIP or directory; repeat as needed")
+    parser.add_argument("--engine", choices=["direct", "opencode"], default="direct", help="Direct coding agent, or Codex-supervised desktop OpenCode kernel")
     args = parser.parse_args()
     try:
-        print(json.dumps(prepare(args.project, args.paper, args.resource), indent=2))
+        print(json.dumps(prepare(args.project, args.paper, args.resource, args.engine), indent=2))
     except (ValueError, OSError) as exc:
         parser.exit(1, f"Cannot prepare conversion: {exc}\n")
 

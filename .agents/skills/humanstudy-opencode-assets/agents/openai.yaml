@@ -1,0 +1,4 @@
+interface:
+  display_name: "HumanStudy OpenCode Assets"
+  short_description: "Supervise OpenCode asset generation and data PRs"
+  default_prompt: "Use $humanstudy-opencode-assets to convert the supplied research sources with the shared desktop OpenCode kernel, preserve missing items, and submit a draft data PR."
