@@ -30,7 +30,8 @@ interface Props {
   onRun(perCondition: number): Promise<void>
   onBuild(): void
   /** Stop the agent and ask these run folders (absolute paths) to stop. */
-  onStop(runs: string[]): void
+  /** Stop: write STOP into these run folders; `ownTurn` when the agent's current turn is this tab's request. */
+  onStop(runs: string[], ownTurn: boolean): void
   onAsk(draft: string): void
   onOpenFile(path: string): void
 }
@@ -59,11 +60,12 @@ const packageEntries = (tree: ProjectEntry[]): ProjectEntry[] => {
   return pkg ? [pkg, ...all(pkg.children ?? [])] : []
 }
 const READ_LIMIT = 4 * 1024 * 1024
-function usePackageReadiness(dir: string, tree: ProjectEntry[]): { slugs: string[]; readiness: PackageReadiness | null } {
+function usePackageReadiness(dir: string, tree: ProjectEntry[]): { slugs: string[]; readiness: PackageReadiness | null; checking: boolean } {
   const entries = useMemo(() => packageEntries(tree), [tree])
   const slugs = useMemo(() => entries.filter((e) => e.kind === 'dir' && /^package\/[^/]+$/.test(e.rel) && !e.name.startsWith('.') && e.name !== '__pycache__').map((e) => e.name), [entries])
   const stamp = packageStamp(entries)
-  const [readiness, setReadiness] = useState<PackageReadiness | null>(null)
+  const [checked, setChecked] = useState<{ stamp: string; readiness: PackageReadiness } | null>(null)
+  const readiness = checked?.readiness ?? null
   useEffect(() => {
     let live = true
     const sizes = new Map(entries.map((e) => [e.rel, e.size]))
@@ -71,10 +73,11 @@ function usePackageReadiness(dir: string, tree: ProjectEntry[]): { slugs: string
       const rel = `package/${slug}/${file}`
       if ((sizes.get(rel) ?? 0) > READ_LIMIT) return undefined
       return window.humanstudy.project.readText(`${dir}/${rel}`).catch(() => null)
-    }).then((r) => { if (live) setReadiness(r) })
+    }).then((r) => { if (live) setChecked({ stamp, readiness: r }) })
     return () => { live = false }
   }, [dir, stamp]) // eslint-disable-line react-hooks/exhaustive-deps
-  return { slugs, readiness: readiness && readiness.exists === slugs.length > 0 ? readiness : null }
+  // `checking`: the package files changed since the last check, so `ready` may be out of date.
+  return { slugs, readiness: readiness && readiness.exists === slugs.length > 0 ? readiness : null, checking: checked?.stamp !== stamp }
 }
 const fileUrl = (tree: ProjectEntry[], path?: string): string | undefined => {
   if (!path) return undefined
@@ -94,7 +97,7 @@ export function SimulationPanel(props: Props) {
   const plan = useMemo(() => simulationPlan(program, studyId), [program, studyId])
   const scope = useMemo(() => simulationScope(program, studyId), [program, studyId])
   const limits = useMemo(() => simulationLimits(program, studyId), [program, studyId])
-  const { slugs, readiness } = usePackageReadiness(dir, project.tree)
+  const { slugs, readiness, checking } = usePackageReadiness(dir, project.tree)
   const built = Boolean(readiness?.ready)
   const [perCondition, setPerCondition] = useState(plan.defaultPerCondition)
   useEffect(() => setPerCondition(plan.defaultPerCondition), [plan.defaultPerCondition])
@@ -143,6 +146,9 @@ export function SimulationPanel(props: Props) {
   const quietMiss = runProblem || (pending?.kind === 'run' && !requestBusy && !newRun && now - pending.at > 8_000)
   useEffect(() => {
     if (!pending) return
+    // Until the conversation is known again (reopening a project, signing in) it cannot own anything;
+    // keep the request instead of discarding it as someone else's.
+    if (!agentThreadId) return
     if (pending.owner !== owner) { setPending(null); setBuildProblem(false); return }
     if (!pending.turn && requestBusy && agentTurnKey) {
       setPending({ ...pending, turn: agentTurnKey }); return
@@ -150,6 +156,8 @@ export function SimulationPanel(props: Props) {
     const turnEnded = Boolean(pending.turn) && (!agentBusy || pending.turn !== agentTurnKey)
     const notStarted = !pending.turn && !requestBusy && now - pending.at > 8_000
     if (pending.kind === 'build' && (turnEnded || notStarted)) {
+      // The package check is still reading the files the build just wrote: decide once it is done.
+      if (checking && slugs.length > 0) return
       setBuildProblem(!built && (!pending.turn || pending.turn === agentTurnKey))
       setPending(null)
     }
@@ -195,7 +203,9 @@ export function SimulationPanel(props: Props) {
     const at = Date.now()
     try { sessionStorage.setItem(STOP_KEY(dir), String(at)) } catch { /* no storage */ }
     setStopAt(at); setNow(at)
-    props.onStop([...new Set([activeRun?.path, newRun?.path].filter((p): p is string => Boolean(p) && !runs.find((r) => r.path === p)?.results))])
+    // The chat turn is stopped only when it belongs to this run or build; a run going on in the
+    // background while the agent answers something else stops through its STOP file alone.
+    props.onStop([...new Set([activeRun?.path, newRun?.path].filter((p): p is string => Boolean(p) && !runs.find((r) => r.path === p)?.results))], Boolean(requestBusy || (pending?.owner === owner && !agentBusy)))
     setPending(null); setBuildProblem(false); setRunProblem(false)
   }
   const activeRun = active ?? (newRun && states.get(newRun.id) === 'running' ? newRun : undefined)

@@ -267,7 +267,9 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   const onEdit = async (id: string, fieldId: string, text: string): Promise<boolean> => {
     if (!program) return false
     const path = `${project.dir}/program.json`
-    try {
+    // Read, patch, write only if unchanged since the read: an agent checkpoint (program_io.py) landing in
+    // between is patched again rather than overwritten.
+    const save = async (): Promise<void> => {
       const raw = await window.humanstudy.project.readText(path)
       let next: string
       try {
@@ -276,7 +278,15 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
         if (/is not in program\.json$/.test(e instanceof Error ? e.message : '')) throw new Error(t('study.field_missing', { id, field: fieldId }))
         throw e
       }
-      await window.humanstudy.project.writeText(path, next)
+      await window.humanstudy.project.writeText(path, next, raw)
+    }
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try { await save(); break } catch (e) {
+          if (attempt < 2 && /changed on disk/.test(e instanceof Error ? e.message : '')) continue
+          throw e
+        }
+      }
       setEditError('')
       setChanged((c) => new Set(c).add(id))
       track('program.edited', { target: id, metadata: { field: fieldId } })
@@ -387,8 +397,8 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
                 }
               }}
               onBuild={() => onSendAgent?.(t('sim.build_prompt'))}
-              onStop={(runs) => {
-                onStopAgent?.()
+              onStop={(runs, ownTurn) => {
+                if (ownTurn) onStopAgent?.()
                 // The run itself is a background process; simkit ends it after the participants in flight.
                 const live = runs.length ? runs : [project.tree.length ? findRunning(project.tree) : null].filter((p): p is string => Boolean(p))
                 for (const dir of live) void window.humanstudy.project.writeText(`${dir}/STOP`, 'Stopped by the researcher\n').catch(() => undefined)

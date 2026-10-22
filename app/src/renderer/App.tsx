@@ -147,8 +147,11 @@ export default function App() {
 
   const load = useCallback(async (dir: string) => {
     const snap = await window.humanstudy.project.read(dir)
+    // Only a different project clears the selection. A re-read of the same one (the agent saved a
+    // checkpoint, a field was saved) must not close the open item and the field being edited in it.
+    const sameProject = state.current.project?.dir === snap.dir
     setProject(snap)
-    setSelected([])
+    if (!sameProject) setSelected([])
   }, [])
   const openProject = useCallback(
     async (dir: string) => {

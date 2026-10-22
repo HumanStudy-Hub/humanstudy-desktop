@@ -94,7 +94,9 @@ export function FileView({ file, version, onDirty }: Props) {
     let live = true
     void load().then((t) => {
       if (!live || t === null || t === saved) return
-      if (!isDirty(text, saved)) {
+      // Another editor of the same file (a tab and the Paper pane) may hold the unsaved draft: a clean
+      // copy here must not reload and drop it; it shows the notice instead.
+      if (!isDirty(text, saved) && !getDraft(file.path)) {
         setSaved(t)
         setText(t)
       } else setOnDisk(t)

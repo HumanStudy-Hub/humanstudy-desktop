@@ -69,7 +69,10 @@ window.humanstudy = { telemetry: { track: async () => {} }, project: {
 } };
 const file = { kind: 'file', name: 'review_notes.txt', path: '/proj/review_notes.txt', rel: 'review_notes.txt', ext: 'txt', url: '' };
 function Fixture() { const [view, setView] = useState('file'); window.fixture.show = setView;
-  return view === 'file' ? <FileView file={file} dir="/proj" version={0} onDirty={(p, d) => { window.fixture.dirty[p] = d }} /> : <p id="study">Study</p> }
+  // The Paper pane can hold a second, hidden editor of the same file; it sees every project change.
+  const [pane, setPane] = useState(false), [version, setVersion] = useState(0); window.fixture.pane = setPane; window.fixture.bump = () => setVersion((v) => v + 1);
+  return <>{view === 'file' ? <FileView file={file} dir="/proj" version={version} onDirty={(p, d) => { window.fixture.dirty[p] = d }} /> : <p id="study">Study</p>}
+    {pane && <div id="pane"><FileView file={file} dir="/proj" version={version} onDirty={() => {}} /></div>}</> }
 createRoot(document.getElementById('root')).render(<Fixture />);
 ` },
       bundle: true, format: 'iife', platform: 'browser', jsx: 'automatic', outfile: join(ui, 'fixture.js'), define: { 'process.env.NODE_ENV': '"production"' }, logLevel: 'error', loader: { '.css': 'empty' },
@@ -103,6 +106,13 @@ app.whenReady().then(async () => {
     assert.equal(await js("window.fixture.dirty['/proj/review_notes.txt']"), false);
     await js("window.fixture.show('study')"); await wait(); await js("window.fixture.show('file')"); await wait();
     assert.equal(await button(), 'Saved', 'no stale draft after the save');
+    // A clean second editor of the same file reloads on a disk change; it must not drop the draft
+    // typed in the tab.
+    await js("window.fixture.pane(true)"); await wait();
+    await type('a draft typed in the tab\\n'); await wait();
+    await js("window.fixture.disk.text = 'the agent rewrote it'; window.fixture.bump()"); await wait(); await wait();
+    await js("window.fixture.show('study')"); await wait(); await js("window.fixture.show('file')"); await wait();
+    assert.equal(await js("document.querySelector('textarea').value"), 'a draft typed in the tab\\n', 'the clean copy dropped the draft');
     console.log('draft UI ok');
   } catch (e) { console.error(e); process.exitCode = 1 } finally { w.destroy(); app.exit(process.exitCode || 0) }
 });

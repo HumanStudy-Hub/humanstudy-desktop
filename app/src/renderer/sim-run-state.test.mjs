@@ -27,7 +27,7 @@ try{
  function Fixture(){const[state,setState]=useState({busy:false,turn:null,thread:'t1',tree:[pkg]}),[key,setKey]=useState(0);
  window.fixture.set=patch=>setState(s=>({...s,...patch}));window.fixture.advance=ms=>{offset+=ms;setState(s=>({...s}))};window.fixture.remount=()=>setKey(n=>n+1);
  return <SimulationPanel key={key} project={{dir:'/fixture',name:'Fixture',tree:state.tree}} program={sample} studyId={sample.studies[0].id} studies={sample.studies} model='fixture' agentBusy={state.busy} agentThreadId={state.thread} agentTurnKey={state.turn}
-  onStudy={()=>{}} onBuild={()=>{}} onRun={async()=>{if(!window.fixture.noStart)setState(s=>({...s,busy:true,turn:'run-'+Date.now()}))}} onStop={runs=>{window.fixture.stops.push(runs);setState(s=>({...s,busy:false}))}} onAsk={()=>{}} onOpenFile={()=>{}}/>};
+  onStudy={()=>{}} onBuild={()=>{}} onRun={async()=>{if(!window.fixture.noStart)setState(s=>({...s,busy:true,turn:'run-'+Date.now()}))}} onStop={(runs,own)=>{window.fixture.stops.push(runs);window.fixture.own=own;if(own)setState(s=>({...s,busy:false}))}} onAsk={()=>{}} onOpenFile={()=>{}}/>};
  createRoot(document.getElementById('root')).render(<Fixture/>);
  `},bundle:true,format:'iife',platform:'browser',jsx:'automatic',outfile:join(out,'fixture.js'),define:{'process.env.NODE_ENV':'"production"'},logLevel:'error'})
  writeFileSync(join(out,'index.html'),'<link rel="stylesheet" href="fixture.css"><div id="root"></div><script src="fixture.js"></script>')
@@ -81,6 +81,12 @@ try{
  await js("window.fixture.set({tree:window.fixture.treeOf({'2026-10-22-1100':{files:[],mtime:Date.now()-600000},'2026-10-22-1000':{files:['run.py','STOP'],mtime:Date.now()-600000,progress:{stage:'preparing',total:40}},'2026-10-21-0900':{files:['results.html',['sessions.jsonl',{size:0}]],mtime:Date.now()-86400000},'2026-10-20-0800':{files:['results.html',['sessions.jsonl',{size:900}]],mtime:Date.now()-172800000,progress:{stage:'done',done:40,total:40}}})})");await wait(200);
  assert.ok(await has('.sim-result'),'a run with participants was not shown as a result');assert.ok(!(await has('.sim-history')),'empty folders were counted next to the one real result');
  assert.ok(!(await has('.sim-live')),'an aborted folder looked active');
+ // Stop on a background run while the agent answers something else stops the run, not that answer.
+ await js("window.fixture.advance(60000);window.fixture.set({busy:true,turn:'t1:other-question',tree:window.fixture.treeOf({'2026-10-22-1300':{files:['run.py'],progress:{stage:'running',runner:'alive',done:5,total:40,updatedAt:new Date(Date.now()).toISOString(),heartbeatAt:new Date(Date.now()).toISOString()}}})})");await wait(1200);
+ assert.ok(await has('.sim-live'),'the background run was not shown as running');
+ await js("document.querySelector('.sim-stop').click()");await wait(150);
+ assert.deepEqual((await js('window.fixture.stops')).at(-1),['/fixture/artifacts/simulations/2026-10-22-1300'],'Stop did not target the background run');
+ assert.equal(await js('window.fixture.own'),false,'Stop on a background run aborted an unrelated chat turn');
  assert.equal(errors.length,0,errors.join('\\n'));console.log('Chat vs run state, quiet live stages, stale heartbeat, Stop during preparation (with and without a folder), retry, and result counting passed');
  }catch(e){console.error(e);process.exitCode=1}finally{w.destroy();app.exit(process.exitCode||0)}});
  `)

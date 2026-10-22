@@ -22,7 +22,7 @@ import { checkForUpdates, installUpdate, startUpdates, stopUpdates, updateStatus
 import { existsSync } from 'node:fs'
 import { watchFolder, type FolderWatch } from './project-watch'
 import { fileVersion } from '../shared/file-version'
-import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
@@ -308,13 +308,20 @@ function threadDir(dir: string): string {
 // ---- unsaved edits: a window that reports drafts asks before it closes or the app quits ----------
 const unsaved = new Map<number, UnsavedPrompt>()
 /** True when the window may close: no drafts, or the researcher chose to discard them. */
-function confirmDiscard(win: BrowserWindow): boolean {
+function confirmDiscard(win: BrowserWindow, forget = true): boolean {
   const id = win.webContents.id
   const prompt = unsaved.get(id)
   if (!prompt) return true
   const choice = dialog.showMessageBoxSync(win, { type: 'warning', message: prompt.message, detail: prompt.detail, buttons: [prompt.discard, prompt.cancel], defaultId: 1, cancelId: 1, noLink: true })
   if (choice !== 0) return false
-  unsaved.delete(id)
+  if (forget) unsaved.delete(id)
+  return true
+}
+/** Every window agrees to discard its drafts; a Cancel in any one keeps all of them. */
+function confirmDiscardAll(): boolean {
+  const wins = BrowserWindow.getAllWindows()
+  if (!wins.every((w) => confirmDiscard(w, false))) return false
+  for (const w of wins) unsaved.delete(w.webContents.id)
   return true
 }
 ipcMain.on('app:unsaved', (e, prompt: UnsavedPrompt | null) => {
@@ -433,7 +440,7 @@ app.whenReady().then(() => {
     if ((await stat(q)).size > TEXT_LIMIT) throw new Error('file is larger than 4 MB')
     return readFile(q, 'utf8')
   })
-  ipcMain.handle('project:writeText', async (_e, p: string, text: string) => {
+  ipcMain.handle('project:writeText', async (_e, p: string, text: string, ifUnchanged?: string) => {
     const q = ownedPath(p)
     if (typeof text !== 'string' || text.length > TEXT_LIMIT) throw new Error('text is too large')
     if (basename(q) === 'program.json') JSON.parse(text) // never leave the program unreadable
@@ -441,8 +448,16 @@ app.whenReady().then(() => {
     // Keep the version being replaced (program.json, artifacts/, exports/), so no save loses it.
     const root = [...openProjects].find((d) => q.startsWith(d + sep))
     if (root) await snapshot(root, relOf(root, q)).catch(() => undefined)
+    // A patch of what was read must not overwrite a newer save (the agent's checkpoint): compare just
+    // before writing, then replace in one rename so nobody reads a half-written file.
+    if (typeof ifUnchanged === 'string' && (await readFile(q, 'utf8').catch(() => null)) !== ifUnchanged)
+      throw new Error('changed on disk while saving; try again')
     telemetry.noteHumanWrite(q)
-    await writeFile(q, text, 'utf8')
+    if (typeof ifUnchanged === 'string') {
+      const tmp = `${q}.${process.pid}.tmp`
+      await writeFile(tmp, text, 'utf8')
+      await rename(tmp, q).catch(async (error) => { await unlink(tmp).catch(() => undefined); throw error })
+    } else await writeFile(q, text, 'utf8')
     telemetry.track('file.edited', { target: extname(q).slice(1) || 'file' })
   })
 
@@ -753,7 +768,9 @@ app.whenReady().then(() => {
 
   ipcMain.handle('updates:status', () => updateStatus())
   ipcMain.handle('updates:check', () => checkForUpdates())
-  ipcMain.handle('updates:install', () => installUpdate())
+  // Ask about unsaved drafts before the update stops the agent and quits: Cancel must leave everything
+  // running (on Windows the installer starts before the app quits, so asking later is too late).
+  ipcMain.handle('updates:install', () => (confirmDiscardAll() ? installUpdate() : undefined))
   startUpdates((s) => broadcast('updates:changed', s), () => shutdown.prepare(true), () => { shutdown.reset() })
 
   setupMenu({ newWindow: createWindow, checkForUpdates: () => void checkForUpdates() })
@@ -765,7 +782,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', event => {
   // Ask about unsaved edits before the kernels are stopped, so Cancel leaves everything running.
-  if (!BrowserWindow.getAllWindows().every(confirmDiscard)) return event.preventDefault()
+  if (!confirmDiscardAll()) return event.preventDefault()
   if (!primaryInstance || shutdown.ready()) return
   event.preventDefault()
   void shutdown.prepare(false).then(ready => {
