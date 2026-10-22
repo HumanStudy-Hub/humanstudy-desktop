@@ -10,7 +10,14 @@ try{
  await build({stdin:{resolveDir:here,loader:'tsx',contents:`
  import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{SimulationPanel}from'./components/SimulationPanel';import sample from'../shared/sample-program.json';import'./styles.css';
  const realNow=Date.now;let offset=0;Date.now=()=>realNow()+offset;
- window.fixture={};window.humanstudy={telemetry:{track:async()=>{}},project:{readText:async()=>null}};
+ // A complete package (#20: only a package with all eight valid files counts as built).
+ const P='package/p',pkgFiles=['study.json','source/paper_metadata.json','source/evidence.json','materials/materials.json','task/task.json','task/adapter.py','evaluation/evaluation.py','audit/missing_information.json'];
+ const texts=Object.fromEntries(pkgFiles.map(f=>['/fixture/'+P+'/'+f,f==='task/adapter.py'?'def run_sessions(llm, seed, n, arms=None): return []':f==='evaluation/evaluation.py'?'def evaluate(sessions): return {}':'{}']));
+ const entry=rel=>({name:rel.split('/').pop(),path:'/fixture/'+rel,rel,kind:'file',ext:rel.split('.').pop(),size:10,mtime:0});
+ const folder=(rel,children)=>({name:rel.split('/').pop(),path:'/fixture/'+rel,rel,kind:'dir',ext:'',children});
+ const sub=d=>folder(P+'/'+d,pkgFiles.filter(f=>f.startsWith(d+'/')).map(f=>entry(P+'/'+f)));
+ window.fixture={package:[folder('package',[folder(P,[entry(P+'/study.json'),sub('source'),sub('materials'),sub('task'),sub('evaluation'),sub('audit')])])]};
+ window.humanstudy={telemetry:{track:async()=>{}},project:{readText:async p=>{if(p in texts)return texts[p];throw Error('missing')}}};
  sessionStorage.setItem('hs.sim.pending:/fixture',JSON.stringify({at:Date.now()-109*60000,kind:'build'}));
  function Fixture(){const[state,setState]=useState({busy:true,turn:'unrelated',thread:'thread-1',tree:[]}),[key,setKey]=useState(0);window.fixture.set=patch=>setState(s=>({...s,...patch}));window.fixture.advance=ms=>{offset+=ms;setState(s=>({...s}))};window.fixture.remount=()=>setKey(n=>n+1);
  return <SimulationPanel key={key} project={{dir:'/fixture',name:'Fixture',tree:state.tree}} program={sample} studyId={sample.studies[0].id} studies={sample.studies} model='fixture' agentBusy={state.busy} agentThreadId={state.thread} agentTurnKey={state.turn} onStudy={()=>{}} onBuild={()=>{if(!window.fixture.ignoreBuild)setState(s=>({...s,busy:true,turn:'build-'+Date.now()}))}} onRun={async()=>{}} onStop={()=>setState(s=>({...s,busy:false}))} onAsk={()=>{}} onOpenFile={()=>{}}/>};createRoot(document.getElementById('root')).render(<Fixture/>);
@@ -26,7 +33,7 @@ try{
  await js("window.fixture.set({busy:true,thread:'thread-2',turn:'another-conversation'})");await wait(100);assert.ok(!(await text()).includes('Building the runnable'),'another conversation adopted this build');
  await js('window.fixture.set({busy:false})');await wait(50);await js("document.querySelector('.sim-actions .primary').click()");await wait(100);await js("document.querySelector('.sim-stop').click()");await wait(100);assert.ok(!(await text()).includes('Building the runnable'),'Stop left the build running');
  await js('window.fixture.ignoreBuild=true');await js("document.querySelector('.sim-actions .primary').click()");await wait(50);await js('window.fixture.advance(10000)');await wait(1100);assert.ok((await text()).includes('Saved work is kept'),'dispatch without a busy event never expired');
- await js('window.fixture.ignoreBuild=false');await js("document.querySelector('.sim-actions .primary').click()");await wait(100);await js("window.fixture.set({busy:false,tree:[{kind:'dir',rel:'package',children:[{kind:'dir',children:[{name:'task',children:[{name:'adapter.py'}]}]}]}]})");await wait(100);assert.equal(await js("document.querySelector('.sim-problem')"),null,'successful package produced a failure banner');
+ await js('window.fixture.ignoreBuild=false');await js("document.querySelector('.sim-actions .primary').click()");await wait(100);await js("window.fixture.set({busy:false,tree:window.fixture.package})");await wait(100);assert.equal(await js("document.querySelector('.sim-problem')"),null,'successful package produced a failure banner');
  await js("document.querySelector('.sim-actions .primary').click()");await wait(50);await js('window.fixture.advance(10000)');await wait(1100);assert.ok((await text()).includes('without starting a simulation'),'missing simulation was not explained');
  await js("window.fixture.set({busy:true,turn:'another-unrelated-question'})");await wait(100);assert.ok(!(await text()).includes('Looking through the project'),'unrelated chat revived a failed run');
  assert.equal(errors.length,0,errors.join('\\n'));console.log('Legacy timer, quick completion, unrelated chat, tab remount, thread switching, Stop, failed dispatch and missing/successful output passed');

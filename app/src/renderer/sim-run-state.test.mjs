@@ -15,7 +15,12 @@ try{
  const S='artifacts/simulations';
  const file=(rel,extra={})=>({name:rel.split('/').pop(),path:'/fixture/'+rel,rel,kind:'file',ext:rel.split('.').pop(),mtime:Date.now(),size:10,url:'about:blank',...extra});
  const dir=(rel,children)=>({name:rel.split('/').pop(),path:'/fixture/'+rel,rel,kind:'dir',ext:'',children});
- const pkg=dir('package',[dir('package/p',[dir('package/p/task',[file('package/p/task/adapter.py')])])]);
+ // A complete package (#20: Run is offered only when all eight files are there and valid).
+ const P='package/p',body={'task/adapter.py':'def run_sessions(llm, seed, n, arms=None): return []','evaluation/evaluation.py':'def evaluate(sessions): return {}'};
+ const pkgFiles=['study.json','source/paper_metadata.json','source/evidence.json','materials/materials.json','task/task.json','task/adapter.py','evaluation/evaluation.py','audit/missing_information.json'];
+ for(const f of pkgFiles)texts['/fixture/'+P+'/'+f]=body[f]??'{}';
+ const sub=d=>dir(P+'/'+d,pkgFiles.filter(f=>f.startsWith(d+'/')).map(f=>file(P+'/'+f,{mtime:0})));
+ const pkg=dir('package',[dir(P,[file(P+'/study.json',{mtime:0}),sub('source'),sub('materials'),sub('task'),sub('evaluation'),sub('audit')])]);
  // runs: {id: {files:[name|[name,extra]], progress?}}
  const treeOf=runs=>[pkg,dir('artifacts',[dir(S,Object.entries(runs).map(([id,r])=>{const rel=S+'/'+id;if(r.progress){texts['/fixture/'+rel+'/progress.json']=JSON.stringify(r.progress)}const m=r.mtime??(r.progress?.updatedAt?Date.parse(r.progress.updatedAt):Date.now());return dir(rel,[...(r.progress?['progress.json']:[]),...r.files].map(x=>Array.isArray(x)?file(rel+'/'+x[0],{mtime:m,...x[1]}):file(rel+'/'+x,{mtime:m})))}))])];
  window.fixture.treeOf=treeOf;
