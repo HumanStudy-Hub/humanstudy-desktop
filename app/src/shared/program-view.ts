@@ -125,7 +125,10 @@ export function passageSupport(program:HumanProgram,selection:{sourceId?:string;
   let out:{same:boolean}|null=null;
   if(e&&quote.length&&e.locator.page===selection.page&&sharedRun(quote,picked)>=Math.min(6,quote.length,picked.length)){
    const ref={...(e.path?{file:e.path}:{}),...(e.sourceId?{sourceId:e.sourceId}:{})};
-   const same=resolve&&selection.source?resolve(ref)===selection.source:(!selection.sourceId||!e.sourceId||e.sourceId===selection.sourceId);
+   // Paths compare without case or separator differences (Windows and macOS folders ignore case). An
+   // evidence source that does not resolve to a file (an opaque sourceId) falls back to the id rule.
+   const target=resolve&&selection.source?resolve(ref):null;
+   const same=target!==null?samePath(target,selection.source!):(!selection.sourceId||!e.sourceId||e.sourceId===selection.sourceId);
    out={same};
   }
   hits.set(id,out);return out;
@@ -140,6 +143,7 @@ export function passageSupport(program:HumanProgram,selection:{sourceId?:string;
  }
  return {same,other};
 }
+const samePath=(a:string,b:string)=>a.replace(/\\/g,'/').toLowerCase()===b.replace(/\\/g,'/').toLowerCase();
 function sharedRun(a:string[],b:string[]):number {
  let best=0;const prev=new Uint16Array(b.length+1),cur=new Uint16Array(b.length+1);
  for(let i=1;i<=a.length;i++){for(let j=1;j<=b.length;j++){cur[j]=a[i-1]===b[j-1]?prev[j-1]+1:0;if(cur[j]>best)best=cur[j];}prev.set(cur);cur.fill(0);}

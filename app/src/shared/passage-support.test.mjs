@@ -55,3 +55,12 @@ test('a different page or too short a run is no support at all; old callers keep
   assert.deepEqual(passageSupport(program, { page: 1, text: 'the wheel', source: a.path }, resolve), { same: [], other: [] })
   assert.equal(supportedBy(program, selection).length, 4)
 })
+
+test('paths compare without case or separator differences; an unresolvable source falls back to its id', () => {
+  const upper = (p) => p.replace('/p/sources/document-a.pdf', 'C:\\P\\Sources\\Document-A.pdf')
+  const winResolve = (ref) => { const p = resolve(ref); return p && upper(p) }
+  assert.deepEqual(passageSupport(program, { ...selection, source: 'c:/p/sources/document-a.pdf' }, winResolve).same, ['source-a-only', 'both'])
+  // An opaque sourceId that names no file cannot be placed in another file: it is not "another source".
+  const r = passageSupport(program, { ...selection, source: a.path }, (ref) => (ref.file || ref.sourceId ? resolve(ref) : null))
+  assert.ok(r.same.includes('paper-only'), 'evidence whose source cannot be resolved was labelled as another file')
+})
