@@ -12,6 +12,7 @@ import { findQuote, type Rect, type Word } from '../../shared/source-anchor'
 import type { TokenDiff, TokenPart } from '../../shared/significant-tokens'
 import { readPdfAnnotations, type PdfAnnotation } from '../../shared/pdf-annotations'
 import { observeSettledWidth } from '../settled-width'
+import { replacedOnDisk, versionedUrl } from '../../shared/file-version'
 import { makeWords } from './pdf-words'
 import { lap, track } from '../telemetry'
 import { t } from '../i18n'
@@ -77,6 +78,9 @@ export function SourceDrawer({
   const [err, setErr] = useState<string | null>(null)
   const [hit, setHit] = useState<{ page: number; rects: Rect[] } | null>(null)
   const [verdict, setVerdict] = useState<QuoteResult | null>(null)
+  // paper.pdf replaced at the same path: reload, and say which version is now shown.
+  const [replaced, setReplaced] = useState<{ at?: number } | null>(null)
+  const shownFile = useRef<{ path: string; version?: string } | null>(null)
   const [selection, setSelection] = useState<
     (PassageSelection & { top: number; left: number; pages: PdfAnnotation['pages']; annotationId?: string }) | null
   >(null)
@@ -153,6 +157,24 @@ export function SourceDrawer({
   }
 
   useEffect(() => {
+    const now = pdf ? { path: pdf.path, version: pdf.version } : null
+    if (replacedOnDisk(shownFile.current, now)) {
+      setReplaced({ at: pdf?.mtime })
+      setSelection(null)
+      onSelect?.(null)
+      track('source.file_replaced', { target: pdf?.ext ?? 'pdf' })
+    } else if (shownFile.current?.path !== now?.path) setReplaced(null)
+    shownFile.current = now
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdf?.path, pdf?.version])
+  // The notice is brief, but only counts down while the pane is in view.
+  useEffect(() => {
+    if (!replaced || !active) return
+    const id = window.setTimeout(() => setReplaced(null), 12000)
+    return () => window.clearTimeout(id)
+  }, [replaced, active])
+
+  useEffect(() => {
     setDoc(null)
     setPages([])
     setErr(null)
@@ -161,7 +183,8 @@ export function SourceDrawer({
     // Older papers often leave standard fonts unembedded; pdfjs needs its font data to draw their text.
     const base = new URL('pdfjs/', document.baseURI).href
     const task = pdfjs.getDocument({
-      url: pdf.url,
+      // A new version is a new URL: a replaced file is fetched again, never served from cache.
+      url: versionedUrl(pdf.url, pdf.version),
       standardFontDataUrl: `${base}standard_fonts/`,
       cMapUrl: `${base}cmaps/`,
       cMapPacked: true,
@@ -180,7 +203,7 @@ export function SourceDrawer({
       live = false
       void task.destroy()
     }
-  }, [open, pdf?.url])
+  }, [open, pdf?.url, pdf?.version])
 
   // Only visible pages and explicitly requested citations extract text.
   const loadPage = useMemo(
@@ -408,6 +431,13 @@ export function SourceDrawer({
             +
           </button>
         </div>
+      )}
+      {replaced && (
+        <p className="paper-replaced" role="status">
+          {replaced.at
+            ? t('paper.replaced_at', { file: pdf?.name ?? '', time: new Date(replaced.at).toLocaleString() })
+            : t('paper.replaced', { file: pdf?.name ?? '' })}
+        </p>
       )}
       {annotationError && (
         <p role="alert" className="part error pad">

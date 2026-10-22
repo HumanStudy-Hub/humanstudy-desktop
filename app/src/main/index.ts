@@ -19,7 +19,9 @@ import {
 import { createProject, isInside, listProjects, renameProject, trashProject } from './projects'
 import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
 import { checkForUpdates, installUpdate, startUpdates, stopUpdates, updateStatus } from './updates'
-import { existsSync, watch, type FSWatcher } from 'node:fs'
+import { existsSync } from 'node:fs'
+import { watchFolder, type FolderWatch } from './project-watch'
+import { fileVersion } from '../shared/file-version'
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -168,14 +170,16 @@ async function listTree(root: string, dir: string, depth: number, count: { n: nu
     else if (d.isFile()) {
       let size: number | undefined
       let mtime: number | undefined
+      let version: string | undefined
       try {
         const st = await stat(path)
         size = st.size
         mtime = Math.round(st.mtimeMs)
+        version = fileVersion(st)
       } catch {
         /* unreadable */
       }
-      out.push({ name: d.name, path, rel, kind: 'file', ext: extname(d.name).slice(1).toLowerCase(), url: toUrl(path), size, mtime })
+      out.push({ name: d.name, path, rel, kind: 'file', ext: extname(d.name).slice(1).toLowerCase(), url: toUrl(path), size, mtime, version })
     }
   }
   return out
@@ -204,6 +208,8 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
     }
   }
   const pdfPath = [join(dir, 'paper.pdf')].find(existsSync)
+  // The version stamp lets the paper pane notice paper.pdf replaced at the same path.
+  const pdfStat = pdfPath ? await stat(pdfPath).catch(() => null) : null
   return {
     dir,
     name: basename(dir),
@@ -211,36 +217,51 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
     programError,
     artifacts: await listDir(join(dir, 'artifacts')),
     exports: await listDir(join(dir, 'exports')),
-    pdf: pdfPath ? { name: 'paper.pdf', path: pdfPath, url: toUrl(pdfPath), ext: 'pdf' } : null,
+    pdf: pdfPath
+      ? {
+          name: 'paper.pdf',
+          path: pdfPath,
+          url: toUrl(pdfPath),
+          ext: 'pdf',
+          ...(pdfStat ? { size: pdfStat.size, mtime: Math.round(pdfStat.mtimeMs), version: fileVersion(pdfStat) } : {}),
+        }
+      : null,
     tree: await listTree(dir, dir, 0, { n: 0 }),
   }
 }
 
 // ---- watch the open project so new artifacts appear without a reload -----------------
-const watchers = new Map<string, FSWatcher>()
+const watchers = new Map<string, FolderWatch>()
 const snapTimers = new Map<string, NodeJS.Timeout>()
 function watchProject(dir: string): void {
   if (watchers.has(dir)) return
-  let timer: NodeJS.Timeout | undefined
   try {
-    const w = watch(dir, { recursive: true }, (_e, file) => {
-      if (file && String(file).startsWith('.humanstudy')) return
-      if (file) telemetry.noteFsChange(dir, String(file))
-      if (file) {
+    const w = watchFolder(dir, {
+      ignore: (file) => file.startsWith('.humanstudy'),
+      onFile: (file) => {
+        telemetry.noteFsChange(dir, file)
         // A history for what the agent (or the researcher) wrote; debounced so one write is one version.
-        const rel = String(file).split(sep).join('/')
+        const rel = file.split(sep).join('/')
         if (isVersioned(rel)) {
           const k = `${dir}\n${rel}`
           clearTimeout(snapTimers.get(k))
           snapTimers.set(k, setTimeout(() => { snapTimers.delete(k); void snapshot(dir, rel).catch(() => undefined) }, 600))
         }
-      }
-      clearTimeout(timer)
-      timer = setTimeout(() => broadcast('project:changed', dir), 250)
+      },
+      // Replacing a file is often several events (temporary file, rename, delete + create); one
+      // broadcast after they settle, and the renderer compares version stamps.
+      onSettled: () => broadcast('project:changed', dir),
+      // Watching died (e.g. EPERM on Windows): forget it so the next project read watches again,
+      // and let the renderer re-read now. It also re-checks on window focus and tab switches.
+      onError: () => {
+        if (watchers.get(dir) === w) watchers.delete(dir)
+        broadcast('project:changed', dir)
+      },
+      debounceMs: 300,
     })
     watchers.set(dir, w)
   } catch {
-    /* watching is a convenience */
+    /* watching is a convenience: the renderer also re-reads on focus and tab switches */
   }
 }
 

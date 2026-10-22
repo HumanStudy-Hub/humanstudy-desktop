@@ -592,6 +592,8 @@ const ROWS: Row[] = [
   ['paper.cited_none', 'No study item cites this', '没有条目引用这段'],
   ['paper.passage_draft', 'From the paper, p. {n}:\n“{q}”\n\n', '论文第 {n} 页：\n“{q}”\n\n'],
   ['paper.page_aria', 'Page {n} of the paper', '论文第 {n} 页'],
+  ['paper.replaced_at', '{file} changed on disk and was reloaded. Showing the version saved {time}.', '{file} 已在磁盘上被修改并已重新载入。现在显示的是 {time} 保存的版本。'],
+  ['paper.replaced', '{file} changed on disk and was reloaded. Showing the current version.', '{file} 已在磁盘上被修改并已重新载入。现在显示的是当前版本。'],
   ['paper.located', 'Text located on this page by automatic matching — not a confirmation', '已通过自动文本匹配在此页找到 —— 并非人工核对'],
   ['paper.differs', 'Located, but numbers or signs differ — check the page:', '已定位，但数字或符号不一致 —— 请核对原文：'],
   ['paper.differs_quote', 'cited', '引用'],

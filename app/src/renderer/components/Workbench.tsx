@@ -73,6 +73,8 @@ interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSour
   agentBusy?: boolean
   agentActivity?: string
   onWorkspaceChange?(snapshot: WorkspaceSnapshot): void
+  /** Re-read the project from disk (tab switches), in case the folder watcher missed a change. */
+  onRecheck?(): void
 }
 
 const key = (dir: string) => `hs.wb2:${dir}`
@@ -94,7 +96,7 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, source, onClearSelection, onAskSelection, onFixProgram, onFold, simulationRequest, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentActivity, onWorkspaceChange, ...docProps }: Props) {
+export function Workbench({ ref, project, source, onClearSelection, onAskSelection, onFixProgram, onFold, simulationRequest, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
   // Tolerant: one slip by the agent sets that detail aside and the document still renders.
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
@@ -128,6 +130,15 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
     const found = passageSupport(program, { ...passage, source: sourceFile?.path ?? null }, (ref) => sourceTarget(project, ref)?.path ?? null)
     return { page: passage.page, file: sourceLabel, ids: found.same, other: found.other }
   }, [passage, program, project, sourceFile?.path, sourceLabel])
+
+  // A source file replaced on disk: what was located in the old version says nothing about the new one.
+  const sourceVersions = useMemo(() => [project.pdf, ...files].filter(f => f && f.ext === 'pdf').map(f => `${f!.path}\n${f!.version ?? ''}`).sort().join('\n'), [project.pdf, files])
+  const seenVersions = useRef(sourceVersions)
+  useEffect(() => {
+    if (seenVersions.current === sourceVersions) return
+    seenVersions.current = sourceVersions
+    setQuoteStatus(new Map())
+  }, [sourceVersions])
 
   // Project switch: restore its tabs.
   useEffect(() => {
@@ -181,7 +192,10 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
     if (layout.active === 'paper' || layout.compare) setPaperSeen(true)
   }, [layout.active, layout.compare])
 
-  const activate = (id: TabId) => update((l) => (l.active === id ? l : { ...l, active: id }))
+  const activate = (id: TabId) => {
+    if (id !== layout.active) onRecheck?.()
+    update((l) => (l.active === id ? l : { ...l, active: id }))
+  }
   const open = (id: `file:${string}`) => {
     track('tab.open', { target: `file.${fileByPath.get(id.slice(5))?.ext ?? ''}` })
     update((l) => ({ ...l, tabs: l.tabs.includes(id) ? l.tabs : [...l.tabs, id], active: id }))

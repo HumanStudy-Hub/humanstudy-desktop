@@ -194,6 +194,30 @@ export default function App() {
       if (dir === project.dir) void load(dir)
     })
   }, [project, load])
+  // The folder watcher can miss a replaced file (on Windows a rename-replace or an editor's temporary
+  // file may report only the other name). Re-read when the window regains focus or a tab is switched:
+  // a changed version stamp reloads the source; an unchanged project keeps its state and selection.
+  const lastCheck = useRef(0)
+  const recheck = useCallback(() => {
+    const dir = project?.dir
+    if (!dir || Date.now() - lastCheck.current < 800) return
+    lastCheck.current = Date.now()
+    window.humanstudy.project
+      .read(dir)
+      .then((snap) => setProject((prev) => (!prev || prev.dir !== snap.dir || JSON.stringify(prev) === JSON.stringify(snap) ? prev : snap)))
+      .catch(() => undefined)
+  }, [project?.dir])
+  useEffect(() => {
+    const visible = () => {
+      if (document.visibilityState === 'visible') recheck()
+    }
+    window.addEventListener('focus', recheck)
+    document.addEventListener('visibilitychange', visible)
+    return () => {
+      window.removeEventListener('focus', recheck)
+      document.removeEventListener('visibilitychange', visible)
+    }
+  }, [recheck])
 
   const openSettings = (section: SettingsSection) => {
     track('settings.opened', { target: section })
@@ -423,6 +447,7 @@ export default function App() {
               project={project}
               source={source}
               onWorkspaceChange={cacheWorkspace}
+              onRecheck={recheck}
               simulationRequest={simulationRequest}
               onRunSimulation={approval => { setSimulationRequest(null); sendInWorkspace(approval, session.busy ? session.enqueue : session.send) }}
               onSendAgent={text => sendInWorkspace(text, session.busy ? session.enqueue : session.send)}
