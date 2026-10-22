@@ -601,7 +601,7 @@ export function registerTelemetry(): void {
   ipcMain.handle('telemetry:flush', async () => {
     await t.flush({ force: true })
     await sourceCollector().flush()
-    return t.status()
+    return { ...t.status(), sourcePending: await sourceCollector().pending(), sourceError: sourceCollector().error() }
   })
 
   const startedAt = Date.now()

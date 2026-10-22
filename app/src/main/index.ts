@@ -483,6 +483,8 @@ app.whenReady().then(() => {
         name = basename(target)
       }
       await copyFile(src, target, 1) // COPYFILE_EXCL: never overwrite
+      // Import is a known completed action; don't rely on fs.watch reporting a filename on Windows.
+      telemetry.noteFsChange(root, relative(root, target))
       out.push({ name: basename(target), path: target, url: toUrl(target), ext: extname(target).slice(1).toLowerCase() })
     }
     return out
