@@ -53,14 +53,44 @@ assert.deepEqual(S.runFolders([]), [])
 assert.equal(new Date(S.runDate('2026-10-15-1329-example')).getHours(), 13)
 assert.equal(S.runDate('latest'), null)
 
-// run state
+// run state: from the run itself (its folder and progress.json), never from chat activity
 const now = 1_000_000
-assert.equal(S.runState({ results: 'x' }, { stage: 'done' }, false, now, 0), 'done')
-assert.equal(S.runState({}, { stage: 'failed' }, true, now, 0), 'failed')
-assert.equal(S.runState({}, { stage: 'running', updatedAt: now - 10_000 }, false, now, 0), 'running', 'a detached run.py keeps going after the agent turn')
-assert.equal(S.runState({}, { stage: 'running', updatedAt: now - 300_000 }, false, now, 0), 'stopped', 'progress that stopped moving')
-assert.equal(S.runState({}, { stage: 'running', updatedAt: now - 300_000 }, true, now, 0), 'running')
-assert.equal(S.runState({ results: 'x' }, { stage: 'writing' }, true, now, 0), 'running', 'the agent is still writing the results page')
+assert.equal(S.runState({ results: 'x' }, { stage: 'done' }, now, 0), 'done')
+assert.equal(S.runState({}, { stage: 'failed' }, now, 0, true), 'failed')
+assert.equal(S.runState({}, { stage: 'running', updatedAt: now - 10_000 }, now, 0), 'running', 'a detached run.py keeps going after the agent turn')
+assert.equal(S.runState({}, { stage: 'running', updatedAt: now - 300_000 }, now, 0), 'stopped', 'progress that stopped moving')
+assert.equal(S.runState({}, { stage: 'running', updatedAt: now - 300_000 }, now, 0, true), 'running', 'the turn that started this run is still working')
+assert.equal(S.runState({ results: 'x' }, { stage: 'writing' }, now, 0, true), 'running', 'the agent is still writing the results page')
+assert.equal(S.runState({ results: 'x' }, { stage: 'writing' }, now, 0), 'done')
+// #16 (1): asking the agent about a report must not revive a stopped run. runState has no notion of
+// "the agent is busy"; only the run's own turn (owned) counts, and a STOP file always wins.
+assert.equal(S.runState.length, 4, 'runState takes no agent-busy input')
+assert.equal(S.runState({}, { stage: 'stopped', updatedAt: now - 1_000 }, now, 0), 'stopped')
+assert.equal(S.runState({}, { stage: 'running', updatedAt: now - 120_000 }, now, now - 120_000), 'stopped', 'a stopped run stays stopped while the agent answers a question')
+// #16 (4): Stop during preparation: the STOP file ends the run at once, even with fresh files and the turn alive.
+assert.equal(S.runState({ stop: true }, { stage: 'preparing', updatedAt: now - 1_000 }, now, now), 'stopped')
+assert.equal(S.runState({ stop: true }, null, now, now, true), 'stopped', 'a folder with only run.py and STOP')
+assert.equal(S.runState({ stop: true, results: 'x' }, { stage: 'done' }, now, 0), 'done', 'a run that finished before Stop stays a result')
+
+// #16 (3): a run counts as a result only with participant data
+const tree3 = [d('artifacts', [d('artifacts/simulations', [
+  d('artifacts/simulations/2026-10-20-0900', [f('artifacts/simulations/2026-10-20-0900/run.py'), f('artifacts/simulations/2026-10-20-0900/STOP')]),
+  d('artifacts/simulations/2026-10-20-1000', [f('artifacts/simulations/2026-10-20-1000/results.html'), { ...f('artifacts/simulations/2026-10-20-1000/sessions.jsonl'), size: 0 }]),
+  d('artifacts/simulations/2026-10-20-1100', [f('artifacts/simulations/2026-10-20-1100/results.html'), { ...f('artifacts/simulations/2026-10-20-1100/sessions.jsonl'), size: 812 }]),
+  d('artifacts/simulations/2026-10-20-1200', []),
+])])]
+const [empty, real, blank, aborted] = S.runFolders(tree3)
+assert.deepEqual([empty.id, real.id, blank.id, aborted.id], ['2026-10-20-1200', '2026-10-20-1100', '2026-10-20-1000', '2026-10-20-0900'])
+assert.equal(aborted.stop, true); assert.equal(real.sessions, '/p/artifacts/simulations/2026-10-20-1100/sessions.jsonl'); assert.equal(real.sessionsSize, 812)
+assert.equal(S.hasParticipantData(empty, null), false, 'an empty folder')
+assert.equal(S.hasParticipantData(aborted, S.parseProgress('{"stage":"preparing","total":40}')), false, 'aborted while preparing')
+assert.equal(S.hasParticipantData(blank, null), false, 'an empty sessions.jsonl')
+assert.equal(S.hasParticipantData(real, null), true)
+assert.equal(S.isResult(blank, null, 'done'), false, 'a results page without participants is not a result')
+assert.equal(S.isResult(real, null, 'done'), true)
+assert.equal(S.isResult(real, null, 'running'), false)
+assert.equal(S.isResult(runs[1], S.parseProgress(readFileSync(join(here, '../../resources/sample/example-simulation/progress.json'), 'utf8')), 'done'), true, 'the shipped example (participant counts in progress.json) is still a result')
+assert.equal(S.isResult(runs[1], null, 'done'), false)
 
 // the plan from the study document
 const plan = S.simulationPlan(sample, 'exp-1')

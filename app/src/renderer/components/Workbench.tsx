@@ -352,11 +352,11 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
                 }
               }}
               onBuild={() => onSendAgent?.(t('sim.build_prompt'))}
-              onStop={() => {
+              onStop={(runs) => {
                 onStopAgent?.()
                 // The run itself is a background process; simkit ends it after the participants in flight.
-                const live = project.tree.length ? findRunning(project.tree) : null
-                if (live) void window.humanstudy.project.writeText(`${live}/STOP`, 'Stopped by the researcher\n').catch(() => undefined)
+                const live = runs.length ? runs : [project.tree.length ? findRunning(project.tree) : null].filter((p): p is string => Boolean(p))
+                for (const dir of live) void window.humanstudy.project.writeText(`${dir}/STOP`, 'Stopped by the researcher\n').catch(() => undefined)
               }}
               onAsk={(draft) => docProps.onPrefill?.(draft)}
               onOpenFile={(path) => { const e = fileByPath.get(path); if (e) openEntry(e) }}

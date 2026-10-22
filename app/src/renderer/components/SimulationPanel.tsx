@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { HumanProgram } from '../../shared/human-program'
 import type { ProjectEntry, ProjectSnapshot } from '../../preload/types'
 import { simulationScope, simulationLimits } from '../../shared/simulation-scope'
-import { estimateRun, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
+import { estimateRun, hasParticipantData, isResult, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
 import { shortModelName } from './ModelPicker'
 import { listenToArtifact } from '../bridge'
 import { getLang, t } from '../i18n'
@@ -26,11 +26,10 @@ interface Props {
   agentTurnKey?: string | null
   /** What the agent is doing right now, in plain words (from the chat's activity line). */
   agentActivity?: string
-  /** A run request typed in the chat, waiting for this screen's confirmation. */
-  request?: string | null
   onRun(perCondition: number): Promise<void>
   onBuild(): void
-  onStop(): void
+  /** Stop the agent and ask these run folders (absolute paths) to stop. */
+  onStop(runs: string[]): void
   onAsk(draft: string): void
   onOpenFile(path: string): void
 }
@@ -43,6 +42,13 @@ const readPending = (dir: string): Pending | null => {
 const writePending = (dir: string, p: Pending | null) => {
   try { if (p) sessionStorage.setItem(PENDING_KEY(dir), JSON.stringify(p)); else sessionStorage.removeItem(PENDING_KEY(dir)) } catch { /* no storage */ }
 }
+// When the researcher last pressed Stop. A run folder with no activity after it is stopped, even
+// before its STOP file shows up in the tree or while a just-created folder still looks fresh.
+const STOP_KEY = (dir: string) => `hs.sim.stopped:${dir}`
+const readStopAt = (dir: string): number | null => {
+  try { const v = Number(sessionStorage.getItem(STOP_KEY(dir))); return Number.isFinite(v) && v > 0 ? v : null } catch { return null }
+}
+const STOP_GRACE = 10_000
 
 const hasPackage = (tree: ProjectEntry[]): boolean => {
   const pkg = tree.find((e) => e.kind === 'dir' && e.rel === 'package')
@@ -93,10 +99,21 @@ export function SimulationPanel(props: Props) {
   useEffect(() => { setBuildProblem(false); setRunProblem(false) }, [owner])
   const requestBusy = pending?.owner === owner && agentBusy && Boolean(agentTurnKey) && (pending.turn ? pending.turn === agentTurnKey : pending.before !== agentTurnKey)
   const [now, setNow] = useState(() => Date.now())
-  const states = new Map(runs.map((r) => [r.id, runState(r, texts[r.id]?.progress ?? null, agentBusy, now, r.mtime)]))
+  const [stopAt, setStopAt] = useState<number | null>(() => readStopAt(dir))
+  useEffect(() => setStopAt(readStopAt(dir)), [dir])
   const newRun = pending?.kind === 'run' ? runs.find((r) => r.mtime >= pending.at - 5_000 && !texts[r.id]?.summary?.example) : undefined
+  // Only the chat turn that started this run speaks for it; any other chat activity (a question about
+  // a report, an edit) says nothing about whether a simulation is running.
+  const ownedRun = pending?.kind === 'run' && requestBusy
+  const states = new Map(runs.map((r) => {
+    const progress = texts[r.id]?.progress ?? null
+    const st = runState(r, progress, now, r.mtime, ownedRun && r.id === newRun?.id)
+    const startedAfterStop = stopAt !== null && pending?.kind === 'run' && pending.at > stopAt && r.id === newRun?.id
+    const quietSinceStop = stopAt !== null && !startedAfterStop && (progress?.updatedAt ?? r.mtime) < stopAt + STOP_GRACE
+    return [r.id, st === 'running' && quietSinceStop ? 'stopped' : st] as const
+  }))
   const active = runs.find((r) => states.get(r.id) === 'running' && !texts[r.id]?.summary?.example && now - r.mtime < 6 * 3600_000)
-  const running = Boolean(active) || (pending?.kind === 'run' && requestBusy && !newRun) || (pending?.kind === 'run' && newRun && states.get(newRun.id) === 'running')
+  const running = Boolean(active) || (ownedRun && !newRun) || (pending?.kind === 'run' && newRun && states.get(newRun.id) === 'running')
   const building = pending?.kind === 'build' && requestBusy
   // Bind the request to its actual chat turn. A different conversation or later
   // question must never resurrect a project-level "building" flag.
@@ -124,9 +141,11 @@ export function SimulationPanel(props: Props) {
     return () => clearInterval(id)
   }, [running, building, Boolean(pending), quietMiss])
 
-  const finished = runs.filter((r) => r.results && states.get(r.id) !== 'running')
+  // Results are finished runs with participant data; an empty or aborted folder is never one.
+  const finished = runs.filter((r) => isResult(r, texts[r.id]?.progress ?? null, states.get(r.id)))
+  const listed = runs.filter((r) => states.get(r.id) === 'running' || hasParticipantData(r, texts[r.id]?.progress ?? null))
   const [shown, setShown] = useState<string | null>(null)
-  const current = (shown && runs.find((r) => r.id === shown)) || (newRun && states.get(newRun.id) !== 'running' ? newRun : undefined) || finished.find((r) => !texts[r.id]?.summary?.example) || finished[0]
+  const current = (shown && finished.find((r) => r.id === shown)) || (newRun && finished.includes(newRun) ? newRun : undefined) || finished.find((r) => !texts[r.id]?.summary?.example) || finished[0]
   const failedRun = newRun && states.get(newRun.id) === 'failed' ? newRun : undefined
 
   const viewed = useRef(false)
@@ -147,10 +166,14 @@ export function SimulationPanel(props: Props) {
     track('simulation.build', { metadata: { conditions: plan.conditions.length } })
     props.onBuild()
   }
+  // Stop returns the tab to its idle, retryable state at once, also while the run is still being prepared.
   const stop = () => {
     track('simulation.stop', { metadata: { done: activeProgress?.done ?? 0, total: activeProgress?.total ?? 0 } })
-    props.onStop()
-    setPending(null)
+    const at = Date.now()
+    try { sessionStorage.setItem(STOP_KEY(dir), String(at)) } catch { /* no storage */ }
+    setStopAt(at); setNow(at)
+    props.onStop([...new Set([activeRun?.path, newRun?.path].filter((p): p is string => Boolean(p) && !runs.find((r) => r.path === p)?.results))])
+    setPending(null); setBuildProblem(false); setRunProblem(false)
   }
   const activeRun = active ?? (newRun && states.get(newRun.id) === 'running' ? newRun : undefined)
   const activeProgress = activeRun ? texts[activeRun.id]?.progress ?? null : null
@@ -160,8 +183,8 @@ export function SimulationPanel(props: Props) {
   const isExample = Boolean(current && texts[current.id]?.summary?.example)
   // Your own finished run comes first; the shipped example sits below the plan, and nothing old
   // distracts from a run in progress.
-  const resultFirst = Boolean(current?.results && !isExample && !running && !building)
-  const result = current && current.results ? (
+  const resultFirst = Boolean(current && !isExample && !running && !building)
+  const result = current ? (
     <Result run={current} tree={project.tree} summary={texts[current.id]?.summary ?? null} progress={texts[current.id]?.progress ?? null}
       onOpen={() => { track('simulation.result_open', { metadata: { how: 'tab', example: isExample } }); props.onOpenFile(current.results!) }}
       onAsk={() => props.onAsk(t('sim.discuss_prompt', { run: current.rel }))} />
@@ -175,7 +198,7 @@ export function SimulationPanel(props: Props) {
 
       {resultFirst && result}
       {running ? (
-        <Progress progress={activeProgress} startedAt={activeProgress?.startedAt ?? pending?.at ?? activeRun?.mtime ?? now} now={now} plan={plan} built={built} activity={props.agentActivity} model={activeProgress?.model ?? model} onStop={stop} />
+        <Progress progress={activeProgress} startedAt={activeProgress?.startedAt ?? pending?.at ?? activeRun?.mtime ?? now} now={now} plan={plan} built={built} activity={requestBusy ? props.agentActivity : undefined} model={activeProgress?.model ?? model} onStop={stop} />
       ) : building ? (
         <section className="sim-card sim-live" aria-live="polite">
           <p className="sim-stage-now">{t('sim.building')}</p>
@@ -222,7 +245,6 @@ export function SimulationPanel(props: Props) {
                 <dt>{t('sim.estimate')}</dt>
                 <dd>{t('sim.estimate_value', { lo: estimate.minutes[0], hi: estimate.minutes[1], cost: costText(estimate.cost) })}</dd>
               </dl>
-              {props.request && <p className="sim-request"><span className="muted">{t('sim.your_request')}</span> {props.request}</p>}
               {(limits.text.length > 0 || limits.decisions.length > 0) && (
                 <div className="sim-limits">
                   <h3>{t('sim.cannot')}</h3>
@@ -244,16 +266,16 @@ export function SimulationPanel(props: Props) {
       )}
 
       {!resultFirst && !running && !building && result}
-      {runs.length > 1 && (
+      {listed.length > 1 && (
         <section className="sim-history">
           <h3>{t('sim.earlier')}</h3>
           <ul>
-            {runs.map((r) => {
+            {listed.map((r) => {
               const s = texts[r.id]?.summary, p = texts[r.id]?.progress, st = states.get(r.id)
               const when = runDate(r.id) ?? r.mtime
               return (
                 <li key={r.id}>
-                  <button className={`sim-run-row${current?.id === r.id ? ' on' : ''}`} disabled={!r.results} onClick={() => { setShown(r.id); track('simulation.result_open', { metadata: { how: 'history', example: Boolean(s?.example) } }) }}>
+                  <button className={`sim-run-row${current?.id === r.id ? ' on' : ''}`} disabled={!finished.includes(r)} onClick={() => { setShown(r.id); track('simulation.result_open', { metadata: { how: 'history', example: Boolean(s?.example) } }) }}>
                     <span>{new Date(when).toLocaleString(getLang(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}{s?.example ? ` · ${t('sim.example')}` : ''}</span>
                     <span className="muted">{shortModelName(s?.model ?? p?.model ?? '') || '—'}</span>
                     <span className="muted">{s?.perCondition ? t('sim.n_each', { n: s.perCondition }) : p?.total ? t('sim.n_total', { n: p.total }) : ''}</span>

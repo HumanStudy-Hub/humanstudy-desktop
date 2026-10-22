@@ -71,7 +71,6 @@ const ROWS: Row[] = [
   ['sim.cost_about', 'about {a}', '约 {a}'],
   ['sim.cost_range', '{a}–{b}', '{a}–{b}'],
   ['sim.list_sep', ', ', '、'],
-  ['sim.your_request', 'Your request:', '你的要求：'],
   ['sim.cannot', 'What a simulation cannot show', '模拟无法体现的部分'],
   ['sim.decision_default', 'not settled yet; the agent follows the paper or asks you', '尚未确定；助手会按论文处理或先问你'],
   ['sim.blocked', 'Before it can run: {what}. Ask the agent to settle these with you.', '运行前需要先确定：{what}。请让助手和你一起解决。'],
