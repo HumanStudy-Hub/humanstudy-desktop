@@ -63,7 +63,6 @@ interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSour
   /** Send the agent a message about a program.json that needs fixing. */
   onFixProgram?(text: string): void
   onFold(): void
-  simulationRequest?: string | null
   onRunSimulation?(approval: string): void
   /** Send the agent a message right away (the Simulation tab's "Build the study first"). */
   onSendAgent?(text: string): void
@@ -96,7 +95,7 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, source, onClearSelection, onAskSelection, onFixProgram, onFold, simulationRequest, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, ...docProps }: Props) {
+export function Workbench({ ref, project, source, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, ...docProps }: Props) {
   // Tolerant: one slip by the agent sets that detail aside and the document still renders.
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
@@ -342,10 +341,9 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
               agentThreadId={agentThreadId}
               agentTurnKey={agentTurnKey}
               agentActivity={agentActivity}
-              request={simulationRequest}
               onRun={async (perCondition) => {
                 const study = studies.find(st => st.id === studyId)?.title ?? studyId
-                const request = simulationRequest ?? t('sim.request', { study, n: perCondition, model: model || 'selected in the app' })
+                const request = t('sim.request', { study, n: perCondition, model: model || 'selected in the app' })
                 try {
                   onRunSimulation?.(await approveSimulation(project.dir, program, studyId, request, { perCondition, model }))
                 } catch (e) {

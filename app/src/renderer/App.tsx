@@ -13,7 +13,6 @@ import { UpdateNotice, useUpdateStatus } from './components/Updates'
 import { AgreementDialog } from './components/ResearchData'
 import { lap, setTelemetryProject, track } from './telemetry'
 import { t, useLang } from './i18n'
-import { requestsSimulation } from '../shared/simulation-scope'
 import { classifyTool, researchActivity, toolSentence } from './toolSentence'
 import { onAsk as onArtifactAsk, onOpenSource as onArtifactOpenSource } from './bridge'
 import { artifactSourceRef } from './artifact-source'
@@ -93,8 +92,7 @@ export default function App() {
   const session = useSession(project?.dir ?? null, agentReady)
   const lastUser = session.messages.filter(m => m.role === 'user').at(-1)
   const agentTurnKey = lastUser ? `${session.threadId ?? session.id ?? ''}:${lastUser.id}` : null
-  const [simulationRequest, setSimulationRequest] = useState<string | null>(null)
-  useEffect(() => { setSimulationRequest(null); setSource(null) }, [project?.dir])
+  useEffect(() => { setSource(null) }, [project?.dir])
   // What the agent is doing, in the chat's own words, for the Simulation tab's live line.
   const agentActivity = useMemo(() => {
     if (!session.busy) return ''
@@ -104,10 +102,6 @@ export default function App() {
     const s = last && (last.state === 'pending' || last.state === 'running') ? toolSentence(classifyTool(last, project?.dir)) : researchActivity(tools, project?.dir)
     return t(s.key, s.vars)
   }, [session.busy, session.status, session.messages, project?.dir])
-  const reviewRun = (text: string, send: (text: string) => void) => {
-    if (requestsSimulation(text)) { setSimulationRequest(text); showTab('simulation') }
-    else send(text)
-  }
   useEffect(() => {
     if (!account?.signedIn) return setResearch(null)
     window.humanstudy.telemetry
@@ -396,7 +390,7 @@ export default function App() {
               </PaneHead>
               <Chat
                 ref={chat}
-                session={{ ...session, send: text => reviewRun(text, t => sendInWorkspace(t, session.send)), enqueue: text => reviewRun(text, t => sendInWorkspace(t, session.enqueue)), interruptAndSend: text => reviewRun(text, t => sendInWorkspace(t, session.interruptAndSend)) }}
+                session={{ ...session, send: text => sendInWorkspace(text, session.send), enqueue: text => sendInWorkspace(text, session.enqueue), interruptAndSend: text => sendInWorkspace(text, session.interruptAndSend) }}
                 selected={selectedItems}
                 onClearSelection={() => setSelected([])}
                 account={account}
@@ -426,8 +420,7 @@ export default function App() {
               project={project}
               source={source}
               onWorkspaceChange={cacheWorkspace}
-              simulationRequest={simulationRequest}
-              onRunSimulation={approval => { setSimulationRequest(null); sendInWorkspace(approval, session.busy ? session.enqueue : session.send) }}
+              onRunSimulation={approval => sendInWorkspace(approval, session.busy ? session.enqueue : session.send)}
               onSendAgent={text => sendInWorkspace(text, session.busy ? session.enqueue : session.send)}
               onStopAgent={() => void session.abort()}
               model={settings?.model ?? ''}

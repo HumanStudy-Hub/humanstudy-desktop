@@ -16,7 +16,7 @@ await build({ stdin: { contents: `
   export { viewStudies };
   export { sourceTarget } from '../shared/source-target';
   export { sourceRefs } from '../shared/program-view';
-  export { simulationScope, requestsSimulation } from '../shared/simulation-scope';
+  export { simulationScope } from '../shared/simulation-scope';
   export { withWorkspaceContext, sourceFocus } from '../shared/workspace-context';
   export { sectionNeeds } from './program/missing';
   export { SECTIONS } from './program/sections';
@@ -61,12 +61,6 @@ assert.equal(R.simulationScope(scoped,'another-study').ready,false)
 assert.equal(R.simulationScope({...scoped,nodes:[{...scoped.nodes[0],fields:fields.slice(0,4)}]},sample.studies[0].id).ready,false)
 assert.equal(R.simulationScope({...scoped,nodes:[{...scoped.nodes[0],fields:fields.map(f=>f.id==='limits'?{...f,value:'TBD'}:f)}]},sample.studies[0].id).ready,false)
 assert.equal(R.simulationScope({...scoped,issues:[{severity:'blocking',studyId:sample.studies[0].id}]},sample.studies[0].id).ready,false)
-assert.equal(R.requestsSimulation('Please run a simulation'),true)
-assert.equal(R.requestsSimulation('开始模拟实验'),true)
-assert.equal(R.requestsSimulation('Explain the simulation limits'),false)
-assert.equal(R.requestsSimulation('What can we simulate?'),false)
-assert.equal(R.requestsSimulation("Don't run a simulation yet"),false)
-assert.equal(R.requestsSimulation('不要模拟'),false)
 
 const material = {...scoped.nodes[0],id:'material',kind:'material',fields:[{...fields[0],id:'instructions',value:null,state:'missing'}]}
 const p2={...sample,nodes:[material],steps:[]}
