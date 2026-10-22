@@ -26,6 +26,7 @@ import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
 import { isVersioned, readVersion, relOf, snapshot, versionsOf } from './versions'
 import { createThreads, threads } from './threads'
+import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
 import { refreshPack } from './pack'
 import type { Kernel, KernelEvent } from './kernel-types'
@@ -55,6 +56,8 @@ let kernel: Kernel | null = null
 const allKernels = new Set<Kernel>()
 const sessionKernel = new Map<string, Kernel>()
 const activeTurns = new Set<string>()
+// The automatic paper build; its state file is under .humanstudy, which the project watcher ignores.
+const paperBuilds = createPaperBuilds(dir => broadcast('project:changed', dir))
 let threadsInitialized = false
 const shutdown = createShutdown({
   busy: () => activeTurns.size > 0,
@@ -88,6 +91,7 @@ function currentKernel(): Kernel {
       if (shutdown.closing() && e.type === 'done') e = { ...e, detail: 'shutdown' }
       if (e.type === 'done') activeTurns.delete(e.sessionId)
       else if (e.type === 'text' || e.type === 'tool' || (e.type === 'status' && e.text === 'busy') || (e.type === 'question' && !e.question?.resolved) || (e.type === 'permission' && !e.permission?.resolved)) activeTurns.add(e.sessionId)
+      try { paperBuilds.event(e) } catch (err) { console.error('paper build state', err) } // never blocks events
       threads().onEvent(e) // record before the renderer hears about it
       broadcast('kernel:event', e)
     })
@@ -209,6 +213,7 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
     name: basename(dir),
     program,
     programError,
+    build: paperBuilds.read(dir),
     artifacts: await listDir(join(dir, 'artifacts')),
     exports: await listDir(join(dir, 'exports')),
     pdf: pdfPath ? { name: 'paper.pdf', path: pdfPath, url: toUrl(pdfPath), ext: 'pdf' } : null,
@@ -346,6 +351,9 @@ app.whenReady().then(() => {
     telemetry.noteProjectFiles(snap)
     return snap
   })
+  ipcMain.handle('project:startBuild', (_e, dir: string, sid: string) => paperBuilds.start(ownedPath(dir), sid))
+  ipcMain.handle('project:releaseBuild', (_e, dir: string, sid: string) => paperBuilds.release(ownedPath(dir), sid))
+  ipcMain.handle('project:retryBuild', (_e, dir: string) => paperBuilds.retry(ownedPath(dir)))
   ipcMain.handle('project:reveal', (_e, p: string) => shell.showItemInFolder(p))
   ipcMain.handle('project:versions', async (_e, p: string) => {
     const q = ownedPath(p)
@@ -541,6 +549,7 @@ app.whenReady().then(() => {
       throw err
     }
     sessionKernel.set(id, k)
+    paperBuilds.bind(id, dir)
     notify.noteSession(id, dir)
     telemetry.trackSessionStart(id, dir, kernelName(k), started)
     return id
@@ -553,7 +562,7 @@ app.whenReady().then(() => {
       resume: async (dir, sid) => {
         const k = sessionKernel.get(sid) ?? currentKernel()
         const alive = await k.resumeSession(dir, sid)
-        if (alive) sessionKernel.set(alive, k)
+        if (alive) { sessionKernel.set(alive, k); paperBuilds.bind(alive, dir) }
         return alive
       },
     },
@@ -574,7 +583,7 @@ app.whenReady().then(() => {
     const alreadyActive = activeTurns.has(id)
     activeTurns.add(id)
     try { await k.send(id, prompt) }
-    catch (error) { if (!alreadyActive) activeTurns.delete(id); throw error }
+    catch (error) { if (!alreadyActive) activeTurns.delete(id); paperBuilds.sendFailed(id, error); throw error }
   })
   ipcMain.handle('kernel:export', async (_e,sid:string) => {
     const k=kernelFor(sid)

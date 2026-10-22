@@ -157,11 +157,24 @@ export interface FileVersion {
   size: number
 }
 
+/** Why an automatic paper build stopped; the renderer words it (i18n), the chat has the details. */
+export type PaperBuildError = 'closed' | 'interrupted' | 'incomplete' | 'too_large' | 'failed'
+
+/** The automatic first build after a paper import (main/paper-build.ts). */
+export interface PaperBuildState {
+  status: 'pending' | 'running' | 'complete' | 'error'
+  phase: 'reading' | 'writing' | 'checking' | 'packaging'
+  error?: PaperBuildError
+  /** The conversation that runs (or ran) the build. */
+  sessionId?: string
+}
+
 export interface ProjectSnapshot {
   dir: string
   name: string
   program: unknown | null
   programError?: string
+  build?: PaperBuildState
   artifacts: ProjectFile[]
   exports: ProjectFile[]
   pdf: ProjectFile | null
@@ -334,6 +347,12 @@ export interface HumanStudyApi {
     pickProjectsRoot(): Promise<Settings | null>
   }
   project: {
+    /** Claim the project's pending paper build for this conversation; true means: send the build request now. */
+    startBuild(dir: string, sid: string): Promise<boolean>
+    /** Undo startBuild when the request could not be sent. */
+    releaseBuild(dir: string, sid: string): Promise<void>
+    /** After a failed build: mark it pending again so it restarts in the open conversation. */
+    retryBuild(dir: string): Promise<boolean>
     open(): Promise<string | null>
     read(dir: string): Promise<ProjectSnapshot>
     reveal(path: string): Promise<void>

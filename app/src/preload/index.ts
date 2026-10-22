@@ -43,6 +43,9 @@ const api: HumanStudyApi = {
     pickProjectsRoot: () => ipcRenderer.invoke('settings:pickProjectsRoot'),
   },
   project: {
+    startBuild: (dir, sid) => ipcRenderer.invoke('project:startBuild', dir, sid),
+    releaseBuild: (dir, sid) => ipcRenderer.invoke('project:releaseBuild', dir, sid),
+    retryBuild: (dir) => ipcRenderer.invoke('project:retryBuild', dir),
     open: () => ipcRenderer.invoke('project:open'),
     read: (dir) => ipcRenderer.invoke('project:read', dir),
     reveal: (path) => ipcRenderer.invoke('project:reveal', path),
