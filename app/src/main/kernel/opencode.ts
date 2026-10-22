@@ -1,4 +1,5 @@
 import { nativeRoute, hideCredentials } from './native-api'
+import { startRequestTransport } from './request-transport'
 import { NATIVE_SESSION_MUTATIONS, NATIVE_TURNS, type NativeRequest, type NativeSelection } from '../../shared/native'
 import { validateAnswers, type KernelQuestion } from '../../shared/question'
 // opencode kernel: one `opencode serve` process per project directory, driven over HTTP + SSE.
@@ -111,6 +112,7 @@ interface Server {
   exited: boolean
   stderrTail: string
   eventsOnline: boolean
+  transport?: Awaited<ReturnType<typeof startRequestTransport>>
 }
 
 interface SessionState {
@@ -533,7 +535,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     return p
   }
 
-  private configContent(): string {
+  private configContent(transport?: { baseURL: string; token: string }): string {
     const model = this.provider ? `${this.provider}/${this.model}` : undefined
     // The fork bakes in the humanstudy provider, its models and the share/autoupdate/telemetry defaults.
     // Here only what the app decides per run: the chosen model (inline config outranks any config file)
@@ -544,7 +546,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       permission: { edit: 'ask', bash: BASH_PERMISSION, external_directory: 'ask' },
     }
     if (this.provider === HOSTED_PROVIDER) {
-      cfg.provider = { [HOSTED_PROVIDER]: { models: { [this.model]: {
+      cfg.provider = { [HOSTED_PROVIDER]: { ...(transport ? { options: { baseURL: transport.baseURL, apiKey: transport.token } } : {}), models: { [this.model]: {
         ...(!BAKED_HOSTED_MODELS.includes(this.model) ? { name: this.model, tool_call: true } : {}),
         variants: { 'humanstudy-recovery': { reasoningEffort: 'low' } },
       } } } }
@@ -556,7 +558,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
   /** Env for the kernel process: its own XDG dirs, so ~/.config/opencode and ~/.local/share/opencode of
    *  a personal install are never read, and sessions persist under <home>/data per project. */
-  private kernelEnv(password: string): NodeJS.ProcessEnv {
+  private kernelEnv(password: string, transport?: { baseURL: string; token: string }): NodeJS.ProcessEnv {
     const xdg = {
       XDG_CONFIG_HOME: join(this.home, 'config'),
       XDG_DATA_HOME: join(this.home, 'data'),
@@ -570,7 +572,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       ...process.env,
       ...xdg,
       OPENCODE_SERVER_PASSWORD: password,
-      OPENCODE_CONFIG_CONTENT: this.configContent(),
+      OPENCODE_CONFIG_CONTENT: this.configContent(transport),
       OPENCODE_DISABLE_AUTOUPDATE: '1',
       OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: '1', // no ~/.claude/CLAUDE.md from the user's own Claude Code
       // humanstudy_llm (simulations) defaults to the model the researcher selected.
@@ -588,11 +590,22 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     if (this.disposed) throw new Error('kernel disposed')
     const port = await freePort()
     const password = randomBytes(24).toString('base64url')
+    const transport = this.provider === HOSTED_PROVIDER && process.env.HUMANSTUDY_DESKTOP_KEY ? await startRequestTransport({
+      project: dir,
+      upstream: process.env.HUMANSTUDY_HOSTED_BASEURL || 'https://humanstudy-hub.com/api/desktop/v1',
+      key: process.env.HUMANSTUDY_DESKTOP_KEY,
+      bypass: process.env.HUMANSTUDY_SERVER_BYPASS,
+      onAdjust: () => {
+        for (const [id, state] of this.sessions) if (state.server.dir === dir && state.inFlight)
+          this.emitter.emit({ sessionId: id, type: 'status', text: 'Preparing source context', detail: 'Full source files are kept locally and can be reopened for verification.' })
+      },
+    }) : undefined
+    if (this.disposed) { transport?.close(); throw new Error('kernel disposed') }
     // Packaged Electron pages send file:// as their WebSocket origin. PTY access still
     // requires a single-use ticket issued through the authenticated main process.
     const proc = spawn(this.binary, ['serve', '--port', String(port), '--hostname', '127.0.0.1', '--cors', 'file://'], {
       cwd: dir,
-      env: this.kernelEnv(password),
+      env: this.kernelEnv(password, transport),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const server: Server = {
@@ -605,6 +618,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       exited: false,
       stderrTail: '',
       eventsOnline: false,
+      transport,
     }
     this.live.add(server)
     const keep = (chunk: Buffer): void => {
@@ -613,6 +627,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     proc.stdout?.on('data', keep)
     proc.stderr?.on('data', keep)
     proc.on('exit', (code) => {
+      transport?.close()
       server.exited = true
       server.sse.abort()
       this.live.delete(server)
@@ -626,6 +641,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       }
     })
     proc.on('error', () => {
+      transport?.close()
       server.exited = true
     })
 
@@ -634,6 +650,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       server.connected = this.openEvents(server)
       await server.connected
     } catch (err) {
+      transport?.close()
       proc.kill('SIGKILL')
       const tail = redact(server.stderrTail).trim().split('\n').slice(-5).join('\n')
       throw new Error(`${(err as Error).message}${tail ? `\nopencode output:\n${tail}` : ''}`)
@@ -661,6 +678,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
   private killAll(sig: NodeJS.Signals): void {
     for (const srv of this.live) {
+      srv.transport?.close()
       srv.sse.abort()
       if (!srv.exited) srv.proc.kill(sig)
     }
