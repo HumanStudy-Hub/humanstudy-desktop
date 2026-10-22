@@ -7,6 +7,26 @@ for backwards-compatible rollout. `HUMANSTUDY_COMMUNITY_BRANCH` selects the Benc
 for local testing. Search covers source metadata, substudy text and reviewed concept aliases;
 lexical alias expansion does not silently assign a reviewed taxonomy label.
 
+Desktop cards and detail pages show assigned topics from the same catalog. Clicking a topic
+filters by its stable concept ID; typing its English or Chinese alias searches both assigned
+papers and matching source text. These are intentionally different operations: a text hit does
+not create a classification. The initial catalog contains only the framing seed, not automatic
+classification of all 302 records. A domain curator still needs to lead taxonomy expansion.
+Availability distinguishes indexed sources, legacy study materials and accepted Human Programs.
+Cards are displayed 30 at a time; search always covers the entire cached catalog.
+
+For a browser review of the actual desktop renderer with the public catalog:
+
+```bash
+mkdir -p app/src/renderer/public/preview
+cp ../bench-research-index/co_website/data/research_index.json app/src/renderer/public/preview/research_index.json
+cd app && npm run preview:web -- --host 127.0.0.1 --port 5184
+# Open http://127.0.0.1:5184/?catalog=research and choose Studies.
+```
+
+This is a visual preview with a scripted agent, not an Electron release or a live contribution.
+The public catalog fixture is ignored by Git; Electron uses the real shared index loader.
+
 Accepted community copies download from one exact Git commit. Their manifest identity, each
 file's hash and its byte length are checked before creating the local project. Full programs,
 packages, sources and research artifacts are retained. `sources/study.json` records the stable

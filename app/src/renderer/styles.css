@@ -466,6 +466,14 @@ button.tile:hover:not(:disabled) { border-color: var(--accent); box-shadow: var(
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 button.study-card:hover { border-color: var(--accent); box-shadow: var(--shadow); }
+.research-card:focus-within, .research-card:hover { border-color: var(--accent); }
+.research-card-open { width: 100%; text-align: left; display: flex; flex: 1; flex-direction: column; align-items: flex-start; gap: 4px; padding: 0; }
+.research-availability { color: var(--accent); margin-top: 8px; }
+.research-topics, .research-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.research-topics { margin-top: 8px; }
+.research-filter { margin-bottom: 16px; }
+.research-topic { padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); font-size: 12px; background: var(--accent-soft); }
+.research-topic:hover { border-color: var(--accent); }
 .study-card-title { font-weight: 600; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .study-card-desc { font-size: 13px; line-height: 1.5; color: var(--muted); margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .study-card-foot { margin-top: auto; padding-top: 12px; }

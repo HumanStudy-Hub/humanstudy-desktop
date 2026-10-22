@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { CommunityStudy, CommunityStudyDetail } from '../preload/types'
+import { catalogSearchFields } from '../shared/research-search'
 
 const OWNER_REPO = 'HumanStudy-Hub/HumanStudy-Bench'
 const BRANCH = process.env.HUMANSTUDY_COMMUNITY_BRANCH || 'main'
@@ -21,7 +22,7 @@ const ID_RE = /^(study_\d{3,}|paper_[a-f0-9]{24})$/
 
 type Detail = CommunityStudyDetail
 interface CacheFile {
-  index?: { fetchedAt: number; studies: CommunityStudy[] }
+  index?: { fetchedAt: number; studies: CommunityStudy[]; format?: number }
   details?: Record<string, { fetchedAt: number; detail: Detail }>
 }
 
@@ -132,6 +133,7 @@ function normStudy(raw: unknown): CommunityStudy | null {
     legacyStudyId: typeof o.legacyStudyId === 'string' && /^study_\d{3,}$/.test(o.legacyStudyId) ? o.legacyStudyId : undefined,
     searchText: typeof o.searchText === 'string' ? o.searchText : '',
     conceptLabels: Array.isArray(o.conceptLabels) ? o.conceptLabels.filter((v): v is string => typeof v === 'string') : [],
+    topics: Array.isArray(o.topics) ? o.topics.filter((v): v is { id: string; label: string } => !!v && typeof v === 'object' && typeof v.id === 'string' && typeof v.label === 'string') : [],
     searchAliases: Array.isArray(o.searchAliases) ? o.searchAliases.filter((v): v is string => typeof v === 'string') : [],
     currentRevision: typeof o.currentRevision === 'string' ? o.currentRevision : null,
     assetRoot: typeof o.assetRoot === 'string' ? o.assetRoot : undefined,
@@ -151,14 +153,11 @@ async function refreshIndex(): Promise<CommunityStudy[]> {
     const concepts = data.taxonomy?.concepts ?? []
     const list = Array.isArray(data?.papers) ? data.papers.map(raw => {
       const paper = raw as Record<string, unknown>
-      const ids = Array.isArray(paper.conceptIds) ? paper.conceptIds : []
-      const text = [paper.title, paper.description, paper.searchText].join('\n').normalize('NFKC').toLocaleLowerCase('en')
-      return { ...paper, conceptLabels: concepts.filter(c => c.status === 'reviewed' && ids.includes(c.id)).flatMap(c => [c.label, ...c.aliases]),
-        searchAliases: concepts.filter(c => c.status === 'reviewed' && c.label.toLocaleLowerCase('en').split(/\s+/).every(word => text.includes(word))).flatMap(c => [c.label, ...c.aliases]) }
+      return { ...paper, ...catalogSearchFields(paper, concepts) }
     }) : Array.isArray(data?.studies) ? data.studies : []
     const studies = list.map(normStudy).filter((s): s is CommunityStudy => s !== null)
     const c = await loadCache()
-    c.index = { fetchedAt: Date.now(), studies }
+    c.index = { fetchedAt: Date.now(), studies, format: 2 }
     await saveCache()
     return studies
   })().finally(() => {
@@ -167,17 +166,14 @@ async function refreshIndex(): Promise<CommunityStudy[]> {
   return indexInFlight
 }
 
-/** The index; served from cache when present, refreshed in the background at most every 10 minutes. */
+/** Refresh expired/pre-topic caches before returning; keep the last copy if offline. */
 export async function communityStudies(): Promise<CommunityStudy[]> {
   const c = await loadCache()
-  if (c.index) {
-    if (Date.now() - c.index.fetchedAt > TTL_MS) void refreshIndex().catch(() => undefined)
-    return c.index.studies
-  }
+  if (c.index?.format === 2 && Date.now() - c.index.fetchedAt < TTL_MS) return c.index.studies
   try {
     return await refreshIndex()
   } catch {
-    return [] // offline with no cache
+    return c.index?.studies ?? []
   }
 }
 
@@ -275,8 +271,8 @@ export async function communityStudy(rawId: string): Promise<Detail> {
   const id = assertId(rawId)
   const c = await loadCache()
   const hit = c.details?.[id]
-  if (hit && Date.now() - hit.fetchedAt < TTL_MS) return hit.detail
   const entry = await indexEntry(id)
+  if (hit && Date.now() - hit.fetchedAt < TTL_MS) return entry ? { ...hit.detail, ...entry } : hit.detail
   try {
     const sha = await mainSha()
     const [files, activity] = await Promise.all([listFiles(id, entry, sha || BRANCH), listActivity(id, entry)])

@@ -9,7 +9,7 @@ import {createHash} from 'node:crypto'
 const here=dirname(fileURLToPath(import.meta.url)),temp=await mkdtemp(join(tmpdir(),'community-index-'))
 await build({entryPoints:[join(here,'community.ts')],bundle:true,platform:'node',format:'esm',outfile:join(temp,'community.mjs'),logLevel:'error'})
 await build({entryPoints:[join(here,'../shared/research-search.ts')],bundle:true,platform:'node',format:'esm',outfile:join(temp,'search.mjs'),logLevel:'error'})
-const lib=await import(pathToFileURL(join(temp,'community.mjs'))),{matchesResearch}=await import(pathToFileURL(join(temp,'search.mjs')))
+const lib=await import(pathToFileURL(join(temp,'community.mjs'))),{matchesResearch,catalogSearchFields,researchAvailability}=await import(pathToFileURL(join(temp,'search.mjs')))
 const id='paper_'+'a'.repeat(24),commit='c'.repeat(40)
 const content=Buffer.from(JSON.stringify({schemaVersion:2,id:'test',source:{filename:'paper.pdf'},evidence:[{path:'materials/stimuli.txt'}]}))
 const fixtureFiles={'program.json':content,'sources/attached/materials/stimuli.txt':Buffer.from('Complete material END'),'sources/attached/paper.pdf':Buffer.from('%PDF-fixture'),'sources/study.json':Buffer.from('{"participants":42}')}
@@ -20,6 +20,22 @@ const paper={id,title:'Decision framing',authors:['Researcher'],year:2026,descri
 const catalog={schemaVersion:1,papers:[paper],taxonomy:{concepts:[{id:'phenomenon:framing',label:'Framing effect',aliases:['框架效应'],status:'reviewed'}]}}
 const previous=globalThis.fetch
 process.on('exit',()=>{globalThis.fetch=previous})
+
+test('shared catalog topics distinguish an assignment from lexical matches and proposed labels',()=>{
+ const concepts=[...catalog.taxonomy.concepts,{id:'phenomenon:risk',label:'Risk',aliases:['风险'],status:'proposed'}]
+ const tagged={...paper,contributors:[],...catalogSearchFields(paper,concepts)}
+ const untagged={...paper,title:'Framing effect in public goods games',conceptIds:[],...catalogSearchFields({...paper,title:'Framing effect in public goods games',conceptIds:[]},concepts)}
+ const proposed={...paper,title:'Risk',...catalogSearchFields({...paper,conceptIds:['phenomenon:risk']},concepts)}
+ assert.deepEqual(tagged.topics,[{id:'phenomenon:framing',label:'Framing effect'}])
+ assert.ok(matchesResearch(tagged,'框架效应','phenomenon:framing'))
+ assert.ok(matchesResearch(untagged,'框架效应'),'alias search also finds unclassified papers')
+ assert.deepEqual(untagged.topics,[],'text matches must not manufacture a classification')
+ assert.equal(matchesResearch(untagged,'','phenomenon:framing'),false)
+ assert.deepEqual(proposed.topics,[]);assert.equal(matchesResearch(proposed,'风险'),false)
+ assert.equal(researchAvailability(tagged),'Human Program available')
+ assert.equal(researchAvailability({...untagged,currentRevision:null}),'Source indexed')
+ assert.equal(researchAvailability({...untagged,currentRevision:null,legacyStudyId:'study_003'}),'Study materials')
+})
 
 test('community index retains searchable aliases and forks exact verified files with their baseline',async()=>{
  const calls=[];let created=0

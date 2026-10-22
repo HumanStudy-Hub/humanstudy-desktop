@@ -214,6 +214,7 @@ export interface CommunityStudy {
   legacyStudyId?: string
   searchText?: string
   conceptLabels?: string[]
+  topics?: { id: string; label: string }[]
   searchAliases?: string[]
   currentRevision?: string | null
   assetRoot?: string
