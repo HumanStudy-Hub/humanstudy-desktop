@@ -18,7 +18,11 @@ The app reads progress.json:
   {"stage": "preparing|trial|running|scoring|writing|done|failed|stopped",
    "done": 12, "total": 40, "failed": 0,
    "conditions": [{"id": "harm", "done": 6, "total": 20}, ...],
-   "model": "...", "startedAt": "...Z", "updatedAt": "...Z", "message": "plain sentence"}
+   "model": "...", "startedAt": "...Z", "updatedAt": "...Z", "message": "plain sentence",
+   "runner": "alive|exited", "heartbeatAt": "...Z"}
+While run.py runs, a background thread refreshes heartbeatAt every HEARTBEAT_SECONDS (also through a
+long scoring step), so the app can tell a quiet but live run from one whose process is gone. When
+run.py ends normally, runner becomes "exited": the agent is writing the results up.
 The researcher's Stop button writes a file named STOP into the run folder; the run then ends after the
 participants in flight, with stage "stopped".
 
@@ -28,6 +32,7 @@ Command line (for the agent's shell between steps):
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import random
@@ -40,6 +45,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
+HEARTBEAT_SECONDS = 15
 STAGES = ("preparing", "trial", "running", "scoring", "writing", "done", "failed", "stopped")
 
 
@@ -77,8 +83,13 @@ class SimRun:
             "model": model or old.get("model", ""),
             "startedAt": old.get("startedAt") or _now(),
             "updatedAt": _now(),
+            "runner": "alive",
+            "pid": os.getpid(),
         }
         self._save()
+        self._closed = threading.Event()
+        threading.Thread(target=self._heartbeat, name="simkit-heartbeat", daemon=True).start()
+        atexit.register(self._exit)
         # An uncaught error anywhere in run.py (the evaluation, a file write) ends the run as "failed"
         # with its reason, so the app never shows a run that silently stopped moving.
         previous = sys.excepthook
@@ -101,8 +112,28 @@ class SimRun:
             return {}
 
     def _save(self) -> None:
-        self.progress["updatedAt"] = _now()
+        self.progress["updatedAt"] = self.progress["heartbeatAt"] = _now()
         _write_json(self.progress_path, self.progress)
+
+    def _heartbeat(self) -> None:
+        """Liveness only: heartbeatAt moves, updatedAt (the last real progress) does not."""
+        while not self._closed.wait(HEARTBEAT_SECONDS):
+            with self._lock:
+                self.progress["heartbeatAt"] = _now()
+                try:
+                    _write_json(self.progress_path, self.progress)
+                except OSError:
+                    return
+
+    def _exit(self) -> None:
+        """run.py ended (normally, after an error, or after Stop): no process is behind this run any more."""
+        self._closed.set()
+        with self._lock:
+            self.progress["runner"] = "exited"
+            try:
+                _write_json(self.progress_path, self.progress)
+            except OSError:
+                pass
 
     def stage(self, name: str, message: str | None = None) -> None:
         if name not in STAGES:

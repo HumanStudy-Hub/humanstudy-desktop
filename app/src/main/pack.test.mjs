@@ -68,6 +68,21 @@ test('refreshPack upgrades an untouched previous visualize skill but keeps a cus
   assert.equal(readFileSync(dest, 'utf8'), 'my own visualize rules')
 })
 
+test('refreshPack upgrades an untouched previous simkit.py (run heartbeat, #16) but keeps an edited one', async () => {
+  const proj = mkdtempSync(join(tmpdir(), 'proj-'))
+  const prev = spawnSync('git', ['show', 'fc0c465:pack/skills/simulate/simkit.py'], { cwd: packDir, encoding: 'utf8' })
+  if (prev.status !== 0) return // shallow checkout without the base commit
+  const dest = join(proj, '.opencode/skills/simulate/simkit.py')
+  mkdirSync(dirname(dest), { recursive: true })
+  writeFileSync(dest, prev.stdout)
+  await P.refreshPack(proj)
+  assert.equal(readFileSync(dest, 'utf8'), readFileSync(join(packDir, 'skills/simulate/simkit.py'), 'utf8'))
+  assert.match(readFileSync(dest, 'utf8'), /heartbeatAt/)
+  writeFileSync(dest, '# my own runner')
+  await P.refreshPack(proj)
+  assert.equal(readFileSync(dest, 'utf8'), '# my own runner')
+})
+
 const python = ['python3', 'python'].find((p) => spawnSync(p, ['--version']).status === 0)
 test('inline.py inlines the kit, embeds the program and checks the page', { skip: !python }, () => {
   const proj = mkdtempSync(join(tmpdir(), 'proj-'))

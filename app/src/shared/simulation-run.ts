@@ -24,6 +24,10 @@ export interface SimProgress {
   updatedAt?: number
   /** One plain sentence from the run (shown as is), or the reason it failed. */
   message?: string
+  /** simkit's liveness: "alive" while run.py runs (heartbeatAt moves every 15 s), "exited" after it ended.
+   *  Absent in files from older packs. */
+  runner?: 'alive' | 'exited'
+  heartbeatAt?: number
 }
 
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0)
@@ -63,6 +67,7 @@ export function parseProgress(text: string | null | undefined): SimProgress | nu
     stage, done: Number.isFinite(done) ? done : 0, total, failed: num(r.failed ?? r.parse_failures ?? r.errors), conditions: conditions.filter((c) => c.id),
     model: str(r.model), startedAt: time(r.startedAt ?? r.started_at), updatedAt: time(r.updatedAt ?? r.updated_at),
     message: str(r.message ?? r.error ?? r.note),
+    runner: r.runner === 'alive' || r.runner === 'exited' ? r.runner : undefined, heartbeatAt: time(r.heartbeatAt ?? r.heartbeat_at),
   }
 }
 
@@ -100,10 +105,15 @@ export interface SimRunFiles {
   summary?: string
   results?: string
   report?: string
+  /** sessions.jsonl: one line per finished AI participant (the run's participant data). */
+  sessions?: string
+  sessionsSize?: number
+  /** The researcher pressed Stop (the app wrote a STOP file into the folder). */
+  stop?: boolean
   /** Newest modification time of anything in the folder, ms. */
   mtime: number
 }
-interface TreeEntry { name: string; path: string; rel: string; kind: 'file' | 'dir'; mtime?: number; children?: TreeEntry[] }
+interface TreeEntry { name: string; path: string; rel: string; kind: 'file' | 'dir'; mtime?: number; size?: number; children?: TreeEntry[] }
 
 /** Run folders under artifacts/simulations, newest first. */
 export function runFolders(tree: TreeEntry[]): SimRunFiles[] {
@@ -125,6 +135,7 @@ export function runFolders(tree: TreeEntry[]): SimRunFiles[] {
     runs.push({
       id: dir.name, rel: dir.rel, path: dir.path,
       progress: pick('progress.json'), summary: pick('summary.json'), results: pick('results.html'), report: pick('report.md'),
+      sessions: pick('sessions.jsonl'), sessionsSize: files.get('sessions.jsonl')?.size, stop: files.has('STOP'),
       mtime: Math.max(dir.mtime ?? 0, ...[...files.values()].map((f) => f.mtime ?? 0)),
     })
   }
@@ -132,14 +143,38 @@ export function runFolders(tree: TreeEntry[]): SimRunFiles[] {
 }
 
 export type RunState = 'running' | 'done' | 'failed' | 'stopped'
-/** Finished = results.html exists. A run whose progress stopped moving while the agent is idle was stopped. */
-export function runState(run: Pick<SimRunFiles, 'results'>, progress: SimProgress | null, agentBusy: boolean, now: number, lastChange: number): RunState {
+/** run.py's heartbeat moves every 15 s; this many missed beats means its process is gone. */
+export const HEARTBEAT_STALE = 90_000
+/** After run.py ends, the agent writes the report and results page into the run folder. */
+export const WRITE_UP_WINDOW = 20 * 60_000
+
+/** The run's status comes from the run itself (its folder and progress.json), never from whether the
+ *  agent happens to be replying in the chat: a question about a report must not revive a stopped run.
+ *  `owned` is true only while the chat turn that started this very run is still working.
+ *  Finished = results.html exists. Stopped only when STOP was written or nothing is behind the run any
+ *  more: run.py's heartbeat went stale (its process is gone), or, after run.py ended, the folder has
+ *  not changed for the whole write-up window. A quiet scoring or writing stage is not "stopped". */
+export function runState(run: Pick<SimRunFiles, 'results' | 'stop'>, progress: SimProgress | null, now: number, lastChange: number, owned = false): RunState {
   if (progress?.stage === 'failed') return 'failed'
-  if (run.results && (!progress || progress.stage === 'done' || !agentBusy)) return 'done'
-  if (progress?.stage === 'stopped') return 'stopped'
-  if (agentBusy) return 'running'
-  // The agent is idle: the run.py process may still be writing (it runs in the agent's shell), so allow a quiet minute.
-  return now - (progress?.updatedAt ?? lastChange) < 90_000 ? 'running' : 'stopped'
+  if (run.results && (!progress || progress.stage === 'done' || !owned)) return 'done'
+  if (progress?.stage === 'stopped' || run.stop) return 'stopped'
+  if (progress?.stage === 'done') return 'done'
+  if (owned) return 'running'
+  if (progress?.runner === 'alive') return now - (progress.heartbeatAt ?? progress.updatedAt ?? lastChange) < HEARTBEAT_STALE ? 'running' : 'stopped'
+  if (progress?.runner === 'exited') return now - Math.max(progress.updatedAt ?? 0, lastChange) < WRITE_UP_WINDOW ? 'running' : 'stopped'
+  // Older packs write no heartbeat: progress that stopped moving for a while means the run is gone.
+  return now - (progress?.updatedAt ?? lastChange) < HEARTBEAT_STALE ? 'running' : 'stopped'
+}
+
+/** Participant data: at least one finished AI participant (sessions.jsonl with content, or a count in
+ *  progress.json, as the shipped example has). A folder without it is never a result. */
+export function hasParticipantData(run: Pick<SimRunFiles, 'sessions' | 'sessionsSize'>, progress: SimProgress | null): boolean {
+  return Boolean(run.sessions && run.sessionsSize !== 0) || (progress?.done ?? 0) > 0
+}
+
+/** A result: finished, with a results page, from real participant data. */
+export function isResult(run: Pick<SimRunFiles, 'results' | 'sessions' | 'sessionsSize'>, progress: SimProgress | null, state: RunState | undefined): boolean {
+  return Boolean(run.results) && state === 'done' && hasParticipantData(run, progress)
 }
 
 /** "Run from 15 Oct, 14:02" needs the stamp folder name as a date. */

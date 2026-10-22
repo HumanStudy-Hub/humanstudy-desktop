@@ -798,7 +798,6 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
 .sim-plan dt { color: var(--muted); }
 .sim-plan dd { margin: 0; }
 .sim-plan select { font: inherit; padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--text); }
-.sim-request { margin: 0 0 14px; padding: 8px 12px; background: var(--bg); border-radius: 6px; }
 .sim-limits { margin: 0 0 16px; padding: 12px 14px; background: var(--warning-bg); border: 1px solid var(--warning-line); border-radius: 6px; }
 .sim-limits h3 { color: var(--warning); margin-bottom: 6px; }
 .sim-limits ul { margin: 0; padding-left: 18px; }
