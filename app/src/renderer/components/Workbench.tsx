@@ -110,6 +110,14 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
     }
   }, [project.program, project.programError])
   const fixProgram = () => onFixProgram?.(fixProgramMessage(problems, error))
+  // The automatic build after a paper import: one status line while it runs, one retry when it stops.
+  const build = project.build
+  const building = build?.status === 'pending' || build?.status === 'running'
+  const buildLine = !build ? '' : build.status === 'pending' ? t('build.pending') : t(`build.${build.phase}`)
+  const buildFailed = build?.status === 'error' ? `${t(`build.error.${build.error ?? 'failed'}`)} ${t('build.kept')}` : ''
+  // A project from before automatic builds: a paper, no study, never built. Offer it; never start it unasked.
+  const paperOnly = !build && Boolean(project.pdf) && !project.program && !error
+  const retryBuild = () => void window.humanstudy.project.retryBuild(project.dir).catch((e: unknown) => setEditError(String(e)))
   const studies = useMemo(() => (program ? viewStudies(program) : []), [program])
   const files = useMemo(() => flatten(project.tree), [project.tree])
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
@@ -393,6 +401,8 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
           {active === 'study' &&
             (program ? (
               <>
+                {building && <div className="build-status" role="status">{buildLine}</div>}
+                {buildFailed && <div className="part error edit-error" role="alert">{buildFailed} <button className="link" onClick={retryBuild}>{t('build.retry')}</button></div>}
                 <StudyView
                   view="study"
                   program={program}
@@ -404,7 +414,7 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
                   onClearSelection={onClearSelection}
                   onAskSelection={onAskSelection}
                   editError={editError}
-                  problems={problems}
+                  problems={building ? [] : problems}
                   onFix={fixProgram}
                   changedIds={changed}
                   onEdit={onEdit}
@@ -416,9 +426,17 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
                 />
               </>
             ) : (
-              <Empty title={error ? t('study.unreadable') : t('study.empty_title')} body={error ?? t('study.empty_body')}>
-                {error && onFixProgram && <button className="link" onClick={fixProgram}>{t('study.fix')}</button>}
-              </Empty>
+              building ? <Empty title={t('build.title')} body={buildLine} />
+              : buildFailed ? (
+                <Empty title={t('build.failed_title')} body={buildFailed}>
+                  <button className="link" onClick={retryBuild}>{t('build.retry')}</button>
+                </Empty>
+              ) : (
+                <Empty title={error ? t('study.unreadable') : t('study.empty_title')} body={error ?? (paperOnly ? t('study.paper_no_study') : t('study.empty_body'))}>
+                  {paperOnly && <button className="link" onClick={retryBuild}>{t('study.build_from_paper')}</button>}
+                  {error && onFixProgram && <button className="link" onClick={fixProgram}>{t('study.fix')}</button>}
+                </Empty>
+              )
             ))}
           {activeFile?.ext === 'pdf' && activeFile.url ? (
             <SourceDrawer key={activeFile.path} pdf={activeFile as import('../../preload/types').ProjectFile} source={DEFAULT_SOURCE}

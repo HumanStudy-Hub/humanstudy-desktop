@@ -16,6 +16,12 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
 - [ ] Real-paper owner dogfood, PDF zoom/text annotations/quote highlights, sample attachment repair,
       and collaborator dev-backend access before sharing. See detailed acceptance criteria.
 
+## Next · 0.6.x tester reports
+
+- [~] #15 Importing a paper starts the build automatically (import = authorization): Study view shows
+      progress and fills in from `program_io.py` checkpoints; a failure shows its reason and one retry.
+      Building never starts a simulation. Needs a real-paper run on Mac and Windows before release.
+
 ## Next · from the 2026-10-12 review (agent-first: no new buttons/tabs)
 
 - [x] Server: desktop_events owner_id default (every event was rejected by RLS). Web dev 1958777.

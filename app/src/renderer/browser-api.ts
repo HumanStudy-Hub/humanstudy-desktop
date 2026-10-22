@@ -732,6 +732,9 @@ def intentional(harm: float, help_: float) -> float:
       },
     },
     project: {
+      startBuild: async () => false,
+      releaseBuild: async () => undefined,
+      retryBuild: async () => false,
       open: async () => snapshot.dir,
       read: async (dir) => {
         if (dir === snapshot.dir) return snapshot

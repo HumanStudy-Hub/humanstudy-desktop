@@ -93,6 +93,12 @@ export default function App() {
   const session = useSession(project?.dir ?? null, agentReady)
   const lastUser = session.messages.filter(m => m.role === 'user').at(-1)
   const agentTurnKey = lastUser ? `${session.threadId ?? session.id ?? ''}:${lastUser.id}` : null
+  // Importing a paper authorizes building its study: start as soon as the agent is ready and idle (issue #15).
+  const buildPending = Boolean(project?.pdf && project.build?.status === 'pending')
+  const { startPaperBuild } = session
+  useEffect(() => {
+    if (agentReady && session.id && !session.busy && buildPending) void startPaperBuild(t('build.prompt')).catch(() => undefined)
+  }, [agentReady, session.id, session.busy, buildPending, startPaperBuild])
   useEffect(() => { setSource(null) }, [project?.dir])
   // What the agent is doing, in the chat's own words, for the Simulation tab's live line.
   const agentActivity = useMemo(() => {

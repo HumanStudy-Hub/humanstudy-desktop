@@ -22,6 +22,21 @@ can actually run as the original participants did, so the researcher can check i
 
 ## 2. Write program.json (the Study document)
 
+**Save in checkpoints, so the researcher sees the study as it is extracted.** Once the study
+map is known, write a first batch (top level `schemaVersion: 2`, `id`, `title`, `source`, `intent`,
+plus `studies` and the overview/question nodes with their evidence) as JSON with the write tool to
+`.humanstudy/tmp/batch-01.json` and apply it:
+
+```bash
+python .opencode/skills/build/program_io.py .humanstudy/tmp/batch-01.json
+```
+
+Continue with small batches (`batch-02.json`, …), for example one section or one study at a time,
+each with the evidence its records cite. `program_io.py` merges records by `id`: a record sent
+again updates the fields it contains, and records not in the batch are kept. It writes
+`program.json` atomically, so a failed batch never damages the saved one. Never write the whole
+program in one tool call. An import build is already authorized: do not ask whether to start.
+
 Validate against `schema/human-program.schema.json`. Work in this order:
 
 1. `source`, `studies` (with `dependsOn` where a study consumes another's outputs), `intent`.
@@ -89,11 +104,15 @@ placeholder text; interactive and sequential structure intact; under 500 KB.
 ### Self-check (mandatory)
 
 After every write to `program.json` run `python .opencode/skills/build/check_program.py program.json`
-and fix every printed problem until it prints `PASS`. It lists all problems at once, each with a
+and fix every printed problem until it prints `PASS` (between checkpoints, only problems about
+records a later batch will add may remain; the final check must print `PASS`). It lists all problems at once, each with a
 fix. Typical slips: a step id placed in an issue's `nodeId` (use `stepId`), a `missing`/`decision`
 field or rule with no review issue naming its `nodeId`/`fieldId` (or `stepId`), an id in a list
 that does not exist. The app tolerates a few slips by setting them aside, but it warns the
 researcher; a clean check is the standard.
+
+Finish and validate the visible program **before** packaging or views. Do not delay the
+program until these auxiliary artifacts exist.
 
 ## 3. Package: make the study runnable
 

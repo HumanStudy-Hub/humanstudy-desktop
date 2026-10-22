@@ -41,6 +41,9 @@ export async function installPack(projectDir: string): Promise<void> {
   }
 }
 
+/** Pack-relative helper scripts that refreshPack keeps current (see refreshPack). */
+const HELPERS = ['skills/build/program_io.py']
+
 export const packFileCount = (): number => Object.keys(files).length
 
 /** Upgrade untouched default prompts in existing projects; never overwrite custom instructions. */
@@ -55,6 +58,14 @@ export async function refreshPack(projectDir: string): Promise<void> {
       await mkdir(dirname(abs), { recursive: true })
       await writeFile(abs, content, 'utf8')
     }
+  }
+  // App-owned helper scripts the skills call: kept at the shipped version, also in projects made before them.
+  for (const rel of HELPERS) {
+    const abs = join(projectDir, target(rel)!)
+    const content = files[PREFIX + rel]
+    if (content === undefined || (await readFile(abs, 'utf8').catch(() => null)) === content) continue
+    await mkdir(dirname(abs), { recursive: true })
+    await writeFile(abs, content, 'utf8')
   }
   // The artifact kit is vendored code, not researcher instructions: install or update it as shipped.
   for (const rel of kitFiles()) {
