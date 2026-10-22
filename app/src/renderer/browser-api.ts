@@ -183,16 +183,21 @@ if (!('humanstudy' in window)) {
   }
   // Simulation tab: the example run every sample project ships with, and scripted runs of your own.
   const simMode = new URLSearchParams(location.search).get('sim')
+  // A complete package (the eight files the Simulation tab checks); ?sim=incomplete leaves only a stub adapter.
+  const PKG = 'package/knobe-2003-intentional-action/'
   const putPackage = () => {
-    put('package/knobe-2003-intentional-action/study.json', '{"title": "Knobe (2003)"}\n', 30)
-    put('package/knobe-2003-intentional-action/task/adapter.py', '# Replay adapter (browser preview)\n', 30)
+    put(PKG + 'study.json', '{"title": "Knobe (2003)", "readiness": {"status": "ready", "blocking": []}}\n', 30)
+    for (const f of ['source/paper_metadata.json', 'source/evidence.json', 'materials/materials.json', 'task/task.json', 'audit/missing_information.json']) put(PKG + f, '{}\n', 30)
+    put(PKG + 'task/adapter.py', '# Replay adapter (browser preview)\ndef run_sessions(llm, seed, n, arms=None):\n    return []\n', 30)
+    put(PKG + 'evaluation/evaluation.py', '# Scoring (browser preview)\ndef evaluate(sessions):\n    return {}\n', 30)
   }
   if (mode !== 'empty') {
     put(`${EXAMPLE_RUN}/results.html`, exampleResults, 60 * 24 * 3)
     put(`${EXAMPLE_RUN}/summary.json`, exampleSummary, 60 * 24 * 3)
     put(`${EXAMPLE_RUN}/progress.json`, exampleProgress, 60 * 24 * 3)
     put(`${EXAMPLE_RUN}/report.md`, exampleReport, 60 * 24 * 3)
-    if (simMode && simMode !== 'unbuilt') putPackage()
+    if (simMode === 'incomplete') put(PKG + 'task/adapter.py', '# Replay adapter (browser preview)\n', 30)
+    else if (simMode && simMode !== 'unbuilt') putPackage()
   }
   const stampOf = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`
   const touched = () => { buildTree(); changed.forEach((cb) => cb(snapshot.dir)) }
