@@ -549,6 +549,8 @@ const ROWS: Row[] = [
   ['model.no_source', 'No source cited', '未引用出处'],
   ['model.clear', 'Clear selection (Esc)', '清除选择（Esc）'],
   ['model.support', 'Selected passage · p. {n} is cited by', '所选段落 · 第 {n} 页，引用它的条目：'],
+  ['model.support_file', 'Selected passage · {file}, p. {n} is cited by', '所选段落 · {file} 第 {n} 页，引用它的条目：'],
+  ['model.support_other', 'Same words, cited from another source:', '相同文字，但引用的是另一份来源：'],
   ['model.support_none', 'No study item cites the selected passage.', '没有条目引用所选段落。'],
   ['model.quote_missing', 'Quote not found on p. {n} — check this citation', '在第 {n} 页没有找到引用的原文，请核对这条引用'],
   ['model.quote_differs', 'Quote located on p. {n}, but its numbers or signs differ from the source — check this citation', '在第 {n} 页定位到引用，但数字或符号与原文不一致，请核对这条引用'],

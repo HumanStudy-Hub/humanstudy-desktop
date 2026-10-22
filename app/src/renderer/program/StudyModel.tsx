@@ -25,7 +25,7 @@ export type StudyModelProps = {
   onStudy?(id: string): void;
   selectedIds: string[];
   /** Items cited by the passage selected in the paper, and that passage's page. */
-  support?: { page: number; ids: string[] } | null;
+  support?: { page: number; ids: string[]; file?: string; other?: { id: string; file: string }[] } | null;
   onClearSupport?(): void;
   changedIds?: ReadonlySet<string>;
   /** What the paper pane found for each citation it opened (quoteKey). */
@@ -102,7 +102,8 @@ export default function StudyModel(props: StudyModelProps) {
       {program.studies.map(st => <button key={st.id} role="tab" title={st.title} aria-selected={st.id === studyId} onClick={() => { setFocus(null); props.onStudy?.(st.id); }}>{st.title}</button>)}
     </div></div>}
     {props.support && <div className={s.support} role="status">
-      {props.support.ids.length ? <><span>{t('model.support', { n: props.support.page })}</span>{props.support.ids.map(id => <button key={id} onClick={() => open(id)}>{titleOf(program, id)}</button>)}</> : <span>{t('model.support_none')}</span>}
+      {props.support.ids.length ? <><span>{props.support.file ? t('model.support_file', { n: props.support.page, file: props.support.file }) : t('model.support', { n: props.support.page })}</span>{props.support.ids.map(id => <button key={id} onClick={() => open(id)}>{titleOf(program, id)}</button>)}</> : <span>{t('model.support_none')}</span>}
+      {!!props.support.other?.length && <><span className={s.supportOther}>{t('model.support_other')}</span>{props.support.other.map(o => <button key={o.id} className={s.supportOther} title={o.file} onClick={() => open(o.id)}>{titleOf(program, o.id)}{o.file ? ` · ${o.file}` : ''}</button>)}</>}
       {props.onClearSupport && <button className={s.supportClose} aria-label={t('chat.clear')} onClick={props.onClearSupport}>×</button>}
     </div>}
     <div className={s.scroll} ref={scroll}>

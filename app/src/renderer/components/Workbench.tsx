@@ -14,7 +14,7 @@ import { simulationScope } from '../../shared/simulation-scope'
 import { simulationPlan } from '../../shared/simulation-run'
 import { SimulationPanel } from './SimulationPanel'
 import { sourceFocus } from '../../shared/workspace-context'
-import { supportedBy } from '../../shared/program-view'
+import { passageSupport } from '../../shared/program-view'
 import { quoteKey } from '../../shared/source-anchor'
 
 export type MainTab = 'study' | 'paper' | 'simulation'
@@ -120,7 +120,14 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   // What the paper found for each citation it opened, and the passage the reader selected there.
   const [quoteStatus, setQuoteStatus] = useState<ReadonlyMap<string, QuoteStatus>>(() => new Map())
   const [passage, setPassage] = useState<PassageSelection | null>(null)
-  const support = useMemo(() => passage && program ? { page: passage.page, ids: supportedBy(program, passage) } : null, [passage, program])
+  // Items citing the selected passage: those citing this file first; the same words cited from another
+  // file are listed apart, with that file's name, never as support for this one.
+  const sourceLabel = sourceFile ? ('rel' in sourceFile ? sourceFile.rel : sourceFile.name) : undefined
+  const support = useMemo(() => {
+    if (!passage || !program) return null
+    const found = passageSupport(program, { ...passage, source: sourceFile?.path ?? null }, (ref) => sourceTarget(project, ref)?.path ?? null)
+    return { page: passage.page, file: sourceLabel, ids: found.same, other: found.other }
+  }, [passage, program, project, sourceFile?.path, sourceLabel])
 
   // Project switch: restore its tabs.
   useEffect(() => {
