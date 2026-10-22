@@ -54,7 +54,8 @@ def _now() -> str:
 
 
 def _write_json(path: Path, data: dict) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    # One temporary name per process: the heartbeat thread and `simkit.py stage` may write at once.
+    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     tmp.replace(path)  # atomic: the app never reads a half-written file
 
@@ -123,7 +124,9 @@ class SimRun:
                 try:
                     _write_json(self.progress_path, self.progress)
                 except OSError:
-                    return
+                    # Transient on Windows (antivirus or the indexer holding the file): try again
+                    # on the next beat rather than letting a live run read as stopped.
+                    continue
 
     def _exit(self) -> None:
         """run.py ended (normally, after an error, or after Stop): no process is behind this run any more."""

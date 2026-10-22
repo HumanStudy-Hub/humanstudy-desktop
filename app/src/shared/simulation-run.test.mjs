@@ -85,6 +85,8 @@ const writing = hb({ stage: 'writing', runner: 'exited', updatedAt: iso(now - 8 
 assert.equal(S.runState({}, writing, now, now - 8 * 60_000), 'running', 'run.py ended; the agent is writing up (8 quiet minutes)')
 assert.equal(S.runState({}, writing, now, now - 60_000), 'running', 'report.md just written')
 assert.equal(S.runState({}, hb({ stage: 'writing', runner: 'exited', updatedAt: iso(now - 25 * 60_000) }), now, now - 25 * 60_000), 'stopped', 'nothing written for the whole write-up window')
+assert.equal(S.runState({}, hb({ stage: 'trial', runner: 'exited', updatedAt: iso(now - 60_000) }), now, now - 60_000), 'stopped', 'a finished trial is not a run being written up')
+assert.equal(S.runState({}, hb({ stage: 'running', runner: 'exited', updatedAt: iso(now - 60_000) }), now, now - 60_000), 'stopped', 'run.py exited before scoring')
 assert.equal(S.runState({}, hb({ stage: 'running', updatedAt: iso(now - 120_000) }), now, now - 120_000), 'stopped', 'older packs without a heartbeat keep the 90 s rule')
 
 // #16 (3): a run counts as a result only with participant data

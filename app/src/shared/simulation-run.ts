@@ -161,7 +161,12 @@ export function runState(run: Pick<SimRunFiles, 'results' | 'stop'>, progress: S
   if (progress?.stage === 'done') return 'done'
   if (owned) return 'running'
   if (progress?.runner === 'alive') return now - (progress.heartbeatAt ?? progress.updatedAt ?? lastChange) < HEARTBEAT_STALE ? 'running' : 'stopped'
-  if (progress?.runner === 'exited') return now - Math.max(progress.updatedAt ?? 0, lastChange) < WRITE_UP_WINDOW ? 'running' : 'stopped'
+  // Only a run that got as far as scoring or writing is written up after run.py ends; a trial
+  // (`run.py --trial`) or an aborted run that exited earlier has nothing behind it.
+  if (progress?.runner === 'exited') {
+    const writingUp = progress.stage === 'scoring' || progress.stage === 'writing'
+    return writingUp && now - Math.max(progress.updatedAt ?? 0, lastChange) < WRITE_UP_WINDOW ? 'running' : 'stopped'
+  }
   // Older packs write no heartbeat: progress that stopped moving for a while means the run is gone.
   return now - (progress?.updatedAt ?? lastChange) < HEARTBEAT_STALE ? 'running' : 'stopped'
 }

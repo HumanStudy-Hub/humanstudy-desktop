@@ -4,7 +4,7 @@
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
@@ -168,6 +168,16 @@ test('program_io.py saves checkpoints by id without losing saved work', { skip: 
   assert.equal(r.status, 0, r.stderr)
   saved = JSON.parse(readFileSync(join(dir, 'program.json'), 'utf8'))
   assert.deepEqual(saved.nodes.map((n) => n.title), ['First updated', p.nodes[1].title, 'Duplicate kept'])
+  // One saved record without an id (a slip the app tolerates) must not make a batch replace the list.
+  const slip = JSON.parse(readFileSync(join(dir, 'program.json'), 'utf8'))
+  slip.evidence.splice(1, 0, { quote: 'slip without an id' })
+  writeFileSync(join(dir, 'program.json'), JSON.stringify(slip, null, 2), 'utf8')
+  r = run({ evidence: [{ ...p.evidence[0], id: 'ev-new' }] })
+  assert.equal(r.status, 0, r.stderr)
+  saved = JSON.parse(readFileSync(join(dir, 'program.json'), 'utf8'))
+  assert.equal(saved.evidence.length, slip.evidence.length + 1, 'saved evidence was dropped')
+  assert.equal(saved.evidence[1].quote, 'slip without an id')
+  assert.ok(!readdirSync(dir).some((f) => f.endsWith('.tmp')), 'temporary file left behind')
 })
 
 test('an older project with a paper but no study is offered a build, never started unasked', () => {

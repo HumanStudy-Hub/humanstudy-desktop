@@ -93,6 +93,28 @@ class SimkitTest(unittest.TestCase):
             finally:
                 simkit.HEARTBEAT_SECONDS = old
 
+    def test_heartbeat_survives_a_failed_write(self):
+        # On Windows the replace can fail while antivirus holds progress.json; the next beat retries.
+        with tempfile.TemporaryDirectory() as d:
+            old, write = simkit.HEARTBEAT_SECONDS, simkit._write_json
+            simkit.HEARTBEAT_SECONDS = 0.05
+            failures = []
+            try:
+                run = simkit.SimRun(d, plan={"a": 1}, model="m")
+                def flaky(path, data):
+                    if len(failures) < 2 and threading.current_thread().name == "simkit-heartbeat":
+                        failures.append(1)
+                        raise PermissionError("held by another process")
+                    write(path, data)
+                simkit._write_json = flaky
+                time.sleep(0.4)
+                self.assertEqual(len(failures), 2)
+                self.assertTrue(any(t.name == "simkit-heartbeat" for t in threading.enumerate()), "heartbeat thread died")
+                run._exit()
+            finally:
+                simkit._write_json = write
+                simkit.HEARTBEAT_SECONDS = old
+
 
 if __name__ == "__main__":
     unittest.main()

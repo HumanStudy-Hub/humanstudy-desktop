@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 RECORDS = ("studies", "nodes", "steps", "relations", "evidence", "issues")
@@ -29,12 +30,13 @@ def merge(old, new):
         for key, value in new.items():
             out[key] = merge(old.get(key), value)
         return out
-    if isinstance(old, list) and isinstance(new, list) and all(isinstance(x, dict) and x.get("id") for x in old + new):
+    if isinstance(old, list) and isinstance(new, list) and all(isinstance(x, dict) and x.get("id") for x in new) \
+            and all(isinstance(x, dict) for x in old):
         # Update the first record with that id in place (the one the app shows); never drop or reorder
         # saved records, including duplicates the researcher has not resolved yet.
         out = list(old)
         for item in new:
-            at = next((i for i, x in enumerate(out) if x["id"] == item["id"]), None)
+            at = next((i for i, x in enumerate(out) if x.get("id") == item["id"]), None)
             if at is None:
                 out.append(item)
             else:
@@ -74,12 +76,25 @@ def main() -> int:
     except (OSError, ValueError) as error:  # json.JSONDecodeError is a ValueError
         print(f"program_io: {error}. program.json was not changed.", file=sys.stderr)
         return 1
-    tmp = target.with_name(target.name + ".tmp")
-    with tmp.open("w", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp, target)
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Windows refuses the replace while another program (the app, antivirus) has the file open.
+        for attempt in range(10):
+            try:
+                os.replace(tmp, target)
+                break
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.2)
+    except OSError as error:
+        tmp.unlink(missing_ok=True)
+        print(f"program_io: {error}. program.json was not changed.", file=sys.stderr)
+        return 1
     counts = ", ".join(f"{len(merged[key])} {key}" for key in RECORDS)
     print(f"Saved {target}: {counts}. Run check_program.py next.")
     return 0
