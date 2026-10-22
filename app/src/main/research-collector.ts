@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs'
 import { mkdir, readFile, readdir, rename, stat, writeFile, unlink } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { gzipSync, gunzipSync } from 'node:zlib'
-import { CONTENT_BUCKET, LIMITS, MANIFEST_FORMAT, scrubResearchString, validateResearchEvent, type ResearchEvent, type ResearchContentRow, type ContentRef } from '../shared/research-contract'
+import { CONTENT_BUCKET, EVENTS, LIMITS, MANIFEST_FORMAT, scrubResearchString, scrubResearchValue, validateResearchEvent, type ResearchEvent, type ResearchContentRow, type ContentRef } from '../shared/research-contract'
 
 export const SOURCE_CONSENT_VERSION = 3
 export interface ResearchAuth { supabaseUrl: string; supabaseKey: string; accessToken: string; userId: string }
@@ -22,6 +22,7 @@ interface Options {
 }
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export type ResearchCapture = Partial<ResearchEvent> & Pick<ResearchEvent, 'event_type'>
 async function json<T>(path: string): Promise<T | null> { try { return JSON.parse(await readFile(path, 'utf8')) } catch { return null } }
 async function atomic(path: string, data: string | Uint8Array) {
   const tmp = `${path}.${randomUUID()}.tmp`
@@ -52,7 +53,7 @@ export function createResearchCollector(options: Options) {
   }
   async function ownerDir(owner: string): Promise<string> {
     const root = join(options.root, owner)
-    for (const dir of ['', 'events', 'content']) await mkdir(join(root, dir), { recursive: true, mode: 0o700 })
+    for (const dir of ['', 'events', 'content', 'rejected']) await mkdir(join(root, dir), { recursive: true, mode: 0o700 })
     return root
   }
   async function object(root: string, sha256: string, bytes: Uint8Array, row: ResearchContentRow) {
@@ -81,6 +82,21 @@ export function createResearchCollector(options: Options) {
     }
     return { role: 'source', sha256, bytes, mime }
   }
+  async function stageBytes(root: string, raw: Buffer, role: string): Promise<ContentRef> {
+    const sha256 = hash(raw), parts: Array<{ sha256: string; bytes: number }> = []
+    for (let i = 0; i < raw.length || i === 0; i += LIMITS.partBytes) {
+      const bytes = raw.subarray(i, i + LIMITS.partBytes), part = hash(bytes), compressed = gzipSync(bytes)
+      await object(root, part, compressed, { sha256: part, kind: 'part', bytes: bytes.length,
+        stored_bytes: compressed.length, mime: 'text/plain', encoding: 'gzip', surface: options.surface })
+      parts.push({ sha256: part, bytes: bytes.length })
+    }
+    if (parts.length > 1) {
+      const manifest = Buffer.from(JSON.stringify({ format: MANIFEST_FORMAT, encoding: 'utf8', bytes: raw.length, sha256, mime: 'text/plain', parts }))
+      await object(root, sha256, manifest, { sha256, kind: 'manifest', bytes: raw.length, stored_bytes: manifest.length,
+        mime: 'text/plain', encoding: 'identity', parts: parts.map(p => p.sha256), surface: options.surface })
+    }
+    return { role, sha256, bytes: raw.length, mime: 'text/plain' }
+  }
   async function enqueue(auth: Pick<ResearchAuth, 'userId'>, root: string, fields: Partial<ResearchEvent> & Pick<ResearchEvent, 'event_type' | 'data_type'>) {
     let session = sessions.get(auth.userId)
     if (!session) {
@@ -99,10 +115,79 @@ export function createResearchCollector(options: Options) {
     if (errors.length) throw new Error(`Invalid research event: ${errors.join('; ')}`)
     await atomic(join(root, 'events', row.id + '.json'), JSON.stringify(row))
     session.seq++
+    return row.id
+  }
+  /** Persist one complete semantic event. Large values are referenced, never clipped. */
+  function capture(fields: ResearchCapture, context: { projectDir?: string; email?: string | null } = {}): Promise<string | null> {
+    const capturedOwner = localOwner() // bind at invocation, not when the serialized queue reaches it
+    return run(async () => {
+      const owner = await capturedOwner
+      if (!owner || await localOwner() !== owner) return null
+      const spec = EVENTS[fields.event_type]
+      if (!spec) throw new Error('Unknown research event type: ' + fields.event_type)
+      const root = await ownerDir(owner)
+      const metadata = scrubResearchValue(fields.metadata ?? {}, context) as Record<string, unknown>
+      const refs = [...(fields.content_refs ?? [])]
+      for (const [key, value] of Object.entries(metadata)) {
+        if (typeof value === 'string' && Buffer.byteLength(value) > LIMITS.inlineTextBytes) {
+          const ref = await stageBytes(root, Buffer.from(value), key)
+          refs.push(ref); delete metadata[key]
+        }
+      }
+      // Preserve required keys and complete structured values, including long question/tool inputs.
+      if (Buffer.byteLength(JSON.stringify(metadata)) > LIMITS.metadataBytes) {
+        const ref = await stageBytes(root, Buffer.from(JSON.stringify(metadata)), 'metadata')
+        refs.push(ref)
+        for (const key of Object.keys(metadata)) {
+          const value = metadata[key]
+          if (!spec.metadata?.includes(key) && !spec.content?.includes(key)) delete metadata[key]
+          else if (typeof value === 'object' && value !== null) metadata[key] = { content_ref: ref.sha256, key }
+        }
+      }
+      if (await localOwner() !== owner) return null
+      const id = fields.id ?? randomUUID()
+      return enqueue({ userId: owner }, root, { ...fields, id, data_type: spec.dataType,
+        ...(fields.target ? { target: scrubResearchString(fields.target, context) } : {}),
+        ...(spec.primary ? { action_id: id } : {}), metadata, content_refs: refs })
+    })
+  }
+  async function end(reason = 'closed'): Promise<void> {
+    const owner = await localOwner(); if (!owner) return
+    await run(async () => {
+      const session = sessions.get(owner); if (!session) return
+      await enqueue({ userId: owner }, await ownerDir(owner), { event_type: 'session.end', data_type: 'session',
+        metadata: { reason, captured_through_seq: session.seq } })
+      sessions.delete(owner)
+    })
+  }
+  /** Version generated files; sanitize text, preserve opaque bytes. Sources use queueSource. */
+  function queueArtifact(path: string, projectId: string, artifactId: string, by: string): Promise<void> {
+    const capturedOwner = localOwner()
+    return run(async () => {
+      const owner = await capturedOwner; if (!owner || await localOwner() !== owner) return
+      const root = await ownerDir(owner), before = await stat(path)
+      if (!before.isFile()) return
+      const textFile = /\.(json|md|txt|csv|tsv|html?|py|r|js|ts|tex|bib|ya?ml|xml|svg|qmd|rmd|css|sql|jl|do|sps|ipynb|log|toml|ini)$/i.test(artifactId)
+      const role = artifactId === 'program.json' ? 'program' : 'file'
+      const ref = textFile
+        ? await stageBytes(root, Buffer.from(scrubResearchString(await readFile(path, 'utf8'), { projectDir: path.slice(0, -artifactId.length).replace(/[\\/]+$/, '') })), role)
+        : await stageFile(root, path, 'application/octet-stream')
+      const after = await stat(path)
+      if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ino !== after.ino || await localOwner() !== owner) return
+      const receipt = join(root, `artifact-${hash(Buffer.from(projectId + ':' + artifactId))}.json`)
+      const previous = await json<{ hash: string; version: number }>(receipt)
+      if (previous?.hash === ref.sha256) return
+      const version = (previous?.version ?? 0) + 1
+      await enqueue({ userId: owner }, root, { event_type: artifactId === 'program.json' ? 'program.version' : 'artifact.version', data_type: 'knowledge_artifact',
+        project_id: projectId, artifact_id: artifactId, artifact_version: version,
+        metadata: { by, hash: ref.sha256 }, content_refs: [{ ...ref, role }] })
+      await atomic(receipt, JSON.stringify({ hash: ref.sha256, version }))
+    })
   }
   async function queueSource(path: string, projectId: string, mime = 'application/octet-stream'): Promise<void> {
+    const capturedOwner = localOwner()
     return run(async () => {
-      const owner = await localOwner(); if (!owner) return
+      const owner = await capturedOwner; if (!owner || await localOwner() !== owner) return
       const auth = { userId: owner }
       const info = await stat(path); if (!info.isFile()) return
       const root = await ownerDir(auth.userId), ref = await stageFile(root, path, mime)
@@ -156,7 +241,10 @@ export function createResearchCollector(options: Options) {
   }
   async function flush(): Promise<void> {
     if (flushing) return flushing
-    flushing = run(async () => {
+    flushing = (async () => {
+      // Network waits never occupy the capture queue. A slow upload must not leave new user
+      // interactions only in memory until a 20-second request timeout finishes.
+      await chain
       let auth = await identity(); if (!auth) return
       const root = await ownerDir(auth.userId)
       const who = await request(auth, '/auth/v1/user')
@@ -164,34 +252,62 @@ export function createResearchCollector(options: Options) {
       // allowed() is only true after the current explicit agreement. Never migrate older consent.
       const agreed = await request(auth, '/rest/v1/research_consents?on_conflict=owner_id,surface,version', { method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: JSON.stringify({ surface: options.surface, version: SOURCE_CONSENT_VERSION, usage: true, content: true, sources: true }) })
       if (!agreed.ok) throw new Error(`Could not record the source agreement (${agreed.status}).`)
-      const files = (await readdir(join(root, 'events'))).filter(f => f.endsWith('.json'))
-      for (const file of files) {
-        const row = await json<ResearchEvent>(join(root, 'events', file)); if (!row) throw new Error('An event needs local recovery; its file was retained.')
+      let files = (await readdir(join(root, 'events'))).filter(f => f.endsWith('.json'))
+      if (files.length) await run(async () => {
+        const session = sessions.get(auth!.userId)
+        if (!session) return
+        await enqueue(auth!, root, { event_type: 'delivery.checkpoint', data_type: 'session', metadata: {
+          captured_through_seq: session.seq, pending_events: files.length,
+          pending_content: (await readdir(join(root, 'content'))).filter(f => f.endsWith('.json')).length } })
+      })
+      files = (await readdir(join(root, 'events'))).filter(f => f.endsWith('.json'))
+      const pendingRows = await Promise.all(files.map(async file => ({ file, row: await json<ResearchEvent>(join(root, 'events', file)) })))
+      pendingRows.sort((a, b) => (a.row?.research_session_id ?? '').localeCompare(b.row?.research_session_id ?? '') || (a.row?.client_seq ?? 0) - (b.row?.client_seq ?? 0))
+      let rejection: string | undefined = (await readdir(join(root, 'rejected'))).length
+        ? 'A rejected research record is retained locally for review.' : undefined
+      for (const { file, row } of pendingRows) {
+        if (!row) { rejection = 'A corrupt event was retained for local recovery.'; continue }
         for (const ref of row.content_refs) await upload(auth, root, ref.sha256)
         auth = await fresh(auth)
         const stored = await request(auth, '/rest/v1/research_events?on_conflict=id', { method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: JSON.stringify(row) })
-        if (!stored.ok) throw new Error(`Research event delivery failed (${stored.status}); retained locally.`)
+        if (!stored.ok) {
+          if ([400, 413, 422].includes(stored.status)) {
+            // Isolate exactly one rejected record; preserve its complete original and report the gap.
+            await atomic(join(root, 'rejected', file), JSON.stringify({ row, status: stored.status, rejected_at: new Date().toISOString() }))
+            await enqueue(auth, root, { event_type: 'delivery.rejected', data_type: 'session', metadata: {
+              rejected_event_id: row.id, rejected_seq: row.client_seq, rejected_session_id: row.research_session_id, status: stored.status } })
+            await unlink(join(root, 'events', file)); rejection = 'A rejected research record is retained locally for review.'
+            continue
+          }
+          throw new Error(`Research event delivery failed (${stored.status}); retained locally.`)
+        }
         await unlink(join(root, 'events', file))
       }
       // Only acknowledged content is eligible for local cleanup. Unsent bytes are never pruned.
-      if (!(await readdir(join(root, 'events'))).some(f => f.endsWith('.json'))) {
-        for (const f of await readdir(join(root, 'content'))) await unlink(join(root, 'content', f))
-      }
-      lastError = undefined
-    }).catch(e => { lastError = e instanceof Error ? e.message : 'Research upload failed.' }).finally(() => { flushing = null })
+      await run(async () => {
+        if (!(await readdir(join(root, 'events'))).some(f => f.endsWith('.json')) && !(await readdir(join(root, 'rejected'))).length)
+          for (const f of await readdir(join(root, 'content'))) await unlink(join(root, 'content', f))
+      })
+      lastError = rejection
+    })().catch(e => { lastError = e instanceof Error ? e.message : 'Research upload failed.' }).finally(() => { flushing = null })
     return flushing
   }
   async function pending(): Promise<number> {
     const owner = await localOwner(); if (!owner) return 0
     const root = await ownerDir(owner)
-    return (await readdir(join(root, 'events'))).filter(f => f.endsWith('.json')).length
+    const rejected = (await readdir(join(root, 'rejected'))).filter(f => f.endsWith('.json')).length
+    if (rejected) lastError = 'A rejected research record is retained locally for review.'
+    return (await readdir(join(root, 'events'))).filter(f => f.endsWith('.json')).length + rejected
   }
   async function exportFiles(): Promise<Record<string, Uint8Array>> {
+    if (flushing) await flushing
     const owner = options.ownerId ? options.ownerId() : (await options.auth())?.userId
     if (!owner || !uuid.test(owner)) return {}
     const root = await ownerDir(owner), files: Record<string, Uint8Array> = {}
-    for (const dir of ['events', 'content']) for (const f of await readdir(join(root, dir)))
-      if (/^[a-f0-9-]+\.(json|bin)$/.test(f)) files[`research-v1/local/${dir}/${f}`] = await readFile(join(root, dir, f))
+    await run(async () => {
+      for (const dir of ['events', 'content', 'rejected']) for (const f of await readdir(join(root, dir)))
+        if (/^[a-f0-9-]+\.(json|bin)$/.test(f)) files[`research-v1/local/${dir}/${f}`] = await readFile(join(root, dir, f))
+    })
     const auth = await identity(false); if (!auth || auth.userId !== owner) throw new Error('Sign in to the original account before exporting research data.')
     const who = await request(auth, '/auth/v1/user')
     if (!who.ok || (await who.json()).id !== owner) throw new Error('Could not verify the export account.')
@@ -216,5 +332,5 @@ export function createResearchCollector(options: Options) {
     files['research-v1/README.txt'] = Buffer.from('Object metadata is in research_content.json. Decompress gzip objects before reading. For a manifest, decompress each part and concatenate in the declared order; then verify the original SHA-256. Original source bytes are preserved. verified_at distinguishes server-checked content from uploaded content.')
     return files
   }
-  return { queueSource, flush, pending, exportFiles, error: () => lastError }
+  return { capture, end, queueSource, queueArtifact, flush, pending, exportFiles, error: () => lastError }
 }

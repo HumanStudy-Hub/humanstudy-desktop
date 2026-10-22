@@ -3,6 +3,15 @@
 import type { TelemetryTrackOptions } from '../preload/types'
 
 let currentProjectId: string | undefined
+let activation: { seen: boolean; via: string } | null = null
+/** A component's semantic event owns the activation; fallback captures otherwise unnamed clicks. */
+export function beginActivation(target: string, via: string): void {
+  const current = { seen: false, via }; activation = current
+  queueMicrotask(() => {
+    if (!current.seen) track('ui.click', { target, metadata: { via } })
+    if (activation === current) activation = null
+  })
+}
 
 /** Resolves the open project's research id so later events carry project_id. */
 export async function setTelemetryProject(dir: string | null): Promise<void> {
@@ -17,6 +26,10 @@ export async function setTelemetryProject(dir: string | null): Promise<void> {
 
 export function track(type: string, opts: TelemetryTrackOptions = {}): void {
   try {
+    if (activation) {
+      activation.seen = true
+      opts = { ...opts, metadata: { ...opts.metadata, via: activation.via } }
+    }
     void window.humanstudy.telemetry
       ?.track(type, { ...opts, projectId: opts.projectId ?? currentProjectId })
       .catch(() => undefined)

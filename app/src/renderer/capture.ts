@@ -1,7 +1,7 @@
 // Window-wide research events that no single component owns: keyboard shortcuts and the start of
 // typing in the message composer. Everything goes through track(), which the main process gates on
 // consent, so installing the listeners is always safe.
-import { track } from './telemetry'
+import { beginActivation, track } from './telemetry'
 
 const MODS = new Set(['Meta', 'Control', 'Alt', 'Shift'])
 let installed = false
@@ -24,17 +24,28 @@ export function installCapture(): void {
     },
     true,
   )
-  // A typing episode starts with the first input after 8 s of quiet in the composer.
-  let lastInput = 0
-  document.addEventListener(
-    'input',
-    (e) => {
-      const el = e.target as HTMLElement | null
-      if (!el || el.tagName !== 'TEXTAREA' || !el.closest('.composer')) return
-      const now = Date.now()
-      if (now - lastInput > 8_000) track('composer.typing_start', { metadata: { existingChars: (el as HTMLTextAreaElement).value.length } })
-      lastInput = now
-    },
-    true,
-  )
+  document.addEventListener('click', e => {
+    if (!(e.target instanceof Element)) return
+    const el = e.target.closest('[data-event],button,a,input,select,textarea,[role]') ?? e.target
+    const name = el.getAttribute('data-event') ?? el.tagName.toLowerCase()
+    beginActivation(name, e.detail === 0 ? 'keyboard' : 'pointer')
+  }, true)
+  let visibleSince = document.visibilityState === 'visible' ? Date.now() : 0
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') visibleSince = Date.now()
+    else if (visibleSince) { track('ui.foreground', { durationMs: Date.now() - visibleSince }); visibleSince = 0 }
+  })
+  // Only the settled position is captured; no mouse coordinates or per-frame scroll events.
+  const runs = new Map<Element, { start: number; end: number; at: number; timer: ReturnType<typeof setTimeout> }>()
+  document.addEventListener('scroll', e => {
+    if (!(e.target instanceof Element)) return
+    const el = e.target, range = el.scrollHeight - el.clientHeight
+    if (range <= 0) return
+    const end = Math.round(Math.max(0, Math.min(1, el.scrollTop / range)) * 1000), prior = runs.get(el)
+    if (prior) clearTimeout(prior.timer)
+    const run = { start: prior?.start ?? end, end, at: prior?.at ?? Date.now(), timer: undefined as unknown as ReturnType<typeof setTimeout> }
+    run.timer = setTimeout(() => { runs.delete(el); track('ui.scroll', { durationMs: Date.now() - run.at,
+      metadata: { endDepth: run.end, distance: Math.abs(run.end - run.start), direction: run.end >= run.start ? 'down' : 'up' } }) }, 800)
+    runs.set(el, run)
+  }, { capture: true, passive: true })
 }

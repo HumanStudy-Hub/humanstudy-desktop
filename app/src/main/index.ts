@@ -76,7 +76,7 @@ const shutdown = createShutdown({
     })
     return result.response === 1
   },
-  flush: async () => { if (threadsInitialized) await threads().flush() },
+  flush: async () => { if (threadsInitialized) await threads().flush(); await telemetry.settleResearch(activeTurns.size === 0) },
   quiesce: async () => {
     // Preserve kernel/session bindings until exit so an unsuccessful quit remains usable.
     await Promise.all([...activeTurns].map(id => kernelFor(id).abort(id)))

@@ -1,6 +1,10 @@
-> **Start here (2026-10-15):** `docs/handoff-2026-10-15.md` — current state, P0 CPU runaway, 0.6.1 release steps.
+> **Current rollout (2026-10-22):** [Unified collection and application rollout](docs/rollout-checklist-2026-10-22.md) · [GitHub #30](https://github.com/HumanStudy-Hub/humanstudy-desktop/issues/30).
+> Historical context: `docs/handoff-2026-10-15.md` — CPU investigation and 0.6.1 release steps.
 
 # HumanStudy Hub desktop · backlog
+
+**Current execution:** [Unified collection and application rollout](docs/rollout-checklist-2026-10-22.md).
+Tracks desktop/web/headless capture, database migration and packaged acceptance. Build/save blockers are listed separately as out-of-scope follow-ups.
 
 Feature parity target: the Codex / Claude Code desktop apps, for social scientists. Each item
 names its owner wave so several agents can work without touching the same files.
