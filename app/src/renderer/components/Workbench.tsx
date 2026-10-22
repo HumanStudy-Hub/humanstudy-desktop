@@ -17,6 +17,7 @@ import { SimulationPanel } from './SimulationPanel'
 import { sourceFocus } from '../../shared/workspace-context'
 import { supportedBy } from '../../shared/program-view'
 import { quoteKey } from '../../shared/source-anchor'
+import { clearDraft, draftsIn } from '../drafts'
 
 export type MainTab = 'study' | 'paper' | 'simulation'
 type TabId = MainTab | `file:${string}`
@@ -111,7 +112,7 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
 
   const [layout, setLayout] = useState<Layout>(() => loadLayout(project.dir))
-  const [dirty, setDirty] = useState<Set<string>>(() => new Set())
+  const [dirty, setDirty] = useState<Set<string>>(() => new Set(draftsIn(project.dir).map((d) => d.path)))
   const [editError, setEditError] = useState('')
   const [changed, setChanged] = useState<Set<string>>(() => new Set())
   const [paperSeen, setPaperSeen] = useState(false)
@@ -126,7 +127,7 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   // Project switch: restore its tabs.
   useEffect(() => {
     setLayout(loadLayout(project.dir))
-    setDirty(new Set())
+    setDirty(new Set(draftsIn(project.dir).map((d) => d.path)))
     setChanged(new Set())
     setEditError('')
     setQuoteStatus(new Map())
@@ -197,6 +198,7 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   const close = (id: `file:${string}`) => {
     track('tab.close', { target: tabKind(id, fileByPath), metadata: { dirty: dirty.has(id.slice(5)) } })
     if (dirty.has(id.slice(5)) && !window.confirm(t('wb.discard'))) return
+    clearDraft(id.slice(5))
     setDirty((d) => {
       if (!d.has(id.slice(5))) return d
       const n = new Set(d)

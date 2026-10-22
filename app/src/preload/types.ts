@@ -270,6 +270,14 @@ export interface MenuCommand {
   arg?: string
 }
 
+/** The localized close confirmation the main process shows while a window has unsaved edits. */
+export interface UnsavedPrompt {
+  message: string
+  detail: string
+  discard: string
+  cancel: string
+}
+
 export interface AppInfo {
   version: string
   platform: string
@@ -371,6 +379,8 @@ export interface HumanStudyApi {
   }
   app: {
     info(): Promise<AppInfo>
+    /** Tells the window whether it holds unsaved edits; closing or quitting then asks first. null: none. */
+    setUnsaved(prompt: UnsavedPrompt | null): void
   }
   menu: {
     onCommand(cb: (c: MenuCommand) => void): () => void

@@ -879,7 +879,7 @@ def intentional(harm: float, help_: float) -> float:
         retry: async () => runInstall(false),
       },
     },
-    app: { info: async () => ({ version: '0.1.0', platform: 'preview', arch: 'preview', kernelPath: '/preview/kernel/1.19.0/agent', home: '/Users/preview', devKeys: query.has('devkeys') }) },
+    app: { info: async () => ({ version: '0.1.0', platform: 'preview', arch: 'preview', kernelPath: '/preview/kernel/1.19.0/agent', home: '/Users/preview', devKeys: query.has('devkeys') }), setUnsaved: () => undefined },
     menu: {
       onCommand: (cb) => {
         menuListeners.add(cb)
