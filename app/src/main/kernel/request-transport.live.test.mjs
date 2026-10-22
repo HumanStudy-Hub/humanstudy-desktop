@@ -20,7 +20,8 @@ const requests = []
 const upstream = createServer(async (req, res) => {
   const chunks = []; for await (const chunk of req) chunks.push(chunk)
   const raw = Buffer.concat(chunks); const body = JSON.parse(raw)
-  requests.push({ bytes: raw.length, archived: raw.includes(Buffer.from('Full image retained locally:')) })
+  const removed = raw.toString().split('image was removed from this request').length - 1
+  requests.push({ bytes: raw.length, archived: removed > 0, removed, messages: (body.messages ?? []).map(({ cache_control, ...message }) => JSON.stringify(message)) })
   if (raw.length > 4_000_000) { res.writeHead(413, { 'content-type': 'application/json' }); res.end('{"error":{"message":"Request too large"}}'); return }
   const results = body.messages?.filter(message => message.role === 'tool') ?? []
   const n = results.length
@@ -68,13 +69,21 @@ try {
   assert.deepEqual(JSON.parse(readFileSync(join(project, 'program.json'), 'utf8')), { fixture: true, pagesRead: 23 })
   assert.ok(requests.some(request => request.archived), 'the native chain exercised payload adaptation')
   assert.ok(requests.every(request => request.bytes <= 3_600_000), 'all upstream request bodies fit the gateway limit')
+  for (let index = 1; index < requests.length; index++) assert.ok(requests[index].removed >= requests[index - 1].removed, 'the archived prefix never moves back')
+  // Between cuts each request extends the previous one; only OpenCode's own tail (the last two
+  // messages, which carry its cache markers) may differ.
+  var stableTurns = requests.filter((request, index) => index && request.removed === requests[index - 1].removed && request.messages.length > requests[index - 1].messages.length)
+  for (const request of stableTurns) {
+    const before = requests[requests.indexOf(request) - 1].messages
+    assert.deepEqual(request.messages.slice(0, before.length - 2), before.slice(0, -2), 'request prefix is unchanged between cuts')
+  }
   const history = await kernel.native(sid, { operation: 'history' })
   const nativeBytes = Buffer.byteLength(JSON.stringify(history))
   assert.ok(nativeBytes > 4_500_000, 'full native image history still exists beyond the hosting limit')
   const archive = join(project, '.humanstudy/tmp/request-archive')
   const originals = pages.map(file => readFileSync(join(project, file)))
   for (const file of readdirSync(archive)) assert.ok(originals.some(bytes => bytes.equals(readFileSync(join(archive, file)))), 'archive exactly matches original source bytes')
-  console.log(JSON.stringify({ realKernel: true, model: 'offline deterministic fixture', pagesRead: 23, checkpointWritten: true, requests: requests.length, maxRequestBytes: Math.max(...requests.map(request => request.bytes)), nativeHistoryBytes: nativeBytes, archivedImages: readdirSync(archive).length }))
+  console.log(JSON.stringify({ realKernel: true, model: 'offline deterministic fixture', pagesRead: 23, checkpointWritten: true, requests: requests.length, maxRequestBytes: Math.max(...requests.map(request => request.bytes)), nativeHistoryBytes: nativeBytes, archivedImages: readdirSync(archive).length, prefixStableRequests: stableTurns.length, cutMoves: requests.filter((request, index) => index && request.removed !== requests[index - 1].removed).length }))
 } finally {
   await kernel.dispose(); upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve))
   rmSync(out, { recursive: true, force: true })

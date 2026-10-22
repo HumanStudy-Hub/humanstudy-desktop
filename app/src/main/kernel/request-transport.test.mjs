@@ -3,12 +3,13 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { randomBytes } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = mkdtempSync(join(tmpdir(), 'request-transport-'))
 await build({ entryPoints: [join(dirname(fileURLToPath(import.meta.url)), 'request-transport.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(root, 'transport.mjs'), logLevel: 'error' })
-const { fitRequest, startRequestTransport, REQUEST_BYTES } = await import(pathToFileURL(join(root, 'transport.mjs')))
+const { fitRequest, startRequestTransport, REQUEST_BYTES, REQUEST_TARGET_BYTES } = await import(pathToFileURL(join(root, 'transport.mjs')))
 const image = bytes => ({ type: 'image_url', image_url: { url: 'data:image/png;base64,' + bytes.toString('base64') } })
 const originalImage = Buffer.alloc(2_000_000, 21)
 const latestImage = Buffer.alloc(1_000_000, 42)
@@ -38,6 +39,52 @@ const textFit = fitRequest(textRaw, root)
 assert.ok(readdirSync(archive).some(file => file.endsWith('.txt') && readFileSync(join(archive, file), 'utf8') === fullText))
 assert.equal(JSON.parse(textFit.body).messages[1].content, 'Last tool output')
 assert.throws(() => fitRequest(JSON.stringify({ messages: [{ role: 'user', content: fullText }] }), root), /page ranges/)
+
+// Stable cut: 30 turns, each reading one more ~240 KB page image (the size of a rendered paper
+// page). The archived prefix may only move on the turn whose history crosses the trigger; between
+// those turns every earlier message must be byte-identical so the provider prompt cache survives.
+{
+  const stable = join(root, 'stable'); mkdirSync(stable)
+  const pages = Array.from({ length: 30 }, () => randomBytes(180_000))
+  const history = [{ role: 'system', content: 'You convert papers.' }, { role: 'user', content: 'Read every page.' }]
+  const turns = []
+  for (let turn = 0; turn < pages.length; turn++) {
+    history.push({ role: 'assistant', content: null, tool_calls: [{ id: 'call_' + turn, type: 'function', function: { name: 'read', arguments: JSON.stringify({ filePath: `page-${turn}.png` }) } }] })
+    history.push({ role: 'tool', tool_call_id: 'call_' + turn, content: `Image read successfully: page ${turn}` })
+    history.push({ role: 'user', content: [{ type: 'text', text: 'Attached image(s) from tool result:' }, image(pages[turn])] })
+    // OpenCode marks the newest messages for prompt caching, so the tail differs between turns.
+    const messages = history.map((message, index) => index >= history.length - 2 ? { ...message, cache_control: { type: 'ephemeral' } } : message)
+    const raw = JSON.stringify({ model: 'fixture', messages, tools: [{ type: 'function', function: { name: 'read', parameters: {} } }] })
+    const out = JSON.parse(fitRequest(raw, stable).body)
+    const inline = out.messages.flatMap(message => Array.isArray(message.content) ? message.content.filter(part => part.type === 'image_url' || /image was removed/.test(part.text ?? '')) : [])
+    const cut = inline.findIndex(part => part.type === 'image_url')
+    assert.ok(cut >= 0, 'newest page stays inline')
+    assert.ok(inline.slice(cut).every(part => part.type === 'image_url'), 'only the oldest pages are archived')
+    turns.push({ raw, cut, bytes: Buffer.byteLength(JSON.stringify(out)), messages: out.messages.map(({ cache_control, ...message }) => JSON.stringify(message)) })
+    assert.ok(turns.at(-1).bytes <= REQUEST_BYTES)
+    assert.equal(fitRequest(raw, stable).body, JSON.stringify(out), 'same history gives the same request')
+  }
+  const moves = []
+  for (let turn = 1; turn < turns.length; turn++) {
+    const [before, now] = [turns[turn - 1], turns[turn]]
+    assert.ok(now.cut >= before.cut, 'the cut never moves back')
+    if (now.cut === before.cut) {
+      assert.deepEqual(now.messages.slice(0, before.messages.length), before.messages, `turn ${turn} appends without changing the prefix`)
+    } else {
+      moves.push(turn)
+      assert.ok(Buffer.byteLength(now.raw) > REQUEST_BYTES, 'the cut only moves once the trigger is crossed')
+      assert.ok(now.bytes <= REQUEST_TARGET_BYTES + 250_000, `turn ${turn} drops back to the target`)
+    }
+  }
+  // ~7.3 MB of pages: crossing 3.6 MB once and then every ~1.6 MB, not on every one of the ~16 turns past the limit.
+  assert.ok(moves.length >= 2 && moves.length <= 4, `cut moved on turns ${moves}`)
+  for (let turn = 1; turn < moves.length; turn++) assert.ok(moves[turn] - moves[turn - 1] >= 6, 'at least ~1.6 MB of new pages between cuts')
+  const archived = readdirSync(join(stable, '.humanstudy/tmp/request-archive'))
+  assert.equal(archived.length, turns.at(-1).cut, 'one content-addressed file per archived page, never rewritten')
+  assert.ok(turns.at(-1).messages.join('').includes('.humanstudy/tmp/request-archive/'), 'placeholder uses a project-relative forward-slash path')
+  assert.ok(!turns.at(-1).messages.join('').includes(stable), 'placeholder never embeds the absolute local path')
+  console.log(`stable cut: moved on turns ${moves.join(', ')} of ${turns.length}; max body ${Math.max(...turns.map(t => t.bytes))} bytes`)
+}
 
 // Reject archive symlinks without writing research data outside the project.
 const unsafe = join(root, 'unsafe'), outside = join(root, 'outside')
