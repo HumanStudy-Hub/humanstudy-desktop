@@ -185,6 +185,8 @@ export function ResearchDataSection({ onReview }: { onReview(): void }) {
               <div className="muted small">
                 {status.lastSentAt ? `Last sent ${new Date(status.lastSentAt).toLocaleString()}` : 'Nothing sent yet.'}
                 {status.lastError ? ` · Waiting to retry (${status.lastError})` : ''}
+                {(status.sourcePending ?? 0) > 0 ? ` · ${status.sourcePending} archive records waiting to upload` : ''}
+                {status.sourceError ? ` · Source upload: ${status.sourceError}` : ''}
               </div>
             </div>
             <div className="setting-control provider-actions">

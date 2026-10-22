@@ -3,9 +3,10 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { readFile, stat, writeFile } from 'node:fs/promises'
+import { readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { storeResearchContent } from './research-content'
+import { createResearchCollector } from './research-collector'
 import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
 import { accountHash, createTelemetry, FLUSH_INTERVAL_MS, programDiff, scrubString, type StoredState, type Telemetry } from './telemetry-core'
@@ -62,6 +63,40 @@ export function getTelemetry(): Telemetry {
     platform: process.platform,
   })
   return telemetry
+}
+
+let sources: ReturnType<typeof createResearchCollector> | null = null
+function sourceCollector() {
+  if (!sources) sources = createResearchCollector({
+    root: join(dir(), 'research-v1'), surface: 'desktop', appVersion: app.getVersion(),
+    auth: () => getAccount().restAuth(), ownerId: () => getAccount().researchOwner(),
+    allowed: () => { const s = getTelemetry().status(); return s.consentVersion === 3 && s.usage && s.content },
+  })
+  return sources
+}
+async function queueSource(projectDir: string, rel: string): Promise<void> {
+  const projectId = projectIdFor(projectDir)
+  if (!projectId || !getTelemetry().status().content) return
+  const path = join(projectDir, rel)
+  const actual = await realpath(path), root = await realpath(projectDir)
+  if (!actual.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) return
+  const ext = extname(path).toLowerCase()
+  const mime = ext === '.pdf' ? 'application/pdf' : ext === '.zip' ? 'application/zip' : ext === '.json' ? 'application/json' : 'application/octet-stream'
+  await sourceCollector().queueSource(path, projectId, mime)
+}
+/** Run only after renewed agreement and on explicit project open, never scan the user's disk. */
+async function queueProjectSources(projectDir: string): Promise<void> {
+  if (!getTelemetry().status().content) return
+  if (existsSync(join(projectDir, 'paper.pdf'))) await queueSource(projectDir, 'paper.pdf')
+  const walk = async (rel: string): Promise<void> => {
+    for (const entry of await readdir(join(projectDir, rel), { withFileTypes: true }).catch(() => [])) {
+      if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue
+      const child = `${rel}/${entry.name}`
+      if (entry.isDirectory()) await walk(child)
+      else if (entry.isFile()) await queueSource(projectDir, child)
+    }
+  }
+  await walk('sources')
 }
 
 // ---- project ids ----------------------------------------------------------------------
@@ -357,13 +392,14 @@ const byWhom = (abs: string): 'human' | 'agent' => ((humanWrites.get(abs) ?? 0) 
 export function noteFsChange(projectDir: string, rel: string): void {
   const r = rel.split('\\').join('/')
   const isProgram = r === 'program.json'
-  if (!isProgram && !WATCHED_DIRS.test(r)) return
-  if (r.startsWith('sources/') || basename(r) === 'paper.pdf' || r.includes('/.')) return
+  const isSource = r === 'paper.pdf' || r.startsWith('sources/')
+  if (!isProgram && !isSource && !WATCHED_DIRS.test(r)) return
+  if (r.includes('/.')) return
   const key = `${projectDir}\0${r}`
   clearTimeout(fsTimers.get(key))
   const timer = setTimeout(() => {
     fsTimers.delete(key)
-    void (isProgram ? snapshotProgram(projectDir) : snapshotFile(projectDir, r)).catch(() => undefined)
+    void (isSource ? queueSource(projectDir, r) : isProgram ? snapshotProgram(projectDir) : snapshotFile(projectDir, r)).catch(() => undefined)
   }, 700)
   timer.unref?.()
   fsTimers.set(key, timer)
@@ -439,6 +475,7 @@ export async function exportMyData(parent?: BrowserWindow | null): Promise<strin
   const t = getTelemetry()
   const acct = getAccount()
   if (!acct.status().email) throw new Error('Sign in to your HumanStudy Hub account first.')
+  const exportOwner = acct.researchOwner()
   const opts = { title: 'Export my research data', defaultPath: join(app.getPath('downloads'), `humanstudy-research-data-${new Date().toISOString().slice(0, 10)}.zip`), filters: [{ name: 'Zip', extensions: ['zip'] }] }
   const pick = parent ? await dialog.showSaveDialog(parent, opts) : await dialog.showSaveDialog(opts)
   if (pick.canceled || !pick.filePath) return null
@@ -491,6 +528,8 @@ export async function exportMyData(parent?: BrowserWindow | null): Promise<strin
     const b = diskFs.read(f.rel)
     if (b) files[`replay-unsent/${f.rel}`] = b
   }
+  Object.assign(files, await sourceCollector().exportFiles())
+  if (getAccount().researchOwner() !== exportOwner) throw new Error('Your account changed. Please export again from the original account.')
   await writeFile(pick.filePath, zipSync(files))
   return pick.filePath
 }
@@ -501,7 +540,7 @@ const RENDERER_DENY = /^(consent|conversation|kernel|agent|replay)\.|^project\.(
 
 export function registerTelemetry(): void {
   const t = getTelemetry()
-  ipcMain.handle('telemetry:status', () => t.status())
+  ipcMain.handle('telemetry:status', async () => ({ ...t.status(), sourcePending: await sourceCollector().pending(), sourceError: sourceCollector().error() }))
   let sessionStartLogged = false
   const logSessionStart = (late: boolean): void => {
     if (sessionStartLogged || !t.status().usage) return
@@ -515,7 +554,10 @@ export function registerTelemetry(): void {
     const agreed = v.usage === true && v.content === true
     const st = await t.setConsent({ usage: agreed, content: agreed })
     logSessionStart(true) // consent given after launch: the session still gets its start event
-    if (st.content && rendererProjectDir) noteFsChange(rendererProjectDir, 'program.json')
+    if (st.content && rendererProjectDir) {
+      noteFsChange(rendererProjectDir, 'program.json')
+      void queueProjectSources(rendererProjectDir).then(() => sourceCollector().flush()).catch(() => undefined)
+    }
     if (!st.content) getReplay().clearLocal() // withdrawn: nothing recorded stays on disk
     return st
   })
@@ -552,11 +594,13 @@ export function registerTelemetry(): void {
   ipcMain.handle('telemetry:projectId', (_e, projectDir: string | null) => {
     rendererProjectDir = typeof projectDir === 'string' && projectDir ? resolve(projectDir) : undefined
     if (!rendererProjectDir || !t.status().usage) return null
+    void queueProjectSources(rendererProjectDir).catch(() => undefined)
     return projectIdFor(rendererProjectDir)
   })
   ipcMain.handle('telemetry:recent', () => t.recent())
   ipcMain.handle('telemetry:flush', async () => {
     await t.flush({ force: true })
+    await sourceCollector().flush()
     return t.status()
   })
 
@@ -566,6 +610,8 @@ export function registerTelemetry(): void {
   timer.unref?.()
   const replayTimer = setInterval(() => void getReplay().flush().catch(() => undefined), REPLAY_FLUSH_MS)
   replayTimer.unref?.()
+  const sourceTimer = setInterval(() => void sourceCollector().flush(), FLUSH_INTERVAL_MS)
+  sourceTimer.unref?.()
   void getReplay().flush().catch(() => undefined) // chunks left from a previous run
   app.on('before-quit', () => {
     // Persisted to the queue; uploaded on the next launch if this quit outruns the request.
