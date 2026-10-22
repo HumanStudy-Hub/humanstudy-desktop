@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -61,6 +62,36 @@ class SimkitTest(unittest.TestCase):
             simkit._cli(["stage", d, "failed", "The evaluation could not read the answers"])
             p = json.loads((Path(d) / "progress.json").read_text())
             self.assertEqual((p["stage"], p["message"]), ("failed", "The evaluation could not read the answers"))
+
+    def test_heartbeat_keeps_a_quiet_stage_live_and_exit_is_recorded(self):
+        # #16: a long scoring step writes no progress, but the heartbeat shows the process is alive;
+        # when run.py ends, runner becomes "exited" (the agent writes the results up).
+        with tempfile.TemporaryDirectory() as d:
+            old = simkit.HEARTBEAT_SECONDS
+            simkit.HEARTBEAT_SECONDS = 0.05
+            try:
+                run = simkit.SimRun(d, plan={"a": 1}, model="m")
+                run.stage("scoring")
+                first = json.loads((Path(d) / "progress.json").read_text())
+                self.assertEqual((first["runner"], first["stage"]), ("alive", "scoring"))
+                deadline = time.time() + 5
+                beat = first
+                while time.time() < deadline and beat["heartbeatAt"] == first["heartbeatAt"]:
+                    time.sleep(0.1)
+                    beat = json.loads((Path(d) / "progress.json").read_text())
+                self.assertNotEqual(beat["heartbeatAt"], first["heartbeatAt"], "heartbeat did not move during a quiet stage")
+                self.assertEqual(beat["updatedAt"], first["updatedAt"], "a heartbeat is not progress")
+                self.assertEqual(beat["stage"], "scoring")
+                run._exit()
+                done = json.loads((Path(d) / "progress.json").read_text())
+                self.assertEqual((done["runner"], done["stage"]), ("exited", "scoring"))
+                after = done["heartbeatAt"]
+                time.sleep(0.3)
+                self.assertEqual(json.loads((Path(d) / "progress.json").read_text())["heartbeatAt"], after, "heartbeat continued after exit")
+                simkit._cli(["stage", d, "writing"])
+                self.assertEqual(json.loads((Path(d) / "progress.json").read_text())["runner"], "exited")
+            finally:
+                simkit.HEARTBEAT_SECONDS = old
 
 
 if __name__ == "__main__":

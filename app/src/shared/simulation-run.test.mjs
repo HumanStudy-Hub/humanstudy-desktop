@@ -72,6 +72,21 @@ assert.equal(S.runState({ stop: true }, { stage: 'preparing', updatedAt: now - 1
 assert.equal(S.runState({ stop: true }, null, now, now, true), 'stopped', 'a folder with only run.py and STOP')
 assert.equal(S.runState({ stop: true, results: 'x' }, { stage: 'done' }, now, 0), 'done', 'a run that finished before Stop stays a result')
 
+// #16: a quiet stage of a live run is not "stopped". simkit's heartbeat says the process is alive;
+// after run.py exits, the agent has the write-up window. Stopped only on STOP or when nothing is behind it.
+const hb = (o) => S.parseProgress(JSON.stringify(o))
+const iso = (ms) => new Date(ms).toISOString()
+const scoring = hb({ stage: 'scoring', runner: 'alive', updatedAt: iso(now - 10 * 60_000), heartbeatAt: iso(now - 15_000) })
+assert.equal(scoring.runner, 'alive'); assert.equal(now - scoring.heartbeatAt, 15_000)
+assert.equal(S.runState({}, scoring, now, now - 15_000), 'running', 'a 10-minute scoring step with a live heartbeat')
+assert.equal(S.runState({}, hb({ stage: 'scoring', runner: 'alive', updatedAt: iso(now - 10 * 60_000), heartbeatAt: iso(now - 120_000) }), now, now - 120_000), 'stopped', 'heartbeat stale: the process is gone')
+assert.equal(S.runState({ stop: true }, scoring, now, now), 'stopped', 'STOP wins over a live heartbeat')
+const writing = hb({ stage: 'writing', runner: 'exited', updatedAt: iso(now - 8 * 60_000) })
+assert.equal(S.runState({}, writing, now, now - 8 * 60_000), 'running', 'run.py ended; the agent is writing up (8 quiet minutes)')
+assert.equal(S.runState({}, writing, now, now - 60_000), 'running', 'report.md just written')
+assert.equal(S.runState({}, hb({ stage: 'writing', runner: 'exited', updatedAt: iso(now - 25 * 60_000) }), now, now - 25 * 60_000), 'stopped', 'nothing written for the whole write-up window')
+assert.equal(S.runState({}, hb({ stage: 'running', updatedAt: iso(now - 120_000) }), now, now - 120_000), 'stopped', 'older packs without a heartbeat keep the 90 s rule')
+
 // #16 (3): a run counts as a result only with participant data
 const tree3 = [d('artifacts', [d('artifacts/simulations', [
   d('artifacts/simulations/2026-10-20-0900', [f('artifacts/simulations/2026-10-20-0900/run.py'), f('artifacts/simulations/2026-10-20-0900/STOP')]),

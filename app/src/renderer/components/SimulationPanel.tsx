@@ -109,7 +109,7 @@ export function SimulationPanel(props: Props) {
     const progress = texts[r.id]?.progress ?? null
     const st = runState(r, progress, now, r.mtime, ownedRun && r.id === newRun?.id)
     const startedAfterStop = stopAt !== null && pending?.kind === 'run' && pending.at > stopAt && r.id === newRun?.id
-    const quietSinceStop = stopAt !== null && !startedAfterStop && (progress?.updatedAt ?? r.mtime) < stopAt + STOP_GRACE
+    const quietSinceStop = stopAt !== null && !startedAfterStop && (Math.max(progress?.updatedAt ?? 0, progress?.heartbeatAt ?? 0) || r.mtime) < stopAt + STOP_GRACE
     return [r.id, st === 'running' && quietSinceStop ? 'stopped' : st] as const
   }))
   const active = runs.find((r) => states.get(r.id) === 'running' && !texts[r.id]?.summary?.example && now - r.mtime < 6 * 3600_000)

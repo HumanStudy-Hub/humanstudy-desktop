@@ -17,7 +17,7 @@ try{
  const dir=(rel,children)=>({name:rel.split('/').pop(),path:'/fixture/'+rel,rel,kind:'dir',ext:'',children});
  const pkg=dir('package',[dir('package/p',[dir('package/p/task',[file('package/p/task/adapter.py')])])]);
  // runs: {id: {files:[name|[name,extra]], progress?}}
- const treeOf=runs=>[pkg,dir('artifacts',[dir(S,Object.entries(runs).map(([id,r])=>{const rel=S+'/'+id;if(r.progress){texts['/fixture/'+rel+'/progress.json']=JSON.stringify(r.progress)}const m=r.progress?.updatedAt?Date.parse(r.progress.updatedAt):r.mtime??Date.now();return dir(rel,[...(r.progress?['progress.json']:[]),...r.files].map(x=>Array.isArray(x)?file(rel+'/'+x[0],{mtime:m,...x[1]}):file(rel+'/'+x,{mtime:m})))}))])];
+ const treeOf=runs=>[pkg,dir('artifacts',[dir(S,Object.entries(runs).map(([id,r])=>{const rel=S+'/'+id;if(r.progress){texts['/fixture/'+rel+'/progress.json']=JSON.stringify(r.progress)}const m=r.mtime??(r.progress?.updatedAt?Date.parse(r.progress.updatedAt):Date.now());return dir(rel,[...(r.progress?['progress.json']:[]),...r.files].map(x=>Array.isArray(x)?file(rel+'/'+x[0],{mtime:m,...x[1]}):file(rel+'/'+x,{mtime:m})))}))])];
  window.fixture.treeOf=treeOf;
  function Fixture(){const[state,setState]=useState({busy:false,turn:null,thread:'t1',tree:[pkg]}),[key,setKey]=useState(0);
  window.fixture.set=patch=>setState(s=>({...s,...patch}));window.fixture.advance=ms=>{offset+=ms;setState(s=>({...s}))};window.fixture.remount=()=>setKey(n=>n+1);
@@ -58,13 +58,25 @@ try{
  assert.ok((await text()).includes('1 of 40'),'the retried run did not show its progress');
  await js("document.querySelector('.sim-stop').click()");await wait(150);
 
+ // A quiet scoring stage of a live run (heartbeat moving, no progress for 10 minutes) is not "Stopped",
+ // whatever the chat is doing; a stale heartbeat (process gone) is.
+ await js("window.fixture.advance(600000);window.fixture.set({busy:true,turn:'t1:unrelated',tree:window.fixture.treeOf({'2026-10-22-1200':{files:['run.py',['sessions.jsonl',{size:500}]],mtime:Date.now()-15000,progress:{stage:'scoring',runner:'alive',done:40,total:40,updatedAt:new Date(Date.now()-600000).toISOString(),heartbeatAt:new Date(Date.now()-15000).toISOString()}}})})");await wait(1200);
+ assert.ok((await text()).includes('Comparing with the paper'),'a live run in a quiet scoring stage was not shown as running');
+ await js("window.fixture.set({busy:false,turn:'t1:unrelated-done'})");await wait(1200);
+ assert.ok((await text()).includes('Comparing with the paper'),'the end of an unrelated chat turn stopped a live run');
+ // run.py ended and the agent is writing up: still running for the write-up window.
+ await js("window.fixture.set({tree:window.fixture.treeOf({'2026-10-22-1200':{files:['run.py','report.md',['sessions.jsonl',{size:500}]],mtime:Date.now()-300000,progress:{stage:'writing',runner:'exited',done:40,total:40,updatedAt:new Date(Date.now()-480000).toISOString()}}})})");await wait(1200);
+ assert.ok((await text()).includes('Writing up the results'),'a quiet write-up was shown as stopped');
+ await js("window.fixture.set({tree:window.fixture.treeOf({'2026-10-22-1200':{files:['run.py',['sessions.jsonl',{size:500}]],mtime:Date.now()-120000,progress:{stage:'scoring',runner:'alive',done:40,total:40,updatedAt:new Date(Date.now()-600000).toISOString(),heartbeatAt:new Date(Date.now()-120000).toISOString()}}})})");await wait(1200);
+ assert.ok(!(await has('.sim-live')),'a run whose heartbeat went stale (process gone) still looked active');
+
  // (3) Only runs with participant data are results; empty and aborted folders are not listed or shown.
  await js("window.fixture.advance(600000);window.fixture.set({busy:false,tree:window.fixture.treeOf({'2026-10-22-1100':{files:[],mtime:Date.now()-600000},'2026-10-22-1000':{files:['run.py','STOP'],mtime:Date.now()-600000,progress:{stage:'preparing',total:40}},'2026-10-21-0900':{files:['results.html',['sessions.jsonl',{size:0}]],mtime:Date.now()-86400000}})})");await wait(200);
  assert.ok(!(await has('.sim-result')),'a folder without participant data was shown as a result');assert.ok(!(await has('.sim-history')),'empty run folders were listed as runs');
  await js("window.fixture.set({tree:window.fixture.treeOf({'2026-10-22-1100':{files:[],mtime:Date.now()-600000},'2026-10-22-1000':{files:['run.py','STOP'],mtime:Date.now()-600000,progress:{stage:'preparing',total:40}},'2026-10-21-0900':{files:['results.html',['sessions.jsonl',{size:0}]],mtime:Date.now()-86400000},'2026-10-20-0800':{files:['results.html',['sessions.jsonl',{size:900}]],mtime:Date.now()-172800000,progress:{stage:'done',done:40,total:40}}})})");await wait(200);
  assert.ok(await has('.sim-result'),'a run with participants was not shown as a result');assert.ok(!(await has('.sim-history')),'empty folders were counted next to the one real result');
  assert.ok(!(await has('.sim-live')),'an aborted folder looked active');
- assert.equal(errors.length,0,errors.join('\\n'));console.log('Chat vs run state, Stop during preparation (with and without a folder), retry, and result counting passed');
+ assert.equal(errors.length,0,errors.join('\\n'));console.log('Chat vs run state, quiet live stages, stale heartbeat, Stop during preparation (with and without a folder), retry, and result counting passed');
  }catch(e){console.error(e);process.exitCode=1}finally{w.destroy();app.exit(process.exitCode||0)}});
  `)
  const env={...process.env};delete env.ELECTRON_RUN_AS_NODE

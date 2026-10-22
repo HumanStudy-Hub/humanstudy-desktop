@@ -24,6 +24,10 @@ export interface SimProgress {
   updatedAt?: number
   /** One plain sentence from the run (shown as is), or the reason it failed. */
   message?: string
+  /** simkit's liveness: "alive" while run.py runs (heartbeatAt moves every 15 s), "exited" after it ended.
+   *  Absent in files from older packs. */
+  runner?: 'alive' | 'exited'
+  heartbeatAt?: number
 }
 
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0)
@@ -63,6 +67,7 @@ export function parseProgress(text: string | null | undefined): SimProgress | nu
     stage, done: Number.isFinite(done) ? done : 0, total, failed: num(r.failed ?? r.parse_failures ?? r.errors), conditions: conditions.filter((c) => c.id),
     model: str(r.model), startedAt: time(r.startedAt ?? r.started_at), updatedAt: time(r.updatedAt ?? r.updated_at),
     message: str(r.message ?? r.error ?? r.note),
+    runner: r.runner === 'alive' || r.runner === 'exited' ? r.runner : undefined, heartbeatAt: time(r.heartbeatAt ?? r.heartbeat_at),
   }
 }
 
@@ -138,20 +143,27 @@ export function runFolders(tree: TreeEntry[]): SimRunFiles[] {
 }
 
 export type RunState = 'running' | 'done' | 'failed' | 'stopped'
+/** run.py's heartbeat moves every 15 s; this many missed beats means its process is gone. */
+export const HEARTBEAT_STALE = 90_000
+/** After run.py ends, the agent writes the report and results page into the run folder. */
+export const WRITE_UP_WINDOW = 20 * 60_000
+
 /** The run's status comes from the run itself (its folder and progress.json), never from whether the
  *  agent happens to be replying in the chat: a question about a report must not revive a stopped run.
- *  `owned` is true only while the chat turn that started this very run is still working (it writes the
- *  report and results page after the participants, when progress.json no longer moves).
- *  Finished = results.html exists. A STOP file means stopped. Otherwise progress that stopped moving
- *  means the run.py process is gone. */
+ *  `owned` is true only while the chat turn that started this very run is still working.
+ *  Finished = results.html exists. Stopped only when STOP was written or nothing is behind the run any
+ *  more: run.py's heartbeat went stale (its process is gone), or, after run.py ended, the folder has
+ *  not changed for the whole write-up window. A quiet scoring or writing stage is not "stopped". */
 export function runState(run: Pick<SimRunFiles, 'results' | 'stop'>, progress: SimProgress | null, now: number, lastChange: number, owned = false): RunState {
   if (progress?.stage === 'failed') return 'failed'
   if (run.results && (!progress || progress.stage === 'done' || !owned)) return 'done'
   if (progress?.stage === 'stopped' || run.stop) return 'stopped'
   if (progress?.stage === 'done') return 'done'
   if (owned) return 'running'
-  // run.py runs detached from the agent (simkit start), so allow a quiet stretch between participants.
-  return now - (progress?.updatedAt ?? lastChange) < 90_000 ? 'running' : 'stopped'
+  if (progress?.runner === 'alive') return now - (progress.heartbeatAt ?? progress.updatedAt ?? lastChange) < HEARTBEAT_STALE ? 'running' : 'stopped'
+  if (progress?.runner === 'exited') return now - Math.max(progress.updatedAt ?? 0, lastChange) < WRITE_UP_WINDOW ? 'running' : 'stopped'
+  // Older packs write no heartbeat: progress that stopped moving for a while means the run is gone.
+  return now - (progress?.updatedAt ?? lastChange) < HEARTBEAT_STALE ? 'running' : 'stopped'
 }
 
 /** Participant data: at least one finished AI participant (sessions.jsonl with content, or a count in
