@@ -287,6 +287,11 @@ code, pre { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 1
 .paper-cite-page { font-weight: 600; white-space: nowrap; }
 .paper-cite q { flex: 1; min-width: 0; color: var(--muted); white-space: normal; overflow-wrap: anywhere; }
 .paper-cite .link { margin-left: auto; white-space: nowrap; }
+.paper-located { color: var(--muted); }
+.paper-replaced { flex: none; margin: 0; padding: 6px 14px; border-bottom: 1px solid var(--accent-line); background: var(--accent-soft); font-size: 12px; }
+.paper-differs { display: flex; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
+.paper-differs code { font-size: 11px; overflow-wrap: anywhere; }
+.paper-differs mark { background: var(--warning-line); color: inherit; border-radius: 3px; padding: 0 2px; font-weight: 600; }
 .paper-ask { position: absolute; z-index: 5; display: flex; align-items: center; gap: 10px; padding: 5px 10px; background: var(--bg); border: 1px solid var(--accent-line); border-radius: 8px; box-shadow: var(--shadow); font-size: 12px; color: var(--muted); white-space: nowrap; }
 .paper-ask button { color: var(--accent); font-weight: 600; }
 .study-select { margin-bottom: 20px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }

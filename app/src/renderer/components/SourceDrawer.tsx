@@ -9,8 +9,10 @@ import * as pdfjs from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { ProjectFile } from '../../preload/types'
 import { findQuote, type Rect, type Word } from '../../shared/source-anchor'
+import type { TokenDiff, TokenPart } from '../../shared/significant-tokens'
 import { readPdfAnnotations, type PdfAnnotation } from '../../shared/pdf-annotations'
 import { observeSettledWidth } from '../settled-width'
+import { replacedOnDisk, versionedUrl } from '../../shared/file-version'
 import { makeWords } from './pdf-words'
 import { lap, track } from '../telemetry'
 import { t } from '../i18n'
@@ -25,7 +27,9 @@ export interface SourceRef {
   file?: string
   verified?: boolean
 }
-export type QuoteResult = { found: boolean; page?: number }
+/** Where a cited quote was located. Located is a text match only: `differs` lists numbers or signs
+ * that do not match exactly, and nothing here says the citation was checked by a person. */
+export type QuoteResult = { found: boolean; page?: number; differs?: TokenDiff }
 export type PassageSelection = { page: number; text: string }
 
 interface Props {
@@ -74,6 +78,9 @@ export function SourceDrawer({
   const [err, setErr] = useState<string | null>(null)
   const [hit, setHit] = useState<{ page: number; rects: Rect[] } | null>(null)
   const [verdict, setVerdict] = useState<QuoteResult | null>(null)
+  // paper.pdf replaced at the same path: reload, and say which version is now shown.
+  const [replaced, setReplaced] = useState<{ at?: number } | null>(null)
+  const shownFile = useRef<{ path: string; version?: string } | null>(null)
   const [selection, setSelection] = useState<
     (PassageSelection & { top: number; left: number; pages: PdfAnnotation['pages']; annotationId?: string }) | null
   >(null)
@@ -150,6 +157,24 @@ export function SourceDrawer({
   }
 
   useEffect(() => {
+    const now = pdf ? { path: pdf.path, version: pdf.version } : null
+    if (replacedOnDisk(shownFile.current, now)) {
+      setReplaced({ at: pdf?.mtime })
+      setSelection(null)
+      onSelect?.(null)
+      track('source.file_replaced', { target: pdf?.ext ?? 'pdf' })
+    } else if (shownFile.current?.path !== now?.path) setReplaced(null)
+    shownFile.current = now
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdf?.path, pdf?.version])
+  // The notice is brief, but only counts down while the pane is in view.
+  useEffect(() => {
+    if (!replaced || !active) return
+    const id = window.setTimeout(() => setReplaced(null), 12000)
+    return () => window.clearTimeout(id)
+  }, [replaced, active])
+
+  useEffect(() => {
     setDoc(null)
     setPages([])
     setErr(null)
@@ -158,7 +183,8 @@ export function SourceDrawer({
     // Older papers often leave standard fonts unembedded; pdfjs needs its font data to draw their text.
     const base = new URL('pdfjs/', document.baseURI).href
     const task = pdfjs.getDocument({
-      url: pdf.url,
+      // A new version is a new URL: a replaced file is fetched again, never served from cache.
+      url: versionedUrl(pdf.url, pdf.version),
       standardFontDataUrl: `${base}standard_fonts/`,
       cMapUrl: `${base}cmaps/`,
       cMapPacked: true,
@@ -177,7 +203,7 @@ export function SourceDrawer({
       live = false
       void task.destroy()
     }
-  }, [open, pdf?.url])
+  }, [open, pdf?.url, pdf?.version])
 
   // Only visible pages and explicitly requested citations extract text.
   const loadPage = useMemo(
@@ -273,15 +299,17 @@ export function SourceDrawer({
       }
       if (cancelled) return
       setHit(found)
-      const result = found ? { found: true, page: found.page } : { found: false }
+      const result: QuoteResult = found
+        ? { found: true, page: found.page, ...(found.differs ? { differs: found.differs } : {}) }
+        : { found: false }
       setVerdict(result)
       scrollTo(found?.page ?? page, found?.rects[0])
       noteShown(found?.page ?? page, 'citation')
       callbacks.current.onQuote?.(source, result)
-      if (!result.found || result.page !== source.page)
+      if (!result.found || result.page !== source.page || result.differs)
         track('source.quote_check', {
           target: source.nodeId,
-          metadata: { page: source.page, found: result.found, foundOn: result.page ?? null },
+          metadata: { page: source.page, found: result.found, foundOn: result.page ?? null, differs: Boolean(result.differs) },
         })
     })().catch((e) => {
       if (!cancelled) setErr(String(e))
@@ -404,6 +432,13 @@ export function SourceDrawer({
           </button>
         </div>
       )}
+      {replaced && (
+        <p className="paper-replaced" role="status">
+          {replaced.at
+            ? t('paper.replaced_at', { file: pdf?.name ?? '', time: new Date(replaced.at).toLocaleString() })
+            : t('paper.replaced', { file: pdf?.name ?? '' })}
+        </p>
+      )}
       {annotationError && (
         <p role="alert" className="part error pad">
           {annotationError}
@@ -411,7 +446,7 @@ export function SourceDrawer({
       )}
       {cited && (
         <div
-          className={`paper-cite ${verdict && (!verdict.found || verdict.page !== cited.page) ? 'warn' : ''}`}
+          className={`paper-cite ${verdict && (!verdict.found || verdict.page !== cited.page || verdict.differs) ? 'warn' : ''}`}
           role="status"
         >
           <span className="paper-cite-page">{t('doc.cite_page', { n: cited.page })}</span>
@@ -419,6 +454,8 @@ export function SourceDrawer({
           {verdict?.found && verdict.page !== cited.page && (
             <span>{t('model.quote_moved', { n: cited.page, m: verdict.page ?? '' })}</span>
           )}
+          {verdict?.differs && <TokenMismatch differs={verdict.differs} />}
+          {verdict?.found && !verdict.differs && <span className="paper-located">{t('paper.located')}</span>}
           {cited.quote && (!verdict || !verdict.found) && <q>{cited.quote}</q>}
           {!cited.quote && <span className="muted">{t('paper.page_only', { page: cited.page })}</span>}
           <button className="link" onClick={onClose}>
@@ -516,6 +553,28 @@ export function SourceDrawer({
         )}
       </div>
     </div>
+  )
+}
+
+/** The numbers and signs of a located quote that do not match the source exactly. */
+function TokenMismatch({ differs }: { differs: TokenDiff }) {
+  const show = (parts: TokenPart[]) =>
+    parts.map((p, i) => (
+      <span key={i}>
+        {i > 0 && ' '}
+        {p.changed ? <mark>{p.t}</mark> : p.t}
+      </span>
+    ))
+  return (
+    <span className="paper-differs">
+      <span>{t('paper.differs')}</span>
+      <span>
+        {t('paper.differs_quote')} <code>{show(differs.quote)}</code>
+      </span>
+      <span>
+        {t('paper.differs_source')} <code>{show(differs.source)}</code>
+      </span>
+    </span>
   )
 }
 

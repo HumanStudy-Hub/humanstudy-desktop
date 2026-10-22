@@ -15,7 +15,7 @@ import { simulationScope } from '../../shared/simulation-scope'
 import { simulationPlan } from '../../shared/simulation-run'
 import { SimulationPanel } from './SimulationPanel'
 import { sourceFocus } from '../../shared/workspace-context'
-import { supportedBy } from '../../shared/program-view'
+import { passageSupport } from '../../shared/program-view'
 import { quoteKey } from '../../shared/source-anchor'
 import { clearDraft, draftsIn } from '../drafts'
 
@@ -76,6 +76,8 @@ interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSour
   agentTurnKey?: string | null
   agentActivity?: string
   onWorkspaceChange?(snapshot: WorkspaceSnapshot): void
+  /** Re-read the project from disk (tab switches), in case the folder watcher missed a change. */
+  onRecheck?(): void
 }
 
 const key = (dir: string) => `hs.wb2:${dir}`
@@ -97,7 +99,7 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, source, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, ...docProps }: Props) {
+export function Workbench({ ref, project, source, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
   // Tolerant: one slip by the agent sets that detail aside and the document still renders.
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
@@ -123,7 +125,23 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   // What the paper found for each citation it opened, and the passage the reader selected there.
   const [quoteStatus, setQuoteStatus] = useState<ReadonlyMap<string, QuoteStatus>>(() => new Map())
   const [passage, setPassage] = useState<PassageSelection | null>(null)
-  const support = useMemo(() => passage && program ? { page: passage.page, ids: supportedBy(program, passage) } : null, [passage, program])
+  // Items citing the selected passage: those citing this file first; the same words cited from another
+  // file are listed apart, with that file's name, never as support for this one.
+  const sourceLabel = sourceFile ? ('rel' in sourceFile ? sourceFile.rel : sourceFile.name) : undefined
+  const support = useMemo(() => {
+    if (!passage || !program) return null
+    const found = passageSupport(program, { ...passage, source: sourceFile?.path ?? null }, (ref) => sourceTarget(project, ref)?.path ?? null)
+    return { page: passage.page, file: sourceLabel, ids: found.same, other: found.other }
+  }, [passage, program, project, sourceFile?.path, sourceLabel])
+
+  // A source file replaced on disk: what was located in the old version says nothing about the new one.
+  const sourceVersions = useMemo(() => [project.pdf, ...files].filter(f => f && f.ext === 'pdf').map(f => `${f!.path}\n${f!.version ?? ''}`).sort().join('\n'), [project.pdf, files])
+  const seenVersions = useRef(sourceVersions)
+  useEffect(() => {
+    if (seenVersions.current === sourceVersions) return
+    seenVersions.current = sourceVersions
+    setQuoteStatus(new Map())
+  }, [sourceVersions])
 
   // Project switch: restore its tabs.
   useEffect(() => {
@@ -177,7 +195,10 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
     if (layout.active === 'paper' || layout.compare) setPaperSeen(true)
   }, [layout.active, layout.compare])
 
-  const activate = (id: TabId) => update((l) => (l.active === id ? l : { ...l, active: id }))
+  const activate = (id: TabId) => {
+    if (id !== layout.active) onRecheck?.()
+    update((l) => (l.active === id ? l : { ...l, active: id }))
+  }
   const open = (id: `file:${string}`) => {
     track('tab.open', { target: `file.${fileByPath.get(id.slice(5))?.ext ?? ''}` })
     update((l) => ({ ...l, tabs: l.tabs.includes(id) ? l.tabs : [...l.tabs, id], active: id }))

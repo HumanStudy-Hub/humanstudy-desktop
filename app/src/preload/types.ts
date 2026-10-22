@@ -131,6 +131,11 @@ export interface ProjectFile {
   /** hsfile:// URL the renderer can load (iframe, img, fetch). */
   url: string
   ext: string
+  size?: number
+  /** Last modified, ms since the epoch. */
+  mtime?: number
+  /** Changes whenever the file is rewritten or replaced (shared/file-version.ts). */
+  version?: string
 }
 
 /** One entry of the project file tree (the Program tab). Folders carry children; files carry a url. */
@@ -146,6 +151,8 @@ export interface ProjectEntry {
   size?: number
   /** Last modified, ms since the epoch. */
   mtime?: number
+  /** Changes whenever the file is rewritten or replaced (shared/file-version.ts). */
+  version?: string
   children?: ProjectEntry[]
 }
 

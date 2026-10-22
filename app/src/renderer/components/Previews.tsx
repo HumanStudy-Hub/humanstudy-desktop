@@ -7,7 +7,7 @@ const cache = new Map<string, string>()
 
 /** The start of a text file (up to `max` characters); cached per file version, null while loading. */
 export function useFileText(entry: ProjectEntry, enabled = true, max = 20000): string | null {
-  const key = `${entry.path}|${entry.mtime ?? 0}|${entry.size ?? 0}`
+  const key = `${entry.path}|${entry.version ?? `${entry.mtime ?? 0}|${entry.size ?? 0}`}`
   const [text, setText] = useState<string | null>(() => cache.get(key) ?? null)
   useEffect(() => {
     if (!enabled) return
@@ -60,7 +60,7 @@ import type { FileVersion } from '../../preload/types'
 /** Saved versions of a file (oldest first); reloads when the file changes. */
 export function useVersions(entry: ProjectEntry | null): FileVersion[] {
   const [list, setList] = useState<FileVersion[]>([])
-  const key = entry ? `${entry.path}|${entry.mtime ?? 0}|${entry.size ?? 0}` : ''
+  const key = entry ? `${entry.path}|${entry.version ?? `${entry.mtime ?? 0}|${entry.size ?? 0}`}` : ''
   useEffect(() => {
     if (!entry) return setList([])
     let live = true

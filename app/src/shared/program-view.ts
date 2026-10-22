@@ -108,15 +108,37 @@ const words=(text:string)=>text.toLowerCase().normalize('NFKC').match(/[\p{L}\p{
 /** Program items whose evidence quotes the selected passage: same source and page, and a run of
  * shared words long enough to be the same sentence rather than a common phrase. */
 export function supportedBy(program:HumanProgram,selection:{sourceId?:string;page:number;text:string}):string[] {
- const picked=words(selection.text);if(picked.length<3)return [];
- const quotes=new Map<string,boolean>();
- const cites=(evidenceIds:string[])=>evidenceIds.some(id=>{
-  if(quotes.has(id))return quotes.get(id)!;
+ return passageSupport(program,selection).same;
+}
+
+/** Items citing the selected passage, split by source. Two documents can share a sentence, so with
+ * `source` (the file the passage was selected in) and `resolve` (an evidence's file or sourceId to the
+ * same kind of key, null when it names no file in the project) only evidence from that file counts as
+ * `same`; matching evidence from any other file is `other`, labelled with the file it cites. */
+export function passageSupport(program:HumanProgram,selection:{sourceId?:string;page:number;text:string;source?:string|null},
+ resolve?:(ref:{file?:string;sourceId?:string})=>string|null):{same:string[];other:{id:string;file:string}[]} {
+ const picked=words(selection.text);if(picked.length<3)return {same:[],other:[]};
+ const hits=new Map<string,{same:boolean}|null>();
+ const hit=(id:string)=>{
+  if(hits.has(id))return hits.get(id)!;
   const e=program.evidence.find(e=>e.id===id),quote=words(e?.quote??'');
-  const hit=Boolean(e&&quote.length&&e.locator.page===selection.page&&(!selection.sourceId||!e.sourceId||e.sourceId===selection.sourceId)&&sharedRun(quote,picked)>=Math.min(6,quote.length,picked.length));
-  quotes.set(id,hit);return hit;
- });
- return [...program.steps.filter(s=>cites(entityEvidence(program,`flow:${s.id}`))).map(s=>`flow:${s.id}`),...program.nodes.filter(n=>cites(entityEvidence(program,n.id))).map(n=>n.id)];
+  let out:{same:boolean}|null=null;
+  if(e&&quote.length&&e.locator.page===selection.page&&sharedRun(quote,picked)>=Math.min(6,quote.length,picked.length)){
+   const ref={...(e.path?{file:e.path}:{}),...(e.sourceId?{sourceId:e.sourceId}:{})};
+   const same=resolve&&selection.source?resolve(ref)===selection.source:(!selection.sourceId||!e.sourceId||e.sourceId===selection.sourceId);
+   out={same};
+  }
+  hits.set(id,out);return out;
+ };
+ const label=(evidenceIds:string[])=>{const e=evidenceIds.map(id=>hits.get(id)?program.evidence.find(x=>x.id===id):undefined).find(Boolean);return e?.path??e?.sourceId??'';};
+ const same:string[]=[],other:{id:string;file:string}[]=[];
+ const items:[string,string[]][]=[...program.steps.map(s=>[`flow:${s.id}`,entityEvidence(program,`flow:${s.id}`)] as [string,string[]]),...program.nodes.map(n=>[n.id,entityEvidence(program,n.id)] as [string,string[]])];
+ for(const [id,evidenceIds] of items){
+  const found=evidenceIds.map(hit);
+  if(found.some(h=>h?.same))same.push(id);
+  else if(found.some(Boolean))other.push({id,file:label(evidenceIds.filter(x=>hits.get(x)))});
+ }
+ return {same,other};
 }
 function sharedRun(a:string[],b:string[]):number {
  let best=0;const prev=new Uint16Array(b.length+1),cur=new Uint16Array(b.length+1);

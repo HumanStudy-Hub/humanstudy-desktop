@@ -15,16 +15,17 @@ import { fieldLabel } from './labels';
 import { track } from '../telemetry';
 import { getLang, t, translate } from '../i18n';
 import s from './StudyModel.module.css';
+import type { TokenDiff } from '../../shared/significant-tokens';
 
 export type { SourceRef };
-export type QuoteStatus = { found: boolean; page?: number };
+export type QuoteStatus = { found: boolean; page?: number; differs?: TokenDiff };
 export type StudyModelProps = {
   program: HumanProgram;
   studyId: string;
   onStudy?(id: string): void;
   selectedIds: string[];
   /** Items cited by the passage selected in the paper, and that passage's page. */
-  support?: { page: number; ids: string[] } | null;
+  support?: { page: number; ids: string[]; file?: string; other?: { id: string; file: string }[] } | null;
   onClearSupport?(): void;
   changedIds?: ReadonlySet<string>;
   /** What the paper pane found for each citation it opened (quoteKey). */
@@ -102,7 +103,8 @@ export default function StudyModel(props: StudyModelProps) {
       {program.studies.map(st => <button key={st.id} role="tab" title={st.title} aria-selected={st.id === studyId} onClick={() => { setFocus(null); props.onStudy?.(st.id); }}>{st.title}</button>)}
     </div></div>}
     {props.support && <div className={s.support} role="status">
-      {props.support.ids.length ? <><span>{t('model.support', { n: props.support.page })}</span>{props.support.ids.map(id => <button key={id} onClick={() => open(id)}>{titleOf(program, id)}</button>)}</> : <span>{t('model.support_none')}</span>}
+      {props.support.ids.length ? <><span>{props.support.file ? t('model.support_file', { n: props.support.page, file: props.support.file }) : t('model.support', { n: props.support.page })}</span>{props.support.ids.map(id => <button key={id} onClick={() => open(id)}>{titleOf(program, id)}</button>)}</> : <span>{t('model.support_none')}</span>}
+      {!!props.support.other?.length && <><span className={s.supportOther}>{t('model.support_other')}</span>{props.support.other.map(o => <button key={o.id} className={s.supportOther} title={o.file} onClick={() => open(o.id)}>{titleOf(program, o.id)}{o.file ? ` · ${o.file}` : ''}</button>)}</>}
       {props.onClearSupport && <button className={s.supportClose} aria-label={t('chat.clear')} onClick={props.onClearSupport}>×</button>}
     </div>}
     <div className={s.scroll} ref={scroll}>
@@ -310,9 +312,9 @@ function Cite({ id, refs, ctx }: { id: string; refs: SourceRef[]; ctx: Ctx }) {
   const ref=refs[0];if(!ref)return null;
   const label=(r:SourceRef)=>r.page?t('doc.cite_page',{n:r.page}):t('doc.cite_file');
   const status=ref.page?ctx.quoteStatus?.get(quoteKey(ref.page,ref.quote,ref.file??ref.sourceId)):undefined;
-  const missing=status&&!status.found,moved=status?.found&&status.page!==ref.page;
+  const missing=status&&!status.found,moved=status?.found&&status.page!==ref.page,differs=Boolean(status?.found&&status.differs);
   return <span className={s.citeGroup}>
-    <button ref={anchor} className={`${s.cite} ${missing||moved||!ref.verified?s.citeWarn:''}`} title={`${missing?t('model.quote_missing',{n:ref.page??''}):moved?t('model.quote_moved',{n:ref.page??'',m:status!.page!}):t(ref.verified?'doc.cite_open':'doc.cite_unmatched')}\n${ref.quote??''}`} aria-expanded={refs.length>1?expanded:undefined} onClick={e=>{e.stopPropagation();if(refs.length>1){const r=e.currentTarget.getBoundingClientRect();setPoint({left:Math.max(8,Math.min(r.right-380,window.innerWidth-396)),top:Math.max(8,Math.min(r.bottom+4,window.innerHeight-340))});setExpanded(v=>!v)}else ctx.onSource(id,ref)}}>{label(ref)}{refs.length>1?` +${refs.length-1}`:''}{moved?` → ${status!.page}`:''}{missing?' ?':''} <span aria-hidden>↗</span></button>
+    <button ref={anchor} className={`${s.cite} ${missing||moved||differs||!ref.verified?s.citeWarn:''}`} title={`${missing?t('model.quote_missing',{n:ref.page??''}):differs?t('model.quote_differs',{n:status!.page!}):moved?t('model.quote_moved',{n:ref.page??'',m:status!.page!}):t(ref.verified?'doc.cite_open':'doc.cite_unmatched')}\n${ref.quote??''}`} aria-expanded={refs.length>1?expanded:undefined} onClick={e=>{e.stopPropagation();if(refs.length>1){const r=e.currentTarget.getBoundingClientRect();setPoint({left:Math.max(8,Math.min(r.right-380,window.innerWidth-396)),top:Math.max(8,Math.min(r.bottom+4,window.innerHeight-340))});setExpanded(v=>!v)}else ctx.onSource(id,ref)}}>{label(ref)}{refs.length>1?` +${refs.length-1}`:''}{moved?` → ${status!.page}`:''}{missing||differs?' ?':''} <span aria-hidden>↗</span></button>
     {expanded&&createPortal(<span ref={list} className={s.citeList} style={point}>{refs.map((r,i)=><button key={i} onClick={e=>{e.stopPropagation();setExpanded(false);ctx.onSource(id,r)}}><strong>{label(r)}{r.file?` · ${r.file}`:''}</strong><q>{r.quote}</q></button>)}</span>,document.body)}
   </span>;
 

@@ -13,6 +13,7 @@ import { copyText } from './Markdown'
 import { resultTitle } from '../results'
 import { listenToArtifact, withArtifactCsp } from '../bridge'
 import { getDraft, isDirty, setDraft, toDisk } from '../drafts'
+import { versionedUrl } from '../../shared/file-version'
 
 const TEXT = new Set(['md', 'txt', 'json', 'py', 'html', 'htm', 'css', 'js', 'ts', 'mjs', 'csv', 'tsv', 'yaml', 'yml', 'r', 'sh', 'tex', 'bib', 'xml', 'toml', ''])
 const IMAGE = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'])
@@ -126,7 +127,7 @@ export function FileView({ file, version, onDirty }: Props) {
   if (IMAGE.has(file.ext))
     return (
       <div className="artifact-image">
-        <img key={file.mtime ?? 0} src={file.url} alt={file.name} />
+        <img key={file.version ?? file.mtime ?? 0} src={file.url && versionedUrl(file.url, file.version)} alt={file.name} />
       </div>
     )
   if (!isText)
@@ -235,7 +236,7 @@ export function FileView({ file, version, onDirty }: Props) {
       ) : mode === 'preview' && isCsv ? (
         <div className="file-csv">{saved === null ? <p className="muted">{t('common.loading')}</p> : <CsvTable text={text} rows={200} cols={30} />}</div>
       ) : mode === 'preview' ? (
-        <iframe ref={frame} key={file.mtime ?? 0} className="artifact-frame" src={dirty ? `data:text/html;charset=utf-8,${encodeURIComponent(withArtifactCsp(text))}` : file.url} sandbox="allow-scripts" title={file.name} />
+        <iframe ref={frame} key={file.version ?? file.mtime ?? 0} className="artifact-frame" src={dirty ? `data:text/html;charset=utf-8,${encodeURIComponent(withArtifactCsp(text))}` : file.url && versionedUrl(file.url, file.version)} sandbox="allow-scripts" title={file.name} />
       ) : saved === null && !error ? (
         <p className="muted pad">{t('common.loading')}</p>
       ) : (

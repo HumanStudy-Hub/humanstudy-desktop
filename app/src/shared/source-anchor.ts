@@ -3,6 +3,8 @@
 // line-break hyphens ("confi- dence"), which older scanned papers are full of. Explicit ellipses
 // require every remaining passage to match. No match, or an ambiguous one, returns [].
 
+import { compareSignificant, mergeDiffs, normalizeSignificant, significantTokens, type TokenDiff } from './significant-tokens'
+
 export type Rect = { x: number; y: number; w: number; h: number }
 /** One word of a PDF page in percent of the page box (see renderer/components/pdf-words.ts). */
 export type Word = { t: string; x: number; y: number; w: number; h: number }
@@ -13,15 +15,34 @@ const fold = (text: string) =>
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, '')
 
+/** Where a quote sits among a page's words: the words to box, and the source text of each matched
+ * passage (for the exact comparison of numbers and signs in significant-tokens.ts). */
+export type QuoteMatch = { words: Word[]; parts: { quote: string; source: string }[] }
+
 /** Locate a quoted passage in a page's words. Never invent a box. */
 export function quoteRects(words: Word[], quote: string): Rect[] {
-  if (!words.length) return []
-  const owner: number[] = []
-  let hay = ''
+  const found = locateQuote(words, quote)
+  return found ? merge(found.words) : []
+}
+
+export function locateQuote(words: Word[], quote: string): QuoteMatch | null {
+  if (!words.length) return null
+  // `raw` is the page text as extracted (normalised, words joined by spaces); every folded character
+  // remembers where it came from, so a match can be read back with its punctuation and signs.
+  const owner: number[] = [],
+    from: number[] = [],
+    to: number[] = []
+  let hay = '',
+    raw = ''
   words.forEach((word, i) => {
-    const part = fold(word.t)
-    hay += part
-    for (let k = 0; k < part.length; k++) owner.push(i)
+    if (i) raw += ' '
+    for (const ch of normalizeSignificant(word.t)) {
+      const at = raw.length
+      raw += ch
+      const part = fold(ch)
+      hay += part
+      for (let k = 0; k < part.length; k++) owner.push(i), from.push(at), to.push(raw.length)
+    }
   })
   const unique = (needle: string): number => {
     const at = hay.indexOf(needle)
@@ -29,31 +50,52 @@ export function quoteRects(words: Word[], quote: string): Rect[] {
     return at < 0 || hay.indexOf(needle, at + 1) >= 0 ? -1 : at
   }
   const span = (start: number, length: number) => words.slice(owner[start], owner[start + length - 1] + 1)
+  const sourceOf = (start: number, length: number, piece: string) => sourceText(raw, from[start], to[start + length - 1], piece)
   // Require the whole quote or every ordered part of an explicitly abbreviated quote.
-  const pieces = quote
-    .split(/\[\s*\.\.\.\s*\]|\.\.\.|…/)
-    .map(fold)
-    .filter(Boolean)
+  const rawPieces = quote.split(/\[\s*\.\.\.\s*\]|\.\.\.|…/).filter((p) => fold(p))
   const whole = fold(quote)
-  if (whole.length < 6) return []
-  const find = (needle: string): Word[] => {
-    const at = unique(needle)
-    return at < 0 ? [] : span(at, needle.length)
-  }
-  const exact = find(whole)
-  if (exact.length) return merge(exact)
-  if (pieces.length > 1) {
-    const parts: Word[] = []
+  if (whole.length < 6) return null
+  const at = unique(whole)
+  if (at >= 0) return { words: span(at, whole.length), parts: [{ quote, source: sourceOf(at, whole.length, quote) }] }
+  if (rawPieces.length > 1) {
+    const parts: Word[] = [],
+      texts: QuoteMatch['parts'] = []
     let last = -1
-    for (const piece of pieces) {
-      const at = unique(piece)
-      if (at < 0 || at <= last) return []
-      parts.push(...span(at, piece.length))
-      last = at + piece.length - 1
+    for (const piece of rawPieces) {
+      const needle = fold(piece),
+        at = unique(needle)
+      if (at < 0 || at <= last) return null
+      parts.push(...span(at, needle.length))
+      texts.push({ quote: piece, source: sourceOf(at, needle.length, piece) })
+      last = at + needle.length - 1
     }
-    return merge(parts)
+    return { words: parts, parts: texts }
   }
-  return []
+  return null
+}
+
+/** The source text of a match, widened just enough to compare it with the quote: a number cut by the
+ * match is completed ("p = .04" against ".045"), and the quote's own leading or trailing signs
+ * ("−0.5", "p <") are read from the source too, so a sign outside the letters still counts. */
+function sourceText(raw: string, start: number, end: number, quote: string): string {
+  const digit = (c?: string) => c !== undefined && c >= '0' && c <= '9'
+  const alnum = (c?: string) => c !== undefined && /[\p{L}\p{N}]/u.test(c)
+  if (digit(raw[start])) {
+    while (start > 0 && (digit(raw[start - 1]) || (/[.,]/.test(raw[start - 1]) && digit(raw[start - 2])))) start--
+    if (raw[start - 1] === '.') start--
+    if (raw[start - 1] === '-' && !alnum(raw[start - 2])) start--
+  }
+  if (digit(raw[end - 1])) {
+    while (end < raw.length && (digit(raw[end]) || (/[.,]/.test(raw[end]) && digit(raw[end + 1])))) end++
+    if (raw[end] === '%') end++
+  }
+  const q = normalizeSignificant(quote)
+  const signs = (part: string) => part.replace(/\s/g, '').length
+  for (let n = signs(q.match(/^[^\p{L}\p{N}]*/u)![0]); n > 0 && start > 0 && !alnum(raw[start - 1]); start--)
+    if (!/\s/.test(raw[start - 1])) n--
+  for (let n = signs(q.match(/[^\p{L}\p{N}]*$/u)![0]); n > 0 && end < raw.length && !alnum(raw[end]); end++)
+    if (!/\s/.test(raw[end])) n--
+  return raw.slice(start, end)
 }
 
 /** Merge adjacent words on the same line so the box hugs the passage. */
@@ -75,7 +117,8 @@ function merge(boxes: Rect[]): Rect[] {
   return result
 }
 
-export type QuoteHit = { page: number; rects: Rect[] }
+/** Found on a page; `differs` lists numbers or signs that do not match exactly (located is not checked). */
+export type QuoteHit = { page: number; rects: Rect[]; differs?: TokenDiff }
 /** The cited page first, then the rest: a quote found elsewhere is a citation with the wrong page. */
 export function findQuote(pages: { page: number; words: Word[] }[], quote: string, page: number): QuoteHit | null {
   if (!quote.trim()) return null
@@ -83,8 +126,13 @@ export function findQuote(pages: { page: number; words: Word[] }[], quote: strin
     (a, b) => Number(b.page === page) - Number(a.page === page) || Math.abs(a.page - page) - Math.abs(b.page - page),
   )
   for (const p of order) {
-    const rects = quoteRects(p.words, quote)
-    if (rects.length) return { page: p.page, rects }
+    const found = locateQuote(p.words, quote)
+    if (!found) continue
+    const differs = mergeDiffs(
+      found.parts.map((x) => compareSignificant(x.quote, x.source)),
+      found.parts.map((x) => ({ quote: significantTokens(x.quote), source: significantTokens(x.source) })),
+    )
+    return { page: p.page, rects: merge(found.words), ...(differs ? { differs } : {}) }
   }
   return null
 }
