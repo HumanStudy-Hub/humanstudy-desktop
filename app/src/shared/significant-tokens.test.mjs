@@ -72,3 +72,27 @@ test('text without significant tokens and abbreviated quotes still behave as bef
   assert.ok(abbreviated?.differs, 'each ellipsis part is compared')
   assert.deepEqual(changed(abbreviated.differs.quote), ['>'])
 })
+
+test('a minus set as its own glyph (LaTeX math) is still a sign; a spaced range dash is not', () => {
+  const latex = page('The effect was t = − 2.10, p = .04, r = - .32, in the 95% CI [− 0.1, 0.5] overall.')
+  for (const quote of ['effect was t = 2.10, p', 'p = .04, r = .32, in the', 'the 95% CI [0.1, 0.5] overall']) {
+    const hit = findQuote([latex], quote, 1)
+    assert.ok(hit, quote)
+    assert.ok(hit.differs, `a dropped minus was not flagged: ${quote}`)
+  }
+  for (const quote of ['effect was t = -2.10, p', 'effect was t = −2.10, p', 'p = .04, r = -.32, in the', 'the 95% CI [-0.1, 0.5] overall']) {
+    const hit = findQuote([latex], quote, 1)
+    assert.ok(hit, quote)
+    assert.equal(hit.differs, undefined, `a matching minus was flagged: ${quote}`)
+  }
+  // Starting the quote at the number still picks up a separate minus glyph, but not a range dash.
+  assert.ok(findQuote([latex], '2.10, p = .04, r', 1).differs, 'quote starting after a separate minus')
+  const range = page('Participants aged 18 - 25 years took part in the study.')
+  assert.equal(findQuote([range], '25 years took part in the', 1).differs, undefined, 'range dash read as a minus')
+  assert.deepEqual(significantTokens('aged 18 - 25 and 18–25'), ['18', '25', '18', '25'])
+})
+
+test('scientific notation keeps its exponent sign', () => {
+  assert.deepEqual(significantTokens('1.2e-5 and 3E+2 and 4e−3'), ['1.2e-5', '3E+2', '4e-3'])
+  assert.ok(compareSignificant('value was 1.2e-5 here', 'value was 1.2e5 here'))
+})

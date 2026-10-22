@@ -10,12 +10,18 @@ export function normalizeSignificant(text: string): string {
     text
       .normalize('NFKC')
       .replace(/\u00ad/g, '')
+      // LaTeX sets the math minus in its own font, so pdf.js gives it as a separate item: "− 2.10".
+      // U+2212 is always a minus; join it to its number before dashes are folded together.
+      .replace(/\u2212\s+(?=\.?\d)/g, '\u2212')
       // Hyphen, non-breaking hyphen, figure dash, en dash and the minus sign all reach us as minus.
       .replace(/[\u2010-\u2013\u2212\ufe63\uff0d]/g, '-')
       .replace(/[\u2266\u2a7d]|<=/g, '\u2264')
       .replace(/[\u2267\u2a7e]|>=/g, '\u2265')
       .replace(/!=|=\/=/g, '\u2260')
       .replace(/\+\/-|\+-(?=\s*\d)/g, '\u00b1')
+      // A spaced minus after an operator or opening bracket ("r = - .32", "[- 0.1") is a sign; a spaced
+      // dash between two numbers ("18 - 25") stays a range.
+      .replace(/(^\s*|[=<>\u2264\u2265\u2260\u00b1(\[,;:]\s*)-\s+(?=\.?\d)/g, '$1-')
       // Extraction often breaks a number around its point or before its percent sign.
       .replace(/(\d|[<>=≤≥≠(]\s*|^)\.\s+(\d)/g, '$1.$2')
       .replace(/(\d)\s+%/g, '$1%')
@@ -23,7 +29,7 @@ export function normalizeSignificant(text: string): string {
 }
 
 // A minus counts as a sign only where it cannot be a hyphen or a range dash ("t-test", "18-25").
-const TOKEN = /(?:(?<![\p{L}\p{N}.])-)?(?:\d+(?:[.,]\d+)*|\.\d+)%?|[<>=≤≥≠±×]|\p{Script=Greek}/gu
+const TOKEN = /(?:(?<![\p{L}\p{N}.])-)?(?:\d+(?:[.,]\d+)*|\.\d+)(?:[eE][-+]?\d+)?%?|[<>=≤≥≠±×]|\p{Script=Greek}/gu
 
 /** The tokens of a text that must match exactly, in order. */
 export function significantTokens(text: string): string[] {

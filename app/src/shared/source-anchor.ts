@@ -83,7 +83,10 @@ function sourceText(raw: string, start: number, end: number, quote: string): str
   if (digit(raw[start])) {
     while (start > 0 && (digit(raw[start - 1]) || (/[.,]/.test(raw[start - 1]) && digit(raw[start - 2])))) start--
     if (raw[start - 1] === '.') start--
-    if (raw[start - 1] === '-' && !alnum(raw[start - 2])) start--
+    if (/[-\u2212]/.test(raw[start - 1] ?? '') && !alnum(raw[start - 2])) start--
+    // A minus set as its own glyph ("− 2.10"), but not a range dash between numbers ("18 - 25").
+    else if (/\s/.test(raw[start - 1] ?? '') && /[-\u2212]/.test(raw[start - 2] ?? '') && !alnum(raw[start - 3]) && !alnum((raw.slice(0, start - 2).trimEnd()).at(-1)))
+      start -= 2
   }
   if (digit(raw[end - 1])) {
     while (end < raw.length && (digit(raw[end]) || (/[.,]/.test(raw[end]) && digit(raw[end + 1])))) end++
