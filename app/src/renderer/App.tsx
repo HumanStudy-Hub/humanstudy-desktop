@@ -91,6 +91,12 @@ export default function App() {
   const hasAccess = account?.modelAccess === 'hosted' || (devKeys && account?.modelAccess === 'own-key')
   const agentReady = Boolean(hasAccess && agreed)
   const session = useSession(project?.dir ?? null, agentReady)
+  // Importing a paper authorizes building its study: start as soon as the agent is ready and idle (issue #15).
+  const buildPending = Boolean(project?.pdf && project.build?.status === 'pending')
+  const { startPaperBuild } = session
+  useEffect(() => {
+    if (agentReady && session.id && !session.busy && buildPending) void startPaperBuild(t('build.prompt')).catch(() => undefined)
+  }, [agentReady, session.id, session.busy, buildPending, startPaperBuild])
   const [simulationRequest, setSimulationRequest] = useState<string | null>(null)
   useEffect(() => { setSimulationRequest(null); setSource(null) }, [project?.dir])
   // What the agent is doing, in the chat's own words, for the Simulation tab's live line.

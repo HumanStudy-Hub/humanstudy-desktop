@@ -157,6 +157,23 @@ const ROWS: Row[] = [
   // ---- study tab
   ['study.empty_title', 'No study yet', '还没有研究'],
   ['study.empty_body', 'Ask the agent in the chat to build the study from the paper. It appears here as soon as it is written.', '在左侧聊天中让助手根据论文构建研究，写好后会立刻显示在这里。'],
+  // Automatic build after a paper import (main/paper-build.ts). build.prompt is sent to the agent as the
+  // researcher's message: keep its scientific rules (verbatim instruments, gaps marked missing, no simulation).
+  ['build.prompt', 'Build the study from paper.pdf now, following the build skill. Importing the paper is the go-ahead, so do not ask whether to start. If program.json or saved batches already exist, continue from them instead of starting over. Save program.json in small checkpoints with program_io.py so the Study view fills in as you work, and run the program check until it passes. Transcribe printed instruments verbatim; record anything the paper does not state as missing, with a review issue, rather than filling it in. Do not run a simulation.', '现在按照 build 技能，根据 paper.pdf 构建研究。导入论文即表示同意开始，不必再询问是否开始。如果已有 program.json 或已保存的批次，请在其基础上继续，不要从头开始。用 program_io.py 分小批保存 program.json，让研究视图随进度逐步显示，并反复运行程序检查直到通过。论文中印出的测量工具须逐字转录；论文没有说明的内容标记为 missing 并附审阅问题，不要自行补全。不要运行模拟。'],
+  ['build.title', 'Building the study from the paper', '正在根据论文构建研究'],
+  ['build.pending', 'The agent starts reading the paper as soon as it is ready.', '助手就绪后会立即开始阅读论文。'],
+  ['build.reading', 'Reading the paper…', '正在阅读论文…'],
+  ['build.writing', 'Writing the study; sections appear here as they are saved…', '正在撰写研究，各部分保存后会显示在这里…'],
+  ['build.checking', 'Checking the study against the paper…', '正在对照论文检查研究…'],
+  ['build.packaging', 'Making the study runnable…', '正在把研究做成可运行的…'],
+  ['build.failed_title', 'The build stopped', '构建已停止'],
+  ['build.error.closed', 'The app closed before the build finished.', '构建完成前应用已关闭。'],
+  ['build.error.interrupted', 'The build was interrupted.', '构建被中断。'],
+  ['build.error.incomplete', 'The agent stopped before the study was complete.', '研究尚未完成，助手就停止了。'],
+  ['build.error.too_large', 'A request to the model was too large.', '发送给模型的请求过大。'],
+  ['build.error.failed', 'The build stopped with an error.', '构建因错误停止。'],
+  ['build.kept', 'Saved work is kept; the chat shows what happened.', '已保存的内容会保留，聊天中可以看到具体情况。'],
+  ['build.retry', 'Try again', '重试'],
   ['study.problems', 'The study file has {n} formatting problems; they were set aside.', '研究文件有 {n} 处格式问题，已暂时忽略'],
   ['study.fix', 'Ask the agent to fix', '让助手修复'],
   ['study.unreadable', 'The study document could not be read', '无法读取研究文档'],

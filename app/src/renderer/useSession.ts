@@ -46,6 +46,8 @@ export interface Message {
 
 export interface Session {
   id: string | null
+  /** Sends `prompt` when the project has a pending paper build that this conversation could claim. */
+  startPaperBuild(prompt: string): Promise<void>
   messages: Message[]
   busy: boolean
   status: string
@@ -164,6 +166,15 @@ export function useSession(projectDir: string | null, enabled = true): Session {
       throw error
     }
   },[activate])
+  /** Start the project's pending paper build in this conversation (importing the paper authorized it).
+   *  The main process claims it first, so a build is never sent twice. */
+  const startPaperBuild = useCallback(async (prompt: string) => {
+    const dir = dirRef.current, sid = idRef.current
+    if (!dir || !sid || busyRef.current) return
+    if (!(await window.humanstudy.project.startBuild(dir, sid))) return
+    if (dirRef.current !== dir || idRef.current !== sid || busyRef.current) return void window.humanstudy.project.releaseBuild(dir, sid)
+    sendRef.current(prompt)
+  }, [])
 
   const refreshThreads = useCallback(async () => {
     const dir = dirRef.current
@@ -393,7 +404,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const waitingForQuestion = messages.some(m => m.parts.some(p => p.kind === 'question' && !p.resolved && !p.expired))
 
   return {
-    id, messages, busy, status, error, queue, send, enqueue, editQueued, removeQueued, interruptAndSend, abort,
+    id, startPaperBuild, messages, busy, status, error, queue, send, enqueue, editQueued, removeQueued, interruptAndSend, abort,
     reply, waitingForPermission, answerQuestion, rejectQuestion, waitingForQuestion, threadId, threads, usage, resumedWithContext: resumed, native, adoptThread: activate, newThread, openThread, renameThread, deleteThread,
   }
 }

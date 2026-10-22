@@ -78,6 +78,7 @@ function classifyBash(cmd: string): ToolAction {
   if (/\bhs-pdf\b|\bpdftotext\b|\bpdftoppm\b|\bpdfinfo\b/.test(c) || /\bpdfplumber\b|\bPyPDF|\bfitz\b/.test(c) || (/paper\.pdf/.test(c) && !/^(rm|mv|cp)\b/.test(c)))
     return { type: 'read-paper', page: pageOf(c) }
   if (/check_package|validate_package|check-package/.test(c)) return { type: 'check-package' }
+  if (/\bprogram_io\.py\b/.test(c)) return { type: 'write-study' }
   if (/^(pip3?|python3? -m pip|npm|pnpm|brew|uv)\s+(install|add)\b/.test(c)) return { type: 'install' }
   if (/^mkdir\b/.test(c)) return { type: 'make-folder' }
   if (/\b(run_simulation|run_sessions)\b|artifacts\/simulations\//.test(c)) return { type: 'simulate' }
