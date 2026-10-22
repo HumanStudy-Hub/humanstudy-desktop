@@ -110,6 +110,8 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   const building = build?.status === 'pending' || build?.status === 'running'
   const buildLine = !build ? '' : build.status === 'pending' ? t('build.pending') : t(`build.${build.phase}`)
   const buildFailed = build?.status === 'error' ? `${t(`build.error.${build.error ?? 'failed'}`)} ${t('build.kept')}` : ''
+  // A project from before automatic builds: a paper, no study, never built. Offer it; never start it unasked.
+  const paperOnly = !build && Boolean(project.pdf) && !project.program && !error
   const retryBuild = () => void window.humanstudy.project.retryBuild(project.dir).catch((e: unknown) => setEditError(String(e)))
   const studies = useMemo(() => (program ? viewStudies(program) : []), [program])
   const files = useMemo(() => flatten(project.tree), [project.tree])
@@ -401,7 +403,8 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
                   <button className="link" onClick={retryBuild}>{t('build.retry')}</button>
                 </Empty>
               ) : (
-                <Empty title={error ? t('study.unreadable') : t('study.empty_title')} body={error ?? t('study.empty_body')}>
+                <Empty title={error ? t('study.unreadable') : t('study.empty_title')} body={error ?? (paperOnly ? t('study.paper_no_study') : t('study.empty_body'))}>
+                  {paperOnly && <button className="link" onClick={retryBuild}>{t('study.build_from_paper')}</button>}
                   {error && onFixProgram && <button className="link" onClick={fixProgram}>{t('study.fix')}</button>}
                 </Empty>
               )

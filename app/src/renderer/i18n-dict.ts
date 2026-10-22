@@ -174,6 +174,8 @@ const ROWS: Row[] = [
   ['build.error.failed', 'The build stopped with an error.', '构建因错误停止。'],
   ['build.kept', 'Saved work is kept; the chat shows what happened.', '已保存的内容会保留，聊天中可以看到具体情况。'],
   ['build.retry', 'Try again', '重试'],
+  ['study.paper_no_study', 'This project has a paper but no study yet.', '此项目有论文，但还没有研究。'],
+  ['study.build_from_paper', 'Build it from the paper', '根据论文构建'],
   ['study.problems', 'The study file has {n} formatting problems; they were set aside.', '研究文件有 {n} 处格式问题，已暂时忽略'],
   ['study.fix', 'Ask the agent to fix', '让助手修复'],
   ['study.unreadable', 'The study document could not be read', '无法读取研究文档'],

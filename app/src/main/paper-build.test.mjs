@@ -118,7 +118,7 @@ test('the build request is an authorization to build, not to simulate', async ()
     assert.match(prompt, /program_io\.py/)
     assert.match(prompt, /missing/)
   }
-  for (const key of ['build.title', 'build.pending', 'build.reading', 'build.writing', 'build.checking', 'build.packaging', 'build.failed_title', 'build.kept', 'build.retry',
+  for (const key of ['study.paper_no_study', 'study.build_from_paper', 'build.title', 'build.pending', 'build.reading', 'build.writing', 'build.checking', 'build.packaging', 'build.failed_title', 'build.kept', 'build.retry',
     'build.error.closed', 'build.error.interrupted', 'build.error.incomplete', 'build.error.too_large', 'build.error.failed'])
     assert.ok(dict.includes(`['${key}',`), key)
 })
@@ -157,4 +157,18 @@ test('program_io.py saves checkpoints by id without losing saved work', { skip: 
   r = run({ nodes: [{ title: 'no id' }] })
   assert.equal(r.status, 1)
   assert.equal(readFileSync(join(dir, 'program.json'), 'utf8'), before)
+})
+
+test('an older project with a paper but no study is offered a build, never started unasked', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'paper-build-old-')), { builds } = tracker()
+  builds.bind('s1', dir)
+  assert.equal(builds.read(dir), undefined, 'no state: the Study view offers the link')
+  assert.equal(builds.start(dir, 's1'), false, 'no automatic start without a pending build')
+  assert.equal(builds.retry(dir), false, 'no paper: nothing to build')
+  writeFileSync(join(dir, 'paper.pdf'), '%PDF-1.4')
+  assert.equal(builds.retry(dir), true, 'the link marks the build pending')
+  assert.equal(builds.start(dir, 's1'), true)
+  const done = mkdtempSync(join(tmpdir(), 'paper-build-done-'))
+  writeFileSync(join(done, 'paper.pdf'), '%PDF-1.4'); writeFileSync(join(done, 'program.json'), sample)
+  assert.equal(builds.retry(done), false, 'a project that already has a study is left alone')
 })

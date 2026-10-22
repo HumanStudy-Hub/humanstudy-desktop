@@ -351,7 +351,8 @@ export interface HumanStudyApi {
     startBuild(dir: string, sid: string): Promise<boolean>
     /** Undo startBuild when the request could not be sent. */
     releaseBuild(dir: string, sid: string): Promise<void>
-    /** After a failed build: mark it pending again so it restarts in the open conversation. */
+    /** After a failed build, or in an older project with a paper and no study: mark the build pending so it
+     *  starts in the open conversation. */
     retryBuild(dir: string): Promise<boolean>
     open(): Promise<string | null>
     read(dir: string): Promise<ProjectSnapshot>

@@ -10,7 +10,7 @@
 // State lives in <project>/.humanstudy/paper-build.json so it survives restarts. A `running` build whose
 // conversation is not live in this app process was interrupted (crash, forced quit) and reads as `error`,
 // so the researcher gets a retry instead of a spinner that never ends; it is never resumed silently.
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { KernelEvent } from './kernel-types'
 import { readHumanProgram } from '../shared/human-program'
@@ -113,9 +113,12 @@ export function createPaperBuilds(changed: (dir: string) => void) {
       live.delete(sessionId)
       save(dir, { status: 'pending', phase: 'reading' })
     },
-    /** The researcher asked to try again after a failure. */
+    /** The researcher asked to build: again after a failure, or for the first time in a project that has
+     *  a paper but no study and was made before automatic builds (those never start on their own). */
     retry(dir: string): boolean {
-      if (read(dir)?.status !== 'error') return false
+      const state = read(dir)
+      const firstBuild = !state && existsSync(join(dir, 'paper.pdf')) && !existsSync(join(dir, 'program.json'))
+      if (state?.status !== 'error' && !firstBuild) return false
       save(dir, { status: 'pending', phase: 'reading' })
       return true
     },
