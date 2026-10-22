@@ -9,6 +9,7 @@ import * as pdfjs from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { ProjectFile } from '../../preload/types'
 import { findQuote, type Rect, type Word } from '../../shared/source-anchor'
+import type { TokenDiff, TokenPart } from '../../shared/significant-tokens'
 import { readPdfAnnotations, type PdfAnnotation } from '../../shared/pdf-annotations'
 import { observeSettledWidth } from '../settled-width'
 import { makeWords } from './pdf-words'
@@ -25,7 +26,9 @@ export interface SourceRef {
   file?: string
   verified?: boolean
 }
-export type QuoteResult = { found: boolean; page?: number }
+/** Where a cited quote was located. Located is a text match only: `differs` lists numbers or signs
+ * that do not match exactly, and nothing here says the citation was checked by a person. */
+export type QuoteResult = { found: boolean; page?: number; differs?: TokenDiff }
 export type PassageSelection = { page: number; text: string }
 
 interface Props {
@@ -273,15 +276,17 @@ export function SourceDrawer({
       }
       if (cancelled) return
       setHit(found)
-      const result = found ? { found: true, page: found.page } : { found: false }
+      const result: QuoteResult = found
+        ? { found: true, page: found.page, ...(found.differs ? { differs: found.differs } : {}) }
+        : { found: false }
       setVerdict(result)
       scrollTo(found?.page ?? page, found?.rects[0])
       noteShown(found?.page ?? page, 'citation')
       callbacks.current.onQuote?.(source, result)
-      if (!result.found || result.page !== source.page)
+      if (!result.found || result.page !== source.page || result.differs)
         track('source.quote_check', {
           target: source.nodeId,
-          metadata: { page: source.page, found: result.found, foundOn: result.page ?? null },
+          metadata: { page: source.page, found: result.found, foundOn: result.page ?? null, differs: Boolean(result.differs) },
         })
     })().catch((e) => {
       if (!cancelled) setErr(String(e))
@@ -411,7 +416,7 @@ export function SourceDrawer({
       )}
       {cited && (
         <div
-          className={`paper-cite ${verdict && (!verdict.found || verdict.page !== cited.page) ? 'warn' : ''}`}
+          className={`paper-cite ${verdict && (!verdict.found || verdict.page !== cited.page || verdict.differs) ? 'warn' : ''}`}
           role="status"
         >
           <span className="paper-cite-page">{t('doc.cite_page', { n: cited.page })}</span>
@@ -419,6 +424,8 @@ export function SourceDrawer({
           {verdict?.found && verdict.page !== cited.page && (
             <span>{t('model.quote_moved', { n: cited.page, m: verdict.page ?? '' })}</span>
           )}
+          {verdict?.differs && <TokenMismatch differs={verdict.differs} />}
+          {verdict?.found && !verdict.differs && <span className="paper-located">{t('paper.located')}</span>}
           {cited.quote && (!verdict || !verdict.found) && <q>{cited.quote}</q>}
           {!cited.quote && <span className="muted">{t('paper.page_only', { page: cited.page })}</span>}
           <button className="link" onClick={onClose}>
@@ -516,6 +523,28 @@ export function SourceDrawer({
         )}
       </div>
     </div>
+  )
+}
+
+/** The numbers and signs of a located quote that do not match the source exactly. */
+function TokenMismatch({ differs }: { differs: TokenDiff }) {
+  const show = (parts: TokenPart[]) =>
+    parts.map((p, i) => (
+      <span key={i}>
+        {i > 0 && ' '}
+        {p.changed ? <mark>{p.t}</mark> : p.t}
+      </span>
+    ))
+  return (
+    <span className="paper-differs">
+      <span>{t('paper.differs')}</span>
+      <span>
+        {t('paper.differs_quote')} <code>{show(differs.quote)}</code>
+      </span>
+      <span>
+        {t('paper.differs_source')} <code>{show(differs.source)}</code>
+      </span>
+    </span>
   )
 }
 

@@ -551,6 +551,7 @@ const ROWS: Row[] = [
   ['model.support', 'Selected passage · p. {n} is cited by', '所选段落 · 第 {n} 页，引用它的条目：'],
   ['model.support_none', 'No study item cites the selected passage.', '没有条目引用所选段落。'],
   ['model.quote_missing', 'Quote not found on p. {n} — check this citation', '在第 {n} 页没有找到引用的原文，请核对这条引用'],
+  ['model.quote_differs', 'Quote located on p. {n}, but its numbers or signs differ from the source — check this citation', '在第 {n} 页定位到引用，但数字或符号与原文不一致，请核对这条引用'],
   ['model.quote_moved', 'Quote found on p. {m}, not p. {n} as cited', '引用的原文在第 {m} 页，而不是标注的第 {n} 页'],
   ['model.question_1', '1 question', '1 个问题'],
   ['model.questions', '{n} questions', '{n} 个问题'],
@@ -589,6 +590,10 @@ const ROWS: Row[] = [
   ['paper.cited_none', 'No study item cites this', '没有条目引用这段'],
   ['paper.passage_draft', 'From the paper, p. {n}:\n“{q}”\n\n', '论文第 {n} 页：\n“{q}”\n\n'],
   ['paper.page_aria', 'Page {n} of the paper', '论文第 {n} 页'],
+  ['paper.located', 'Text located on this page by automatic matching — not a confirmation', '已通过自动文本匹配在此页找到 —— 并非人工核对'],
+  ['paper.differs', 'Located, but numbers or signs differ — check the page:', '已定位，但数字或符号不一致 —— 请核对原文：'],
+  ['paper.differs_quote', 'cited', '引用'],
+  ['paper.differs_source', 'source', '原文'],
 
   // ---- Research data agreement
   ['agree.title', 'Research data agreement', '研究数据协议'],
