@@ -22,16 +22,17 @@ import { checkForUpdates, installUpdate, startUpdates, stopUpdates, updateStatus
 import { existsSync } from 'node:fs'
 import { watchFolder, type FolderWatch } from './project-watch'
 import { fileVersion } from '../shared/file-version'
-import { copyFile, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
 import { isVersioned, readVersion, relOf, snapshot, versionsOf } from './versions'
 import { createThreads, threads } from './threads'
+import { saveProjectText } from './program-save'
 import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
 import { refreshPack } from './pack'
-import { assertRunnablePackage } from './package-readiness'
+import { assertRunnablePackage, projectPackageReadiness } from './package-readiness'
 import type { Kernel, KernelEvent } from './kernel-types'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
 
@@ -435,6 +436,7 @@ app.whenReady().then(() => {
     await copyFile(q, r.filePath)
     return r.filePath
   })
+  ipcMain.handle('project:packageReadiness', async (_e, dir: string, studyId: string) => projectPackageReadiness(ownedPath(dir), studyId))
   ipcMain.handle('project:readText', async (_e, p: string) => {
     const q = ownedPath(p)
     if ((await stat(q)).size > TEXT_LIMIT) throw new Error('file is larger than 4 MB')
@@ -443,21 +445,12 @@ app.whenReady().then(() => {
   ipcMain.handle('project:writeText', async (_e, p: string, text: string, ifUnchanged?: string) => {
     const q = ownedPath(p)
     if (typeof text !== 'string' || text.length > TEXT_LIMIT) throw new Error('text is too large')
-    if (basename(q) === 'program.json') JSON.parse(text) // never leave the program unreadable
-    await mkdir(dirname(q), { recursive: true })
-    // Keep the version being replaced (program.json, artifacts/, exports/), so no save loses it.
-    const root = [...openProjects].find((d) => q.startsWith(d + sep))
-    if (root) await snapshot(root, relOf(root, q)).catch(() => undefined)
-    // A patch of what was read must not overwrite a newer save (the agent's checkpoint): compare just
-    // before writing, then replace in one rename so nobody reads a half-written file.
-    if (typeof ifUnchanged === 'string' && (await readFile(q, 'utf8').catch(() => null)) !== ifUnchanged)
-      throw new Error('changed on disk while saving; try again')
-    telemetry.noteHumanWrite(q)
-    if (typeof ifUnchanged === 'string') {
-      const tmp = `${q}.${process.pid}.tmp`
-      await writeFile(tmp, text, 'utf8')
-      await rename(tmp, q).catch(async (error) => { await unlink(tmp).catch(() => undefined); throw error })
-    } else await writeFile(q, text, 'utf8')
+    await saveProjectText(q, text, { ifUnchanged, beforeWrite: async () => {
+      const root = [...openProjects].find((d) => q.startsWith(d + sep))
+      if (root) await snapshot(root, relOf(root, q)).catch(() => undefined)
+      telemetry.noteHumanWrite(q)
+    } })
+    if (basename(q).toLowerCase() === 'program.json') paperBuilds.humanSaved(projectRootOf(q))
     telemetry.track('file.edited', { target: extname(q).slice(1) || 'file' })
   })
 

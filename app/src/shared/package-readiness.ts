@@ -27,6 +27,7 @@ export const PACKAGE_ENTRY_POINTS: Partial<Record<PackageFile, string>> = {
 export type PackageProblem =
   | { file: PackageFile; kind: 'missing' }
   | { file: PackageFile; kind: 'invalid-json' }
+  | { file: PackageFile; kind: 'unvalidated' | 'wrong-study' | 'stale-program' | 'bindings' }
   | { file: PackageFile; kind: 'no-entry'; entry: string }
 
 export interface PackageReadiness {
@@ -39,7 +40,7 @@ export interface PackageReadiness {
 }
 
 /** File text, `null` when the file does not exist, `undefined` when it exists but was not read
- *  (too large to read here; the agent's check covers it). */
+ *  (unvalidated files cannot enable Run). */
 export type ReadPackageFile = (file: PackageFile) => Promise<string | null | undefined>
 
 const defines = (source: string, name: string) =>
@@ -52,7 +53,7 @@ export async function packageProblems(read: ReadPackageFile): Promise<PackagePro
   PACKAGE_FILES.forEach((file, i) => {
     const text = texts[i]
     if (text === null) return void problems.push({ file, kind: 'missing' })
-    if (text === undefined) return
+    if (text === undefined) return void problems.push({ file, kind: 'unvalidated' })
     if (file.endsWith('.json')) {
       try { JSON.parse(text) } catch { problems.push({ file, kind: 'invalid-json' }) }
       return
@@ -64,11 +65,44 @@ export async function packageProblems(read: ReadPackageFile): Promise<PackagePro
 }
 
 /** Check every package folder; ready when one of them passes. */
-export async function packageReadiness(slugs: string[], read: (slug: string, file: PackageFile) => Promise<string | null | undefined>): Promise<PackageReadiness> {
+export async function packageReadiness(slugs: string[], read: (slug: string, file: PackageFile) => Promise<string | null | undefined>, context?: { studyId: string; program: unknown }): Promise<PackageReadiness> {
   if (!slugs.length) return { exists: false, ready: false, slug: null, problems: [] }
-  const checked = await Promise.all([...slugs].sort().map(async (slug) => ({ slug, problems: await packageProblems((f) => read(slug, f)) })))
+  const checked = await Promise.all([...slugs].sort().map(async (slug) => {
+    const cache = new Map<PackageFile, Promise<string | null | undefined>>()
+    const once = (file: PackageFile) => {
+      if (!cache.has(file)) cache.set(file, read(slug, file).catch(() => null))
+      return cache.get(file)!
+    }
+    const problems = await packageProblems(once)
+    if (context) {
+      try {
+        const study = JSON.parse((await once('study.json')) ?? '')
+        if (!study.program?.studies?.some((s: { id: string }) => s.id === context.studyId))
+          problems.push({ file: 'study.json', kind: 'wrong-study' })
+        if (canonical(study.program) !== canonical(context.program)) problems.push({ file: 'study.json', kind: 'stale-program' })
+        const program = context.program as { id: string; steps: { id: string }[]; nodes: { id: string; kind: string }[] }
+        const expected = {
+          programId: program.id,
+          stepIds: program.steps.map(s => s.id),
+          recordNodeIds: program.nodes.filter(n => ['record', 'variable'].includes(n.kind)).map(n => n.id),
+          analysisNodeIds: program.nodes.filter(n => n.kind === 'analysis').map(n => n.id),
+        }
+        const task = JSON.parse((await once('task/task.json')) ?? '')
+        if (canonical(task?.programBindings) !== canonical(expected)) problems.push({ file: 'task/task.json', kind: 'bindings' })
+      } catch {
+        if (!problems.length) problems.push({ file: 'study.json', kind: 'unvalidated' })
+      }
+    }
+    return { slug, problems }
+  }))
   const best = checked.reduce((a, b) => (b.problems.length < a.problems.length ? b : a))
   return { exists: true, ready: best.problems.length === 0, slug: best.slug, problems: best.problems }
+}
+
+function canonical(value: unknown): string {
+  const sorted = (v: unknown): unknown => Array.isArray(v) ? v.map(sorted)
+    : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)).map(([k, x]) => [k, sorted(x)])) : v
+  return JSON.stringify(sorted(value)) ?? 'null'
 }
 
 /** A one-line fingerprint of the package files (names, sizes, times), to recheck when they change. */

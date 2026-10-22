@@ -8,7 +8,7 @@ import {spawn} from 'node:child_process'
 const here=dirname(fileURLToPath(import.meta.url)),out=mkdtempSync(join(tmpdir(),'build-progress-'))
 try{
  await build({stdin:{resolveDir:here,loader:'tsx',contents:`
- import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{SimulationPanel}from'./components/SimulationPanel';import sample from'../shared/sample-program.json';import'./styles.css';
+ import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{SimulationPanel}from'./components/SimulationPanel';import sample from'../shared/sample-program.json';import {packageReadiness} from '../shared/package-readiness';import'./styles.css';
  const realNow=Date.now;let offset=0;Date.now=()=>realNow()+offset;
  // A complete package (#20: only a package with all eight valid files counts as built).
  const P='package/p',pkgFiles=['study.json','source/paper_metadata.json','source/evidence.json','materials/materials.json','task/task.json','task/adapter.py','evaluation/evaluation.py','audit/missing_information.json'];
@@ -17,10 +17,11 @@ try{
  const folder=(rel,children)=>({name:rel.split('/').pop(),path:'/fixture/'+rel,rel,kind:'dir',ext:'',children});
  const sub=d=>folder(P+'/'+d,pkgFiles.filter(f=>f.startsWith(d+'/')).map(f=>entry(P+'/'+f)));
  window.fixture={package:[folder('package',[folder(P,[entry(P+'/study.json'),sub('source'),sub('materials'),sub('task'),sub('evaluation'),sub('audit')])])]};
- window.humanstudy={telemetry:{track:async()=>{}},project:{readText:async p=>{if(p in texts)return texts[p];throw Error('missing')}}};
+ window.humanstudy={telemetry:{track:async()=>{}},project:{packageReadiness:async(dir,studyId)=>packageReadiness(window.fixture.tree?.find(e=>e.rel==='package')?.children.map(e=>e.name)??[],async(slug,file)=>texts[dir+'/package/'+slug+'/'+file]??null,{studyId,program:sample}),readText:async p=>{if(p in texts)return texts[p];throw Error('missing')}}};
  sessionStorage.setItem('hs.sim.pending:/fixture',JSON.stringify({at:Date.now()-109*60000,kind:'build'}));
+ texts['/fixture/package/p/study.json']=JSON.stringify({program:sample});texts['/fixture/package/p/task/task.json']=JSON.stringify({programBindings:{programId:sample.id,stepIds:sample.steps.map(s=>s.id),recordNodeIds:sample.nodes.filter(n=>['record','variable'].includes(n.kind)).map(n=>n.id),analysisNodeIds:sample.nodes.filter(n=>n.kind==='analysis').map(n=>n.id)}});
  function Fixture(){const[state,setState]=useState({busy:true,turn:'unrelated',thread:'thread-1',tree:[]}),[key,setKey]=useState(0);window.fixture.set=patch=>setState(s=>({...s,...patch}));window.fixture.advance=ms=>{offset+=ms;setState(s=>({...s}))};window.fixture.remount=()=>setKey(n=>n+1);
- return <SimulationPanel key={key} project={{dir:'/fixture',name:'Fixture',tree:state.tree}} program={sample} studyId={sample.studies[0].id} studies={sample.studies} model='fixture' agentBusy={state.busy} agentThreadId={state.thread} agentTurnKey={state.turn} onStudy={()=>{}} onBuild={()=>{if(!window.fixture.ignoreBuild)setState(s=>({...s,busy:true,turn:'build-'+Date.now()}))}} onRun={async()=>{}} onStop={()=>setState(s=>({...s,busy:false}))} onAsk={()=>{}} onOpenFile={()=>{}}/>};createRoot(document.getElementById('root')).render(<Fixture/>);
+ window.fixture.tree=state.tree;return <SimulationPanel key={key} project={{dir:'/fixture',name:'Fixture',tree:state.tree}} program={sample} studyId={sample.studies[0].id} studies={sample.studies} model='fixture' agentBusy={state.busy} agentThreadId={state.thread} agentTurnKey={state.turn} onStudy={()=>{}} onBuild={()=>{if(!window.fixture.ignoreBuild)setState(s=>({...s,busy:true,turn:'build-'+Date.now()}))}} onRun={async()=>{}} onStop={()=>setState(s=>({...s,busy:false}))} onAsk={()=>{}} onOpenFile={()=>{}}/>};createRoot(document.getElementById('root')).render(<Fixture/>);
  `},bundle:true,format:'iife',platform:'browser',jsx:'automatic',outfile:join(out,'fixture.js'),define:{'process.env.NODE_ENV':'"production"'},logLevel:'error'})
  writeFileSync(join(out,'index.html'),'<link rel="stylesheet" href="fixture.css"><div id="root"></div><script src="fixture.js"></script>')
  writeFileSync(join(out,'runner.cjs'),`

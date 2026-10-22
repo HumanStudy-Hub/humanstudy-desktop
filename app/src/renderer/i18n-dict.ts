@@ -96,6 +96,8 @@ const ROWS: Row[] = [
   ['sim.incomplete', 'The runnable study the agent started is not complete yet, so it cannot run and there is no cost estimate. What is still needed:', '助手开始构建的可运行研究还不完整，因此还不能运行，也没有费用估计。还缺少：'],
   ['sim.ask_complete', 'Ask the agent to complete it', '让助手补全'],
   ['sim.complete_prompt', 'The runnable study in {pkg} is incomplete: {what}. Complete it following the build skill’s section 3 (Package), and run the package check until it passes. Do not run a simulation yet.', '{pkg} 中的可运行研究还不完整：{what}。请按 build 技能第 3 节（Package）补全，并反复运行包检查直到通过。先不要运行模拟。'],
+  ['sim.pkg_unvalidated', 'This file could not be checked. Ask the agent to check the package.', '此文件尚未验证，请让 agent 检查材料。'],
+  ['sim.pkg_stale', 'This package does not match the selected study. Ask the agent to update it.', '此材料与当前研究不匹配，请让 agent 更新。'],
   ['sim.pkg_missing', '{what} ({file}) is missing', '缺少{what}（{file}）'],
   ['sim.pkg_invalid', '{what} ({file}) cannot be read: it is not valid JSON', '{what}（{file}）无法读取：不是有效的 JSON'],
   ['sim.pkg_no_entry', '{what} ({file}) does not define {entry}()', '{what}（{file}）没有定义 {entry}()'],

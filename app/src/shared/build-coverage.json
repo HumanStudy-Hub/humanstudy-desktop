@@ -1,0 +1,14 @@
+{
+  "empirical": {
+    "participants": ["participants"],
+    "design": ["design"],
+    "procedure": ["procedure"],
+    "variables": ["variable", "record"],
+    "analysis": ["analysis"],
+    "results": ["result"]
+  },
+  "analysis": {
+    "analysis": ["analysis"],
+    "results": ["result"]
+  }
+}

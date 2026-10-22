@@ -7,7 +7,7 @@ import type { HumanProgram } from '../../shared/human-program'
 import type { ProjectEntry, ProjectSnapshot } from '../../preload/types'
 import { simulationScope, simulationLimits } from '../../shared/simulation-scope'
 import { estimateRun, hasParticipantData, isResult, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
-import { packageReadiness, packageStamp, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
+import { packageStamp, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
 import { shortModelName } from './ModelPicker'
 import { listenToArtifact } from '../bridge'
 import { getLang, t } from '../i18n'
@@ -59,25 +59,19 @@ const packageEntries = (tree: ProjectEntry[]): ProjectEntry[] => {
   const all = (es: ProjectEntry[]): ProjectEntry[] => es.flatMap((e) => [e, ...all(e.children ?? [])])
   return pkg ? [pkg, ...all(pkg.children ?? [])] : []
 }
-const READ_LIMIT = 4 * 1024 * 1024
-function usePackageReadiness(dir: string, tree: ProjectEntry[]): { slugs: string[]; readiness: PackageReadiness | null; checking: boolean } {
+function usePackageReadiness(dir: string, tree: ProjectEntry[], studyId: string, program: HumanProgram): { slugs: string[]; readiness: PackageReadiness | null; checking: boolean } {
   const entries = useMemo(() => packageEntries(tree), [tree])
   const slugs = useMemo(() => entries.filter((e) => e.kind === 'dir' && /^package\/[^/]+$/.test(e.rel) && !e.name.startsWith('.') && e.name !== '__pycache__').map((e) => e.name), [entries])
-  const stamp = packageStamp(entries)
+  const stamp = JSON.stringify([dir, studyId, packageStamp(entries), program])
   const [checked, setChecked] = useState<{ stamp: string; readiness: PackageReadiness } | null>(null)
-  const readiness = checked?.readiness ?? null
   useEffect(() => {
     let live = true
-    const sizes = new Map(entries.map((e) => [e.rel, e.size]))
-    void packageReadiness(slugs, async (slug, file) => {
-      const rel = `package/${slug}/${file}`
-      if ((sizes.get(rel) ?? 0) > READ_LIMIT) return undefined
-      return window.humanstudy.project.readText(`${dir}/${rel}`).catch(() => null)
-    }).then((r) => { if (live) setChecked({ stamp, readiness: r }) })
+    void window.humanstudy.project.packageReadiness(dir, studyId).then((readiness) => {
+      if (live) setChecked({ stamp, readiness })
+    }).catch(() => { if (live) setChecked({ stamp, readiness: { exists: slugs.length > 0, ready: false, slug: null, problems: [] } }) })
     return () => { live = false }
-  }, [dir, stamp]) // eslint-disable-line react-hooks/exhaustive-deps
-  // `checking`: the package files changed since the last check, so `ready` may be out of date.
-  return { slugs, readiness: readiness && readiness.exists === slugs.length > 0 ? readiness : null, checking: checked?.stamp !== stamp }
+  }, [dir, stamp, studyId]) // eslint-disable-line react-hooks/exhaustive-deps
+  return { slugs, readiness: checked?.stamp === stamp ? checked.readiness : null, checking: checked?.stamp !== stamp }
 }
 const fileUrl = (tree: ProjectEntry[], path?: string): string | undefined => {
   if (!path) return undefined
@@ -97,7 +91,7 @@ export function SimulationPanel(props: Props) {
   const plan = useMemo(() => simulationPlan(program, studyId), [program, studyId])
   const scope = useMemo(() => simulationScope(program, studyId), [program, studyId])
   const limits = useMemo(() => simulationLimits(program, studyId), [program, studyId])
-  const { slugs, readiness, checking } = usePackageReadiness(dir, project.tree)
+  const { slugs, readiness, checking } = usePackageReadiness(dir, project.tree, studyId, program)
   const built = Boolean(readiness?.ready)
   const [perCondition, setPerCondition] = useState(plan.defaultPerCondition)
   useEffect(() => setPerCondition(plan.defaultPerCondition), [plan.defaultPerCondition])
@@ -250,7 +244,7 @@ export function SimulationPanel(props: Props) {
             <section className="sim-card" aria-live="polite">
               {readiness ? (<>
                 <p>{t('sim.incomplete')}</p>
-                <ul className="sim-missing">{readiness.problems.map((p) => <li key={p.file}>{problemText(p)}</li>)}</ul>
+                <ul className="sim-missing">{readiness.problems.map((p) => <li key={`${p.file}:${p.kind}`}>{problemText(p)}</li>)}</ul>
                 <button className="link" onClick={() => props.onAsk(t('sim.complete_prompt', { pkg: `package/${readiness.slug}`, what: readiness.problems.map(problemText).join(t('sim.list_sep')) }))}>{t('sim.ask_complete')}</button>
               </>) : <p className="muted small">{t('sim.checking')}</p>}
             </section>
@@ -334,7 +328,9 @@ export function SimulationPanel(props: Props) {
 
 function problemText(p: PackageProblem): string {
   const vars = { what: t(`sim.pkg.${p.file}`), file: p.file }
-  return p.kind === 'missing' ? t('sim.pkg_missing', vars) : p.kind === 'invalid-json' ? t('sim.pkg_invalid', vars) : t('sim.pkg_no_entry', { ...vars, entry: p.entry })
+  if (p.kind === 'unvalidated') return t('sim.pkg_unvalidated', vars)
+  if (p.kind === 'wrong-study' || p.kind === 'stale-program' || p.kind === 'bindings') return t('sim.pkg_stale', vars)
+  return p.kind === 'missing' ? t('sim.pkg_missing', vars) : p.kind === 'invalid-json' ? t('sim.pkg_invalid', vars) : t('sim.pkg_no_entry', { ...vars, entry: p.kind === 'no-entry' ? p.entry : '' })
 }
 
 function costText(range: [number, number]): string {

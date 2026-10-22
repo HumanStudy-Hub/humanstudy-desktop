@@ -157,5 +157,5 @@ paper does not state as `missing` with a review issue, which the researcher revi
 document. Read the paper with `hs-pdf pages`, in page ranges, not by attaching the PDF itself.
 Save `program.json` in small checkpoints with the build skill's `program_io.py` as soon as the
 study map is known, so the Study document fills in while you work; never write the whole
-program in one huge tool call. Report the build complete only after the program check passes.
+program in one huge tool call. Report the build complete only after `check_program.py program.json --complete` passes for every identified study. Always use `program_io.py` for subsequent program edits too; it preserves confirmed researcher edits and reports conflicts for review.
 Building never authorizes a simulation.

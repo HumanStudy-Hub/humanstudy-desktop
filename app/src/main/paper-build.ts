@@ -10,10 +10,12 @@
 // State lives in <project>/.humanstudy/paper-build.json so it survives restarts. A `running` build whose
 // conversation is not live in this app process was interrupted (crash, forced quit) and reads as `error`,
 // so the researcher gets a retry instead of a spinner that never ends; it is never resumed silently.
+import { createHash } from 'node:crypto'
+import { buildCoverageProblems } from '../shared/build-completion'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { KernelEvent } from './kernel-types'
-import { readHumanProgram } from '../shared/human-program'
+import { validateHumanProgram } from '../shared/human-program'
 import type { PaperBuildError, PaperBuildState } from '../preload/types'
 
 const file = (dir: string): string => join(dir, '.humanstudy', 'paper-build.json')
@@ -40,15 +42,22 @@ export function pendingPaperBuild(dir: string): void {
 }
 
 
-/** Is program.json a Study with content (not only a first checkpoint)? Small slips are fine: the Study
- *  view lists them with its own fix action. */
-export function programComplete(dir: string): boolean {
+/** Independently validate the exact on-disk bytes, rather than trusting a tool's PASS text. */
+function inspectProgram(dir: string): { hash: string; problems: string[] } | null {
   try {
-    const { program } = readHumanProgram(JSON.parse(readFileSync(join(dir, 'program.json'), 'utf8')))
-    return program.studies.length > 0 && program.nodes.length > 0 && program.evidence.length > 0
-  } catch {
-    return false
-  }
+    const bytes = readFileSync(join(dir, 'program.json'))
+    const program = validateHumanProgram(JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, '')))
+    return { hash: createHash('sha256').update(bytes).digest('hex'), problems: buildCoverageProblems(program) }
+  } catch { return null }
+}
+export function programComplete(dir: string): boolean {
+  const result = inspectProgram(dir)
+  return result !== null && result.problems.length === 0
+}
+const currentCertificate = (dir: string, state: PaperBuildState): boolean => {
+  if (!state.checked || !state.validationHash) return false
+  const current = inspectProgram(dir)
+  return current !== null && current.hash === state.validationHash && !current.problems.length
 }
 
 /** Which part of the build a tool call belongs to, from its input (the build skill's own commands). */
@@ -71,7 +80,7 @@ export function createPaperBuilds(changed: (dir: string) => void) {
   }
   const fail = (dir: string, state: PaperBuildState, error: PaperBuildError): void => {
     if (state.sessionId) live.delete(state.sessionId)
-    save(dir, { status: 'error', phase: state.phase, sessionId: state.sessionId, error })
+    save(dir, { ...state, status: 'error', error })
   }
 
   /** The state as the app should show it now (an orphaned `running` build becomes an interrupted error). */
@@ -82,9 +91,14 @@ export function createPaperBuilds(changed: (dir: string) => void) {
       try { writePaperBuild(dir, next) } catch { /* shown either way */ }
       return next
     }
+    if (state?.status === 'complete' && !currentCertificate(dir, state)) {
+      const next: PaperBuildState = { ...state, status: 'error', checked: false, error: 'incomplete' }
+      try { writePaperBuild(dir, next) } catch { /* shown either way */ }
+      return next
+    }
     // Finished by hand after a failure (in the chat or another conversation): nothing is left to retry.
-    if (state?.status === 'error' && state.checked && programComplete(dir)) {
-      const next: PaperBuildState = { status: 'complete', phase: state.phase }
+    if (state?.status === 'error' && currentCertificate(dir, state)) {
+      const next: PaperBuildState = { ...state, status: 'complete', error: undefined }
       try { writePaperBuild(dir, next) } catch { /* shown either way */ }
       return next
     }
@@ -93,6 +107,14 @@ export function createPaperBuilds(changed: (dir: string) => void) {
 
   return {
     read,
+    /** A successful app field/file save is independently checked immediately; normal human edits
+     * keep a completed extraction completed without a new agent turn. */
+    humanSaved(dir: string): void {
+      const state = readPaperBuild(dir)
+      if (state?.status !== 'complete') return
+      const result = inspectProgram(dir)
+      if (result && !result.problems.length) save(dir, { ...state, checked: true, validationHash: result.hash })
+    },
     bind(sessionId: string, dir: string): void {
       projects.set(sessionId, resolve(dir))
     },
@@ -138,25 +160,29 @@ export function createPaperBuilds(changed: (dir: string) => void) {
       // The program check passing after the last write is what makes a study complete; a first
       // checkpoint already has a study, a node and evidence.
       const check = e.type === 'tool' ? checkResult(e) : null
-      if (check !== null && (state.status === 'running' || state.status === 'error') && Boolean(state.checked) !== check)
-        save(dir, { ...state, checked: check })
-      const checked = check ?? state.checked
+      let certificate = state
+      if (check !== null && (state.status === 'running' || state.status === 'error' || state.status === 'complete')) {
+        const result = check ? inspectProgram(dir) : null
+        certificate = { ...state, checked: Boolean(result && !result.problems.length), validationHash: result?.hash }
+        save(dir, certificate)
+      }
+      const checked = currentCertificate(dir, certificate)
       if (state.status === 'error' && e.type === 'done' && e.detail !== 'shutdown') {
-        if (checked && programComplete(dir)) save(dir, { status: 'complete', phase: state.phase })
+        if (checked && programComplete(dir)) save(dir, { ...certificate, status: 'complete', error: undefined })
         return
       }
       if (state.status !== 'running' || state.sessionId !== e.sessionId) return
       if (e.type === 'error') lastError.set(e.sessionId, e.text ?? '')
       else if (e.type === 'tool') {
         const phase = buildPhase(e.input ?? e.detail)
-        if (phase && phase !== state.phase) save(dir, { ...state, checked, phase })
+        if (phase && phase !== state.phase) save(dir, { ...certificate, checked, phase })
       } else if (e.type === 'done') {
         const error = lastError.get(e.sessionId)
         lastError.delete(e.sessionId)
         if (e.detail === 'shutdown') return fail(dir, state, 'closed')
         if (checked && programComplete(dir)) {
           live.delete(e.sessionId)
-          return save(dir, { status: 'complete', phase: state.phase })
+          return save(dir, { ...certificate, status: 'complete', error: undefined })
         }
         fail(dir, state, error === undefined ? 'incomplete' : tooLarge(error) ? 'too_large' : 'failed')
       }

@@ -34,7 +34,7 @@ python .opencode/skills/build/program_io.py .humanstudy/tmp/batch-01.json
 Continue with small batches (`batch-02.json`, …), for example one section or one study at a time,
 each with the evidence its records cite. `program_io.py` merges records by `id`: a record sent
 again updates the fields it contains, and records not in the batch are kept. It writes
-`program.json` atomically, so a failed batch never damages the saved one. Never write the whole
+`program.json` under a shared save lock and atomically, so a failed batch never damages the saved one. Never write the whole
 program in one tool call. An import build is already authorized: do not ask whether to start.
 
 Validate against `schema/human-program.schema.json`. Work in this order:
@@ -110,6 +110,19 @@ fix. Typical slips: a step id placed in an issue's `nodeId` (use `stepId`), a `m
 field or rule with no review issue naming its `nodeId`/`fieldId` (or `stepId`), an id in a list
 that does not exist. The app tolerates a few slips by setting them aside, but it warns the
 researcher; a clean check is the standard.
+
+Before reporting completion run `python .opencode/skills/build/check_program.py program.json --complete`.
+For every identified empirical study account for participants, design, procedure, variables/records,
+analysis and results. For an analysis-only scope account for analysis and results. These are coverage
+checks, not a fixed experimental template: information the paper omits is an explicit `missing` field
+with its targeted issue, not invented content. Shared nodes may supply shared details, but every
+study needs its own scoped content or explicit missing information. A valid checkpoint is not a
+completed paper. Recheck after any change; PASS applies only to the checked bytes.
+
+Always use `program_io.py` for agent edits, including refinements; do not bypass its lock/protection
+with direct writes to program.json. Confirmed researcher fields are kept when a batch conflicts;
+the complete proposal is saved under `.humanstudy/program-conflicts/` with a review issue. Discuss it
+with the researcher, who can accept it by editing that field. Never relabel the saved human edit.
 
 Finish and validate the visible program **before** packaging or views. Do not delay the
 program until these auxiliary artifacts exist.

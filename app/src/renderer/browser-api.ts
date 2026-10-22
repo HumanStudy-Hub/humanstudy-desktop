@@ -1,3 +1,4 @@
+import { packageReadiness } from '../shared/package-readiness'
 import { validateAnswers, updateQuestion, type KernelQuestion } from '../shared/question'
 // Browser preview: when the renderer runs outside Electron, stand in for the preload bridge with
 // the sample program, a local paper and a scripted kernel, so the interface can be reviewed in a
@@ -765,6 +766,10 @@ def intentional(harm: float, help_: float) -> float:
           const path = `${dir}/${isPaper ? 'paper.pdf' : 'sources/' + name}`
           return { name: path.split('/').pop()!, path, url: path, ext: name.split('.').pop()?.toLowerCase() ?? '' }
         }),
+      packageReadiness: async (dir, studyId) => {
+        const slugs = [...new Set([...texts.keys()].filter(p => p.startsWith(`${dir}/package/`)).map(p => p.slice(`${dir}/package/`.length).split('/')[0]!))]
+        return packageReadiness(slugs, async (slug, file) => texts.get(`${dir}/package/${slug}/${file}`) ?? null, { studyId, program: snapshot.program })
+      },
       readText: async (path) => {
         const t = texts.get(path)
         if (t === undefined) throw new Error('no such file in the preview')
