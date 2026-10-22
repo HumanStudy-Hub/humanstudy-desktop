@@ -801,6 +801,7 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
 .sim-limits { margin: 0 0 16px; padding: 12px 14px; background: var(--warning-bg); border: 1px solid var(--warning-line); border-radius: 6px; }
 .sim-limits h3 { color: var(--warning); margin-bottom: 6px; }
 .sim-limits ul { margin: 0; padding-left: 18px; }
+.sim-missing { margin: 0 0 10px; padding-left: 18px; }
 .sim-limits li + li { margin-top: 4px; }
 .sim-blocked { color: var(--danger); margin: 0 0 12px; }
 .sim-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
