@@ -2,7 +2,7 @@
 
 Owner authorization (2026-10-22): integrate collection into the actual applications, complete
 desktop/web/headless interaction and agent capture, validate the real database and packaged
-application, migrate the database. Previously reviewed build/save/readiness issues are tracked separately and are not included in this collection rollout.
+application, migrate the database. Previously reviewed build/save/readiness issues are tracked separately. On 2026-10-22 the owner separately authorized fixing/testing them; see the tester follow-up below.
 The owner requests one maintained TODO. This file is the canonical execution checklist; GitHub
 tracking links and evidence are updated as work progresses.
 
@@ -58,7 +58,7 @@ truncation or fabricated study information. Preserve original source traceabilit
 - Desktop #28 (on #26): renewed consent, per-owner source queue/dedup, source export.
 - Desktop #29 (on #11): personal headless account and source queue.
 - Previous offline results: desktop 147, web 220, headless 18 tests passed. These do not satisfy
-  T11–T16. Existing #26 build/save/readiness findings remain open in the separate backlog below.
+  T11–T16. The #26 build/save/readiness follow-up is tracked separately below; PR #31 now contains tested code fixes, without release acceptance.
 
 ## Blockers and decisions
 
@@ -74,9 +74,9 @@ additive migration. Windows machine access and packaged-app permissions remain t
 
 ## Separate product backlog (outside this collection rollout)
 
-- [ ] T03 — Build completion must validate current bytes and identified-study coverage, rather than a stale PASS.
-- [ ] T04 — Preserve researcher-confirmed fields; coordinate app/helper writes and retain conflicts and versions.
-- [ ] T05 — Package readiness must fail closed for unread files and bind approval to the selected study/package.
+- [x] T03 — Code and regressions: independent schema/coverage validation per identified study, explicit missing outcomes allowed, SHA-256 validation certificates; stale shell writes/reopen invalidate completion. PR #31; real-model/installed acceptance stays open in T14–T16.
+- [x] T04 — Code and regressions: preserve confirmed researcher fields/rules, retain full conflict proposals with review issues, shared app/Python lock and compare/save; actual subprocess races pass. PR #31. Arbitrary external writers do not acquire this lock; installed/Windows acceptance remains open.
+- [x] T05 — Code and regressions: unread resources fail closed; full large-file checks in main process, current program/selected study/task bindings checked, unknown project and stale approval rejected. PR #31; real adapter smoke and installed acceptance remain required.
 
 ## Current acceptance and remaining work
 
@@ -96,7 +96,7 @@ additive migration. Windows machine access and packaged-app permissions remain t
   agreement, sample original-file archival, mixed UI-event retry and protected verifier tests.
   Enabling production collection before T08 is finished would create an incomplete dataset.
 - Synthetic test accounts/objects are removed after evidence capture; no emails were sent.
-- Separate product findings (T03–T05) are unchanged. The old Knobe fixture displays formatting
+- Separate product findings (T03–T05) now have code/regression fixes in PR #31, authorized after the collection round; they have not been merged or released. The old Knobe fixture displays formatting
   issues; the bundle acceptance verifies rendering and collection, not scientific completeness.
 
 ### Next execution order
@@ -110,3 +110,14 @@ additive migration. Windows machine access and packaged-app permissions remain t
 5. Present concrete changes/installers for the owner's merge/release decision.
 
 - Final collector check: slow network delivery does not block new capture persistence; quarantined records remain visible after restart. Real Storage acknowledgement-loss recovery passed on the final collector.
+
+## Tester reliability follow-up (separately authorized)
+
+- [PR #31](https://github.com/HumanStudy-Hub/humanstudy-desktop/pull/31), branch
+  `codex/tester-reliability-fixes`, commit `ffbbb23`, stacked on combined tester PR #26.
+- 154/154 offline desktop regressions, 17/17 managed Python tests, main/renderer TypeScript,
+  production build and diff checks pass. Electron/React harnesses, real Python concurrent saves,
+  omitted studies, current hashes, helper upgrades and valid/invalid large resources are covered.
+- Detailed evidence: `docs/tester-reliability-2026-10-22.md` on the fix branch.
+- No merge, release, installer publication or database change. T14 installed Mac walkthrough,
+  T15 actual Windows and T16 hosted Haiku paper build remain open. Automated tests are not those acceptances.
