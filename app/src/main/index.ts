@@ -30,7 +30,7 @@ import { createShutdown } from './shutdown-core'
 import { refreshPack } from './pack'
 import { assertRunnablePackage } from './package-readiness'
 import type { Kernel, KernelEvent } from './kernel-types'
-import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, WorkspaceContext } from '../preload/types'
+import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
 
 // ---- kernel: accept a factory, a default export, a class, or an instance -------------
 function loadKernel(): Kernel {
@@ -270,6 +270,24 @@ function threadDir(dir: string): string {
   return d
 }
 
+// ---- unsaved edits: a window that reports drafts asks before it closes or the app quits ----------
+const unsaved = new Map<number, UnsavedPrompt>()
+/** True when the window may close: no drafts, or the researcher chose to discard them. */
+function confirmDiscard(win: BrowserWindow): boolean {
+  const id = win.webContents.id
+  const prompt = unsaved.get(id)
+  if (!prompt) return true
+  const choice = dialog.showMessageBoxSync(win, { type: 'warning', message: prompt.message, detail: prompt.detail, buttons: [prompt.discard, prompt.cancel], defaultId: 1, cancelId: 1, noLink: true })
+  if (choice !== 0) return false
+  unsaved.delete(id)
+  return true
+}
+ipcMain.on('app:unsaved', (e, prompt: UnsavedPrompt | null) => {
+  const ok = prompt && typeof prompt === 'object' && ['message', 'detail', 'discard', 'cancel'].every((k) => typeof (prompt as unknown as Record<string, unknown>)[k] === 'string')
+  if (ok) unsaved.set(e.sender.id, prompt)
+  else unsaved.delete(e.sender.id)
+})
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1440,
@@ -284,6 +302,9 @@ function createWindow(): void {
     webPreferences: { preload: join(__dirname, '../preload/index.js'), sandbox: false, contextIsolation: true },
   })
   win.once('ready-to-show', () => win.show())
+  const contentsId = win.webContents.id
+  win.on('close', (e) => { if (!confirmDiscard(win)) e.preventDefault() })
+  win.on('closed', () => unsaved.delete(contentsId))
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^(https?:|mailto:)/i.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
@@ -379,6 +400,9 @@ app.whenReady().then(() => {
     if (typeof text !== 'string' || text.length > TEXT_LIMIT) throw new Error('text is too large')
     if (basename(q) === 'program.json') JSON.parse(text) // never leave the program unreadable
     await mkdir(dirname(q), { recursive: true })
+    // Keep the version being replaced (program.json, artifacts/, exports/), so no save loses it.
+    const root = [...watchers.keys()].find((d) => q.startsWith(d + sep))
+    if (root) await snapshot(root, relOf(root, q)).catch(() => undefined)
     telemetry.noteHumanWrite(q)
     await writeFile(q, text, 'utf8')
     telemetry.track('file.edited', { target: extname(q).slice(1) || 'file' })
@@ -701,6 +725,8 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', event => {
+  // Ask about unsaved edits before the kernels are stopped, so Cancel leaves everything running.
+  if (!BrowserWindow.getAllWindows().every(confirmDiscard)) return event.preventDefault()
   if (!primaryInstance || shutdown.ready()) return
   event.preventDefault()
   void shutdown.prepare(false).then(ready => {

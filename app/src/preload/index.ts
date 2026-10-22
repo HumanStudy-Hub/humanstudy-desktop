@@ -74,7 +74,7 @@ const api: HumanStudyApi = {
       retry: () => ipcRenderer.invoke('kernel:installRetry'),
     },
   },
-  app: { info: () => ipcRenderer.invoke('app:info') },
+  app: { info: () => ipcRenderer.invoke('app:info'), setUnsaved: (prompt) => ipcRenderer.send('app:unsaved', prompt) },
   menu: { onCommand: (cb) => listen<MenuCommand>('menu:command', cb) },
   threads: {
     list: (dir) => ipcRenderer.invoke('threads:list', dir),

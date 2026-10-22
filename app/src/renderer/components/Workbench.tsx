@@ -2,7 +2,8 @@
 // opens as another tab, like an artifact panel. A Files sidebar (hidden by default, ⌘B) lists the folder.
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import StudyModel, { viewStudies, type QuoteStatus, type StudyModelProps } from '../program/StudyModel'
-import { readHumanProgram, validateHumanProgram, type HumanProgram } from '../../shared/human-program'
+import { readHumanProgram, type HumanProgram } from '../../shared/human-program'
+import { patchProgramField } from '../../shared/program-patch'
 import type { ProjectEntry, ProjectSnapshot, WorkspaceContext } from '../../preload/types'
 import { lap, track } from '../telemetry'
 import { FileView } from './FileView'
@@ -16,6 +17,7 @@ import { SimulationPanel } from './SimulationPanel'
 import { sourceFocus } from '../../shared/workspace-context'
 import { supportedBy } from '../../shared/program-view'
 import { quoteKey } from '../../shared/source-anchor'
+import { clearDraft, draftsIn } from '../drafts'
 
 export type MainTab = 'study' | 'paper' | 'simulation'
 type TabId = MainTab | `file:${string}`
@@ -111,7 +113,7 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
 
   const [layout, setLayout] = useState<Layout>(() => loadLayout(project.dir))
-  const [dirty, setDirty] = useState<Set<string>>(() => new Set())
+  const [dirty, setDirty] = useState<Set<string>>(() => new Set(draftsIn(project.dir).map((d) => d.path)))
   const [editError, setEditError] = useState('')
   const [changed, setChanged] = useState<Set<string>>(() => new Set())
   const [paperSeen, setPaperSeen] = useState(false)
@@ -126,7 +128,7 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   // Project switch: restore its tabs.
   useEffect(() => {
     setLayout(loadLayout(project.dir))
-    setDirty(new Set())
+    setDirty(new Set(draftsIn(project.dir).map((d) => d.path)))
     setChanged(new Set())
     setEditError('')
     setQuoteStatus(new Map())
@@ -197,6 +199,7 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   const close = (id: `file:${string}`) => {
     track('tab.close', { target: tabKind(id, fileByPath), metadata: { dirty: dirty.has(id.slice(5)) } })
     if (dirty.has(id.slice(5)) && !window.confirm(t('wb.discard'))) return
+    clearDraft(id.slice(5))
     setDirty((d) => {
       if (!d.has(id.slice(5))) return d
       const n = new Set(d)
@@ -230,25 +233,28 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
     track('file.open', { target: e.rel, metadata: { ext: e.ext, size: e.size ?? null } })
     open(`file:${e.path}`)
   }
-  // Human edit of a study field: the researcher's decision, written straight into program.json.
-  const onEdit = async (id: string, fieldId: string, text: string) => {
-    if (!program) return
-    const next = structuredClone(program) as HumanProgram
-    const field = id.startsWith('flow:')
-      ? next.steps.find((s) => s.id === id.slice(5))?.rule
-      : next.nodes.find((n) => n.id === id)?.fields.find((f) => f.id === fieldId)
-    if (!field) return setEditError(t('study.field_missing', { id, field: fieldId }))
-    field.value = text
-    field.origin = 'researcher'
-    field.state = 'confirmed'
+  // Human edit of a study field: the researcher's decision, patched into program.json as it is on disk.
+  // Only that field's bytes change; entries the tolerant reader set aside are never rewritten.
+  const onEdit = async (id: string, fieldId: string, text: string): Promise<boolean> => {
+    if (!program) return false
+    const path = `${project.dir}/program.json`
     try {
-      validateHumanProgram(next)
-      await window.humanstudy.project.writeText(`${project.dir}/program.json`, JSON.stringify(next, null, 2) + '\n')
+      const raw = await window.humanstudy.project.readText(path)
+      let next: string
+      try {
+        next = patchProgramField(raw, { id, fieldId, value: text })
+      } catch (e) {
+        if (/is not in program\.json$/.test(e instanceof Error ? e.message : '')) throw new Error(t('study.field_missing', { id, field: fieldId }))
+        throw e
+      }
+      await window.humanstudy.project.writeText(path, next)
       setEditError('')
       setChanged((c) => new Set(c).add(id))
       track('program.edited', { target: id, metadata: { field: fieldId } })
+      return true
     } catch (e) {
       setEditError(e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '') : String(e))
+      return false
     }
   }
 
@@ -380,7 +386,7 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
                   problems={problems}
                   onFix={fixProgram}
                   changedIds={changed}
-                  onEdit={(id, fieldId, text) => void onEdit(id, fieldId, text)}
+                  onEdit={onEdit}
                   {...docProps}
                   onSource={(id, ref) => {
                     docProps.onSource(id, ref)

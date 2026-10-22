@@ -17,6 +17,7 @@ import { classifyTool, researchActivity, toolSentence } from './toolSentence'
 import { onAsk as onArtifactAsk, onOpenSource as onArtifactOpenSource } from './bridge'
 import { artifactSourceRef } from './artifact-source'
 import { SampleOnboarding } from './components/SampleOnboarding'
+import { clearDraftsIn, draftCount, draftsIn, onDraftsChange } from './drafts'
 
 const PANES_KEY = 'hs.panes'
 type Pane = 'agent' | 'program'
@@ -152,11 +153,28 @@ export default function App() {
     },
     [load]
   )
-  const closeProject = () => {
+  // Unsaved file edits survive tab switches; leaving the project asks before they are dropped.
+  const confirmLeave = (): boolean => {
+    const dir = state.current.project?.dir
+    if (!dir) return true
+    const n = draftsIn(dir).length
+    if (n && !window.confirm(t('app.leave_unsaved', { n }))) return false
+    clearDraftsIn(dir)
+    return true
+  }
+  const closeProject = (): boolean => {
+    if (!confirmLeave()) return false
     track('project.closed')
     void setTelemetryProject(null)
     setProject(null)
+    return true
   }
+  // Closing the window or quitting asks while any draft exists (main/index.ts shows the dialog).
+  useEffect(() => {
+    const sync = () => window.humanstudy.app.setUnsaved(draftCount() ? { message: t('app.quit_unsaved'), detail: t('app.quit_unsaved_detail'), discard: t('app.discard_close'), cancel: t('app.cancel') } : null)
+    sync()
+    return onDraftsChange(sync)
+  }, [])
 
   useEffect(() => {
     window.humanstudy.settings.get().then(setSettings).catch(() => undefined)
@@ -251,10 +269,10 @@ export default function App() {
       if (command === 'settings.open') return openSettings((arg as SettingsSection) || 'general')
       if (command === 'project.fromPaper') return st.project ? undefined : home.current?.fromPaper()
       if (command === 'project.new') {
-        if (st.project) closeProject()
+        if (st.project && !closeProject()) return
         return setWantNew(true)
       }
-      if (command === 'project.open') return void window.humanstudy.project.open().then((dir) => { if (dir) void openProject(dir) })
+      if (command === 'project.open') return void window.humanstudy.project.open().then((dir) => { if (dir && (dir === state.current.project?.dir || confirmLeave())) void openProject(dir) })
       if (command === 'thread.new') return st.project ? newThreadRef.current() : undefined
       if (command === 'selection.clear') return setSelected([])
       if (command === 'pane.toggle' && st.project && (arg === 'agent' || arg === 'program')) setPane(arg, !st.open[arg])
