@@ -240,9 +240,15 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
 
 // ---- watch the open project so new artifacts appear without a reload -----------------
 const watchers = new Map<string, FolderWatch>()
+// Open projects, kept apart from their watchers: a watcher that died (EPERM on Windows) must not make
+// version history or the pre-save snapshot think the project was closed.
+const openProjects = new Set<string>()
+// A watcher that keeps failing is retried at most every few seconds, not on every re-read it triggers.
+const watchFailedAt = new Map<string, number>()
 const snapTimers = new Map<string, NodeJS.Timeout>()
 function watchProject(dir: string): void {
-  if (watchers.has(dir)) return
+  openProjects.add(dir)
+  if (watchers.has(dir) || Date.now() - (watchFailedAt.get(dir) ?? 0) < 5_000) return
   try {
     const w = watchFolder(dir, {
       ignore: (file) => file.startsWith('.humanstudy'),
@@ -263,6 +269,7 @@ function watchProject(dir: string): void {
       // and let the renderer re-read now. It also re-checks on window focus and tab switches.
       onError: () => {
         if (watchers.get(dir) === w) watchers.delete(dir)
+        watchFailedAt.set(dir, Date.now())
         broadcast('project:changed', dir)
       },
       debounceMs: 300,
@@ -276,13 +283,15 @@ function watchProject(dir: string): void {
 /** The opened project folder a file belongs to. */
 function projectRootOf(file: string): string {
   const q = resolve(file)
-  for (const d of watchers.keys()) if (q.startsWith(d + sep)) return d
+  for (const d of openProjects) if (q.startsWith(d + sep)) return d
   throw new Error('that file is not in an opened project')
 }
 
 function unwatch(dir: string): void {
   watchers.get(dir)?.close()
   watchers.delete(dir)
+  watchFailedAt.delete(dir)
+  openProjects.delete(dir)
 }
 
 function broadcast(channel: string, payload: unknown): void {
@@ -430,7 +439,7 @@ app.whenReady().then(() => {
     if (basename(q) === 'program.json') JSON.parse(text) // never leave the program unreadable
     await mkdir(dirname(q), { recursive: true })
     // Keep the version being replaced (program.json, artifacts/, exports/), so no save loses it.
-    const root = [...watchers.keys()].find((d) => q.startsWith(d + sep))
+    const root = [...openProjects].find((d) => q.startsWith(d + sep))
     if (root) await snapshot(root, relOf(root, q)).catch(() => undefined)
     telemetry.noteHumanWrite(q)
     await writeFile(q, text, 'utf8')
