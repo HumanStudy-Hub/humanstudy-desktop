@@ -1,7 +1,8 @@
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -228,13 +229,17 @@ if (process.env.HUMANSTUDY_KERNEL_BIN) {
   // Bun canonicalizes macOS /var aliases differently; a real workspace path keeps
   // the write inside the native project's permission boundary.
   const project = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), '.native-recovery-'))
-  const checkpoint = join(project, 'repaired-checkpoint.txt')
+  const checkpoint = join(project, 'program.json')
+  const completeProgram = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../shared/sample-program.json'), 'utf8')
+  const pack = join(dirname(fileURLToPath(import.meta.url)), '../../../../pack')
+  mkdirSync(join(project, 'schema'))
+  writeFileSync(join(project, 'schema/human-program.schema.json'), readFileSync(join(pack, 'schema/human-program.schema.json')))
   const model = createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk)
     const body = JSON.parse(Buffer.concat(chunks).toString())
     const main = Boolean(body.tools?.length), n = main ? ++count : 0
     const delta = n === 1 ? { tool_calls: [{ index: 0, id: 'broken_write', type: 'function', function: { name: 'write', arguments: '{"filePath":"unfinished' } }] }
-      : n === 3 ? { tool_calls: [{ index: 0, id: 'fixed_write', type: 'function', function: { name: 'write', arguments: JSON.stringify({ filePath: checkpoint, content: '完整原文 retained\nFINAL EVIDENCE' }) } }] }
+      : n === 3 ? { tool_calls: [{ index: 0, id: 'fixed_write', type: 'function', function: { name: 'write', arguments: JSON.stringify({ filePath: checkpoint, content: completeProgram }) } }] }
       : { content: n === 2 ? "I'll write a smaller valid call next." : 'Saved and checked the checkpoint.' }
     const chunk = { id: 'fixture-' + n, object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta, finish_reason: null }] }
     res.writeHead(200, { 'content-type': 'text/event-stream' })
@@ -254,10 +259,12 @@ if (process.env.HUMANSTUDY_KERNEL_BIN) {
     await k.send(sid, 'Save the complete checkpoint inside this project. Do not run simulations.')
     await done
     assert.equal(count, 4, 'native invalid → promise-only stop → adjusted valid write → final answer')
-    assert.equal(readFileSync(checkpoint, 'utf8'), '完整原文 retained\nFINAL EVIDENCE')
+    assert.equal(readFileSync(checkpoint, 'utf8'), completeProgram, 'every byte of the complete study must survive the repaired native tool call')
+    const checked = execFileSync('python3', [join(pack, 'skills/build/check_program.py'), checkpoint], { cwd: project, encoding: 'utf8' })
+    assert.match(checked, /PASS/, 'actual saved program must pass the shipped research-structure checker')
     assert.equal(events.filter(e => e.type === 'status' && e.text === 'recovering' && e.input?.reason === 'invalid_tool_call').length, 1)
     assert.equal(events.some(e => e.type === 'error'), false)
-    console.log('Real installed OpenCode malformed JSON → native stop → automatic repair → actual file saved passed')
+    console.log('Real installed OpenCode malformed JSON → native stop → automatic repair → complete 50 KB program.json saved and check_program.py PASS')
   } finally { await k.dispose(); await new Promise(r => model.close(r)); rmSync(project, { recursive: true, force: true }) }
 }
 rmSync(out, { recursive: true, force: true })

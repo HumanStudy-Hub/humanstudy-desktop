@@ -71,6 +71,8 @@ interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSour
   /** The model selected in the app, whether the agent is working, and what it is doing. */
   model?: string
   agentBusy?: boolean
+  agentThreadId?: string
+  agentTurnKey?: string | null
   agentActivity?: string
   onWorkspaceChange?(snapshot: WorkspaceSnapshot): void
 }
@@ -94,7 +96,7 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, source, onClearSelection, onAskSelection, onFixProgram, onFold, simulationRequest, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentActivity, onWorkspaceChange, ...docProps }: Props) {
+export function Workbench({ ref, project, source, onClearSelection, onAskSelection, onFixProgram, onFold, simulationRequest, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, ...docProps }: Props) {
   // Tolerant: one slip by the agent sets that detail aside and the document still renders.
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
@@ -337,6 +339,8 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
               onStudy={(id) => update((l) => ({ ...l, study: id }))}
               model={model}
               agentBusy={agentBusy}
+              agentThreadId={agentThreadId}
+              agentTurnKey={agentTurnKey}
               agentActivity={agentActivity}
               request={simulationRequest}
               onRun={async (perCondition) => {

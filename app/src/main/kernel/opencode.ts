@@ -127,6 +127,10 @@ interface SessionState {
   snapshotParts: Set<string>
   awaitingAssistant: boolean
   failed: boolean
+  lastActivity: number
+  lastProbe: number
+  idleSince?: number
+  stalled: boolean
   pendingPermissions: Map<string, KernelPermission>
   recovery: { epoch: number; attempts: number; pending: boolean; running: boolean; cancelled: boolean; progress: boolean; reason?: 'output_limit' | 'invalid_tool_call'; assistantId?: string }
   expectUserIdentity?: boolean
@@ -164,6 +168,12 @@ export class OpencodeKernel implements Kernel {
   private model: string
   private readyTimeoutMs: number
   private permission: 'ask' | 'project' | undefined
+  private clock = (): number => Date.now()
+  private livenessQuietMs = 60_000
+  private livenessIdleGraceMs = 30_000
+  private livenessWarningMs = 5 * 60_000
+  private probing = false
+  private livenessTimer: ReturnType<typeof setInterval>
   private exitHook = (): void => this.killAll('SIGKILL')
 
   constructor(opts: OpencodeOptions) {
@@ -177,6 +187,8 @@ export class OpencodeKernel implements Kernel {
     if (this.provider === 'openrouter' && !(process.env.HUMANSTUDY_DEV_KEYS === '1' && process.env.OPENROUTER_API_KEY)) this.provider = ''
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 30_000
     this.permission = opts.permission
+    this.livenessTimer = setInterval(() => { void this.checkLiveness() }, 30_000)
+    this.livenessTimer.unref()
     process.once('exit', this.exitHook)
   }
 
@@ -231,6 +243,7 @@ export class OpencodeKernel implements Kernel {
       snapshotParts: new Set(),
       awaitingAssistant: false,
       failed: false,
+      lastActivity: this.clock(), lastProbe: 0, stalled: false,
       title: '',
       pendingPermissions: new Map(),
       recovery: { epoch: 0, attempts: 0, pending: false, running: false, cancelled: true, progress: false },
@@ -302,6 +315,7 @@ export class OpencodeKernel implements Kernel {
     s.awaitingAssistant = true
     s.expectUserIdentity = true
     s.failed = false
+    s.lastActivity = this.clock(); s.lastProbe = 0; s.idleSince = undefined; s.stalled = false
     s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, pending: false, running: false, cancelled: false, progress: false }
     s.inFlight = true
     try {
@@ -380,6 +394,7 @@ export class OpencodeKernel implements Kernel {
     const turn = NATIVE_TURNS.has(request.operation)
     if (turn) {
       s.turnBaseline = new Set(s.roles.keys()); s.inFlight = true; s.awaitingAssistant = true; s.expectUserIdentity = request.operation!=='compact'; s.failed = false
+      s.lastActivity = this.clock(); s.lastProbe = 0; s.idleSince = undefined; s.stalled = false
       s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, pending: false, running: false, cancelled: request.operation === 'compact', progress: false }
       this.emitter.emit({sessionId,type:'status',text:request.operation === 'compact' ? 'compacting' : 'busy'})
     }
@@ -443,6 +458,7 @@ export class OpencodeKernel implements Kernel {
     if (s.pendingPermissions.size || s.pendingQuestions.size) { r.pending = true; r.running = false; return }
     const attempt = ++r.attempts
     r.progress = false
+    s.lastActivity = this.clock(); s.idleSince = undefined; s.stalled = false
     this.emitter.emit({ sessionId, type: 'status', text: 'recovering', detail: `Recovery ${attempt}/2: checking saved work and splitting the remaining task into smaller steps.`, input: { attempt, reason, strategy: 'checkpoints_smaller_units', model: s.selection?.model?.modelID??this.model, ...(recoveryProvider === HOSTED_PROVIDER ? { reasoningEffort: 'low' } : {}) } })
     s.awaitingAssistant = true
     try {
@@ -466,6 +482,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
   async dispose(): Promise<void> {
     this.disposed = true
+    clearInterval(this.livenessTimer)
     process.removeListener('exit', this.exitHook)
     const procs = [...this.live]
     this.killAll('SIGTERM')
@@ -686,6 +703,49 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
   // ---- SSE ----------------------------------------------------------------------------
 
+  /** Repair a silent/missed completion even if the event connection never closes.
+   * Read only: never replay a prompt, tool or simulation because its UI went quiet. */
+  private async checkLiveness(): Promise<void> {
+    if (this.disposed || this.probing) return
+    const now = this.clock()
+    const due = [...this.sessions].filter(([, s]) => s.inFlight && !s.server.exited &&
+      !this.syncLoops.has(s.server) && !s.pendingQuestions.size && !s.pendingPermissions.size &&
+      now - s.lastActivity >= this.livenessQuietMs && now - s.lastProbe >= this.livenessQuietMs)
+      .map(([id, s]) => ({ id, s, epoch: s.recovery.epoch }))
+    if (!due.length) return
+    this.probing = true
+    try {
+      for (const server of new Set(due.map(({ s }) => s.server))) {
+        const turns = due.filter(({ s }) => s.server === server)
+        for (const { s } of turns) s.lastProbe = now
+        let statuses: Record<string, { type?: string; message?: string }>
+        try { statuses = await this.restoreSnapshot(server, true) }
+        catch { if (!this.disposed) this.beginCatchup(server); continue }
+        if (this.disposed) return
+        for (const { id, s, epoch } of turns) {
+          if (!s.inFlight || s.recovery.epoch !== epoch || s.pendingQuestions.size || s.pendingPermissions.size || s.recovery.running) continue
+          const status = statuses[id]
+          if (!status || status.type === 'idle') {
+            // Confirm idle twice, allowing for a prompt accepted just before the
+            // native worker starts. Busy jobs and unanswered questions never time out here.
+            if (s.idleSince === undefined) s.idleSince = this.clock()
+            else if (this.clock() - s.idleSince >= this.livenessIdleGraceMs) {
+              s.inFlight = false; s.recovery.cancelled = true; s.recovery.pending = false
+              this.emitter.emit({ sessionId: id, type: 'error', text: 'The agent is no longer running, but no completed response was received. Received messages and saved files are kept. Check the conversation before retrying; the task was not sent again.' })
+              this.emitter.emit({ sessionId: id, type: 'done' })
+            }
+          } else {
+            s.idleSince = undefined
+            if (!s.stalled && this.clock() - s.lastActivity >= this.livenessWarningMs) {
+              s.stalled = true
+              this.emitter.emit({ sessionId: id, type: 'status', text: 'stalled' })
+            }
+          }
+        }
+      }
+    } finally { this.probing = false }
+  }
+
   /** Repair observation only. Never retry prompts, tools, uploads or simulations here. */
   private beginCatchup(server: Server): void {
     this.catchingUp.add(server)
@@ -716,7 +776,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     })()
   }
 
-  private async restoreSnapshot(server: Server): Promise<void> {
+  private async restoreSnapshot(server: Server, quietProbe = false): Promise<Record<string, { type?: string; message?: string }>> {
     const active = [...this.sessions].filter(([, s]) => s.server === server && s.inFlight)
       .map(([id, s]) => ({ id, s, epoch: s.recovery.epoch }))
     const [statusRes, permissionsRes, questionsRes] = await Promise.all([
@@ -728,8 +788,12 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     const permissions = await permissionsRes.json() as Array<Record<string, any>>
     const questions = await questionsRes.json() as Array<{ id: string; sessionID: string; questions: KernelQuestion['questions'] }>
     for (const { id: sessionId, s, epoch } of active) {
-      const response = await this.request(server, 'GET', `/session/${encodeURIComponent(sessionId)}/message`, undefined, 5000)
-      const messages = await response.json() as NativeMessage[]
+      const status = statuses[sessionId]
+      const busyProbe = quietProbe && status && status.type !== 'idle'
+      // While native is busy, only observe status/questions/permissions. Replaying
+      // old completion metadata could mistake a previous limit for a new failure;
+      // re-reading a large history would also add work to a long-running job.
+      const messages = busyProbe ? [] : await (await this.request(server, 'GET', `/session/${encodeURIComponent(sessionId)}/message`, undefined, 5000)).json() as NativeMessage[]
       if (!s.inFlight || this.sessions.get(sessionId) !== s || s.recovery.epoch !== epoch || this.disposed) continue
       const current = messages.filter(({ info }) => info?.id && !s.turnBaseline.has(info.id))
       for (const { info, parts } of current) {
@@ -747,7 +811,6 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       for (const p of pendingPermissions) if (!s.pendingPermissions.has(String(p.id))) this.handle({ type: 'permission.asked', properties: p })
       const pendingQuestions = questions.filter(q => q.sessionID === sessionId)
       for (const q of pendingQuestions) this.handle({ type: 'question.asked', properties: q })
-      const status = statuses[sessionId]
       const latest = current.filter(m => m.info.role === 'assistant').at(-1)?.info
       if ((!status || status.type === 'idle') && !pendingPermissions.length && !pendingQuestions.length && !s.awaitingAssistant && (latest?.time?.completed || s.failed)) {
         this.handle({ type: 'session.idle', properties: { sessionID: sessionId } })
@@ -755,6 +818,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         this.handle({ type: 'session.status', properties: { sessionID: sessionId, status } })
       }
     }
+    return statuses
   }
 
   /** Opens /event; resolves once `server.connected` arrives. Reconnects while the server lives. */
@@ -834,7 +898,13 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     if (!sessionId) return
     const s = this.sessions.get(sessionId)
     if (!s) return // child/sub-agent sessions and sessions we did not start
-    const emit = (e: Omit<KernelEvent, 'sessionId'>): void => this.emitter.emit({ sessionId, ...e })
+    const emit = (e: Omit<KernelEvent, 'sessionId'>): void => {
+      if (e.type === 'text' || e.type === 'tool' || e.type === 'usage' || e.type === 'question' || e.type === 'permission') {
+        s.lastActivity = this.clock(); s.idleSince = undefined
+        if (s.stalled) { s.stalled = false; this.emitter.emit({ sessionId, type: 'status', text: 'busy' }) }
+      }
+      this.emitter.emit({ sessionId, ...e })
+    }
 
     switch (ev.type) {
       case 'question.asked':
@@ -967,9 +1037,10 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       }
 
       case 'session.status': {
+        if (!s.inFlight) return // late busy notifications must not revive a stopped/completed turn
         const st = p.status ?? {}
         if (st.type === 'idle') return // session.idle handles completion
-        emit({ type: 'status', text: s.recovery.attempts > 0 && !s.recovery.cancelled ? 'recovering' : st.type, detail: st.message })
+        emit({ type: 'status', text: s.stalled ? 'stalled' : s.recovery.attempts > 0 && !s.recovery.cancelled ? 'recovering' : st.type, detail: st.message })
         return
       }
 
