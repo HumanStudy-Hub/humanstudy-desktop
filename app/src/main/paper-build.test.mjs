@@ -159,6 +159,15 @@ test('program_io.py saves checkpoints by id without losing saved work', { skip: 
   r = run({ nodes: [{ title: 'no id' }] })
   assert.equal(r.status, 1)
   assert.equal(readFileSync(join(dir, 'program.json'), 'utf8'), before)
+  // A program.json saved with a BOM (Windows Notepad) and holding a duplicated id the researcher has
+  // not resolved (#17): the batch updates the first one, the one the app shows, and drops nothing.
+  const dup = JSON.parse(before)
+  dup.nodes.push({ ...dup.nodes[0], title: 'Duplicate kept' })
+  writeFileSync(join(dir, 'program.json'), '\ufeff' + JSON.stringify(dup, null, 2), 'utf8')
+  r = run({ nodes: [{ id: node.id, title: 'First updated' }] })
+  assert.equal(r.status, 0, r.stderr)
+  saved = JSON.parse(readFileSync(join(dir, 'program.json'), 'utf8'))
+  assert.deepEqual(saved.nodes.map((n) => n.title), ['First updated', p.nodes[1].title, 'Duplicate kept'])
 })
 
 test('an older project with a paper but no study is offered a build, never started unasked', () => {

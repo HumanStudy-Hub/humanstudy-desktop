@@ -30,10 +30,16 @@ def merge(old, new):
             out[key] = merge(old.get(key), value)
         return out
     if isinstance(old, list) and isinstance(new, list) and all(isinstance(x, dict) and x.get("id") for x in old + new):
-        items = {x["id"]: x for x in old}
+        # Update the first record with that id in place (the one the app shows); never drop or reorder
+        # saved records, including duplicates the researcher has not resolved yet.
+        out = list(old)
         for item in new:
-            items[item["id"]] = merge(items.get(item["id"]), item)
-        return list(items.values())
+            at = next((i for i, x in enumerate(out) if x["id"] == item["id"]), None)
+            if at is None:
+                out.append(item)
+            else:
+                out[at] = merge(out[at], item)
+        return out
     return new
 
 
@@ -61,9 +67,9 @@ def main() -> int:
     args = parser.parse_args()
     target = Path(args.program)
     try:
-        text = sys.stdin.buffer.read().decode("utf-8") if args.batch == "-" else Path(args.batch).read_text(encoding="utf-8")
+        text = sys.stdin.buffer.read().decode("utf-8-sig") if args.batch == "-" else Path(args.batch).read_text(encoding="utf-8-sig")
         batch = json.loads(text)
-        prior = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+        prior = json.loads(target.read_text(encoding="utf-8-sig")) if target.exists() else {}
         merged = apply(prior, batch)
     except (OSError, ValueError) as error:  # json.JSONDecodeError is a ValueError
         print(f"program_io: {error}. program.json was not changed.", file=sys.stderr)
