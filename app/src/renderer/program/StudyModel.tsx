@@ -36,8 +36,9 @@ export type StudyModelProps = {
   /** Discuss a program item, optionally one of its fields, with the agent; draft prefills the message. */
   onAsk(id: string, fieldId?: string, draft?: string): void;
   onPrefill?(draft: string): void;
-  /** Human edit of a field's text. Absent: fields are read-only. */
-  onEdit?(id: string, fieldId: string, text: string): void;
+  /** Human edit of a field's text. Absent: fields are read-only. Resolves false when the save failed,
+   *  and the editor then stays open with the researcher's text so they can retry. */
+  onEdit?(id: string, fieldId: string, text: string): void | Promise<boolean>;
   /** 'simulation': only section 12 ("Can it be simulated?"); the study view shows all twelve. */
   view?: 'study' | 'simulation';
 };
@@ -402,7 +403,7 @@ function FieldRow({ id, field, ctx, against }: { id: string; field: ProgramField
   useEffect(() => { if (focused && ctx.focus?.edit && editable) setEditing(placeholder ? '' : text); }, [ctx.focus]); // eslint-disable-line react-hooks/exhaustive-deps
   const box = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { if (editing !== null && box.current && document.activeElement !== box.current) { box.current.focus(); box.current.style.height = `${box.current.scrollHeight}px`; } }, [editing]);
-  const commit = () => { if (editing === null) return; const next = editing.trim(); setEditing(null); if (next !== text && (next || !placeholder)) ctx.onEdit!(id, field.id, next); };
+  const commit = () => { if (editing === null) return; const typed = editing, next = typed.trim(); setEditing(null); if (next !== text && (next || !placeholder)) void Promise.resolve(ctx.onEdit!(id, field.id, next)).then(ok => { if (ok === false) setEditing(typed); }); };
   const refs = sourceRefs(ctx.program, field.evidenceIds);
   const origin = ORIGINS[field.origin];
   const peer = against?.value != null ? fieldText(against.value) : undefined;

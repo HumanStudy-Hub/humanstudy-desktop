@@ -376,6 +376,9 @@ app.whenReady().then(() => {
     if (typeof text !== 'string' || text.length > TEXT_LIMIT) throw new Error('text is too large')
     if (basename(q) === 'program.json') JSON.parse(text) // never leave the program unreadable
     await mkdir(dirname(q), { recursive: true })
+    // Keep the version being replaced (program.json, artifacts/, exports/), so no save loses it.
+    const root = [...watchers.keys()].find((d) => q.startsWith(d + sep))
+    if (root) await snapshot(root, relOf(root, q)).catch(() => undefined)
     telemetry.noteHumanWrite(q)
     await writeFile(q, text, 'utf8')
     telemetry.track('file.edited', { target: extname(q).slice(1) || 'file' })
