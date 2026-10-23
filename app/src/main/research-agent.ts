@@ -29,6 +29,8 @@ export interface ResearchLink {
 }
 const RECENT_TOOL_MS = 60_000, RECENT_TURN_MS = 120_000, HISTORY = 400, REMEMBERED = 5_000
 const norm = (p: string) => p.split('\\').join('/').replace(/\/+$/, '')
+const emptyInput = (v: unknown) => v === undefined || v === null || v === '' ||
+  (typeof v === 'object' && !Array.isArray(v) && Object.keys(v as object).length === 0)
 
 export function createResearchAgent(capture: Sink) {
   const turns = new Map<string, Turn>()
@@ -80,6 +82,10 @@ export function createResearchAgent(capture: Sink) {
     checkpoint(sid, status === 'complete' ? 'complete' : 'partial')
     for (const [key, tool] of tools) if (key.startsWith(sid + ':')) {
       if (!tool.ended) {
+        // A call interrupted while still pending has no recorded start yet: record it, input absent.
+        if (!tool.start) tool.start = emit(sid, { event_type: 'tool.start', tool_call_id: tool.id, target: key.slice(sid.length + 1).split(':')[0],
+          metadata: { input_absent: true, state: 'pending', native_id_reported: !key.endsWith(':unreported'),
+            ...(tool.message ? { native_message_id: tool.message } : {}), ...(tool.part ? { native_part_id: tool.part } : {}) } })
         tool.ended = Date.now()
         tool.end = emit(sid, { event_type: 'tool.end', tool_call_id: tool.id, target: key.slice(sid.length + 1).split(':')[0],
           caused_by: tool.start, duration_ms: Math.min(86400000, Date.now() - tool.started), metadata: { status: 'interrupted', output_absent: true,
@@ -188,7 +194,11 @@ export function createResearchAgent(capture: Sink) {
         if (e.partId) call.part = e.partId
         const native = { native_id_reported: Boolean(e.toolCallId), ...(call.message ? { native_message_id: call.message } : {}),
           ...(call.part ? { native_part_id: call.part } : {}) }
-        if (!call.start || (e.input !== undefined && JSON.stringify(e.input) !== JSON.stringify(call.input))) {
+        // OpenCode reports every call first as `pending` with an empty input, then `running` with the
+        // complete input. Recording both made two tool.start rows per call; the start is recorded once
+        // the input is known (or the call moves past pending without one).
+        const placeholder = e.text === 'pending' && emptyInput(e.input)
+        if (!placeholder && (!call.start || (e.input !== undefined && JSON.stringify(e.input) !== JSON.stringify(call.input)))) {
           call.input = e.input
           call.inputText = norm(typeof e.input === 'string' ? e.input : JSON.stringify(e.input ?? ''))
           call.start = emit(sid, { event_type: 'tool.start', tool_call_id: call.id, target: e.tool ?? 'tool', metadata: {

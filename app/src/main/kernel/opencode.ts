@@ -298,7 +298,7 @@ export class OpencodeKernel implements Kernel {
     validateAnswers(question, answers)
     await this.request(this.session(sessionId).server, 'POST', `/question/${encodeURIComponent(questionId)}/reply`, { answers })
     this.session(sessionId).pendingQuestions.delete(questionId)
-    this.emitter.emit({ sessionId, type: 'question', question: { ...question, answers, resolved: 'answered' } })
+    if (this.reportResolved('q:' + questionId)) this.emitter.emit({ sessionId, type: 'question', question: { ...question, answers, resolved: 'answered' } })
   }
 
   async rejectQuestion(sessionId: string, questionId: string): Promise<void> {
@@ -308,7 +308,7 @@ export class OpencodeKernel implements Kernel {
     const s = this.session(sessionId)
     s.pendingQuestions.delete(questionId)
     s.recovery.cancelled = true; s.recovery.pending = false
-    this.emitter.emit({ sessionId, type: 'question', question: { ...question, resolved: 'rejected' } })
+    if (this.reportResolved('q:' + questionId)) this.emitter.emit({ sessionId, type: 'question', question: { ...question, resolved: 'rejected' } })
   }
 
   async send(sessionId: string, text: string): Promise<void> {
@@ -435,7 +435,7 @@ export class OpencodeKernel implements Kernel {
     s.pendingQuestions.clear()
     for (const q of pending) {
       await this.request(s.server, 'POST', `/question/${encodeURIComponent(q.id)}/reject`)
-      this.emitter.emit({ sessionId, type: 'question', question: { ...q, resolved: 'rejected' } })
+      if (this.reportResolved('q:' + q.id)) this.emitter.emit({ sessionId, type: 'question', question: { ...q, resolved: 'rejected' } })
     }
     // session.idle normally emits done; clearing a leftover request must not mark it busy again.
     if (s.inFlight) {
@@ -512,6 +512,17 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   // ---- server lifecycle ---------------------------------------------------------------
 
   private autoReplies = new Set<string>()
+  /** Permission ids (and `q:`-prefixed question ids) whose resolution was already reported. The automatic reply and OpenCode's own
+   *  `permission.replied` both report one decision; whichever arrives second is not a new decision
+   *  (seen in the 2026-10-23 hosted acceptance: every Auto approval was reported twice, the second
+   *  without `automatic`, so it read as a researcher's decision). Bounded; ids are unique. */
+  private resolvedReported = new Set<string>()
+  private reportResolved(id: string): boolean {
+    if (this.resolvedReported.has(id)) return false
+    this.resolvedReported.add(id)
+    if (this.resolvedReported.size > 4096) this.resolvedReported.delete(this.resolvedReported.values().next().value as string)
+    return true
+  }
   setPermissionMode(mode: 'ask' | 'project'): void {
     this.permission = mode
     if (mode !== 'project') return
@@ -526,7 +537,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     // grant that would silently survive switching Auto off.
     this.replyTo(s.server, sessionId, perm.id, 'once').then(() => {
       s.pendingPermissions.delete(perm.id)
-      this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'once' } })
+      if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'once' } })
     }, () => this.emitter.emit({ sessionId, type: 'permission', permission: perm }))
       .finally(() => this.autoReplies.delete(perm.id))
   }
@@ -932,12 +943,12 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         return
       case 'question.replied':
         s.pendingQuestions.delete(p.requestID)
-        emit({ type: 'question', question: { id: p.requestID, questions: [], answers: p.answers, resolved: 'answered' } })
+        if (this.reportResolved('q:' + p.requestID)) emit({ type: 'question', question: { id: p.requestID, questions: [], answers: p.answers, resolved: 'answered' } })
         return
       case 'question.rejected':
         s.pendingQuestions.delete(p.requestID)
         s.recovery.cancelled = true; s.recovery.pending = false
-        emit({ type: 'question', question: { id: p.requestID, questions: [], resolved: 'rejected' } })
+        if (this.reportResolved('q:' + p.requestID)) emit({ type: 'question', question: { id: p.requestID, questions: [], resolved: 'rejected' } })
         return
 
       case 'message.updated': {
@@ -1118,7 +1129,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         if (p.requestID) s.pendingPermissions.delete(p.requestID)
         if ((p.reply ?? p.response) === 'reject') { s.recovery.cancelled = true; s.recovery.pending = false }
         const reply = p.reply ?? p.response
-        if (p.requestID && (reply === 'once' || reply === 'always' || reply === 'reject'))
+        if (p.requestID && (reply === 'once' || reply === 'always' || reply === 'reject') && this.reportResolved(p.requestID))
           emit({ type: 'permission', permission: { id: p.requestID, type: '', resolved: reply, ...(this.autoReplies.has(p.requestID) ? { automatic: true } : {}) } })
         return
       }

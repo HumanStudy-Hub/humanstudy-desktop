@@ -51,4 +51,19 @@ test('a second send while busy cannot close or reattribute the active response',
  assert.equal(rows.filter(r=>r.event_type==='conversation.message'&&r.metadata.role==='assistant').map(r=>r.metadata.text).join(''),'First part. Second part.')
  assert.ok(rows.some(r=>r.metadata.status==='submitted_while_busy'))
 })
+test('a native call reported pending-then-running records one tool.start with the complete input',async()=>{
+ // Real OpenCode order (2026-10-23 hosted Haiku acceptance): pending with {} -> running with input -> completed.
+ const rows=[],a=createResearchAgent(async e=>rows.push(e));a.bind('ses_1');a.start('ses_1','Build')
+ const e=f=>a.event({sessionId:'ses_1',type:'tool',tool:'bash',...f})
+ e({toolCallId:'c1',text:'pending',input:{}});e({toolCallId:'c1',text:'running',input:{command:'python check.py'}});e({toolCallId:'c1',text:'completed',input:{command:'python check.py'},output:'PASS'})
+ e({toolCallId:'c2',text:'pending',input:{}}) // interrupted before it ever ran
+ a.event({sessionId:'ses_1',type:'done'});await a.close()
+ const starts=rows.filter(r=>r.event_type==='tool.start'),ends=rows.filter(r=>r.event_type==='tool.end')
+ assert.equal(starts.filter(r=>r.tool_call_id==='c1').length,1)
+ assert.equal(starts.find(r=>r.tool_call_id==='c1').metadata.input,JSON.stringify({command:'python check.py'}))
+ assert.equal(ends.find(r=>r.tool_call_id==='c1').caused_by,starts.find(r=>r.tool_call_id==='c1').id)
+ assert.equal(starts.filter(r=>r.tool_call_id==='c2').length,1);assert.equal(starts.find(r=>r.tool_call_id==='c2').metadata.input_absent,true)
+ assert.equal(ends.find(r=>r.tool_call_id==='c2').metadata.status,'interrupted');assert.equal(ends.find(r=>r.tool_call_id==='c2').caused_by,starts.find(r=>r.tool_call_id==='c2').id)
+ assert.equal(starts.length,ends.length)
+})
 test.after(()=>rm(temp,{recursive:true,force:true}))
