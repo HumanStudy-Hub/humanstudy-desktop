@@ -67,10 +67,25 @@ truncation or fabricated study information. Preserve original source traceabilit
   loaded in isolated Electron, actual project directory and Study/PDF comparison opened, mock
   chat/tools uploaded to real Supabase and account ZIP exported. This is not an installed-app,
   real-model, update or signed/notarized-installer acceptance.
+  Installed acceptance (2026-10-23, branch `claude/acceptance-0.6.7`, [evidence](acceptance/2026-10-23/installed-mac.md)):
+  a notarized and stapled arm64 `0.6.7-rc.1` app, installed from the dmg to a temporary folder and run with an isolated profile
+  through Playwright, passed 10/10 tester-repro checks (#15–#19). Those checks used a mock kernel and a mock
+  account/server; they are UI checks only. Not tag, not release, not update channel.
+  Open: a real model inside the installed UI, quit/reopen during a build, offline/restart delivery and export on the installed app.
 - [ ] T15 — Windows acceptance on a real Windows environment; record a blocker if unavailable,
   never count simulated platform flags as real-machine acceptance.
-- [ ] T16 — End-to-end real-paper hosted build; verify scientific coverage, explicit missing
+- [~] T16 — End-to-end real-paper hosted build; verify scientific coverage, explicit missing
   items, saved artifacts and data delivery. Record model, version, stop criterion and usage.
+  2026-10-23 ([evidence](acceptance/2026-10-23/real-model.md)): three runs of the headless worker on the default hosted Haiku 5.5
+  route under the owner's account, with no output cap, a 45-minute limit and a $5 guard.
+  - False consensus (23 scanned pages), Tversky & Kahneman (5 pages), and a false-consensus rerun on fixed code.
+    Each run was certified **complete** in one request with no Retry, and `check_program --complete` passed.
+  - All 4 false-consensus studies were found. Explicit missing fields: 23, 16 and 12.
+  - No 413s. The image budget cut engaged on Tversky (largest request 3.18 MB). 1 output-limit recovery.
+  - Estimated total ≤ $1.56. 1,014 research rows were delivered, none rejected or pending.
+  - Four collection bugs were found and fixed with tests: duplicate tool.start rows, double-reported Auto
+    permission decisions, repeated recovery rows, and headless program checkpoints captured only at turn end.
+  - Open: a real model in the installed UI, multi-turn and interrupted builds, Windows.
 - [ ] T17 — Review final diffs and test evidence; obtain owner approval for merge/release when
   concrete installers and changes are reviewable. Do not push release tags before notarization.
 
@@ -101,6 +116,10 @@ additive migration. Windows machine access and packaged-app permissions remain t
   (199 pass, 1 web-contract comparison skipped; that comparison passes against the web branch),
   17/17 managed-Python pack tests, both TypeScript configs, production build and diff checks pass.
   Gaps recorded in the map: `consent.change`, `agent.runtime`, `source.page_dwell` not emitted as v1.
+
+- 2026-10-23: acceptance branch `claude/acceptance-0.6.7` (draft PR, base #34): real hosted Haiku builds (T16)
+  and the installed notarized Mac walkthrough (T14). 203 offline tests (202 pass, 1 skipped) and 17/17 managed-Python
+  tests pass, as do both TypeScript configs. Version 0.6.7-rc.1 exists on this branch only; nothing was tagged or released.
 
 ## Separate product backlog (outside this collection rollout)
 

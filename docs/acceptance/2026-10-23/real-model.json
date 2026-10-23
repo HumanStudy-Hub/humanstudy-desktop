@@ -1,0 +1,673 @@
+{
+  "date": "2026-10-23",
+  "tracker": "https://github.com/HumanStudy-Hub/humanstudy-desktop/issues/30 (T16 real-paper hosted build; feeds T14)",
+  "branch": "claude/acceptance-0.6.7 (base claude/research-t10-causality 8ddfb74)",
+  "worker": "app/scripts/opencode-assets.mjs (headless): the desktop OpencodeKernel, request transport, research pack, completion certificate and research collector, compiled from this checkout at worker start",
+  "kernel": "opencode-humanstudy 1.19.0 (hs-v1.19.0)",
+  "runtime": "py3.12.15-20261009-30d68f4541 (managed, lock matches pack/runtime/requirements.lock)",
+  "model": "humanstudy/anthropic/claude-haiku-5.5 (default hosted route, https://humanstudy-hub.com/api/desktop/v1)",
+  "account": "the owner's own desktop account, read in process memory by an owner-authorized local launcher through the app's account-core + OS safeStorage (same approach as the earlier comparison launcher). The research profile reached the worker through a private FIFO, never a regular file; nothing secret was printed or written. Its refresh token was replaced by a placeholder so the worker could not rotate the desktop session; the launcher itself refreshed the session exactly as the app does (re-encrypted into the app's account file).",
+  "prompt": "desktop i18n build.prompt, verbatim (the request the app sends automatically after a paper import)",
+  "stopCriterion": "first completion line with status=complete (desktop programCertificate on the exact program bytes); otherwise at most 2 desktop-style Retry requests (same prompt); quit.",
+  "limits": {
+    "outputTokenCap": null,
+    "wallClockMinutesPerCase": 45,
+    "perTurnTimeoutMinutes": 45,
+    "noProgressMinutes": 10,
+    "spendGuardUSD": 5,
+    "spendEstimate": "Haiku 5.5 long-prompt tier as an upper bound: $0.50/MTok input, $2.50/MTok output+reasoning; the hosted route reported cost=0 on every message, which is not evidence of free usage"
+  },
+  "supervision": {
+    "permissionsNotAutoApproved": "rejected by the driver (none in the two main runs; 1 `rm -f` in the rerun)",
+    "questions": "rejected (none asked)"
+  },
+  "identityCheck": "GET /api/desktop/identity returns 404 in production (web research-collection endpoint not deployed, T13). The acceptance harness answered that one call locally from the desktop key's own signed claim (claim.u == Supabase user id); the hosted proxy still verified the key signature on every model request. This is a harness substitution, not a product change.",
+  "cases": [
+    {
+      "case": "false-consensus-1977",
+      "paper": "Ross, Greene & House (1977), The \"False Consensus Effect\", J. Exp. Soc. Psychol. 13",
+      "pdfPages": 23,
+      "pdfBytes": 1607159,
+      "pdfSha256": "21c8d60c33b635fdab2c9c135c3a34eb00bca2e8bb88abd4262ec6c7a52b24d4",
+      "scan": "scanned (Acrobat Capture OCR text layer)",
+      "actualStudies": "4 empirical studies (Studies 1-4); the Discussion also reports covariance analyses across Studies 1, 3 and 4",
+      "codeRevision": "8ddfb74 (before the fixes in this branch)",
+      "projectId": "3ced711c-b743-41d7-8a70-069280bd326f",
+      "automaticStart": "yes: the desktop build.prompt was sent as the first and only request; no question, no external continuation",
+      "completed": true,
+      "completionCertificate": [
+        {
+          "status": "complete",
+          "programSha256": "0991a9b38873756e5a852c4652c7580ea6a4368f04c3dfe3f367091b2ca37ad1",
+          "problems": []
+        }
+      ],
+      "independentCheck": "check_program.py program.json --complete -> PASS (managed runtime, run after the session)",
+      "wallSeconds": 676,
+      "turns": 1,
+      "retriesUsed": 0,
+      "stop": "complete",
+      "usage": {
+        "input": 146523,
+        "output": 69549,
+        "reasoning": 71448,
+        "reportedCost": 0,
+        "messages": 37
+      },
+      "estimatedCostUSD_upperBound": 0.4258,
+      "modelRequests": 38,
+      "modelRequestStatuses": {
+        "200": 38
+      },
+      "requestBytes": {
+        "max": 1190766,
+        "median": 1095961,
+        "total": 34462906,
+        "over3_6MB": 0
+      },
+      "http413": 0,
+      "stableImageBudgetCut": {
+        "engaged": false,
+        "preparingSourceContextStatuses": 0,
+        "archivedFiles": 0
+      },
+      "recovery": {
+        "attempts": [],
+        "recoveringStatusEvents": 0
+      },
+      "errors": [],
+      "completedToolCalls": 51,
+      "toolErrors": 0,
+      "toolsByName": {
+        "bash": 21,
+        "skill": 1,
+        "read": 6,
+        "write": 16,
+        "edit": 7
+      },
+      "permissionsLeftToSupervisor": [],
+      "questions": [],
+      "program": {
+        "studies": [
+          {
+            "id": "study-1",
+            "type": "empirical",
+            "title": "Study 1: Hypothetical conflict stories, consensus estimates and trait ratings"
+          },
+          {
+            "id": "study-2",
+            "type": "empirical",
+            "title": "Study 2: Self-categorisation and estimates of college students in general"
+          },
+          {
+            "id": "study-3",
+            "type": "empirical",
+            "title": "Study 3: Hypothetical sandwich-board conflict"
+          },
+          {
+            "id": "study-4",
+            "type": "empirical",
+            "title": "Study 4: Real sandwich-board conflict with scripted target questionnaires"
+          },
+          {
+            "id": "study-5",
+            "type": "analysis",
+            "title": "Cross-study covariance analysis of consensus and trait ratings"
+          }
+        ],
+        "nodes": 43,
+        "steps": 15,
+        "evidence": 57,
+        "issues": 24,
+        "issueSeverity": {
+          "check": 19,
+          "decision": 2,
+          "blocking": 3
+        },
+        "fieldsMissingOrNull": 23,
+        "fieldOrigins": {
+          "reported": 107,
+          "unknown": 16,
+          "derived": 3,
+          "implementation": 5,
+          "verbatim": 14
+        }
+      },
+      "artifacts": [
+        "reported-results.html",
+        "study-overview.html"
+      ],
+      "sourceFidelity": {
+        "evidenceQuotes": 57,
+        "exactAfterNormalization": 57,
+        "below0.8": [],
+        "spotChecks": [
+          {
+            "id": "ev-s1-trait-stories",
+            "locator": {
+              "page": 7
+            },
+            "exact": true,
+            "quotePrefix": "For two of the stories (Supermarket Story and Term Paper Sto…"
+          },
+          {
+            "id": "ev-disc-corr-range",
+            "locator": {
+              "page": 18
+            },
+            "exact": true,
+            "quotePrefix": "the correlation coefficients indicating the relationship bet…"
+          },
+          {
+            "id": "ev-s1-scale-anchor",
+            "locator": {
+              "page": 5
+            },
+            "exact": true,
+            "quotePrefix": "Thus, for the disposition of “cooperativeness”, the scale wa…"
+          },
+          {
+            "id": "ev-s1-table1",
+            "locator": {
+              "page": 5,
+              "region": "Table 1"
+            },
+            "exact": true,
+            "quotePrefix": "PERCEIVED CONSENSUS: ESTIMATED COMMONNESS OF OWN AND ALTERNA…"
+          },
+          {
+            "id": "ev-s3-participants",
+            "locator": {
+              "page": 11
+            },
+            "exact": true,
+            "quotePrefix": "In Study 3 a total of 104 Stanford undergraduates read one o…"
+          }
+        ]
+      },
+      "researchDelivery": {
+        "events": 319,
+        "surfaces": [
+          "headless"
+        ],
+        "byType": {
+          "agent_execution:tool.end": 51,
+          "agent_execution:tool.start": 102,
+          "agent_execution:agent.usage": 37,
+          "agent_execution:permission.decision": 80,
+          "conversation:conversation.message": 32,
+          "agent_execution:agent.turn_end": 1,
+          "knowledge_artifact:artifact.version": 10,
+          "interaction:action.invoke": 3,
+          "agent_execution:agent.turn_start": 1,
+          "knowledge_artifact:program.version": 1,
+          "source_input:source.import": 1
+        },
+        "withActionId": 319,
+        "withCausedBy": 316,
+        "referencedContent": 25,
+        "contentRowsVisible": 25
+      }
+    },
+    {
+      "case": "tversky-kahneman-1981",
+      "paper": "Tversky & Kahneman (1981), The Framing of Decisions and the Psychology of Choice, Science 211",
+      "pdfPages": 5,
+      "pdfBytes": 3425683,
+      "pdfSha256": "fe95894df4eafe0797e0adf4d8562ed7beb8f3194fd88d1a1021bbde535f491b",
+      "scan": "scanned with OCR text layer",
+      "actualStudies": "10 numbered survey problems (Problems 1-10), not labelled as studies; grouping them is a judgement",
+      "codeRevision": "8ddfb74 (before the fixes in this branch)",
+      "projectId": "57213770-e9f6-4f89-94aa-c32c552c6284",
+      "automaticStart": "yes: the desktop build.prompt was sent as the first and only request; no question, no external continuation",
+      "completed": true,
+      "completionCertificate": [
+        {
+          "status": "complete",
+          "programSha256": "6e5bfaa08fabbf81ba51feaca1beb89cbf587a8694b6995b761f27c4868cde71",
+          "problems": []
+        }
+      ],
+      "independentCheck": "check_program.py program.json --complete -> PASS (managed runtime, run after the session)",
+      "wallSeconds": 968,
+      "turns": 1,
+      "retriesUsed": 0,
+      "stop": "complete",
+      "usage": {
+        "input": 243665,
+        "output": 51340,
+        "reasoning": 132419,
+        "reportedCost": 0,
+        "messages": 47
+      },
+      "estimatedCostUSD_upperBound": 0.5812,
+      "modelRequests": 48,
+      "modelRequestStatuses": {
+        "200": 48
+      },
+      "requestBytes": {
+        "max": 3177817,
+        "median": 1721664,
+        "total": 76398864,
+        "over3_6MB": 0
+      },
+      "http413": 0,
+      "stableImageBudgetCut": {
+        "engaged": true,
+        "preparingSourceContextStatuses": 33,
+        "archivedFiles": 5
+      },
+      "recovery": {
+        "attempts": [],
+        "recoveringStatusEvents": 0
+      },
+      "errors": [],
+      "completedToolCalls": 54,
+      "toolErrors": 0,
+      "toolsByName": {
+        "bash": 36,
+        "skill": 1,
+        "read": 8,
+        "todowrite": 1,
+        "write": 6,
+        "edit": 2
+      },
+      "permissionsLeftToSupervisor": [],
+      "questions": [],
+      "program": {
+        "studies": [
+          {
+            "id": "s1-framing-decisions",
+            "type": "empirical",
+            "title": "Framing of decisions: Asian disease problems (Problems 1-2)"
+          },
+          {
+            "id": "s2-framing-acts",
+            "type": "empirical",
+            "title": "Framing of acts: concurrent decisions (Problems 3-4)"
+          },
+          {
+            "id": "s3-framing-contingencies",
+            "type": "empirical",
+            "title": "Framing of contingencies: certainty and pseudocertainty (Problems 5-7)"
+          },
+          {
+            "id": "s4-accounts",
+            "type": "empirical",
+            "title": "Psychological accounting (Problems 8-10)"
+          }
+        ],
+        "nodes": 40,
+        "steps": 0,
+        "evidence": 84,
+        "issues": 22,
+        "issueSeverity": {
+          "check": 20,
+          "decision": 2
+        },
+        "fieldsMissingOrNull": 16,
+        "fieldOrigins": {
+          "verbatim": 10,
+          "reported": 56,
+          "unknown": 16,
+          "implementation": 4
+        }
+      },
+      "artifacts": [],
+      "sourceFidelity": {
+        "evidenceQuotes": 84,
+        "exactAfterNormalization": 83,
+        "below0.8": [
+          {
+            "id": "ev-p8-yes",
+            "locator": {
+              "page": 5
+            },
+            "similarity": 0.424,
+            "quotePrefix": "Yes [88 percent] No [12 percent]"
+          }
+        ],
+        "spotChecks": [
+          {
+            "id": "ev-p3-ii-c",
+            "locator": {
+              "page": 2
+            },
+            "exact": true,
+            "quotePrefix": "C. a sure loss of $750 113 percent]"
+          },
+          {
+            "id": "ev-p3-ii-d",
+            "locator": {
+              "page": 2
+            },
+            "exact": true,
+            "quotePrefix": "25% chance to lose nothing [87 percent]"
+          },
+          {
+            "id": "ev-p2-d-pct",
+            "locator": {
+              "page": 1
+            },
+            "exact": true,
+            "quotePrefix": "[78 percent]"
+          },
+          {
+            "id": "ev-p3-lottery-2",
+            "locator": {
+              "page": 3
+            },
+            "exact": true,
+            "quotePrefix": "playing for money"
+          },
+          {
+            "id": "ev-p6-d",
+            "locator": {
+              "page": 3
+            },
+            "exact": true,
+            "quotePrefix": "chance to win $45 [26 percent]"
+          }
+        ]
+      },
+      "researchDelivery": {
+        "events": 345,
+        "surfaces": [
+          "headless"
+        ],
+        "byType": {
+          "agent_execution:tool.start": 108,
+          "agent_execution:tool.end": 54,
+          "agent_execution:permission.decision": 80,
+          "agent_execution:agent.usage": 47,
+          "conversation:conversation.message": 49,
+          "interaction:action.invoke": 3,
+          "knowledge_artifact:program.version": 1,
+          "agent_execution:agent.turn_start": 1,
+          "agent_execution:agent.turn_end": 1,
+          "source_input:source.import": 1
+        },
+        "withActionId": 345,
+        "withCausedBy": 342,
+        "referencedContent": 12,
+        "contentRowsVisible": 12
+      }
+    },
+    {
+      "case": "false-consensus-1977-rerun",
+      "paper": "same PDF as false-consensus-1977, fresh project",
+      "pdfPages": 23,
+      "pdfBytes": 1607159,
+      "pdfSha256": "21c8d60c33b635fdab2c9c135c3a34eb00bca2e8bb88abd4262ec6c7a52b24d4",
+      "scan": "scanned",
+      "actualStudies": "4 empirical studies + cross-study covariance analyses",
+      "codeRevision": "42e5944 (tool.start + permission/question dedup fixes)",
+      "projectId": "99d64fc1-6615-4ea4-87ac-1f5e0b952347",
+      "automaticStart": "yes: the desktop build.prompt was sent as the first and only request; no question, no external continuation",
+      "completed": true,
+      "completionCertificate": [
+        {
+          "status": "complete",
+          "programSha256": "61fe77887748cead59c7660b3eddd5b1e2cac69be4a761a0e84ab2f2830ce4bd",
+          "problems": []
+        }
+      ],
+      "independentCheck": "check_program.py program.json --complete -> PASS (managed runtime, run after the session)",
+      "wallSeconds": 890,
+      "turns": 1,
+      "retriesUsed": 0,
+      "stop": "complete",
+      "usage": {
+        "input": 222388,
+        "output": 61163,
+        "reasoning": 117183,
+        "reportedCost": 0,
+        "messages": 51
+      },
+      "estimatedCostUSD_upperBound": 0.5571,
+      "modelRequests": 52,
+      "modelRequestStatuses": {
+        "200": 52
+      },
+      "requestBytes": {
+        "max": 1157128,
+        "median": 1033391,
+        "total": 45417672,
+        "over3_6MB": 0
+      },
+      "http413": 0,
+      "stableImageBudgetCut": {
+        "engaged": false,
+        "preparingSourceContextStatuses": 0,
+        "archivedFiles": 0
+      },
+      "recovery": {
+        "attempts": [
+          {
+            "attempt": 1,
+            "reason": "output_limit",
+            "strategy": "checkpoints_smaller_units",
+            "model": "anthropic/claude-haiku-5.5",
+            "reasoningEffort": "low"
+          }
+        ],
+        "recoveringStatusEvents": 69
+      },
+      "errors": [],
+      "completedToolCalls": 59,
+      "toolErrors": 1,
+      "toolsByName": {
+        "bash": 38,
+        "skill": 1,
+        "todowrite": 5,
+        "read": 6,
+        "write": 7,
+        "edit": 2
+      },
+      "permissionsLeftToSupervisor": [
+        {
+          "type": "bash",
+          "automatic": false,
+          "reply": "reject"
+        }
+      ],
+      "questions": [],
+      "program": {
+        "studies": [
+          {
+            "id": "s1-stories",
+            "type": "empirical",
+            "title": "Study 1: Hypothetical conflict stories, consensus and trait ratings"
+          },
+          {
+            "id": "s2-categories",
+            "type": "empirical",
+            "title": "Study 2: Personal description categories and estimates of college students in general"
+          },
+          {
+            "id": "s3-hypothetical",
+            "type": "empirical",
+            "title": "Study 3: Hypothetical sandwich-board conflict"
+          },
+          {
+            "id": "s4-real",
+            "type": "empirical",
+            "title": "Study 4: Real sandwich-board conflict"
+          },
+          {
+            "id": "s5-covariance",
+            "type": "analysis",
+            "title": "Cross-study covariance analysis of consensus and trait ratings"
+          }
+        ],
+        "nodes": 47,
+        "steps": 20,
+        "evidence": 45,
+        "issues": 15,
+        "issueSeverity": {
+          "check": 10,
+          "decision": 5
+        },
+        "fieldsMissingOrNull": 12,
+        "fieldOrigins": {
+          "reported": 103,
+          "derived": 4,
+          "unknown": 6,
+          "verbatim": 16,
+          "implementation": 5
+        }
+      },
+      "artifacts": [
+        "hs-kit.css",
+        "hs-kit.js",
+        "reported-results.html",
+        "study-overview.html"
+      ],
+      "sourceFidelity": {
+        "evidenceQuotes": 45,
+        "exactAfterNormalization": 43,
+        "below0.8": [
+          {
+            "id": "e-s4-table4",
+            "locator": {
+              "page": 14
+            },
+            "similarity": 0.721,
+            "quotePrefix": "Eat at Joe's Wear sign 28 (70%) 60.8 39.2 4.0"
+          },
+          {
+            "id": "e-s4-table5",
+            "locator": {
+              "page": 16
+            },
+            "similarity": 0.612,
+            "quotePrefix": "Eat at Joe's Wear sign (n = 28) 115.4 119.8 -4.4 4.37"
+          }
+        ],
+        "spotChecks": [
+          {
+            "id": "e-s1-trait-table2",
+            "locator": {
+              "page": 6
+            },
+            "exact": true,
+            "quotePrefix": "TRAIT RATINGS: RATERS’ INFERENCES ABOUT PERSONAL DISPOSITION…"
+          },
+          {
+            "id": "e-s1-space",
+            "locator": {
+              "page": 4
+            },
+            "exact": true,
+            "quotePrefix": "What % of your peers do you estimate would vote for the prop…"
+          },
+          {
+            "id": "e-s4-table4",
+            "locator": {
+              "page": 14
+            },
+            "exact": false,
+            "quotePrefix": "Eat at Joe's Wear sign 28 (70%) 60.8 39.2 4.0"
+          },
+          {
+            "id": "e-s2-table3",
+            "locator": {
+              "page": 9
+            },
+            "exact": true,
+            "quotePrefix": "Personal traits and views"
+          },
+          {
+            "id": "e-s1-trait-index",
+            "locator": {
+              "page": 7
+            },
+            "exact": true,
+            "quotePrefix": "When Story is treated as a fixed variable, the main effect o…"
+          }
+        ]
+      },
+      "researchDelivery": {
+        "events": 350,
+        "surfaces": [
+          "headless"
+        ],
+        "byType": {
+          "agent_execution:agent.recovery": 69,
+          "agent_execution:agent.usage": 51,
+          "agent_execution:permission.decision": 44,
+          "agent_execution:tool.start": 60,
+          "agent_execution:tool.end": 60,
+          "conversation:conversation.message": 45,
+          "knowledge_artifact:artifact.version": 12,
+          "source_input:source.import": 1,
+          "interaction:action.invoke": 4,
+          "agent_execution:permission.request": 1,
+          "agent_execution:agent.turn_start": 1,
+          "knowledge_artifact:program.version": 1,
+          "agent_execution:agent.turn_end": 1
+        },
+        "withActionId": 350,
+        "withCausedBy": 346,
+        "referencedContent": 28,
+        "contentRowsVisible": 28
+      }
+    }
+  ],
+  "totals": {
+    "estimatedCostUSD_upperBound": 1.5641,
+    "wallSeconds": 2534,
+    "modelRequests": 138,
+    "http413": 0,
+    "outputTokens": 182052,
+    "reasoningTokens": 321050,
+    "inputTokensReported": 612576
+  },
+  "bugsFoundAndFixed": [
+    {
+      "commit": "42e5944",
+      "layer": "collection (research-agent.ts)",
+      "finding": "every tool call produced two tool.start rows (OpenCode reports pending with {} before running with the input): 102 starts / 51 ends in run 1, 108/54 in run 2",
+      "fix": "record the start once the input is known; a call interrupted while pending gets one input-absent start",
+      "test": "research-agent.test.mjs",
+      "liveVerified": "rerun: 60 tool.start / 60 tool.end"
+    },
+    {
+      "commit": "42e5944",
+      "layer": "kernel (opencode.ts)",
+      "finding": "each Auto approval was reported twice (automatic reply + OpenCode permission.replied after the in-flight marker was cleared); the second copy lacked automatic=true, so half of all permission.decision rows read as researcher decisions (80 rows for 40 permissions). Same double-report pattern for question answers/rejections.",
+      "fix": "report each permission/question resolution once (bounded id set)",
+      "test": "kernel/dedup.test.mjs (fails on the old kernel)",
+      "liveVerified": "rerun: 44 decisions = 43 automatic + 1 supervisor rejection, 1 request"
+    },
+    {
+      "commit": "4200039",
+      "layer": "collection (research-agent.ts)",
+      "finding": "one output-limit recovery attempt produced 69 agent.recovery rows (the kernel labels every later status 'recovering')",
+      "fix": "one row per attempt per turn",
+      "test": "research-agent.test.mjs",
+      "liveVerified": "no (found in the rerun; covered by a test built from the observed event sequence; no further paid rerun)"
+    },
+    {
+      "commit": "4200039",
+      "layer": "collection (headless-research.mjs)",
+      "finding": "headless captured program.json/artifacts only at launch and at turn end, so a one-turn build delivered 1 program.version although program_io.py saved several checkpoints",
+      "fix": "capture after every finished tool call (content-hash deduplicated), linked to that call",
+      "test": "research-coverage.test.mjs (fails on the old code)",
+      "liveVerified": "no (same reason)"
+    }
+  ],
+  "observationsNotFixed": [
+    "Haiku marked its own evidence records verification='verified' in Tversky-Kahneman (e.g. a reconstructed 'Yes [88 percent] No [12 percent]' quote whose source order is 'No … Yes …'). The UI does not display 'verified' (installed walkthrough W6), but the stored field is agent self-report.",
+    "Tversky-Kahneman program has 0 steps (procedure is represented by 4 procedure nodes); minimum coverage passes. A runnable package would need steps. No views/artifacts were written in that run (the build prompt does not ask for them).",
+    "OCR noise is preserved verbatim in quotes (e.g. '113 percent]' for a printed '[13 percent]'); the agent filed a review issue for that disagreement instead of silently correcting the quote.",
+    "Reported input tokens (≈135k-245k per run) are far below the request volume (34-76 MB of JSON per run): the usage field appears to exclude cached prompt tokens. Cost here is an estimate, not a bill.",
+    "The rerun's last bash call (rm -f of two copied kit files) needed a permission outside Auto's heuristic; the supervisor rejected it, which ended the turn. The certificate was already complete; artifacts/ keeps hs-kit.css/js copies."
+  ],
+  "notCovered": [
+    "The real-model build ran in the headless worker, not inside the installed app UI (installed walkthrough used a mock kernel; see installed-mac.json).",
+    "Windows (T15).",
+    "Long papers beyond 23 scanned pages; multiple-turn interrupted builds with a real model."
+  ],
+  "privacy": "Projects, logs, sessions and the PDFs stay in a private local acceptance folder. This file contains only counts, hashes and quote prefixes of at most 60 characters."
+}
