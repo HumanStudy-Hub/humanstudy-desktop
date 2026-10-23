@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import type { AccountStatus, ProjectSummary } from '../../preload/types'
 import { Studies, type StudiesHandle } from './Studies'
-import { track } from '../telemetry'
+import { claimAction, holdAction, track } from '../telemetry'
 import { VersionFooter } from './Updates'
 import { KernelBar } from './KernelBar'
 import type { KernelInstallStatus } from '../../preload/types'
@@ -106,24 +106,36 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
     }
   }
 
-  const fromPaper = () =>
-    run(async () => {
+  const fromPaper = () => {
+    // Choosing the paper in the system dialog completes this operation; the import links to it.
+    const action = claimAction('project.create_from_paper', true)
+    holdAction() // opening the created project continues this operation
+    return run(async () => {
       const pdfPath = await window.humanstudy.projects.pickPdf()
       if (!pdfPath) return
-      onOpen(await window.humanstudy.projects.create({ name: baseName(pdfPath), pdfPath }))
+      onOpen(await window.humanstudy.projects.create({ name: baseName(pdfPath), pdfPath }, action))
     })
+  }
   useImperativeHandle(ref, () => ({ fromPaper: () => void fromPaper() }))
   const createBlank = () => {
     const name = blank?.trim()
     if (!name) return
-    void run(async () => onOpen(await window.humanstudy.projects.create({ name })))
+    const action = claimAction('project.create')
+    holdAction() // opening the created project continues this operation
+    void run(async () => onOpen(await window.humanstudy.projects.create({ name }, action)))
   }
-  const sample = () => run(async () => onOpen(await window.humanstudy.projects.create({ name: '', sample: true }), true))
-  const openFolder = () =>
-    run(async () => {
+  const sample = () => {
+    const action = claimAction('project.create_sample')
+    holdAction() // opening the created project continues this operation
+    return run(async () => onOpen(await window.humanstudy.projects.create({ name: '', sample: true }, action), true))
+  }
+  const openFolder = () => {
+    holdAction() // the folder chosen in the system dialog continues this operation
+    return run(async () => {
       const dir = await window.humanstudy.project.open()
       if (dir) onOpen(dir)
     })
+  }
   const saveRename = () => {
     if (!renaming) return
     const { dir, name } = renaming

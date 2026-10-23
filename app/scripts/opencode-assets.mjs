@@ -9,11 +9,12 @@ import { parseArgs, promisify } from 'node:util'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { controlAssets, packPath } from './asset-control.mjs'
 import { openResearchAccount } from './research-auth.mjs'
+import { startHeadlessResearch } from './headless-research.mjs'
 
 const exec=promisify(execFile),here=dirname(fileURLToPath(import.meta.url)),repo=resolve(here,'../..')
 const {values:o}=parseArgs({options:{project:{type:'string'},binary:{type:'string'},'runtime-bin':{type:'string'},provider:{type:'string',default:'humanstudy'},model:{type:'string'},auto:{type:'string',default:'on'},session:{type:'string'},'timeout-minutes':{type:'string',default:'30'},'stall-minutes':{type:'string',default:'5'},'research-auth':{type:'string'},doctor:{type:'boolean'},help:{type:'boolean'}}})
 if(o.help){console.log('node app/scripts/opencode-assets.mjs --project <prepared project> --binary <HumanStudy opencode> --runtime-bin <managed runtime/bin> --research-auth <private-profile> [--provider humanstudy|openrouter] [--model <id>] [--auto on|off] [--session <id>] [--doctor]\nJSON-lines stdin: build, send, permission, answer, reject-question, questions, native, auto, abort, quit. See the Codex skill.');process.exit(0)}
-let lock, ownsLock=false, ownedKernel, bridge, interrupted=false, research, researchAgent, captureArtifacts
+let lock, ownsLock=false, ownedKernel, bridge, interrupted=false, research, headlessResearch
 const stopOwned=()=>{interrupted=true;void (bridge?bridge.stop('interrupted'):ownedKernel?.dispose())}
 try{
   if(!o['research-auth'])throw Error('Supply --research-auth with your own private account profile. Read docs/headless-research.md; another person’s desktop key is not a research identity.')
@@ -58,21 +59,8 @@ try{
   const identityFile=join(cache,'research-project.json')
   const projectId=existsSync(identityFile)?JSON.parse(readFileSync(identityFile,'utf8')).id:randomUUID()
   writeFileSync(identityFile,JSON.stringify({id:projectId}),{mode:0o600})
-  const inside=file=>{const distance=relative(project,realpathSync(file));return !distance.startsWith('..')&&!isAbsolute(distance)}
-  async function collect(dir){if(!inside(dir))return;for(const entry of readdirSync(dir,{withFileTypes:true})){if(entry.name.startsWith('.')||entry.isSymbolicLink())continue;const file=join(dir,entry.name);if(entry.isDirectory())await collect(file);else if(entry.isFile())await research.queueSource(file,projectId,file.toLowerCase().endsWith('.pdf')?'application/pdf':'application/octet-stream')}}
-  if(existsSync(join(project,'paper.pdf'))&&inside(join(project,'paper.pdf')))await research.queueSource(join(project,'paper.pdf'),projectId,'application/pdf')
-  if(existsSync(join(project,'sources')))await collect(join(project,'sources'))
-  researchAgent=createResearchAgent((event,context)=>research.capture(event,context))
-  let artifactChain=Promise.resolve()
-  captureArtifacts=()=>{
-    artifactChain=artifactChain.then(async()=>{
-      if(existsSync(join(project,'program.json'))&&inside(join(project,'program.json')))await research.queueArtifact(join(project,'program.json'),projectId,'program.json','agent-or-external')
-      async function walk(rel){if(!inside(join(project,rel)))return;for(const entry of readdirSync(join(project,rel),{withFileTypes:true})){if(entry.name.startsWith('.')||entry.isSymbolicLink())continue;const child=rel+'/'+entry.name;if(entry.isDirectory())await walk(child);else if(entry.isFile())await research.queueArtifact(join(project,child),projectId,child,'agent-or-external')}}
-      for(const rel of ['artifacts','package','exports'])if(existsSync(join(project,rel)))await walk(rel)
-    }).catch(()=>{})
-    return artifactChain
-  }
-  await captureArtifacts()
+  // Launch and each command are the primary actions; UI actions are not applicable (headless-research.mjs).
+  headlessResearch=await startHeadlessResearch({research,createResearchAgent,project,projectId,model:o.model??DEFAULT_MODEL,provider:o.provider,auto:o.auto})
   void research.flush()
   process.env.HUMANSTUDY_RUNTIME_BIN=runtime
   const kernel=ownedKernel=new OpencodeKernel({binary,home:join(cache,'kernel-home'),provider:o.provider,model:o.model??DEFAULT_MODEL,permission:o.auto==='on'?'project':'ask'})
@@ -87,9 +75,9 @@ try{
     writeFileSync(join(logDir,'completion.json'),JSON.stringify(completion,null,2)+'\n')
     process.stdout.write(JSON.stringify(completion)+'\n')
   }
-  bridge=await controlAssets({kernel,project,session:o.session,input:process.stdin,output:process.stdout,logDir,timeoutMs:timeout*60_000,stallMs:stall*60_000,onOperation:(sid,request)=>{if(!['build','send'].includes(request.op))void research.capture({event_type:'action.invoke',thread_id:sid,project_id:projectId,view:'headless',target:String(request.op),metadata:{via:'system',command:JSON.stringify(request)}}).catch(()=>{})},onSession:sid=>researchAgent.bind(sid,projectId,project,o.model??DEFAULT_MODEL),onEvent:event=>{researchAgent.event(event);if(event.type==='done'){certify(event.sessionId);void captureArtifacts()}},onRequest:(sid,request)=>{if(request.op==='abort')researchAgent.abort(sid);else researchAgent.start(sid,request.text)}})
+  bridge=await controlAssets({kernel,project,session:o.session,input:process.stdin,output:process.stdout,logDir,timeoutMs:timeout*60_000,stallMs:stall*60_000,onOperation:headlessResearch.onOperation,onRequest:headlessResearch.onRequest,onSession:headlessResearch.onSession,onEvent:event=>{headlessResearch.onEvent(event);if(event.type==='done'){certify(event.sessionId)}}})
   if(interrupted)await bridge.stop('interrupted')
   const result=await bridge.exited
   if(!['closed'].includes(result))process.exitCode=2
 }catch(error){console.error(JSON.stringify({type:'fatal',error:String(error.message??error)}));process.exitCode=1}
-finally{await ownedKernel?.dispose();if(captureArtifacts)await captureArtifacts();if(researchAgent)await researchAgent.close();if(research){await research.end('worker-exit');await research.flush();const pending=await research.pending();if(pending||research.error())console.error(JSON.stringify({type:'research_delivery_pending',pending,error:research.error()??null}));}for(const signal of ['SIGINT','SIGTERM'])process.removeListener(signal,stopOwned);if(ownsLock&&existsSync(lock))unlinkSync(lock)}
+finally{await ownedKernel?.dispose();if(headlessResearch)await headlessResearch.close();if(research){await research.end('worker-exit');await research.flush();const pending=await research.pending();if(pending||research.error())console.error(JSON.stringify({type:'research_delivery_pending',pending,error:research.error()??null}));}for(const signal of ['SIGINT','SIGTERM'])process.removeListener(signal,stopOwned);if(ownsLock&&existsSync(lock))unlinkSync(lock)}

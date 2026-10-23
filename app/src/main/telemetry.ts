@@ -7,8 +7,9 @@ import { readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { storeResearchContent } from './research-content'
 import { createResearchCollector } from './research-collector'
-import { createResearchAgent } from './research-agent'
+import { createResearchAgent, type ResearchLink } from './research-agent'
 import { researchInteraction } from '../shared/research-interactions'
+import { actionRef, type ActionRef } from '../shared/research-operations'
 import { createSerial, createWriteAttribution, isSaveTemp } from './write-capture'
 import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
@@ -83,26 +84,52 @@ export async function settleResearch(final = false): Promise<void> {
   await researchAgent.drain()
   if (final) await sourceCollector().end('closed')
 }
-async function queueSource(projectDir: string, rel: string): Promise<void> {
+/** Sources a researcher operation put into a project (import, create from PDF), keyed by absolute path. */
+const importRefs = new Map<string, { ref: ActionRef; at: number }>()
+const IMPORT_LINK_MS = 10 * 60_000
+/** The import/create operation that put `rel` into the project, so its source.import links to it. */
+export function noteImport(projectDir: string, rel: string, ref?: ActionRef): void {
+  if (!ref) return
+  importRefs.set(join(resolve(projectDir), rel), { ref, at: Date.now() })
+  for (const [k, v] of importRefs) if (Date.now() - v.at > IMPORT_LINK_MS) importRefs.delete(k)
+}
+/** The operation that created a project; its first sources and its automatic paper build link to it. */
+const createdBy = new Map<string, { ref: ActionRef; at: number }>()
+const buildParent = new Map<string, string>() // kernel session -> operation that authorized the build
+export function noteProjectCreated(dir: string, ref?: ActionRef): void {
+  if (!ref) return
+  createdBy.set(resolve(dir), { ref, at: Date.now() })
+  noteImport(dir, 'paper.pdf', ref)
+}
+/** The project's automatic paper build was claimed for this session (importing the paper authorized it). */
+export function noteBuildClaim(dir: string, sessionId: string, ref?: ActionRef): void {
+  const by = importRefs.get(join(resolve(dir), 'paper.pdf'))?.ref ?? createdBy.get(resolve(dir))?.ref
+  if (by) buildParent.set(sessionId, by.id)
+  noteAction(ref, dir)
+}
+async function queueSource(projectDir: string, rel: string, trigger: 'baseline' | 'external' = 'external'): Promise<void> {
   const projectId = projectIdFor(projectDir)
   if (!projectId || !getTelemetry().status().content) return
   const path = join(projectDir, rel)
+  const created = createdBy.get(resolve(projectDir))
+  const imported = importRefs.get(join(resolve(projectDir), rel)) ?? (created && rel.startsWith('sources/') ? created : undefined)
   const actual = await realpath(path), root = await realpath(projectDir)
   if (!actual.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) return
   const ext = extname(path).toLowerCase()
   const mime = ext === '.pdf' ? 'application/pdf' : ext === '.zip' ? 'application/zip' : ext === '.json' ? 'application/json' : 'application/octet-stream'
-  await sourceCollector().queueSource(path, projectId, mime)
+  const link = imported && Date.now() - imported.at <= IMPORT_LINK_MS ? researchAgent.sourceLink(imported.ref) : researchAgent.sourceLink(undefined, trigger)
+  await sourceCollector().queueSource(path, projectId, mime, link)
 }
 /** Run only after renewed agreement and on explicit project open, never scan the user's disk. */
 async function queueProjectSources(projectDir: string): Promise<void> {
   if (!getTelemetry().status().content) return
-  if (existsSync(join(projectDir, 'paper.pdf'))) await queueSource(projectDir, 'paper.pdf')
+  if (existsSync(join(projectDir, 'paper.pdf'))) await queueSource(projectDir, 'paper.pdf', 'baseline')
   const walk = async (rel: string): Promise<void> => {
     for (const entry of await readdir(join(projectDir, rel), { withFileTypes: true }).catch(() => [])) {
       if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue
       const child = `${rel}/${entry.name}`
       if (entry.isDirectory()) await walk(child)
-      else if (entry.isFile()) await queueSource(projectDir, child)
+      else if (entry.isFile()) await queueSource(projectDir, child, 'baseline')
     }
   }
   await walk('sources')
@@ -145,13 +172,16 @@ export function track(type: string, opts: TelemetryTrackOptions = {}, projectDir
     const projectId = opts.projectId ?? (projectDir ? (projectIdFor(projectDir) ?? undefined) : undefined)
     const dirFor = projectDir ?? (projectId ? projectIds.get(projectId) : undefined)
     const unified = researchInteraction(type, opts)
-    if (unified) void sourceCollector().capture({ ...unified, project_id: projectId }, { projectDir: dirFor }).catch(() => undefined)
+    const ref = actionRef(opts.action)
+    if (unified || ref) researchAgent.interaction(type, { ...opts, action: ref }, { project_id: projectId, dir: dirFor })
+    if (opts.v1Only) return
     let metadata = opts.metadata
     if (metadata && Buffer.byteLength(JSON.stringify(metadata)) > 12_000) {
       const blob = putBlob(JSON.stringify(metadata), dirFor)
       if (blob) metadata = { metadata_blob: blob }
     }
-    t.track(type, { ...opts, metadata, projectId }, { projectDir: dirFor })
+    const { action: _action, v1Only: _v1, ...legacy } = opts
+    t.track(type, { ...legacy, metadata, projectId }, { projectDir: dirFor })
   } catch {
     /* research data must never break the app */
   }
@@ -177,8 +207,16 @@ export function trackSessionError(projectDir: string, err: unknown, startedAt: n
   track('kernel.session_error', { durationMs: Date.now() - startedAt, metadata: { error: errorLine(err) } }, projectDir)
 }
 
-export function trackTurnStart(sessionId: string, text: string): void {
-  researchAgent.start(sessionId, text)
+/** The operation behind the message being sent; its workspace-context selection links to it. */
+let sendingAction: string | undefined
+export function trackTurnStart(sessionId: string, text: string, ref?: ActionRef): void {
+  const parent = buildParent.get(sessionId)
+  if (parent) {
+    buildParent.delete(sessionId)
+    ref = ref ? (ref.parent ? ref : { ...ref, parent }) : { id: randomUUID(), target: 'paper.build', via: 'system', parent }
+  }
+  sendingAction = researchAgent.start(sessionId, text, ref)
+  queueMicrotask(() => { sendingAction = undefined })
   turns.set(sessionId, { startedAt: Date.now(), tools: new Set(), toolSteps: 0, toolErrors: 0, reply: '' })
   const dir = sessionDirs.get(sessionId)
   track('agent.turn_start', { metadata: { chars: text.length } }, dir)
@@ -186,8 +224,19 @@ export function trackTurnStart(sessionId: string, text: string): void {
   track('composer.send', { metadata: { chars: text.length, attachments: attached ? attached[1].split(',').filter((x) => x.trim()).length : 0 } }, dir)
 }
 
-export function trackTurnAbort(sessionId: string): void {
-  researchAgent.abort(sessionId)
+/** Record an operation that reached the main process without a semantic event of its own. */
+export function noteAction(ref: ActionRef | undefined, projectDir?: string): void {
+  if (ref) researchAgent.action(ref, { project_id: projectDir ? (projectIdFor(projectDir) ?? undefined) : undefined, dir: projectDir })
+}
+/** The researcher answered or dismissed a question / replied to a permission (before the kernel call). */
+export function noteAnswer(sessionId: string, questionId: string, ref?: ActionRef): void {
+  if (ref) researchAgent.answer(sessionId, questionId, ref)
+}
+export function notePermission(sessionId: string, permissionId: string, ref?: ActionRef): void {
+  if (ref) researchAgent.permit(sessionId, permissionId, ref)
+}
+export function trackTurnAbort(sessionId: string, ref?: ActionRef): void {
+  researchAgent.abort(sessionId, ref)
   const turn = turns.get(sessionId)
   if (!turn) return
   turns.delete(sessionId)
@@ -348,6 +397,7 @@ export function onThreadCapture(c: Capture): void {
     if (!getTelemetry().status().content) return
     if (c.kind === 'part' && c.workspace && c.role === 'user') void sourceCollector().capture({ event_type: 'selection.commit',
       project_id: projectIdFor(c.dir), thread_id: c.threadId, message_id: c.messageId, view: 'agent',
+      ...(sendingAction ? { action_id: sendingAction, caused_by: sendingAction } : {}),
       metadata: { kind: 'workspace-context', workspace: c.workspace } }, { projectDir: c.dir }).catch(() => undefined)
     if (c.kind === 'usage') {
       track('conversation.usage', { metadata: { thread_id: c.threadId, message_id: c.messageId, ...c.usage } }, c.dir)
@@ -398,13 +448,14 @@ const WATCHED_DIRS = /^(artifacts|exports|package)\//
 const programState = new Map<string, { hash: string; json: unknown; version: number }>()
 const fileHashes = new Map<string, string>()
 const fileVersions = new Map<string, number>()
-const humanWrites = createWriteAttribution()
+const humanWrites = createWriteAttribution<ActionRef>()
 const captureInOrder = createSerial()
 const fsTimers = new Map<string, NodeJS.Timeout>()
 
 /** The researcher saved this text in the app (so that content is not the agent's). */
-export function noteHumanWrite(path: string, text?: string): void {
-  humanWrites.note(resolve(path), text)
+export function noteHumanWrite(path: string, text?: string, ref?: ActionRef): void {
+  humanWrites.note(resolve(path), text, ref)
+  if (ref) noteAction(ref)
 }
 const byWhom = (abs: string, text?: string): 'human' | 'agent' => humanWrites.by(abs, text)
 /**
@@ -419,8 +470,9 @@ export function noteProgramWritten(projectDir: string, text: string): void {
 export function noteFsChange(projectDir: string, rel: string): void {
   const r = rel.split('\\').join('/')
   const isProgram = r === 'program.json'
-  const isSource = r === 'paper.pdf' || r.startsWith('sources/')
-  if (!isProgram && !isSource && !WATCHED_DIRS.test(r)) return
+  const isAnnotation = r.endsWith('.annotations.json')
+  const isSource = !isAnnotation && (r === 'paper.pdf' || r.startsWith('sources/'))
+  if (!isProgram && !isSource && !isAnnotation && !WATCHED_DIRS.test(r)) return
   if (r.includes('/.') || isSaveTemp(r)) return
   const key = `${projectDir}\0${r}`
   clearTimeout(fsTimers.get(key))
@@ -432,6 +484,8 @@ export function noteFsChange(projectDir: string, rel: string): void {
   fsTimers.set(key, timer)
 }
 
+const linkColumns = (l: ResearchLink) => ({ ...(l.action_id ? { action_id: l.action_id } : {}), ...(l.caused_by ? { caused_by: l.caused_by } : {}),
+  ...(l.thread_id ? { thread_id: l.thread_id } : {}), ...(l.tool_call_id ? { tool_call_id: l.tool_call_id } : {}) })
 async function snapshotProgram(projectDir: string, written?: string): Promise<void> {
   if (!getTelemetry().status().content) return
   const owner = getAccount().researchOwner(), stateKey = `${owner}:${projectDir}`
@@ -463,8 +517,9 @@ async function snapshotProgramNow(projectDir: string, owner: string | null, stat
   const blob = putBlob(raw, projectDir)
   if (blob) metadata.blob = blob
   if (getAccount().researchOwner() !== owner) return
+  const link = researchAgent.versionLink(projectDir, 'program.json', String(metadata.by), humanWrites.action(resolve(path), raw))
   const captured = await sourceCollector().capture({ event_type: 'program.version', project_id: projectIdFor(projectDir), artifact_id: 'program.json',
-    artifact_version: version, metadata: { by: metadata.by, program: raw, hash: createHash('sha256').update(raw).digest('hex') } }, { projectDir })
+    artifact_version: version, ...linkColumns(link), metadata: { ...link.metadata, by: metadata.by, program: raw, hash: createHash('sha256').update(raw).digest('hex') } }, { projectDir })
   if (captured) programState.set(stateKey, { hash, json, version })
   track('project.program_version', { target: 'program.json', metadata }, projectDir)
 }
@@ -494,13 +549,15 @@ async function snapshotFileNow(projectDir: string, rel: string, owner: string | 
     const versionKey = key
     const nextVersion = (fileVersions.get(versionKey) ?? 0) + 1
     if (getAccount().researchOwner() !== owner) return
+    const link = researchAgent.versionLink(projectDir, rel, String(metadata.by), humanWrites.action(resolve(path), text))
     const captured = await sourceCollector().capture({ event_type: 'artifact.version', project_id: projectIdFor(projectDir), artifact_id: rel,
-      artifact_version: nextVersion, metadata: { by: metadata.by, file: text, hash: createHash('sha256').update(text).digest('hex') } }, { projectDir })
+      artifact_version: nextVersion, ...linkColumns(link), metadata: { ...link.metadata, by: metadata.by, file: text, hash: createHash('sha256').update(text).digest('hex') } }, { projectDir })
     if (captured) { fileVersions.set(versionKey, nextVersion); fileHashes.set(key, hash) }
   } else {
     if (getAccount().researchOwner() !== owner) return
     const project = projectIdFor(projectDir)
-    if (project) await sourceCollector().queueArtifact(path, project, rel, String(metadata.by))
+    const human = humanWrites.action(resolve(path))
+    if (project) await sourceCollector().queueArtifact(path, project, rel, String(metadata.by), () => researchAgent.versionLink(projectDir, rel, String(metadata.by), human))
   }
   track('project.file_written', { target: rel, metadata }, projectDir)
 }
@@ -639,7 +696,8 @@ export function registerTelemetry(): void {
     const target = typeof o.target === 'string' ? o.target : undefined
     const durationMs = typeof o.durationMs === 'number' ? o.durationMs : undefined
     const metadata = o.metadata && typeof o.metadata === 'object' && !Array.isArray(o.metadata) ? o.metadata : undefined
-    track(type, { target, durationMs, metadata, projectId: known }, dir)
+    const action = actionRef(o.action)
+    track(type, { target, durationMs, metadata, projectId: known, ...(action ? { action } : {}), ...(o.v1Only === true ? { v1Only: true } : {}) }, dir)
   })
   // Remembers the open project; the id (and .humanstudy/project.json's `id`) only exists once
   // usage events are on, so a project is never touched for research without consent.

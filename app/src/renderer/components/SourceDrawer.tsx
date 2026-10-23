@@ -14,7 +14,7 @@ import { readPdfAnnotations, type PdfAnnotation } from '../../shared/pdf-annotat
 import { observeSettledWidth } from '../settled-width'
 import { replacedOnDisk, versionedUrl } from '../../shared/file-version'
 import { makeWords } from './pdf-words'
-import { lap, track } from '../telemetry'
+import { claimAction, lap, track } from '../telemetry'
 import { t } from '../i18n'
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
@@ -116,6 +116,7 @@ export function SourceDrawer({
 
   async function saveAnnotation(remove = false) {
     if (!pdf || !selection || !annotationsReady || saving) return
+    const action = claimAction(remove ? 'source.annotation_remove' : 'source.annotate')
     setSaving(true)
     setAnnotationError('')
     try {
@@ -127,12 +128,13 @@ export function SourceDrawer({
         if (!/ENOENT|no such file/i.test(String(e))) throw e
       }
       if (current !== annotationRaw.current) throw new Error(t('paper.notes_changed'))
+      const annotationId = remove ? (selection.annotationId ?? 'not-reported') : crypto.randomUUID()
       const next = remove
         ? annotations.filter((a) => a.id !== selection.annotationId)
         : [
             ...annotations,
             {
-              id: crypto.randomUUID(),
+              id: annotationId,
               text: selection.text,
               pages: selection.pages,
               createdAt: new Date().toISOString(),
@@ -140,15 +142,18 @@ export function SourceDrawer({
           ]
       const raw = JSON.stringify({ version: 1, annotations: next }, null, 2) + '\n'
       readPdfAnnotations(raw)
-      await window.humanstudy.project.writeText(`${pdf.path}.annotations.json`, raw)
+      await window.humanstudy.project.writeText(`${pdf.path}.annotations.json`, raw, undefined, action)
       annotationRaw.current = raw
       setAnnotations(next)
       setSelection(null)
       onSelect?.(null)
       window.getSelection()?.removeAllRanges()
       track(remove ? 'source.annotation_removed' : 'source.annotated', {
-        metadata: { pages: selection.pages.map((p) => p.page), chars: selection.text.length },
-      })
+        // The deliberate annotation's own anchor (pages and bounds), not a pointer trajectory.
+        metadata: { pages: selection.pages.map((p) => p.page), chars: selection.text.length, annotation_id: annotationId,
+          // pdf.path is made project-relative by the main-process sanitizer before capture.
+          anchor: { source: pdf.path, pages: selection.pages } },
+      }, action)
     } catch (e) {
       setAnnotationError(String(e))
     } finally {

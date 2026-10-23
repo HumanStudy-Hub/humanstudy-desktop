@@ -1,4 +1,6 @@
 import type { NativeRequest, NativeSelection } from '../shared/native'
+import type { ActionRef } from '../shared/research-operations'
+export type { ActionRef }
 import type { KernelQuestion, QuestionPart } from '../shared/question'
 // Types shared between preload and renderer (the window.humanstudy bridge).
 export type KernelEventType = 'identity' | 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title' | 'question'
@@ -307,6 +309,8 @@ export interface MenuCommand {
   command: 'newProject' | 'openFolder' | 'pane' | 'settings'
   /** For 'pane': 'agent' | 'study' | 'paper' | 'files'. */
   arg?: string
+  /** Chosen with the item's keyboard accelerator rather than the menu itself. */
+  accelerator?: boolean
 }
 
 /** The localized close confirmation the main process shows while a window has unsaved edits. */
@@ -345,7 +349,7 @@ export interface HumanStudyApi {
   projects: {
     list(): Promise<ProjectSummary[]>
     /** Creates a project folder (copying the PDF to paper.pdf when given) and returns its dir. */
-    create(input: { name: string; pdfPath?: string; sample?: boolean }): Promise<string>
+    create(input: { name: string; pdfPath?: string; sample?: boolean }, action?: ActionRef): Promise<string>
     pickPdf(): Promise<string | null>
     rename(dir: string, name: string): Promise<string>
     /** Moves the project folder to the Trash. */
@@ -382,12 +386,12 @@ export interface HumanStudyApi {
   }
   project: {
     /** Claim the project's pending paper build for this conversation; true means: send the build request now. */
-    startBuild(dir: string, sid: string): Promise<boolean>
+    startBuild(dir: string, sid: string, action?: ActionRef): Promise<boolean>
     /** Undo startBuild when the request could not be sent. */
     releaseBuild(dir: string, sid: string): Promise<void>
     /** After a failed build, or in an older project with a paper and no study: mark the build pending so it
      *  starts in the open conversation. */
-    retryBuild(dir: string): Promise<boolean>
+    retryBuild(dir: string, action?: ActionRef): Promise<boolean>
     open(): Promise<string | null>
     read(dir: string): Promise<ProjectSnapshot>
     reveal(path: string): Promise<void>
@@ -403,21 +407,21 @@ export interface HumanStudyApi {
      *  With `ifUnchanged`, the write happens only if the file still holds exactly that text (a patch read
      *  from disk is not written over a newer save, e.g. the agent's checkpoint); otherwise it rejects
      *  with an error whose message starts with "changed on disk". */
-    writeText(path: string, text: string, ifUnchanged?: string): Promise<void>
+    writeText(path: string, text: string, ifUnchanged?: string, action?: ActionRef): Promise<void>
     /** Copies files into the project (sources/, or paper.pdf for a first PDF). Never overwrites; returns the copies. */
-    importFiles(dir: string, paths: string[]): Promise<ProjectFile[]>
+    importFiles(dir: string, paths: string[], action?: ActionRef): Promise<ProjectFile[]>
     onChanged(cb: (dir: string) => void): () => void
   }
   kernel: {
-    native(sessionId: string, request: NativeRequest): Promise<unknown>
+    native(sessionId: string, request: NativeRequest, action?: ActionRef): Promise<unknown>
     export(sessionId: string): Promise<string | null>
     startSession(projectDir: string): Promise<string>
-    send(sessionId: string, text: string, workspace?: WorkspaceContext): Promise<void>
-    abort(sessionId: string): Promise<void>
+    send(sessionId: string, text: string, workspace?: WorkspaceContext, action?: ActionRef): Promise<void>
+    abort(sessionId: string, action?: ActionRef): Promise<void>
     /** Answer a `permission` event: once = Allow once, always = Allow for this project, reject = Deny. */
-    reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void>
-    answerQuestion(sessionId: string, questionId: string, answers: string[][]): Promise<void>
-    rejectQuestion(sessionId: string, questionId: string): Promise<void>
+    reply(sessionId: string, permissionId: string, response: PermissionReply, action?: ActionRef): Promise<void>
+    answerQuestion(sessionId: string, questionId: string, answers: string[][], action?: ActionRef): Promise<void>
+    rejectQuestion(sessionId: string, questionId: string, action?: ActionRef): Promise<void>
     questions(sessionId: string): Promise<KernelQuestion[]>
     onEvent(cb: (e: KernelEvent) => void): () => void
     install: {
@@ -511,6 +515,10 @@ export interface TelemetryTrackOptions {
   metadata?: Record<string, unknown>
   /** Random project id from .humanstudy/project.json (see telemetry.projectId). */
   projectId?: string
+  /** The user operation this event belongs to (one action.invoke per operation). */
+  action?: ActionRef
+  /** Research-v1 only; the legacy stream records the operation under its own name. */
+  v1Only?: boolean
 }
 export interface TelemetryApi {
   status(): Promise<TelemetryStatus>

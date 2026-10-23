@@ -21,7 +21,7 @@ export function buildMenu(hooks: MenuHooks): Menu {
   const pane = (label: string, arg: string, n: number): MenuItemConstructorOptions => ({
     label,
     accelerator: `CmdOrCtrl+${n}`,
-    click: () => send({ command: 'pane', arg }),
+    click: (_item, _win, event) => send({ command: 'pane', arg, accelerator: Boolean(event?.triggeredByAccelerator) }),
   })
   const template: MenuItemConstructorOptions[] = []
   if (mac) {
@@ -30,7 +30,7 @@ export function buildMenu(hooks: MenuHooks): Menu {
       submenu: [
         { label: `About ${app.name}`, click: () => app.showAboutPanel() },
         { type: 'separator' },
-        { label: 'Settings…', accelerator: 'Cmd+,', click: () => send({ command: 'settings' }) },
+        { label: 'Settings…', accelerator: 'Cmd+,', click: (_item, _win, event) => send({ command: 'settings', accelerator: Boolean(event?.triggeredByAccelerator) }) },
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -46,15 +46,15 @@ export function buildMenu(hooks: MenuHooks): Menu {
     {
       label: 'File',
       submenu: [
-        { label: 'New project', accelerator: 'CmdOrCtrl+N', click: () => send({ command: 'newProject' }) },
+        { label: 'New project', accelerator: 'CmdOrCtrl+N', click: (_item, _win, event) => send({ command: 'newProject', accelerator: Boolean(event?.triggeredByAccelerator) }) },
         { label: 'New window', accelerator: 'CmdOrCtrl+Shift+N', click: () => hooks.newWindow() },
-        { label: 'Open folder…', accelerator: 'CmdOrCtrl+O', click: () => send({ command: 'openFolder' }) },
+        { label: 'Open folder…', accelerator: 'CmdOrCtrl+O', click: (_item, _win, event) => send({ command: 'openFolder', accelerator: Boolean(event?.triggeredByAccelerator) }) },
         { type: 'separator' },
         { role: 'close', label: 'Close window', accelerator: 'CmdOrCtrl+W' },
         ...(mac
           ? []
           : ([
-              { label: 'Settings…', accelerator: 'Ctrl+,', click: () => send({ command: 'settings' }) },
+              { label: 'Settings…', accelerator: 'Ctrl+,', click: (_item, _win, event) => send({ command: 'settings', accelerator: Boolean(event?.triggeredByAccelerator) }) },
               { type: 'separator' },
               { role: 'quit' },
             ] as MenuItemConstructorOptions[])),
@@ -67,7 +67,7 @@ export function buildMenu(hooks: MenuHooks): Menu {
         pane('Show chat', 'agent', 1),
         pane('Study', 'study', 2),
         pane('Paper', 'paper', 3),
-        { label: 'Show or hide files', accelerator: 'CmdOrCtrl+B', click: () => send({ command: 'pane', arg: 'files' }) },
+        { label: 'Show or hide files', accelerator: 'CmdOrCtrl+B', click: (_item, _win, event) => send({ command: 'pane', arg: 'files', accelerator: Boolean(event?.triggeredByAccelerator) }) },
         { type: 'separator' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },
@@ -85,7 +85,7 @@ export function buildMenu(hooks: MenuHooks): Menu {
       submenu: [
         { label: 'Documentation', click: () => void shell.openExternal(DOCS) },
         { label: 'Release notes', click: () => void shell.openExternal(RELEASES) },
-        { label: 'Help & feedback…', click: () => send({ command: 'settings', arg: 'help' }) },
+        { label: 'Help & feedback…', click: (_item, _win, event) => send({ command: 'settings', arg: 'help', accelerator: Boolean(event?.triggeredByAccelerator) }) },
         { type: 'separator' },
         { label: 'Check for updates…', click: () => void hooks.checkForUpdates() },
       ],

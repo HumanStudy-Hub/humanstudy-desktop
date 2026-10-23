@@ -11,7 +11,7 @@ import { packageStamp, type PackageProblem, type PackageReadiness } from '../../
 import { shortModelName } from './ModelPicker'
 import { listenToArtifact } from '../bridge'
 import { getLang, t } from '../i18n'
-import { track } from '../telemetry'
+import { holdAction, track } from '../telemetry'
 import { formatDuration } from '../format'
 
 interface Props {
@@ -184,6 +184,8 @@ export function SimulationPanel(props: Props) {
     setRunProblem(false); setNow(Date.now()); setPending({ at: Date.now(), kind: 'run', owner, before: agentTurnKey })
     setShown(null)
     track('simulation.run', { metadata: { perCondition, conditions: plan.conditions.length, model, built } })
+    // The approval is checked before it is sent; the resulting agent turn belongs to this run operation.
+    holdAction()
     try { await props.onRun(perCondition) } catch { setPending(null) }
   }
   const build = () => {

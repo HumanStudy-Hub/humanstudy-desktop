@@ -72,12 +72,13 @@ export async function controlAssets({kernel, project, session, input, output, lo
   },Math.min(20_000,Math.max(20,Math.min(timeoutMs,stallMs)/2)))
   const command=async request=>{
     if(closed)throw Error('Bridge is closed.')
-    onOperation(sid,request)
+    // The command is the operation; its id links the turn, answers and versions it causes.
+    const action=onOperation(sid,request)
     if(request.op==='send'||request.op==='build'){
       if(active)throw Error('A turn is active. Wait or abort before sending another request.')
       const text=request.op==='build'?readFileSync(join(project,'CONVERT.md'),'utf8'):request.text
       if(typeof text!=='string'||!text.trim())throw Error('A non-empty text is required.')
-      onRequest(sid,{...request,text})
+      onRequest(sid,{...request,text},action)
       active=true;failed=false;started=progress=Date.now();lastTurn='running'
       appendFileSync(eventPath,JSON.stringify({at:new Date().toISOString(),request:{op:request.op,text}})+'\n');line++
       try{await kernel.send(sid,text)}catch(error){active=false;lastTurn='error';throw error}
@@ -87,7 +88,7 @@ export async function controlAssets({kernel, project, session, input, output, lo
     }else if(request.op==='answer')await kernel.answerQuestion(sid,request.questionId,request.answers)
     else if(request.op==='reject-question')await kernel.rejectQuestion(sid,request.questionId)
     else if(request.op==='questions')return await kernel.questions(sid)
-    else if(request.op==='abort'){onRequest(sid,request);await kernel.abort(sid);active=false;lastTurn='aborted'}
+    else if(request.op==='abort'){onRequest(sid,request,action);await kernel.abort(sid);active=false;lastTurn='aborted'}
     else if(request.op==='auto'){
       if(!['on','off'].includes(request.mode))throw Error('Auto must be on or off.')
       kernel.setPermissionMode(request.mode==='on'?'project':'ask')

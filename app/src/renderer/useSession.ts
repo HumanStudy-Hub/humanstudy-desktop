@@ -2,8 +2,8 @@ import { NATIVE_TURNS, NATIVE_SESSION_MUTATIONS, type NativeRequest } from '../s
 import { createTextBatcher } from './text-batcher'
 import { updateQuestion, type QuestionPart } from '../shared/question'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { lap, track } from './telemetry'
-import type { KernelEvent, KernelUsage, PermissionReply, Thread, ThreadMessage, ThreadSummary, WorkspaceContext } from '../preload/types'
+import { claimAction, lap, track } from './telemetry'
+import type { ActionRef, KernelEvent, KernelUsage, PermissionReply, Thread, ThreadMessage, ThreadSummary, WorkspaceContext } from '../preload/types'
 
 export interface PermissionPart {
   automatic?: boolean
@@ -54,7 +54,7 @@ export interface Session {
   error: string | null
   /** Messages waiting for the current turn to finish; sent in order after `done`. */
   queue: QueuedMessage[]
-  send(text: string, workspace?: WorkspaceContext): void
+  send(text: string, workspace?: WorkspaceContext, action?: ActionRef): void
   /** Adds a message to the queue (sent automatically after the running turn). */
   enqueue(text: string, workspace?: WorkspaceContext): void
   editQueued(id: number, text: string): void
@@ -86,6 +86,8 @@ export interface QueuedMessage {
   id: number
   text: string
   workspace?: WorkspaceContext
+  /** The operation that queued it; the eventual send links to it. */
+  action?: ActionRef
 }
 
 let nextId = 1
@@ -112,7 +114,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const busyRef = useRef(false)
   const questionEpoch = useRef(0)
   const queueRef = useRef<QueuedMessage[]>([])
-  const sendRef = useRef<(text: string, workspace?: WorkspaceContext) => void>(() => undefined)
+  const sendRef = useRef<(text: string, workspace?: WorkspaceContext, action?: ActionRef) => void>(() => undefined)
   const setBusyBoth = (v: boolean) => {
     busyRef.current = v
     setBusy(v)
@@ -148,6 +150,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   }, [])
   const native = useCallback(async (request: NativeRequest) => {
     const sid=idRef.current
+    const action=claimAction('agent.native.'+request.operation)
     if(!sid)throw Error('Open a conversation first.')
     if(NATIVE_SESSION_MUTATIONS.has(request.operation)&&busyRef.current)throw Error('Stop the current response before changing this session.')
     if(NATIVE_TURNS.has(request.operation)){
@@ -158,7 +161,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
       }
     }
     try {
-      const result=await window.humanstudy.kernel.native(sid,request)
+      const result=await window.humanstudy.kernel.native(sid,request,action)
       if(idRef.current===sid && result && typeof result==='object' && 'kernelSessionId' in result)activate(result as Thread)
       return result
     } catch(error){
@@ -171,9 +174,10 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const startPaperBuild = useCallback(async (prompt: string) => {
     const dir = dirRef.current, sid = idRef.current
     if (!dir || !sid || busyRef.current) return
-    if (!(await window.humanstudy.project.startBuild(dir, sid))) return
+    const action = claimAction('paper.build')
+    if (!(await window.humanstudy.project.startBuild(dir, sid, action))) return
     if (dirRef.current !== dir || idRef.current !== sid || busyRef.current) return void window.humanstudy.project.releaseBuild(dir, sid)
-    sendRef.current(prompt)
+    sendRef.current(prompt, undefined, action)
   }, [])
 
   const refreshThreads = useCallback(async () => {
@@ -248,7 +252,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
         const next = queueRef.current[0]
         if (wasRunning && next) {
           setQueueBoth((q) => q.slice(1))
-          sendRef.current(next.text, next.workspace)
+          sendRef.current(next.text, next.workspace, next.action)
         }
         return
       }
@@ -273,14 +277,15 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     return () => { off(); batch.cancel(); if (textBatch.current === batch) textBatch.current = null }
   }, [refreshThreads])
 
-  const send = useCallback((text: string, workspace?: WorkspaceContext) => {
+  const send = useCallback((text: string, workspace?: WorkspaceContext, action?: ActionRef) => {
     textBatch.current?.flush()
     const sid = idRef.current
     if (!sid || !text.trim()) return
+    const ref = action ?? claimAction('composer.send')
     setMessages((ms) => [...ms, { id: nextId++, role: 'user', parts: [{ kind: 'text', text }], at: Date.now() }])
     setBusyBoth(true)
     setStatus('Thinking…')
-    window.humanstudy.kernel.send(sid, text, workspace).catch((e: unknown) => {
+    window.humanstudy.kernel.send(sid, text, workspace, ref).catch((e: unknown) => {
       setMessages((ms) => appendEvent(ms, { sessionId: sid, type: 'error', text: String(e) }))
       setBusyBoth(false)
     })
@@ -291,7 +296,8 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     textBatch.current?.flush()
     busyRef.current = false
     const sid = idRef.current
-    if (sid) void window.humanstudy.kernel.abort(sid).catch((e: unknown) => {
+    const ref = claimAction('agent.stop')
+    if (sid) void window.humanstudy.kernel.abort(sid, ref).catch((e: unknown) => {
       if (idRef.current === sid) setError(`Could not stop the agent: ${String(e)}`)
     })
     questionEpoch.current++
@@ -302,7 +308,9 @@ export function useSession(projectDir: string | null, enabled = true): Session {
 
   const enqueue = useCallback((text: string, workspace?: WorkspaceContext) => {
     if (!text.trim()) return
-    setQueueBoth((q) => [...q, { id: nextId++, text, ...(workspace ? { workspace: structuredClone(workspace) } : {}) }])
+    // Queuing is the researcher's operation now; the send happens when the running turn ends.
+    const action = claimAction('message.queue', true)
+    setQueueBoth((q) => [...q, { id: nextId++, text, action, ...(workspace ? { workspace: structuredClone(workspace) } : {}) }])
   }, [])
   const editQueued = useCallback((qid: number, text: string) => {
     setQueueBoth((q) => q.map((m) => (m.id === qid ? { ...m, text } : m)))
@@ -315,11 +323,13 @@ export function useSession(projectDir: string | null, enabled = true): Session {
       const sid = idRef.current
       if (!sid) return
       busyRef.current = false
+      // One operation: it stops the running turn and sends the new message.
+      const action = claimAction('composer.interrupt')
       // Wait for the abort to be acknowledged so its `done` cannot end the new turn.
       void window.humanstudy.kernel
-        .abort(sid)
+        .abort(sid, action)
         .catch(() => undefined)
-        .then(() => sendRef.current(text, workspace))
+        .then(() => sendRef.current(text, workspace, action))
     },
     [],
   )
@@ -329,9 +339,10 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     if (!sid) return
     const asked = messagesRef.current.flatMap((m) => m.parts).find((x) => x.kind === 'permission' && x.id === permissionId)
     track('permission.reply', { target: asked?.kind === 'permission' ? asked.type : undefined, metadata: { type: asked?.kind === 'permission' ? asked.type : null, reply: response } })
+    const action = claimAction('permission.reply')
     // Collapse the card at once; the follow-up event with `resolved` is idempotent.
     setMessages((ms) => resolvePermission(ms, permissionId, response))
-    window.humanstudy.kernel.reply(sid, permissionId, response).catch((e: unknown) => {
+    window.humanstudy.kernel.reply(sid, permissionId, response, action).catch((e: unknown) => {
       setMessages((ms) => appendEvent(ms, { sessionId: sid, type: 'error', text: `Could not answer the permission request: ${String(e)}` }))
     })
   }, [])
@@ -339,19 +350,21 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const answerQuestion = useCallback(async (questionId: string, answers: string[][]) => {
     const sid = idRef.current
     if (!sid) throw new Error('No active conversation.')
-    await window.humanstudy.kernel.answerQuestion(sid, questionId, answers)
+    const action = claimAction('question.reply')
+    await window.humanstudy.kernel.answerQuestion(sid, questionId, answers, action)
     if (idRef.current !== sid) return
     questionEpoch.current++
     setMessages(ms => appendEvent(ms, { sessionId: sid, type: 'question', question: { id: questionId, questions: [], answers, resolved: 'answered' } }))
-    track('question.reply', { metadata: { question_id: questionId, count: answers.length } })
+    track('question.reply', { metadata: { question_id: questionId, count: answers.length } }, action)
   }, [])
   const rejectQuestion = useCallback(async (questionId: string) => {
     const sid = idRef.current
     if (!sid) throw new Error('No active conversation.')
     // A deliberate dismissal stops this turn; its queued messages wait for the user.
+    const action = claimAction('question.reject')
     const wasBusy = busyRef.current
     busyRef.current = false
-    try { await window.humanstudy.kernel.rejectQuestion(sid, questionId) }
+    try { await window.humanstudy.kernel.rejectQuestion(sid, questionId, action) }
     catch (e) {
       if (idRef.current === sid) busyRef.current = wasBusy
       throw e
@@ -361,7 +374,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     setBusyBoth(false)
     setStatus('')
     setMessages(ms => appendEvent(ms, { sessionId: sid, type: 'question', question: { id: questionId, questions: [], resolved: 'rejected' } }))
-    track('question.reject', { metadata: { question_id: questionId } })
+    track('question.reject', { metadata: { question_id: questionId } }, action)
   }, [])
 
   const newThread = useCallback((force = false) => {

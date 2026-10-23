@@ -18,17 +18,23 @@ export const HUMAN_WINDOW_MS = 5_000
  * The researcher's in-app saves. When the saved text is known, only that exact content counts as the
  * researcher's; a different version appearing soon after (the agent's merge) is the agent's.
  */
-export function createWriteAttribution(now: () => number = Date.now) {
-  const human = new Map<string, { at: number; hash?: string }>()
+export function createWriteAttribution<A = unknown>(now: () => number = Date.now) {
+  const human = new Map<string, { at: number; hash?: string; action?: A }>()
+  const by = (path: string, text?: string): 'human' | 'agent' => {
+    const h = human.get(path)
+    if (!h || h.at <= now() - HUMAN_WINDOW_MS) return 'agent'
+    if (h.hash === undefined || text === undefined) return 'human'
+    return h.hash === sha1(text) ? 'human' : 'agent'
+  }
   return {
-    note(path: string, text?: string): void {
-      human.set(path, { at: now(), hash: text === undefined ? undefined : sha1(text) })
+    /** `action` is the researcher's save operation, so the captured version links to it. */
+    note(path: string, text?: string, action?: A): void {
+      human.set(path, { at: now(), hash: text === undefined ? undefined : sha1(text), action })
     },
-    by(path: string, text?: string): 'human' | 'agent' {
-      const h = human.get(path)
-      if (!h || h.at <= now() - HUMAN_WINDOW_MS) return 'agent'
-      if (h.hash === undefined || text === undefined) return 'human'
-      return h.hash === sha1(text) ? 'human' : 'agent'
+    by,
+    /** The save operation behind a version attributed to the researcher, if one was reported. */
+    action(path: string, text?: string): A | undefined {
+      return by(path, text) === 'human' ? human.get(path)?.action : undefined
     },
   }
 }

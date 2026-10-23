@@ -20,13 +20,17 @@ export function installCapture(): void {
     'keydown',
     (e) => {
       const which = shortcutName(e)
-      if (which) track('shortcut', { target: which, metadata: { which } })
+      // The shortcut begins an operation; the product action it triggers names it, so one key press
+      // is never counted as both a shortcut and the action.
+      if (which) beginActivation(`shortcut:${which}`, 'shortcut')
     },
     true,
   )
   document.addEventListener('click', e => {
     if (!(e.target instanceof Element)) return
     const el = e.target.closest('[data-event],button,a,input,select,textarea,[role]') ?? e.target
+    // Opening the system file picker is not itself an operation; choosing files is (see attach/import).
+    if (el instanceof HTMLInputElement && el.type === 'file') return
     const name = el.getAttribute('data-event') ?? el.tagName.toLowerCase()
     beginActivation(name, e.detail === 0 ? 'keyboard' : 'pointer')
   }, true)

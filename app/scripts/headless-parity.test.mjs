@@ -15,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const repo = resolve(here, '../..')
 const worker = readFileSync(join(here, 'opencode-assets.mjs'), 'utf8')
-const SHARED = ['research-collector.ts', 'research-agent.ts', 'research-contract.ts']
+const SHARED = ['research-collector.ts', 'research-agent.ts', 'research-contract.ts', 'research-operations.ts', 'research-interactions.ts']
 
 // The module list the worker compiles (its esbuild stdin), resolved relative to app/scripts.
 const workerModules = () => {
@@ -45,6 +45,12 @@ test('the worker compiles the same collector, agent adapter, kernel and completi
   assert.match(readFileSync(join(main, 'index.ts'), 'utf8'), /from '\.\/paper-build'/)
   assert.match(readFileSync(join(main, 'research-collector.ts'), 'utf8'), /from '\.\.\/shared\/research-contract'/, 'collector validates with the vendored contract')
   assert.match(readFileSync(join(main, 'research-agent.ts'), 'utf8'), /from '\.\/research-collector'/, 'agent adapter writes through the collector')
+  // T10: one causality model. The worker's command/version wiring is the tested headless-research.mjs,
+  // and the agent adapter owns the single action registry both surfaces use.
+  assert.match(worker, /from '\.\/headless-research\.mjs'/)
+  assert.match(worker, /onOperation:headlessResearch\.onOperation,onRequest:headlessResearch\.onRequest/)
+  assert.match(readFileSync(join(main, 'research-agent.ts'), 'utf8'), /from '\.\.\/shared\/research-operations'/)
+  assert.match(telemetry, /researchAgent\.interaction\(/, 'desktop UI events route through the same action registry')
 })
 
 test('vendored contract matches the canonical web contract', { skip: !process.env.HUMANSTUDY_WEB_CONTRACT && 'set HUMANSTUDY_WEB_CONTRACT to compare' }, () => {

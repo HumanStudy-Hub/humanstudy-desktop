@@ -23,6 +23,10 @@ interface Options {
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export type ResearchCapture = Partial<ResearchEvent> & Pick<ResearchEvent, 'event_type'>
+/** Causal columns a caller attaches to a captured version or import (see research-agent.ts). */
+export interface CaptureLink { action_id?: string; caused_by?: string; thread_id?: string; tool_call_id?: string; metadata?: Record<string, unknown> }
+const linkFields = (link?: CaptureLink) => link ? { ...(link.action_id ? { action_id: link.action_id } : {}), ...(link.caused_by ? { caused_by: link.caused_by } : {}),
+  ...(link.thread_id ? { thread_id: link.thread_id } : {}), ...(link.tool_call_id ? { tool_call_id: link.tool_call_id } : {}) } : {}
 async function json<T>(path: string): Promise<T | null> { try { return JSON.parse(await readFile(path, 'utf8')) } catch { return null } }
 async function atomic(path: string, data: string | Uint8Array) {
   const tmp = `${path}.${randomUUID()}.tmp`
@@ -161,7 +165,7 @@ export function createResearchCollector(options: Options) {
     })
   }
   /** Version generated files; sanitize text, preserve opaque bytes. Sources use queueSource. */
-  function queueArtifact(path: string, projectId: string, artifactId: string, by: string): Promise<void> {
+  function queueArtifact(path: string, projectId: string, artifactId: string, by: string, link?: CaptureLink | (() => CaptureLink)): Promise<void> {
     const capturedOwner = localOwner()
     return run(async () => {
       const owner = await capturedOwner; if (!owner || await localOwner() !== owner) return
@@ -178,13 +182,15 @@ export function createResearchCollector(options: Options) {
       const previous = await json<{ hash: string; version: number }>(receipt)
       if (previous?.hash === ref.sha256) return
       const version = (previous?.version ?? 0) + 1
+      // Resolved when the version is known to be new, so the writer link is as fresh as the bytes.
+      const resolved = typeof link === 'function' ? link() : link
       await enqueue({ userId: owner }, root, { event_type: artifactId === 'program.json' ? 'program.version' : 'artifact.version', data_type: 'knowledge_artifact',
-        project_id: projectId, artifact_id: artifactId, artifact_version: version,
-        metadata: { by, hash: ref.sha256 }, content_refs: [{ ...ref, role }] })
+        project_id: projectId, artifact_id: artifactId, artifact_version: version, ...linkFields(resolved),
+        metadata: { ...resolved?.metadata, by, hash: ref.sha256 }, content_refs: [{ ...ref, role }] })
       await atomic(receipt, JSON.stringify({ hash: ref.sha256, version }))
     })
   }
-  async function queueSource(path: string, projectId: string, mime = 'application/octet-stream'): Promise<void> {
+  async function queueSource(path: string, projectId: string, mime = 'application/octet-stream', link?: CaptureLink): Promise<void> {
     const capturedOwner = localOwner()
     return run(async () => {
       const owner = await capturedOwner; if (!owner || await localOwner() !== owner) return
@@ -198,7 +204,7 @@ export function createResearchCollector(options: Options) {
       // Recheck after file IO: signing out or switching accounts must never reattribute a source.
       if (await localOwner() !== auth.userId) return
       await enqueue(auth, root, { event_type: 'source.import', data_type: 'source_input', project_id: projectId,
-        source_id: ref.sha256, metadata: { provenance: 'import', filename: scrubResearchString(basename(path)) }, content_refs: [ref] })
+        source_id: ref.sha256, ...linkFields(link), metadata: { ...link?.metadata, provenance: 'import', filename: scrubResearchString(basename(path)) }, content_refs: [ref] })
       await atomic(receipt, JSON.stringify({ sha256: ref.sha256 }))
     })
   }

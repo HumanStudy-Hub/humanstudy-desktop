@@ -120,3 +120,48 @@ collection enabled, `conversation.question` captures both the pending request an
 answered/dismissed state, linked by question, thread and message ids. Interaction-only
 `question.reply`/`question.reject` events carry ids/counts, not answer text. Dismissal is not
 consent; stopped turns explicitly clear pending questions in the native server.
+
+## Causality (T10)
+
+Research-v1 records (`research_events`) follow one causality model on desktop and headless. The
+machine-readable coverage map is [research-coverage-map.json](research-coverage-map.json): for each
+agreed data type, the capture point per surface, the event types, the cloud destination and how
+records link. `app/src/main/research-coverage.test.mjs` drives a scripted source-to-program session
+(import, navigate/select/annotate, ask the agent, answer a question, a permission, a tool write,
+a saved program change, opening an artifact, a simulation run and stop) through the real collector,
+agent adapter and operation tracker on both surfaces with a mocked kernel and network, and fails
+on a missing data type, an unlinked or orphaned downstream record, a duplicate primary action, a
+prohibited stream or a credential/home path in rows or stored content.
+
+- **One primary action per operation.** A click, keyboard shortcut, menu command, composer Enter
+  or headless command is one operation with one `action.invoke` (`shared/research-operations.ts`).
+  The first semantic product action names it and `metadata.via` records the input route
+  (`pointer`, `keyboard`, `shortcut`, `menu`, `system`). A generic `ui.click`/`shortcut`/
+  `menu.command` is recorded only when no semantic action claimed the operation within 300 ms;
+  a shortcut and the action it triggers, or an accelerator and its menu command, count once.
+  Further names for the same operation remain in the legacy `desktop_events` stream only.
+  Opening the system file picker is not an operation by itself; choosing files is.
+- **Links.** `action_id` is the initiating primary action. `caused_by` is the record that directly
+  caused this one. `metadata.parent_action_id` is the enclosing operation when one happens inside
+  another (an answer or permission reply during a turn, a message sent while a turn runs, the
+  automatic paper build authorized by importing the paper). Requests that cross to the main
+  process (send, stop, answer, permission reply, save, import, create, slash commands) carry the
+  operation id; the main process records the primary the first time any path reports it.
+- **Native ids.** `thread_id` is the OpenCode session id; assistant text uses OpenCode's message
+  id with `native_part_ids`; tool records use OpenCode's call id with `native_message_id` and
+  `native_part_id`; `agent.turn_end` records the native user message id.
+- **Versions.** A researcher save links to the save operation (`trigger: human-save`; human vs
+  agent is decided by the exact saved bytes, `write-capture.ts`). An agent write links to the tool
+  call whose input names the file, else the running or most recent call in that project
+  (`trigger: agent-tool`, `writer_link`), else the turn. State found when a project opens is
+  `trigger: baseline`; a change no operation of this process caused is `trigger: external`.
+  Annotation files (`*.annotations.json`) are versioned as artifacts, not imported as sources.
+- **Headless.** UI actions (clicks, shortcuts, menus, navigation, selection/layout) are not
+  applicable and recorded as such (`ui_actions: not_applicable`). The worker launch is
+  `command.start` (sources and baseline versions link to it) and each JSON-lines command is
+  `command.<op>` (`scripts/headless-research.mjs`).
+- **Passive summaries** (`app.foreground`, `scroll.settle`) are never attributed to an operation.
+  A selection made without a click is a standalone `selection.commit`.
+
+Known gaps are listed in the map: `consent.change`, `agent.runtime` and `source.page_dwell` are
+not emitted as v1 events (agreement rows, the legacy stream and `view.dwell` cover them).

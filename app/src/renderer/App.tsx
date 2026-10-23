@@ -11,7 +11,7 @@ import { useKernelInstall } from './useKernelInstall'
 import { ThreadMenu } from './components/Threads'
 import { UpdateNotice, useUpdateStatus } from './components/Updates'
 import { AgreementDialog } from './components/ResearchData'
-import { lap, setTelemetryProject, track } from './telemetry'
+import { beginMenuCommand, claimAction, lap, setTelemetryProject, track } from './telemetry'
 import { t, useLang } from './i18n'
 import { classifyTool, researchActivity, toolSentence } from './toolSentence'
 import { onAsk as onArtifactAsk, onOpenSource as onArtifactOpenSource } from './bridge'
@@ -156,9 +156,10 @@ export default function App() {
   const openProject = useCallback(
     async (dir: string) => {
       const started = performance.now()
+      const action = claimAction('project.open', true)
       await load(dir)
       await setTelemetryProject(dir)
-      track('project.opened', { durationMs: performance.now() - started })
+      track('project.opened', { durationMs: performance.now() - started }, action)
     },
     [load]
   )
@@ -319,6 +320,7 @@ export default function App() {
   useEffect(
     () =>
       window.humanstudy.menu.onCommand((c) => {
+        beginMenuCommand(`menu:${c.command}${c.arg ? '.' + c.arg : ''}`, Boolean(c.accelerator))
         if (c.command === 'newProject') runCommand('project.new')
         else if (c.command === 'openFolder') runCommand('project.open')
         else if (c.command === 'pane') {

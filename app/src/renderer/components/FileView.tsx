@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ProjectEntry } from '../../preload/types'
 import { size } from './Explorer'
-import { track } from '../telemetry'
+import { claimAction, track } from '../telemetry'
 import { t } from '../i18n'
 import { Markdown } from './Markdown'
 import { CsvTable, useVersions } from './Previews'
@@ -109,16 +109,17 @@ export function FileView({ file, version, onDirty }: Props) {
 
   const save = async () => {
     if (!dirty || saving) return
+    const action = claimAction('file.save')
     setSaving(true)
     try {
       const disk = toDisk(text, onDisk ?? saved)
-      await window.humanstudy.project.writeText(file.path, disk)
+      await window.humanstudy.project.writeText(file.path, disk, undefined, action)
       setSaved(disk)
       setOnDisk(null)
       setError('')
       setFlash(t('file.saved'))
       setTimeout(() => setFlash(''), 1500)
-      track('file.saved', { target: file.ext || 'file' })
+      track('file.saved', { target: file.ext || 'file' }, action)
     } catch (e) {
       setError((e instanceof Error ? e.message : String(e)).replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, ''))
     } finally {

@@ -1,0 +1,117 @@
+{
+  "format": "humanstudy-research-coverage-v1",
+  "contract_version": "1.0.0",
+  "issue": "HumanStudy-Hub/humanstudy-desktop#27 (tracker #30, item T10)",
+  "checked_by": ["app/src/main/research-coverage.test.mjs"],
+  "destination": {
+    "events": "public.research_events (one row per record; owner_id and received_at set by the server)",
+    "content": "public.research_content rows + private Storage bucket research-content/<owner>/<sha256> (gzip parts, manifests for > 4 MiB); events reference it through content_refs",
+    "local_before_delivery": "<userData>/research-v1/<owner>/{events,content,rejected} (desktop); <project>/.humanstudy/asset-agent/research-data/<owner>/... (headless)"
+  },
+  "causality": {
+    "primary_event": "action.invoke",
+    "rule": "One user operation (click, keyboard shortcut, menu command, composer Enter, headless command) has exactly one action.invoke, whose id is its action_id. The first semantic product action names it; a generic click/shortcut/menu record is written only when no semantic action claimed the operation within 300 ms. Further semantic names for the same operation stay in the legacy desktop_events stream.",
+    "action_id": "the primary action that initiated the record",
+    "caused_by": "the record that directly caused this one (turn_start -> action; user message -> turn_start; assistant text -> user message; tool.end -> tool.start; agent-written version -> tool.end of the writing call; resolved question/permission -> answering action)",
+    "parent_action_id": "metadata.parent_action_id: the enclosing operation when one happens inside another (an answer or permission reply during a turn, a message sent while a turn runs, an automatic paper build authorized by the paper import/create)",
+    "native_ids": {
+      "thread_id": "native OpenCode session id",
+      "conversation.message (assistant)": "message_id = native OpenCode message id when reported (metadata.native_id_reported); metadata.native_part_ids",
+      "tool.start / tool.end": "tool_call_id = native OpenCode callID (fallback: part id, marked native_id_reported=false); metadata.native_message_id, metadata.native_part_id",
+      "agent.usage": "message_id = native assistant message id",
+      "agent.turn_end": "metadata.native_user_message_id (OpenCode user message id, from the kernel identity event) and metadata.user_message_id (the captured user message)",
+      "conversation.question": "message_id = metadata.question_id = native question request id",
+      "permission.*": "metadata.permission_id = native permission request id"
+    },
+    "unlinked_labels": {
+      "baseline": "state observed when a project opens or the headless worker starts (desktop: no action; headless: linked to command.start)",
+      "external": "a change no operation of this process caused (another editor, a session started elsewhere)",
+      "not-reported": "metadata.action_link on a human save whose caller sent no operation id (older renderer)"
+    },
+    "version_links": {
+      "human": "metadata.trigger = human-save; action_id = the save operation (write-capture.ts attribution decides human vs agent by the exact saved bytes)",
+      "agent": "metadata.trigger = agent-tool; tool_call_id/caused_by = the tool call whose input names the file, else the running call, else the latest call in the project within 60 s (metadata.writer_link says which); else agent-turn"
+    }
+  },
+  "never_collected": [
+    "continuous mouse/pointer positions or trajectories",
+    "individual keystrokes (a shortcut records only its name, e.g. shortcut:cmd+b, and only when no product action claimed it)",
+    "screen, DOM or session-replay recordings",
+    "activity in other applications",
+    "credentials, tokens, account email, absolute machine paths (scrubbed by scrubResearchValue before persistence)"
+  ],
+  "data_types": {
+    "session": {
+      "linkage": "none",
+      "event_types": {
+        "session.start": { "desktop": "research-collector.ts enqueue (first record of a run)", "headless": "same collector" },
+        "session.end": { "desktop": "telemetry.ts settleResearch(final)", "headless": "opencode-assets.mjs finally: research.end('worker-exit')" },
+        "delivery.checkpoint": { "desktop": "research-collector.ts flush", "headless": "same collector" },
+        "delivery.rejected": { "desktop": "research-collector.ts flush (quarantine)", "headless": "same collector" },
+        "consent.change": { "desktop": "gap: agreement changes are recorded in research_consents and legacy consent.changed, not as a v1 event", "headless": "not_applicable: the account profile carries the agreement" }
+      }
+    },
+    "interaction": {
+      "linkage": "self",
+      "event_types": {
+        "action.invoke": {
+          "desktop": "renderer capture.ts (document click, shortcut keydown) + Chat.tsx (composer Enter) + App.tsx menu.onCommand -> shared/research-operations.ts createOperations -> telemetry:track IPC -> research-agent.ts interaction/action; downstream IPCs (kernel:send/abort/reply/answerQuestion/rejectQuestion/native, project:writeText/importFiles/startBuild/retryBuild, projects:create) carry the operation id",
+          "headless": "scripts/headless-research.mjs: command.start (worker launch) and command.<op> for every JSON-lines command; UI clicks/shortcuts/menus not_applicable"
+        }
+      }
+    },
+    "navigation": {
+      "linkage": "when_initiated",
+      "event_types": {
+        "view.dwell": { "desktop": "tab.switch / thread.switch / source.page with duration (Workbench, Studies, useSession, SourceDrawer); linked to the click that ended the dwell", "headless": "not_applicable" },
+        "app.foreground": { "desktop": "capture.ts visibilitychange (passive, never linked)", "headless": "not_applicable" },
+        "scroll.settle": { "desktop": "capture.ts settled scroll (passive, never linked)", "headless": "not_applicable" },
+        "source.page_dwell": { "desktop": "gap: source page dwell is captured as view.dwell (target page.N) because the renderer does not know the source sha256", "headless": "not_applicable" }
+      }
+    },
+    "selection_layout": {
+      "linkage": "when_initiated",
+      "event_types": {
+        "selection.commit": { "desktop": "App.tsx selection.change, SourceDrawer source.select, telemetry.ts onThreadCapture workspace-context (linked to the send)", "headless": "not_applicable" },
+        "annotation.commit": { "desktop": "SourceDrawer saveAnnotation -> source.annotated / source.annotation_removed (annotation id + anchor: source, pages, bounds)", "headless": "not_applicable" },
+        "layout.commit": { "desktop": "Workbench source.compare_resized and other *resized/pane.* events", "headless": "not_applicable" }
+      }
+    },
+    "conversation": {
+      "linkage": "required",
+      "event_types": {
+        "conversation.message": { "desktop": "research-agent.ts start (user, full text) / checkpoint (assistant, partial + final segments)", "headless": "same adapter via headless-research.mjs onRequest" },
+        "conversation.question": { "desktop": "research-agent.ts event(question); answers link to the answering operation (agent.answer before kernel.answerQuestion)", "headless": "same; answer / reject-question commands" },
+        "conversation.error": { "desktop": "research-agent.ts event(error)", "headless": "same adapter" }
+      }
+    },
+    "agent_execution": {
+      "linkage": "required",
+      "event_types": {
+        "agent.turn_start": { "desktop": "research-agent.ts start", "headless": "same adapter" },
+        "agent.turn_end": { "desktop": "research-agent.ts finish (complete/error/aborted/interrupted; stopped_by_action_id)", "headless": "same adapter" },
+        "agent.usage": { "desktop": "research-agent.ts event(usage)", "headless": "same adapter" },
+        "agent.recovery": { "desktop": "research-agent.ts event(status recovering)", "headless": "same adapter" },
+        "tool.start": { "desktop": "research-agent.ts event(tool) with complete input", "headless": "same adapter" },
+        "tool.end": { "desktop": "research-agent.ts event(tool completed/error) with complete output; interrupted at turn end", "headless": "same adapter" },
+        "permission.request": { "desktop": "research-agent.ts event(permission)", "headless": "same adapter" },
+        "permission.decision": { "desktop": "research-agent.ts event(permission resolved); researcher replies link to the reply operation (agent.permit)", "headless": "same; permission command" },
+        "agent.runtime": { "desktop": "gap: kernel install/runtime state is in the legacy stream only", "headless": "gap: worker doctor/provenance is written to the local run log only" }
+      }
+    },
+    "knowledge_artifact": {
+      "linkage": "required_or_labelled",
+      "event_types": {
+        "program.version": { "desktop": "telemetry.ts snapshotProgram (exact bytes committed under the save lock, attributed by write-capture.ts) + researchAgent.versionLink", "headless": "headless-research.mjs captureArtifacts -> research-collector.ts queueArtifact(link)" },
+        "artifact.version": { "desktop": "telemetry.ts snapshotFile (artifacts/, exports/, package/, *.annotations.json) + researchAgent.versionLink", "headless": "headless-research.mjs captureArtifacts (artifacts/, package/, exports/)" }
+      }
+    },
+    "source_input": {
+      "linkage": "required_or_labelled",
+      "event_types": {
+        "source.import": { "desktop": "telemetry.ts queueSource: projects:create / project:importFiles operations (noteImport) or baseline at project open", "headless": "headless-research.mjs at launch (linked to command.start, trigger baseline)" }
+      }
+    }
+  },
+  "web": "Mirrored separately in humanstudy-hub-web (T08). The web adapter must emit the same action.invoke-per-operation rule and the same action_id / caused_by / metadata.parent_action_id meanings; see docs/research-data.md#causality-t10."
+}

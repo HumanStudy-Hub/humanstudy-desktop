@@ -33,6 +33,8 @@ export interface KernelEvent {
   /** Native ids, when reported by the kernel. */
   toolCallId?: string
   messageId?: string
+  /** Native OpenCode part id of a text or tool part, when reported. */
+  partId?: string
   type: KernelEventType
   text?: string
   tool?: string

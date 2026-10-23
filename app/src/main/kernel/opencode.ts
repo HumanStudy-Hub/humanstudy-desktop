@@ -1004,7 +1004,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         if (type ? type !== 'text' : role !== 'assistant') return // skip reasoning etc.
         s.emitted.set(p.partID, (s.emitted.get(p.partID) ?? 0) + p.delta.length)
         if (p.delta.trim()) s.recovery.progress = true
-        emit({ type: 'text', text: p.delta })
+        emit({ type: 'text', text: p.delta, messageId: p.messageID, partId: p.partID })
         return
       }
 
@@ -1020,7 +1020,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
           if (full.length > shown) {
             s.emitted.set(part.id, full.length)
             if (full.slice(shown).trim()) s.recovery.progress = true
-            emit({ type: 'text', text: full.slice(shown) })
+            emit({ type: 'text', text: full.slice(shown), messageId: part.messageID, partId: part.id })
           }
         } else if (part.type === 'tool') {
           const st = part.state ?? {}
@@ -1047,6 +1047,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
             type: 'tool',
             toolCallId: part.callID ?? part.id,
             messageId: part.messageID,
+            partId: part.id,
             tool: part.tool,
             text: status,
             detail,

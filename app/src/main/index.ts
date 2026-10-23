@@ -34,6 +34,7 @@ import { createShutdown } from './shutdown-core'
 import { refreshPack } from './pack'
 import { assertRunnablePackage, projectPackageReadiness } from './package-readiness'
 import type { Kernel, KernelEvent } from './kernel-types'
+import { actionRef } from '../shared/research-operations'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
 
 // ---- kernel: accept a factory, a default export, a class, or an instance -------------
@@ -413,9 +414,16 @@ app.whenReady().then(() => {
     telemetry.noteProjectFiles(snap)
     return snap
   })
-  ipcMain.handle('project:startBuild', (_e, dir: string, sid: string) => paperBuilds.start(ownedPath(dir), sid))
+  ipcMain.handle('project:startBuild', (_e, dir: string, sid: string, action?: unknown) => {
+    const claimed = paperBuilds.start(ownedPath(dir), sid)
+    if (claimed) telemetry.noteBuildClaim(ownedPath(dir), sid, actionRef(action))
+    return claimed
+  })
   ipcMain.handle('project:releaseBuild', (_e, dir: string, sid: string) => paperBuilds.release(ownedPath(dir), sid))
-  ipcMain.handle('project:retryBuild', (_e, dir: string) => paperBuilds.retry(ownedPath(dir)))
+  ipcMain.handle('project:retryBuild', (_e, dir: string, action?: unknown) => {
+    telemetry.noteAction(actionRef(action), ownedPath(dir))
+    return paperBuilds.retry(ownedPath(dir))
+  })
   ipcMain.handle('project:reveal', (_e, p: string) => shell.showItemInFolder(p))
   ipcMain.handle('project:versions', async (_e, p: string) => {
     const q = ownedPath(p)
@@ -442,24 +450,28 @@ app.whenReady().then(() => {
     if ((await stat(q)).size > TEXT_LIMIT) throw new Error('file is larger than 4 MB')
     return readFile(q, 'utf8')
   })
-  ipcMain.handle('project:writeText', async (_e, p: string, text: string, ifUnchanged?: string) => {
+  ipcMain.handle('project:writeText', async (_e, p: string, text: string, ifUnchanged?: string, action?: unknown) => {
     const q = ownedPath(p)
+    const ref = actionRef(action)
     if (typeof text !== 'string' || text.length > TEXT_LIMIT) throw new Error('text is too large')
+    telemetry.noteAction(ref, [...openProjects].find((d) => q.startsWith(d + sep))) // the save operation, with its project
     await saveProjectText(q, text, { ifUnchanged, beforeWrite: async () => {
       const root = [...openProjects].find((d) => q.startsWith(d + sep))
       if (root) await snapshot(root, relOf(root, q)).catch(() => undefined)
-      telemetry.noteHumanWrite(q, text)
+      telemetry.noteHumanWrite(q, text, ref)
     } })
     if (basename(q).toLowerCase() === 'program.json') {
       const root = projectRootOf(q)
       telemetry.noteProgramWritten(root, text) // the version actually committed under the lock
       paperBuilds.humanSaved(root)
     }
-    telemetry.track('file.edited', { target: extname(q).slice(1) || 'file' })
+    telemetry.track('file.edited', { target: extname(q).slice(1) || 'file', ...(ref ? { action: ref } : {}) })
   })
 
-  ipcMain.handle('project:importFiles', async (_e, dir: string, paths: string[]) => {
+  ipcMain.handle('project:importFiles', async (_e, dir: string, paths: string[], action?: unknown) => {
     const root = ownedPath(dir)
+    const ref = actionRef(action)
+    telemetry.noteAction(ref, root)
     if (!Array.isArray(paths) || paths.length > 50) throw new Error('too many files')
     const hasPaper = existsSync(join(root, 'paper.pdf'))
     let paperTaken = hasPaper
@@ -479,6 +491,7 @@ app.whenReady().then(() => {
         for (let n = 2; existsSync(target); n++) target = join(root, 'sources', `${stem} ${n}${ext}`)
         name = basename(target)
       }
+      telemetry.noteImport(root, relative(root, target), ref)
       await copyFile(src, target, 1) // COPYFILE_EXCL: never overwrite
       // Import is a known completed action; don't rely on fs.watch reporting a filename on Windows.
       telemetry.noteFsChange(root, relative(root, target))
@@ -499,9 +512,11 @@ app.whenReady().then(() => {
       throw err
     }
   })
-  ipcMain.handle('projects:create', async (_e, input: { name: string; pdfPath?: string; sample?: boolean }) => {
+  ipcMain.handle('projects:create', async (_e, input: { name: string; pdfPath?: string; sample?: boolean }, action?: unknown) => {
+    const ref = actionRef(action)
     const dir = await createProject(input)
-    telemetry.track('project.created', { metadata: { sample: Boolean(input?.sample), withPaper: Boolean(input?.pdfPath) } }, dir)
+    telemetry.noteProjectCreated(dir, ref)
+    telemetry.track('project.created', { metadata: { sample: Boolean(input?.sample), withPaper: Boolean(input?.pdfPath) }, ...(ref ? { action: ref } : {}) }, dir)
     return dir
   })
   ipcMain.handle('projects:pickPdf', async () => {
@@ -647,7 +662,7 @@ app.whenReady().then(() => {
     return id
   })
   threadsInitialized = true
-  ipcMain.handle('kernel:send', async (_e, id: string, text: string, workspace?: WorkspaceContext) => {
+  ipcMain.handle('kernel:send', async (_e, id: string, text: string, workspace?: WorkspaceContext, action?: unknown) => {
     if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
     const k = kernelFor(id)
     // A simulation approval only reaches the agent when the package can run (the Simulation tab checks
@@ -655,7 +670,7 @@ app.whenReady().then(() => {
     let projectDir = sessionProject.get(id)
     try { projectDir ??= k.directory?.(id) } catch { /* unknown to the kernel; it will refuse the send itself */ }
     await assertRunnablePackage(projectDir, text)
-    telemetry.trackTurnStart(id, text)
+    telemetry.trackTurnStart(id, text, actionRef(action))
     const prompt = threads().beforeSend(id, text, workspace)
     const alreadyActive = activeTurns.has(id)
     activeTurns.add(id)
@@ -672,7 +687,8 @@ app.whenReady().then(() => {
     await writeFile(choice.filePath,choice.filePath.endsWith('.md')?'# Conversation\n\n```json\n'+content+'```\n':content,'utf8')
     return choice.filePath
   })
-  ipcMain.handle('kernel:native', async (_e, sid: string, request: NativeRequest) => {
+  ipcMain.handle('kernel:native', async (_e, sid: string, request: NativeRequest, action?: unknown) => {
+    const ref = actionRef(action)
     if (!request || typeof request.operation !== 'string') throw Error('Choose an OpenCode action.')
     if (shutdown.closing() && NATIVE_MUTATIONS.has(request.operation)) throw Error('The app is saving before closing.')
     const k=kernelFor(sid)
@@ -689,8 +705,8 @@ app.whenReady().then(() => {
     if(NATIVE_TURNS.has(request.operation)){
       activeTurns.add(sid)
       if(request.operation!=='compact')threads().beforeSend(sid, request.operation==='shell' ? '!'+String(request.input?.command??'') : '/'+String(request.input?.command??'')+' '+String(request.input?.arguments??''))
-      telemetry.trackTurnStart(sid,'/'+request.operation)
-    }
+      telemetry.trackTurnStart(sid,'/'+request.operation,ref)
+    } else if (ref && (ref.via !== 'system' || NATIVE_MUTATIONS.has(request.operation))) telemetry.noteAction(ref, sessionProject.get(sid)) // background reads are not operations
     telemetry.track('agent.native_action',{target:request.operation})
     const result=await k.native(sid,operation)
     if(request.operation==='select'){threads().rememberSelection(sid,result as NativeSelection);telemetry.track('agent.configuration',{metadata:result as Record<string,unknown>})}
@@ -720,13 +736,14 @@ app.whenReady().then(() => {
     }
     return result
   })
-  ipcMain.handle('kernel:abort', (_e, id: string) => {
-    telemetry.trackTurnAbort(id)
+  ipcMain.handle('kernel:abort', (_e, id: string, action?: unknown) => {
+    telemetry.trackTurnAbort(id, actionRef(action))
     return kernelFor(id).abort(id)
   })
-  ipcMain.handle('kernel:reply', (_e, id: string, permissionId: string, response: 'once' | 'always' | 'reject') => {
+  ipcMain.handle('kernel:reply', (_e, id: string, permissionId: string, response: 'once' | 'always' | 'reject', action?: unknown) => {
     if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
     if (response !== 'once' && response !== 'always' && response !== 'reject') throw new Error('bad permission response')
+    telemetry.notePermission(id, permissionId, actionRef(action))
     return kernelFor(id).reply(id, permissionId, response)
   })
   ipcMain.handle('kernel:questions', async (_e, id: string) => {
@@ -734,11 +751,15 @@ app.whenReady().then(() => {
     if (pending.length) activeTurns.add(id)
     return pending
   })
-  ipcMain.handle('kernel:answerQuestion', (_e, id: string, questionId: string, answers: string[][]) => {
+  ipcMain.handle('kernel:answerQuestion', (_e, id: string, questionId: string, answers: string[][], action?: unknown) => {
     if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
+    telemetry.noteAnswer(id, questionId, actionRef(action))
     return kernelFor(id).answerQuestion(id, questionId, answers)
   })
-  ipcMain.handle('kernel:rejectQuestion', (_e, id: string, questionId: string) => kernelFor(id).rejectQuestion(id, questionId))
+  ipcMain.handle('kernel:rejectQuestion', (_e, id: string, questionId: string, action?: unknown) => {
+    telemetry.noteAnswer(id, questionId, actionRef(action))
+    return kernelFor(id).rejectQuestion(id, questionId)
+  })
   ipcMain.handle('threads:list', (_e, dir: string) => threads().list(threadDir(dir)))
   ipcMain.handle('threads:get', (_e, dir: string, id: string) => threads().get(threadDir(dir), id))
   ipcMain.handle('threads:create', (_e, dir: string) => threads().create(threadDir(dir)))

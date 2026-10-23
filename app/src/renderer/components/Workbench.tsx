@@ -5,7 +5,7 @@ import StudyModel, { viewStudies, type QuoteStatus, type StudyModelProps } from 
 import { readHumanProgram, type HumanProgram } from '../../shared/human-program'
 import { patchProgramField } from '../../shared/program-patch'
 import type { ProjectEntry, ProjectSnapshot, WorkspaceContext } from '../../preload/types'
-import { lap, track } from '../telemetry'
+import { claimAction, lap, track } from '../telemetry'
 import { FileView } from './FileView'
 import { Explorer, flatten } from './Explorer'
 import { SourceDrawer, type PassageSelection, type SourceRef } from './SourceDrawer'
@@ -117,7 +117,7 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   const buildFailed = build?.status === 'error' ? `${t(`build.error.${build.error ?? 'failed'}`)} ${t('build.kept')}` : ''
   // A project from before automatic builds: a paper, no study, never built. Offer it; never start it unasked.
   const paperOnly = !build && Boolean(project.pdf) && !project.program && !error
-  const retryBuild = () => void window.humanstudy.project.retryBuild(project.dir).catch((e: unknown) => setEditError(String(e)))
+  const retryBuild = () => void window.humanstudy.project.retryBuild(project.dir, claimAction('build.retry')).catch((e: unknown) => setEditError(String(e)))
   const studies = useMemo(() => (program ? viewStudies(program) : []), [program])
   const files = useMemo(() => flatten(project.tree), [project.tree])
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
@@ -266,6 +266,7 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   // Only that field's bytes change; entries the tolerant reader set aside are never rewritten.
   const onEdit = async (id: string, fieldId: string, text: string): Promise<boolean> => {
     if (!program) return false
+    const action = claimAction('program.edit')
     const path = `${project.dir}/program.json`
     // Read, patch, write only if unchanged since the read: an agent checkpoint (program_io.py) landing in
     // between is patched again rather than overwritten.
@@ -278,7 +279,7 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
         if (/is not in program\.json$/.test(e instanceof Error ? e.message : '')) throw new Error(t('study.field_missing', { id, field: fieldId }))
         throw e
       }
-      await window.humanstudy.project.writeText(path, next, raw)
+      await window.humanstudy.project.writeText(path, next, raw, action)
     }
     try {
       for (let attempt = 0; ; attempt++) {
@@ -289,7 +290,7 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
       }
       setEditError('')
       setChanged((c) => new Set(c).add(id))
-      track('program.edited', { target: id, metadata: { field: fieldId } })
+      track('program.edited', { target: id, metadata: { field: fieldId } }, action)
       return true
     } catch (e) {
       setEditError(e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '') : String(e))
@@ -401,7 +402,8 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
                 if (ownTurn) onStopAgent?.()
                 // The run itself is a background process; simkit ends it after the participants in flight.
                 const live = runs.length ? runs : [project.tree.length ? findRunning(project.tree) : null].filter((p): p is string => Boolean(p))
-                for (const dir of live) void window.humanstudy.project.writeText(`${dir}/STOP`, 'Stopped by the researcher\n').catch(() => undefined)
+                const action = claimAction('simulation.stop')
+                for (const dir of live) void window.humanstudy.project.writeText(`${dir}/STOP`, 'Stopped by the researcher\n', undefined, action).catch(() => undefined)
               }}
               onAsk={(draft) => docProps.onPrefill?.(draft)}
               onOpenFile={(path) => { const e = fileByPath.get(path); if (e) openEntry(e) }}
