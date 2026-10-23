@@ -5,10 +5,10 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const temp = await mkdtemp(join(tmpdir(), 'research-operations-'))
-await build({ entryPoints: [new URL('./research-operations.ts', import.meta.url).pathname], bundle: true, platform: 'node', format: 'esm', outfile: join(temp, 'ops.mjs'), logLevel: 'error' })
+await build({ entryPoints: [fileURLToPath(new URL('./research-operations.ts', import.meta.url))], bundle: true, platform: 'node', format: 'esm', outfile: join(temp, 'ops.mjs'), logLevel: 'error' })
 const { createOperations, actionRef, FALLBACK_MS } = await import(pathToFileURL(join(temp, 'ops.mjs')).href)
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 function setup() {

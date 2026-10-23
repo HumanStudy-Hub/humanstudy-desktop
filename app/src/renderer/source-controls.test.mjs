@@ -1,4 +1,5 @@
 // Actual React UI: every citation remains selectable; update dismissal survives remounts.
+import electronBin from 'electron' // the binary's path on every platform
 import {build} from 'esbuild'
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
@@ -19,5 +20,5 @@ try{
  await js('window.fixture.notice()');await wait();assert.ok(await js("document.body.textContent.includes('0.6.4 → 0.6.5')"));await js("document.querySelector('[aria-label=Later]').click()");await wait();await js('window.fixture.remount()');await wait();assert.equal(await js("document.querySelector('.update-notice')"),null,'same-version dismissal was forgotten');await js("window.fixture.status={version:'0.6.5',nextVersion:'0.6.6',state:'ready'};window.fixture.remount()");await wait();assert.ok(await js("document.body.textContent.includes('0.6.5 → 0.6.6')"));await js("document.querySelector('.update-notice .primary').click()");assert.equal(await js('window.fixture.installs'),1);console.log('All citation passages, complete long quotes, explicit version transition and persistent per-version dismissal passed');}catch(e){console.error(e);process.exitCode=1}finally{w.destroy();app.exit(process.exitCode||0)}});
  `)
  const env={...process.env};delete env.ELECTRON_RUN_AS_NODE
- const code=await new Promise((resolve,reject)=>{const c=spawn(join(here,'../../node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),[join(out,'runner.cjs')],{stdio:'inherit',env});const t=setTimeout(()=>{c.kill('SIGTERM');reject(Error('Source control UI test timed out'))},30000);c.on('error',reject);c.on('exit',code=>{clearTimeout(t);resolve(code)})});if(code!==0)process.exitCode=1
+ const code=await new Promise((resolve,reject)=>{const c=spawn(electronBin,[join(out,'runner.cjs')],{stdio:'inherit',env});const t=setTimeout(()=>{c.kill('SIGTERM');reject(Error('Source control UI test timed out'))},30000);c.on('error',reject);c.on('exit',code=>{clearTimeout(t);resolve(code)})});if(code!==0)process.exitCode=1
 }finally{rmSync(out,{recursive:true,force:true})}

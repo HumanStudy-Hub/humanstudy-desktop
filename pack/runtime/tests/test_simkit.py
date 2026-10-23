@@ -115,6 +115,24 @@ class SimkitTest(unittest.TestCase):
                 simkit._write_json = write
                 simkit.HEARTBEAT_SECONDS = old
 
+    def test_progress_updates_wait_out_a_reader_holding_the_file(self):
+        # A real open handle (on Windows: no delete sharing, so os.replace hits a sharing violation).
+        # A stage change on the run's own thread must wait, not crash run.py.
+        with tempfile.TemporaryDirectory() as d:
+            run = simkit.SimRun(d, plan={"a": 1}, model="m")
+            handle = open(Path(d) / "progress.json", "rb")
+            timer = threading.Timer(0.5, handle.close)
+            timer.start()
+            try:
+                run.stage("writing", "Überprüft — 已核对")
+            finally:
+                timer.join()
+                handle.close()
+            p = json.loads((Path(d) / "progress.json").read_text(encoding="utf-8"))
+            self.assertEqual((p["stage"], p["message"]), ("writing", "Überprüft — 已核对"))
+            self.assertEqual([n.name for n in Path(d).iterdir() if n.name.endswith(".tmp")], [])
+            run._exit()
+
 
 if __name__ == "__main__":
     unittest.main()

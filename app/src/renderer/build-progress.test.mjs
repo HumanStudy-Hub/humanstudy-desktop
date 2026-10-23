@@ -1,4 +1,5 @@
 // Real React state transitions, accelerated wall clock, isolated Electron profile.
+import electronBin from 'electron' // the binary's path on every platform
 import {build} from 'esbuild'
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
@@ -42,5 +43,5 @@ try{
  }catch(e){console.error(e);process.exitCode=1}finally{w.destroy();app.exit(process.exitCode||0)}});
  `)
  const env={...process.env};delete env.ELECTRON_RUN_AS_NODE
- const code=await new Promise((resolve,reject)=>{const c=spawn(join(here,'../../node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),[join(out,'runner.cjs')],{stdio:'inherit',env});const t=setTimeout(()=>{c.kill('SIGTERM');reject(Error('Build progress test timed out'))},30000);c.on('error',reject);c.on('exit',code=>{clearTimeout(t);resolve(code)})});if(code!==0)process.exitCode=1
+ const code=await new Promise((resolve,reject)=>{const c=spawn(electronBin,[join(out,'runner.cjs')],{stdio:'inherit',env});const t=setTimeout(()=>{c.kill('SIGTERM');reject(Error('Build progress test timed out'))},30000);c.on('error',reject);c.on('exit',code=>{clearTimeout(t);resolve(code)})});if(code!==0)process.exitCode=1
 }finally{rmSync(out,{recursive:true,force:true})}

@@ -120,8 +120,8 @@ function makeTarball() {
   writeFileSync(join(src, 'python', 'bin', 'python3'), '#!/bin/sh\necho fake\n', { mode: 0o755 })
   writeFileSync(join(src, 'python', 'filler.bin'), Buffer.alloc(400_000, 3)) // random-ish size for resume
   const tgz = join(src, 'py.tar.gz')
-  const r = spawnSync('tar', ['-czf', tgz, '-C', src, 'python'])
-  assert.equal(r.status, 0)
+  const r = spawnSync(core.tarCommand(), ['-czf', tgz, '-C', src, 'python'])
+  assert.equal(r.status, 0, String(r.stderr))
   const data = readFileSync(tgz)
   return { data, sha: createHash('sha256').update(data).digest('hex') }
 }
@@ -161,6 +161,29 @@ function fakeDeps(opts = {}) {
     },
   }
 }
+
+test('tar: Windows uses System32 bsdtar, never whichever tar is first on PATH', () => {
+  assert.equal(core.tarCommand('darwin', {}), 'tar')
+  assert.equal(core.tarCommand('win32', { SystemRoot: 'C:\\Windows' }), 'C:\\Windows\\System32\\tar.exe')
+  assert.equal(core.tarCommand('win32', { windir: 'D:\\WINNT\\' }), 'D:\\WINNT\\System32\\tar.exe')
+  assert.equal(core.tarCommand('win32', {}), 'C:\\Windows\\System32\\tar.exe')
+})
+
+test('extract: a drive-letter path extracts with GNU tar (Git for Windows) first on PATH', { skip: posix ? 'Windows only' : false }, async () => {
+  const gnu = ['C:\\Program Files\\Git\\usr\\bin', 'C:\\msys64\\usr\\bin'].find((d) => existsSync(join(d, 'tar.exe')))
+  const saved = process.env.PATH
+  if (gnu) process.env.PATH = gnu + delimiter + saved
+  try {
+    const t = makeTarball()
+    const dir = mkdtempSync(join(tmpdir(), 'rt-x-'))
+    writeFileSync(join(dir, 'py.tar.gz'), t.data)
+    mkdirSync(join(dir, 'out'))
+    await core.defaultDeps.extract(join(dir, 'py.tar.gz'), join(dir, 'out'))
+    assert.ok(existsSync(join(dir, 'out', 'python', 'filler.bin')))
+  } finally {
+    process.env.PATH = saved
+  }
+})
 
 const lockSmall = 'numpy==2.0.0 \\\n    --hash=sha256:' + 'a'.repeat(64) + '\nscipy==1.0.0 \\\n    --hash=sha256:' + 'b'.repeat(64) + '\n'
 const skip = posix ? false : 'needs bsdtar + sh semantics'

@@ -56,8 +56,19 @@ def _now() -> str:
 def _write_json(path: Path, data: dict) -> None:
     # One temporary name per process: the heartbeat thread and `simkit.py stage` may write at once.
     tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(path)  # atomic: the app never reads a half-written file
+    tmp.write_bytes(json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8"))
+    # Atomic, so the app never reads a half-written file. On Windows a reader without delete sharing
+    # (antivirus, the indexer, another Python reading progress.json) makes the replace fail with a
+    # sharing violation for a moment; wait it out instead of failing the run's stage or progress update.
+    for attempt in range(20):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.1)
 
 
 class Stopped(Exception):

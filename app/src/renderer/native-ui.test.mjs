@@ -1,4 +1,5 @@
 // Real Chromium input/layout + React chat, with isolated native bridge fixtures. No owner data.
+import electronBin from 'electron' // the binary's path on every platform
 import {build} from 'esbuild'
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
@@ -39,7 +40,7 @@ try{
  await w.capturePage().then(image=>require('node:fs').writeFileSync('/private/tmp/humanstudy-native-chat-ui.png',image.toPNG()));console.log('Real Chromium chat input, scroll position, command palette, compact, variant selection and pane resize passed');
  }catch(e){console.error(e);process.exitCode=1}finally{w.destroy();app.exit(process.exitCode||0)}}).catch(e=>{console.error(e);app.exit(1)});
  `)
- const binary=join(here,'../../node_modules/electron/dist/Electron.app/Contents/MacOS/Electron')
+ const binary=electronBin
  const code=await new Promise((resolve,reject)=>{const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;const child=spawn(binary,[join(out,'runner.cjs')],{stdio:'inherit',env});const timer=setTimeout(()=>{child.kill('SIGTERM');reject(Error('Isolated UI test timed out'))},60000);child.on('error',e=>{clearTimeout(timer);reject(e)});child.on('exit',code=>{clearTimeout(timer);resolve(code)})})
  if(code!==0)process.exitCode=1
 }finally{rmSync(out,{recursive:true,force:true})}
