@@ -1,4 +1,6 @@
 import type { NativeRequest, NativeSelection } from '../shared/native'
+import type { ActionRef } from '../shared/research-operations'
+export type { ActionRef }
 import type { KernelQuestion, QuestionPart } from '../shared/question'
 // Types shared between preload and renderer (the window.humanstudy bridge).
 export type KernelEventType = 'identity' | 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title' | 'question'
@@ -29,6 +31,9 @@ export interface KernelUsage {
 }
 export interface KernelEvent {
   sessionId: string
+  /** Native ids, when reported by the kernel. */
+  toolCallId?: string
+  messageId?: string
   type: KernelEventType
   text?: string
   tool?: string
@@ -131,6 +136,11 @@ export interface ProjectFile {
   /** hsfile:// URL the renderer can load (iframe, img, fetch). */
   url: string
   ext: string
+  size?: number
+  /** Last modified, ms since the epoch. */
+  mtime?: number
+  /** Changes whenever the file is rewritten or replaced (shared/file-version.ts). */
+  version?: string
 }
 
 /** One entry of the project file tree (the Program tab). Folders carry children; files carry a url. */
@@ -146,6 +156,8 @@ export interface ProjectEntry {
   size?: number
   /** Last modified, ms since the epoch. */
   mtime?: number
+  /** Changes whenever the file is rewritten or replaced (shared/file-version.ts). */
+  version?: string
   children?: ProjectEntry[]
 }
 
@@ -157,11 +169,28 @@ export interface FileVersion {
   size: number
 }
 
+/** Why an automatic paper build stopped; the renderer words it (i18n), the chat has the details. */
+export type PaperBuildError = 'closed' | 'interrupted' | 'incomplete' | 'too_large' | 'failed'
+
+/** The automatic first build after a paper import (main/paper-build.ts). */
+export interface PaperBuildState {
+  status: 'pending' | 'running' | 'complete' | 'error'
+  phase: 'reading' | 'writing' | 'checking' | 'packaging'
+  error?: PaperBuildError
+  /** The conversation that runs (or ran) the build. */
+  sessionId?: string
+  /** The program check printed PASS after the last write to program.json. */
+  checked?: boolean
+  /** SHA-256 of the independently validated program bytes; any later write invalidates it. */
+  validationHash?: string
+}
+
 export interface ProjectSnapshot {
   dir: string
   name: string
   program: unknown | null
   programError?: string
+  build?: PaperBuildState
   artifacts: ProjectFile[]
   exports: ProjectFile[]
   pdf: ProjectFile | null
@@ -210,6 +239,17 @@ export interface CommunityStudy {
   year: number | null
   description: string
   contributors: { name: string; github?: string }[]
+  aliases?: string[]
+  legacyStudyId?: string
+  searchText?: string
+  conceptLabels?: string[]
+  topics?: { id: string; label: string }[]
+  searchAliases?: string[]
+  currentRevision?: string | null
+  assetRoot?: string
+  assetFiles?: { path: string; sha256: string; bytes: number }[]
+  capabilities?: Record<string, boolean>
+  resources?: { id: string; kind: string; url?: string; access: string }[]
 }
 export interface CommunityStudyDetail extends CommunityStudy {
   /** Files in the study folder, e.g. source/materials/*.json, the paper PDF. */
@@ -218,6 +258,7 @@ export interface CommunityStudyDetail extends CommunityStudy {
   activity: { sha: string; message: string; author: string; avatarUrl?: string; date: string; url: string }[]
   repoUrl: string
   discussionsUrl: string
+  sourceCommit?: string
 }
 
 /** The signed-in HumanStudy Hub account and access to hosted models (no API key needed). */
@@ -268,6 +309,16 @@ export interface MenuCommand {
   command: 'newProject' | 'openFolder' | 'pane' | 'settings'
   /** For 'pane': 'agent' | 'study' | 'paper' | 'files'. */
   arg?: string
+  /** Chosen with the item's keyboard accelerator rather than the menu itself. */
+  accelerator?: boolean
+}
+
+/** The localized close confirmation the main process shows while a window has unsaved edits. */
+export interface UnsavedPrompt {
+  message: string
+  detail: string
+  discard: string
+  cancel: string
 }
 
 export interface AppInfo {
@@ -298,7 +349,7 @@ export interface HumanStudyApi {
   projects: {
     list(): Promise<ProjectSummary[]>
     /** Creates a project folder (copying the PDF to paper.pdf when given) and returns its dir. */
-    create(input: { name: string; pdfPath?: string; sample?: boolean }): Promise<string>
+    create(input: { name: string; pdfPath?: string; sample?: boolean }, action?: ActionRef): Promise<string>
     pickPdf(): Promise<string | null>
     rename(dir: string, name: string): Promise<string>
     /** Moves the project folder to the Trash. */
@@ -334,6 +385,13 @@ export interface HumanStudyApi {
     pickProjectsRoot(): Promise<Settings | null>
   }
   project: {
+    /** Claim the project's pending paper build for this conversation; true means: send the build request now. */
+    startBuild(dir: string, sid: string, action?: ActionRef): Promise<boolean>
+    /** Undo startBuild when the request could not be sent. */
+    releaseBuild(dir: string, sid: string): Promise<void>
+    /** After a failed build, or in an older project with a paper and no study: mark the build pending so it
+     *  starts in the open conversation. */
+    retryBuild(dir: string, action?: ActionRef): Promise<boolean>
     open(): Promise<string | null>
     read(dir: string): Promise<ProjectSnapshot>
     reveal(path: string): Promise<void>
@@ -344,22 +402,26 @@ export interface HumanStudyApi {
     saveCopy(path: string): Promise<string | null>
     /** Text of a file inside an opened project (UTF-8, at most 4 MB). */
     readText(path: string): Promise<string>
-    /** Writes a file inside an opened project, creating folders as needed. program.json must stay valid JSON. */
-    writeText(path: string, text: string): Promise<void>
+    packageReadiness(dir: string, studyId: string): Promise<import('../shared/package-readiness').PackageReadiness>
+    /** Writes a file inside an opened project, creating folders as needed. program.json must stay valid JSON.
+     *  With `ifUnchanged`, the write happens only if the file still holds exactly that text (a patch read
+     *  from disk is not written over a newer save, e.g. the agent's checkpoint); otherwise it rejects
+     *  with an error whose message starts with "changed on disk". */
+    writeText(path: string, text: string, ifUnchanged?: string, action?: ActionRef): Promise<void>
     /** Copies files into the project (sources/, or paper.pdf for a first PDF). Never overwrites; returns the copies. */
-    importFiles(dir: string, paths: string[]): Promise<ProjectFile[]>
+    importFiles(dir: string, paths: string[], action?: ActionRef): Promise<ProjectFile[]>
     onChanged(cb: (dir: string) => void): () => void
   }
   kernel: {
-    native(sessionId: string, request: NativeRequest): Promise<unknown>
+    native(sessionId: string, request: NativeRequest, action?: ActionRef): Promise<unknown>
     export(sessionId: string): Promise<string | null>
     startSession(projectDir: string): Promise<string>
-    send(sessionId: string, text: string, workspace?: WorkspaceContext): Promise<void>
-    abort(sessionId: string): Promise<void>
+    send(sessionId: string, text: string, workspace?: WorkspaceContext, action?: ActionRef): Promise<void>
+    abort(sessionId: string, action?: ActionRef): Promise<void>
     /** Answer a `permission` event: once = Allow once, always = Allow for this project, reject = Deny. */
-    reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void>
-    answerQuestion(sessionId: string, questionId: string, answers: string[][]): Promise<void>
-    rejectQuestion(sessionId: string, questionId: string): Promise<void>
+    reply(sessionId: string, permissionId: string, response: PermissionReply, action?: ActionRef): Promise<void>
+    answerQuestion(sessionId: string, questionId: string, answers: string[][], action?: ActionRef): Promise<void>
+    rejectQuestion(sessionId: string, questionId: string, action?: ActionRef): Promise<void>
     questions(sessionId: string): Promise<KernelQuestion[]>
     onEvent(cb: (e: KernelEvent) => void): () => void
     install: {
@@ -371,6 +433,8 @@ export interface HumanStudyApi {
   }
   app: {
     info(): Promise<AppInfo>
+    /** Tells the window whether it holds unsaved edits; closing or quitting then asks first. null: none. */
+    setUnsaved(prompt: UnsavedPrompt | null): void
   }
   menu: {
     onCommand(cb: (c: MenuCommand) => void): () => void
@@ -423,6 +487,8 @@ export interface TelemetryStatus {
   pending: number
   lastSentAt?: string
   lastError?: string
+  sourcePending?: number
+  sourceError?: string
 }
 /** Exactly the row inserted into public.desktop_events (owner_id is set by the server). */
 export interface TelemetryRow {
@@ -449,6 +515,10 @@ export interface TelemetryTrackOptions {
   metadata?: Record<string, unknown>
   /** Random project id from .humanstudy/project.json (see telemetry.projectId). */
   projectId?: string
+  /** The user operation this event belongs to (one action.invoke per operation). */
+  action?: ActionRef
+  /** Research-v1 only; the legacy stream records the operation under its own name. */
+  v1Only?: boolean
 }
 export interface TelemetryApi {
   status(): Promise<TelemetryStatus>

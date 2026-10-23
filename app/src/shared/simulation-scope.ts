@@ -22,11 +22,6 @@ export function simulationLimits(program: HumanProgram, studyId: string): { text
   const decisions = program.issues.filter(i => i.severity === 'decision' && (!i.studyId || i.studyId === studyId)).map(i => ({ id: i.id, title: i.title }))
   return { text, decisions }
 }
-/** Run intents open the review; ordinary questions about simulation remain normal chat. */
-export function requestsSimulation(text: string) {
-  if (/\b(?:do not|don't|never|cannot|can't)\b.{0,30}\b(?:simulate|replay|run|simulation)\b|(?:不要|不能|先别|不需要).{0,12}(?:模拟|simulation)/i.test(text)) return false
-  return /(?:^|\n)\s*(?:(?:please|can you|could you|let's|i want to)\s+)*(?:simulate|replay)\b|\b(?:run|start|launch|perform)\b.{0,60}\b(?:simulation|study|experiment|pilot)\b|(?:开始|运行|执行|跑|做|帮我|我想).{0,12}(?:模拟|simulation)|(?:模拟一下|跑一下实验)/i.test(text)
-}
 /** The chat shows an approval as what the researcher confirmed, not as its machine-readable header. */
 export function approvalRequest(text: string): string | null {
   if (!text.startsWith('[Simulation scope approved]')) return null

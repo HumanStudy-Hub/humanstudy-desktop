@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 2,
+  "id": "coverage-fixture",
+  "title": "Offline completion fixture",
+  "intent": "reconstruct",
+  "source": { "title": "Fixture", "authors": "Test", "filename": "paper.pdf" },
+  "studies": [{ "id": "s1", "title": "Study one", "type": "empirical" }],
+  "nodes": [
+    { "id": "participants", "kind": "participants", "title": "Participants", "studyIds": ["s1"], "evidenceIds": ["e1"], "fields": [{ "id": "sample", "label": "Sample", "value": "The source describes the sample.", "origin": "reported", "state": "check", "evidenceIds": ["e1"] }] },
+    { "id": "design", "kind": "design", "title": "Design", "studyIds": ["s1"], "evidenceIds": ["e1"], "fields": [{ "id": "design", "label": "Design", "value": "The source describes the comparison.", "origin": "reported", "state": "check", "evidenceIds": ["e1"] }] },
+    { "id": "procedure", "kind": "procedure", "title": "Procedure", "studyIds": ["s1"], "evidenceIds": ["e1"], "fields": [{ "id": "task", "label": "Task", "value": "The source describes the participant task.", "origin": "reported", "state": "check", "evidenceIds": ["e1"] }] },
+    { "id": "variable", "kind": "variable", "title": "Outcome", "studyIds": ["s1"], "evidenceIds": ["e1"], "fields": [{ "id": "measure", "label": "Measure", "value": "The source describes the response.", "origin": "reported", "state": "check", "evidenceIds": ["e1"] }] },
+    { "id": "analysis", "kind": "analysis", "title": "Analysis", "studyIds": ["s1"], "evidenceIds": ["e1"], "fields": [{ "id": "method", "label": "Method", "value": "The source describes the analysis.", "origin": "reported", "state": "check", "evidenceIds": ["e1"] }] },
+    { "id": "result", "kind": "result", "title": "Reported result", "studyIds": ["s1"], "evidenceIds": ["e1"], "fields": [{ "id": "effect", "label": "Effect", "value": "The source describes the result.", "origin": "reported", "state": "check", "evidenceIds": ["e1"] }] }
+  ],
+  "steps": [], "relations": [],
+  "evidence": [{ "id": "e1", "path": "paper.pdf", "locator": { "page": 1 }, "quote": "Synthetic test evidence, not a research claim." }],
+  "issues": []
+}

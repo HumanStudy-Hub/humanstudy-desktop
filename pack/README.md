@@ -12,6 +12,7 @@ pack/
   skills/<name>/SKILL.md            build, simulate, visualize, analyze, export, refine
   skills/build/check_package.py     offline package check (mirrors Bench validate_package.py)
   skills/build/check_program.py     program.json rule check (mirrors the app validator; lists every problem)
+  skills/build/program_io.py        applies one JSON batch to program.json by record id (build checkpoints)
   artifact-kit/                     offline HTML view kit: hs-kit.js/css (flow, conditions, results charts, citation
                                     chips, click bridge), Chart.js 4.4.1 (MIT, sha256 in kit.json), inline.py
                                     (inlines the kit into an artifact and checks it); copied to .opencode/artifact-kit/
@@ -20,6 +21,11 @@ pack/
 ```
 
 ## Loading it
+
+For initial source conversion with your own Claude Code or Codex session, see
+[`docs/headless-source-conversion.md`](../docs/headless-source-conversion.md).
+`python3 scripts/prepare_conversion.py --project <new-folder> --resource <bundle>`
+installs this same pack without launching desktop or OpenCode.
 
 A kernel loads the pack into a project in one of two ways:
 

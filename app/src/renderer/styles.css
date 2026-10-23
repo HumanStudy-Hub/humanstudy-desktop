@@ -236,6 +236,7 @@ code, pre { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 1
 .file-editor { flex: 1; min-height: 0; width: 100%; resize: none; border: 0; outline: 0; padding: 16px 20px 40px; background: var(--bg); color: var(--text); font: 12.5px/1.6 ui-monospace, 'SF Mono', Menlo, monospace; tab-size: 2; white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; overflow-y: auto; }
 .study-scroll { padding: 0 0 64px; }
 .edit-error { margin: 8px 20px 0; font-size: 12px; flex: none; }
+.build-status { margin: 8px 20px 0; font-size: 12px; flex: none; color: var(--muted); }
 .menu-sep { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 
 /* sign-in */
@@ -287,6 +288,11 @@ code, pre { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 1
 .paper-cite-page { font-weight: 600; white-space: nowrap; }
 .paper-cite q { flex: 1; min-width: 0; color: var(--muted); white-space: normal; overflow-wrap: anywhere; }
 .paper-cite .link { margin-left: auto; white-space: nowrap; }
+.paper-located { color: var(--muted); }
+.paper-replaced { flex: none; margin: 0; padding: 6px 14px; border-bottom: 1px solid var(--accent-line); background: var(--accent-soft); font-size: 12px; }
+.paper-differs { display: flex; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
+.paper-differs code { font-size: 11px; overflow-wrap: anywhere; }
+.paper-differs mark { background: var(--warning-line); color: inherit; border-radius: 3px; padding: 0 2px; font-weight: 600; }
 .paper-ask { position: absolute; z-index: 5; display: flex; align-items: center; gap: 10px; padding: 5px 10px; background: var(--bg); border: 1px solid var(--accent-line); border-radius: 8px; box-shadow: var(--shadow); font-size: 12px; color: var(--muted); white-space: nowrap; }
 .paper-ask button { color: var(--accent); font-weight: 600; }
 .study-select { margin-bottom: 20px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
@@ -466,6 +472,14 @@ button.tile:hover:not(:disabled) { border-color: var(--accent); box-shadow: var(
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 button.study-card:hover { border-color: var(--accent); box-shadow: var(--shadow); }
+.research-card:focus-within, .research-card:hover { border-color: var(--accent); }
+.research-card-open { width: 100%; text-align: left; display: flex; flex: 1; flex-direction: column; align-items: flex-start; gap: 4px; padding: 0; }
+.research-availability { color: var(--accent); margin-top: 8px; }
+.research-topics, .research-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.research-topics { margin-top: 8px; }
+.research-filter { margin-bottom: 16px; }
+.research-topic { padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); font-size: 12px; background: var(--accent-soft); }
+.research-topic:hover { border-color: var(--accent); }
 .study-card-title { font-weight: 600; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .study-card-desc { font-size: 13px; line-height: 1.5; color: var(--muted); margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .study-card-foot { margin-top: auto; padding-top: 12px; }
@@ -798,10 +812,10 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
 .sim-plan dt { color: var(--muted); }
 .sim-plan dd { margin: 0; }
 .sim-plan select { font: inherit; padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--text); }
-.sim-request { margin: 0 0 14px; padding: 8px 12px; background: var(--bg); border-radius: 6px; }
 .sim-limits { margin: 0 0 16px; padding: 12px 14px; background: var(--warning-bg); border: 1px solid var(--warning-line); border-radius: 6px; }
 .sim-limits h3 { color: var(--warning); margin-bottom: 6px; }
 .sim-limits ul { margin: 0; padding-left: 18px; }
+.sim-missing { margin: 0 0 10px; padding-left: 18px; }
 .sim-limits li + li { margin-top: 4px; }
 .sim-blocked { color: var(--danger); margin: 0 0 12px; }
 .sim-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

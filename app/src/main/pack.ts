@@ -41,10 +41,23 @@ export async function installPack(projectDir: string): Promise<void> {
   }
 }
 
+/** Pack-relative helper scripts that refreshPack keeps current (see refreshPack). */
+const HELPERS = ['skills/build/program_io.py', 'skills/build/program_lock.py', 'skills/build/check_program.py', 'schema/build-coverage.json']
+
 export const packFileCount = (): number => Object.keys(files).length
 
 /** Upgrade untouched default prompts in existing projects; never overwrite custom instructions. */
 export async function refreshPack(projectDir: string): Promise<void> {
+  // New shipped skills become available in existing projects too. Never replace a researcher file.
+  for (const [key, content] of Object.entries(files)) {
+    if (!key.startsWith(PREFIX)) continue
+    const dest = target(key.slice(PREFIX.length))
+    if (!dest) continue
+    const abs = join(projectDir, dest)
+    if (await readFile(abs, 'utf8').then(() => true).catch(() => false)) continue
+    await mkdir(dirname(abs), { recursive: true })
+    await writeFile(abs, content, 'utf8')
+  }
   for (const [rel, hash] of Object.entries(previousHashes)) {
     const dest = target(rel)
     const content = files[PREFIX + rel]
@@ -55,6 +68,14 @@ export async function refreshPack(projectDir: string): Promise<void> {
       await mkdir(dirname(abs), { recursive: true })
       await writeFile(abs, content, 'utf8')
     }
+  }
+  // App-owned helper scripts the skills call: kept at the shipped version, also in projects made before them.
+  for (const rel of HELPERS) {
+    const abs = join(projectDir, target(rel)!)
+    const content = files[PREFIX + rel]
+    if (content === undefined || (await readFile(abs, 'utf8').catch(() => null)) === content) continue
+    await mkdir(dirname(abs), { recursive: true })
+    await writeFile(abs, content, 'utf8')
   }
   // The artifact kit is vendored code, not researcher instructions: install or update it as shipped.
   for (const rel of kitFiles()) {

@@ -15,7 +15,8 @@ import { t } from '../i18n'
 import { ArtifactCard } from './ArtifactCard'
 import { classifyTool, researchActivity } from '../toolSentence'
 import { approvalRequest } from '../../shared/simulation-scope'
-import { track } from '../telemetry'
+import { beginActivation, claimAction, track } from '../telemetry'
+import type { ActionRef } from '../../preload/types'
 import { KernelBar } from './KernelBar'
 import { compact, money } from '../format'
 import type { KernelInstallStatus } from '../../preload/types'
@@ -152,12 +153,13 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
     })
   }
 
-  const attach = async (list: File[]) => {
+  const picking = useRef<ActionRef | null>(null)
+  const attach = async (list: File[], action?: ActionRef) => {
     if (!list.length) return
     setAttachError('')
     try {
       const paths = list.map((f) => window.humanstudy.files.pathOf(f)).filter(Boolean)
-      const copies = await window.humanstudy.project.importFiles(projectDir, paths)
+      const copies = await window.humanstudy.project.importFiles(projectDir, paths, action ?? claimAction('source.import', false, 'pointer'))
       const base = projectDir.replace(/\\/g, '/').replace(/\/$/, '') + '/'
       setAttached((a) => [
         ...a,
@@ -200,7 +202,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
   const tools = useMemo(()=>session.messages.filter(m => m.role === 'assistant').at(-1)?.parts.filter((p): p is Extract<Part, { kind: 'tool' }> => p.kind === 'tool') ?? [],[session.messages])
   const activity = useMemo(()=>researchActivity(tools,projectDir),[tools,projectDir])
   const runningTool = tools.some(p => p.state === 'pending' || p.state === 'running')
-  const statusLine = session.status==='compacting'?'Organizing conversation context…':session.waitingForQuestion ? t('question.waiting') : session.waitingForPermission ? t('chat.waiting_perm') : session.busy ? (session.status === 'recovering' ? t('activity.recovery') : session.status === 'reconnecting' ? t('activity.reconnecting') : runningTool ? '' : t(activity.key, activity.vars)) : session.status === 'aborted' ? '' : session.status
+  const statusLine = session.status==='compacting'?'Organizing conversation context…':session.waitingForQuestion ? t('question.waiting') : session.waitingForPermission ? t('chat.waiting_perm') : session.busy ? (session.status === 'stalled' ? t('activity.stalled') : session.status === 'recovering' ? t('activity.recovery') : session.status === 'reconnecting' ? t('activity.reconnecting') : runningTool ? '' : t(activity.key, activity.vars)) : session.status === 'aborted' ? '' : session.status
   const u = session.usage
   const lastAssistant = session.messages.length ? session.messages[session.messages.length - 1].id : -1
 
@@ -334,7 +336,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
               if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();setCommandPick(p=>(p+(e.key==='ArrowDown'?1:commands.length-1))%commands.length);return}
               if(e.key==='Escape'){e.preventDefault();e.stopPropagation();setDraft('');return}
               if(e.key==='Tab'){e.preventDefault();setDraft('/'+commands[Math.min(commandPick,commands.length-1)].name+' ');return}
-              if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();const name=commands[Math.min(commandPick,commands.length-1)].name;if(name==='help'){setDraft('/');return}void native.execute('/'+name);setDraft('');return}
+              if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();beginActivation('composer.command','keyboard');const name=commands[Math.min(commandPick,commands.length-1)].name;if(name==='help'){setDraft('/');return}void native.execute('/'+name);setDraft('');return}
             }
             if (mention && mention.hits.length > 0) {
               if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -357,6 +359,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
             }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
+              beginActivation('composer.send', 'keyboard')
               submit()
             }
           }}
@@ -365,7 +368,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
           <div className="composer-tools">
             <button className="auto-mode" aria-pressed={auto} title={t('settings.permission_hint')} onClick={() => onAuto(!auto)}>{t(auto ? 'chat.auto_on' : 'chat.auto_off')}</button>
             {!native.selection ? <ModelPicker model={model} account={account} onChange={onModel} onOther={() => onSettings('models')} /> : <button className="model-btn" disabled={session.busy} onClick={()=>void native.execute('/models')} title="Choose model and reasoning variant">{shortModelName(native.selection?.model?.modelID??model)}</button>}
-            <button type="button" className="ghost icon attach-btn" aria-label={t('chat.attach')} title={t('chat.attach')} disabled={!session.id} onClick={() => fileInput.current?.click()}>
+            <button type="button" className="ghost icon attach-btn" aria-label={t('chat.attach')} title={t('chat.attach')} disabled={!session.id} onClick={() => { picking.current = claimAction('source.import', true); fileInput.current?.click() }}>
               <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>
                 <path d="M11.5 5.5l-5 5a1.4 1.4 0 002 2l5-5a2.8 2.8 0 00-4-4l-5 5a4.2 4.2 0 006 6l4-4" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
               </svg>
@@ -376,7 +379,8 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
               multiple
               hidden
               onChange={(e) => {
-                void attach(Array.from(e.target.files ?? []))
+                void attach(Array.from(e.target.files ?? []), picking.current ?? undefined)
+                picking.current = null
                 e.target.value = ''
               }}
             />

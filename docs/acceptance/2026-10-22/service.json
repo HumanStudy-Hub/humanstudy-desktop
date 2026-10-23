@@ -1,0 +1,25 @@
+{
+  "at": "2026-10-22T23:02:33.081Z",
+  "project": "zigbuogyerivbnxtnjjw",
+  "synthetic_accounts": 2,
+  "surfaces": [
+    "desktop",
+    "headless"
+  ],
+  "events": 10,
+  "content_objects": 4,
+  "source_roundtrip_bytes": 4195039,
+  "cross_account_denial": true,
+  "no_consent_upload_denial": true,
+  "duplicate_retry": true,
+  "restart_delivery": true,
+  "lost_upload_acknowledgement_recovered": true,
+  "integrity": {
+    "checked": 4,
+    "verified": 4,
+    "pending": 0,
+    "failed": 0
+  },
+  "complete_sessions": 2,
+  "passed": true
+}

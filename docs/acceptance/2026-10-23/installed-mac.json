@@ -1,0 +1,185 @@
+{
+  "date": "2026-10-23",
+  "tracker": "https://github.com/HumanStudy-Hub/humanstudy-desktop/issues/30 (T14)",
+  "build": {
+    "version": "0.6.7-rc.1",
+    "commit": "bc48150 (branch claude/acceptance-0.6.7)",
+    "artifact": "app/dist/HumanStudy-Hub-0.6.7-rc.1-mac-arm64.dmg (local, not uploaded)",
+    "bytes": 128421232,
+    "dmgSha256": "069cb4005b5aee3f10d813d7535dbf9125b3e947378ea7acb1ef585e41b015ab",
+    "appAsarSha256": "7fba4c95fc6fd98f512fad5424e1a14150e61ceb9ce3e019c4bf456e889fee9f",
+    "command": "electron-vite build && node scripts/dist.mjs --mac dmg --arm64 --publish never (keychain profile humanstudy-notary)",
+    "app": {
+      "codesignVerifyDeepStrict": "ok",
+      "spctlExec": "accepted, source=Notarized Developer ID, Developer ID Application: Haoyang Shang (ZS2UVBACK8)",
+      "staplerValidate": "ok"
+    },
+    "dmgContainer": "not signed (spctl: no usable signature) — electron-builder default; the app inside is signed, notarized and stapled",
+    "earlierBuilds": "two earlier rc.1 builds of this branch (before fixes 42e5944/4200039) were also notarized; the walkthrough passed 10/10 on each; only the final one is reported"
+  },
+  "updateChannel": {
+    "tagCreated": false,
+    "releaseCreated": false,
+    "published": false,
+    "analysis": "package.json publish = GitHub, releaseType draft; app-update.yml has no channel. updates.ts never sets allowPrerelease, so installed stable copies (0.6.6) run with electron-updater 6.8.9's default allowPrerelease=false and GitHubProvider resolves /releases/latest, which GitHub never answers with a draft or prerelease. Current latest release: v0.6.6. An rc build itself sets allowPrerelease=true (prerelease current version) and could later move to a newer prerelease or stable; it never downgrades (allowDowngrade false)."
+  },
+  "install": "copied from the mounted dmg (ditto) into <private-acceptance-dir>/install/, not /Applications",
+  "launch": "Playwright _electron.launch({executablePath: '<install>/HumanStudy Hub.app/Contents/MacOS/HumanStudy Hub', args: ['--user-data-dir=<isolated>']}); app.isPackaged=true and app.getPath('userData') confirmed to be the isolated directory; projectsRoot set inside it",
+  "accountAndModel": "UI-only: HUMANSTUDY_KERNEL=mock and HUMANSTUDY_SERVER=<local mock server>. A synthetic signed-in session (placeholder JWT, no refresh) was encrypted by the installed app's own safeStorage into the isolated profile. No real account, no real model and no real research delivery in this walkthrough; the owner's real app data and projects were not opened or modified. Real-model evidence: real-model.json.",
+  "fixture": "synthetic project: two generated one-page PDFs sharing one sentence (DOCUMENT A = paper.pdf, DOCUMENT B = sources/doc-b.pdf), a CRLF + 4-space program.json from app/src/shared/sample-program.json with citations into both, package fixtures. No paper content.",
+  "results": [
+    {
+      "id": "W0",
+      "title": "Installed app identity and isolated profile",
+      "pass": true,
+      "detail": {
+        "userData": "<private-acceptance-dir>/walk-import",
+        "version": "0.6.7-rc.1",
+        "packaged": true,
+        "exe": "<private-acceptance-dir>/install/HumanStudy Hub.app/Contents/MacOS/HumanStudy Hub"
+      },
+      "ms": 0
+    },
+    {
+      "id": "W1",
+      "title": "Import paper -> automatic build starts, no question asked",
+      "pass": true,
+      "detail": {
+        "buildRequestSent": true,
+        "questionShown": false,
+        "paperBuildState": "running",
+        "note": "mock agent writes no program.json, so the build ends as \"stopped before complete\" (expected T03 behaviour)"
+      },
+      "ms": 706
+    },
+    {
+      "id": "W1b",
+      "title": "Build without a certified program is reported incomplete, not complete",
+      "pass": true,
+      "detail": {
+        "banner": "The agent stopped before the study was complete … Try again"
+      },
+      "ms": 969
+    },
+    {
+      "id": "W2",
+      "title": "Incomplete package: no Run button; the notice lists what is missing (incl. run_sessions) and offers Ask the agent to complete it",
+      "pass": true,
+      "detail": {
+        "runButtons": 0,
+        "mentionsRunSessions": true,
+        "askToComplete": true
+      },
+      "ms": 204
+    },
+    {
+      "id": "W3",
+      "title": "Complete package: Run appears; Stop while getting ready returns to idle",
+      "pass": true,
+      "detail": {
+        "gettingReadyShown": true,
+        "idleAfterStop": true
+      },
+      "ms": 1977
+    },
+    {
+      "id": "W4",
+      "title": "Draft in review_notes.txt survives a tab switch and still says Save",
+      "pass": true,
+      "detail": {
+        "draftKept": true,
+        "buttons": [
+          "Save",
+          "Copy",
+          "Download"
+        ]
+      },
+      "ms": 2208
+    },
+    {
+      "id": "W5",
+      "title": "Study field save changes only that field (CRLF/4-space bytes elsewhere unchanged)",
+      "pass": true,
+      "detail": {
+        "changedLines": [
+          {
+            "line": 44,
+            "before": "\"value\": null,",
+            "after": "\"value\": \"Walkthrough researcher note for the gap field.\","
+          },
+          {
+            "line": 45,
+            "before": "\"origin\": \"unknown\",",
+            "after": "\"origin\": \"researcher\","
+          },
+          {
+            "line": 46,
+            "before": "\"state\": \"missing\",",
+            "after": "\"state\": \"confirmed\","
+          }
+        ],
+        "crlfKept": true,
+        "fourSpaceIndent": true,
+        "sha256Before": "eb678926be7c",
+        "sha256After": "3bf912646279",
+        "humanstudyDir": [
+          "paper-build.json",
+          "threads",
+          "versions"
+        ]
+      },
+      "ms": 1791
+    },
+    {
+      "id": "W6",
+      "title": "Citation p>.001 against source p<.001 is located but flagged; clean match says \"located … not a confirmation\"",
+      "pass": true,
+      "detail": {
+        "marks": [
+          ">",
+          "<"
+        ],
+        "located": "Text located on this page by automatic matching — not a confirmation",
+        "anyVerifiedWord": false
+      },
+      "ms": 2012
+    },
+    {
+      "id": "W7",
+      "title": "Selecting a sentence in paper A lists A items first and B items under \"another source\"",
+      "pass": true,
+      "detail": {
+        "header": "ette Selected passage · paper.pdf, p. 1 is cited by ",
+        "otherSection": true,
+        "otherMentionsDocB": true,
+        "selected": "Participants judged the side effect as intentional in most cases. "
+      },
+      "ms": 624
+    },
+    {
+      "id": "W8",
+      "title": "paper.pdf replaced at the same path reloads with a notice",
+      "pass": true,
+      "detail": {
+        "notice": "paper.pdf changed on disk and was reloaded. Showing the version saved 10/22/2026, 9:20:52 PM."
+      },
+      "ms": 697
+    }
+  ],
+  "summary": "10/10 passed",
+  "screenshots": "installed-mac/*.png (downscaled)",
+  "harness": "installed-mac/harness/ (walk-lib.mjs, fixture.mjs, walkthrough.mjs)",
+  "observations": [
+    "Mock mode shows 'Agent unavailable: … kernel:native … unavailable in mock mode' in the chat of every conversation (mock-only; not seen with the real kernel).",
+    "The mock agent treats the word 'run' in the build prompt ('Do not run a simulation') as a command needing approval; W1b declines it. Mock-only.",
+    "A fixture marked complete in paper-build.json without a validation hash is shown as 'The agent stopped before the study was complete' (expected #31 behaviour: no certificate for unchecked bytes)."
+  ],
+  "notCovered": [
+    "real model inside the installed UI",
+    "quit-and-reopen during a real build (interrupted state)",
+    "offline delivery/restart and account export on the installed app",
+    "update download/install",
+    "Windows (T15)",
+    "multiple windows/draft-on-quit dialogs"
+  ]
+}

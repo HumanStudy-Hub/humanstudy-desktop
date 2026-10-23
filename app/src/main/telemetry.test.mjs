@@ -85,6 +85,17 @@ async function test(name, fn) {
   console.log(`ok - ${name}`)
 }
 
+// A previous agreement did not authorize original source uploads.
+await test('version 2 agreement is not silently promoted to source agreement 3', async () => {
+  const first = make(); await first.t.setConsent({ usage: true, content: true });
+  const saved = JSON.parse(first.storage.s.state); saved.consent.version = 2;
+  first.storage.s.state = JSON.stringify(saved);
+  const restarted = make({ storage: first.storage });
+  assert.equal(restarted.t.status().decided, false);
+  assert.equal(restarted.t.status().content, false);
+  assert.equal(restarted.t.track('project.file_written', { target: 'paper.pdf' }), null);
+});
+
 // ---- sanitizer ------------------------------------------------------------------------
 const base = { installId: 'install-0001', sessionId: 'session-0001', appVersion: '0.1.0', platform: 'darwin', now: clock }
 

@@ -1,0 +1,260 @@
+{
+ "task": "T12 migration history reconciliation + research_server_outbox apply",
+ "date": "2026-10-22 (America/Los_Angeles)",
+ "project": "zigbuogyerivbnxtnjjw (shared dev/production)",
+ "access": "Supabase Management API database/query; token from keychain, never printed",
+ "destructive_operations": "none (no DROP/DELETE/UPDATE/TRUNCATE of user data, no policy loosening, no supabase db push)",
+ "history_before": [
+  {
+   "version": "20261005213611",
+   "name": "studio"
+  },
+  {
+   "version": "20261005213836",
+   "name": "studio_rls_performance"
+  },
+  {
+   "version": "20261006062606",
+   "name": "studio_resources"
+  },
+  {
+   "version": "20261006064543",
+   "name": "studio_layout_telemetry"
+  },
+  {
+   "version": "20261007004520",
+   "name": "studio_research_history"
+  },
+  {
+   "version": "20261010001831",
+   "name": "studio_project_origin"
+  },
+  {
+   "version": "20261011120000",
+   "name": "desktop_events"
+  },
+  {
+   "version": "20261012120000",
+   "name": "contributions"
+  },
+  {
+   "version": "20261012150000",
+   "name": "desktop_replay"
+  },
+  {
+   "version": "20261014212248",
+   "name": "desktop_support_requests"
+  },
+  {
+   "version": "20261015223220",
+   "name": "disable_desktop_session_recordings"
+  },
+  {
+   "version": "20261022223132",
+   "name": "research_data_contract_v1"
+  },
+  {
+   "version": "20261022223142",
+   "name": "desktop_events_allow_offline_capture"
+  }
+ ],
+ "history_after": [
+  {
+   "version": "20261005213611",
+   "name": "studio"
+  },
+  {
+   "version": "20261005213836",
+   "name": "studio_rls_performance"
+  },
+  {
+   "version": "20261006062606",
+   "name": "studio_resources"
+  },
+  {
+   "version": "20261006064543",
+   "name": "studio_layout_telemetry"
+  },
+  {
+   "version": "20261007004520",
+   "name": "studio_research_history"
+  },
+  {
+   "version": "20261010001831",
+   "name": "studio_project_origin"
+  },
+  {
+   "version": "20261011120000",
+   "name": "desktop_events"
+  },
+  {
+   "version": "20261012120000",
+   "name": "contributions"
+  },
+  {
+   "version": "20261012150000",
+   "name": "desktop_replay"
+  },
+  {
+   "version": "20261012180000",
+   "name": "desktop_events_owner_default"
+  },
+  {
+   "version": "20261013120000",
+   "name": "desktop_data_no_user_delete"
+  },
+  {
+   "version": "20261014212248",
+   "name": "desktop_support_requests"
+  },
+  {
+   "version": "20261015223220",
+   "name": "disable_desktop_session_recordings"
+  },
+  {
+   "version": "20261022223132",
+   "name": "research_data_contract_v1"
+  },
+  {
+   "version": "20261022223142",
+   "name": "desktop_events_allow_offline_capture"
+  },
+  {
+   "version": "20261023120000",
+   "name": "research_server_outbox"
+  }
+ ],
+ "reconciliation": [
+  {
+   "file": "202610050001_studio.sql",
+   "live": "20261005213611",
+   "effect_verified": "recorded statements identical to file",
+   "action": "renamed file to live version"
+  },
+  {
+   "file": "20261005213815_studio_rls_performance.sql",
+   "live": "20261005213836",
+   "effect_verified": "statements identical",
+   "action": "renamed file"
+  },
+  {
+   "file": "20261006062534_studio_resources.sql",
+   "live": "20261006062606",
+   "effect_verified": "statements identical",
+   "action": "renamed file"
+  },
+  {
+   "file": "20261006065000_studio_layout_telemetry.sql",
+   "live": "20261006064543",
+   "effect_verified": "statements identical except comments/whitespace",
+   "action": "renamed file"
+  },
+  {
+   "file": "20261010001813_studio_project_origin.sql",
+   "live": "20261010001831",
+   "effect_verified": "statements identical",
+   "action": "renamed file"
+  },
+  {
+   "file": "20261012180000_desktop_events_owner_default.sql",
+   "live": null,
+   "effect_verified": "yes: desktop_events.owner_id and desktop_replay_chunks.owner_id default auth.uid()",
+   "action": "INSERTed history row (statements = file)"
+  },
+  {
+   "file": "20261013120000_desktop_data_no_user_delete.sql",
+   "live": null,
+   "effect_verified": "yes: desktop_events_delete, desktop_replay_chunks_delete, storage desktop_replays_delete absent; no DELETE policies on desktop_* or storage",
+   "action": "INSERTed history row (statements = file)"
+  },
+  {
+   "file": "(none on main) 20261014212248_desktop_support_requests.sql",
+   "live": "20261014212248",
+   "effect_verified": "yes: support_requests exists, RLS on, support_insert_own/support_read_own; file on codex/beta-help-feedback byte-identical to recorded statements",
+   "action": "added file to claude/research-t08-server"
+  },
+  {
+   "file": "20261012120000_contributions.sql / 20261012150000_desktop_replay.sql",
+   "live": "same versions",
+   "effect_verified": "tables present (history rows have no recorded statements)",
+   "action": "none"
+  },
+  {
+   "file": "20261022223132 / 20261022223142",
+   "live": "same versions",
+   "effect_verified": "contract statements identical; offline_capture differs only in comments; live desktop_events_insert check = owner + occurred_at <= now()+5min",
+   "action": "none"
+  }
+ ],
+ "rows_inserted": [
+  "20261012180000 desktop_events_owner_default",
+  "20261013120000 desktop_data_no_user_delete",
+  "20261023120000 research_server_outbox (with apply)"
+ ],
+ "web_commit": "humanstudy-hub-web claude/research-t08-server 6527f9b (renames + support_requests file + docs/studio-setup.md refs)",
+ "alignment_after": "16 local files on claude/research-t08-server == 16 history rows, version and name equal. origin/main still carries the old 5 filenames and lacks support_requests/contract/outbox files until PR #26 merges; do NOT supabase db push from main.",
+ "outbox": {
+  "file": "supabase/migrations/20261023120000_research_server_outbox.sql (web 44b80d4, md5 3a5178f134b01d97f1a3026161aeca43, unchanged)",
+  "review": {
+   "additive_only": true,
+   "existing_objects_changed": "none; grants to service_role on research_events/content/consents/missing_content were already present (no-op)",
+   "rls": "enabled; authenticated insert/select/update own rows only; update limited by column grant to attempts,last_attempt_at,last_error,delivered_at,payload and by guard trigger (identity immutable, attempts monotonic, delivered_at once, payload only released to null after delivery); no delete policy/grant; anon has no privileges",
+   "functions": "no SECURITY DEFINER; trigger fns search_path=pg_catalog,pg_temp; studio_cas_workspace_research SECURITY INVOKER search_path=public,pg_temp, EXECUTE authenticated+service_role only (anon revoked)",
+   "cas": "calls live studio_cas_workspace (SETOF, so NOT FOUND on CAS conflict is correct); exceptions from the CAS propagate unchanged; outbox insert isolated in a subtransaction so it cannot block a save. studio_cas_workspace and the history trigger are untouched; prod (origin/main) does not call the new RPC",
+   "view": "security_invoker=true; select to authenticated, service_role",
+   "fixes_made": "none required",
+   "notes": [
+    "Owner can mark own batch delivered and release payload; detectable as delivered_unconfirmed in the view (by design)",
+    "on conflict (id) do nothing reports outbox_stored=true even if the id belongs to another owner (no data leak; cosmetic)",
+    "Trigger functions keep default anon/authenticated EXECUTE ACL; harmless since trigger functions cannot be called directly",
+    "CODE (not migration) finding for T08: lib/research-data/server-outbox.ts service-mode drain only re-checks web v3 consent; service role bypasses the rest of research_events/research_content insert policies (surface/consent_version match, occurred_at bounds, sources consent + stored object) and normalize() does not force research_session_id = outbox id or surface = web. Since owners can insert outbox rows directly, enforce these before enabling /api/cron/research-outbox."
+   ]
+  },
+  "rolled_back_test": "BEGIN; migration; tests/research-server-outbox.sql body; ROLLBACK -> all 10 assertion groups passed; table/function absent afterwards. Negative control (raise in DO block) surfaced as API error, so silent pass is excluded.",
+  "apply": "single transaction: migration + schema_migrations row ('20261023120000','research_server_outbox', statements=file); committed; version equals filename, no rename needed",
+  "post_apply": {
+   "snapshot_diff_removed": {
+    "policies": 0,
+    "columns": 0,
+    "rls": 0,
+    "grants": 0,
+    "functions": 0,
+    "constraints": 0,
+    "triggers": 0,
+    "buckets": 0,
+    "views": 0
+   },
+   "snapshot_diff_added": {
+    "policies": 3,
+    "columns": 27,
+    "rls": 1,
+    "grants": 17,
+    "functions": 3,
+    "constraints": 10,
+    "triggers": 2,
+    "buckets": 0,
+    "views": 1
+   },
+   "added_objects_all_research_server_outbox*": true,
+   "rls_enabled": true,
+   "policies": [
+    "research_server_outbox_insert INSERT authenticated",
+    "research_server_outbox_select SELECT authenticated",
+    "research_server_outbox_update UPDATE authenticated"
+   ],
+   "authenticated_update_columns": [
+    "attempts",
+    "delivered_at",
+    "last_attempt_at",
+    "last_error",
+    "payload"
+   ],
+   "anon_privileges": 0,
+   "outbox_rows": 0,
+   "http": {
+    "https://humanstudy-hub.com/": 200,
+    "https://humanstudy-hub.com/api/desktop/config": 200
+   }
+  }
+ }
+}

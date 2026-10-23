@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useState, type Ref } from 'react'
 import type { CommunityStudy, CommunityStudyDetail } from '../../preload/types'
+import { matchesResearch, researchAvailability, researchRank } from '../../shared/research-search'
 import { relativeTime } from './Home'
 import { track } from '../telemetry'
 
@@ -70,6 +71,8 @@ export function Studies({ query, onOpenProject, ref }: Props) {
   const [list, setList] = useState<CommunityStudy[] | null>(cachedList)
   const [error, setError] = useState('')
   const [openId, setOpenId] = useState<string | null>(null)
+  const [topic, setTopic] = useState<{ id: string; label: string } | null>(null)
+  const [visibleCount, setVisibleCount] = useState(30)
 
   const load = useCallback(async () => {
     setError('')
@@ -98,20 +101,19 @@ export function Studies({ query, onOpenProject, ref }: Props) {
   useEffect(() => {
     if (query) setOpenId(null)
   }, [query])
+  useEffect(() => setVisibleCount(30), [query, topic?.id])
 
   const shown = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!list || !q) return list ?? []
-    return list.filter((s) =>
-      [s.title, s.description, s.authors.join(' '), String(s.year ?? '')].some((f) => f.toLowerCase().includes(q)),
-    )
-  }, [list, query])
+    const q = query.trim()
+    return (list ?? []).filter((s) => matchesResearch(s, q, topic?.id))
+      .sort((a, b) => researchRank(b, q) - researchRank(a, q) || a.id.localeCompare(b.id))
+  }, [list, query, topic])
 
   useImperativeHandle(ref, () => ({ openFirst: () => shown[0] && setOpenId(shown[0].id) }), [shown])
 
   if (openId) {
     const summary = list?.find((s) => s.id === openId) ?? null
-    return <StudyPage id={openId} summary={summary} onBack={() => setOpenId(null)} onOpenProject={onOpenProject} />
+    return <StudyPage id={openId} summary={summary} onBack={() => setOpenId(null)} onTopic={next => { setTopic(next); setOpenId(null) }} onOpenProject={onOpenProject} />
   }
 
   const offline = typeof navigator !== 'undefined' && !navigator.onLine
@@ -121,12 +123,17 @@ export function Studies({ query, onOpenProject, ref }: Props) {
       <header className="lib-head">
         <div>
           <h1 className="lib-title">Studies</h1>
-          <p className="muted lib-lead">Replicable human studies, built and checked by the community.</p>
+          <p className="muted lib-lead">Papers, study materials and community Human Programs.</p>
         </div>
         <button className="lib-link" onClick={() => open(REPO_URL)}>
           Contribute on GitHub ↗
         </button>
       </header>
+
+      {list && <div className="research-filter">
+        {topic && <button className="research-topic" onClick={() => setTopic(null)} aria-label={`Remove topic filter: ${topic.label}`}>{topic.label} <span aria-hidden>×</span></button>}
+        <span className="muted small" role="status">{shown.length} {shown.length === 1 ? 'paper' : 'papers'}</span>
+      </div>}
 
       {error && list && (
         <p className="lib-note small">
@@ -163,20 +170,28 @@ export function Studies({ query, onOpenProject, ref }: Props) {
         </div>
       ) : (
         <ul className="study-list">
-          {shown.map((s) => (
-            <li key={s.id}>
-              <button className="study-card" onClick={() => setOpenId(s.id)}>
+          {shown.slice(0, visibleCount).map((s) => (
+            <li key={s.id} className="study-card research-card">
+              <button className="research-card-open" onClick={() => setOpenId(s.id)}>
                 <strong className="study-card-title">{s.title}</strong>
                 <span className="muted small">{byline(s, 3)}</span>
                 {s.description && <span className="study-card-desc">{s.description}</span>}
-                <Contributors people={s.contributors} compact />
+                <span className="small research-availability">{researchAvailability(s)}</span>
               </button>
+              <Topics topics={s.topics} onSelect={setTopic} />
+              {s.contributors.length > 0 && <Contributors people={s.contributors} compact />}
             </li>
           ))}
         </ul>
       )}
+      {shown.length > visibleCount && <button className="ghost lib-retry" onClick={() => setVisibleCount(count => count + 30)}>Show more ({shown.length - visibleCount})</button>}
     </div>
   )
+}
+
+function Topics({ topics, onSelect }: { topics?: CommunityStudy['topics']; onSelect(topic: { id: string; label: string }): void }) {
+  if (!topics?.length) return null
+  return <div className="research-topics" aria-label="Research topics">{topics.map(topic => <button key={topic.id} className="research-topic" onClick={() => onSelect(topic)}>{topic.label}</button>)}</div>
 }
 
 function Contributors({ people, compact }: { people: CommunityStudy['contributors']; compact?: boolean }) {
@@ -219,11 +234,13 @@ function StudyPage({
   id,
   summary,
   onBack,
+  onTopic,
   onOpenProject,
 }: {
   id: string
   summary: CommunityStudy | null
   onBack(): void
+  onTopic(topic: { id: string; label: string }): void
   onOpenProject(dir: string): void
 }) {
   const [detail, setDetail] = useState<CommunityStudyDetail | null>(null)
@@ -280,6 +297,7 @@ function StudyPage({
         <div className="repo-id">
           <h1 className="repo-title">{head?.title ?? 'Loading…'}</h1>
           {head && <p className="muted repo-byline">{byline(head)}</p>}
+          <Topics topics={head?.topics} onSelect={onTopic} />
         </div>
         <div className="repo-actions">
           <div className="repo-buttons">
@@ -294,7 +312,7 @@ function StudyPage({
             </button>
           </div>
           <p className="muted small repo-note">
-            Copies the paper and materials into a new local project; the agent then builds its Human Program.
+              {head?.currentRevision ? 'Copies the Human Program, materials and artifacts into your projects.' : head?.legacyStudyId || /^study_\d+$/.test(id) ? 'Copies the study materials; the agent can build its Human Program.' : 'Only the source is indexed. A Human Program has not been validated yet.'}
           </p>
           {forkError && <p className="home-error repo-error">{forkError}</p>}
         </div>

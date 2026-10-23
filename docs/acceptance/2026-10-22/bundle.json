@@ -1,0 +1,13 @@
+{
+  "projectId": "ba3823a9-fe9f-4851-8d85-a14503723f10",
+  "model": "mock",
+  "packagedBytes": true,
+  "installedApp": false,
+  "realDatabase": true,
+  "workspaceAndPaperUI": true,
+  "sourceAndProgram": true,
+  "chatAndTools": true,
+  "export": true,
+  "events": 20,
+  "asarSha256": "b45ea13a82b82396ecb0f5edab7360478622216a4f22c1e50fa77d3adfca91dc"
+}

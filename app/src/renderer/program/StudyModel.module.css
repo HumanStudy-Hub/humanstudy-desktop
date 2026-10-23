@@ -45,6 +45,8 @@
 /* ---- passage selected in the paper ---- */
 .support { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 16px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--cited) 9%, var(--bg)); font-size: var(--xs); color: var(--muted); }
 .support > button:not(.supportClose) { padding: 1px 8px; border: 1px solid var(--cited); border-radius: 999px; color: var(--text); }
+span.supportOther { margin-left: 8px; font-style: italic; }
+.support > button.supportOther { border-style: dashed; border-color: var(--line); color: var(--muted); }
 .supportClose { margin-left: auto; font-size: var(--lg); line-height: 1; color: var(--muted); padding: 0 4px; }
 
 .scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; padding-bottom: 40px; }

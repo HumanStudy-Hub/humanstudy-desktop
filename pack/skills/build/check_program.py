@@ -33,9 +33,6 @@ def problems_for(p: dict) -> list[tuple[str, str]]:
     for key, items in (("studies", studies_l), ("nodes", nodes_l), ("steps", steps_l), ("relations", rels), ("evidence", evid_l), ("issues", issues)):
         if dups([i.get("id") for i in items]):
             add(f"{key}: duplicate ID", f"give every entry in {key} its own id: {', '.join(map(str, dups([i.get('id') for i in items])))}")
-    conns = len(rels) + sum(len(s.get("next") or []) + len(s.get("children") or []) for s in steps_l)
-    if conns > 1200:
-        add("Human Program exceeds 1200 display connections", "merge or drop connections")
     nodes = {n.get("id"): n for n in nodes_l}
     studies = {s.get("id") for s in studies_l}
     steps = {s.get("id"): s for s in steps_l}
@@ -187,6 +184,39 @@ def check(p) -> list[tuple[str, str]]:
     return problems_for(p)
 
 
+def coverage_problems(p):
+    """Same policy as shared/build-completion.ts; optional final-build gate, not a schema rule."""
+    candidates = [Path(__file__).resolve().parents[2] / "schema/build-coverage.json", Path(__file__).resolve().parents[3] / "schema/build-coverage.json"]
+    policy_path = next((path for path in candidates if path.is_file()), None)
+    if policy_path is None:
+        return [("build coverage policy is unavailable", "restore the build skill files")]
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    out = []
+    nodes, steps, issues = p.get("nodes", []), p.get("steps", []), p.get("issues", [])
+    def meaningful(v):
+        return bool(v.strip()) if isinstance(v, str) else v is not None and (bool(v) if isinstance(v, (list, dict)) else True)
+    def content(n, study):
+        if meaningful(n.get("summary")) or meaningful(n.get("description")):
+            return True
+        return any((not f.get("studyIds") or study in f["studyIds"]) and
+                   (any(i.get("nodeId") == n.get("id") and (not i.get("fieldId") or i["fieldId"] == f.get("id")) and (not i.get("studyId") or i["studyId"] == study) for i in issues)
+                    if f.get("state") == "missing" else meaningful(f.get("value"))) for f in n.get("fields", []))
+    if not p.get("studies"):
+        out.append(("Identify the studies before completing the build.", ""))
+    if not p.get("evidence"):
+        out.append(("Add the source evidence before completing the build.", ""))
+    for study in p.get("studies", []):
+        sid = study["id"]
+        scoped = [n for n in nodes if not n.get("studyIds") or sid in n["studyIds"]]
+        if not any(sid in n.get("studyIds", []) and content(n, sid) for n in scoped) and not any(s.get("studyId") == sid for s in steps):
+            out.append((f"{sid}: no study-specific extraction or explicit missing information.", ""))
+        for area, kinds in policy["analysis" if study.get("type") == "analysis" else "empirical"].items():
+            if area == "procedure" and any(s.get("studyId") == sid for s in steps):
+                continue
+            if not any(n.get("kind") in kinds and content(n, sid) for n in scoped):
+                out.append((f"{sid}: {area} has not been extracted or explicitly marked missing.", "add source-supported content, or a missing field with a targeted issue; never invent it"))
+    return out
+
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     path = Path(args[0] if args else "program.json")
@@ -196,6 +226,8 @@ def main() -> None:
         print(f"FAIL {path}: cannot read as JSON: {exc}")
         sys.exit(1)
     found = (check(data) if isinstance(data, dict) and data.get("schemaVersion") != 2 else schema_problems(data, path) + check(data))
+    if "--complete" in sys.argv and not found:
+        found += coverage_problems(data)
     for msg, hint in found:
         print(f"PROBLEM {msg}" + (f"\n        fix: {hint}" if hint else ""))
     if found:

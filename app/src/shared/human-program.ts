@@ -51,7 +51,6 @@ export function collectProblems(p: HumanProgram): ProgramProblem[] {
  for (const [key, items] of Object.entries(tables)) {
   if (new Set(items.map(i => i.id)).size !== items.length) add(`${key}: duplicate ID`, `give every entry in ${key} its own id`, () => { const seen = new Set<string>(); items.splice(0, items.length, ...items.filter(i => !seen.has(i.id) && !!seen.add(i.id))); });
  }
- if (p.relations.length + p.steps.reduce((n, s) => n + s.next.length + s.children.length, 0) > 1200) add('Human Program exceeds 1200 display connections');
  const nodes = new Map(p.nodes.map(n => [n.id, n])), studies = new Set(p.studies.map(s => s.id)), steps = new Map(p.steps.map(s => [s.id, s])), evidence = new Set(p.evidence.map(e => e.id));
  const refs = (ids: string[], known: ReadonlySet<string> | ReadonlyMap<string, unknown>, where: string, drop?: (bad: ReadonlySet<string>) => void, hintFor?: (id: string) => string | undefined) => {
   if (new Set(ids).size !== ids.length) add(`${where}: duplicate ID`, 'list each id once', drop && (() => drop(new Set())));
@@ -105,7 +104,7 @@ export function collectProblems(p: HumanProgram): ProgramProblem[] {
 }
 function prepare(value: unknown): HumanProgram {
  const serialized=JSON.stringify(value);
- if(!serialized||new TextEncoder().encode(serialized).byteLength>500_000)throw new Error('Human Program exceeds 500 KB; reference large materials as resources');
+ if(!serialized)throw new Error('Human Program is empty');
  const json=JSON.parse(serialized); // Reject NaN/Infinity and undefined by validating the input, not a sanitized clone.
  if(JSON.stringify(json)!==serialized)throw new Error('Invalid JSON');
  function finite(v:unknown,depth=0):void{if(depth>64)throw new Error('Human Program is too deeply nested');if(typeof v==='number'&&!Number.isFinite(v)||v===undefined||typeof v==='function'||typeof v==='bigint')throw new Error('Invalid JSON value');if(v&&typeof v==='object')Object.values(v).forEach(x=>finite(x,depth+1));}

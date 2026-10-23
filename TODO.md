@@ -1,6 +1,12 @@
-> **Start here (2026-10-15):** `docs/handoff-2026-10-15.md` — current state, P0 CPU runaway, 0.6.1 release steps.
+> **Current rollout (2026-10-22):** [Unified collection and application rollout](docs/rollout-checklist-2026-10-22.md) · [GitHub #30](https://github.com/HumanStudy-Hub/humanstudy-desktop/issues/30).
+> Tester follow-up: [implementation and verification](docs/tester-reliability-2026-10-22.md).
+> T03–T05 code fixes and research collection are integrated on `claude/integration-0.6.7-collection`; installed Mac, real Haiku and Windows acceptance remain open.
+> Historical context: `docs/handoff-2026-10-15.md` — CPU investigation and 0.6.1 release steps.
 
 # HumanStudy Hub desktop · backlog
+
+**Current execution:** [Unified collection and application rollout](docs/rollout-checklist-2026-10-22.md).
+Tracks desktop/web/headless capture, database migration and packaged acceptance. Build/save blockers are listed separately as out-of-scope follow-ups.
 
 Feature parity target: the Codex / Claude Code desktop apps, for social scientists. Each item
 names its owner wave so several agents can work without touching the same files.
@@ -15,6 +21,12 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
 - [x] Research-oriented activity messages; full technical details stay expandable.
 - [ ] Real-paper owner dogfood, PDF zoom/text annotations/quote highlights, sample attachment repair,
       and collaborator dev-backend access before sharing. See detailed acceptance criteria.
+
+## Next · 0.6.x tester reports
+
+- [~] #15 Importing a paper starts the build automatically (import = authorization): Study view shows
+      progress and fills in from `program_io.py` checkpoints; a failure shows its reason and one retry.
+      Building never starts a simulation. Needs a real-paper run on Mac and Windows before release.
 
 ## Next · from the 2026-10-12 review (agent-first: no new buttons/tabs)
 

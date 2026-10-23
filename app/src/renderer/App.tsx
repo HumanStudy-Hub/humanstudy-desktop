@@ -11,13 +11,13 @@ import { useKernelInstall } from './useKernelInstall'
 import { ThreadMenu } from './components/Threads'
 import { UpdateNotice, useUpdateStatus } from './components/Updates'
 import { AgreementDialog } from './components/ResearchData'
-import { lap, setTelemetryProject, track } from './telemetry'
+import { beginMenuCommand, claimAction, lap, setTelemetryProject, track } from './telemetry'
 import { t, useLang } from './i18n'
-import { requestsSimulation } from '../shared/simulation-scope'
 import { classifyTool, researchActivity, toolSentence } from './toolSentence'
 import { onAsk as onArtifactAsk, onOpenSource as onArtifactOpenSource } from './bridge'
 import { artifactSourceRef } from './artifact-source'
 import { SampleOnboarding } from './components/SampleOnboarding'
+import { clearDraftsIn, draftCount, draftsIn, onDraftsChange } from './drafts'
 
 const PANES_KEY = 'hs.panes'
 type Pane = 'agent' | 'program'
@@ -91,20 +91,24 @@ export default function App() {
   const hasAccess = account?.modelAccess === 'hosted' || (devKeys && account?.modelAccess === 'own-key')
   const agentReady = Boolean(hasAccess && agreed)
   const session = useSession(project?.dir ?? null, agentReady)
-  const [simulationRequest, setSimulationRequest] = useState<string | null>(null)
-  useEffect(() => { setSimulationRequest(null); setSource(null) }, [project?.dir])
+  const lastUser = session.messages.filter(m => m.role === 'user').at(-1)
+  const agentTurnKey = lastUser ? `${session.threadId ?? session.id ?? ''}:${lastUser.id}` : null
+  // Importing a paper authorizes building its study: start as soon as the agent is ready and idle (issue #15).
+  const buildPending = Boolean(project?.pdf && project.build?.status === 'pending')
+  const { startPaperBuild } = session
+  useEffect(() => {
+    if (agentReady && session.id && !session.busy && buildPending) void startPaperBuild(t('build.prompt')).catch(() => undefined)
+  }, [agentReady, session.id, session.busy, buildPending, startPaperBuild])
+  useEffect(() => { setSource(null) }, [project?.dir])
   // What the agent is doing, in the chat's own words, for the Simulation tab's live line.
   const agentActivity = useMemo(() => {
     if (!session.busy) return ''
+    if (session.status === 'stalled') return t('activity.stalled')
     const tools = (session.messages.filter(m => m.role === 'assistant').at(-1)?.parts ?? []).filter(p => p.kind === 'tool') as Parameters<typeof researchActivity>[0]
     const last = tools[tools.length - 1]
     const s = last && (last.state === 'pending' || last.state === 'running') ? toolSentence(classifyTool(last, project?.dir)) : researchActivity(tools, project?.dir)
     return t(s.key, s.vars)
-  }, [session.busy, session.messages, project?.dir])
-  const reviewRun = (text: string, send: (text: string) => void) => {
-    if (requestsSimulation(text)) { setSimulationRequest(text); showTab('simulation') }
-    else send(text)
-  }
+  }, [session.busy, session.status, session.messages, project?.dir])
   useEffect(() => {
     if (!account?.signedIn) return setResearch(null)
     window.humanstudy.telemetry
@@ -143,23 +147,44 @@ export default function App() {
 
   const load = useCallback(async (dir: string) => {
     const snap = await window.humanstudy.project.read(dir)
+    // Only a different project clears the selection. A re-read of the same one (the agent saved a
+    // checkpoint, a field was saved) must not close the open item and the field being edited in it.
+    const sameProject = state.current.project?.dir === snap.dir
     setProject(snap)
-    setSelected([])
+    if (!sameProject) setSelected([])
   }, [])
   const openProject = useCallback(
     async (dir: string) => {
       const started = performance.now()
+      const action = claimAction('project.open', true)
       await load(dir)
       await setTelemetryProject(dir)
-      track('project.opened', { durationMs: performance.now() - started })
+      track('project.opened', { durationMs: performance.now() - started }, action)
     },
     [load]
   )
-  const closeProject = () => {
+  // Unsaved file edits survive tab switches; leaving the project asks before they are dropped.
+  const confirmLeave = (): boolean => {
+    const dir = state.current.project?.dir
+    if (!dir) return true
+    const n = draftsIn(dir).length
+    if (n && !window.confirm(t('app.leave_unsaved', { n }))) return false
+    clearDraftsIn(dir)
+    return true
+  }
+  const closeProject = (): boolean => {
+    if (!confirmLeave()) return false
     track('project.closed')
     void setTelemetryProject(null)
     setProject(null)
+    return true
   }
+  // Closing the window or quitting asks while any draft exists (main/index.ts shows the dialog).
+  useEffect(() => {
+    const sync = () => window.humanstudy.app.setUnsaved(draftCount() ? { message: t('app.quit_unsaved'), detail: t('app.quit_unsaved_detail'), discard: t('app.discard_close'), cancel: t('app.cancel') } : null)
+    sync()
+    return onDraftsChange(sync)
+  }, [])
 
   useEffect(() => {
     window.humanstudy.settings.get().then(setSettings).catch(() => undefined)
@@ -194,6 +219,30 @@ export default function App() {
       if (dir === project.dir) void load(dir)
     })
   }, [project, load])
+  // The folder watcher can miss a replaced file (on Windows a rename-replace or an editor's temporary
+  // file may report only the other name). Re-read when the window regains focus or a tab is switched:
+  // a changed version stamp reloads the source; an unchanged project keeps its state and selection.
+  const lastCheck = useRef(0)
+  const recheck = useCallback(() => {
+    const dir = project?.dir
+    if (!dir || Date.now() - lastCheck.current < 800) return
+    lastCheck.current = Date.now()
+    window.humanstudy.project
+      .read(dir)
+      .then((snap) => setProject((prev) => (!prev || prev.dir !== snap.dir || JSON.stringify(prev) === JSON.stringify(snap) ? prev : snap)))
+      .catch(() => undefined)
+  }, [project?.dir])
+  useEffect(() => {
+    const visible = () => {
+      if (document.visibilityState === 'visible') recheck()
+    }
+    window.addEventListener('focus', recheck)
+    document.addEventListener('visibilitychange', visible)
+    return () => {
+      window.removeEventListener('focus', recheck)
+      document.removeEventListener('visibilitychange', visible)
+    }
+  }, [recheck])
 
   const openSettings = (section: SettingsSection) => {
     track('settings.opened', { target: section })
@@ -254,10 +303,10 @@ export default function App() {
       if (command === 'settings.open') return openSettings((arg as SettingsSection) || 'general')
       if (command === 'project.fromPaper') return st.project ? undefined : home.current?.fromPaper()
       if (command === 'project.new') {
-        if (st.project) closeProject()
+        if (st.project && !closeProject()) return
         return setWantNew(true)
       }
-      if (command === 'project.open') return void window.humanstudy.project.open().then((dir) => { if (dir) void openProject(dir) })
+      if (command === 'project.open') return void window.humanstudy.project.open().then((dir) => { if (dir && (dir === state.current.project?.dir || confirmLeave())) void openProject(dir) })
       if (command === 'thread.new') return st.project ? newThreadRef.current() : undefined
       if (command === 'selection.clear') return setSelected([])
       if (command === 'pane.toggle' && st.project && (arg === 'agent' || arg === 'program')) setPane(arg, !st.open[arg])
@@ -271,6 +320,7 @@ export default function App() {
   useEffect(
     () =>
       window.humanstudy.menu.onCommand((c) => {
+        beginMenuCommand(`menu:${c.command}${c.arg ? '.' + c.arg : ''}`, Boolean(c.accelerator))
         if (c.command === 'newProject') runCommand('project.new')
         else if (c.command === 'openFolder') runCommand('project.open')
         else if (c.command === 'pane') {
@@ -393,7 +443,7 @@ export default function App() {
               </PaneHead>
               <Chat
                 ref={chat}
-                session={{ ...session, send: text => reviewRun(text, t => sendInWorkspace(t, session.send)), enqueue: text => reviewRun(text, t => sendInWorkspace(t, session.enqueue)), interruptAndSend: text => reviewRun(text, t => sendInWorkspace(t, session.interruptAndSend)) }}
+                session={{ ...session, send: text => sendInWorkspace(text, session.send), enqueue: text => sendInWorkspace(text, session.enqueue), interruptAndSend: text => sendInWorkspace(text, session.interruptAndSend) }}
                 selected={selectedItems}
                 onClearSelection={() => setSelected([])}
                 account={account}
@@ -423,12 +473,14 @@ export default function App() {
               project={project}
               source={source}
               onWorkspaceChange={cacheWorkspace}
-              simulationRequest={simulationRequest}
-              onRunSimulation={approval => { setSimulationRequest(null); sendInWorkspace(approval, session.busy ? session.enqueue : session.send) }}
+              onRecheck={recheck}
+              onRunSimulation={approval => sendInWorkspace(approval, session.busy ? session.enqueue : session.send)}
               onSendAgent={text => sendInWorkspace(text, session.busy ? session.enqueue : session.send)}
               onStopAgent={() => void session.abort()}
               model={settings?.model ?? ''}
               agentBusy={session.busy}
+              agentThreadId={session.threadId ?? session.id ?? ''}
+              agentTurnKey={agentTurnKey}
               agentActivity={agentActivity}
               selectedIds={selected}
               onClearSelection={() => setSelected([])}

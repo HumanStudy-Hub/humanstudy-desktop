@@ -2,9 +2,10 @@
 // opens as another tab, like an artifact panel. A Files sidebar (hidden by default, ⌘B) lists the folder.
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import StudyModel, { viewStudies, type QuoteStatus, type StudyModelProps } from '../program/StudyModel'
-import { readHumanProgram, validateHumanProgram, type HumanProgram } from '../../shared/human-program'
+import { readHumanProgram, type HumanProgram } from '../../shared/human-program'
+import { patchProgramField } from '../../shared/program-patch'
 import type { ProjectEntry, ProjectSnapshot, WorkspaceContext } from '../../preload/types'
-import { lap, track } from '../telemetry'
+import { claimAction, lap, track } from '../telemetry'
 import { FileView } from './FileView'
 import { Explorer, flatten } from './Explorer'
 import { SourceDrawer, type PassageSelection, type SourceRef } from './SourceDrawer'
@@ -14,8 +15,9 @@ import { simulationScope } from '../../shared/simulation-scope'
 import { simulationPlan } from '../../shared/simulation-run'
 import { SimulationPanel } from './SimulationPanel'
 import { sourceFocus } from '../../shared/workspace-context'
-import { supportedBy } from '../../shared/program-view'
+import { passageSupport } from '../../shared/program-view'
 import { quoteKey } from '../../shared/source-anchor'
+import { clearDraft, draftsIn } from '../drafts'
 
 export type MainTab = 'study' | 'paper' | 'simulation'
 type TabId = MainTab | `file:${string}`
@@ -63,7 +65,6 @@ interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSour
   /** Send the agent a message about a program.json that needs fixing. */
   onFixProgram?(text: string): void
   onFold(): void
-  simulationRequest?: string | null
   onRunSimulation?(approval: string): void
   /** Send the agent a message right away (the Simulation tab's "Build the study first"). */
   onSendAgent?(text: string): void
@@ -71,8 +72,12 @@ interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSour
   /** The model selected in the app, whether the agent is working, and what it is doing. */
   model?: string
   agentBusy?: boolean
+  agentThreadId?: string
+  agentTurnKey?: string | null
   agentActivity?: string
   onWorkspaceChange?(snapshot: WorkspaceSnapshot): void
+  /** Re-read the project from disk (tab switches), in case the folder watcher missed a change. */
+  onRecheck?(): void
 }
 
 const key = (dir: string) => `hs.wb2:${dir}`
@@ -94,7 +99,7 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, source, onClearSelection, onAskSelection, onFixProgram, onFold, simulationRequest, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentActivity, onWorkspaceChange, ...docProps }: Props) {
+export function Workbench({ ref, project, source, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
   // Tolerant: one slip by the agent sets that detail aside and the document still renders.
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
@@ -105,12 +110,20 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
     }
   }, [project.program, project.programError])
   const fixProgram = () => onFixProgram?.(fixProgramMessage(problems, error))
+  // The automatic build after a paper import: one status line while it runs, one retry when it stops.
+  const build = project.build
+  const building = build?.status === 'pending' || build?.status === 'running'
+  const buildLine = !build ? '' : build.status === 'pending' ? t('build.pending') : t(`build.${build.phase}`)
+  const buildFailed = build?.status === 'error' ? `${t(`build.error.${build.error ?? 'failed'}`)} ${t('build.kept')}` : ''
+  // A project from before automatic builds: a paper, no study, never built. Offer it; never start it unasked.
+  const paperOnly = !build && Boolean(project.pdf) && !project.program && !error
+  const retryBuild = () => void window.humanstudy.project.retryBuild(project.dir, claimAction('build.retry')).catch((e: unknown) => setEditError(String(e)))
   const studies = useMemo(() => (program ? viewStudies(program) : []), [program])
   const files = useMemo(() => flatten(project.tree), [project.tree])
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
 
   const [layout, setLayout] = useState<Layout>(() => loadLayout(project.dir))
-  const [dirty, setDirty] = useState<Set<string>>(() => new Set())
+  const [dirty, setDirty] = useState<Set<string>>(() => new Set(draftsIn(project.dir).map((d) => d.path)))
   const [editError, setEditError] = useState('')
   const [changed, setChanged] = useState<Set<string>>(() => new Set())
   const [paperSeen, setPaperSeen] = useState(false)
@@ -120,12 +133,28 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   // What the paper found for each citation it opened, and the passage the reader selected there.
   const [quoteStatus, setQuoteStatus] = useState<ReadonlyMap<string, QuoteStatus>>(() => new Map())
   const [passage, setPassage] = useState<PassageSelection | null>(null)
-  const support = useMemo(() => passage && program ? { page: passage.page, ids: supportedBy(program, passage) } : null, [passage, program])
+  // Items citing the selected passage: those citing this file first; the same words cited from another
+  // file are listed apart, with that file's name, never as support for this one.
+  const sourceLabel = sourceFile ? ('rel' in sourceFile ? sourceFile.rel : sourceFile.name) : undefined
+  const support = useMemo(() => {
+    if (!passage || !program) return null
+    const found = passageSupport(program, { ...passage, source: sourceFile?.path ?? null }, (ref) => sourceTarget(project, ref)?.path ?? null)
+    return { page: passage.page, file: sourceLabel, ids: found.same, other: found.other }
+  }, [passage, program, project, sourceFile?.path, sourceLabel])
+
+  // A source file replaced on disk: what was located in the old version says nothing about the new one.
+  const sourceVersions = useMemo(() => [project.pdf, ...files].filter(f => f && f.ext === 'pdf').map(f => `${f!.path}\n${f!.version ?? ''}`).sort().join('\n'), [project.pdf, files])
+  const seenVersions = useRef(sourceVersions)
+  useEffect(() => {
+    if (seenVersions.current === sourceVersions) return
+    seenVersions.current = sourceVersions
+    setQuoteStatus(new Map())
+  }, [sourceVersions])
 
   // Project switch: restore its tabs.
   useEffect(() => {
     setLayout(loadLayout(project.dir))
-    setDirty(new Set())
+    setDirty(new Set(draftsIn(project.dir).map((d) => d.path)))
     setChanged(new Set())
     setEditError('')
     setQuoteStatus(new Map())
@@ -174,7 +203,10 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
     if (layout.active === 'paper' || layout.compare) setPaperSeen(true)
   }, [layout.active, layout.compare])
 
-  const activate = (id: TabId) => update((l) => (l.active === id ? l : { ...l, active: id }))
+  const activate = (id: TabId) => {
+    if (id !== layout.active) onRecheck?.()
+    update((l) => (l.active === id ? l : { ...l, active: id }))
+  }
   const open = (id: `file:${string}`) => {
     track('tab.open', { target: `file.${fileByPath.get(id.slice(5))?.ext ?? ''}` })
     update((l) => ({ ...l, tabs: l.tabs.includes(id) ? l.tabs : [...l.tabs, id], active: id }))
@@ -196,6 +228,7 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   const close = (id: `file:${string}`) => {
     track('tab.close', { target: tabKind(id, fileByPath), metadata: { dirty: dirty.has(id.slice(5)) } })
     if (dirty.has(id.slice(5)) && !window.confirm(t('wb.discard'))) return
+    clearDraft(id.slice(5))
     setDirty((d) => {
       if (!d.has(id.slice(5))) return d
       const n = new Set(d)
@@ -229,25 +262,39 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
     track('file.open', { target: e.rel, metadata: { ext: e.ext, size: e.size ?? null } })
     open(`file:${e.path}`)
   }
-  // Human edit of a study field: the researcher's decision, written straight into program.json.
-  const onEdit = async (id: string, fieldId: string, text: string) => {
-    if (!program) return
-    const next = structuredClone(program) as HumanProgram
-    const field = id.startsWith('flow:')
-      ? next.steps.find((s) => s.id === id.slice(5))?.rule
-      : next.nodes.find((n) => n.id === id)?.fields.find((f) => f.id === fieldId)
-    if (!field) return setEditError(t('study.field_missing', { id, field: fieldId }))
-    field.value = text
-    field.origin = 'researcher'
-    field.state = 'confirmed'
+  // Human edit of a study field: the researcher's decision, patched into program.json as it is on disk.
+  // Only that field's bytes change; entries the tolerant reader set aside are never rewritten.
+  const onEdit = async (id: string, fieldId: string, text: string): Promise<boolean> => {
+    if (!program) return false
+    const action = claimAction('program.edit')
+    const path = `${project.dir}/program.json`
+    // Read, patch, write only if unchanged since the read: an agent checkpoint (program_io.py) landing in
+    // between is patched again rather than overwritten.
+    const save = async (): Promise<void> => {
+      const raw = await window.humanstudy.project.readText(path)
+      let next: string
+      try {
+        next = patchProgramField(raw, { id, fieldId, value: text })
+      } catch (e) {
+        if (/is not in program\.json$/.test(e instanceof Error ? e.message : '')) throw new Error(t('study.field_missing', { id, field: fieldId }))
+        throw e
+      }
+      await window.humanstudy.project.writeText(path, next, raw, action)
+    }
     try {
-      validateHumanProgram(next)
-      await window.humanstudy.project.writeText(`${project.dir}/program.json`, JSON.stringify(next, null, 2) + '\n')
+      for (let attempt = 0; ; attempt++) {
+        try { await save(); break } catch (e) {
+          if (attempt < 2 && /changed on disk/.test(e instanceof Error ? e.message : '')) continue
+          throw e
+        }
+      }
       setEditError('')
       setChanged((c) => new Set(c).add(id))
-      track('program.edited', { target: id, metadata: { field: fieldId } })
+      track('program.edited', { target: id, metadata: { field: fieldId } }, action)
+      return true
     } catch (e) {
       setEditError(e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '') : String(e))
+      return false
     }
   }
 
@@ -337,11 +384,12 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
               onStudy={(id) => update((l) => ({ ...l, study: id }))}
               model={model}
               agentBusy={agentBusy}
+              agentThreadId={agentThreadId}
+              agentTurnKey={agentTurnKey}
               agentActivity={agentActivity}
-              request={simulationRequest}
               onRun={async (perCondition) => {
                 const study = studies.find(st => st.id === studyId)?.title ?? studyId
-                const request = simulationRequest ?? t('sim.request', { study, n: perCondition, model: model || 'selected in the app' })
+                const request = t('sim.request', { study, n: perCondition, model: model || 'selected in the app' })
                 try {
                   onRunSimulation?.(await approveSimulation(project.dir, program, studyId, request, { perCondition, model }))
                 } catch (e) {
@@ -350,11 +398,12 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
                 }
               }}
               onBuild={() => onSendAgent?.(t('sim.build_prompt'))}
-              onStop={() => {
-                onStopAgent?.()
+              onStop={(runs, ownTurn) => {
+                if (ownTurn) onStopAgent?.()
                 // The run itself is a background process; simkit ends it after the participants in flight.
-                const live = project.tree.length ? findRunning(project.tree) : null
-                if (live) void window.humanstudy.project.writeText(`${live}/STOP`, 'Stopped by the researcher\n').catch(() => undefined)
+                const live = runs.length ? runs : [project.tree.length ? findRunning(project.tree) : null].filter((p): p is string => Boolean(p))
+                const action = claimAction('simulation.stop')
+                for (const dir of live) void window.humanstudy.project.writeText(`${dir}/STOP`, 'Stopped by the researcher\n', undefined, action).catch(() => undefined)
               }}
               onAsk={(draft) => docProps.onPrefill?.(draft)}
               onOpenFile={(path) => { const e = fileByPath.get(path); if (e) openEntry(e) }}
@@ -364,6 +413,8 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
           {active === 'study' &&
             (program ? (
               <>
+                {building && <div className="build-status" role="status">{buildLine}</div>}
+                {buildFailed && <div className="part error edit-error" role="alert">{buildFailed} <button className="link" onClick={retryBuild}>{t('build.retry')}</button></div>}
                 <StudyView
                   view="study"
                   program={program}
@@ -375,10 +426,10 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
                   onClearSelection={onClearSelection}
                   onAskSelection={onAskSelection}
                   editError={editError}
-                  problems={problems}
+                  problems={building ? [] : problems}
                   onFix={fixProgram}
                   changedIds={changed}
-                  onEdit={(id, fieldId, text) => void onEdit(id, fieldId, text)}
+                  onEdit={onEdit}
                   {...docProps}
                   onSource={(id, ref) => {
                     docProps.onSource(id, ref)
@@ -387,9 +438,17 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
                 />
               </>
             ) : (
-              <Empty title={error ? t('study.unreadable') : t('study.empty_title')} body={error ?? t('study.empty_body')}>
-                {error && onFixProgram && <button className="link" onClick={fixProgram}>{t('study.fix')}</button>}
-              </Empty>
+              building ? <Empty title={t('build.title')} body={buildLine} />
+              : buildFailed ? (
+                <Empty title={t('build.failed_title')} body={buildFailed}>
+                  <button className="link" onClick={retryBuild}>{t('build.retry')}</button>
+                </Empty>
+              ) : (
+                <Empty title={error ? t('study.unreadable') : t('study.empty_title')} body={error ?? (paperOnly ? t('study.paper_no_study') : t('study.empty_body'))}>
+                  {paperOnly && <button className="link" onClick={retryBuild}>{t('study.build_from_paper')}</button>}
+                  {error && onFixProgram && <button className="link" onClick={fixProgram}>{t('study.fix')}</button>}
+                </Empty>
+              )
             ))}
           {activeFile?.ext === 'pdf' && activeFile.url ? (
             <SourceDrawer key={activeFile.path} pdf={activeFile as import('../../preload/types').ProjectFile} source={DEFAULT_SOURCE}

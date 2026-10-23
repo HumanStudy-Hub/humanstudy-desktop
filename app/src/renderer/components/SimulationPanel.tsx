@@ -6,11 +6,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { HumanProgram } from '../../shared/human-program'
 import type { ProjectEntry, ProjectSnapshot } from '../../preload/types'
 import { simulationScope, simulationLimits } from '../../shared/simulation-scope'
-import { estimateRun, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
+import { estimateRun, hasParticipantData, isResult, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
+import { packageStamp, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
 import { shortModelName } from './ModelPicker'
 import { listenToArtifact } from '../bridge'
 import { getLang, t } from '../i18n'
-import { track } from '../telemetry'
+import { holdAction, track } from '../telemetry'
 import { formatDuration } from '../format'
 
 interface Props {
@@ -22,29 +23,55 @@ interface Props {
   /** The model selected in the app; AI participants use it too. */
   model: string
   agentBusy: boolean
+  agentThreadId?: string
+  agentTurnKey?: string | null
   /** What the agent is doing right now, in plain words (from the chat's activity line). */
   agentActivity?: string
-  /** A run request typed in the chat, waiting for this screen's confirmation. */
-  request?: string | null
   onRun(perCondition: number): Promise<void>
   onBuild(): void
-  onStop(): void
+  /** Stop the agent and ask these run folders (absolute paths) to stop. */
+  /** Stop: write STOP into these run folders; `ownTurn` when the agent's current turn is this tab's request. */
+  onStop(runs: string[], ownTurn: boolean): void
   onAsk(draft: string): void
   onOpenFile(path: string): void
 }
 
 const PENDING_KEY = (dir: string) => `hs.sim.pending:${dir}`
-interface Pending { at: number; kind: 'run' | 'build' }
+interface Pending { at: number; kind: 'run' | 'build'; owner: string; before: string | null; turn?: string }
 const readPending = (dir: string): Pending | null => {
-  try { const p = JSON.parse(sessionStorage.getItem(PENDING_KEY(dir)) || 'null'); return p && typeof p.at === 'number' ? p : null } catch { return null }
+  try { const p = JSON.parse(sessionStorage.getItem(PENDING_KEY(dir)) || 'null'); return p && Number.isFinite(p.at) && ['build','run'].includes(p.kind) && typeof p.owner === 'string' && (p.before === null || typeof p.before === 'string') && (p.turn === undefined || typeof p.turn === 'string') ? p : null } catch { return null }
 }
 const writePending = (dir: string, p: Pending | null) => {
   try { if (p) sessionStorage.setItem(PENDING_KEY(dir), JSON.stringify(p)); else sessionStorage.removeItem(PENDING_KEY(dir)) } catch { /* no storage */ }
 }
+// When the researcher last pressed Stop. A run folder with no activity after it is stopped, even
+// before its STOP file shows up in the tree or while a just-created folder still looks fresh.
+const STOP_KEY = (dir: string) => `hs.sim.stopped:${dir}`
+const readStopAt = (dir: string): number | null => {
+  try { const v = Number(sessionStorage.getItem(STOP_KEY(dir))); return Number.isFinite(v) && v > 0 ? v : null } catch { return null }
+}
+const STOP_GRACE = 10_000
 
-const hasPackage = (tree: ProjectEntry[]): boolean => {
+// A package can run only when its eight files are there and valid (shared/package-readiness, the same
+// check the main process applies before it lets a run approval through). Rechecked when they change.
+const packageEntries = (tree: ProjectEntry[]): ProjectEntry[] => {
   const pkg = tree.find((e) => e.kind === 'dir' && e.rel === 'package')
-  return Boolean(pkg?.children?.some((d) => d.kind === 'dir' && d.children?.some((c) => c.name === 'task' && c.children?.some((f) => f.name === 'adapter.py'))))
+  const all = (es: ProjectEntry[]): ProjectEntry[] => es.flatMap((e) => [e, ...all(e.children ?? [])])
+  return pkg ? [pkg, ...all(pkg.children ?? [])] : []
+}
+function usePackageReadiness(dir: string, tree: ProjectEntry[], studyId: string, program: HumanProgram): { slugs: string[]; readiness: PackageReadiness | null; checking: boolean } {
+  const entries = useMemo(() => packageEntries(tree), [tree])
+  const slugs = useMemo(() => entries.filter((e) => e.kind === 'dir' && /^package\/[^/]+$/.test(e.rel) && !e.name.startsWith('.') && e.name !== '__pycache__').map((e) => e.name), [entries])
+  const stamp = JSON.stringify([dir, studyId, packageStamp(entries), program])
+  const [checked, setChecked] = useState<{ stamp: string; readiness: PackageReadiness } | null>(null)
+  useEffect(() => {
+    let live = true
+    void window.humanstudy.project.packageReadiness(dir, studyId).then((readiness) => {
+      if (live) setChecked({ stamp, readiness })
+    }).catch(() => { if (live) setChecked({ stamp, readiness: { exists: slugs.length > 0, ready: false, slug: null, problems: [] } }) })
+    return () => { live = false }
+  }, [dir, stamp, studyId]) // eslint-disable-line react-hooks/exhaustive-deps
+  return { slugs, readiness: checked?.stamp === stamp ? checked.readiness : null, checking: checked?.stamp !== stamp }
 }
 const fileUrl = (tree: ProjectEntry[], path?: string): string | undefined => {
   if (!path) return undefined
@@ -58,12 +85,14 @@ const fileUrl = (tree: ProjectEntry[], path?: string): string | undefined => {
 const STEPS: SimStage[] = ['preparing', 'trial', 'running', 'scoring', 'writing']
 
 export function SimulationPanel(props: Props) {
-  const { project, program, studyId, studies, model, agentBusy } = props
+  const { project, program, studyId, studies, model, agentBusy, agentThreadId = '', agentTurnKey = null } = props
   const dir = project.dir
+  const owner = `${dir}:${agentThreadId}`
   const plan = useMemo(() => simulationPlan(program, studyId), [program, studyId])
   const scope = useMemo(() => simulationScope(program, studyId), [program, studyId])
   const limits = useMemo(() => simulationLimits(program, studyId), [program, studyId])
-  const built = hasPackage(project.tree)
+  const { slugs, readiness, checking } = usePackageReadiness(dir, project.tree, studyId, program)
+  const built = Boolean(readiness?.ready)
   const [perCondition, setPerCondition] = useState(plan.defaultPerCondition)
   useEffect(() => setPerCondition(plan.defaultPerCondition), [plan.defaultPerCondition])
   const estimate = estimateRun({ conditions: plan.conditions.length, perCondition, model, needsBuild: !built })
@@ -85,27 +114,63 @@ export function SimulationPanel(props: Props) {
   const [pending, setPendingState] = useState<Pending | null>(() => readPending(dir))
   useEffect(() => setPendingState(readPending(dir)), [dir])
   const setPending = (p: Pending | null) => { writePending(dir, p); setPendingState(p) }
+  const [buildProblem, setBuildProblem] = useState(false)
+  const [runProblem, setRunProblem] = useState(false)
+  useEffect(() => { setBuildProblem(false); setRunProblem(false) }, [owner])
+  const requestBusy = pending?.owner === owner && agentBusy && Boolean(agentTurnKey) && (pending.turn ? pending.turn === agentTurnKey : pending.before !== agentTurnKey)
   const [now, setNow] = useState(() => Date.now())
-  const states = new Map(runs.map((r) => [r.id, runState(r, texts[r.id]?.progress ?? null, agentBusy, now, r.mtime)]))
+  const [stopAt, setStopAt] = useState<number | null>(() => readStopAt(dir))
+  useEffect(() => setStopAt(readStopAt(dir)), [dir])
   const newRun = pending?.kind === 'run' ? runs.find((r) => r.mtime >= pending.at - 5_000 && !texts[r.id]?.summary?.example) : undefined
+  // Only the chat turn that started this run speaks for it; any other chat activity (a question about
+  // a report, an edit) says nothing about whether a simulation is running.
+  const ownedRun = pending?.kind === 'run' && requestBusy
+  const states = new Map(runs.map((r) => {
+    const progress = texts[r.id]?.progress ?? null
+    const st = runState(r, progress, now, r.mtime, ownedRun && r.id === newRun?.id)
+    const startedAfterStop = stopAt !== null && pending?.kind === 'run' && pending.at > stopAt && r.id === newRun?.id
+    const quietSinceStop = stopAt !== null && !startedAfterStop && (Math.max(progress?.updatedAt ?? 0, progress?.heartbeatAt ?? 0) || r.mtime) < stopAt + STOP_GRACE
+    return [r.id, st === 'running' && quietSinceStop ? 'stopped' : st] as const
+  }))
   const active = runs.find((r) => states.get(r.id) === 'running' && !texts[r.id]?.summary?.example && now - r.mtime < 6 * 3600_000)
-  const running = Boolean(active) || (pending?.kind === 'run' && agentBusy && !newRun) || (pending?.kind === 'run' && newRun && states.get(newRun.id) === 'running')
-  const building = pending?.kind === 'build' && agentBusy
-  // A pending request ends when its run folder finished, or the agent went quiet without starting one.
-  const quietMiss = pending?.kind === 'run' && !agentBusy && !newRun && now - pending.at > 8_000
+  const running = Boolean(active) || (ownedRun && !newRun) || (pending?.kind === 'run' && newRun && states.get(newRun.id) === 'running')
+  const building = pending?.kind === 'build' && requestBusy
+  // Bind the request to its actual chat turn. A different conversation or later
+  // question must never resurrect a project-level "building" flag.
+  const quietMiss = runProblem || (pending?.kind === 'run' && !requestBusy && !newRun && now - pending.at > 8_000)
   useEffect(() => {
-    if (pending?.kind === 'build' && !agentBusy && now - pending.at > 5_000) setPending(null)
-    if (pending?.kind === 'run' && newRun && states.get(newRun.id) !== 'running') setPending(null)
+    if (!pending) return
+    // Until the conversation is known again (reopening a project, signing in) it cannot own anything;
+    // keep the request instead of discarding it as someone else's.
+    if (!agentThreadId) return
+    if (pending.owner !== owner) { setPending(null); setBuildProblem(false); return }
+    if (!pending.turn && requestBusy && agentTurnKey) {
+      setPending({ ...pending, turn: agentTurnKey }); return
+    }
+    const turnEnded = Boolean(pending.turn) && (!agentBusy || pending.turn !== agentTurnKey)
+    const notStarted = !pending.turn && !requestBusy && now - pending.at > 8_000
+    if (pending.kind === 'build' && (turnEnded || notStarted)) {
+      // The package check is still reading the files the build just wrote: decide once it is done.
+      if (checking && slugs.length > 0) return
+      setBuildProblem(!built && (!pending.turn || pending.turn === agentTurnKey))
+      setPending(null)
+    }
+    if (pending.kind === 'run' && quietMiss && !newRun) { setRunProblem(true); setPending(null) }
+    if (pending.kind === 'run' && newRun && states.get(newRun.id) !== 'running') setPending(null)
   }) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (built) setBuildProblem(false) }, [built])
   useEffect(() => {
-    if (!running && !building) return
+    // Keep the dispatch grace period ticking even when the agent hasn't started.
+    if (!running && !building && (!pending || quietMiss)) return
     const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
-  }, [running, building])
+  }, [running, building, Boolean(pending), quietMiss])
 
-  const finished = runs.filter((r) => r.results && states.get(r.id) !== 'running')
+  // Results are finished runs with participant data; an empty or aborted folder is never one.
+  const finished = runs.filter((r) => isResult(r, texts[r.id]?.progress ?? null, states.get(r.id)))
+  const listed = runs.filter((r) => states.get(r.id) === 'running' || hasParticipantData(r, texts[r.id]?.progress ?? null))
   const [shown, setShown] = useState<string | null>(null)
-  const current = (shown && runs.find((r) => r.id === shown)) || (newRun && states.get(newRun.id) !== 'running' ? newRun : undefined) || finished.find((r) => !texts[r.id]?.summary?.example) || finished[0]
+  const current = (shown && finished.find((r) => r.id === shown)) || (newRun && finished.includes(newRun) ? newRun : undefined) || finished.find((r) => !texts[r.id]?.summary?.example) || finished[0]
   const failedRun = newRun && states.get(newRun.id) === 'failed' ? newRun : undefined
 
   const viewed = useRef(false)
@@ -116,20 +181,28 @@ export function SimulationPanel(props: Props) {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = async () => {
-    setPending({ at: Date.now(), kind: 'run' })
+    setRunProblem(false); setNow(Date.now()); setPending({ at: Date.now(), kind: 'run', owner, before: agentTurnKey })
     setShown(null)
     track('simulation.run', { metadata: { perCondition, conditions: plan.conditions.length, model, built } })
+    // The approval is checked before it is sent; the resulting agent turn belongs to this run operation.
+    holdAction()
     try { await props.onRun(perCondition) } catch { setPending(null) }
   }
   const build = () => {
-    setPending({ at: Date.now(), kind: 'build' })
+    setBuildProblem(false); setNow(Date.now()); setPending({ at: Date.now(), kind: 'build', owner, before: agentTurnKey })
     track('simulation.build', { metadata: { conditions: plan.conditions.length } })
     props.onBuild()
   }
+  // Stop returns the tab to its idle, retryable state at once, also while the run is still being prepared.
   const stop = () => {
     track('simulation.stop', { metadata: { done: activeProgress?.done ?? 0, total: activeProgress?.total ?? 0 } })
-    props.onStop()
-    setPending(null)
+    const at = Date.now()
+    try { sessionStorage.setItem(STOP_KEY(dir), String(at)) } catch { /* no storage */ }
+    setStopAt(at); setNow(at)
+    // The chat turn is stopped only when it belongs to this run or build; a run going on in the
+    // background while the agent answers something else stops through its STOP file alone.
+    props.onStop([...new Set([activeRun?.path, newRun?.path].filter((p): p is string => Boolean(p) && !runs.find((r) => r.path === p)?.results))], Boolean(requestBusy || (pending?.owner === owner && !agentBusy)))
+    setPending(null); setBuildProblem(false); setRunProblem(false)
   }
   const activeRun = active ?? (newRun && states.get(newRun.id) === 'running' ? newRun : undefined)
   const activeProgress = activeRun ? texts[activeRun.id]?.progress ?? null : null
@@ -139,8 +212,8 @@ export function SimulationPanel(props: Props) {
   const isExample = Boolean(current && texts[current.id]?.summary?.example)
   // Your own finished run comes first; the shipped example sits below the plan, and nothing old
   // distracts from a run in progress.
-  const resultFirst = Boolean(current?.results && !isExample && !running && !building)
-  const result = current && current.results ? (
+  const resultFirst = Boolean(current && !isExample && !running && !building)
+  const result = current ? (
     <Result run={current} tree={project.tree} summary={texts[current.id]?.summary ?? null} progress={texts[current.id]?.progress ?? null}
       onOpen={() => { track('simulation.result_open', { metadata: { how: 'tab', example: isExample } }); props.onOpenFile(current.results!) }}
       onAsk={() => props.onAsk(t('sim.discuss_prompt', { run: current.rel }))} />
@@ -154,7 +227,7 @@ export function SimulationPanel(props: Props) {
 
       {resultFirst && result}
       {running ? (
-        <Progress progress={activeProgress} startedAt={activeProgress?.startedAt ?? pending?.at ?? activeRun?.mtime ?? now} now={now} plan={plan} built={built} activity={props.agentActivity} model={activeProgress?.model ?? model} onStop={stop} />
+        <Progress progress={activeProgress} startedAt={activeProgress?.startedAt ?? pending?.at ?? activeRun?.mtime ?? now} now={now} plan={plan} built={built} activity={requestBusy ? props.agentActivity : undefined} model={activeProgress?.model ?? model} onStop={stop} />
       ) : building ? (
         <section className="sim-card sim-live" aria-live="polite">
           <p className="sim-stage-now">{t('sim.building')}</p>
@@ -163,13 +236,21 @@ export function SimulationPanel(props: Props) {
         </section>
       ) : (
         <>
-          {(failedRun || quietMiss) && (
+          {(failedRun || quietMiss || buildProblem) && (
             <section className="sim-card sim-problem" role="alert">
-              <p>{failedRun ? t('sim.failed', { reason: texts[failedRun.id]?.progress?.message ?? t('sim.failed_unknown') }) : t('sim.no_run')}</p>
-              <button className="link" onClick={() => { setPending(null); props.onAsk(failedRun ? t('sim.fix_prompt', { run: failedRun.rel }) : t('sim.why_prompt')) }}>{t('sim.ask_fix')}</button>
+              <p>{failedRun ? t('sim.failed', { reason: texts[failedRun.id]?.progress?.message ?? t('sim.failed_unknown') }) : t(buildProblem ? 'sim.no_build' : 'sim.no_run')}</p>
+              <button className="link" onClick={() => { setPending(null); setBuildProblem(false); setRunProblem(false); props.onAsk(failedRun ? t('sim.fix_prompt', { run: failedRun.rel }) : t(buildProblem ? 'sim.why_build_prompt' : 'sim.why_prompt')) }}>{t('sim.ask_fix')}</button>
             </section>
           )}
-          {!built ? (
+          {slugs.length > 0 && !built ? (
+            <section className="sim-card" aria-live="polite">
+              {readiness ? (<>
+                <p>{t('sim.incomplete')}</p>
+                <ul className="sim-missing">{readiness.problems.map((p) => <li key={`${p.file}:${p.kind}`}>{problemText(p)}</li>)}</ul>
+                <button className="link" onClick={() => props.onAsk(t('sim.complete_prompt', { pkg: `package/${readiness.slug}`, what: readiness.problems.map(problemText).join(t('sim.list_sep')) }))}>{t('sim.ask_complete')}</button>
+              </>) : <p className="muted small">{t('sim.checking')}</p>}
+            </section>
+          ) : !built ? (
             <section className="sim-card">
               <p>{t('sim.not_built')}</p>
               <div className="sim-actions">
@@ -201,7 +282,6 @@ export function SimulationPanel(props: Props) {
                 <dt>{t('sim.estimate')}</dt>
                 <dd>{t('sim.estimate_value', { lo: estimate.minutes[0], hi: estimate.minutes[1], cost: costText(estimate.cost) })}</dd>
               </dl>
-              {props.request && <p className="sim-request"><span className="muted">{t('sim.your_request')}</span> {props.request}</p>}
               {(limits.text.length > 0 || limits.decisions.length > 0) && (
                 <div className="sim-limits">
                   <h3>{t('sim.cannot')}</h3>
@@ -223,16 +303,16 @@ export function SimulationPanel(props: Props) {
       )}
 
       {!resultFirst && !running && !building && result}
-      {runs.length > 1 && (
+      {listed.length > 1 && (
         <section className="sim-history">
           <h3>{t('sim.earlier')}</h3>
           <ul>
-            {runs.map((r) => {
+            {listed.map((r) => {
               const s = texts[r.id]?.summary, p = texts[r.id]?.progress, st = states.get(r.id)
               const when = runDate(r.id) ?? r.mtime
               return (
                 <li key={r.id}>
-                  <button className={`sim-run-row${current?.id === r.id ? ' on' : ''}`} disabled={!r.results} onClick={() => { setShown(r.id); track('simulation.result_open', { metadata: { how: 'history', example: Boolean(s?.example) } }) }}>
+                  <button className={`sim-run-row${current?.id === r.id ? ' on' : ''}`} disabled={!finished.includes(r)} onClick={() => { setShown(r.id); track('simulation.result_open', { metadata: { how: 'history', example: Boolean(s?.example) } }) }}>
                     <span>{new Date(when).toLocaleString(getLang(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}{s?.example ? ` · ${t('sim.example')}` : ''}</span>
                     <span className="muted">{shortModelName(s?.model ?? p?.model ?? '') || '—'}</span>
                     <span className="muted">{s?.perCondition ? t('sim.n_each', { n: s.perCondition }) : p?.total ? t('sim.n_total', { n: p.total }) : ''}</span>
@@ -246,6 +326,13 @@ export function SimulationPanel(props: Props) {
       )}
     </div>
   )
+}
+
+function problemText(p: PackageProblem): string {
+  const vars = { what: t(`sim.pkg.${p.file}`), file: p.file }
+  if (p.kind === 'unvalidated') return t('sim.pkg_unvalidated', vars)
+  if (p.kind === 'wrong-study' || p.kind === 'stale-program' || p.kind === 'bindings') return t('sim.pkg_stale', vars)
+  return p.kind === 'missing' ? t('sim.pkg_missing', vars) : p.kind === 'invalid-json' ? t('sim.pkg_invalid', vars) : t('sim.pkg_no_entry', { ...vars, entry: p.kind === 'no-entry' ? p.entry : '' })
 }
 
 function costText(range: [number, number]): string {

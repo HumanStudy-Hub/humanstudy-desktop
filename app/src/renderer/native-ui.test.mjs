@@ -1,4 +1,5 @@
 // Real Chromium input/layout + React chat, with isolated native bridge fixtures. No owner data.
+import electronBin from 'electron' // the binary's path on every platform
 import {build} from 'esbuild'
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
@@ -20,9 +21,10 @@ try{
  writeFileSync(join(out,'index.html'),'<link rel="stylesheet" href="fixture.css"><style>html,body,#root{height:100%;margin:0}#root{width:700px}.chat{height:100%}</style><div id="root"></div><script src="fixture.js"></script>')
  writeFileSync(join(out,'runner.cjs'),`
  const {app,BrowserWindow}=require('electron');const assert=require('node:assert/strict');
+ // Windows: a hidden window never paints, so requestAnimationFrame never fires; show it there (the runner has a desktop).
  app.setPath('userData',${JSON.stringify(join(out,'userdata'))});app.commandLine.appendSwitch('disable-background-timer-throttling');
  const wait=ms=>new Promise(r=>setTimeout(r,ms));
- app.whenReady().then(async()=>{const w=new BrowserWindow({show:false,width:1100,height:900,webPreferences:{backgroundThrottling:false}});const errors=[];w.webContents.on('console-message',(_e,level,message)=>{if(level>=3)errors.push(message)});
+ app.whenReady().then(async()=>{const w=new BrowserWindow({show:process.platform==='win32',width:1100,height:900,webPreferences:{backgroundThrottling:false}});const errors=[];w.webContents.on('console-message',(_e,level,message)=>{if(level>=3)errors.push(message)});
  const js=code=>w.webContents.executeJavaScript(code,true);const frame=()=>js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
  try{await w.loadFile(${JSON.stringify(join(out,'index.html'))});await wait(1000);assert.equal(await js("document.querySelectorAll('.msg').length"),800);assert.equal(errors.length,0,errors.join('\\n'));
  await js("document.querySelector('textarea').focus()");const latency=[];for(let i=0;i<30;i++){const t=Date.now();await w.webContents.insertText('a');await frame();latency.push(Date.now()-t)};assert.equal(await js("document.querySelector('textarea').value"),'a'.repeat(30));latency.sort((a,b)=>a-b);console.log('Typing with 800 complete messages: p50='+latency[15]+'ms, p95='+latency[28]+'ms including two animation frames');
@@ -36,10 +38,10 @@ try{
  await command('connect');await js("[...document.querySelectorAll('[role=dialog] button')].find(b=>b.textContent==='Fixture provider').click()");await frame();assert.equal(await js("[...document.querySelectorAll('[role=dialog] label')].some(e=>e.textContent.includes('Lab name'))"),false);await js("const select=document.querySelector('[role=dialog] select');select.value='lab';select.dispatchEvent(new Event('change',{bubbles:true}))");await frame();assert.equal(await js("[...document.querySelectorAll('[role=dialog] label')].some(e=>e.textContent.includes('Lab name'))"),true);await js("[...document.querySelectorAll('[role=dialog] button')].find(b=>b.textContent==='Fixture sign-in').click()");await frame();assert.equal(await js("window.fixture.calls.find(c=>c.operation==='providerConnect').input.inputs.mode"),'lab');await js("[...document.querySelectorAll('[role=dialog] button')].find(b=>b.textContent==='Finish sign-in').click()");await frame();assert.equal(await js("window.fixture.calls.find(c=>c.operation==='providerCallback').input.id"),'fixture');await js("document.querySelector('[aria-label=Close]').click()");await frame();
  await command('mcp');await js("[...document.querySelectorAll('[role=dialog] button')].find(b=>b.textContent==='Get sign-in link').click()");await frame();await js("[...document.querySelectorAll('[role=dialog] button')].find(b=>b.textContent==='Finish sign-in').click()");await frame();assert.equal(await js("window.fixture.calls.find(c=>c.operation==='mcpCallback').input.name"),'fixture-tools');await js("document.querySelector('[aria-label=Close]').click()");await frame();
  const frames=[];for(let i=0;i<25;i++){const t=Date.now();await js('document.getElementById("root").style.width='+JSON.stringify(450+i*10));await frame();frames.push(Date.now()-t)};frames.sort((a,b)=>a-b);console.log('Chat pane resize: p95='+frames[23]+'ms including two animation frames');assert.equal(errors.length,0,errors.join('\\n'));
- await w.capturePage().then(image=>require('node:fs').writeFileSync('/private/tmp/humanstudy-native-chat-ui.png',image.toPNG()));console.log('Real Chromium chat input, scroll position, command palette, compact, variant selection and pane resize passed');
+ await w.capturePage().then(image=>require('node:fs').writeFileSync(require('node:path').join(require('node:os').tmpdir(),'humanstudy-native-chat-ui.png'),image.toPNG()));console.log('Real Chromium chat input, scroll position, command palette, compact, variant selection and pane resize passed');
  }catch(e){console.error(e);process.exitCode=1}finally{w.destroy();app.exit(process.exitCode||0)}}).catch(e=>{console.error(e);app.exit(1)});
  `)
- const binary=join(here,'../../node_modules/electron/dist/Electron.app/Contents/MacOS/Electron')
+ const binary=electronBin
  const code=await new Promise((resolve,reject)=>{const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;const child=spawn(binary,[join(out,'runner.cjs')],{stdio:'inherit',env});const timer=setTimeout(()=>{child.kill('SIGTERM');reject(Error('Isolated UI test timed out'))},60000);child.on('error',e=>{clearTimeout(timer);reject(e)});child.on('exit',code=>{clearTimeout(timer);resolve(code)})})
  if(code!==0)process.exitCode=1
-}finally{rmSync(out,{recursive:true,force:true})}
+}finally{rmSync(out,{recursive:true,force:true,maxRetries:10})} // Windows: Chromium's helpers may still hold userdata for a moment

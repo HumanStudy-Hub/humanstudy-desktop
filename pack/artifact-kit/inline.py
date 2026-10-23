@@ -43,7 +43,7 @@ def slim_program(program: dict) -> dict:
     out = {k: strip(program.get(k)) for k in ('id', 'title', 'source', 'studies', 'nodes', 'steps', 'issues') if k in program}
     out['evidence'] = [
         {k: v for k, v in {'id': e.get('id'), 'locator': {'page': (e.get('locator') or {}).get('page')},
-                           'quote': (e.get('quote') or '')[:500], 'path': e.get('path')}.items() if v is not None}
+                           'quote': (e.get('quote') or ''), 'path': e.get('path')}.items() if v is not None}
         for e in program.get('evidence') or []
     ]
     return out

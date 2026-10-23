@@ -26,6 +26,12 @@ try {
     complete('partial', 'length', 12)
     assert.match(events.filter(e => e.type === 'error').at(-1).text, /output and saved files have been kept/)
     assert.equal(events.find(e => e.type === 'text').text, 'Full received text is preserved.')
+    // T10: research records carry OpenCode's own message/part/call ids.
+    assert.equal(events.find(e => e.type === 'text').messageId, 'partial')
+    assert.equal(events.find(e => e.type === 'text').partId, 'p')
+    k.handle({ type: 'message.part.updated', properties: { part: { sessionID: 's', messageID: 'partial', id: 'prt_tool', callID: 'call_1', type: 'tool', tool: 'write', state: { status: 'running', input: { filePath: 'a' } } } } })
+    const tool = events.find(e => e.type === 'tool')
+    assert.deepEqual([tool.toolCallId, tool.messageId, tool.partId], ['call_1', 'partial', 'prt_tool'])
     complete('ok', 'stop', 12)
     complete('tool', 'tool-calls', 0)
     assert.equal(events.filter(e => e.type === 'error').length, 2, 'normal and tool completions are not errors')

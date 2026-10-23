@@ -53,6 +53,7 @@ for (const tool of ['glob', 'grep', 'list']) assert.deepEqual(sent({ tool, detai
 assert.deepEqual(sent({ tool: 'bash', detail: 'ls -la' }), ['tool.looking', null])
 assert.deepEqual(sent({ tool: 'bash', detail: 'mkdir -p artifacts' }), ['tool.folders', null])
 assert.deepEqual(sent({ tool: 'bash', detail: 'python3 check_package.py package/x' }), ['tool.checking_package', null])
+assert.deepEqual(sent({ tool: 'bash', input: { command: 'python .opencode/skills/build/program_io.py .humanstudy/tmp/batch-02.json' } }), ['tool.updating_study', null])
 assert.deepEqual(sent({ tool: 'bash', detail: 'python3 analyze.py' }), ['tool.running_script', null])
 assert.deepEqual(sent({ tool: 'bash', detail: 'curl example.org' }), ['tool.running_command', null])
 assert.deepEqual(sent({ tool: 'webfetch', input: { url: 'https://doi.org/10.1/x' } }), ['tool.opening', 'doi.org'])

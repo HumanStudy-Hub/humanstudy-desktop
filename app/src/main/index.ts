@@ -16,20 +16,26 @@ import {
   isAllowedExternal,
   setCommunityCacheDir,
 } from './community'
-import { createProject, isInside, listProjects, renameProject, trashProject } from './projects'
+import { createProject, isInside, isWithin, listProjects, renameProject, trashProject } from './projects'
 import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
 import { checkForUpdates, installUpdate, startUpdates, stopUpdates, updateStatus } from './updates'
-import { existsSync, watch, type FSWatcher } from 'node:fs'
+import { existsSync } from 'node:fs'
+import { watchFolder, type FolderWatch } from './project-watch'
+import { fileVersion } from '../shared/file-version'
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
 import { isVersioned, readVersion, relOf, snapshot, versionsOf } from './versions'
 import { createThreads, threads } from './threads'
+import { saveProjectText } from './program-save'
+import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
 import { refreshPack } from './pack'
+import { assertRunnablePackage, projectPackageReadiness } from './package-readiness'
 import type { Kernel, KernelEvent } from './kernel-types'
-import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, WorkspaceContext } from '../preload/types'
+import { actionRef } from '../shared/research-operations'
+import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
 
 // ---- kernel: accept a factory, a default export, a class, or an instance -------------
 function loadKernel(): Kernel {
@@ -54,7 +60,11 @@ function loadKernel(): Kernel {
 let kernel: Kernel | null = null
 const allKernels = new Set<Kernel>()
 const sessionKernel = new Map<string, Kernel>()
+/** The project folder of each session (for checks that need it before the kernel sees a message). */
+const sessionProject = new Map<string, string>()
 const activeTurns = new Set<string>()
+// The automatic paper build; its state file is under .humanstudy, which the project watcher ignores.
+const paperBuilds = createPaperBuilds(dir => broadcast('project:changed', dir))
 let threadsInitialized = false
 const shutdown = createShutdown({
   busy: () => activeTurns.size > 0,
@@ -68,7 +78,7 @@ const shutdown = createShutdown({
     })
     return result.response === 1
   },
-  flush: async () => { if (threadsInitialized) await threads().flush() },
+  flush: async () => { if (threadsInitialized) await threads().flush(); await telemetry.settleResearch(activeTurns.size === 0) },
   quiesce: async () => {
     // Preserve kernel/session bindings until exit so an unsuccessful quit remains usable.
     await Promise.all([...activeTurns].map(id => kernelFor(id).abort(id)))
@@ -88,6 +98,7 @@ function currentKernel(): Kernel {
       if (shutdown.closing() && e.type === 'done') e = { ...e, detail: 'shutdown' }
       if (e.type === 'done') activeTurns.delete(e.sessionId)
       else if (e.type === 'text' || e.type === 'tool' || (e.type === 'status' && e.text === 'busy') || (e.type === 'question' && !e.question?.resolved) || (e.type === 'permission' && !e.permission?.resolved)) activeTurns.add(e.sessionId)
+      try { paperBuilds.event(e) } catch (err) { console.error('paper build state', err) } // never blocks events
       threads().onEvent(e) // record before the renderer hears about it
       broadcast('kernel:event', e)
     })
@@ -129,9 +140,8 @@ protocol.registerSchemesAsPrivileged([
 const allowedRoots = new Set<string>()
 function isAllowed(p: string): boolean {
   const q = resolve(p)
-  const root = resolve(getSettings().projectsRoot)
-  if (q === root || q.startsWith(root + sep)) return true
-  return [...allowedRoots].some((r) => q === r || q.startsWith(r + sep))
+  if (isWithin(getSettings().projectsRoot, q)) return true
+  return [...allowedRoots].some((r) => isWithin(r, q))
 }
 const toUrl = (p: string): string => 'hsfile://local/' + encodeURIComponent(p)
 const ARTIFACT_CSP =
@@ -168,14 +178,16 @@ async function listTree(root: string, dir: string, depth: number, count: { n: nu
     else if (d.isFile()) {
       let size: number | undefined
       let mtime: number | undefined
+      let version: string | undefined
       try {
         const st = await stat(path)
         size = st.size
         mtime = Math.round(st.mtimeMs)
+        version = fileVersion(st)
       } catch {
         /* unreadable */
       }
-      out.push({ name: d.name, path, rel, kind: 'file', ext: extname(d.name).slice(1).toLowerCase(), url: toUrl(path), size, mtime })
+      out.push({ name: d.name, path, rel, kind: 'file', ext: extname(d.name).slice(1).toLowerCase(), url: toUrl(path), size, mtime, version })
     }
   }
   return out
@@ -204,56 +216,83 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
     }
   }
   const pdfPath = [join(dir, 'paper.pdf')].find(existsSync)
+  // The version stamp lets the paper pane notice paper.pdf replaced at the same path.
+  const pdfStat = pdfPath ? await stat(pdfPath).catch(() => null) : null
   return {
     dir,
     name: basename(dir),
     program,
     programError,
+    build: paperBuilds.read(dir),
     artifacts: await listDir(join(dir, 'artifacts')),
     exports: await listDir(join(dir, 'exports')),
-    pdf: pdfPath ? { name: 'paper.pdf', path: pdfPath, url: toUrl(pdfPath), ext: 'pdf' } : null,
+    pdf: pdfPath
+      ? {
+          name: 'paper.pdf',
+          path: pdfPath,
+          url: toUrl(pdfPath),
+          ext: 'pdf',
+          ...(pdfStat ? { size: pdfStat.size, mtime: Math.round(pdfStat.mtimeMs), version: fileVersion(pdfStat) } : {}),
+        }
+      : null,
     tree: await listTree(dir, dir, 0, { n: 0 }),
   }
 }
 
 // ---- watch the open project so new artifacts appear without a reload -----------------
-const watchers = new Map<string, FSWatcher>()
+const watchers = new Map<string, FolderWatch>()
+// Open projects, kept apart from their watchers: a watcher that died (EPERM on Windows) must not make
+// version history or the pre-save snapshot think the project was closed.
+const openProjects = new Set<string>()
+// A watcher that keeps failing is retried at most every few seconds, not on every re-read it triggers.
+const watchFailedAt = new Map<string, number>()
 const snapTimers = new Map<string, NodeJS.Timeout>()
 function watchProject(dir: string): void {
-  if (watchers.has(dir)) return
-  let timer: NodeJS.Timeout | undefined
+  openProjects.add(dir)
+  if (watchers.has(dir) || Date.now() - (watchFailedAt.get(dir) ?? 0) < 5_000) return
   try {
-    const w = watch(dir, { recursive: true }, (_e, file) => {
-      if (file && String(file).startsWith('.humanstudy')) return
-      if (file) telemetry.noteFsChange(dir, String(file))
-      if (file) {
+    const w = watchFolder(dir, {
+      ignore: (file) => file.startsWith('.humanstudy'),
+      onFile: (file) => {
+        telemetry.noteFsChange(dir, file)
         // A history for what the agent (or the researcher) wrote; debounced so one write is one version.
-        const rel = String(file).split(sep).join('/')
+        const rel = file.split(sep).join('/')
         if (isVersioned(rel)) {
           const k = `${dir}\n${rel}`
           clearTimeout(snapTimers.get(k))
           snapTimers.set(k, setTimeout(() => { snapTimers.delete(k); void snapshot(dir, rel).catch(() => undefined) }, 600))
         }
-      }
-      clearTimeout(timer)
-      timer = setTimeout(() => broadcast('project:changed', dir), 250)
+      },
+      // Replacing a file is often several events (temporary file, rename, delete + create); one
+      // broadcast after they settle, and the renderer compares version stamps.
+      onSettled: () => broadcast('project:changed', dir),
+      // Watching died (e.g. EPERM on Windows): forget it so the next project read watches again,
+      // and let the renderer re-read now. It also re-checks on window focus and tab switches.
+      onError: () => {
+        if (watchers.get(dir) === w) watchers.delete(dir)
+        watchFailedAt.set(dir, Date.now())
+        broadcast('project:changed', dir)
+      },
+      debounceMs: 300,
     })
     watchers.set(dir, w)
   } catch {
-    /* watching is a convenience */
+    /* watching is a convenience: the renderer also re-reads on focus and tab switches */
   }
 }
 
 /** The opened project folder a file belongs to. */
 function projectRootOf(file: string): string {
   const q = resolve(file)
-  for (const d of watchers.keys()) if (q.startsWith(d + sep)) return d
+  for (const d of openProjects) if (isInside(d, q)) return d
   throw new Error('that file is not in an opened project')
 }
 
 function unwatch(dir: string): void {
   watchers.get(dir)?.close()
   watchers.delete(dir)
+  watchFailedAt.delete(dir)
+  openProjects.delete(dir)
 }
 
 function broadcast(channel: string, payload: unknown): void {
@@ -266,6 +305,31 @@ function threadDir(dir: string): string {
   if (!isAllowed(d)) throw new Error('project folder is not under the projects folder and was not opened')
   return d
 }
+
+// ---- unsaved edits: a window that reports drafts asks before it closes or the app quits ----------
+const unsaved = new Map<number, UnsavedPrompt>()
+/** True when the window may close: no drafts, or the researcher chose to discard them. */
+function confirmDiscard(win: BrowserWindow, forget = true): boolean {
+  const id = win.webContents.id
+  const prompt = unsaved.get(id)
+  if (!prompt) return true
+  const choice = dialog.showMessageBoxSync(win, { type: 'warning', message: prompt.message, detail: prompt.detail, buttons: [prompt.discard, prompt.cancel], defaultId: 1, cancelId: 1, noLink: true })
+  if (choice !== 0) return false
+  if (forget) unsaved.delete(id)
+  return true
+}
+/** Every window agrees to discard its drafts; a Cancel in any one keeps all of them. */
+function confirmDiscardAll(): boolean {
+  const wins = BrowserWindow.getAllWindows()
+  if (!wins.every((w) => confirmDiscard(w, false))) return false
+  for (const w of wins) unsaved.delete(w.webContents.id)
+  return true
+}
+ipcMain.on('app:unsaved', (e, prompt: UnsavedPrompt | null) => {
+  const ok = prompt && typeof prompt === 'object' && ['message', 'detail', 'discard', 'cancel'].every((k) => typeof (prompt as unknown as Record<string, unknown>)[k] === 'string')
+  if (ok) unsaved.set(e.sender.id, prompt)
+  else unsaved.delete(e.sender.id)
+})
 
 function createWindow(): void {
   const win = new BrowserWindow({
@@ -281,6 +345,9 @@ function createWindow(): void {
     webPreferences: { preload: join(__dirname, '../preload/index.js'), sandbox: false, contextIsolation: true },
   })
   win.once('ready-to-show', () => win.show())
+  const contentsId = win.webContents.id
+  win.on('close', (e) => { if (!confirmDiscard(win)) e.preventDefault() })
+  win.on('closed', () => unsaved.delete(contentsId))
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^(https?:|mailto:)/i.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
@@ -346,6 +413,16 @@ app.whenReady().then(() => {
     telemetry.noteProjectFiles(snap)
     return snap
   })
+  ipcMain.handle('project:startBuild', (_e, dir: string, sid: string, action?: unknown) => {
+    const claimed = paperBuilds.start(ownedPath(dir), sid)
+    if (claimed) telemetry.noteBuildClaim(ownedPath(dir), sid, actionRef(action))
+    return claimed
+  })
+  ipcMain.handle('project:releaseBuild', (_e, dir: string, sid: string) => paperBuilds.release(ownedPath(dir), sid))
+  ipcMain.handle('project:retryBuild', (_e, dir: string, action?: unknown) => {
+    telemetry.noteAction(actionRef(action), ownedPath(dir))
+    return paperBuilds.retry(ownedPath(dir))
+  })
   ipcMain.handle('project:reveal', (_e, p: string) => shell.showItemInFolder(p))
   ipcMain.handle('project:versions', async (_e, p: string) => {
     const q = ownedPath(p)
@@ -366,23 +443,34 @@ app.whenReady().then(() => {
     await copyFile(q, r.filePath)
     return r.filePath
   })
+  ipcMain.handle('project:packageReadiness', async (_e, dir: string, studyId: string) => projectPackageReadiness(ownedPath(dir), studyId))
   ipcMain.handle('project:readText', async (_e, p: string) => {
     const q = ownedPath(p)
     if ((await stat(q)).size > TEXT_LIMIT) throw new Error('file is larger than 4 MB')
     return readFile(q, 'utf8')
   })
-  ipcMain.handle('project:writeText', async (_e, p: string, text: string) => {
+  ipcMain.handle('project:writeText', async (_e, p: string, text: string, ifUnchanged?: string, action?: unknown) => {
     const q = ownedPath(p)
+    const ref = actionRef(action)
     if (typeof text !== 'string' || text.length > TEXT_LIMIT) throw new Error('text is too large')
-    if (basename(q) === 'program.json') JSON.parse(text) // never leave the program unreadable
-    await mkdir(dirname(q), { recursive: true })
-    telemetry.noteHumanWrite(q)
-    await writeFile(q, text, 'utf8')
-    telemetry.track('file.edited', { target: extname(q).slice(1) || 'file' })
+    telemetry.noteAction(ref, [...openProjects].find((d) => isInside(d, q))) // the save operation, with its project
+    await saveProjectText(q, text, { ifUnchanged, beforeWrite: async () => {
+      const root = [...openProjects].find((d) => isInside(d, q))
+      if (root) await snapshot(root, relOf(root, q)).catch(() => undefined)
+      telemetry.noteHumanWrite(q, text, ref)
+    } })
+    if (basename(q).toLowerCase() === 'program.json') {
+      const root = projectRootOf(q)
+      telemetry.noteProgramWritten(root, text) // the version actually committed under the lock
+      paperBuilds.humanSaved(root)
+    }
+    telemetry.track('file.edited', { target: extname(q).slice(1) || 'file', ...(ref ? { action: ref } : {}) })
   })
 
-  ipcMain.handle('project:importFiles', async (_e, dir: string, paths: string[]) => {
+  ipcMain.handle('project:importFiles', async (_e, dir: string, paths: string[], action?: unknown) => {
     const root = ownedPath(dir)
+    const ref = actionRef(action)
+    telemetry.noteAction(ref, root)
     if (!Array.isArray(paths) || paths.length > 50) throw new Error('too many files')
     const hasPaper = existsSync(join(root, 'paper.pdf'))
     let paperTaken = hasPaper
@@ -402,7 +490,10 @@ app.whenReady().then(() => {
         for (let n = 2; existsSync(target); n++) target = join(root, 'sources', `${stem} ${n}${ext}`)
         name = basename(target)
       }
+      telemetry.noteImport(root, relative(root, target), ref)
       await copyFile(src, target, 1) // COPYFILE_EXCL: never overwrite
+      // Import is a known completed action; don't rely on fs.watch reporting a filename on Windows.
+      telemetry.noteFsChange(root, relative(root, target))
       out.push({ name: basename(target), path: target, url: toUrl(target), ext: extname(target).slice(1).toLowerCase() })
     }
     return out
@@ -420,9 +511,11 @@ app.whenReady().then(() => {
       throw err
     }
   })
-  ipcMain.handle('projects:create', async (_e, input: { name: string; pdfPath?: string; sample?: boolean }) => {
+  ipcMain.handle('projects:create', async (_e, input: { name: string; pdfPath?: string; sample?: boolean }, action?: unknown) => {
+    const ref = actionRef(action)
     const dir = await createProject(input)
-    telemetry.track('project.created', { metadata: { sample: Boolean(input?.sample), withPaper: Boolean(input?.pdfPath) } }, dir)
+    telemetry.noteProjectCreated(dir, ref)
+    telemetry.track('project.created', { metadata: { sample: Boolean(input?.sample), withPaper: Boolean(input?.pdfPath) }, ...(ref ? { action: ref } : {}) }, dir)
     return dir
   })
   ipcMain.handle('projects:pickPdf', async () => {
@@ -541,6 +634,8 @@ app.whenReady().then(() => {
       throw err
     }
     sessionKernel.set(id, k)
+    sessionProject.set(id, dir)
+    paperBuilds.bind(id, dir)
     notify.noteSession(id, dir)
     telemetry.trackSessionStart(id, dir, kernelName(k), started)
     return id
@@ -553,7 +648,7 @@ app.whenReady().then(() => {
       resume: async (dir, sid) => {
         const k = sessionKernel.get(sid) ?? currentKernel()
         const alive = await k.resumeSession(dir, sid)
-        if (alive) sessionKernel.set(alive, k)
+        if (alive) { sessionKernel.set(alive, k); sessionProject.set(alive, dir); paperBuilds.bind(alive, dir) }
         return alive
       },
     },
@@ -566,15 +661,20 @@ app.whenReady().then(() => {
     return id
   })
   threadsInitialized = true
-  ipcMain.handle('kernel:send', async (_e, id: string, text: string, workspace?: WorkspaceContext) => {
+  ipcMain.handle('kernel:send', async (_e, id: string, text: string, workspace?: WorkspaceContext, action?: unknown) => {
     if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
     const k = kernelFor(id)
-    telemetry.trackTurnStart(id, text)
+    // A simulation approval only reaches the agent when the package can run (the Simulation tab checks
+    // the same; this is the second line of defence).
+    let projectDir = sessionProject.get(id)
+    try { projectDir ??= k.directory?.(id) } catch { /* unknown to the kernel; it will refuse the send itself */ }
+    await assertRunnablePackage(projectDir, text)
+    telemetry.trackTurnStart(id, text, actionRef(action))
     const prompt = threads().beforeSend(id, text, workspace)
     const alreadyActive = activeTurns.has(id)
     activeTurns.add(id)
     try { await k.send(id, prompt) }
-    catch (error) { if (!alreadyActive) activeTurns.delete(id); throw error }
+    catch (error) { if (!alreadyActive) activeTurns.delete(id); paperBuilds.sendFailed(id, error); throw error }
   })
   ipcMain.handle('kernel:export', async (_e,sid:string) => {
     const k=kernelFor(sid)
@@ -586,7 +686,8 @@ app.whenReady().then(() => {
     await writeFile(choice.filePath,choice.filePath.endsWith('.md')?'# Conversation\n\n```json\n'+content+'```\n':content,'utf8')
     return choice.filePath
   })
-  ipcMain.handle('kernel:native', async (_e, sid: string, request: NativeRequest) => {
+  ipcMain.handle('kernel:native', async (_e, sid: string, request: NativeRequest, action?: unknown) => {
+    const ref = actionRef(action)
     if (!request || typeof request.operation !== 'string') throw Error('Choose an OpenCode action.')
     if (shutdown.closing() && NATIVE_MUTATIONS.has(request.operation)) throw Error('The app is saving before closing.')
     const k=kernelFor(sid)
@@ -603,8 +704,8 @@ app.whenReady().then(() => {
     if(NATIVE_TURNS.has(request.operation)){
       activeTurns.add(sid)
       if(request.operation!=='compact')threads().beforeSend(sid, request.operation==='shell' ? '!'+String(request.input?.command??'') : '/'+String(request.input?.command??'')+' '+String(request.input?.arguments??''))
-      telemetry.trackTurnStart(sid,'/'+request.operation)
-    }
+      telemetry.trackTurnStart(sid,'/'+request.operation,ref)
+    } else if (ref && (ref.via !== 'system' || NATIVE_MUTATIONS.has(request.operation))) telemetry.noteAction(ref, sessionProject.get(sid)) // background reads are not operations
     telemetry.track('agent.native_action',{target:request.operation})
     const result=await k.native(sid,operation)
     if(request.operation==='select'){threads().rememberSelection(sid,result as NativeSelection);telemetry.track('agent.configuration',{metadata:result as Record<string,unknown>})}
@@ -613,7 +714,7 @@ app.whenReady().then(() => {
       const current=await k.native(next,{operation:'session'}) as {title:string;directory:string;revert?:{messageID:string}}
       const history=await k.native(next,{operation:'history'}) as any[]
       const dir=ownedPath(k.directory?.(next)??current.directory)
-      if(['open','fork'].includes(request.operation)){sessionKernel.set(next,k);notify.noteSession(next,dir);telemetry.trackSessionStart(next,dir,kernelName(k),Date.now())}
+      if(['open','fork'].includes(request.operation)){sessionKernel.set(next,k);sessionProject.set(next,dir);paperBuilds.bind(next,dir);notify.noteSession(next,dir);telemetry.trackSessionStart(next,dir,kernelName(k),Date.now())}
       const thread=await threads().fromNative(dir,next,nativeMessages(history,current.revert?.messageID),current.title,!['open','fork'].includes(request.operation))
       if(request.operation==='fork'){
         const catalog=await k.native(next,{operation:'catalog'}) as {selection:NativeSelection}
@@ -634,13 +735,14 @@ app.whenReady().then(() => {
     }
     return result
   })
-  ipcMain.handle('kernel:abort', (_e, id: string) => {
-    telemetry.trackTurnAbort(id)
+  ipcMain.handle('kernel:abort', (_e, id: string, action?: unknown) => {
+    telemetry.trackTurnAbort(id, actionRef(action))
     return kernelFor(id).abort(id)
   })
-  ipcMain.handle('kernel:reply', (_e, id: string, permissionId: string, response: 'once' | 'always' | 'reject') => {
+  ipcMain.handle('kernel:reply', (_e, id: string, permissionId: string, response: 'once' | 'always' | 'reject', action?: unknown) => {
     if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
     if (response !== 'once' && response !== 'always' && response !== 'reject') throw new Error('bad permission response')
+    telemetry.notePermission(id, permissionId, actionRef(action))
     return kernelFor(id).reply(id, permissionId, response)
   })
   ipcMain.handle('kernel:questions', async (_e, id: string) => {
@@ -648,11 +750,15 @@ app.whenReady().then(() => {
     if (pending.length) activeTurns.add(id)
     return pending
   })
-  ipcMain.handle('kernel:answerQuestion', (_e, id: string, questionId: string, answers: string[][]) => {
+  ipcMain.handle('kernel:answerQuestion', (_e, id: string, questionId: string, answers: string[][], action?: unknown) => {
     if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
+    telemetry.noteAnswer(id, questionId, actionRef(action))
     return kernelFor(id).answerQuestion(id, questionId, answers)
   })
-  ipcMain.handle('kernel:rejectQuestion', (_e, id: string, questionId: string) => kernelFor(id).rejectQuestion(id, questionId))
+  ipcMain.handle('kernel:rejectQuestion', (_e, id: string, questionId: string, action?: unknown) => {
+    telemetry.noteAnswer(id, questionId, actionRef(action))
+    return kernelFor(id).rejectQuestion(id, questionId)
+  })
   ipcMain.handle('threads:list', (_e, dir: string) => threads().list(threadDir(dir)))
   ipcMain.handle('threads:get', (_e, dir: string, id: string) => threads().get(threadDir(dir), id))
   ipcMain.handle('threads:create', (_e, dir: string) => threads().create(threadDir(dir)))
@@ -681,7 +787,9 @@ app.whenReady().then(() => {
 
   ipcMain.handle('updates:status', () => updateStatus())
   ipcMain.handle('updates:check', () => checkForUpdates())
-  ipcMain.handle('updates:install', () => installUpdate())
+  // Ask about unsaved drafts before the update stops the agent and quits: Cancel must leave everything
+  // running (on Windows the installer starts before the app quits, so asking later is too late).
+  ipcMain.handle('updates:install', () => (confirmDiscardAll() ? installUpdate() : undefined))
   startUpdates((s) => broadcast('updates:changed', s), () => shutdown.prepare(true), () => { shutdown.reset() })
 
   setupMenu({ newWindow: createWindow, checkForUpdates: () => void checkForUpdates() })
@@ -692,6 +800,8 @@ app.whenReady().then(() => {
 })
 
 app.on('before-quit', event => {
+  // Ask about unsaved edits before the kernels are stopped, so Cancel leaves everything running.
+  if (!confirmDiscardAll()) return event.preventDefault()
   if (!primaryInstance || shutdown.ready()) return
   event.preventDefault()
   void shutdown.prepare(false).then(ready => {

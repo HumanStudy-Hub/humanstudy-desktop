@@ -343,7 +343,14 @@ export function createAccount(deps: AccountDeps) {
     return { supabaseUrl: c.supabaseUrl, supabaseKey: c.supabaseKey, accessToken: token, userId: jwtSub(token) }
   }
 
-  return { status, signIn, signUp, signOut, forgotPassword, resendConfirmation, changePassword, unlock, getConfig, hostedAccess, restAuth }
+  // Identifies local pending research data even when refresh is temporarily offline. The remote
+  // uploader still verifies the current access token with Supabase before sending anything.
+  function researchOwner(): string | null {
+    const token = getSession()?.accessToken
+    if (!token) return null
+    try { return jwtSub(token) || null } catch { return null }
+  }
+  return { status, signIn, signUp, signOut, forgotPassword, resendConfirmation, changePassword, unlock, getConfig, hostedAccess, restAuth, researchOwner }
 }
 
 function validAuthOrigin(raw: string): string {

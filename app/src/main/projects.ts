@@ -1,18 +1,24 @@
 import { app, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import sampleProgram from '../shared/sample-program.json'
+import { pendingPaperBuild } from './paper-build'
 import { installPack } from './pack'
 import { installSampleAssets } from './sample-project'
 import { ensureProjectsRoot, getSettings } from './settings'
 import type { ProjectSummary } from '../preload/types'
 
+/** True when p is root or inside it. Through path.relative, so on Windows the comparison ignores case
+ *  (C:\\Users vs c:\\users, as other tools report the drive) the way the file system does. */
+export function isWithin(root: string, p: string): boolean {
+  const rel = relative(resolve(root), resolve(p))
+  return rel === '' || (rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel))
+}
+
 /** True when p is strictly inside root (root itself does not count). */
 export function isInside(root: string, p: string): boolean {
-  const r = resolve(root)
-  const q = resolve(p)
-  return q.startsWith(r + sep)
+  return isWithin(root, p) && relative(resolve(root), resolve(p)) !== ''
 }
 
 export function safeName(name: string): string {
@@ -130,6 +136,7 @@ export async function createProject(input: { name: string; pdfPath?: string; sam
     await writeFile(join(dir, 'program.json'), JSON.stringify(sampleProgram, null, 2) + '\n')
   }
   await installPack(dir)
+  if (input?.pdfPath) pendingPaperBuild(dir)
   await writeFile(join(dir, MARKER), JSON.stringify({ format: 1, createdAt: new Date().toISOString() }, null, 2) + '\n')
   return dir
 }

@@ -1,3 +1,4 @@
+import { packageReadiness } from '../shared/package-readiness'
 import { validateAnswers, updateQuestion, type KernelQuestion } from '../shared/question'
 // Browser preview: when the renderer runs outside Electron, stand in for the preload bridge with
 // the sample program, a local paper and a scripted kernel, so the interface can be reviewed in a
@@ -12,6 +13,7 @@ import exampleSummary from '../../resources/sample/example-simulation/summary.js
 import exampleProgress from '../../resources/sample/example-simulation/progress.json?raw'
 import exampleReport from '../../resources/sample/example-simulation/report.md?raw'
 import { EXAMPLE_RUN } from '../shared/simulation-run'
+import { catalogSearchFields, type ResearchConcept } from '../shared/research-search'
 
 // Preview flags (all optional, combine freely):
 //   ?project=empty    a new project: paper.pdf only, no study yet
@@ -20,6 +22,7 @@ import { EXAMPLE_RUN } from '../shared/simulation-run'
 //   ?agent=1          signed in, unlocked, agreement accepted, so the agent can be used
 //   ?lang=zh|en       sets the interface language (stored like Settings → Language)
 //   ?program=real     the project in public/preview/real/ (local only; see below)
+//   ?catalog=research loads public/preview/research_index.json for catalog UI review (local only)
 //   ?sim=built        the runnable study package exists (Simulation tab: ready to run); default: not built yet
 //   ?sim=running      ...and a simulation is running (progress ticks, never finishes);  ?sim=done: a finished run of your own
 //   ?fresh=1          no seeded conversations;  ?install=1|error, ?declined=1, ?devkeys=1, ?folderError=1 as before
@@ -183,16 +186,21 @@ if (!('humanstudy' in window)) {
   }
   // Simulation tab: the example run every sample project ships with, and scripted runs of your own.
   const simMode = new URLSearchParams(location.search).get('sim')
+  // A complete package (the eight files the Simulation tab checks); ?sim=incomplete leaves only a stub adapter.
+  const PKG = 'package/knobe-2003-intentional-action/'
   const putPackage = () => {
-    put('package/knobe-2003-intentional-action/study.json', '{"title": "Knobe (2003)"}\n', 30)
-    put('package/knobe-2003-intentional-action/task/adapter.py', '# Replay adapter (browser preview)\n', 30)
+    put(PKG + 'study.json', '{"title": "Knobe (2003)", "readiness": {"status": "ready", "blocking": []}}\n', 30)
+    for (const f of ['source/paper_metadata.json', 'source/evidence.json', 'materials/materials.json', 'task/task.json', 'audit/missing_information.json']) put(PKG + f, '{}\n', 30)
+    put(PKG + 'task/adapter.py', '# Replay adapter (browser preview)\ndef run_sessions(llm, seed, n, arms=None):\n    return []\n', 30)
+    put(PKG + 'evaluation/evaluation.py', '# Scoring (browser preview)\ndef evaluate(sessions):\n    return {}\n', 30)
   }
   if (mode !== 'empty') {
     put(`${EXAMPLE_RUN}/results.html`, exampleResults, 60 * 24 * 3)
     put(`${EXAMPLE_RUN}/summary.json`, exampleSummary, 60 * 24 * 3)
     put(`${EXAMPLE_RUN}/progress.json`, exampleProgress, 60 * 24 * 3)
     put(`${EXAMPLE_RUN}/report.md`, exampleReport, 60 * 24 * 3)
-    if (simMode && simMode !== 'unbuilt') putPackage()
+    if (simMode === 'incomplete') put(PKG + 'task/adapter.py', '# Replay adapter (browser preview)\n', 30)
+    else if (simMode && simMode !== 'unbuilt') putPackage()
   }
   const stampOf = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`
   const touched = () => { buildTree(); changed.forEach((cb) => cb(snapshot.dir)) }
@@ -448,7 +456,7 @@ def intentional(harm: float, help_: float) -> float:
     { type: 'done' },
   ]
   // Real titles, authors, years and descriptions copied from HumanStudy-Bench's studies_index.json.
-  const communityStudies: CommunityStudy[] = [
+  let communityStudies: CommunityStudy[] = [
     {
       "id": "study_001",
       "title": "The “False Consensus Effect”: An Egocentric Bias in Social Perception and Attribution Processes",
@@ -612,19 +620,29 @@ def intentional(harm: float, help_: float) -> float:
     ]
   }
   const REPO = 'https://github.com/HumanStudy-Hub/HumanStudy-Bench'
+  let catalogLoaded = false
+  const loadPreviewCatalog = async () => {
+    if (new URLSearchParams(location.search).get('catalog') !== 'research' || catalogLoaded) return
+    const response = await fetch('/preview/research_index.json')
+    if (!response.ok) throw new Error('Copy the public research catalog to public/preview/research_index.json to preview it.')
+    const index = await response.json() as { papers: (CommunityStudy & Record<string, unknown>)[]; taxonomy: { concepts: ResearchConcept[] } }
+    communityStudies = index.papers.map(paper => ({ ...paper, contributors: paper.contributors ?? [], ...catalogSearchFields(paper, index.taxonomy.concepts) }))
+    catalogLoaded = true
+  }
   const communityDetail = (id: string): CommunityStudyDetail => {
     const study = communityStudies.find((s) => s.id === id)
     if (!study) throw new Error(`Unknown study ${id}`)
-    const base = `${REPO}/blob/main/studies/${id}`
+    const root = study.assetRoot || `studies/${study.legacyStudyId || id}`
+    const base = `${REPO}/blob/main/${root}`
     return {
       ...study,
       files: (communityFiles[id] ?? []).map(([path, size]) => ({ path, size, url: `${base}/${path}` })),
       // Clearly fake activity: the preview never talks to GitHub.
-      activity: [
+      activity: catalogLoaded ? [] : [
         { sha: 'preview0000001', message: 'Preview activity · not from GitHub', author: 'preview', date: ago(60 * 3), url: `${REPO}/commits/main/studies/${id}` },
         { sha: 'preview0000002', message: 'Preview activity · materials listing\n\nMock commit body.', author: 'preview', date: ago(60 * 24 * 5), url: `${REPO}/commits/main/studies/${id}` },
       ],
-      repoUrl: `${REPO}/tree/main/studies/${id}`,
+      repoUrl: `${REPO}/tree/main/${root}`,
       discussionsUrl: `${REPO}/discussions`,
     }
   }
@@ -669,7 +687,7 @@ def intentional(harm: float, help_: float) -> float:
     },
     community: {
       studies: async () => {
-        await new Promise((r) => setTimeout(r, 350))
+        await loadPreviewCatalog()
         return communityStudies.map((s) => ({ ...s }))
       },
       study: async (id) => {
@@ -727,6 +745,9 @@ def intentional(harm: float, help_: float) -> float:
       },
     },
     project: {
+      startBuild: async () => false,
+      releaseBuild: async () => undefined,
+      retryBuild: async () => false,
       open: async () => snapshot.dir,
       read: async (dir) => {
         if (dir === snapshot.dir) return snapshot
@@ -757,12 +778,17 @@ def intentional(harm: float, help_: float) -> float:
           const path = `${dir}/${isPaper ? 'paper.pdf' : 'sources/' + name}`
           return { name: path.split('/').pop()!, path, url: path, ext: name.split('.').pop()?.toLowerCase() ?? '' }
         }),
+      packageReadiness: async (dir, studyId) => {
+        const slugs = [...new Set([...texts.keys()].filter(p => p.startsWith(`${dir}/package/`)).map(p => p.slice(`${dir}/package/`.length).split('/')[0]!))]
+        return packageReadiness(slugs, async (slug, file) => texts.get(`${dir}/package/${slug}/${file}`) ?? null, { studyId, program: snapshot.program })
+      },
       readText: async (path) => {
         const t = texts.get(path)
         if (t === undefined) throw new Error('no such file in the preview')
         return t
       },
-      writeText: async (path, text) => {
+      writeText: async (path, text, ifUnchanged) => {
+        if (ifUnchanged !== undefined && texts.get(path) !== ifUnchanged) throw new Error('changed on disk')
         if (path.endsWith('program.json')) {
           JSON.parse(text)
           snapshot.program = JSON.parse(text)
@@ -879,7 +905,7 @@ def intentional(harm: float, help_: float) -> float:
         retry: async () => runInstall(false),
       },
     },
-    app: { info: async () => ({ version: '0.1.0', platform: 'preview', arch: 'preview', kernelPath: '/preview/kernel/1.19.0/agent', home: '/Users/preview', devKeys: query.has('devkeys') }) },
+    app: { info: async () => ({ version: '0.1.0', platform: 'preview', arch: 'preview', kernelPath: '/preview/kernel/1.19.0/agent', home: '/Users/preview', devKeys: query.has('devkeys') }), setUnsaved: () => undefined },
     menu: {
       onCommand: (cb) => {
         menuListeners.add(cb)

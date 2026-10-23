@@ -1,16 +1,19 @@
 // One file of the project: text is edited in place and saved back; HTML previews in a sandboxed
 // frame; images show as images. Files the agent rewrites reload unless the researcher has unsaved
-// edits, in which case a notice offers the reload.
+// edits, in which case a notice offers the reload. Unsaved text lives in drafts.ts, not only here, so
+// switching tabs or views and coming back finds it again.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ProjectEntry } from '../../preload/types'
 import { size } from './Explorer'
-import { track } from '../telemetry'
+import { claimAction, track } from '../telemetry'
 import { t } from '../i18n'
 import { Markdown } from './Markdown'
 import { CsvTable, useVersions } from './Previews'
 import { copyText } from './Markdown'
 import { resultTitle } from '../results'
 import { listenToArtifact, withArtifactCsp } from '../bridge'
+import { getDraft, isDirty, setDraft, toDisk } from '../drafts'
+import { versionedUrl } from '../../shared/file-version'
 
 const TEXT = new Set(['md', 'txt', 'json', 'py', 'html', 'htm', 'css', 'js', 'ts', 'mjs', 'csv', 'tsv', 'yaml', 'yml', 'r', 'sh', 'tex', 'bib', 'xml', 'toml', ''])
 const IMAGE = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'])
@@ -30,8 +33,9 @@ export function FileView({ file, version, onDirty }: Props) {
   const isCsv = file.ext === 'csv' || file.ext === 'tsv'
   const hasPreview = isHtml || isMd || isCsv
   const [mode, setMode] = useState<'preview' | 'source'>(hasPreview ? 'preview' : 'source')
-  const [saved, setSaved] = useState<string | null>(null)
-  const [text, setText] = useState('')
+  // `saved` is the text on disk the editor is based on; a draft from an earlier visit restores both.
+  const [saved, setSaved] = useState<string | null>(() => getDraft(file.path)?.base ?? null)
+  const [text, setText] = useState(() => getDraft(file.path)?.text ?? '')
   const [onDisk, setOnDisk] = useState<string | null>(null) // newer content while the editor is dirty
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
@@ -45,9 +49,12 @@ export function FileView({ file, version, onDirty }: Props) {
   const frame = useRef<HTMLIFrameElement>(null)
   useEffect(() => (isHtml ? listenToArtifact(() => frame.current) : undefined), [isHtml])
 
-  const dirty = saved !== null && text !== saved
+  const dirty = isDirty(text, saved)
 
   useEffect(() => onDirty(file.path, dirty), [dirty, file.path, onDirty])
+  useEffect(() => {
+    if (saved !== null) setDraft(file.path, text, saved)
+  }, [file.path, text, saved])
 
   const load = useCallback(async () => {
     try {
@@ -63,8 +70,11 @@ export function FileView({ file, version, onDirty }: Props) {
   useEffect(() => {
     if (!isText) return
     let live = true
+    const draft = getDraft(file.path)
     void load().then((t) => {
       if (!live || t === null) return
+      // A draft survives the visit; if the file changed on disk meanwhile, offer the reload.
+      if (draft) return void (t !== draft.base && setOnDisk(t))
       setSaved(t)
       setText(t)
     })
@@ -84,7 +94,9 @@ export function FileView({ file, version, onDirty }: Props) {
     let live = true
     void load().then((t) => {
       if (!live || t === null || t === saved) return
-      if (text === saved) {
+      // Another editor of the same file (a tab and the Paper pane) may hold the unsaved draft: a clean
+      // copy here must not reload and drop it; it shows the notice instead.
+      if (!isDirty(text, saved) && !getDraft(file.path)) {
         setSaved(t)
         setText(t)
       } else setOnDisk(t)
@@ -97,15 +109,17 @@ export function FileView({ file, version, onDirty }: Props) {
 
   const save = async () => {
     if (!dirty || saving) return
+    const action = claimAction('file.save')
     setSaving(true)
     try {
-      await window.humanstudy.project.writeText(file.path, text)
-      setSaved(text)
+      const disk = toDisk(text, onDisk ?? saved)
+      await window.humanstudy.project.writeText(file.path, disk, undefined, action)
+      setSaved(disk)
       setOnDisk(null)
       setError('')
       setFlash(t('file.saved'))
       setTimeout(() => setFlash(''), 1500)
-      track('file.saved', { target: file.ext || 'file' })
+      track('file.saved', { target: file.ext || 'file' }, action)
     } catch (e) {
       setError((e instanceof Error ? e.message : String(e)).replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, ''))
     } finally {
@@ -116,7 +130,7 @@ export function FileView({ file, version, onDirty }: Props) {
   if (IMAGE.has(file.ext))
     return (
       <div className="artifact-image">
-        <img key={file.mtime ?? 0} src={file.url} alt={file.name} />
+        <img key={file.version ?? file.mtime ?? 0} src={file.url && versionedUrl(file.url, file.version)} alt={file.name} />
       </div>
     )
   if (!isText)
@@ -165,7 +179,7 @@ export function FileView({ file, version, onDirty }: Props) {
           </span>
         )}
         {flash && <span className="muted small">{flash}</span>}
-        {mode === 'source' && !viewing && (
+        {mode === 'source' && !viewing && saved !== null && (
           <button className={dirty ? 'primary small-btn' : 'ghost small-btn'} disabled={!dirty || saving} onClick={() => void save()} title="⌘S">
             {saving ? t('file.saving') : dirty ? t('file.save') : t('file.saved')}
           </button>
@@ -225,7 +239,7 @@ export function FileView({ file, version, onDirty }: Props) {
       ) : mode === 'preview' && isCsv ? (
         <div className="file-csv">{saved === null ? <p className="muted">{t('common.loading')}</p> : <CsvTable text={text} rows={200} cols={30} />}</div>
       ) : mode === 'preview' ? (
-        <iframe ref={frame} key={file.mtime ?? 0} className="artifact-frame" src={dirty ? `data:text/html;charset=utf-8,${encodeURIComponent(withArtifactCsp(text))}` : file.url} sandbox="allow-scripts" title={file.name} />
+        <iframe ref={frame} key={file.version ?? file.mtime ?? 0} className="artifact-frame" src={dirty ? `data:text/html;charset=utf-8,${encodeURIComponent(withArtifactCsp(text))}` : file.url && versionedUrl(file.url, file.version)} sandbox="allow-scripts" title={file.name} />
       ) : saved === null && !error ? (
         <p className="muted pad">{t('common.loading')}</p>
       ) : (
@@ -233,6 +247,7 @@ export function FileView({ file, version, onDirty }: Props) {
           ref={box}
           className="file-editor"
           value={text}
+          readOnly={saved === null}
           spellCheck={false}
           wrap="soft"
           onChange={(e) => setText(e.target.value)}

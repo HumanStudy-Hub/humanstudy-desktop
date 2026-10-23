@@ -26,6 +26,7 @@ const cases = [
   ['fce-repaired', fx('fce-repaired.json'), true],
   ['knobe-e2e', fx('knobe-e2e.json'), false], // evidence without any source reference
   ['sample', sample, true],
+  ['complete-large-material', mut(p => { p.nodes[0].fields[0].value = '完整材料 '.repeat(120000) + 'END-OF-SOURCE' }), true],
   ['dup-node', mut((p) => p.nodes.push(structuredClone(p.nodes[0]))), false],
   ['unknown-evidence', mut((p) => p.nodes[0].evidenceIds.push('nope')), false],
   ['issue-nodeId-is-step', mut((p) => p.issues.push({ id: 'iss-x', title: 't', severity: 'check', reason: 'r', impact: 'i', suggestedAction: 'a', nodeId: step.id, evidenceIds: [] })), false],

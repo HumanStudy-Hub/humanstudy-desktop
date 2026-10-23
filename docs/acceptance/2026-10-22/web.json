@@ -1,0 +1,20 @@
+{
+  "at": "2026-10-22T22:50:45.711Z",
+  "runtime": "local production Next.js build",
+  "database": "real Supabase",
+  "projectId": "04219952-a49c-45d8-ab38-4d6aeaae4a74",
+  "agreementGate": true,
+  "originalSampleFiles": 5,
+  "sourceArchives": 5,
+  "idempotentUiEvent": true,
+  "protectedIntegrityJob": true,
+  "integrity": {
+    "checked": 5,
+    "verified": 5,
+    "pending": 0,
+    "failed": 0
+  },
+  "events": 17,
+  "serverChatAndToolMigration": false,
+  "passed": true
+}

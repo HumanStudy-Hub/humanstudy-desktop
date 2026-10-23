@@ -189,10 +189,18 @@ export interface RuntimeDeps {
   python(python: string, args: string[], env: NodeJS.ProcessEnv, onLine: (l: string) => void, signal?: AbortSignal): Promise<void>
 }
 
+/** The tar to extract with. bsdtar ships with macOS and with Windows 10+ as System32\\tar.exe. On Windows
+ *  the bare name is not safe: Git for Windows ("Unix tools on PATH"), MSYS2 or Cygwin put GNU tar first,
+ *  and GNU tar reads `D:\\...` as host `D` and fails ("Cannot connect to D: resolve failed"). */
+export function tarCommand(platform: string = process.platform, env: NodeJS.ProcessEnv = process.env): string {
+  if (platform !== 'win32') return 'tar'
+  const root = env.SystemRoot || env.SYSTEMROOT || env.windir || 'C:\\Windows'
+  return `${root.replace(/[\\/]+$/, '')}\\System32\\tar.exe`
+}
+
 export const defaultDeps: RuntimeDeps = {
-  // bsdtar ships with macOS and with Windows 10+ (System32\tar.exe).
   extract: async (tarball, into) => {
-    await run('tar', ['-xzf', tarball, '-C', into], { windowsHide: true, maxBuffer: 1 << 20 })
+    await run(tarCommand(), ['-xzf', tarball, '-C', into], { windowsHide: true, maxBuffer: 1 << 20 })
   },
   python: (python, args, env, onLine, signal) =>
     new Promise((resolve, reject) => {

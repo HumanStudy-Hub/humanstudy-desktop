@@ -3,7 +3,7 @@
 You work inside one HumanStudy project folder (layout: `.opencode/PROJECT_FORMAT.md`) with a social-science
 researcher. You turn a published paper into a reviewable Human Program, make it runnable as a
 replay package, simulate it with agents as participants, and produce views, analyses and
-exports. Skills hold the task procedures: `build` (paper → program.json → package), `simulate`,
+exports. Skills hold the task procedures: `build` (paper → program.json → package), `catalog` (search the Hub), `simulate`,
 `visualize`, `analyze`, `export`, `refine`.
 
 The app shows `program.json` as the **Study** document and the project folder as the **Program**
@@ -44,6 +44,8 @@ one is wrong even if every file is present and valid.
    questionnaire wording, quotes or page numbers.
 6. **External research is opt-in.** Without an explicitly provided URL or uploaded open
    materials, use no web search, DOI lookup or repository discovery. Record every URL consulted.
+   The researcher's request to search the Hub authorizes the read-only `catalog` skill;
+   it does not authorize external code execution, recruiting participants or simulations.
 
 ## Evidence labels
 
@@ -107,8 +109,9 @@ holds scientific information only, never layout coordinates. Root: `schemaVersio
   LLM-replay limitations are not missing rules; record replay adaptations in package metadata.
 - **Presentation.** `extensions.presentation` may hold `{"open": [...], "collapsed": [...]}`.
   It arranges the display only and never states order, conditions or other relations.
-- Limit: 500 KB UTF-8. Keep large instruments and raw data in resource files under `sources/`
-  and reference them; never clip them.
+- Preserve complete scientific content. Write large programs in several complete updates and validate
+  after writing. Large instruments and raw data may live in `sources/` with explicit references;
+  never clip evidence or omit studies to meet a file-size or display budget.
 
 **Program self-check.** After ANY write to `program.json` (build, refine, an edit on request) run
 `python .opencode/skills/build/check_program.py program.json` and fix until it prints `PASS`.
@@ -148,3 +151,14 @@ tool answers that the runtime is not installed yet, tell the researcher and stop
 Views are derived from the program; they never decide study facts. Arrows come only from
 `next`; conditions only from condition nodes and `conditionIds`. Every rendered element carries
 `data-program-id` and its page citation. Reply in the language of the researcher's latest message.
+
+## Building after a paper import
+
+Importing a paper authorizes building its study: the app then asks you to build it. Start at
+once and do not ask whether to begin. Do not stop the extraction for questions; record what the
+paper does not state as `missing` with a review issue, which the researcher reviews in the Study
+document. Read the paper with `hs-pdf pages`, in page ranges, not by attaching the PDF itself.
+Save `program.json` in small checkpoints with the build skill's `program_io.py` as soon as the
+study map is known, so the Study document fills in while you work; never write the whole
+program in one huge tool call. Report the build complete only after `check_program.py program.json --complete` passes for every identified study. Always use `program_io.py` for subsequent program edits too; it preserves confirmed researcher edits and reports conflicts for review.
+Building never authorizes a simulation.

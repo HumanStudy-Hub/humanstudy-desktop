@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -61,6 +62,76 @@ class SimkitTest(unittest.TestCase):
             simkit._cli(["stage", d, "failed", "The evaluation could not read the answers"])
             p = json.loads((Path(d) / "progress.json").read_text())
             self.assertEqual((p["stage"], p["message"]), ("failed", "The evaluation could not read the answers"))
+
+    def test_heartbeat_keeps_a_quiet_stage_live_and_exit_is_recorded(self):
+        # #16: a long scoring step writes no progress, but the heartbeat shows the process is alive;
+        # when run.py ends, runner becomes "exited" (the agent writes the results up).
+        with tempfile.TemporaryDirectory() as d:
+            old = simkit.HEARTBEAT_SECONDS
+            simkit.HEARTBEAT_SECONDS = 0.05
+            try:
+                run = simkit.SimRun(d, plan={"a": 1}, model="m")
+                run.stage("scoring")
+                first = json.loads((Path(d) / "progress.json").read_text())
+                self.assertEqual((first["runner"], first["stage"]), ("alive", "scoring"))
+                deadline = time.time() + 5
+                beat = first
+                while time.time() < deadline and beat["heartbeatAt"] == first["heartbeatAt"]:
+                    time.sleep(0.1)
+                    beat = json.loads((Path(d) / "progress.json").read_text())
+                self.assertNotEqual(beat["heartbeatAt"], first["heartbeatAt"], "heartbeat did not move during a quiet stage")
+                self.assertEqual(beat["updatedAt"], first["updatedAt"], "a heartbeat is not progress")
+                self.assertEqual(beat["stage"], "scoring")
+                run._exit()
+                done = json.loads((Path(d) / "progress.json").read_text())
+                self.assertEqual((done["runner"], done["stage"]), ("exited", "scoring"))
+                after = done["heartbeatAt"]
+                time.sleep(0.3)
+                self.assertEqual(json.loads((Path(d) / "progress.json").read_text())["heartbeatAt"], after, "heartbeat continued after exit")
+                simkit._cli(["stage", d, "writing"])
+                self.assertEqual(json.loads((Path(d) / "progress.json").read_text())["runner"], "exited")
+            finally:
+                simkit.HEARTBEAT_SECONDS = old
+
+    def test_heartbeat_survives_a_failed_write(self):
+        # On Windows the replace can fail while antivirus holds progress.json; the next beat retries.
+        with tempfile.TemporaryDirectory() as d:
+            old, write = simkit.HEARTBEAT_SECONDS, simkit._write_json
+            simkit.HEARTBEAT_SECONDS = 0.05
+            failures = []
+            try:
+                run = simkit.SimRun(d, plan={"a": 1}, model="m")
+                def flaky(path, data):
+                    if len(failures) < 2 and threading.current_thread().name == "simkit-heartbeat":
+                        failures.append(1)
+                        raise PermissionError("held by another process")
+                    write(path, data)
+                simkit._write_json = flaky
+                time.sleep(0.4)
+                self.assertEqual(len(failures), 2)
+                self.assertTrue(any(t.name == "simkit-heartbeat" for t in threading.enumerate()), "heartbeat thread died")
+                run._exit()
+            finally:
+                simkit._write_json = write
+                simkit.HEARTBEAT_SECONDS = old
+
+    def test_progress_updates_wait_out_a_reader_holding_the_file(self):
+        # A real open handle (on Windows: no delete sharing, so os.replace hits a sharing violation).
+        # A stage change on the run's own thread must wait, not crash run.py.
+        with tempfile.TemporaryDirectory() as d:
+            run = simkit.SimRun(d, plan={"a": 1}, model="m")
+            handle = open(Path(d) / "progress.json", "rb")
+            timer = threading.Timer(0.5, handle.close)
+            timer.start()
+            try:
+                run.stage("writing", "Überprüft — 已核对")
+            finally:
+                timer.join()
+                handle.close()
+            p = json.loads((Path(d) / "progress.json").read_text(encoding="utf-8"))
+            self.assertEqual((p["stage"], p["message"]), ("writing", "Überprüft — 已核对"))
+            self.assertEqual([n.name for n in Path(d).iterdir() if n.name.endswith(".tmp")], [])
+            run._exit()
 
 
 if __name__ == "__main__":

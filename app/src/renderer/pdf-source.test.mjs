@@ -1,4 +1,5 @@
 // Real Chromium + PDF.js with a long paper; no user documents or credentials.
+import electronBin from 'electron' // the binary's path on every platform
 import {build} from 'esbuild'
 import {mkdtempSync,writeFileSync,readFileSync,cpSync,rmSync} from 'node:fs'
 import {tmpdir} from 'node:os'
@@ -36,5 +37,5 @@ try{
  }catch(e){console.error(e);app.exitCode=1}finally{w.destroy();app.exit(app.exitCode||0)}}).catch(e=>{console.error(e);app.exit(1)});
  `)
  const env={...process.env};delete env.ELECTRON_RUN_AS_NODE
- const code=await new Promise((resolve,reject)=>{const c=spawn(join(here,'../../node_modules/electron/dist/Electron.app/Contents/MacOS/Electron'),[join(out,'runner.cjs')],{stdio:'inherit',env});const t=setTimeout(()=>{c.kill('SIGTERM');reject(Error('PDF UI fixture timed out'))},60000);c.on('error',reject);c.on('exit',code=>{clearTimeout(t);resolve(code)})});if(code!==0)process.exitCode=1
+ const code=await new Promise((resolve,reject)=>{const c=spawn(electronBin,[join(out,'runner.cjs')],{stdio:'inherit',env});const t=setTimeout(()=>{c.kill('SIGTERM');reject(Error('PDF UI fixture timed out'))},60000);c.on('error',reject);c.on('exit',code=>{clearTimeout(t);resolve(code)})});if(code!==0)process.exitCode=1
 }finally{rmSync(out,{recursive:true,force:true})}

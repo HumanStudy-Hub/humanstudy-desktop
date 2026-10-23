@@ -1,4 +1,5 @@
 import { nativeRoute, hideCredentials } from './native-api'
+import { startRequestTransport } from './request-transport'
 import { NATIVE_SESSION_MUTATIONS, NATIVE_TURNS, type NativeRequest, type NativeSelection } from '../../shared/native'
 import { validateAnswers, type KernelQuestion } from '../../shared/question'
 // opencode kernel: one `opencode serve` process per project directory, driven over HTTP + SSE.
@@ -111,6 +112,7 @@ interface Server {
   exited: boolean
   stderrTail: string
   eventsOnline: boolean
+  transport?: Awaited<ReturnType<typeof startRequestTransport>>
 }
 
 interface SessionState {
@@ -127,6 +129,10 @@ interface SessionState {
   snapshotParts: Set<string>
   awaitingAssistant: boolean
   failed: boolean
+  lastActivity: number
+  lastProbe: number
+  idleSince?: number
+  stalled: boolean
   pendingPermissions: Map<string, KernelPermission>
   recovery: { epoch: number; attempts: number; pending: boolean; running: boolean; cancelled: boolean; progress: boolean; reason?: 'output_limit' | 'invalid_tool_call'; assistantId?: string }
   expectUserIdentity?: boolean
@@ -164,6 +170,12 @@ export class OpencodeKernel implements Kernel {
   private model: string
   private readyTimeoutMs: number
   private permission: 'ask' | 'project' | undefined
+  private clock = (): number => Date.now()
+  private livenessQuietMs = 60_000
+  private livenessIdleGraceMs = 30_000
+  private livenessWarningMs = 5 * 60_000
+  private probing = false
+  private livenessTimer: ReturnType<typeof setInterval>
   private exitHook = (): void => this.killAll('SIGKILL')
 
   constructor(opts: OpencodeOptions) {
@@ -177,6 +189,8 @@ export class OpencodeKernel implements Kernel {
     if (this.provider === 'openrouter' && !(process.env.HUMANSTUDY_DEV_KEYS === '1' && process.env.OPENROUTER_API_KEY)) this.provider = ''
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 30_000
     this.permission = opts.permission
+    this.livenessTimer = setInterval(() => { void this.checkLiveness() }, 30_000)
+    this.livenessTimer.unref()
     process.once('exit', this.exitHook)
   }
 
@@ -231,6 +245,7 @@ export class OpencodeKernel implements Kernel {
       snapshotParts: new Set(),
       awaitingAssistant: false,
       failed: false,
+      lastActivity: this.clock(), lastProbe: 0, stalled: false,
       title: '',
       pendingPermissions: new Map(),
       recovery: { epoch: 0, attempts: 0, pending: false, running: false, cancelled: true, progress: false },
@@ -283,7 +298,7 @@ export class OpencodeKernel implements Kernel {
     validateAnswers(question, answers)
     await this.request(this.session(sessionId).server, 'POST', `/question/${encodeURIComponent(questionId)}/reply`, { answers })
     this.session(sessionId).pendingQuestions.delete(questionId)
-    this.emitter.emit({ sessionId, type: 'question', question: { ...question, answers, resolved: 'answered' } })
+    if (this.reportResolved('q:' + questionId)) this.emitter.emit({ sessionId, type: 'question', question: { ...question, answers, resolved: 'answered' } })
   }
 
   async rejectQuestion(sessionId: string, questionId: string): Promise<void> {
@@ -293,7 +308,7 @@ export class OpencodeKernel implements Kernel {
     const s = this.session(sessionId)
     s.pendingQuestions.delete(questionId)
     s.recovery.cancelled = true; s.recovery.pending = false
-    this.emitter.emit({ sessionId, type: 'question', question: { ...question, resolved: 'rejected' } })
+    if (this.reportResolved('q:' + questionId)) this.emitter.emit({ sessionId, type: 'question', question: { ...question, resolved: 'rejected' } })
   }
 
   async send(sessionId: string, text: string): Promise<void> {
@@ -302,6 +317,7 @@ export class OpencodeKernel implements Kernel {
     s.awaitingAssistant = true
     s.expectUserIdentity = true
     s.failed = false
+    s.lastActivity = this.clock(); s.lastProbe = 0; s.idleSince = undefined; s.stalled = false
     s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, pending: false, running: false, cancelled: false, progress: false }
     s.inFlight = true
     try {
@@ -380,6 +396,7 @@ export class OpencodeKernel implements Kernel {
     const turn = NATIVE_TURNS.has(request.operation)
     if (turn) {
       s.turnBaseline = new Set(s.roles.keys()); s.inFlight = true; s.awaitingAssistant = true; s.expectUserIdentity = request.operation!=='compact'; s.failed = false
+      s.lastActivity = this.clock(); s.lastProbe = 0; s.idleSince = undefined; s.stalled = false
       s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, pending: false, running: false, cancelled: request.operation === 'compact', progress: false }
       this.emitter.emit({sessionId,type:'status',text:request.operation === 'compact' ? 'compacting' : 'busy'})
     }
@@ -418,7 +435,7 @@ export class OpencodeKernel implements Kernel {
     s.pendingQuestions.clear()
     for (const q of pending) {
       await this.request(s.server, 'POST', `/question/${encodeURIComponent(q.id)}/reject`)
-      this.emitter.emit({ sessionId, type: 'question', question: { ...q, resolved: 'rejected' } })
+      if (this.reportResolved('q:' + q.id)) this.emitter.emit({ sessionId, type: 'question', question: { ...q, resolved: 'rejected' } })
     }
     // session.idle normally emits done; clearing a leftover request must not mark it busy again.
     if (s.inFlight) {
@@ -443,6 +460,7 @@ export class OpencodeKernel implements Kernel {
     if (s.pendingPermissions.size || s.pendingQuestions.size) { r.pending = true; r.running = false; return }
     const attempt = ++r.attempts
     r.progress = false
+    s.lastActivity = this.clock(); s.idleSince = undefined; s.stalled = false
     this.emitter.emit({ sessionId, type: 'status', text: 'recovering', detail: `Recovery ${attempt}/2: checking saved work and splitting the remaining task into smaller steps.`, input: { attempt, reason, strategy: 'checkpoints_smaller_units', model: s.selection?.model?.modelID??this.model, ...(recoveryProvider === HOSTED_PROVIDER ? { reasoningEffort: 'low' } : {}) } })
     s.awaitingAssistant = true
     try {
@@ -466,6 +484,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
   async dispose(): Promise<void> {
     this.disposed = true
+    clearInterval(this.livenessTimer)
     process.removeListener('exit', this.exitHook)
     const procs = [...this.live]
     this.killAll('SIGTERM')
@@ -493,6 +512,17 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   // ---- server lifecycle ---------------------------------------------------------------
 
   private autoReplies = new Set<string>()
+  /** Permission ids (and `q:`-prefixed question ids) whose resolution was already reported. The automatic reply and OpenCode's own
+   *  `permission.replied` both report one decision; whichever arrives second is not a new decision
+   *  (seen in the 2026-10-23 hosted acceptance: every Auto approval was reported twice, the second
+   *  without `automatic`, so it read as a researcher's decision). Bounded; ids are unique. */
+  private resolvedReported = new Set<string>()
+  private reportResolved(id: string): boolean {
+    if (this.resolvedReported.has(id)) return false
+    this.resolvedReported.add(id)
+    if (this.resolvedReported.size > 4096) this.resolvedReported.delete(this.resolvedReported.values().next().value as string)
+    return true
+  }
   setPermissionMode(mode: 'ask' | 'project'): void {
     this.permission = mode
     if (mode !== 'project') return
@@ -507,7 +537,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     // grant that would silently survive switching Auto off.
     this.replyTo(s.server, sessionId, perm.id, 'once').then(() => {
       s.pendingPermissions.delete(perm.id)
-      this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'once' } })
+      if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'once' } })
     }, () => this.emitter.emit({ sessionId, type: 'permission', permission: perm }))
       .finally(() => this.autoReplies.delete(perm.id))
   }
@@ -533,7 +563,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     return p
   }
 
-  private configContent(): string {
+  private configContent(transport?: { baseURL: string; token: string }): string {
     const model = this.provider ? `${this.provider}/${this.model}` : undefined
     // The fork bakes in the humanstudy provider, its models and the share/autoupdate/telemetry defaults.
     // Here only what the app decides per run: the chosen model (inline config outranks any config file)
@@ -544,7 +574,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       permission: { edit: 'ask', bash: BASH_PERMISSION, external_directory: 'ask' },
     }
     if (this.provider === HOSTED_PROVIDER) {
-      cfg.provider = { [HOSTED_PROVIDER]: { models: { [this.model]: {
+      cfg.provider = { [HOSTED_PROVIDER]: { ...(transport ? { options: { baseURL: transport.baseURL, apiKey: transport.token } } : {}), models: { [this.model]: {
         ...(!BAKED_HOSTED_MODELS.includes(this.model) ? { name: this.model, tool_call: true } : {}),
         variants: { 'humanstudy-recovery': { reasoningEffort: 'low' } },
       } } } }
@@ -556,7 +586,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
   /** Env for the kernel process: its own XDG dirs, so ~/.config/opencode and ~/.local/share/opencode of
    *  a personal install are never read, and sessions persist under <home>/data per project. */
-  private kernelEnv(password: string): NodeJS.ProcessEnv {
+  private kernelEnv(password: string, transport?: { baseURL: string; token: string }): NodeJS.ProcessEnv {
     const xdg = {
       XDG_CONFIG_HOME: join(this.home, 'config'),
       XDG_DATA_HOME: join(this.home, 'data'),
@@ -570,7 +600,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       ...process.env,
       ...xdg,
       OPENCODE_SERVER_PASSWORD: password,
-      OPENCODE_CONFIG_CONTENT: this.configContent(),
+      OPENCODE_CONFIG_CONTENT: this.configContent(transport),
       OPENCODE_DISABLE_AUTOUPDATE: '1',
       OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: '1', // no ~/.claude/CLAUDE.md from the user's own Claude Code
       // humanstudy_llm (simulations) defaults to the model the researcher selected.
@@ -588,11 +618,22 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     if (this.disposed) throw new Error('kernel disposed')
     const port = await freePort()
     const password = randomBytes(24).toString('base64url')
+    const transport = this.provider === HOSTED_PROVIDER && process.env.HUMANSTUDY_DESKTOP_KEY ? await startRequestTransport({
+      project: dir,
+      upstream: process.env.HUMANSTUDY_HOSTED_BASEURL || 'https://humanstudy-hub.com/api/desktop/v1',
+      key: process.env.HUMANSTUDY_DESKTOP_KEY,
+      bypass: process.env.HUMANSTUDY_SERVER_BYPASS,
+      onAdjust: () => {
+        for (const [id, state] of this.sessions) if (state.server.dir === dir && state.inFlight)
+          this.emitter.emit({ sessionId: id, type: 'status', text: 'Preparing source context', detail: 'Full source files are kept locally and can be reopened for verification.' })
+      },
+    }) : undefined
+    if (this.disposed) { transport?.close(); throw new Error('kernel disposed') }
     // Packaged Electron pages send file:// as their WebSocket origin. PTY access still
     // requires a single-use ticket issued through the authenticated main process.
     const proc = spawn(this.binary, ['serve', '--port', String(port), '--hostname', '127.0.0.1', '--cors', 'file://'], {
       cwd: dir,
-      env: this.kernelEnv(password),
+      env: this.kernelEnv(password, transport),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const server: Server = {
@@ -605,6 +646,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       exited: false,
       stderrTail: '',
       eventsOnline: false,
+      transport,
     }
     this.live.add(server)
     const keep = (chunk: Buffer): void => {
@@ -613,6 +655,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     proc.stdout?.on('data', keep)
     proc.stderr?.on('data', keep)
     proc.on('exit', (code) => {
+      transport?.close()
       server.exited = true
       server.sse.abort()
       this.live.delete(server)
@@ -626,6 +669,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       }
     })
     proc.on('error', () => {
+      transport?.close()
       server.exited = true
     })
 
@@ -634,6 +678,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       server.connected = this.openEvents(server)
       await server.connected
     } catch (err) {
+      transport?.close()
       proc.kill('SIGKILL')
       const tail = redact(server.stderrTail).trim().split('\n').slice(-5).join('\n')
       throw new Error(`${(err as Error).message}${tail ? `\nopencode output:\n${tail}` : ''}`)
@@ -661,6 +706,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
   private killAll(sig: NodeJS.Signals): void {
     for (const srv of this.live) {
+      srv.transport?.close()
       srv.sse.abort()
       if (!srv.exited) srv.proc.kill(sig)
     }
@@ -685,6 +731,49 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   }
 
   // ---- SSE ----------------------------------------------------------------------------
+
+  /** Repair a silent/missed completion even if the event connection never closes.
+   * Read only: never replay a prompt, tool or simulation because its UI went quiet. */
+  private async checkLiveness(): Promise<void> {
+    if (this.disposed || this.probing) return
+    const now = this.clock()
+    const due = [...this.sessions].filter(([, s]) => s.inFlight && !s.server.exited &&
+      !this.syncLoops.has(s.server) && !s.pendingQuestions.size && !s.pendingPermissions.size &&
+      now - s.lastActivity >= this.livenessQuietMs && now - s.lastProbe >= this.livenessQuietMs)
+      .map(([id, s]) => ({ id, s, epoch: s.recovery.epoch }))
+    if (!due.length) return
+    this.probing = true
+    try {
+      for (const server of new Set(due.map(({ s }) => s.server))) {
+        const turns = due.filter(({ s }) => s.server === server)
+        for (const { s } of turns) s.lastProbe = now
+        let statuses: Record<string, { type?: string; message?: string }>
+        try { statuses = await this.restoreSnapshot(server, true) }
+        catch { if (!this.disposed) this.beginCatchup(server); continue }
+        if (this.disposed) return
+        for (const { id, s, epoch } of turns) {
+          if (!s.inFlight || s.recovery.epoch !== epoch || s.pendingQuestions.size || s.pendingPermissions.size || s.recovery.running) continue
+          const status = statuses[id]
+          if (!status || status.type === 'idle') {
+            // Confirm idle twice, allowing for a prompt accepted just before the
+            // native worker starts. Busy jobs and unanswered questions never time out here.
+            if (s.idleSince === undefined) s.idleSince = this.clock()
+            else if (this.clock() - s.idleSince >= this.livenessIdleGraceMs) {
+              s.inFlight = false; s.recovery.cancelled = true; s.recovery.pending = false
+              this.emitter.emit({ sessionId: id, type: 'error', text: 'The agent is no longer running, but no completed response was received. Received messages and saved files are kept. Check the conversation before retrying; the task was not sent again.' })
+              this.emitter.emit({ sessionId: id, type: 'done' })
+            }
+          } else {
+            s.idleSince = undefined
+            if (!s.stalled && this.clock() - s.lastActivity >= this.livenessWarningMs) {
+              s.stalled = true
+              this.emitter.emit({ sessionId: id, type: 'status', text: 'stalled' })
+            }
+          }
+        }
+      }
+    } finally { this.probing = false }
+  }
 
   /** Repair observation only. Never retry prompts, tools, uploads or simulations here. */
   private beginCatchup(server: Server): void {
@@ -716,7 +805,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     })()
   }
 
-  private async restoreSnapshot(server: Server): Promise<void> {
+  private async restoreSnapshot(server: Server, quietProbe = false): Promise<Record<string, { type?: string; message?: string }>> {
     const active = [...this.sessions].filter(([, s]) => s.server === server && s.inFlight)
       .map(([id, s]) => ({ id, s, epoch: s.recovery.epoch }))
     const [statusRes, permissionsRes, questionsRes] = await Promise.all([
@@ -728,8 +817,12 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     const permissions = await permissionsRes.json() as Array<Record<string, any>>
     const questions = await questionsRes.json() as Array<{ id: string; sessionID: string; questions: KernelQuestion['questions'] }>
     for (const { id: sessionId, s, epoch } of active) {
-      const response = await this.request(server, 'GET', `/session/${encodeURIComponent(sessionId)}/message`, undefined, 5000)
-      const messages = await response.json() as NativeMessage[]
+      const status = statuses[sessionId]
+      const busyProbe = quietProbe && status && status.type !== 'idle'
+      // While native is busy, only observe status/questions/permissions. Replaying
+      // old completion metadata could mistake a previous limit for a new failure;
+      // re-reading a large history would also add work to a long-running job.
+      const messages = busyProbe ? [] : await (await this.request(server, 'GET', `/session/${encodeURIComponent(sessionId)}/message`, undefined, 5000)).json() as NativeMessage[]
       if (!s.inFlight || this.sessions.get(sessionId) !== s || s.recovery.epoch !== epoch || this.disposed) continue
       const current = messages.filter(({ info }) => info?.id && !s.turnBaseline.has(info.id))
       for (const { info, parts } of current) {
@@ -747,7 +840,6 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       for (const p of pendingPermissions) if (!s.pendingPermissions.has(String(p.id))) this.handle({ type: 'permission.asked', properties: p })
       const pendingQuestions = questions.filter(q => q.sessionID === sessionId)
       for (const q of pendingQuestions) this.handle({ type: 'question.asked', properties: q })
-      const status = statuses[sessionId]
       const latest = current.filter(m => m.info.role === 'assistant').at(-1)?.info
       if ((!status || status.type === 'idle') && !pendingPermissions.length && !pendingQuestions.length && !s.awaitingAssistant && (latest?.time?.completed || s.failed)) {
         this.handle({ type: 'session.idle', properties: { sessionID: sessionId } })
@@ -755,6 +847,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         this.handle({ type: 'session.status', properties: { sessionID: sessionId, status } })
       }
     }
+    return statuses
   }
 
   /** Opens /event; resolves once `server.connected` arrives. Reconnects while the server lives. */
@@ -834,7 +927,13 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     if (!sessionId) return
     const s = this.sessions.get(sessionId)
     if (!s) return // child/sub-agent sessions and sessions we did not start
-    const emit = (e: Omit<KernelEvent, 'sessionId'>): void => this.emitter.emit({ sessionId, ...e })
+    const emit = (e: Omit<KernelEvent, 'sessionId'>): void => {
+      if (e.type === 'text' || e.type === 'tool' || e.type === 'usage' || e.type === 'question' || e.type === 'permission') {
+        s.lastActivity = this.clock(); s.idleSince = undefined
+        if (s.stalled) { s.stalled = false; this.emitter.emit({ sessionId, type: 'status', text: 'busy' }) }
+      }
+      this.emitter.emit({ sessionId, ...e })
+    }
 
     switch (ev.type) {
       case 'question.asked':
@@ -844,12 +943,12 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         return
       case 'question.replied':
         s.pendingQuestions.delete(p.requestID)
-        emit({ type: 'question', question: { id: p.requestID, questions: [], answers: p.answers, resolved: 'answered' } })
+        if (this.reportResolved('q:' + p.requestID)) emit({ type: 'question', question: { id: p.requestID, questions: [], answers: p.answers, resolved: 'answered' } })
         return
       case 'question.rejected':
         s.pendingQuestions.delete(p.requestID)
         s.recovery.cancelled = true; s.recovery.pending = false
-        emit({ type: 'question', question: { id: p.requestID, questions: [], resolved: 'rejected' } })
+        if (this.reportResolved('q:' + p.requestID)) emit({ type: 'question', question: { id: p.requestID, questions: [], resolved: 'rejected' } })
         return
 
       case 'message.updated': {
@@ -873,6 +972,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
           const t = info.tokens ?? {}
           emit({
             type: 'usage',
+            messageId: info.id,
             usage: {
               input: Number(t.input) || 0,
               output: Number(t.output) || 0,
@@ -915,7 +1015,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         if (type ? type !== 'text' : role !== 'assistant') return // skip reasoning etc.
         s.emitted.set(p.partID, (s.emitted.get(p.partID) ?? 0) + p.delta.length)
         if (p.delta.trim()) s.recovery.progress = true
-        emit({ type: 'text', text: p.delta })
+        emit({ type: 'text', text: p.delta, messageId: p.messageID, partId: p.partID })
         return
       }
 
@@ -931,7 +1031,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
           if (full.length > shown) {
             s.emitted.set(part.id, full.length)
             if (full.slice(shown).trim()) s.recovery.progress = true
-            emit({ type: 'text', text: full.slice(shown) })
+            emit({ type: 'text', text: full.slice(shown), messageId: part.messageID, partId: part.id })
           }
         } else if (part.type === 'tool') {
           const st = part.state ?? {}
@@ -956,6 +1056,9 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
           const out = status === 'error' ? st.error : st.output
           emit({
             type: 'tool',
+            toolCallId: part.callID ?? part.id,
+            messageId: part.messageID,
+            partId: part.id,
             tool: part.tool,
             text: status,
             detail,
@@ -967,9 +1070,10 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       }
 
       case 'session.status': {
+        if (!s.inFlight) return // late busy notifications must not revive a stopped/completed turn
         const st = p.status ?? {}
         if (st.type === 'idle') return // session.idle handles completion
-        emit({ type: 'status', text: s.recovery.attempts > 0 && !s.recovery.cancelled ? 'recovering' : st.type, detail: st.message })
+        emit({ type: 'status', text: s.stalled ? 'stalled' : s.recovery.attempts > 0 && !s.recovery.cancelled ? 'recovering' : st.type, detail: st.message })
         return
       }
 
@@ -1025,7 +1129,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         if (p.requestID) s.pendingPermissions.delete(p.requestID)
         if ((p.reply ?? p.response) === 'reject') { s.recovery.cancelled = true; s.recovery.pending = false }
         const reply = p.reply ?? p.response
-        if (p.requestID && (reply === 'once' || reply === 'always' || reply === 'reject'))
+        if (p.requestID && (reply === 'once' || reply === 'always' || reply === 'reject') && this.reportResolved(p.requestID))
           emit({ type: 'permission', permission: { id: p.requestID, type: '', resolved: reply, ...(this.autoReplies.has(p.requestID) ? { automatic: true } : {}) } })
         return
       }

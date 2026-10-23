@@ -1,0 +1,77 @@
+import {build} from 'esbuild'
+import {test} from 'node:test'
+import assert from 'node:assert/strict'
+import {mkdtemp,rm} from 'node:fs/promises'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
+import {pathToFileURL, fileURLToPath } from 'node:url'
+const temp=await mkdtemp(join(tmpdir(),'research-agent-'))
+await build({entryPoints:[fileURLToPath(new URL('./research-agent.ts',import.meta.url))],bundle:true,platform:'node',format:'esm',outfile:join(temp,'agent.mjs')})
+const {createResearchAgent}=await import(pathToFileURL(join(temp,'agent.mjs')))
+test('one shared adapter preserves partial chat, parallel native calls, questions, permissions, errors and usage',async()=>{
+ const rows=[],a=createResearchAgent(async e=>{rows.push(e)})
+ a.bind('ses_1','project01','/project','reported-model');a.start('ses_1','Build this paper')
+ const e=fields=>a.event({sessionId:'ses_1',...fields})
+ e({type:'text',text:'First full paragraph. '})
+ e({type:'tool',tool:'bash',toolCallId:'call_1',text:'running',input:{command:'a'}})
+ e({type:'tool',tool:'bash',toolCallId:'call_2',text:'running',input:{command:'b'}})
+ e({type:'tool',tool:'bash',toolCallId:'call_2',text:'completed',output:'b done'})
+ e({type:'tool',tool:'bash',toolCallId:'call_1',text:'error',output:'a failed'})
+ e({type:'question',question:{id:'q1',questions:[{question:'Which condition?',options:[]}]}})
+ e({type:'question',question:{id:'q1',questions:[],answers:[['Original']],resolved:'answered'}})
+ e({type:'permission',permission:{id:'p1',type:'bash'}})
+ e({type:'permission',permission:{id:'p1',type:'bash',resolved:'once',automatic:true}})
+ e({type:'usage',messageId:'native_message',usage:{input:300,output:70,reasoning:20,cost:0.01}})
+ e({type:'text',text:'Partial work kept.'});e({type:'error',text:'Connection failed'});e({type:'done'})
+ await a.close()
+ assert.equal(rows.filter(r=>r.event_type==='action.invoke').length,1)
+ assert.equal(rows.filter(r=>r.event_type==='tool.end').length,2)
+ assert.equal(rows.find(r=>r.event_type==='tool.end'&&r.tool_call_id==='call_1').metadata.output,'a failed')
+ assert.equal(rows.find(r=>r.event_type==='tool.end'&&r.tool_call_id==='call_2').metadata.output,'b done')
+ const text=rows.filter(r=>r.event_type==='conversation.message'&&r.metadata.role==='assistant').map(r=>r.metadata.text).join('')
+ assert.equal(text,'First full paragraph. Partial work kept.')
+ assert.equal(rows.find(r=>r.event_type==='agent.usage').message_id,'native_message')
+ assert.equal(rows.find(r=>r.event_type==='agent.turn_end').metadata.status,'error')
+ assert.ok(rows.filter(r=>r.event_type!=='action.invoke').every(r=>r.action_id===rows[0].id))
+ assert.equal(rows.filter(r=>r.event_type==='conversation.question').length,2)
+})
+test('abort saves pending text and emits interruption for unfinished tools',async()=>{
+ const rows=[],a=createResearchAgent(async e=>rows.push(e));a.bind('ses_1');a.start('ses_1','Run')
+ a.event({sessionId:'ses_1',type:'tool',tool:'write',toolCallId:'c1',text:'running',input:{content:'whole file'}})
+ a.event({sessionId:'ses_1',type:'text',text:'received before abort'});a.abort('ses_1');await a.close()
+ assert.ok(rows.some(r=>r.event_type==='tool.end'&&r.metadata.status==='interrupted'))
+ assert.ok(rows.some(r=>r.metadata.text==='received before abort'&&r.metadata.status==='partial'))
+})
+test('a second send while busy cannot close or reattribute the active response',async()=>{
+ const rows=[],a=createResearchAgent(async e=>rows.push(e));a.bind('ses_1');a.start('ses_1','Original request')
+ a.event({sessionId:'ses_1',type:'text',text:'First part. '});a.start('ses_1','Repeated send')
+ a.event({sessionId:'ses_1',type:'text',text:'Second part.'});a.event({sessionId:'ses_1',type:'done'});await a.close()
+ assert.equal(rows.filter(r=>r.event_type==='agent.turn_start').length,1)
+ assert.equal(rows.filter(r=>r.event_type==='agent.turn_end').length,1)
+ assert.equal(rows.filter(r=>r.event_type==='conversation.message'&&r.metadata.role==='assistant').map(r=>r.metadata.text).join(''),'First part. Second part.')
+ assert.ok(rows.some(r=>r.metadata.status==='submitted_while_busy'))
+})
+test('a native call reported pending-then-running records one tool.start with the complete input',async()=>{
+ // Real OpenCode order (2026-10-23 hosted Haiku acceptance): pending with {} -> running with input -> completed.
+ const rows=[],a=createResearchAgent(async e=>rows.push(e));a.bind('ses_1');a.start('ses_1','Build')
+ const e=f=>a.event({sessionId:'ses_1',type:'tool',tool:'bash',...f})
+ e({toolCallId:'c1',text:'pending',input:{}});e({toolCallId:'c1',text:'running',input:{command:'python check.py'}});e({toolCallId:'c1',text:'completed',input:{command:'python check.py'},output:'PASS'})
+ e({toolCallId:'c2',text:'pending',input:{}}) // interrupted before it ever ran
+ a.event({sessionId:'ses_1',type:'done'});await a.close()
+ const starts=rows.filter(r=>r.event_type==='tool.start'),ends=rows.filter(r=>r.event_type==='tool.end')
+ assert.equal(starts.filter(r=>r.tool_call_id==='c1').length,1)
+ assert.equal(starts.find(r=>r.tool_call_id==='c1').metadata.input,JSON.stringify({command:'python check.py'}))
+ assert.equal(ends.find(r=>r.tool_call_id==='c1').caused_by,starts.find(r=>r.tool_call_id==='c1').id)
+ assert.equal(starts.filter(r=>r.tool_call_id==='c2').length,1);assert.equal(starts.find(r=>r.tool_call_id==='c2').metadata.input_absent,true)
+ assert.equal(ends.find(r=>r.tool_call_id==='c2').metadata.status,'interrupted');assert.equal(ends.find(r=>r.tool_call_id==='c2').caused_by,starts.find(r=>r.tool_call_id==='c2').id)
+ assert.equal(starts.length,ends.length)
+})
+test('one recovery attempt is one agent.recovery record although later statuses still say recovering',async()=>{
+ const rows=[],a=createResearchAgent(async e=>rows.push(e));a.bind('ses_1');a.start('ses_1','Build')
+ const st=f=>a.event({sessionId:'ses_1',type:'status',text:'recovering',...f})
+ st({detail:'Recovery 1/2: checking saved work',input:{attempt:1,reason:'output_limit'}});for(let i=0;i<5;i++)st({})
+ st({detail:'Recovery 2/2',input:{attempt:2,reason:'output_limit'}});st({});a.event({sessionId:'ses_1',type:'done'})
+ a.start('ses_1','Retry');st({detail:'Recovery 1/2',input:{attempt:1,reason:'output_limit'}});a.event({sessionId:'ses_1',type:'done'});await a.close()
+ assert.deepEqual(rows.filter(r=>r.event_type==='agent.recovery').map(r=>r.metadata.attempt),[1,2,1])
+})
+test.after(()=>rm(temp,{recursive:true,force:true}))
