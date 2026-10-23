@@ -16,6 +16,9 @@ truncation or fabricated study information. Preserve original source traceabilit
   Evidence: desktop #26/#28 and web #25 remain open at their reviewed revisions. Shared project
   is healthy; the approved v1 and offline-policy migrations were applied. Existing history
   discrepancies were audited against actual defaults/policies; do not blindly db push.
+  Integration (2026-10-22): #26 + #31 + #28 combined on `claude/integration-0.6.7-collection`
+  (draft PR #32); one textual conflict (TODO.md) and one semantic fix — program versions are now
+  captured from the exact bytes committed under #31's save lock, attributed by content hash.
 - [x] T02 — Tracking issue: https://github.com/HumanStudy-Hub/humanstudy-desktop/issues/30; linked from repository TODO.
 - [~] T06 — Shared durable event/content collector: full text, content references, monotonic
   sequence/checkpoints, account ownership, deduplication, rejection quarantine and delivery state.
@@ -28,6 +31,11 @@ truncation or fabricated study information. Preserve original source traceabilit
 - [~] T09 — Headless: use the same collector/agent adapter; capture commands/conversations,
   questions/permissions, tools, partial failures, usage and final artifacts under the actual
   collaborator identity. UI-only actions are explicitly not applicable.
+  Integration (2026-10-22): #29 (+#10/#11) rebased by merge onto the 0.6.7 integration on
+  `claude/headless-on-0.6.7` (draft PR #33). The worker now runs the same kernel (#26 liveness and
+  request transport), pack, save lock, completion certificate and collector as desktop; one tracked
+  copy of the collector/agent/contract, asserted by `app/scripts/headless-parity.test.mjs`.
+  Offline only: no real worker run under a personal account yet.
 - [ ] T10 — Cross-surface action/parent causality, coverage map and no-double-counting checks.
 - [x] T11 — Real database/Storage acceptance with isolated synthetic accounts: roles/RLS, other-account denial, consent,
   original file round trip, duplicate/restart/interruption and verifier behavior.
@@ -71,6 +79,9 @@ additive migration. Windows machine access and packaged-app permissions remain t
 
 - 2026-10-22: started execution; read-only shared-database audit confirms v1 schema absent and
   history mismatch. Requested an isolated Supabase acceptance branch through its cost-aware tool.
+- 2026-10-22: integration branches for #26/#31/#28 (PR #32) and headless #29 on top (PR #33). Offline:
+  171/171 and 192/192 desktop tests, 17/17 managed-Python pack tests, 7/7 headless conversion tests,
+  both TypeScript configs, production build and diff checks pass. Not merged; T14–T16 still open.
 
 ## Separate product backlog (outside this collection rollout)
 
