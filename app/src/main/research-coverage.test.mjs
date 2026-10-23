@@ -334,3 +334,18 @@ test('headless: commands are the primary actions and drive the same linked recor
 })
 
 test.after(() => rm(temp, { recursive: true, force: true }))
+
+test('a version links to the tool call that named its file, for Windows paths too', () => {
+  const agent = R.createResearchAgent(async () => ({ id: 'evt' }))
+  const dir = 'C:\\Users\\r\\proj', sid = 'ses_win'
+  agent.bind(sid, PROJECT, dir, 'm')
+  agent.start(sid, 'Write the materials.', { id: 'act_win', target: 'composer.send', via: 'keyboard' })
+  const tool = (id, name, input, text) => agent.event({ sessionId: sid, type: 'tool', tool: name, toolCallId: id, messageId: 'msg_w', partId: 'prt_' + id, input, text })
+  tool('call_w_write', 'write', { filePath: dir + '\\artifacts\\materials.md', content: 'x' }, 'running')
+  tool('call_w_write', 'write', { filePath: dir + '\\artifacts\\materials.md', content: 'x' }, 'completed')
+  // A later call is still running when the file's version is captured; it did not name the file.
+  tool('call_w_bash', 'bash', { command: 'python program_io.py batch.json' }, 'running')
+  const link = agent.versionLink(dir, 'artifacts/materials.md', 'agent-or-external')
+  assert.equal(link.tool_call_id, 'call_w_write')
+  assert.equal(link.metadata.writer_link, 'tool-input')
+})

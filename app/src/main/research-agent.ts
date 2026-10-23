@@ -29,6 +29,18 @@ export interface ResearchLink {
 }
 const RECENT_TOOL_MS = 60_000, RECENT_TURN_MS = 120_000, HISTORY = 400, REMEMBERED = 5_000
 const norm = (p: string) => p.split('\\').join('/').replace(/\/+$/, '')
+// Path matching runs on the tool input's string values, not its JSON text: JSON doubles every
+// Windows backslash, which would never match a project path. Windows paths compare case-insensitively.
+const fold = (p: string) => process.platform === 'win32' ? p.toLowerCase() : p
+const inputPaths = (input: unknown): string => {
+  const out: string[] = []
+  const walk = (v: unknown, depth: number) => {
+    if (typeof v === 'string') out.push(norm(v))
+    else if (v && typeof v === 'object' && depth < 4) for (const x of Object.values(v)) walk(x, depth + 1)
+  }
+  walk(input, 0)
+  return fold(out.join('\n'))
+}
 const emptyInput = (v: unknown) => v === undefined || v === null || v === '' ||
   (typeof v === 'object' && !Array.isArray(v) && Object.keys(v as object).length === 0)
 
@@ -103,8 +115,8 @@ export function createResearchAgent(capture: Sink) {
   }
   /** The tool call (or, failing that, the turn) that most plausibly wrote `rel` in `dir`. */
   function writer(dir: string, rel: string): ResearchLink | null {
-    const root = norm(dir), file = norm(rel), now = Date.now()
-    const inProject = (c: Call) => !c.dir || norm(c.dir) === root
+    const root = fold(norm(dir)), file = fold(norm(rel)), now = Date.now()
+    const inProject = (c: Call) => !c.dir || fold(norm(c.dir)) === root
     const live = (c: Call) => !c.ended || now - c.ended <= RECENT_TOOL_MS
     const candidates = history.filter(c => inProject(c) && live(c) && c.action).reverse()
     const named = candidates.find(c => c.inputText.includes(file) || c.inputText.includes(root + '/' + file))
@@ -113,9 +125,9 @@ export function createResearchAgent(capture: Sink) {
     if (call) return { action_id: call.action, caused_by: call.end ?? call.start, thread_id: call.sid, tool_call_id: call.id,
       metadata: { trigger: 'agent-tool', writer_link: named ? 'tool-input' : running ? 'tool-running' : 'tool-recent',
         ...(call.message ? { native_message_id: call.message } : {}), ...(call.part ? { native_part_id: call.part } : {}) } }
-    for (const [sid, t] of turns) if (!t.dir || norm(t.dir) === root)
+    for (const [sid, t] of turns) if (!t.dir || fold(norm(t.dir)) === root)
       return { action_id: t.action, caused_by: t.action, thread_id: sid, metadata: { trigger: 'agent-turn', writer_link: 'turn' } }
-    for (const [sid, t] of lastTurn) if ((!t.dir || norm(t.dir) === root) && now - t.ended <= RECENT_TURN_MS)
+    for (const [sid, t] of lastTurn) if ((!t.dir || fold(norm(t.dir)) === root) && now - t.ended <= RECENT_TURN_MS)
       return { action_id: t.action, caused_by: t.action, thread_id: sid, metadata: { trigger: 'agent-turn', writer_link: 'recent-turn' } }
     return null
   }
@@ -202,7 +214,7 @@ export function createResearchAgent(capture: Sink) {
         const placeholder = e.text === 'pending' && emptyInput(e.input)
         if (!placeholder && (!call.start || (e.input !== undefined && JSON.stringify(e.input) !== JSON.stringify(call.input)))) {
           call.input = e.input
-          call.inputText = norm(typeof e.input === 'string' ? e.input : JSON.stringify(e.input ?? ''))
+          call.inputText = inputPaths(e.input)
           call.start = emit(sid, { event_type: 'tool.start', tool_call_id: call.id, target: e.tool ?? 'tool', metadata: {
             ...(e.input === undefined ? { input_absent: true } : { input: typeof e.input === 'string' ? e.input : JSON.stringify(e.input) }),
             ...native, state: e.text ?? 'pending' } })
