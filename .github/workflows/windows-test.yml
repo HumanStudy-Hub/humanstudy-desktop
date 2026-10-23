@@ -6,7 +6,7 @@ name: Windows tests
 on:
   workflow_dispatch:
   push:
-    branches: ['claude/windows-ci']
+    branches: ['claude/windows-ci', 'claude/release-0.6.7-rc']
   pull_request:
     branches: [main]
     paths:
