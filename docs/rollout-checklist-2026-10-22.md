@@ -37,8 +37,8 @@ truncation or fabricated study information. Preserve original source traceabilit
   copy of the collector/agent/contract, asserted by `app/scripts/headless-parity.test.mjs`.
   Offline only: no real worker run under a personal account yet.
 - [~] T10 — Cross-surface action/parent causality, coverage map and no-double-counting checks.
-  Desktop + headless code/regression (2026-10-22, branch `claude/research-t10-causality`, draft PR
-  on #33): one `action.invoke` per operation (semantic name wins, generic click/shortcut only as a
+  Desktop + headless code/regression (2026-10-22, branch `claude/research-t10-causality`, draft
+  [PR #34](https://github.com/HumanStudy-Hub/humanstudy-desktop/pull/34) on #33): one `action.invoke` per operation (semantic name wins, generic click/shortcut only as a
   fallback, input route in `via`); action_id / caused_by / `metadata.parent_action_id` on messages,
   turns, tools, questions, permissions, imports, versions (save -> save operation, agent write ->
   writing tool call) and simulation run/stop; native OpenCode session/message/part/call ids;
