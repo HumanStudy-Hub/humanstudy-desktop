@@ -36,7 +36,16 @@ truncation or fabricated study information. Preserve original source traceabilit
   request transport), pack, save lock, completion certificate and collector as desktop; one tracked
   copy of the collector/agent/contract, asserted by `app/scripts/headless-parity.test.mjs`.
   Offline only: no real worker run under a personal account yet.
-- [ ] T10 — Cross-surface action/parent causality, coverage map and no-double-counting checks.
+- [~] T10 — Cross-surface action/parent causality, coverage map and no-double-counting checks.
+  Desktop + headless code/regression (2026-10-22, branch `claude/research-t10-causality`, draft PR
+  on #33): one `action.invoke` per operation (semantic name wins, generic click/shortcut only as a
+  fallback, input route in `via`); action_id / caused_by / `metadata.parent_action_id` on messages,
+  turns, tools, questions, permissions, imports, versions (save -> save operation, agent write ->
+  writing tool call) and simulation run/stop; native OpenCode session/message/part/call ids;
+  headless commands are the primary actions (UI actions not applicable). Machine-readable
+  [coverage map](research-coverage-map.json) + `research-coverage.test.mjs` (scripted desktop and
+  headless sessions through the real collector, mocked kernel/network). Contract unchanged.
+  Open: web adapter must mirror the same rule (T08); no installed-app or real-model evidence yet.
 - [x] T11 — Real database/Storage acceptance with isolated synthetic accounts: roles/RLS, other-account denial, consent,
   original file round trip, duplicate/restart/interruption and verifier behavior.
   Evidence: [service](acceptance/2026-10-22/service.json), [web](acceptance/2026-10-22/web.json).
@@ -82,6 +91,10 @@ additive migration. Windows machine access and packaged-app permissions remain t
 - 2026-10-22: integration branches for #26/#31/#28 (PR #32) and headless #29 on top (PR #33). Offline:
   171/171 and 192/192 desktop tests, 17/17 managed-Python pack tests, 7/7 headless conversion tests,
   both TypeScript configs, production build and diff checks pass. Not merged; T14–T16 still open.
+- 2026-10-22: T10 causality on `claude/research-t10-causality` (base #33). Offline: 200 tests
+  (199 pass, 1 web-contract comparison skipped; that comparison passes against the web branch),
+  17/17 managed-Python pack tests, both TypeScript configs, production build and diff checks pass.
+  Gaps recorded in the map: `consent.change`, `agent.runtime`, `source.page_dwell` not emitted as v1.
 
 ## Separate product backlog (outside this collection rollout)
 
@@ -98,7 +111,8 @@ additive migration. Windows machine access and packaged-app permissions remain t
   web 220 tests, headless selected suite 25 tests; TypeScript and production builds pass.
 - Desktop/headless share the exact collector and kernel adapter. Full long text, parallel tool
   ids, interrupted output, questions/permissions, usage, source and generated files are wired.
-  Cross-surface causality/one-primary-action coverage remains open (T10).
+  Cross-surface causality/one-primary-action: desktop/headless code and coverage check done (T10);
+  web mirror and installed/real-model acceptance remain open.
 - Web UI actions now target v1 when enabled. Queue count/age pruning and whole-batch drops were
   removed; independently stored event ids avoid destructive cross-tab adoption. Storage quota
   failure is surfaced, but IndexedDB expansion and full server chat/tool/artifact migration are
