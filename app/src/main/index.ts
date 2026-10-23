@@ -448,9 +448,13 @@ app.whenReady().then(() => {
     await saveProjectText(q, text, { ifUnchanged, beforeWrite: async () => {
       const root = [...openProjects].find((d) => q.startsWith(d + sep))
       if (root) await snapshot(root, relOf(root, q)).catch(() => undefined)
-      telemetry.noteHumanWrite(q)
+      telemetry.noteHumanWrite(q, text)
     } })
-    if (basename(q).toLowerCase() === 'program.json') paperBuilds.humanSaved(projectRootOf(q))
+    if (basename(q).toLowerCase() === 'program.json') {
+      const root = projectRootOf(q)
+      telemetry.noteProgramWritten(root, text) // the version actually committed under the lock
+      paperBuilds.humanSaved(root)
+    }
     telemetry.track('file.edited', { target: extname(q).slice(1) || 'file' })
   })
 

@@ -9,6 +9,7 @@ import { storeResearchContent } from './research-content'
 import { createResearchCollector } from './research-collector'
 import { createResearchAgent } from './research-agent'
 import { researchInteraction } from '../shared/research-interactions'
+import { createSerial, createWriteAttribution, isSaveTemp } from './write-capture'
 import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
 import { accountHash, createTelemetry, FLUSH_INTERVAL_MS, programDiff, scrubString, type StoredState, type Telemetry } from './telemetry-core'
@@ -397,14 +398,22 @@ const WATCHED_DIRS = /^(artifacts|exports|package)\//
 const programState = new Map<string, { hash: string; json: unknown; version: number }>()
 const fileHashes = new Map<string, string>()
 const fileVersions = new Map<string, number>()
-const humanWrites = new Map<string, number>()
+const humanWrites = createWriteAttribution()
+const captureInOrder = createSerial()
 const fsTimers = new Map<string, NodeJS.Timeout>()
 
-/** The researcher saved this file in the app (so the resulting change is not the agent's). */
-export function noteHumanWrite(path: string): void {
-  humanWrites.set(resolve(path), Date.now())
+/** The researcher saved this text in the app (so that content is not the agent's). */
+export function noteHumanWrite(path: string, text?: string): void {
+  humanWrites.note(resolve(path), text)
 }
-const byWhom = (abs: string): 'human' | 'agent' => ((humanWrites.get(abs) ?? 0) > Date.now() - 5_000 ? 'human' : 'agent')
+const byWhom = (abs: string, text?: string): 'human' | 'agent' => humanWrites.by(abs, text)
+/**
+ * The app committed these exact program bytes under the program lock. Capture them directly: the
+ * debounced watcher read would otherwise merge a save with an agent merge that lands right after it.
+ */
+export function noteProgramWritten(projectDir: string, text: string): void {
+  void snapshotProgram(projectDir, text).catch(() => undefined)
+}
 
 /** A file under a watched project changed; versions/snapshots are queued after a short settle. */
 export function noteFsChange(projectDir: string, rel: string): void {
@@ -412,7 +421,7 @@ export function noteFsChange(projectDir: string, rel: string): void {
   const isProgram = r === 'program.json'
   const isSource = r === 'paper.pdf' || r.startsWith('sources/')
   if (!isProgram && !isSource && !WATCHED_DIRS.test(r)) return
-  if (r.includes('/.')) return
+  if (r.includes('/.') || isSaveTemp(r)) return
   const key = `${projectDir}\0${r}`
   clearTimeout(fsTimers.get(key))
   const timer = setTimeout(() => {
@@ -423,13 +432,16 @@ export function noteFsChange(projectDir: string, rel: string): void {
   fsTimers.set(key, timer)
 }
 
-async function snapshotProgram(projectDir: string): Promise<void> {
+async function snapshotProgram(projectDir: string, written?: string): Promise<void> {
   if (!getTelemetry().status().content) return
   const owner = getAccount().researchOwner(), stateKey = `${owner}:${projectDir}`
+  return captureInOrder(stateKey, () => snapshotProgramNow(projectDir, owner, stateKey, written))
+}
+async function snapshotProgramNow(projectDir: string, owner: string | null, stateKey: string, written?: string): Promise<void> {
   const path = join(projectDir, 'program.json')
   const actual = await realpath(path), root = await realpath(projectDir)
   if (!actual.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) return
-  const raw = await readFile(path, 'utf8')
+  const raw = written ?? await readFile(path, 'utf8')
   const hash = createHash('sha1').update(raw).digest('hex')
   const prev = programState.get(stateKey)
   if (prev?.hash === hash) return
@@ -443,7 +455,7 @@ async function snapshotProgram(projectDir: string): Promise<void> {
   const metadata: Record<string, unknown> = {
     version,
     initial: !prev,
-    by: prev ? byWhom(resolve(path)) : 'open',
+    by: prev ? byWhom(resolve(path), raw) : 'open',
     bytes: Buffer.byteLength(raw),
     hash: hash.slice(0, 12),
   }
@@ -460,6 +472,9 @@ async function snapshotProgram(projectDir: string): Promise<void> {
 async function snapshotFile(projectDir: string, rel: string): Promise<void> {
   if (!getTelemetry().status().content) return
   const owner = getAccount().researchOwner()
+  return captureInOrder(`${owner}:${projectDir}\0${rel}`, () => snapshotFileNow(projectDir, rel, owner))
+}
+async function snapshotFileNow(projectDir: string, rel: string, owner: string | null): Promise<void> {
   const path = join(projectDir, rel)
   const actual = await realpath(path).catch(() => null), root = await realpath(projectDir)
   if (!actual?.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) return
@@ -469,6 +484,7 @@ async function snapshotFile(projectDir: string, rel: string): Promise<void> {
   const metadata: Record<string, unknown> = { size: st.size, ext, by: byWhom(resolve(path)) }
   if (TEXT_EXTS.has(ext)) {
     const text = await readFile(path, 'utf8')
+    metadata.by = byWhom(resolve(path), text)
     const hash = createHash('sha1').update(text).digest('hex')
     const key = `${owner}:${projectDir}\0${rel}`
     if (fileHashes.get(key) === hash) return
