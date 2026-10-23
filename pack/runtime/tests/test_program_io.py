@@ -43,13 +43,15 @@ class ProgramIoContentionTest(unittest.TestCase):
     def test_parallel_saves_all_land(self):
         n = 8
         procs = [subprocess.Popen([sys.executable, str(IO), "-"], cwd=self.dir, stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(n)]
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) for _ in range(n)]
         for i, p in enumerate(procs):
             p.stdin.write(json.dumps({"nodes": [{"id": f"n{i + 1}"}]}).encode("utf-8"))
             p.stdin.close()
         for p in procs:
+            with p.stderr:
+                err = p.stderr.read()
             p.wait(timeout=60)
-            self.assertEqual(p.returncode, 0, p.stderr.read().decode("utf-8", "replace"))
+            self.assertEqual(p.returncode, 0, err.decode("utf-8", "replace"))
         self.assertEqual(sorted(x["id"] for x in self.saved()["nodes"]), sorted(f"n{i}" for i in range(n + 1)))
         self.assertEqual(self.leftovers(), [])
 

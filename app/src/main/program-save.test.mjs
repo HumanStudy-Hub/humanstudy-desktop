@@ -88,3 +88,18 @@ test('Python protects confirmed step rules and parent replacement, including val
   const r = spawnSync(python, ['-c', code, dirname(helper)], { encoding: 'utf8' })
   assert.equal(r.status, 0, r.stderr)
 })
+
+test('app and agent taking the lock in tight turns never fail each other (Windows delete-pending lock folder)', { skip: !python }, async () => {
+  // On Windows a just-removed lock folder refuses mkdir with access denied for a moment; both sides
+  // must treat that as busy. Python churns the lock for 3 s while the app takes it 40 times.
+  const { dir, target } = project()
+  const code = `import sys,time\nsys.path.insert(0,sys.argv[1])\nfrom program_lock import program_lock\nend=time.monotonic()+3\nn=0\nwhile time.monotonic()<end:\n with program_lock('program.json'):\n  n+=1\nprint(n)`
+  const churn = start(['-c', code, dirname(helper)], dir)
+  let taken = 0
+  for (let i = 0; i < 40; i++) await withProgramLock(target, async () => { taken++ })
+  const r = await churn.done
+  assert.equal(r.code, 0, r.stderr)
+  assert.equal(taken, 40)
+  assert.ok(Number(r.stdout) > 0)
+  assert.ok(!readdirSync(dir).some(n => n.endsWith('.lock')))
+})

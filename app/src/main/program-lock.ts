@@ -18,7 +18,15 @@ export async function withProgramLock<T>(target: string, work: () => Promise<T>,
       catch (error) { await rmdir(lock).catch(() => undefined); throw error }
       break
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      const code = (error as NodeJS.ErrnoException).code
+      // Windows: a lock folder another writer just removed is "delete pending" while a handle is open,
+      // and mkdir fails with EPERM/EACCES. That is a busy lock (same rule as program_lock.py).
+      if (process.platform === 'win32' && (code === 'EPERM' || code === 'EACCES')) {
+        if (Date.now() >= until) throw error
+        await new Promise((r) => setTimeout(r, 25))
+        continue
+      }
+      if (code !== 'EEXIST') throw error
       const entries = await readdir(lock).catch(() => null)
       if (entries?.length === 1 && /^\d+-[\da-f-]+$/.test(entries[0]!) && !alive(Number(entries[0]!.split('-')[0]))) {
         // Only the reaper that actually unlinks the old token may remove the empty directory.
