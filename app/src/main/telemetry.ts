@@ -3,9 +3,12 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { readFile, stat, writeFile } from 'node:fs/promises'
+import { readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { storeResearchContent } from './research-content'
+import { createResearchCollector } from './research-collector'
+import { createResearchAgent } from './research-agent'
+import { researchInteraction } from '../shared/research-interactions'
 import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
 import { accountHash, createTelemetry, FLUSH_INTERVAL_MS, programDiff, scrubString, type StoredState, type Telemetry } from './telemetry-core'
@@ -64,6 +67,46 @@ export function getTelemetry(): Telemetry {
   return telemetry
 }
 
+let sources: ReturnType<typeof createResearchCollector> | null = null
+function sourceCollector() {
+  if (!sources) sources = createResearchCollector({
+    root: join(dir(), 'research-v1'), surface: 'desktop', appVersion: app.getVersion(),
+    auth: () => getAccount().restAuth(), ownerId: () => getAccount().researchOwner(),
+    allowed: () => { const s = getTelemetry().status(); return s.consentVersion === 3 && s.usage && s.content },
+  })
+  return sources
+}
+const researchAgent = createResearchAgent((event, context) => sourceCollector().capture(event, context))
+/** Drain local capture before a restart; network delivery remains resumable. */
+export async function settleResearch(final = false): Promise<void> {
+  await researchAgent.drain()
+  if (final) await sourceCollector().end('closed')
+}
+async function queueSource(projectDir: string, rel: string): Promise<void> {
+  const projectId = projectIdFor(projectDir)
+  if (!projectId || !getTelemetry().status().content) return
+  const path = join(projectDir, rel)
+  const actual = await realpath(path), root = await realpath(projectDir)
+  if (!actual.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) return
+  const ext = extname(path).toLowerCase()
+  const mime = ext === '.pdf' ? 'application/pdf' : ext === '.zip' ? 'application/zip' : ext === '.json' ? 'application/json' : 'application/octet-stream'
+  await sourceCollector().queueSource(path, projectId, mime)
+}
+/** Run only after renewed agreement and on explicit project open, never scan the user's disk. */
+async function queueProjectSources(projectDir: string): Promise<void> {
+  if (!getTelemetry().status().content) return
+  if (existsSync(join(projectDir, 'paper.pdf'))) await queueSource(projectDir, 'paper.pdf')
+  const walk = async (rel: string): Promise<void> => {
+    for (const entry of await readdir(join(projectDir, rel), { withFileTypes: true }).catch(() => [])) {
+      if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue
+      const child = `${rel}/${entry.name}`
+      if (entry.isDirectory()) await walk(child)
+      else if (entry.isFile()) await queueSource(projectDir, child)
+    }
+  }
+  await walk('sources')
+}
+
 // ---- project ids ----------------------------------------------------------------------
 const projectIds = new Map<string, string>() // id -> absolute dir
 /**
@@ -100,6 +143,8 @@ export function track(type: string, opts: TelemetryTrackOptions = {}, projectDir
     if (!t.status().usage) return
     const projectId = opts.projectId ?? (projectDir ? (projectIdFor(projectDir) ?? undefined) : undefined)
     const dirFor = projectDir ?? (projectId ? projectIds.get(projectId) : undefined)
+    const unified = researchInteraction(type, opts)
+    if (unified) void sourceCollector().capture({ ...unified, project_id: projectId }, { projectDir: dirFor }).catch(() => undefined)
     let metadata = opts.metadata
     if (metadata && Buffer.byteLength(JSON.stringify(metadata)) > 12_000) {
       const blob = putBlob(JSON.stringify(metadata), dirFor)
@@ -124,6 +169,7 @@ const turns = new Map<string, Turn>()
 
 export function trackSessionStart(sessionId: string, projectDir: string, kernelName: string, startedAt: number): void {
   sessionDirs.set(sessionId, resolve(projectDir))
+  researchAgent.bind(sessionId, projectIdFor(projectDir) ?? undefined, projectDir)
   track('kernel.session_start', { durationMs: Date.now() - startedAt, metadata: { kernel: kernelName } }, projectDir)
 }
 export function trackSessionError(projectDir: string, err: unknown, startedAt: number): void {
@@ -131,6 +177,7 @@ export function trackSessionError(projectDir: string, err: unknown, startedAt: n
 }
 
 export function trackTurnStart(sessionId: string, text: string): void {
+  researchAgent.start(sessionId, text)
   turns.set(sessionId, { startedAt: Date.now(), tools: new Set(), toolSteps: 0, toolErrors: 0, reply: '' })
   const dir = sessionDirs.get(sessionId)
   track('agent.turn_start', { metadata: { chars: text.length } }, dir)
@@ -139,6 +186,7 @@ export function trackTurnStart(sessionId: string, text: string): void {
 }
 
 export function trackTurnAbort(sessionId: string): void {
+  researchAgent.abort(sessionId)
   const turn = turns.get(sessionId)
   if (!turn) return
   turns.delete(sessionId)
@@ -147,6 +195,7 @@ export function trackTurnAbort(sessionId: string): void {
 }
 
 export function onKernelEvent(e: KernelEvent): void {
+  researchAgent.event(e)
   const turn = turns.get(e.sessionId)
   if (!turn) return
   const dir = sessionDirs.get(e.sessionId)
@@ -296,6 +345,9 @@ function fit(out: Record<string, unknown>, key: string, value: string | undefine
 export function onThreadCapture(c: Capture): void {
   try {
     if (!getTelemetry().status().content) return
+    if (c.kind === 'part' && c.workspace && c.role === 'user') void sourceCollector().capture({ event_type: 'selection.commit',
+      project_id: projectIdFor(c.dir), thread_id: c.threadId, message_id: c.messageId, view: 'agent',
+      metadata: { kind: 'workspace-context', workspace: c.workspace } }, { projectDir: c.dir }).catch(() => undefined)
     if (c.kind === 'usage') {
       track('conversation.usage', { metadata: { thread_id: c.threadId, message_id: c.messageId, ...c.usage } }, c.dir)
       return
@@ -344,6 +396,7 @@ const TEXT_EXTS = new Set(['txt', 'md', 'json', 'csv', 'tsv', 'html', 'htm', 'py
 const WATCHED_DIRS = /^(artifacts|exports|package)\//
 const programState = new Map<string, { hash: string; json: unknown; version: number }>()
 const fileHashes = new Map<string, string>()
+const fileVersions = new Map<string, number>()
 const humanWrites = new Map<string, number>()
 const fsTimers = new Map<string, NodeJS.Timeout>()
 
@@ -357,13 +410,14 @@ const byWhom = (abs: string): 'human' | 'agent' => ((humanWrites.get(abs) ?? 0) 
 export function noteFsChange(projectDir: string, rel: string): void {
   const r = rel.split('\\').join('/')
   const isProgram = r === 'program.json'
-  if (!isProgram && !WATCHED_DIRS.test(r)) return
-  if (r.startsWith('sources/') || basename(r) === 'paper.pdf' || r.includes('/.')) return
+  const isSource = r === 'paper.pdf' || r.startsWith('sources/')
+  if (!isProgram && !isSource && !WATCHED_DIRS.test(r)) return
+  if (r.includes('/.')) return
   const key = `${projectDir}\0${r}`
   clearTimeout(fsTimers.get(key))
   const timer = setTimeout(() => {
     fsTimers.delete(key)
-    void (isProgram ? snapshotProgram(projectDir) : snapshotFile(projectDir, r)).catch(() => undefined)
+    void (isSource ? queueSource(projectDir, r) : isProgram ? snapshotProgram(projectDir) : snapshotFile(projectDir, r)).catch(() => undefined)
   }, 700)
   timer.unref?.()
   fsTimers.set(key, timer)
@@ -371,10 +425,13 @@ export function noteFsChange(projectDir: string, rel: string): void {
 
 async function snapshotProgram(projectDir: string): Promise<void> {
   if (!getTelemetry().status().content) return
+  const owner = getAccount().researchOwner(), stateKey = `${owner}:${projectDir}`
   const path = join(projectDir, 'program.json')
+  const actual = await realpath(path), root = await realpath(projectDir)
+  if (!actual.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) return
   const raw = await readFile(path, 'utf8')
   const hash = createHash('sha1').update(raw).digest('hex')
-  const prev = programState.get(projectDir)
+  const prev = programState.get(stateKey)
   if (prev?.hash === hash) return
   let json: unknown
   try {
@@ -383,7 +440,6 @@ async function snapshotProgram(projectDir: string): Promise<void> {
     return // mid-write; the next change event retries
   }
   const version = (prev?.version ?? 0) + 1
-  programState.set(projectDir, { hash, json, version })
   const metadata: Record<string, unknown> = {
     version,
     initial: !prev,
@@ -394,12 +450,19 @@ async function snapshotProgram(projectDir: string): Promise<void> {
   if (prev) metadata.diff = programDiff(prev.json, json)
   const blob = putBlob(raw, projectDir)
   if (blob) metadata.blob = blob
+  if (getAccount().researchOwner() !== owner) return
+  const captured = await sourceCollector().capture({ event_type: 'program.version', project_id: projectIdFor(projectDir), artifact_id: 'program.json',
+    artifact_version: version, metadata: { by: metadata.by, program: raw, hash: createHash('sha256').update(raw).digest('hex') } }, { projectDir })
+  if (captured) programState.set(stateKey, { hash, json, version })
   track('project.program_version', { target: 'program.json', metadata }, projectDir)
 }
 
 async function snapshotFile(projectDir: string, rel: string): Promise<void> {
   if (!getTelemetry().status().content) return
+  const owner = getAccount().researchOwner()
   const path = join(projectDir, rel)
+  const actual = await realpath(path).catch(() => null), root = await realpath(projectDir)
+  if (!actual?.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) return
   const st = await stat(path).catch(() => null)
   if (!st?.isFile()) return
   const ext = extname(rel).slice(1).toLowerCase()
@@ -407,12 +470,21 @@ async function snapshotFile(projectDir: string, rel: string): Promise<void> {
   if (TEXT_EXTS.has(ext)) {
     const text = await readFile(path, 'utf8')
     const hash = createHash('sha1').update(text).digest('hex')
-    const key = `${projectDir}\0${rel}`
+    const key = `${owner}:${projectDir}\0${rel}`
     if (fileHashes.get(key) === hash) return
-    fileHashes.set(key, hash)
     const blob = putBlob(text, projectDir)
     if (blob) metadata.blob = blob
     metadata.chars = text.length
+    const versionKey = key
+    const nextVersion = (fileVersions.get(versionKey) ?? 0) + 1
+    if (getAccount().researchOwner() !== owner) return
+    const captured = await sourceCollector().capture({ event_type: 'artifact.version', project_id: projectIdFor(projectDir), artifact_id: rel,
+      artifact_version: nextVersion, metadata: { by: metadata.by, file: text, hash: createHash('sha256').update(text).digest('hex') } }, { projectDir })
+    if (captured) { fileVersions.set(versionKey, nextVersion); fileHashes.set(key, hash) }
+  } else {
+    if (getAccount().researchOwner() !== owner) return
+    const project = projectIdFor(projectDir)
+    if (project) await sourceCollector().queueArtifact(path, project, rel, String(metadata.by))
   }
   track('project.file_written', { target: rel, metadata }, projectDir)
 }
@@ -439,6 +511,7 @@ export async function exportMyData(parent?: BrowserWindow | null): Promise<strin
   const t = getTelemetry()
   const acct = getAccount()
   if (!acct.status().email) throw new Error('Sign in to your HumanStudy Hub account first.')
+  const exportOwner = acct.researchOwner()
   const opts = { title: 'Export my research data', defaultPath: join(app.getPath('downloads'), `humanstudy-research-data-${new Date().toISOString().slice(0, 10)}.zip`), filters: [{ name: 'Zip', extensions: ['zip'] }] }
   const pick = parent ? await dialog.showSaveDialog(parent, opts) : await dialog.showSaveDialog(opts)
   if (pick.canceled || !pick.filePath) return null
@@ -491,6 +564,8 @@ export async function exportMyData(parent?: BrowserWindow | null): Promise<strin
     const b = diskFs.read(f.rel)
     if (b) files[`replay-unsent/${f.rel}`] = b
   }
+  Object.assign(files, await sourceCollector().exportFiles())
+  if (getAccount().researchOwner() !== exportOwner) throw new Error('Your account changed. Please export again from the original account.')
   await writeFile(pick.filePath, zipSync(files))
   return pick.filePath
 }
@@ -501,7 +576,7 @@ const RENDERER_DENY = /^(consent|conversation|kernel|agent|replay)\.|^project\.(
 
 export function registerTelemetry(): void {
   const t = getTelemetry()
-  ipcMain.handle('telemetry:status', () => t.status())
+  ipcMain.handle('telemetry:status', async () => ({ ...t.status(), sourcePending: await sourceCollector().pending(), sourceError: sourceCollector().error() }))
   let sessionStartLogged = false
   const logSessionStart = (late: boolean): void => {
     if (sessionStartLogged || !t.status().usage) return
@@ -515,7 +590,10 @@ export function registerTelemetry(): void {
     const agreed = v.usage === true && v.content === true
     const st = await t.setConsent({ usage: agreed, content: agreed })
     logSessionStart(true) // consent given after launch: the session still gets its start event
-    if (st.content && rendererProjectDir) noteFsChange(rendererProjectDir, 'program.json')
+    if (st.content && rendererProjectDir) {
+      noteFsChange(rendererProjectDir, 'program.json')
+      void queueProjectSources(rendererProjectDir).then(() => sourceCollector().flush()).catch(() => undefined)
+    }
     if (!st.content) getReplay().clearLocal() // withdrawn: nothing recorded stays on disk
     return st
   })
@@ -552,12 +630,14 @@ export function registerTelemetry(): void {
   ipcMain.handle('telemetry:projectId', (_e, projectDir: string | null) => {
     rendererProjectDir = typeof projectDir === 'string' && projectDir ? resolve(projectDir) : undefined
     if (!rendererProjectDir || !t.status().usage) return null
+    void queueProjectSources(rendererProjectDir).catch(() => undefined)
     return projectIdFor(rendererProjectDir)
   })
   ipcMain.handle('telemetry:recent', () => t.recent())
   ipcMain.handle('telemetry:flush', async () => {
     await t.flush({ force: true })
-    return t.status()
+    await sourceCollector().flush()
+    return { ...t.status(), sourcePending: await sourceCollector().pending(), sourceError: sourceCollector().error() }
   })
 
   const startedAt = Date.now()
@@ -566,6 +646,8 @@ export function registerTelemetry(): void {
   timer.unref?.()
   const replayTimer = setInterval(() => void getReplay().flush().catch(() => undefined), REPLAY_FLUSH_MS)
   replayTimer.unref?.()
+  const sourceTimer = setInterval(() => void sourceCollector().flush(), FLUSH_INTERVAL_MS)
+  sourceTimer.unref?.()
   void getReplay().flush().catch(() => undefined) // chunks left from a previous run
   app.on('before-quit', () => {
     // Persisted to the queue; uploaded on the next launch if this quit outruns the request.

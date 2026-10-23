@@ -29,6 +29,9 @@ export interface KernelUsage {
 }
 export interface KernelEvent {
   sessionId: string
+  /** Native ids, when reported by the kernel. */
+  toolCallId?: string
+  messageId?: string
   type: KernelEventType
   text?: string
   tool?: string
@@ -468,6 +471,8 @@ export interface TelemetryStatus {
   pending: number
   lastSentAt?: string
   lastError?: string
+  sourcePending?: number
+  sourceError?: string
 }
 /** Exactly the row inserted into public.desktop_events (owner_id is set by the server). */
 export interface TelemetryRow {

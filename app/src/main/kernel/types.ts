@@ -45,6 +45,8 @@ export interface KernelUsage {
  */
 export interface KernelEvent {
   sessionId: string
+  toolCallId?: string
+  messageId?: string
   type: KernelEventType
   text?: string
   tool?: string
