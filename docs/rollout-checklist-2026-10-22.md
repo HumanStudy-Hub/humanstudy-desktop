@@ -51,8 +51,14 @@ truncation or fabricated study information. Preserve original source traceabilit
   Evidence: [service](acceptance/2026-10-22/service.json), [web](acceptance/2026-10-22/web.json).
   SQL acceptance ran in a rolled-back transaction on real PostgreSQL; HTTP tests used temporary
   synthetic accounts. Web bulk-insert key mismatch was found and fixed during this acceptance.
-- [~] T12 — Reconcile migration history and apply reviewed additive schema/offline policy to
+- [x] T12 — Reconcile migration history and apply reviewed additive schema/offline policy to
   shared Supabase. User has authorized migration; preserve existing records and legacy clients.
+  Done 2026-10-22 ([evidence](acceptance/2026-10-23/migrations.md)). Two history rows were added
+  after their live effects were verified. Web `claude/research-t08-server` 6527f9b renames 5 files
+  to their live versions and adds support_requests, so 16 files == 16 rows. `20261023120000_research_server_outbox`
+  passed a rolled-back test and was then applied. The before/after diff removed nothing, and prod returns 200.
+  Main stays misaligned until PR #26 merges; never `db push` from main. Open T08 code item:
+  the service-mode drain must enforce the research_events/content policy predicates.
 - [ ] T13 — Deploy/configure actual web backend with staged flag; verify agreement, source
   archival, signed-in identity and protected integrity job against the real database.
 - [~] T14 — Package Mac test build; click through import/automatic build, source comparison,
