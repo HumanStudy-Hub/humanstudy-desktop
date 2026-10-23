@@ -68,6 +68,7 @@ jobs:
           python -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
       - name: Desktop test suite (offline; live-provider suites excluded)
+        if: ${{ !cancelled() }}
         run: |
           files=$(ls src/main/*.test.mjs src/main/kernel/*.test.mjs src/renderer/*.test.mjs src/shared/*.test.mjs scripts/*.test.mjs \
             | grep -v '\.live\.test\.mjs$' | grep -v 'native-live\.test\.mjs$')
@@ -78,6 +79,7 @@ jobs:
           HUMANSTUDY_TEST_PYTHON: python
 
       - name: Managed runtime install (python-build-standalone + .cmd shims)
+        if: ${{ !cancelled() }}
         run: |
           rt="$RUNNER_TEMP/hs-rt"
           node scripts/install-runtime.mjs "$rt"
@@ -87,7 +89,9 @@ jobs:
           HUMANSTUDY_TEST_PYTHON="$(cygpath -w "$rt/python/python.exe")" node --test src/main/runtime.test.mjs
 
       - run: npm run typecheck
+        if: ${{ !cancelled() }}
       - run: npx electron-vite build
+        if: ${{ !cancelled() }}
 
       - name: Unsigned NSIS test installer (never published)
         run: node scripts/dist.mjs --win nsis --x64 --unsigned --publish never
