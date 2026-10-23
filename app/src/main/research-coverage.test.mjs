@@ -298,7 +298,14 @@ test('headless: commands are the primary actions and drive the same linked recor
   assert.equal((await command({ op: 'permission', permissionId: 'per_h', reply: 'once' })).ok, true)
   kernel.emit(ev.write('running', 'artifacts/materials.md'))
   await writeFile(join(project, 'artifacts', 'materials.md'), `# Materials\nverbatim ${HOME_FILE}\n`)
-  kernel.emit(ev.write('completed', 'artifacts/materials.md')); kernel.emit(ev.text('Done.')); kernel.emit(ev.usage); kernel.emit(ev.done)
+  kernel.emit(ev.write('completed', 'artifacts/materials.md'))
+  // Two program checkpoints written through bash (program_io.py) during one turn: each is a version.
+  for (const n of [1, 2]) {
+    const call = { type: 'tool', tool: 'bash', toolCallId: 'call_h_ckpt' + n, messageId: 'msg_h_assistant', partId: 'prt_h_ckpt' + n, input: { command: 'python .opencode/skills/build/program_io.py batch-' + n + '.json' } }
+    kernel.emit({ ...call, text: 'running' }); await writeFile(join(project, 'program.json'), JSON.stringify({ nodes: [{ id: 'n' + n }] }))
+    kernel.emit({ ...call, text: 'completed', output: 'saved' }); await sleep(50)
+  }
+  kernel.emit(ev.text('Done.')); kernel.emit(ev.usage); kernel.emit(ev.done)
   await sleep(50)
   assert.equal((await command({ op: 'questions' })).ok, true)
   input.write(JSON.stringify({ op: 'quit', id: 'quit' }) + '\n')
@@ -320,6 +327,9 @@ test('headless: commands are the primary actions and drive the same linked recor
   const written = rows.find(r => r.artifact_id === 'artifacts/materials.md')
   assert.equal(written.tool_call_id, 'call_h_write'); assert.equal(byId.get(written.caused_by).event_type, 'tool.end'); assert.equal(written.action_id, id('command.build'))
   assert.ok(!rows.some(r => r.data_type === 'interaction' && r.metadata.via !== 'system'), 'no UI actions on headless')
+  const programs = rows.filter(r => r.event_type === 'program.version')
+  assert.deepEqual(programs.map(r => r.artifact_version), [1, 2, 3], 'baseline plus both mid-turn checkpoints')
+  assert.deepEqual(programs.slice(1).map(r => r.tool_call_id), ['call_h_ckpt1', 'call_h_ckpt2'])
   await rm(root, { recursive: true, force: true })
 })
 

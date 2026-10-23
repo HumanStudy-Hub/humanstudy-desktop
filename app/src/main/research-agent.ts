@@ -36,6 +36,7 @@ export function createResearchAgent(capture: Sink) {
   const turns = new Map<string, Turn>()
   const contexts = new Map<string, { project?: string; dir?: string; model: string }>()
   const tools = new Map<string, Call>()
+  const recoveries = new Map<string, string>() // session -> last recorded recovery attempt this turn
   const history: Call[] = []
   const lastTurn = new Map<string, { action: string; dir?: string; ended: number }>()
   const emitted = new Set<string>()
@@ -98,6 +99,7 @@ export function createResearchAgent(capture: Sink) {
         ...(stoppedBy ? { stopped_by_action_id: stoppedBy } : {}) } })
     lastTurn.set(sid, { action: t.action, dir: t.dir, ended: Date.now() })
     turns.delete(sid)
+    recoveries.delete(sid)
   }
   /** The tool call (or, failing that, the turn) that most plausibly wrote `rel` in `dir`. */
   function writer(dir: string, rel: string): ResearchLink | null {
@@ -234,7 +236,15 @@ export function createResearchAgent(capture: Sink) {
         checkpoint(sid, 'partial')
         emit(sid, { event_type: 'conversation.error', metadata: { status: 'error', text: e.text ?? e.detail ?? 'Unknown error' } })
       } else if (e.type === 'status' && e.text === 'recovering') {
-        emit(sid, { event_type: 'agent.recovery', metadata: { reason: 'runtime-recovery', detail: e.detail ?? '', ...((e.input ?? {}) as Record<string, unknown>) } })
+        // The kernel announces each recovery attempt once (with its attempt number) and then keeps
+        // labelling every later session status `recovering` for the rest of the turn. One attempt is
+        // one record (2026-10-23 hosted acceptance: 1 attempt had produced 69 agent.recovery rows).
+        const reported = (e.input as { attempt?: unknown } | undefined)?.attempt
+        const attempt = reported === undefined ? recoveries.get(sid) ?? 'not-reported' : String(reported)
+        if (recoveries.get(sid) !== attempt) {
+          recoveries.set(sid, attempt)
+          emit(sid, { event_type: 'agent.recovery', metadata: { reason: 'runtime-recovery', detail: e.detail ?? '', ...((e.input ?? {}) as Record<string, unknown>) } })
+        }
       } else if (e.type === 'done') finish(sid, t?.failed ? 'error' : e.detail === 'shutdown' ? 'interrupted' : 'complete')
     },
     /** Stop the running turn; `ref` is the stop operation when a person or command asked for it. */

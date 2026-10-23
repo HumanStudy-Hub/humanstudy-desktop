@@ -61,7 +61,9 @@ export async function startHeadlessResearch({ research, createResearchAgent, pro
       return ref
     },
     onRequest(sid, request, ref) { if (request.op === 'abort') agent.abort(sid, ref); else agent.start(sid, request.text, ref) },
-    onEvent(event) { agent.event(event); if (event.type === 'done') void captureArtifacts() },
+    // Checkpoints are versioned when the call that wrote them finishes (program_io.py runs through
+    // bash), not only at turn end; unchanged files are deduplicated by content hash in the collector.
+    onEvent(event) { agent.event(event); if (event.type === 'done' || (event.type === 'tool' && ['completed', 'error'].includes(event.text))) void captureArtifacts() },
     async close() { await captureArtifacts(); await agent.close() },
   }
 }

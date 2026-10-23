@@ -66,4 +66,12 @@ test('a native call reported pending-then-running records one tool.start with th
  assert.equal(ends.find(r=>r.tool_call_id==='c2').metadata.status,'interrupted');assert.equal(ends.find(r=>r.tool_call_id==='c2').caused_by,starts.find(r=>r.tool_call_id==='c2').id)
  assert.equal(starts.length,ends.length)
 })
+test('one recovery attempt is one agent.recovery record although later statuses still say recovering',async()=>{
+ const rows=[],a=createResearchAgent(async e=>rows.push(e));a.bind('ses_1');a.start('ses_1','Build')
+ const st=f=>a.event({sessionId:'ses_1',type:'status',text:'recovering',...f})
+ st({detail:'Recovery 1/2: checking saved work',input:{attempt:1,reason:'output_limit'}});for(let i=0;i<5;i++)st({})
+ st({detail:'Recovery 2/2',input:{attempt:2,reason:'output_limit'}});st({});a.event({sessionId:'ses_1',type:'done'})
+ a.start('ses_1','Retry');st({detail:'Recovery 1/2',input:{attempt:1,reason:'output_limit'}});a.event({sessionId:'ses_1',type:'done'});await a.close()
+ assert.deepEqual(rows.filter(r=>r.event_type==='agent.recovery').map(r=>r.metadata.attempt),[1,2,1])
+})
 test.after(()=>rm(temp,{recursive:true,force:true}))
