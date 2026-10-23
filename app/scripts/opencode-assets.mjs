@@ -40,8 +40,8 @@ try{
   for(const name of ['python','python3','hs-pdf'])if(!existsSync(join(runtime,name))&&!existsSync(join(runtime,name+'.cmd')))throw Error(`Managed runtime is missing ${name}.`)
   const cache=join(project,'.humanstudy/asset-agent');mkdirSync(cache,{recursive:true})
   const compiled=join(cache,'desktop-kernel.mjs')
-  await build({stdin:{contents:"export {createResearchAgent} from '../src/main/research-agent.ts'; export {createResearchCollector} from '../src/main/research-collector.ts'; export {OpencodeKernel,DEFAULT_MODEL} from '../src/main/kernel/opencode.ts'; export {KERNEL_VERSION} from '../src/main/opencode-install-core.ts'; export {runtimeVersion,runtimePaths} from '../src/main/runtime-core.ts';",resolveDir:here,loader:'ts'},bundle:true,platform:'node',format:'esm',target:'node20',outfile:compiled,logLevel:'error'})
-  const {createResearchAgent,createResearchCollector,OpencodeKernel,DEFAULT_MODEL,KERNEL_VERSION,runtimeVersion:versionForLock,runtimePaths}=await import(pathToFileURL(compiled).href)
+  await build({stdin:{contents:"export {createResearchAgent} from '../src/main/research-agent.ts'; export {createResearchCollector} from '../src/main/research-collector.ts'; export {OpencodeKernel,DEFAULT_MODEL} from '../src/main/kernel/opencode.ts'; export {KERNEL_VERSION} from '../src/main/opencode-install-core.ts'; export {runtimeVersion,runtimePaths} from '../src/main/runtime-core.ts'; export {programCertificate} from '../src/main/paper-build.ts';",resolveDir:here,loader:'ts'},bundle:true,platform:'node',format:'esm',target:'node20',outfile:compiled,logLevel:'error'})
+  const {createResearchAgent,createResearchCollector,OpencodeKernel,DEFAULT_MODEL,KERNEL_VERSION,runtimeVersion:versionForLock,runtimePaths,programCertificate}=await import(pathToFileURL(compiled).href)
   // Read the same version constants and runtime marker used by desktop.
   const version=(await exec(binary,['--version'],{timeout:15_000})).stdout.trim()
   if(!version.includes('opencode-humanstudy')||!version.split(/\s+/).includes(KERNEL_VERSION))throw Error(`Expected the desktop HumanStudy OpenCode ${KERNEL_VERSION}; got ${version}.`)
@@ -79,7 +79,15 @@ try{
   for(const signal of ['SIGINT','SIGTERM'])process.once(signal,stopOwned)
   const logDir=join(cache,'runs',new Date().toISOString().replace(/[:.]/g,'-'))
   mkdirSync(logDir,{recursive:true});writeFileSync(join(logDir,'provenance.json'),JSON.stringify(provenance,null,2)+'\n')
-  bridge=await controlAssets({kernel,project,session:o.session,input:process.stdin,output:process.stdout,logDir,timeoutMs:timeout*60_000,stallMs:stall*60_000,onOperation:(sid,request)=>{if(!['build','send'].includes(request.op))void research.capture({event_type:'action.invoke',thread_id:sid,project_id:projectId,view:'headless',target:String(request.op),metadata:{via:'system',command:JSON.stringify(request)}}).catch(()=>{})},onSession:sid=>researchAgent.bind(sid,projectId,project,o.model??DEFAULT_MODEL),onEvent:event=>{researchAgent.event(event);if(event.type==='done')void captureArtifacts()},onRequest:(sid,request)=>{if(request.op==='abort')researchAgent.abort(sid);else researchAgent.start(sid,request.text)}})
+  // Same completion rule as desktop: schema plus minimum per-study coverage of the exact program bytes.
+  // An idle turn or a tool's PASS text alone never certifies the asset; this is not scientific validation.
+  const certify=sessionId=>{
+    const c=programCertificate(project)
+    const completion={type:'completion',sessionId,at:new Date().toISOString(),status:c===null?'unreadable':c.problems.length?'incomplete':'complete',programSha256:c?.hash??null,problems:c?.problems??['program.json is missing, unreadable or schema-invalid.']}
+    writeFileSync(join(logDir,'completion.json'),JSON.stringify(completion,null,2)+'\n')
+    process.stdout.write(JSON.stringify(completion)+'\n')
+  }
+  bridge=await controlAssets({kernel,project,session:o.session,input:process.stdin,output:process.stdout,logDir,timeoutMs:timeout*60_000,stallMs:stall*60_000,onOperation:(sid,request)=>{if(!['build','send'].includes(request.op))void research.capture({event_type:'action.invoke',thread_id:sid,project_id:projectId,view:'headless',target:String(request.op),metadata:{via:'system',command:JSON.stringify(request)}}).catch(()=>{})},onSession:sid=>researchAgent.bind(sid,projectId,project,o.model??DEFAULT_MODEL),onEvent:event=>{researchAgent.event(event);if(event.type==='done'){certify(event.sessionId);void captureArtifacts()}},onRequest:(sid,request)=>{if(request.op==='abort')researchAgent.abort(sid);else researchAgent.start(sid,request.text)}})
   if(interrupted)await bridge.stop('interrupted')
   const result=await bridge.exited
   if(!['closed'].includes(result))process.exitCode=2

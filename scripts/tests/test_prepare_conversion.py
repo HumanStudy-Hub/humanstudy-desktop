@@ -54,6 +54,31 @@ class PrepareConversionTests(unittest.TestCase):
         self.assertEqual(manifest["engine"], "opencode")
         self.assertIn("program-only", (self.project / "CONVERT.md").read_text())
 
+    def test_worker_gets_desktop_save_lock_and_completion_gate(self):
+        """Headless parity with desktop 0.6.7: locked program writer and --complete coverage gate."""
+        helper.prepare(self.project, None, [self.resources], engine="opencode")
+        manifest = json.loads((self.project / ".humanstudy/conversion-pack.json").read_text())
+        for rel, shipped in ((".opencode/skills/build/program_io.py", "skills/build/program_io.py"),
+                             (".opencode/skills/build/program_lock.py", "skills/build/program_lock.py"),
+                             (".opencode/skills/build/check_program.py", "skills/build/check_program.py"),
+                             ("schema/build-coverage.json", "schema/build-coverage.json")):
+            self.assertIn(rel, manifest["files"])
+            self.assertEqual((self.project / rel).read_bytes(), (ROOT / "pack" / shipped).read_bytes())
+        task = (self.project / "CONVERT.md").read_text()
+        self.assertIn("check_program.py program.json --complete", task)
+        self.assertIn("program_io.py", task)
+        checker = [sys.executable, ".opencode/skills/build/check_program.py", "program.json", "--complete"]
+        target = self.project / "program.json"
+        target.write_bytes((ROOT / "app/src/main/fixtures/complete-program.json").read_bytes())
+        good = subprocess.run(checker, cwd=self.project, capture_output=True, text=True)
+        self.assertEqual(good.returncode, 0, good.stdout + good.stderr)
+        thin = json.loads(target.read_text())
+        thin["nodes"] = [n for n in thin["nodes"] if n["id"] != "result"]
+        target.write_text(json.dumps(thin))
+        bad = subprocess.run(checker, cwd=self.project, capture_output=True, text=True)
+        self.assertNotEqual(bad.returncode, 0, "a study without extracted or missing results is not complete")
+        self.assertIn("s1", bad.stdout)
+
     def test_symlink_and_recursive_input_fail_before_creating_project(self):
         (self.resources / "linked.json").symlink_to(self.resources / "design.json")
         with self.assertRaisesRegex(ValueError, "Symlink"):

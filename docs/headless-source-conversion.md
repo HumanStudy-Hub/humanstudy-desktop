@@ -63,9 +63,15 @@ From the generated project, use that environment's Python to run:
 
 ```sh
 python -c 'import jsonschema'
-python .opencode/skills/build/check_program.py program.json
+python .opencode/skills/build/check_program.py program.json --complete
 python .opencode/artifact-kit/inline.py artifacts/study-overview.html
 ```
+
+`--complete` applies the same minimum per-study coverage policy (`schema/build-coverage.json`)
+the desktop app uses before it reports a build complete. Agents write `program.json` only through
+`.opencode/skills/build/program_io.py`, which holds the desktop's shared program lock. The OpenCode
+worker (`app/scripts/opencode-assets.mjs`) also certifies each finished turn with the desktop's own
+completion check on the exact program bytes and records it in the run log's `completion.json`.
 
 Replace `python` with the prepared environment's interpreter. The first command
 matters: the shared checker skips JSON Schema validation when `jsonschema` is

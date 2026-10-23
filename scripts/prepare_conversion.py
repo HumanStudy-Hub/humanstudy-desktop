@@ -71,11 +71,16 @@ Use the existing minimal identity/title/source and overview summary fields where
 the sources support them; represent absent information using the existing schema.
 Do not claim scientific reproduction from a successful initial conversion.
 
+Write program.json only through `.opencode/skills/build/program_io.py`, as the build skill
+requires: it holds the shared program lock, replaces the file atomically and keeps confirmed
+researcher fields. The final check is `check_program.py program.json --complete`, the same
+minimum-coverage rule the desktop app applies before it reports a build complete.
+
 Validate with your prepared Python environment:
 
 ```sh
 python -c 'import jsonschema'
-python .opencode/skills/build/check_program.py program.json
+python .opencode/skills/build/check_program.py program.json --complete
 # For each generated HTML artifact:
 python .opencode/artifact-kit/inline.py artifacts/study-overview.html
 ```

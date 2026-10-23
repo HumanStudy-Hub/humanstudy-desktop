@@ -38,7 +38,10 @@ and the data-PR layout. Locate this repository from the skill's path; it contain
    selecting a scientific answer on the researcher's behalf. Default to initial
    program/artifact conversion: no simulation, runnable-package requirement,
    taxonomy work or exhaustive scientific reproduction.
-6. `done` means the turn is idle, not that the asset is complete. Inspect actual
+6. `done` means the turn is idle, not that the asset is complete. After each `done`
+   the worker emits a `completion` line (also `completion.json` in the run log): the
+   desktop's own schema + per-study coverage check bound to the program's SHA-256.
+   Only `complete` certifies minimum coverage; it is not scientific validation. Inspect actual
    files; run the shared program/schema and artifact checks using the managed
    runtime. The current metadata/overview summary contract must remain usable.
    Preserve missing items and actual check results. Read native context/todos or

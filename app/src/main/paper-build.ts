@@ -42,8 +42,11 @@ export function pendingPaperBuild(dir: string): void {
 }
 
 
-/** Independently validate the exact on-disk bytes, rather than trusting a tool's PASS text. */
-function inspectProgram(dir: string): { hash: string; problems: string[] } | null {
+/**
+ * Independently validate the exact on-disk bytes, rather than trusting a tool's PASS text. The
+ * headless worker (scripts/opencode-assets.mjs) certifies its builds with this same function.
+ */
+export function programCertificate(dir: string): { hash: string; problems: string[] } | null {
   try {
     const bytes = readFileSync(join(dir, 'program.json'))
     const program = validateHumanProgram(JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, '')))
@@ -51,12 +54,12 @@ function inspectProgram(dir: string): { hash: string; problems: string[] } | nul
   } catch { return null }
 }
 export function programComplete(dir: string): boolean {
-  const result = inspectProgram(dir)
+  const result = programCertificate(dir)
   return result !== null && result.problems.length === 0
 }
 const currentCertificate = (dir: string, state: PaperBuildState): boolean => {
   if (!state.checked || !state.validationHash) return false
-  const current = inspectProgram(dir)
+  const current = programCertificate(dir)
   return current !== null && current.hash === state.validationHash && !current.problems.length
 }
 
@@ -112,7 +115,7 @@ export function createPaperBuilds(changed: (dir: string) => void) {
     humanSaved(dir: string): void {
       const state = readPaperBuild(dir)
       if (state?.status !== 'complete') return
-      const result = inspectProgram(dir)
+      const result = programCertificate(dir)
       if (result && !result.problems.length) save(dir, { ...state, checked: true, validationHash: result.hash })
     },
     bind(sessionId: string, dir: string): void {
@@ -162,7 +165,7 @@ export function createPaperBuilds(changed: (dir: string) => void) {
       const check = e.type === 'tool' ? checkResult(e) : null
       let certificate = state
       if (check !== null && (state.status === 'running' || state.status === 'error' || state.status === 'complete')) {
-        const result = check ? inspectProgram(dir) : null
+        const result = check ? programCertificate(dir) : null
         certificate = { ...state, checked: Boolean(result && !result.problems.length), validationHash: result?.hash }
         save(dir, certificate)
       }
