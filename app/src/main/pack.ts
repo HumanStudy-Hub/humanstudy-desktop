@@ -42,7 +42,7 @@ export async function installPack(projectDir: string): Promise<void> {
 }
 
 /** Pack-relative helper scripts that refreshPack keeps current (see refreshPack). */
-const HELPERS = ['skills/build/program_io.py']
+const HELPERS = ['skills/build/program_io.py', 'skills/build/program_lock.py', 'skills/build/check_program.py', 'schema/build-coverage.json']
 
 export const packFileCount = (): number => Object.keys(files).length
 

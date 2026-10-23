@@ -117,3 +117,18 @@ test('inline.py inlines the kit, embeds the program and checks the page', { skip
   assert.match(r.stdout, /"nope" is not an id/)
   assert.match(r.stdout, /data-page="9" on n1 but its evidence is on p\. 4/)
 })
+
+test('existing projects get the shared lock/checker/policy and old default build prompts are upgraded', async () => {
+  const proj = mkdtempSync(join(tmpdir(), 'proj-safe-program-'))
+  const original = spawnSync('git', ['show', '815242a:pack/skills/build/SKILL.md'], { cwd: packDir, encoding: 'utf8' })
+  const skill = join(proj, '.opencode/skills/build/SKILL.md')
+  mkdirSync(dirname(skill), { recursive: true })
+  if (original.status === 0) writeFileSync(skill, original.stdout)
+  await P.refreshPack(proj)
+  for (const rel of ['.opencode/skills/build/program_io.py', '.opencode/skills/build/program_lock.py', '.opencode/skills/build/check_program.py', 'schema/build-coverage.json'])
+    assert.ok(existsSync(join(proj, rel)), rel)
+  assert.match(readFileSync(skill, 'utf8'), /program.json --complete/)
+  writeFileSync(skill, 'Researcher custom instructions')
+  await P.refreshPack(proj)
+  assert.equal(readFileSync(skill, 'utf8'), 'Researcher custom instructions')
+})

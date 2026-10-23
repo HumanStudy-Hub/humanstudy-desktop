@@ -176,6 +176,8 @@ export interface PaperBuildState {
   sessionId?: string
   /** The program check printed PASS after the last write to program.json. */
   checked?: boolean
+  /** SHA-256 of the independently validated program bytes; any later write invalidates it. */
+  validationHash?: string
 }
 
 export interface ProjectSnapshot {
@@ -381,6 +383,7 @@ export interface HumanStudyApi {
     saveCopy(path: string): Promise<string | null>
     /** Text of a file inside an opened project (UTF-8, at most 4 MB). */
     readText(path: string): Promise<string>
+    packageReadiness(dir: string, studyId: string): Promise<import('../shared/package-readiness').PackageReadiness>
     /** Writes a file inside an opened project, creating folders as needed. program.json must stay valid JSON.
      *  With `ifUnchanged`, the write happens only if the file still holds exactly that text (a patch read
      *  from disk is not written over a newer save, e.g. the agent's checkpoint); otherwise it rejects

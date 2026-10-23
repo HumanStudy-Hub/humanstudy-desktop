@@ -14,7 +14,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const out = mkdtempSync(join(tmpdir(), 'paper-build-test-'))
 await build({ entryPoints: [join(here, 'paper-build.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'core.mjs'), logLevel: 'error' })
 const P = await import(pathToFileURL(join(out, 'core.mjs')).href)
-const sample = readFileSync(join(here, '../shared/sample-program.json'), 'utf8')
+const sample = readFileSync(join(here, 'fixtures/complete-program.json'), 'utf8')
 
 function project() {
   const dir = mkdtempSync(join(tmpdir(), 'paper-build-proj-'))
@@ -222,4 +222,89 @@ test('every conversation the main process attaches to a project can claim its bu
     const [sid, dir] = r.slice('sessionProject.set('.length, -1).split(',').map((s) => s.trim())
     assert.ok(main.includes(`paperBuilds.bind(${sid}, ${dir})`) || main.includes(`paperBuilds.bind(${sid},${dir})`), `${r} without paperBuilds.bind`)
   }
+})
+
+test('completion rejects a valid but unextracted second study, including shared-only coverage', () => {
+  const p = JSON.parse(sample)
+  p.studies.push({ id: 's2', title: 'Identified but not extracted', type: 'empirical' })
+  const dir = project()
+  writeFileSync(join(dir, 'program.json'), JSON.stringify(p))
+  assert.equal(P.programComplete(dir), false)
+  p.nodes.forEach(n => { n.studyIds = [] })
+  writeFileSync(join(dir, 'program.json'), JSON.stringify(p))
+  assert.equal(P.programComplete(dir), false, 'shared paper facts cannot silently cover an omitted study')
+  const { builds } = tracker(); builds.bind('s', dir); builds.start(dir, 's')
+  builds.event({ sessionId: 's', type: 'tool', tool: 'bash', input: 'check_program.py program.json', output: 'PASS program.json' })
+  builds.event({ sessionId: 's', type: 'done' })
+  assert.equal(builds.read(dir).error, 'incomplete', 'generic schema PASS is not completion')
+})
+
+test('missing source information with targeted issues is a completed extraction, not a reason to invent', () => {
+  const p = JSON.parse(sample)
+  for (const n of p.nodes) {
+    const f = n.fields[0]; f.value = null; f.state = 'missing'; f.origin = 'unknown'
+    p.issues.push({ id: `missing-${n.id}`, title: 'Not reported', severity: 'check', reason: 'Source does not report this.', impact: 'Needs researcher review.', suggestedAction: 'Supply original materials if available.', nodeId: n.id, fieldId: f.id, studyId: 's1', evidenceIds: [] })
+  }
+  const dir = project(); writeFileSync(join(dir, 'program.json'), JSON.stringify(p))
+  assert.equal(P.programComplete(dir), true)
+  p.issues.pop(); writeFileSync(join(dir, 'program.json'), JSON.stringify(p))
+  assert.equal(P.programComplete(dir), false, 'an untracked missing field cannot finish the build')
+})
+
+test('PASS is bound to exact current bytes, even for shell writes and after restart', () => {
+  const dir = project(), { builds } = tracker(); builds.bind('s', dir); builds.start(dir, 's')
+  writeFileSync(join(dir, 'program.json'), sample)
+  builds.event({ sessionId: 's', type: 'tool', input: 'check_program.py program.json', output: 'PASS program.json' })
+  const checkedHash = builds.read(dir).validationHash
+  assert.match(checkedHash, /^[a-f0-9]{64}$/)
+  // A shell write not mentioned in tool metadata, still valid and covered, invalidates the certificate.
+  writeFileSync(join(dir, 'program.json'), sample + '\n')
+  builds.event({ sessionId: 's', type: 'tool', tool: 'bash', input: 'python custom_script.py', output: 'updated' })
+  builds.event({ sessionId: 's', type: 'done' })
+  assert.equal(builds.read(dir).status, 'error')
+  builds.event({ sessionId: 's', type: 'tool', input: 'check_program.py program.json --complete', output: 'PASS program.json' })
+  builds.event({ sessionId: 's', type: 'done' })
+  assert.equal(builds.read(dir).status, 'complete')
+  assert.notEqual(builds.read(dir).validationHash, checkedHash)
+  assert.equal(tracker().builds.read(dir).status, 'complete')
+  writeFileSync(join(dir, 'program.json'), sample)
+  assert.equal(tracker().builds.read(dir).status, 'error', 'stale completion does not survive reopen')
+})
+
+test('Python final-build check and app coverage gate agree', { skip: !python }, () => {
+  assert.equal(readFileSync(join(here, '../shared/build-coverage.json'), 'utf8'), readFileSync(join(here, '../../../pack/schema/build-coverage.json'), 'utf8'))
+  const dir = project(), path = join(dir, 'program.json')
+  const checker = join(here, '../../../pack/skills/build/check_program.py')
+  const p = JSON.parse(sample)
+  for (const kind of ['complete', 'empty-study', 'analysis-only', 'missing', 'untracked-missing', 'empty-values']) {
+    const value = structuredClone(p)
+    if (kind === 'empty-study') value.studies.push({ id: 's2', title: 'Empty', type: 'empirical' })
+    if (kind === 'analysis-only') { value.studies[0].type = 'analysis'; value.nodes = value.nodes.filter(n => ['analysis','result'].includes(n.kind)) }
+    if (kind === 'missing' || kind === 'untracked-missing') {
+      value.nodes[0].fields[0].state = 'missing'; value.nodes[0].fields[0].value = null
+      if (kind === 'missing') value.issues.push({ id: 'missing', title: 'Missing', severity: 'check', reason: 'Not reported', impact: 'Unknown sample', suggestedAction: 'Review source', nodeId: value.nodes[0].id, fieldId: value.nodes[0].fields[0].id, evidenceIds: [] })
+    }
+    if (kind === 'empty-values') value.nodes.forEach(n => n.fields.forEach(f => { f.value = '' }))
+    writeFileSync(path, JSON.stringify(value))
+    const result = spawnSync(python, [checker, path, '--complete'], { encoding: 'utf8' })
+    assert.equal(result.status === 0, P.programComplete(dir), `${kind}: ${result.stdout} ${result.stderr}`)
+  }
+})
+
+test('normal human edits and later agent rechecks do not leave a completed project falsely stuck', () => {
+  const dir = project(), { builds } = tracker(); builds.bind('s', dir); builds.start(dir, 's')
+  writeFileSync(join(dir, 'program.json'), sample)
+  const pass = { sessionId: 's', type: 'tool', input: 'check_program.py program.json --complete', output: 'PASS program.json' }
+  builds.event(pass); builds.event({ sessionId: 's', type: 'done' })
+  const before = builds.read(dir).validationHash
+  const p = JSON.parse(sample); p.nodes[0].fields[0].value = 'Confirmed human correction'
+  writeFileSync(join(dir, 'program.json'), JSON.stringify(p))
+  builds.humanSaved(dir)
+  assert.equal(builds.read(dir).status, 'complete')
+  assert.notEqual(builds.read(dir).validationHash, before)
+  // A legitimate agent recheck may arrive before the folder watcher invalidates the old hash.
+  writeFileSync(join(dir, 'program.json'), sample)
+  builds.event(pass)
+  assert.equal(builds.read(dir).status, 'complete')
+  assert.equal(builds.read(dir).validationHash, before)
 })

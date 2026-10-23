@@ -9,9 +9,9 @@ import {spawn} from 'node:child_process'
 const here=dirname(fileURLToPath(import.meta.url)),out=mkdtempSync(join(tmpdir(),'sim-run-state-'))
 try{
  await build({stdin:{resolveDir:here,loader:'tsx',contents:`
- import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{SimulationPanel}from'./components/SimulationPanel';import sample from'../shared/sample-program.json';import'./styles.css';
+ import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{SimulationPanel}from'./components/SimulationPanel';import sample from'../shared/sample-program.json';import {packageReadiness} from '../shared/package-readiness';import'./styles.css';
  const realNow=Date.now;let offset=0;Date.now=()=>realNow()+offset;
- const texts={};window.fixture={stops:[]};window.humanstudy={telemetry:{track:async()=>{}},project:{readText:async p=>{if(p in texts)return texts[p];throw Error('missing')}}};
+ const texts={};window.fixture={stops:[]};window.humanstudy={telemetry:{track:async()=>{}},project:{packageReadiness:async(dir,studyId)=>packageReadiness(window.fixture.tree?.find(e=>e.rel==='package')?.children.map(e=>e.name)??[],async(slug,file)=>texts[dir+'/package/'+slug+'/'+file]??null,{studyId,program:sample}),readText:async p=>{if(p in texts)return texts[p];throw Error('missing')}}};
  const S='artifacts/simulations';
  const file=(rel,extra={})=>({name:rel.split('/').pop(),path:'/fixture/'+rel,rel,kind:'file',ext:rel.split('.').pop(),mtime:Date.now(),size:10,url:'about:blank',...extra});
  const dir=(rel,children)=>({name:rel.split('/').pop(),path:'/fixture/'+rel,rel,kind:'dir',ext:'',children});
@@ -24,9 +24,10 @@ try{
  // runs: {id: {files:[name|[name,extra]], progress?}}
  const treeOf=runs=>[pkg,dir('artifacts',[dir(S,Object.entries(runs).map(([id,r])=>{const rel=S+'/'+id;if(r.progress){texts['/fixture/'+rel+'/progress.json']=JSON.stringify(r.progress)}const m=r.mtime??(r.progress?.updatedAt?Date.parse(r.progress.updatedAt):Date.now());return dir(rel,[...(r.progress?['progress.json']:[]),...r.files].map(x=>Array.isArray(x)?file(rel+'/'+x[0],{mtime:m,...x[1]}):file(rel+'/'+x,{mtime:m})))}))])];
  window.fixture.treeOf=treeOf;
+ texts['/fixture/package/p/study.json']=JSON.stringify({program:sample});texts['/fixture/package/p/task/task.json']=JSON.stringify({programBindings:{programId:sample.id,stepIds:sample.steps.map(s=>s.id),recordNodeIds:sample.nodes.filter(n=>['record','variable'].includes(n.kind)).map(n=>n.id),analysisNodeIds:sample.nodes.filter(n=>n.kind==='analysis').map(n=>n.id)}});
  function Fixture(){const[state,setState]=useState({busy:false,turn:null,thread:'t1',tree:[pkg]}),[key,setKey]=useState(0);
  window.fixture.set=patch=>setState(s=>({...s,...patch}));window.fixture.advance=ms=>{offset+=ms;setState(s=>({...s}))};window.fixture.remount=()=>setKey(n=>n+1);
- return <SimulationPanel key={key} project={{dir:'/fixture',name:'Fixture',tree:state.tree}} program={sample} studyId={sample.studies[0].id} studies={sample.studies} model='fixture' agentBusy={state.busy} agentThreadId={state.thread} agentTurnKey={state.turn}
+ window.fixture.tree=state.tree;return <SimulationPanel key={key} project={{dir:'/fixture',name:'Fixture',tree:state.tree}} program={sample} studyId={sample.studies[0].id} studies={sample.studies} model='fixture' agentBusy={state.busy} agentThreadId={state.thread} agentTurnKey={state.turn}
   onStudy={()=>{}} onBuild={()=>{}} onRun={async()=>{if(!window.fixture.noStart)setState(s=>({...s,busy:true,turn:'run-'+Date.now()}))}} onStop={(runs,own)=>{window.fixture.stops.push(runs);window.fixture.own=own;if(own)setState(s=>({...s,busy:false}))}} onAsk={()=>{}} onOpenFile={()=>{}}/>};
  createRoot(document.getElementById('root')).render(<Fixture/>);
  `},bundle:true,format:'iife',platform:'browser',jsx:'automatic',outfile:join(out,'fixture.js'),define:{'process.env.NODE_ENV':'"production"'},logLevel:'error'})

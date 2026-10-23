@@ -1,3 +1,7 @@
+> **Current execution tracker:** [#30](https://github.com/HumanStudy-Hub/humanstudy-desktop/issues/30).
+> Tester follow-up: [implementation and verification](docs/tester-reliability-2026-10-22.md).
+> T03–T05 code fixes pass 154 desktop and 17 Python regressions on this branch; installed Mac, real Haiku and Windows acceptance remain open.
+
 > **Start here (2026-10-15):** `docs/handoff-2026-10-15.md` — current state, P0 CPU runaway, 0.6.1 release steps.
 
 # HumanStudy Hub desktop · backlog
