@@ -256,5 +256,56 @@
     "https://humanstudy-hub.com/api/desktop/config": 200
    }
   }
- }
+ },
+ "followups": [
+  {
+   "task": "T08 follow-up: apply 20261023140000_research_server_outbox_tighten",
+   "date": "2026-10-22 (America/Los_Angeles)",
+   "file": "supabase/migrations/20261023140000_research_server_outbox_tighten.sql (web claude/research-t08-server 9ba6f11, md5 78226fe7a02ed6414ce94e037b460b2b, unchanged)",
+   "destructive_operations": "none (single ALTER POLICY that tightens WITH CHECK; no data touched)",
+   "review": {
+    "scope": "alter policy research_server_outbox_insert with check only; roles unchanged (authenticated); no other object",
+    "new_check": [
+     "owner_id = auth.uid()",
+     "project_id null or a studio_workspaces row owned by caller",
+     "jsonb_array_length(events)=event_count",
+     "jsonb_array_length(content)=content_count",
+     "each event is an object, surface='web', research_session_id = row id, no foreign owner_id"
+    ],
+    "rpc_compatible": "studio_cas_workspace_research inserts outboxRow(buildServerBatch) rows: id=session id, project_id=CAS workspace id, counts=array lengths, events surface web + session id, no owner_id -> satisfies policy; violations caught by RPC subtransaction (save commits, outbox_stored=false)"
+   },
+   "rolled_back_test": {
+    "result": "passed",
+    "repo_test_adjustment": "tests/research-server-outbox.sql pg_temp.batch and section 8 used empty events with event_count 3/2; replaced with matching web events of the batch session (logic unchanged)",
+    "tighten_tests": [
+     "T1 producer-shaped RPC batch (2 events, 1 content) stored",
+     "T2 direct own-owner / null-project / own event owner_id accepted",
+     "T3 9 forged direct inserts denied 42501: other owner, other user's project, unknown project, desktop surface, wrong session, event other owner, event_count mismatch, content_count mismatch, non-object event",
+     "T4 forged RPC batch: save commits, outbox_stored=false, nothing stored",
+     "T5 cross-project RPC batch not stored"
+    ],
+    "negative_control": "same script without migration fails: 'T3 forged row accepted: other user project'",
+    "rerun_against_live_policy": "passed (rolled back)"
+   },
+   "apply": "single transaction: migration + schema_migrations ('20261023140000','research_server_outbox_tighten', statements=file); history rows 16 -> 17",
+   "post_apply": {
+    "snapshot_diff": {
+     "policies_changed": [
+      "public.research_server_outbox.research_server_outbox_insert (with_check)"
+     ],
+     "grants": 0,
+     "column_grants": 0,
+     "functions": 0,
+     "triggers": 0,
+     "rls": 0
+    },
+    "outbox_rows": 0,
+    "http": {
+     "https://humanstudy-hub.com/": 200,
+     "https://humanstudy-hub.com/api/desktop/config": 200
+    }
+   },
+   "followup_web": "tests/research-server-outbox.sql now fails as committed (count-mismatched empty payloads); update it to matching payloads and add forged-row cases"
+  }
+ ]
 }
