@@ -165,19 +165,30 @@ export function createResearchCollector(options: Options) {
     })
   }
   /** Version generated files; sanitize text, preserve opaque bytes. Sources use queueSource. */
-  function queueArtifact(path: string, projectId: string, artifactId: string, by: string, link?: CaptureLink | (() => CaptureLink)): Promise<void> {
+  /**
+   * `snapshot` is the file's text read when its writer finished. Captures run in order behind
+   * earlier ones, so without it a quick second write can replace the file before it is read and
+   * the earlier version is never recorded.
+   */
+  function queueArtifact(path: string, projectId: string, artifactId: string, by: string, link?: CaptureLink | (() => CaptureLink), snapshot?: string): Promise<void> {
     const capturedOwner = localOwner()
     return run(async () => {
       const owner = await capturedOwner; if (!owner || await localOwner() !== owner) return
-      const root = await ownerDir(owner), before = await stat(path)
-      if (!before.isFile()) return
+      const root = await ownerDir(owner), before = snapshot === undefined ? await stat(path) : undefined
+      if (before && !before.isFile()) return
       const textFile = /\.(json|md|txt|csv|tsv|html?|py|r|js|ts|tex|bib|ya?ml|xml|svg|qmd|rmd|css|sql|jl|do|sps|ipynb|log|toml|ini)$/i.test(artifactId)
       const role = artifactId === 'program.json' ? 'program' : 'file'
-      const ref = textFile
-        ? await stageBytes(root, Buffer.from(scrubResearchString(await readFile(path, 'utf8'), { projectDir: path.slice(0, -artifactId.length).replace(/[\\/]+$/, '') })), role)
-        : await stageFile(root, path, 'application/octet-stream')
-      const after = await stat(path)
-      if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ino !== after.ino || await localOwner() !== owner) return
+      const projectDir = path.slice(0, -artifactId.length).replace(/[\\/]+$/, '')
+      const ref = snapshot !== undefined
+        ? await stageBytes(root, Buffer.from(scrubResearchString(snapshot, { projectDir })), role)
+        : textFile
+          ? await stageBytes(root, Buffer.from(scrubResearchString(await readFile(path, 'utf8'), { projectDir })), role)
+          : await stageFile(root, path, 'application/octet-stream')
+      if (before) {
+        const after = await stat(path)
+        if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ino !== after.ino) return
+      }
+      if (await localOwner() !== owner) return
       const receipt = join(root, `artifact-${hash(Buffer.from(projectId + ':' + artifactId))}.json`)
       const previous = await json<{ hash: string; version: number }>(receipt)
       if (previous?.hash === ref.sha256) return

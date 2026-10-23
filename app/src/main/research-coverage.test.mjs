@@ -303,8 +303,10 @@ test('headless: commands are the primary actions and drive the same linked recor
   for (const n of [1, 2]) {
     const call = { type: 'tool', tool: 'bash', toolCallId: 'call_h_ckpt' + n, messageId: 'msg_h_assistant', partId: 'prt_h_ckpt' + n, input: { command: 'python .opencode/skills/build/program_io.py batch-' + n + '.json' } }
     kernel.emit({ ...call, text: 'running' }); await writeFile(join(project, 'program.json'), JSON.stringify({ nodes: [{ id: 'n' + n }] }))
-    kernel.emit({ ...call, text: 'completed', output: 'saved' }); await sleep(50)
+    // No pause: the next checkpoint replaces the file before the queued capture runs (as on a slow disk).
+    kernel.emit({ ...call, text: 'completed', output: 'saved' })
   }
+  await sleep(50)
   kernel.emit(ev.text('Done.')); kernel.emit(ev.usage); kernel.emit(ev.done)
   await sleep(50)
   assert.equal((await command({ op: 'questions' })).ok, true)

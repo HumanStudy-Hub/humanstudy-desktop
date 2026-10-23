@@ -3,7 +3,7 @@
 // The worker launch and each JSON-lines command are the primary actions; the turn, answers, tool calls
 // and versions they cause link to them exactly as on desktop. Used by opencode-assets.mjs and its tests.
 import { randomUUID } from 'node:crypto'
-import { existsSync, readdirSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'node:path'
 
 export const HEADLESS_NOT_APPLICABLE = ['interaction:ui-click', 'interaction:ui-shortcut', 'interaction:ui-menu', 'navigation', 'selection_layout']
@@ -30,8 +30,13 @@ export async function startHeadlessResearch({ research, createResearchAgent, pro
   // Versions found at launch are the baseline; later ones link to the tool call (or turn) that wrote them.
   const captureArtifacts = (baseline = false) => {
     const link = rel => () => baseline ? atLaunch : agent.versionLink(project, rel, 'agent-or-external')
+    // program.json is read and linked now, when its writer finished: a later checkpoint may replace
+    // it before this capture's turn in the queue comes.
+    const programPath = join(project, 'program.json')
+    let program, programLink
+    try { if (existsSync(programPath) && inside(programPath)) { program = readFileSync(programPath, 'utf8'); programLink = link('program.json')() } } catch { program = undefined }
     artifactChain = artifactChain.then(async () => {
-      if (existsSync(join(project, 'program.json')) && inside(join(project, 'program.json'))) await research.queueArtifact(join(project, 'program.json'), projectId, 'program.json', 'agent-or-external', link('program.json'))
+      if (program !== undefined) await research.queueArtifact(programPath, projectId, 'program.json', 'agent-or-external', programLink, program)
       async function walk(rel) {
         if (!inside(join(project, rel))) return
         for (const entry of readdirSync(join(project, rel), { withFileTypes: true })) {
