@@ -149,14 +149,15 @@ def prepare(project: Path, paper: Path | None, resources: list[Path], engine: st
             target = project / "sources" / resource.name / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, target)
-    (project / "AGENTS.md").write_text((PACK / "AGENTS.md").read_text(encoding="utf-8") if engine == "opencode" else INSTRUCTIONS, encoding="utf-8")
-    (project / "CLAUDE.md").write_text("# HumanStudy conversion\n\nRead and follow AGENTS.md and CONVERT.md before working.\n", encoding="utf-8")
+    # Bytes, not text mode: Windows text mode would write CRLF, and the worker's copy must match the pack.
+    (project / "AGENTS.md").write_bytes((PACK / "AGENTS.md").read_bytes() if engine == "opencode" else INSTRUCTIONS.encode("utf-8"))
+    (project / "CLAUDE.md").write_bytes(("# HumanStudy conversion\n\nRead and follow AGENTS.md and CONVERT.md before working.\n").encode("utf-8"))
     task = TASK
     if engine == "opencode":
         task += "\nOpenCode worker mode: execute the shared build skill yourself. The parent Codex controls this session. Read all supplied digital resources even when no paper.pdf exists. This is program-only initial conversion: preserve missing issues, do not ask the parent to invent scientific choices, and do not start simulations or execute contributed research code. Use the provided managed runtime. Save the program and applicable views before reporting completion.\n"
-    (project / "CONVERT.md").write_text(task, encoding="utf-8")
+    (project / "CONVERT.md").write_bytes((task).encode("utf-8"))
     manifest["engine"] = engine
-    (project / ".humanstudy/conversion-pack.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    (project / ".humanstudy/conversion-pack.json").write_bytes((json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
     return {"project": str(project.resolve()), "packFiles": len(pack_files), "status": "prepared",
             "next": "Use the Codex humanstudy-opencode-assets skill to control the OpenCode worker." if engine == "opencode" else "Open this project in Claude Code or Codex and ask it to follow CONVERT.md."}
 

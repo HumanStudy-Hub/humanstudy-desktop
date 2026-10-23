@@ -6,7 +6,9 @@ export function displayPath(path: string, projectDir: string | null | undefined,
   if (!p) return p
   const root = (projectDir ?? '').replace(/\\/g, '/').replace(/\/+$/, '')
   const h = (home ?? '').replace(/\\/g, '/').replace(/\/+$/, '')
-  const within = (base: string, x: string) => Boolean(base) && (x === base || x.startsWith(base + '/'))
+  // Windows drive paths compare without case: tools report C:/Users/me and c:/users/me for one folder.
+  const fold = (x: string) => (/^[A-Za-z]:\//.test(x) ? x.toLowerCase() : x)
+  const within = (base: string, x: string) => Boolean(base) && (fold(x) === fold(base) || fold(x).startsWith(fold(base) + '/'))
   if (!p.startsWith('/') && !/^[A-Za-z]:\//.test(p)) {
     const abs = '/' + p
     if (within(root, abs) || within(h, abs)) p = abs

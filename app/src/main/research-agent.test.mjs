@@ -4,9 +4,9 @@ import assert from 'node:assert/strict'
 import {mkdtemp,rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {pathToFileURL} from 'node:url'
+import {pathToFileURL, fileURLToPath } from 'node:url'
 const temp=await mkdtemp(join(tmpdir(),'research-agent-'))
-await build({entryPoints:[new URL('./research-agent.ts',import.meta.url).pathname],bundle:true,platform:'node',format:'esm',outfile:join(temp,'agent.mjs')})
+await build({entryPoints:[fileURLToPath(new URL('./research-agent.ts',import.meta.url))],bundle:true,platform:'node',format:'esm',outfile:join(temp,'agent.mjs')})
 const {createResearchAgent}=await import(pathToFileURL(join(temp,'agent.mjs')))
 test('one shared adapter preserves partial chat, parallel native calls, questions, permissions, errors and usage',async()=>{
  const rows=[],a=createResearchAgent(async e=>{rows.push(e)})

@@ -16,7 +16,7 @@ await build({entryPoints:[join(here,'projects.ts')],bundle:true,platform:'node',
  b.onResolve({filter:/^(electron|\.\/settings|\.\/pack)$/},a=>({path:a.path,namespace:'project-fixture'}))
  b.onLoad({filter:/.*/,namespace:'project-fixture'},a=>({contents:a.path==='electron'?`export const app={get isPackaged(){return globalThis.__projectTest.packaged},getAppPath:()=>globalThis.__projectTest.appRoot};export const shell={trashItem:async()=>{throw Error('not used')}}`:a.path==='./settings'?`export const ensureProjectsRoot=()=>globalThis.__projectTest.root;export const getSettings=()=>({projectsRoot:globalThis.__projectTest.root})`:`export const installPack=async()=>{}`,loader:'js'}))
 }}]})
-const {createProject,listProjects}=await import(pathToFileURL(join(temp,'projects.mjs')))
+const {createProject,listProjects,isInside,isWithin}=await import(pathToFileURL(join(temp,'projects.mjs')))
 process.on('exit',()=>{rmSync(temp,{recursive:true,force:true});delete globalThis.__projectTest;if(previous)Object.defineProperty(process,'resourcesPath',previous);else delete process.resourcesPath})
 function check(dir){
  const p=JSON.parse(readFileSync(join(dir,'program.json'),'utf8'))
@@ -43,4 +43,18 @@ test('packaged creation reads resources/sample independently of the source check
 test('sample cannot replace a user-selected paper',async()=>{
  await assert.rejects(createProject({name:'Conflict',sample:true,pdfPath:join(appRoot,'resources/sample/KNOBE.pdf')}),/sample.*PDF|sample.*paper/i)
  assert.equal(existsSync(join(fixture.root,'Conflict')),false)
+})
+
+test('containment: siblings and parents are outside; on Windows a differently cased path is the same folder',()=>{
+  const root=join(temp,'projects')
+  assert.ok(isWithin(root,root)&&!isInside(root,root))
+  assert.ok(isInside(root,join(root,'a','paper.pdf')))
+  assert.ok(!isInside(root,root+'2')&&!isInside(root,join(root,'..','x')))
+  assert.ok(isInside(root,join(root,'..notes.md')),'a name starting with .. is still inside')
+  if(process.platform==='win32'){
+    // Tools report the same folder as C:\Users\... and c:\users\...; NTFS treats them as one.
+    const flip=s=>s.replace(/^[A-Za-z]:/,d=>d===d.toUpperCase()?d.toLowerCase():d.toUpperCase()).replace(/projects/,'PROJECTS')
+    assert.ok(isInside(root,flip(join(root,'a','paper.pdf'))))
+    assert.ok(isWithin(flip(root),root))
+  }
 })

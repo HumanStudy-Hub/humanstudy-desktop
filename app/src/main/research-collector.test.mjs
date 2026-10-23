@@ -4,9 +4,9 @@ import assert from 'node:assert/strict'
 import {mkdtemp,readFile,readdir,writeFile,rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {pathToFileURL} from 'node:url'
+import {pathToFileURL, fileURLToPath } from 'node:url'
 const temp=await mkdtemp(join(tmpdir(),'research-collector-test-'))
-await build({entryPoints:[new URL('./research-collector.ts',import.meta.url).pathname],bundle:true,platform:'node',format:'esm',outfile:join(temp,'collector.mjs')})
+await build({entryPoints:[fileURLToPath(new URL('./research-collector.ts',import.meta.url))],bundle:true,platform:'node',format:'esm',outfile:join(temp,'collector.mjs')})
 const {createResearchCollector}=await import(pathToFileURL(join(temp,'collector.mjs')))
 const OWNER='11111111-1111-4111-8111-111111111111',OTHER='22222222-2222-4222-8222-222222222222',PROJECT='33333333-3333-4333-8333-333333333333'
 async function setup(){

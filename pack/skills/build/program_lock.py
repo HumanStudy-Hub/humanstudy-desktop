@@ -46,6 +46,15 @@ def program_lock(target, timeout=15):
                 lock.rmdir()
                 raise
             break
+        except PermissionError:
+            # Windows: a lock folder another writer has just removed stays "delete pending" while any
+            # handle is open, and mkdir is refused with access denied. That is a busy lock, not a
+            # failure; only a refusal that outlasts the timeout is reported as itself.
+            if os.name != 'nt':
+                raise
+            if time.monotonic() >= until:
+                raise
+            time.sleep(.025)
         except FileExistsError:
             try:
                 entries = list(lock.iterdir())

@@ -10,10 +10,10 @@ import { realpathSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 import { gunzipSync } from 'node:zlib'
 
-const here = new URL('.', import.meta.url).pathname
+const here = fileURLToPath(new URL('.', import.meta.url))
 const temp = await mkdtemp(join(tmpdir(), 'research-coverage-'))
 await build({
   stdin: { contents: `export {createResearchCollector} from './research-collector.ts'; export {createResearchAgent} from './research-agent.ts';
