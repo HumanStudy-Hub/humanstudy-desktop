@@ -3,7 +3,7 @@
 // node src/main/project-watch.test.mjs
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
-import { copyFileSync, mkdtempSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -83,6 +83,44 @@ test('a burst of events is one notice; a watcher error closes it and reports ins
   await wait(60)
   assert.equal(settled, 1, 'a closed watcher must not report')
   w.close()
+})
+
+test('real folder: deleting a watched subfolder, then the folder itself, closes the watcher instead of crashing', async () => {
+  // On Windows the recursive watcher reports EPERM when its folder goes away; elsewhere it may go quiet.
+  const parent = mkdtempSync(join(tmpdir(), 'hs-gone-'))
+  const dir = join(parent, 'project')
+  mkdirSync(join(dir, 'outputs', 'run-1'), { recursive: true })
+  writeFileSync(join(dir, 'outputs', 'run-1', 'progress.json'), '{}')
+  let errors = 0, settled = 0
+  const w = watchFolder(dir, { onSettled: () => settled++, onError: () => errors++, debounceMs: 50 })
+  try {
+    await wait(100)
+    rmSync(join(dir, 'outputs'), { recursive: true, force: true })
+    for (let i = 0; i < 20 && !settled && !errors; i++) await wait(50)
+    assert.ok(settled + errors >= 1, 'removing a subfolder was not noticed')
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10 })
+    await wait(300)
+    assert.ok(!existsSync(dir), 'a watched folder must stay deletable (trash a project while open)')
+  } finally {
+    w.close()
+    rmSync(parent, { recursive: true, force: true, maxRetries: 10 })
+  }
+})
+
+test('real folder: an open, watched project folder can be renamed', async () => {
+  const parent = mkdtempSync(join(tmpdir(), 'hs-rename-'))
+  const dir = join(parent, 'Study A'), to = join(parent, 'Study B')
+  mkdirSync(join(dir, 'sources'), { recursive: true })
+  writeFileSync(join(dir, 'paper.pdf'), pdf('A'))
+  const w = watchFolder(dir, { onSettled: () => {}, onError: () => {}, debounceMs: 50 })
+  try {
+    await wait(100)
+    renameSync(dir, to) // index.ts renames first, then unwatches the old path
+    assert.ok(existsSync(join(to, 'paper.pdf')))
+  } finally {
+    w.close()
+    rmSync(parent, { recursive: true, force: true, maxRetries: 10 })
+  }
 })
 
 test('the viewer reloads a new version of the same file, under a new URL', () => {

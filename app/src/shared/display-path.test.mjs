@@ -22,4 +22,10 @@ assert.equal(d('Users/me/HumanStudy/paper/program.json', proj, home), 'program.j
 assert.equal(d('Users/me/Downloads/x.pdf', proj, home), '~/Downloads/x.pdf')
 assert.equal(d('/Users/me/HumanStudy/paper2/a', proj, home), '~/HumanStudy/paper2/a') // sibling, not inside
 assert.equal(d('/tmp/x', null, null), '/tmp/x')
+// Windows: backslashes, and the drive/folder case another tool reports, still resolve to the project.
+const wproj = 'C:\\Users\\Me\\HumanStudy\\paper', whome = 'C:\\Users\\Me'
+assert.equal(d('C:\\Users\\Me\\HumanStudy\\paper\\notes\\a.md', wproj, whome), 'notes/a.md')
+assert.equal(d('c:\\users\\me\\HumanStudy\\paper\\program.json', wproj, whome), 'program.json')
+assert.equal(d('c:/Users/Me/Downloads/x.pdf', wproj, whome), '~/Downloads/x.pdf')
+assert.equal(d('D:\\data\\x.csv', wproj, whome), 'D:/data/x.csv')
 console.log('display-path ok')

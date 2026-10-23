@@ -186,7 +186,7 @@ test('extract: a drive-letter path extracts with GNU tar (Git for Windows) first
 })
 
 const lockSmall = 'numpy==2.0.0 \\\n    --hash=sha256:' + 'a'.repeat(64) + '\nscipy==1.0.0 \\\n    --hash=sha256:' + 'b'.repeat(64) + '\n'
-const skip = posix ? false : 'needs bsdtar + sh semantics'
+const skip = false // Windows runs these too: System32 bsdtar extracts, and the shims are .cmd files
 
 test('install: download, extract, shims, pip args, marker; second run is a no-op that refreshes support files', { skip }, async () => {
   const t = makeTarball()
@@ -201,8 +201,9 @@ test('install: download, extract, shims, pip args, marker; second run is a no-op
     const rt = await run()
     assert.equal(readFileSync(rt.ok, 'utf8'), core.runtimeVersion(lockSmall))
     assert.ok(existsSync(join(root, 'python', 'bin', 'python3')))
-    assert.ok(statSync(join(root, 'bin', 'python3')).mode & 0o100)
-    assert.ok(existsSync(join(root, 'bin', 'pdftotext')))
+    if (posix) assert.ok(statSync(join(root, 'bin', 'python3')).mode & 0o100)
+    assert.ok(existsSync(join(root, 'bin', posix ? 'pdftotext' : 'pdftotext.cmd')))
+    if (!posix) assert.match(readFileSync(join(root, 'bin', 'python3.cmd'), 'utf8'), /^@echo off\r\n"%~dp0\.\.\\python\\python\.exe" %\*\r\n$/)
     assert.equal(readFileSync(join(rt.sitePackages, 'humanstudy_llm.py'), 'utf8'), '# v1')
     assert.ok(!existsSync(join(root, 'download')), 'download folder removed')
     assert.equal(hits.length, 1)
@@ -213,7 +214,7 @@ test('install: download, extract, shims, pip args, marker; second run is a no-op
     assert.ok(readFileSync(pip.at(-1), 'utf8') === lockSmall)
     const env = f.calls.find((c) => c.args[1] === 'pip').env
     assert.equal(env.PYTHONNOUSERSITE, '1')
-    assert.ok(env.PATH.startsWith(join(root, 'bin')))
+    assert.ok(env[Object.keys(env).find((k) => k.toLowerCase() === 'path')].startsWith(join(root, 'bin')))
     assert.ok(env.PIP_CACHE_DIR.startsWith(root))
     assert.deepEqual(seen, [...seen].sort((a, b) => a - b), 'progress never goes backwards')
     assert.ok(seen.at(-1) >= 99 && seen.at(-1) <= 99)

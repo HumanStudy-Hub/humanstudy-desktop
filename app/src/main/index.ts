@@ -16,7 +16,7 @@ import {
   isAllowedExternal,
   setCommunityCacheDir,
 } from './community'
-import { createProject, isInside, listProjects, renameProject, trashProject } from './projects'
+import { createProject, isInside, isWithin, listProjects, renameProject, trashProject } from './projects'
 import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
 import { checkForUpdates, installUpdate, startUpdates, stopUpdates, updateStatus } from './updates'
 import { existsSync } from 'node:fs'
@@ -140,9 +140,8 @@ protocol.registerSchemesAsPrivileged([
 const allowedRoots = new Set<string>()
 function isAllowed(p: string): boolean {
   const q = resolve(p)
-  const root = resolve(getSettings().projectsRoot)
-  if (q === root || q.startsWith(root + sep)) return true
-  return [...allowedRoots].some((r) => q === r || q.startsWith(r + sep))
+  if (isWithin(getSettings().projectsRoot, q)) return true
+  return [...allowedRoots].some((r) => isWithin(r, q))
 }
 const toUrl = (p: string): string => 'hsfile://local/' + encodeURIComponent(p)
 const ARTIFACT_CSP =
@@ -285,7 +284,7 @@ function watchProject(dir: string): void {
 /** The opened project folder a file belongs to. */
 function projectRootOf(file: string): string {
   const q = resolve(file)
-  for (const d of openProjects) if (q.startsWith(d + sep)) return d
+  for (const d of openProjects) if (isInside(d, q)) return d
   throw new Error('that file is not in an opened project')
 }
 
@@ -454,9 +453,9 @@ app.whenReady().then(() => {
     const q = ownedPath(p)
     const ref = actionRef(action)
     if (typeof text !== 'string' || text.length > TEXT_LIMIT) throw new Error('text is too large')
-    telemetry.noteAction(ref, [...openProjects].find((d) => q.startsWith(d + sep))) // the save operation, with its project
+    telemetry.noteAction(ref, [...openProjects].find((d) => isInside(d, q))) // the save operation, with its project
     await saveProjectText(q, text, { ifUnchanged, beforeWrite: async () => {
-      const root = [...openProjects].find((d) => q.startsWith(d + sep))
+      const root = [...openProjects].find((d) => isInside(d, q))
       if (root) await snapshot(root, relOf(root, q)).catch(() => undefined)
       telemetry.noteHumanWrite(q, text, ref)
     } })
