@@ -22,6 +22,11 @@ pack/
 
 ## Loading it
 
+For initial source conversion with your own Claude Code or Codex session, see
+[`docs/headless-source-conversion.md`](../docs/headless-source-conversion.md).
+`python3 scripts/prepare_conversion.py --project <new-folder> --resource <bundle>`
+installs this same pack without launching desktop or OpenCode.
+
 A kernel loads the pack into a project in one of two ways:
 
 1. **Copy**: copy `AGENTS.md`, `skills/` and `schema/` into the project folder (opencode reads

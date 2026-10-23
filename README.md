@@ -27,6 +27,16 @@ npm run typecheck
 npm run dist:mac      # signed macOS build (needs a Developer ID certificate)
 ```
 
+## Generate assets without the desktop UI
+
+Open this checkout in Codex and use
+[`$humanstudy-opencode-assets`](.agents/skills/humanstudy-opencode-assets/SKILL.md).
+Codex supervises the actual desktop OpenCode kernel and shared research pack to
+convert source bundles, retain missing information, and prepare a draft data PR.
+See the skill's [operator reference](.agents/skills/humanstudy-opencode-assets/references/operator.md)
+for explicit model access, matching kernel/runtime setup and the control protocol.
+No desktop GUI or account-key copying is required. Publication still needs review.
+
 ## Dogfooding against the dev preview
 
 Nothing to install: on first run the app downloads its agent kernel, the HumanStudy edition of

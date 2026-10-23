@@ -9,12 +9,10 @@
     "id": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 100,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
     },
     "title": {
       "type": "string",
-      "maxLength": 300,
       "minLength": 1,
       "pattern": "\\S"
     },
@@ -28,28 +26,22 @@
       "type": "object",
       "properties": {
         "title": {
-          "type": "string",
-          "maxLength": 300
+          "type": "string"
         },
         "authors": {
-          "type": "string",
-          "maxLength": 500
+          "type": "string"
         },
         "filename": {
-          "type": "string",
-          "maxLength": 300
+          "type": "string"
         },
         "venue": {
-          "type": "string",
-          "maxLength": 300
+          "type": "string"
         },
         "doi": {
-          "type": "string",
-          "maxLength": 200
+          "type": "string"
         },
         "version": {
-          "type": "string",
-          "maxLength": 100
+          "type": "string"
         }
       },
       "required": [
@@ -67,12 +59,10 @@
           "id": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
           },
           "title": {
             "type": "string",
-            "maxLength": 300,
             "minLength": 1,
             "pattern": "\\S"
           },
@@ -84,18 +74,15 @@
             ]
           },
           "description": {
-            "type": "string",
-            "maxLength": 40000
+            "type": "string"
           },
           "dependsOn": {
             "type": "array",
             "items": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 100,
               "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
-            },
-            "maxItems": 500
+            }
           }
         },
         "required": [
@@ -104,22 +91,19 @@
           "type"
         ],
         "additionalProperties": false
-      },
-      "maxItems": 500
+      }
     },
     "nodes": {
       "type": "array",
       "items": {
         "$ref": "#/$defs/node"
-      },
-      "maxItems": 400
+      }
     },
     "steps": {
       "type": "array",
       "items": {
         "$ref": "#/$defs/step"
-      },
-      "maxItems": 200
+      }
     },
     "relations": {
       "type": "array",
@@ -129,28 +113,23 @@
           "id": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
           },
           "from": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
           },
           "to": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
           },
           "type": {
-            "type": "string",
-            "maxLength": 100
+            "type": "string"
           },
           "label": {
-            "type": "string",
-            "maxLength": 300
+            "type": "string"
           }
         },
         "required": [
@@ -160,22 +139,19 @@
           "type"
         ],
         "additionalProperties": false
-      },
-      "maxItems": 500
+      }
     },
     "evidence": {
       "type": "array",
       "items": {
         "$ref": "#/$defs/evidence"
-      },
-      "maxItems": 1000
+      }
     },
     "issues": {
       "type": "array",
       "items": {
         "$ref": "#/$defs/issue"
-      },
-      "maxItems": 200
+      }
     },
     "extensions": {
       "type": "object"
@@ -202,12 +178,10 @@
         "id": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 100,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
         },
         "label": {
           "type": "string",
-          "maxLength": 200,
           "minLength": 1,
           "pattern": "\\S"
         },
@@ -235,24 +209,19 @@
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
-          },
-          "maxItems": 500
+          }
         },
         "derivation": {
-          "type": "string",
-          "maxLength": 40000
+          "type": "string"
         },
         "studyIds": {
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
-          },
-          "maxItems": 500
+          }
         },
         "extensions": {
           "type": "object"
@@ -274,64 +243,52 @@
         "id": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 100,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
         },
         "kind": {
           "type": "string",
-          "maxLength": 100,
           "minLength": 1
         },
         "title": {
           "type": "string",
-          "maxLength": 200,
           "minLength": 1,
           "pattern": "\\S"
         },
         "summary": {
-          "type": "string",
-          "maxLength": 500
+          "type": "string"
         },
         "description": {
-          "type": "string",
-          "maxLength": 40000
+          "type": "string"
         },
         "studyIds": {
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
-          },
-          "maxItems": 500
+          }
         },
         "fields": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/field"
-          },
-          "maxItems": 100
+          }
         },
         "evidenceIds": {
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
-          },
-          "maxItems": 500
+          }
         },
         "conditionIds": {
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
           },
-          "maxItems": 500,
           "description": "Experimental conditions (nodes of kind \"condition\") this node belongs to. Steps or nodes in different phases that share a condition id run in the same condition. Omit for content shared by all conditions."
         },
         "extensions": {
@@ -354,13 +311,11 @@
         "id": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 95,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
         },
         "studyId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 100,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
         },
         "kind": {
@@ -377,7 +332,6 @@
         },
         "title": {
           "type": "string",
-          "maxLength": 200,
           "minLength": 1,
           "pattern": "\\S"
         },
@@ -386,50 +340,40 @@
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
-          },
-          "maxItems": 500
+          }
         },
         "inputIds": {
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
-          },
-          "maxItems": 500
+          }
         },
         "outputIds": {
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
-          },
-          "maxItems": 500
+          }
         },
         "visibleIds": {
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
-          },
-          "maxItems": 500
+          }
         },
         "children": {
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
-          },
-          "maxItems": 500
+          }
         },
         "next": {
           "type": "array",
@@ -439,20 +383,17 @@
               "to": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 100,
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
               },
               "when": {
-                "type": "string",
-                "maxLength": 40000
+                "type": "string"
               }
             },
             "required": [
               "to"
             ],
             "additionalProperties": false
-          },
-          "maxItems": 500
+          }
         },
         "rule": {
           "$ref": "#/$defs/field"
@@ -462,20 +403,16 @@
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
-          },
-          "maxItems": 500
+          }
         },
         "conditionIds": {
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
           },
-          "maxItems": 500,
           "description": "Experimental conditions (nodes of kind \"condition\") this step belongs to. Steps or nodes in different phases that share a condition id run in the same condition. Omit for content shared by all conditions."
         },
         "extensions": {
@@ -503,22 +440,18 @@
         "id": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 100,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
         },
         "sourceId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 100,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
         },
         "path": {
-          "type": "string",
-          "maxLength": 1000
+          "type": "string"
         },
         "url": {
-          "type": "string",
-          "maxLength": 2000
+          "type": "string"
         },
         "locator": {
           "type": "object",
@@ -529,8 +462,7 @@
               "maximum": 100000
             },
             "pointer": {
-              "type": "string",
-              "maxLength": 2000
+              "type": "string"
             },
             "start": {
               "type": "integer",
@@ -541,24 +473,20 @@
               "minimum": 0
             },
             "sheet": {
-              "type": "string",
-              "maxLength": 200
+              "type": "string"
             },
             "cell": {
-              "type": "string",
-              "maxLength": 100
+              "type": "string"
             },
             "region": {
-              "type": "string",
-              "maxLength": 10000
+              "type": "string"
             }
           },
           "required": [],
           "additionalProperties": false
         },
         "quote": {
-          "type": "string",
-          "maxLength": 40000
+          "type": "string"
         },
         "verification": {
           "enum": [
@@ -579,12 +507,10 @@
         "id": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 100,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
         },
         "title": {
           "type": "string",
-          "maxLength": 200,
           "minLength": 1,
           "pattern": "\\S"
         },
@@ -596,39 +522,32 @@
           ]
         },
         "reason": {
-          "type": "string",
-          "maxLength": 40000
+          "type": "string"
         },
         "impact": {
-          "type": "string",
-          "maxLength": 40000
+          "type": "string"
         },
         "suggestedAction": {
-          "type": "string",
-          "maxLength": 40000
+          "type": "string"
         },
         "studyId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 100,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
         },
         "nodeId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 100,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
         },
         "fieldId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 100,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
         },
         "stepId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 100,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
         },
         "evidenceIds": {
@@ -636,10 +555,8 @@
           "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 100,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
-          },
-          "maxItems": 500
+          }
         }
       },
       "required": [
@@ -653,6 +570,5 @@
       ],
       "additionalProperties": false
     }
-  },
-  "x-maxSerializedBytes": 500000
+  }
 }

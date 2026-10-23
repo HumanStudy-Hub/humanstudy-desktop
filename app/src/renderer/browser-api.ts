@@ -13,6 +13,7 @@ import exampleSummary from '../../resources/sample/example-simulation/summary.js
 import exampleProgress from '../../resources/sample/example-simulation/progress.json?raw'
 import exampleReport from '../../resources/sample/example-simulation/report.md?raw'
 import { EXAMPLE_RUN } from '../shared/simulation-run'
+import { catalogSearchFields, type ResearchConcept } from '../shared/research-search'
 
 // Preview flags (all optional, combine freely):
 //   ?project=empty    a new project: paper.pdf only, no study yet
@@ -21,6 +22,7 @@ import { EXAMPLE_RUN } from '../shared/simulation-run'
 //   ?agent=1          signed in, unlocked, agreement accepted, so the agent can be used
 //   ?lang=zh|en       sets the interface language (stored like Settings → Language)
 //   ?program=real     the project in public/preview/real/ (local only; see below)
+//   ?catalog=research loads public/preview/research_index.json for catalog UI review (local only)
 //   ?sim=built        the runnable study package exists (Simulation tab: ready to run); default: not built yet
 //   ?sim=running      ...and a simulation is running (progress ticks, never finishes);  ?sim=done: a finished run of your own
 //   ?fresh=1          no seeded conversations;  ?install=1|error, ?declined=1, ?devkeys=1, ?folderError=1 as before
@@ -454,7 +456,7 @@ def intentional(harm: float, help_: float) -> float:
     { type: 'done' },
   ]
   // Real titles, authors, years and descriptions copied from HumanStudy-Bench's studies_index.json.
-  const communityStudies: CommunityStudy[] = [
+  let communityStudies: CommunityStudy[] = [
     {
       "id": "study_001",
       "title": "The “False Consensus Effect”: An Egocentric Bias in Social Perception and Attribution Processes",
@@ -618,19 +620,29 @@ def intentional(harm: float, help_: float) -> float:
     ]
   }
   const REPO = 'https://github.com/HumanStudy-Hub/HumanStudy-Bench'
+  let catalogLoaded = false
+  const loadPreviewCatalog = async () => {
+    if (new URLSearchParams(location.search).get('catalog') !== 'research' || catalogLoaded) return
+    const response = await fetch('/preview/research_index.json')
+    if (!response.ok) throw new Error('Copy the public research catalog to public/preview/research_index.json to preview it.')
+    const index = await response.json() as { papers: (CommunityStudy & Record<string, unknown>)[]; taxonomy: { concepts: ResearchConcept[] } }
+    communityStudies = index.papers.map(paper => ({ ...paper, contributors: paper.contributors ?? [], ...catalogSearchFields(paper, index.taxonomy.concepts) }))
+    catalogLoaded = true
+  }
   const communityDetail = (id: string): CommunityStudyDetail => {
     const study = communityStudies.find((s) => s.id === id)
     if (!study) throw new Error(`Unknown study ${id}`)
-    const base = `${REPO}/blob/main/studies/${id}`
+    const root = study.assetRoot || `studies/${study.legacyStudyId || id}`
+    const base = `${REPO}/blob/main/${root}`
     return {
       ...study,
       files: (communityFiles[id] ?? []).map(([path, size]) => ({ path, size, url: `${base}/${path}` })),
       // Clearly fake activity: the preview never talks to GitHub.
-      activity: [
+      activity: catalogLoaded ? [] : [
         { sha: 'preview0000001', message: 'Preview activity · not from GitHub', author: 'preview', date: ago(60 * 3), url: `${REPO}/commits/main/studies/${id}` },
         { sha: 'preview0000002', message: 'Preview activity · materials listing\n\nMock commit body.', author: 'preview', date: ago(60 * 24 * 5), url: `${REPO}/commits/main/studies/${id}` },
       ],
-      repoUrl: `${REPO}/tree/main/studies/${id}`,
+      repoUrl: `${REPO}/tree/main/${root}`,
       discussionsUrl: `${REPO}/discussions`,
     }
   }
@@ -675,7 +687,7 @@ def intentional(harm: float, help_: float) -> float:
     },
     community: {
       studies: async () => {
-        await new Promise((r) => setTimeout(r, 350))
+        await loadPreviewCatalog()
         return communityStudies.map((s) => ({ ...s }))
       },
       study: async (id) => {

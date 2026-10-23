@@ -90,7 +90,7 @@ test('inline.py inlines the kit, embeds the program and checks the page', { skip
   writeFileSync(join(proj, 'program.json'), JSON.stringify({
     id: 'p', title: 'T', studies: [{ id: 'study1', title: 'Study 1' }],
     nodes: [{ id: 'n1', kind: 'result', title: 'R', studyIds: ['study1'], fields: [{ id: 'effect', label: 'Effect', value: 'x', origin: 'reported', state: 'confirmed', evidenceIds: ['e1'] }], evidenceIds: ['e1'] }],
-    steps: [], evidence: [{ id: 'e1', sourceId: 'paper', locator: { page: 4 }, quote: 'q </script> q' }], issues: [],
+    steps: [], evidence: [{ id: 'e1', sourceId: 'paper', locator: { page: 4 }, quote: 'q </script> q' + ' complete quoted context'.repeat(100) + 'END-OF-QUOTE' }], issues: [],
   }))
   const page = join(proj, 'artifacts/v.html')
   writeFileSync(page, '<!doctype html><html lang="en"><head><title>V</title><link rel="stylesheet" href="hs-kit.css"><script src="hs-kit.js"></script></head><body><div data-program-id="n1/effect" data-page="4"></div><div id="c"></div><script>HS.results("#c",{groups:[{label:"A",id:"n1",human:{mean:1}}]})</script></body></html>')
@@ -104,6 +104,7 @@ test('inline.py inlines the kit, embeds the program and checks the page', { skip
   assert.ok(!html.includes('data-hs-kit="chart"'), 'Chart.js only when referenced')
   assert.ok(!/<link[^>]*hs-kit\.css/.test(html) && !/src="hs-kit\.js"/.test(html))
   assert.ok(!html.includes('q </script> q'), 'embedded JSON escapes </script>')
+  assert.ok(html.includes('END-OF-QUOTE'),'citation context is not clipped at 500 characters')
   // idempotent: a second run keeps exactly one copy of the kit
   r = run(); html = readFileSync(page, 'utf8')
   assert.equal(r.status, 0)
