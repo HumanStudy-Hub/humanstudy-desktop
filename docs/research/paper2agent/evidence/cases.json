@@ -1,0 +1,38 @@
+[
+  {
+    "case": "tversky-kahneman-1981",
+    "date": "2026-10-22",
+    "input_sha256": "fe95894df4eafe0797e0adf4d8562ed7beb8f3194fd88d1a1021bbde535f491b",
+    "paper2agent_commit": "8c2d059165ef8cdcb70dbea76655b9c2b55b38e6",
+    "model_controls": "Existing extraction model/prompt history not yet established; do not infer relative model quality.",
+    "case_limitations": [
+      "Existing HumanStudy extraction model/prompt provenance unknown; not regenerated.",
+      "Paper2Skill had additional coordinator and independent source review.",
+      "Original supplied article ends on printed page 457 mid-sentence.",
+      "Three math paragraphs are images, not verified searchable math.",
+      "Paper2MCP and simulation not run."
+    ],
+    "public_evidence_scope": "Report and aggregate metadata only; original PDFs, copyrighted reading packages, private transcripts, account state and raw execution databases are not included."
+  },
+  {
+    "case": "false-consensus-1977",
+    "date": "2026-10-22",
+    "input_sha256": "21c8d60c33b635fdab2c9c135c3a34eb00bca2e8bb88abd4262ec6c7a52b24d4",
+    "paper2agent_commit": "8c2d059165ef8cdcb70dbea76655b9c2b55b38e6",
+    "humanstudy_branch": "codex/opencode-asset-skill",
+    "humanstudy_commit": "5d70737",
+    "same_kernel": "opencode-humanstudy 1.19.0",
+    "same_model_route": "humanstudy/anthropic/claude-haiku-5.5",
+    "time_budget_minutes_per_arm": 30,
+    "output_token_budget_per_arm": 30000,
+    "budget_note": "30000 reported output tokens per arm; enforced after completed-message usage events, so one-message overshoot is retained. Reported reasoning is separate and was not bounded; this is not equal total compute or cost.",
+    "maximum_external_output_repair_requests_per_arm": 2,
+    "scientific_edits_by_codex": 0,
+    "final_checks": {
+      "humanstudy_program_checker": "PASS (partial content)",
+      "paper2skill_evaluator_draft_build": "FAIL: join_previous requires preceding prose and space/none",
+      "paper2skill_strict_verification": "No successful strict verification; no producer reading-package delivery"
+    },
+    "public_evidence_scope": "Report and aggregate metadata only; original PDFs, copyrighted reading packages, private transcripts, account state and raw execution databases are not included."
+  }
+]
