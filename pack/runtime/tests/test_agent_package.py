@@ -78,18 +78,21 @@ class AgentPackage(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root, True)
 
     def test_export_builds_and_verifies_skill_and_mcp(self):
-        run = export(self.root)
+        run = export(self.root, "--mcp")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn("PASS", run.stdout)
         out = self.root / "exports/agent"
-        skill, server = out / "skill/study-5", out / "mcp/study-5-mcp/server.py"
+        skill = out / "study-5"
+        server = skill / "scripts/mcp_server.py"
         text = (skill / "SKILL.md").read_text(encoding="utf-8")
         self.assertTrue(text.startswith("---\nname: study-5\ndescription: "))
         for ref in ["study-exp-1.md", "study-exp-2.md", "paper.md", "open-issues.md", "sources.md"]:
             self.assertTrue((skill / "references" / ref).is_file(), ref)
         self.assertEqual((skill / "program.json").read_bytes(), PROGRAM.read_bytes(), "program is an exact copy")
         manifest = json.loads((out / "MANIFEST.json").read_text(encoding="utf-8"))
-        self.assertIn("skill/study-5/SKILL.md", manifest["files"])
+        self.assertIn("study-5/SKILL.md", manifest["files"])
+        self.assertEqual(manifest["mcpServer"], "study-5/scripts/mcp_server.py")
+        self.assertTrue((skill / "references/accuracy.md").is_file())
         self.assertFalse(list(out.rglob("paper.pdf")), "the paper is not shared by default")
         self.assertIn("| `paper.pdf` |", (skill / "references/sources.md").read_text(encoding="utf-8"), "its hash is recorded")
         self.assertFalse([p for p in out.rglob("*") if p.name.startswith(".agent-package-")])
@@ -112,21 +115,59 @@ class AgentPackage(unittest.TestCase):
         cli = subprocess.run([sys.executable, str(core), "search", "chairman"], capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(cli.returncode, 0, cli.stderr)
 
+    def test_skill_only_by_default(self):
+        self.assertEqual(export(self.root).returncode, 0)
+        out = self.root / "exports/agent"
+        self.assertFalse((out / "study-5/scripts/mcp_server.py").exists())
+        self.assertFalse((out / "mcp").exists())
+        self.assertNotIn("mcp add", (out / "README.md").read_text(encoding="utf-8"))
+
+    def test_cli_participants_each_get_a_fresh_process_in_an_empty_folder(self):
+        sys.path.insert(0, str(REPO / "pack/skills/export/agent"))
+        import study_core
+        fake = ('%s -c "import os,sys; sys.stdin.read(); '
+                'print(\'yes\' if not os.listdir(\'.\') else \'saw files\', os.getpid())"' % sys.executable)
+        result = study_core.Study(self.root).run(study_core.cli_llm(fake), n=2)
+        replies = [x["reply"] for x in result["sessions"]]
+        self.assertTrue(all(r.startswith("yes ") for r in replies), replies)
+        self.assertEqual(len({r.split()[1] for r in replies}), 4, "one process per participant")
+        self.assertIn("simulation", result["note"])
+
+    def test_quote_check_finds_wrong_pages_and_missing_quotes(self):
+        sys.path.insert(0, str(REPO / "pack/skills/build"))
+        import check_quotes
+        pages = ["Title page. Participants were 80 undergraduates.",
+                 "Method. Each subject read one of four stories and then estimated the percentage of peers.",
+                 "Results. The combined effect was F(1, 312) = 49.1, p < .001 for consensus."]
+        original = check_quotes.Pdf.load
+        check_quotes.Pdf.load = lambda self: (setattr(self, "reader", "test") or pages)
+        self.addCleanup(setattr, check_quotes.Pdf, "load", original)
+        program = json.loads(PROGRAM.read_text(encoding="utf-8"))
+        program["evidence"] = [
+            {"id": "ok", "locator": {"page": 2}, "quote": "Each subject read one of four\nstories"},
+            {"id": "slip", "locator": {"page": 3}, "quote": "The combined effect was F(1, 312) = 49.7, p < .001"},
+            {"id": "page", "locator": {"page": 1}, "quote": "estimated the percentage of peers"},
+            {"id": "gone", "locator": {"page": 2}, "quote": "Participants were paid ten dollars for an hour"}]
+        (self.root / "program.json").write_text(json.dumps(program), encoding="utf-8")
+        report = check_quotes.check(self.root / "program.json")
+        status = {r["id"]: r["status"] for r in report["results"]}
+        self.assertEqual(status, {"ok": "found", "slip": "close", "page": "other_page", "gone": "not_found"})
+
     def test_never_overwrites_and_respects_sharing_flags(self):
         self.assertEqual(export(self.root).returncode, 0)
         self.assertEqual(export(self.root).returncode, 1, "existing exports are never overwritten")
         shutil.rmtree(self.root / "exports")
         run = export(self.root, "--include-paper")
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertTrue((self.root / "exports/agent/skill/study-5/paper.pdf").is_file())
+        self.assertTrue((self.root / "exports/agent/study-5/paper.pdf").is_file())
 
     def test_blocked_study_reads_but_does_not_run(self):
         root = make_project(ready=False)
         self.addCleanup(shutil.rmtree, root, True)
-        self.assertEqual(export(root).returncode, 0)
+        self.assertEqual(export(root, "--mcp").returncode, 0)
         out = root / "exports/agent"
-        self.assertIn("Not ready to run", (out / "skill/study-5/SKILL.md").read_text(encoding="utf-8"))
-        res = mcp(out / "mcp/study-5-mcp/server.py", [("plan_participants", {"n": 1})])
+        self.assertIn("Not ready to run", (out / "study-5/SKILL.md").read_text(encoding="utf-8"))
+        res = mcp(out / "study-5/scripts/mcp_server.py", [("plan_participants", {"n": 1})])
         self.assertTrue(res[2]["result"]["isError"])
         self.assertIn("not ready", res[2]["result"]["content"][0]["text"])
 
@@ -134,7 +175,7 @@ class AgentPackage(unittest.TestCase):
         shutil.rmtree(self.root / "package")
         run = export(self.root)
         self.assertEqual(run.returncode, 0, run.stderr)
-        self.assertIn("Reading only", (self.root / "exports/agent/skill/study-5/SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("Reading only", (self.root / "exports/agent/study-5/SKILL.md").read_text(encoding="utf-8"))
 
 
 def raw_server(server, lines):
@@ -154,8 +195,8 @@ class ReviewRegressions(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root, True)
 
     def test_server_survives_malformed_input_and_follows_jsonrpc(self):
-        self.assertEqual(export(self.root).returncode, 0)
-        server = self.root / "exports/agent/mcp/study-5-mcp/server.py"
+        self.assertEqual(export(self.root, "--mcp").returncode, 0)
+        server = self.root / "exports/agent/study-5/scripts/mcp_server.py"
         out, code = raw_server(server, [
             b"1", b"\xff\xfe", b'{"jsonrpc":"2.0","id":2,"method":"ping","params":[1]}',
             b'{"jsonrpc":"2.0","id":3,"result":{}}',
@@ -215,7 +256,7 @@ class ReviewRegressions(unittest.TestCase):
         self.assertIn("conditions:", md)
         run = export(self.root)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        self.assertTrue((self.root / "exports/agent/skill/study-5/references/study-exp-3.md").is_file())
+        self.assertTrue((self.root / "exports/agent/study-5/references/study-exp-3.md").is_file())
 
 
 if __name__ == "__main__":

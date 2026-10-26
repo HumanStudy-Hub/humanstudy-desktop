@@ -1,6 +1,6 @@
 """MCP server (stdio) for one HumanStudy program. Standard library only, Python 3.8+.
 
-Each tool calls study_core.py, which reads program.json and the replay package in this folder; the
+Each tool calls study_core.py, which reads program.json and the replay package of this skill; the
 server adds no study facts and holds no model keys. The connected agent supplies AI participants'
 replies itself (plan_participants -> its own model, one fresh context per prompt -> score_replies).
 
@@ -25,7 +25,7 @@ with contextlib.redirect_stdout(sys.stderr):
     from study_core import Study  # noqa: E402
 
 SUPPORTED = ["2025-06-18", "2025-03-26", "2024-11-05"]
-STUDY = Study(HERE)
+STUDY = Study()  # the skill folder this script sits in
 NAME = (STUDY.program.get("id") or "humanstudy-program")[:60]
 
 
@@ -61,7 +61,8 @@ TOOLS = [
     ("plan_participants", "Every prompt the AI participants will read (from the replay package, n per condition), in "
      "order: one entry per model call, usually one per AI participant. Answer each in a fresh model context that "
      "sees only that prompt, "
-     "then send the replies, in the same order and with the same n, arms and seed, to score_replies.",
+     "then send the replies, in the same order and with the same n, arms and seed, to score_replies. Never "
+     "answer the prompts yourself in this conversation: you know the hypothesis.",
      obj({"n": {"type": "integer", "minimum": 1, "maximum": 500}, "arms": {"type": "array", "items": S},
           "seed": {"type": "integer"}}),
      lambda a: STUDY.plan(a.get("n", 5), a.get("arms"), a.get("seed", 20261015))),

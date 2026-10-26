@@ -3,10 +3,11 @@
 
     python .opencode/skills/export/agent_package.py --output exports/<project>-agent-<date>
 
-The layout follows Paper2Agent's combined delivery (skill/ + mcp/, github.com/jmiao24/Paper2Agent,
-MIT): any agent that reads SKILL.md folders or speaks MCP can then read, query and run the study.
-Both parts are generated from the same program and replay package and are verified before the
-folder appears: file hashes, every study renders, real MCP calls, and the package smoke test.
+The skill follows Paper2Agent's paper skill (github.com/jmiao24/Paper2Agent, MIT): any agent that
+reads SKILL.md folders can read, query and run the study. `--mcp` adds an MCP server over the same
+folder for clients that cannot run commands. Before the folder appears it is verified: file hashes,
+every study renders, the scripts run, real MCP calls (with --mcp), and the package smoke test; every
+quote is also compared with its cited page (references/accuracy.md).
 The paper PDF and sources/ stay out unless the researcher has the right to share them.
 """
 import argparse
@@ -105,7 +106,7 @@ def readiness_text(study):
     return "Not ready to run: the study still needs decisions (%s). Reading and querying work." % blocking
 
 
-def skill_md(study, name):
+def skill_md(study, name, quote_line=None):
     ov = study.overview()
     who = short_authors(study)
     year = year_of(study)
@@ -129,15 +130,18 @@ def skill_md(study, name):
         run += [
             "The replay package `package/%s/` holds the participant prompts (`task/adapter.py`) and the "
             "paper's analysis (`evaluation/evaluation.py`)." % pkg, "",
-            "With your own model (no key needed here):", "",
-            "1. `python scripts/study_core.py plan --n 5 > plan.json` lists every prompt, n per condition.",
-            "2. Answer each prompt in a fresh context that sees only that prompt, with no other instructions: "
-            "one AI participant per original participant.",
-            "3. Save the replies as a JSON list in plan order and run "
-            "`python scripts/study_core.py replay replies.json --n 5` for the paper's own analysis.", "",
-            "Or let the package call a model directly: "
-            "`python scripts/study_core.py run --model <model-id> --n 5` (needs `OPENROUTER_API_KEY`, or "
-            "`OPENAI_API_KEY` with `OPENAI_BASE_URL`).", "",
+            "Each AI participant must answer in its own fresh context that sees only its prompt. Never "
+            "answer several prompts yourself in this conversation: you know the hypothesis, so those "
+            "answers would not be independent participants.", "",
+            "With an agent CLI you are signed in to (no key needed), one new process per participant:", "",
+            "```bash",
+            'python scripts/study_core.py run --n 5 --cli "claude -p --model haiku"',
+            'python scripts/study_core.py run --n 5 --cli "codex exec --skip-git-repo-check -s read-only -"',
+            "```", "",
+            "Each process gets only the prompt on stdin, in an empty folder, so it cannot read this study. "
+            "With an API key instead: `--model <model-id>` (`OPENROUTER_API_KEY`, or `OPENAI_API_KEY` with "
+            "`OPENAI_BASE_URL`). To collect answers some other way: `plan --n 5` lists every prompt, and "
+            "`replay replies.json --n 5` scores the replies given in the same order.", "",
         ]
     return "\n".join([
         "---",
@@ -155,7 +159,8 @@ def skill_md(study, name):
         *rows, "",
         "Also: [paper.md](references/paper.md) (background, findings, limitations), "
         "[open-issues.md](references/open-issues.md) (what the paper does not state) and "
-        "[sources.md](references/sources.md) (source files and hashes).", "",
+        "[sources.md](references/sources.md) (source files and hashes) and "
+        "[accuracy.md](references/accuracy.md) (%s)." % (quote_line or "what has been checked"), "",
         "Search everything: `python scripts/study_core.py search <words>`.", "",
         *run,
         "## Rules", "",
@@ -181,73 +186,102 @@ def sources_md(study, root, include_paper, include_sources):
     return "\n".join(out) + "\n"
 
 
-def readme(study, name):
-    skill = "skill/%s" % name
-    server = "mcp/%s-mcp/server.py" % name
-    return "\n".join([
-        "# %s: agent package" % study.program.get("title"), "",
+def readme(study, name, with_mcp):
+    server = "%s/scripts/mcp_server.py" % name
+    lines = [
+        "# %s: agent skill" % study.program.get("title"), "",
         citation(study), "",
-        "Built with HumanStudy Hub. The same program in two forms for AI agents:", "",
-        "- `%s/`: a skill folder (`SKILL.md`, readable references, `program.json`, the replay package)." % skill,
-        "- `mcp/%s-mcp/`: an MCP server with tools to read, search, prompt and score the study." % name, "",
+        "Built with HumanStudy Hub. `%s/` is a skill folder: `SKILL.md`, one readable reference per study "
+        "with page numbers, `program.json` and the replay package. Any agent that reads skills can use it; "
+        "it needs only Python 3.8+ (no packages, no keys)." % name, "",
         readiness_text(study), "",
-        "Both need only Python 3.8+ (no packages). On Windows use `python` or `py` where these lines say "
-        "`python3`, and absolute paths.", "",
-        "## Claude Code", "",
+        "On Windows use `python` or `py` where these lines say `python3`.", "",
+        "## Install", "",
         "```bash",
-        "mkdir -p ~/.claude/skills && cp -R %s ~/.claude/skills/" % skill,
-        "claude mcp add %s -- python3 \"$PWD/%s\"" % (name, server),
+        "# Claude Code",
+        "mkdir -p ~/.claude/skills && cp -R %s ~/.claude/skills/" % name,
+        "# Codex",
+        "mkdir -p ~/.agents/skills && cp -R %s ~/.agents/skills/" % name,
+        "# OpenCode: copy it into your project's .opencode/skills/",
         "```", "",
-        "## Codex", "",
-        "```bash",
-        "mkdir -p ~/.agents/skills && cp -R %s ~/.agents/skills/" % skill,
-        "codex mcp add %s -- python3 \"$PWD/%s\"" % (name, server),
-        "```", "",
-        "## OpenCode", "",
-        "Copy `%s` into your project's `.opencode/skills/` folder and add to `opencode.json`:" % skill, "",
-        "```json",
-        json.dumps({"mcp": {name: {"type": "local", "command": ["python3", "/absolute/path/" + server], "enabled": True}}}, indent=2),
-        "```", "",
-        "## Without an agent", "",
-        "```bash",
-        "python3 %s/scripts/study_core.py overview" % skill,
-        "```", "",
-        "`MANIFEST.json` lists every file with its SHA-256. AI participants' answers are a simulation, "
-        "not data from people.", "",
-    ])
+    ]
+    if with_mcp:
+        lines += [
+            "## MCP server (optional)", "",
+            "For clients that cannot run commands or read files. It serves the same folder:", "",
+            "```bash",
+            "claude mcp add %s -- python3 \"$PWD/%s\"" % (name, server),
+            "codex mcp add %s -- python3 \"$PWD/%s\"" % (name, server),
+            "```", "",
+            "OpenCode `opencode.json`:", "",
+            "```json",
+            json.dumps({"mcp": {name: {"type": "local", "command": ["python3", "/absolute/path/" + server],
+                                       "enabled": True}}}, indent=2),
+            "```", "",
+        ]
+    lines += ["## Without an agent", "", "```bash", "python3 %s/scripts/study_core.py overview" % name, "```", "",
+              "`MANIFEST.json` lists every file with its SHA-256. AI participants' answers are a simulation, "
+              "not data from people.", ""]
+    return "\n".join(lines)
 
 
-def mcp_readme(study, tools):
-    lines = "\n".join("- `%s`: %s" % (t["name"], t["description"]) for t in tools)
-    return "\n".join(["# %s: MCP server" % study.program.get("title"), "",
-                      "`python3 server.py` speaks MCP over stdio. It needs no packages and no keys.", "",
-                      "## Tools", "", lines, "", readiness_text(study), ""])
+def quote_report(root):
+    """check_quotes.py from the build skill: every quote compared with the text of its cited page."""
+    sys.path.insert(0, str(HERE.parent / "build"))
+    try:
+        import check_quotes
+    except ImportError:
+        return None, None
+    report = check_quotes.check(root / "program.json")
+    return report, check_quotes.summary(report)
 
 
-def write_study_folder(study, root, dest, name, include_paper, include_sources):
-    """Shared content of the skill and the MCP folders: program, package, optional sources."""
-    dest.mkdir(parents=True)
-    shutil.copy2(root / "program.json", dest / "program.json")
+def accuracy_md(report, line):
+    out = ["# Accuracy checks", "",
+           "What has been checked mechanically, independent of the model that built the program.", ""]
+    if report is None:
+        return "\n".join(out + ["The quote check was not available when this was exported.", ""])
+    out += ["## Quotes against their pages", "", line + ".", "",
+            "- **found**: the quote is on the cited page.",
+            "- **close**: nearly verbatim (OCR noise or a small slip); reread before relying on it.",
+            "- **other page** / **not found**: the quote or its page number needs fixing.",
+            "- **unchecked**: no text layer on that page (scanned image) or not a PDF; check by eye.", ""]
+    rows = [r for r in report["results"] if r["status"] != "found"]
+    if rows:
+        out += ["| Evidence | Page | Result | Detail |", "| --- | --- | --- | --- |"]
+        for r in rows:
+            detail = r.get("reason") or ("found on p. %s" % r["foundOn"] if r.get("foundOn") else
+                                         "similarity %s" % r.get("similarity"))
+            out.append("| `%s` | %s | %s | %s |" % (r["id"], r["page"], r["status"].replace("_", " "), detail))
+        out.append("")
+    out += ["Not checked mechanically: whether every study, condition and step of the paper is in the "
+            "program, and whether fields that summarise rather than quote are right. Those rest on the "
+            "researcher's review of the program.", ""]
+    return "\n".join(out)
+
+
+def build(root, out, include_paper=False, include_sources=False, with_mcp=False):
+    study = Study(root)
+    name = skill_name(study.program)
+    skill = out / name
+    skill.mkdir(parents=True)
+    shutil.copy2(root / "program.json", skill / "program.json")
     if study.package:
-        copy_tree(study.package, dest / "package" / study.package.name)
+        copy_tree(study.package, skill / "package" / study.package.name)
     if include_paper:
         paper = paper_path(root, study)
         if paper.is_file():
-            shutil.copy2(paper, dest / paper.name)
+            shutil.copy2(paper, skill / paper.name)
     if include_sources and (root / "sources").is_dir():
-        copy_tree(root / "sources", dest / "sources")
-
-
-def build(root, out, include_paper=False, include_sources=False):
-    study = Study(root)
-    name = skill_name(study.program)
-    skill = out / "skill" / name
-    write_study_folder(study, root, skill, name, include_paper, include_sources)
+        copy_tree(root / "sources", skill / "sources")
     (skill / "scripts").mkdir()
     shutil.copy2(HERE / "agent/study_core.py", skill / "scripts/study_core.py")
+    if with_mcp:
+        shutil.copy2(HERE / "agent/mcp_server.py", skill / "scripts/mcp_server.py")
+    report, line = quote_report(root)
     refs = skill / "references"
     refs.mkdir()
-    (skill / "SKILL.md").write_text(skill_md(study, name), encoding="utf-8")
+    (skill / "SKILL.md").write_text(skill_md(study, name, line), encoding="utf-8")
     (refs / "paper.md").write_text("# Paper context\n\n" + study.paper_markdown(), encoding="utf-8")
     for s in study.studies:
         (refs / ("study-%s.md" % file_id(s["id"]))).write_text(study.study_markdown(s["id"]), encoding="utf-8")
@@ -256,23 +290,17 @@ def build(root, out, include_paper=False, include_sources=False):
         "# Open issues\n\nWhat the paper does not state or what still needs a decision.\n\n"
         + ("\n".join(study.issue_line(i) for i in issues) if issues else "None recorded.") + "\n", encoding="utf-8")
     (refs / "sources.md").write_text(sources_md(study, root, include_paper, include_sources), encoding="utf-8")
-
-    mcp = out / "mcp" / ("%s-mcp" % name)
-    write_study_folder(study, root, mcp, name, include_paper, include_sources)
-    shutil.copy2(HERE / "agent/study_core.py", mcp / "study_core.py")
-    shutil.copy2(HERE / "agent/mcp_server.py", mcp / "server.py")
-    listed, stderr = mcp_session(mcp / "server.py", [])
-    tools = listed.get(1, {}).get("result", {}).get("tools")
-    assert tools, "the MCP server did not start: %s" % stderr[-800:]
-    (mcp / "README.md").write_text(mcp_readme(study, tools), encoding="utf-8")
-    (out / "README.md").write_text(readme(study, name), encoding="utf-8")
+    (refs / "accuracy.md").write_text(accuracy_md(report, line), encoding="utf-8")
+    (out / "README.md").write_text(readme(study, name, with_mcp), encoding="utf-8")
 
     files = {p.relative_to(out).as_posix(): sha(p) for p in sorted(out.rglob("*")) if p.is_file()}
     paper = paper_path(root, study)
     manifest = {"format": VERSION, "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "programId": study.program.get("id"), "programSha256": sha(root / "program.json"),
                 "paperSha256": sha(paper) if paper.is_file() else None,
-                "readiness": study.readiness(), "skill": "skill/" + name, "mcp": "mcp/%s-mcp" % name,
+                "readiness": study.readiness(), "skill": name,
+                "mcpServer": name + "/scripts/mcp_server.py" if with_mcp else None,
+                "quoteCheck": report["counts"] if report else None,
                 "files": files}
     (out / "MANIFEST.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return name
@@ -309,47 +337,46 @@ def verify(out, name):
     assert set(extra) == listed, "unlisted files: %s" % sorted(set(extra) - listed)
     checks.append("files and hashes (%d files)" % len(manifest["files"]))
 
-    skill = out / "skill" / name
+    skill = out / name
     text = (skill / "SKILL.md").read_text(encoding="utf-8")
     assert text.startswith("---\nname: %s\ndescription: " % name), "SKILL.md frontmatter"
     for link in re.findall(r"\]\(([^)#]+)\)", text):
         assert (skill / link).is_file(), "broken link in SKILL.md: " + link
-    copies = {}
-    for folder in [skill, out / "mcp" / ("%s-mcp" % name)]:
-        s = Study(folder)
-        copies[folder.name] = s
-        for st in s.studies:
-            assert s.study_markdown(st["id"]).strip(), "empty study " + st["id"]
-        missing = [e for n in s.nodes for f in n.get("fields", []) for e in f.get("evidenceIds", []) if e not in s.evidence]
-        assert not missing, "fields cite unknown evidence: %s" % sorted(set(missing))[:5]
-    checks.append("program loads and every study renders in both folders")
+    s = Study(skill)
+    for st in s.studies:
+        assert s.study_markdown(st["id"]).strip(), "empty study " + st["id"]
+    missing = [e for n in s.nodes for f in n.get("fields", []) for e in f.get("evidenceIds", []) if e not in s.evidence]
+    assert not missing, "fields cite unknown evidence: %s" % sorted(set(missing))[:5]
+    checks.append("program loads and every study renders")
+    cli = subprocess.run([sys.executable, str(skill / "scripts/study_core.py"), "overview"],
+                         capture_output=True, text=True, encoding="utf-8", timeout=120, cwd=str(tempfile.gettempdir()))
+    assert cli.returncode == 0 and json.loads(cli.stdout).get("id") == s.program.get("id"), "study_core.py: " + cli.stderr[-500:]
+    checks.append("scripts/study_core.py runs from outside the folder")
 
-    first = next(iter(copies.values()))
-    calls = [("study_overview", {})]
-    if first.studies:
-        calls.append(("read_study", {"study_id": first.studies[0]["id"]}))
-    calls.append(("search_study", {"query": (first.program.get("title") or "study").split()[0]}))
-    responses, stderr = mcp_session(out / "mcp" / ("%s-mcp" % name) / "server.py", calls)
-    assert responses.get(0, {}).get("result", {}).get("capabilities", {}).get("tools") is not None, \
-        "MCP initialize failed: %s" % stderr[-500:]
-    tools = [t["name"] for t in responses.get(1, {}).get("result", {}).get("tools", [])]
-    assert "read_study" in tools and "score_sessions" in tools, "MCP tools/list: %s" % tools
-    for i, (tool, _) in enumerate(calls):
-        res = responses.get(i + 2, {}).get("result", {})
-        assert res and not res.get("isError"), "MCP %s failed: %s %s" % (tool, res, stderr[-500:])
-    checks.append("MCP server: initialize, %d tools listed, %d tool calls" % (len(tools), len(calls)))
+    if manifest.get("mcpServer"):
+        calls = [("study_overview", {})]
+        if s.studies:
+            calls.append(("read_study", {"study_id": s.studies[0]["id"]}))
+        calls.append(("search_study", {"query": (s.program.get("title") or "study").split()[0]}))
+        responses, stderr = mcp_session(out / manifest["mcpServer"], calls)
+        assert responses.get(0, {}).get("result", {}).get("capabilities", {}).get("tools") is not None, \
+            "MCP initialize failed: %s" % stderr[-500:]
+        tools = [t["name"] for t in responses.get(1, {}).get("result", {}).get("tools", [])]
+        assert "read_study" in tools and "score_replies" in tools, "MCP tools/list: %s" % tools
+        for i, (tool, _) in enumerate(calls):
+            res = responses.get(i + 2, {}).get("result", {})
+            assert res and not res.get("isError"), "MCP %s failed: %s %s" % (tool, res, stderr[-500:])
+        checks.append("MCP server: initialize, %d tools listed, %d tool calls" % (len(tools), len(calls)))
 
-    for folder, s in copies.items():
-        if s.package:
-            with tempfile.TemporaryDirectory() as tmp:
-                pkg = Path(tmp) / s.package.name  # a copy: files the test writes never reach the export
-                shutil.copytree(s.package, pkg)
-                run = subprocess.run([sys.executable, str(pkg / "task/adapter.py"), "--smoke-test"],
-                                     capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                     timeout=300, cwd=str(pkg))
-            assert run.returncode == 0, "replay package smoke test failed in %s:\n%s%s" % (folder, run.stdout[-800:], run.stderr[-800:])
-    if first.package:
-        checks.append("replay package smoke test in both folders")
+    if s.package:
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = Path(tmp) / s.package.name  # a copy: files the test writes never reach the export
+            shutil.copytree(s.package, pkg)
+            run = subprocess.run([sys.executable, str(pkg / "task/adapter.py"), "--smoke-test"],
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                 timeout=300, cwd=str(pkg))
+        assert run.returncode == 0, "replay package smoke test failed:\n%s%s" % (run.stdout[-800:], run.stderr[-800:])
+        checks.append("replay package smoke test")
     return checks
 
 
@@ -365,6 +392,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--output", required=True, help="new folder inside the project, e.g. exports/<project>-agent-<date>")
     ap.add_argument("--root", default=".", help="the research project (default: current folder)")
+    ap.add_argument("--mcp", action="store_true", help="also add an MCP server, for clients that cannot run commands")
     ap.add_argument("--include-paper", action="store_true", help="copy the paper PDF (only with the right to share it)")
     ap.add_argument("--include-sources", action="store_true", help="copy sources/ (only with the right to share them)")
     a = ap.parse_args(argv)
@@ -384,8 +412,9 @@ def main(argv=None):
     work = staging / out.name
     try:
         work.mkdir()
-        name = build(root, work, a.include_paper, a.include_sources)
+        name = build(root, work, a.include_paper, a.include_sources, a.mcp)
         checks = verify(work, name)
+        quotes = json.loads((work / "MANIFEST.json").read_text(encoding="utf-8")).get("quoteCheck")
         work.rename(out)
     except (AssertionError, OSError, RuntimeError, KeyError) as exc:
         print("FAIL %s" % exc, file=sys.stderr)
@@ -394,8 +423,12 @@ def main(argv=None):
         shutil.rmtree(staging, ignore_errors=True)
     for c in checks:
         print("ok   " + c)
+    if quotes is not None:
+        bad = quotes.get("not_found", 0) + quotes.get("other_page", 0)
+        print("%s quotes: %s" % ("note" if bad else "ok  ", ", ".join("%d %s" % (v, k.replace("_", " "))
+                                                                     for k, v in sorted(quotes.items()))))
     size = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
-    print("PASS %s (%.1f KB): skill/%s and mcp/%s-mcp" % (out, size / 1024, name, name))
+    print("PASS %s (%.1f KB): skill %s%s" % (out, size / 1024, name, " with MCP server" if a.mcp else ""))
     return 0
 
 

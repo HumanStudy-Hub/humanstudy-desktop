@@ -24,8 +24,8 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
 
 ## Next · #14 Paper2Agent integration
 
-- [~] Agent package export ([docs/agent-package.md](docs/agent-package.md)): `skill/` + `mcp/` from one
-      program, verified before it appears; Claude Code acceptance over MCP done on two private papers.
+- [~] Agent skill export ([docs/agent-package.md](docs/agent-package.md)): one skill folder, `--mcp` optional, quote check, CLI participants;
+      Claude Code acceptance done on two private papers. Next: Bench ground-truth accuracy rate.
       Open: in-app request through the `export` skill on Mac/Windows, Codex/OpenCode client check,
       turn-by-turn sessions for multi-turn studies, Paper2Skill-style source review in `build`.
 

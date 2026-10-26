@@ -1,64 +1,74 @@
-# Agent package: a study as a skill and an MCP server
+# Agent skill: a study for any AI agent
 
 Issue [#14](https://github.com/HumanStudy-Hub/humanstudy-desktop/issues/14). Research reports: PR #13.
 
 ## What it is
 
-Paper2Agent delivers a paper as `skill/` (an agent-readable paper) plus `mcp/` (tested tools that
-bind to the paper's code). HumanStudy already has the asset Paper2Agent lacks for social science:
-`program.json` (what each participant saw and did, cited to the page) and a replay package that
-runs participants and the paper's own analysis. The agent package uses the same delivery layout
-for that asset:
+Paper2Agent turns a paper into a skill an agent can read. HumanStudy already has the asset that
+matters for social science: `program.json` (what each participant saw and did, cited to the page)
+and a replay package that runs participants and the paper's own analysis. The export packs both
+into one skill folder:
 
 ```text
 exports/<project>-agent-<date>/
   README.md                 install lines for Claude Code, Codex, OpenCode
-  MANIFEST.json             SHA-256 of every file, program and paper hashes, readiness
-  skill/<name>/             SKILL.md, references/study-<id>.md (one per study), paper.md,
-                            open-issues.md, sources.md, program.json, package/, scripts/study_core.py
-  mcp/<name>-mcp/           server.py (stdio MCP, standard library only), study_core.py,
-                            program.json, package/
+  MANIFEST.json             SHA-256 of every file, program and paper hashes, readiness, quote check
+  <name>/                   the skill
+    SKILL.md
+    references/             study-<id>.md (one per study), paper.md, open-issues.md,
+                            sources.md, accuracy.md
+    program.json, package/<slug>/
+    scripts/study_core.py   read, search, run and score (standard library, Python 3.8+)
+    scripts/mcp_server.py   only with --mcp
 ```
 
-One program, two access formats. Neither adds facts: references are rendered from program fields
-with their pages; verbatim fields stay quoted; missing fields read "Not stated in the paper".
+One folder, nothing duplicated. A skill is enough for any agent that can run commands and read
+files (Claude Code, Codex, OpenCode). `--mcp` adds a stdio MCP server over the same folder for clients
+that cannot. References are rendered from program fields with their pages; verbatim fields stay
+quoted with their check flag; missing fields read "Not stated in the paper".
 
-## How another agent runs the study
+## Running AI participants
 
-MCP tools: `study_overview`, `list_conditions`, `read_study`, `read_paper_context`, `get_item`,
-`search_study`, `list_open_issues`, `participant_prompt`, `parse_reply`, `plan_participants`,
-`score_replies`, `score_sessions`.
+Each AI participant must answer in its own fresh context. A model answering many prompts in one
+conversation knows the hypothesis, so its answers are not independent participants (seen in an
+early pilot: one context answered every gain-frame prompt the same way).
 
-`plan_participants` runs the package's own `run_sessions` with a recording model, so the agent
-receives every prompt in order. It answers each in a fresh context (its own model or subagents),
-then `score_replies` replays those answers through `run_sessions` with the same seed and runs
-`evaluate`. If a prompt depends on an earlier answer (multi-turn studies), replay refuses and the
-study must use `study_core.py run --model ...` with an API key from the environment. The export
-itself never holds a key. A study whose readiness is `blocked` can be read but not run.
+- `run --cli "claude -p --model haiku"` or `--cli "codex exec --skip-git-repo-check -s read-only -"`:
+  one new process per participant, prompt on stdin, in an empty folder so it cannot read the
+  study. Uses the CLI's own login; no key in the export.
+- `run --model <id>`: OpenAI-compatible API with a key from the environment.
+- `plan` / `replay`: list every prompt, collect answers elsewhere, score them in the same order.
+  Refused when a prompt depends on an earlier answer.
 
-## Verification before the folder appears
+All three go through the package's own `run_sessions` and `evaluate`, and a `blocked` study can be
+read but not run.
 
-Built in a staging folder, then: every file matches the manifest; SKILL.md frontmatter and links;
-program loads and every study renders in both copies; every cited evidence id exists; real MCP
-session (initialize, tools/list, three tool calls); the package's `--smoke-test` in both copies.
-Only then is the folder moved into place. Existing exports are never overwritten.
+## Accuracy
 
-Accepted on 2026-10-25 with real projects (kept private): false consensus 1977 (blocked package,
-read via Claude Code over MCP, answers matched program.json) and framing 1981 (ready package:
-Claude Code planned 3 participants per condition, answered them and scored them over MCP).
+Two different questions:
 
-## What it deliberately does not do
+1. **Does the export match the program?** Verified before the folder appears: manifest hashes,
+   SKILL.md frontmatter and links, every study renders, every cited evidence id exists, the scripts
+   run from outside the folder, a real MCP session (with `--mcp`), the package smoke test on a copy.
+2. **Does the program match the paper?** `build/check_quotes.py` compares every evidence quote with
+   the text layer of its cited page: found / close / other page / not found / unchecked (scanned
+   pages). It runs in `build` and again at export, into `references/accuracy.md`. The model's own
+   "verified" mark is not treated as evidence. On the two test papers: 35/35 and 43/45 found; the
+   two misses were table rows whose text layer is garbled, which is exactly what needs a human look.
 
-- No research-code MCP tools (Paper2MCP): social-science papers rarely ship code; the replay
-  package is the executable part, and every tool binds to it.
-- No paper redistribution by default (`--include-paper`, `--include-sources` need the right to share).
-- No second workflow in the app: the researcher asks the agent ("use this in Claude Code") and the
-  `export` skill runs one command.
+Not yet checked mechanically: completeness (every study, condition and step present) and
+summarised fields. Next: compare programs built from Bench's 12 curated studies with their ground
+truth, field by field, for an accuracy rate.
 
-## Next
+## Accepted on 2026-10-25 (private papers, content not published)
 
-- Paper2Skill's source review ideas inside `build`: source snapshots with hashes (now recorded in
-  `sources.md`), page-range review by a separate verifier, review decisions reused only for the same
-  source bytes.
-- Multi-turn studies: a turn-by-turn MCP session (`start_session` / `answer`) instead of plan/replay.
-- Community: publish agent packages next to programs so any agent can load a reviewed study.
+- False consensus 1977 (blocked package): Claude Code answered method questions with pages.
+- Framing 1981 (ready package): Claude Code ran a pilot over MCP; `--cli "claude -p --model haiku"`
+  ran 4 participants as 4 separate processes and scored them with the paper's evaluator.
+
+## Not in scope
+
+- Research-code tools (Paper2MCP): social-science papers rarely ship code; the replay package is the
+  executable part.
+- Paper redistribution by default (`--include-paper`, `--include-sources` need the right to share).
+- A second workflow in the app: the researcher asks the agent and the `export` skill runs one command.

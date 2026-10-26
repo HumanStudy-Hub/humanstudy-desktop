@@ -8,13 +8,17 @@ facts. Standard library only, Python 3.8+, so the folder works outside the Human
     python study_core.py score sessions.jsonl          the paper's own analysis on those sessions
     python study_core.py plan --n 5 > plan.json        every participant prompt, for your own model to answer
     python study_core.py replay replies.json --n 5     score those answers (same n, arms and seed)
+    python study_core.py run --cli "claude -p --model haiku" [--n 5]   one new CLI process per participant
     python study_core.py run --model <id> [--n 5] [--arm A]   needs OPENROUTER_API_KEY or OPENAI_API_KEY
 """
 import argparse
 import importlib.util
 import json
 import os
+import shlex
+import subprocess
 import sys
+import tempfile
 import urllib.request
 from pathlib import Path
 
@@ -411,6 +415,31 @@ def http_llm(model, temperature=1.0):
     return llm
 
 
+def cli_llm(command, timeout=600):
+    """llm(prompt) -> str by starting a new agent CLI process per call (one fresh context per participant).
+
+    The prompt goes to stdin, the reply is the process's stdout. The process runs in a new empty folder,
+    so it cannot read the study, its hypotheses or other participants' answers. Uses the CLI's own login.
+    """
+    argv = shlex.split(command, posix=os.name != "nt")
+    if not argv:
+        raise RuntimeError("--cli needs a command, e.g. \"claude -p --model haiku\"")
+
+    def llm(prompt, *args, **kw):
+        if isinstance(prompt, list):
+            text = "\n\n".join(str(m.get("content", "")) for m in prompt if isinstance(m, dict))
+        else:
+            system = kw.get("system") or (args[0] if args and isinstance(args[0], str) else None)
+            text = (system + "\n\n" + prompt) if system else prompt
+        with tempfile.TemporaryDirectory(prefix="participant-") as empty:
+            run = subprocess.run(argv, input=text, capture_output=True, text=True, encoding="utf-8",
+                                 errors="replace", timeout=timeout, cwd=empty)
+        if run.returncode != 0:
+            raise RuntimeError("participant command failed (%d): %s" % (run.returncode, run.stderr.strip()[-400:]))
+        return run.stdout.strip()
+    return llm
+
+
 def read_sessions(path):
     raw = Path(path).read_text(encoding="utf-8").strip()
     if raw.startswith("["):
@@ -441,7 +470,9 @@ def main(argv=None):
         q.add_argument("--arm", action="append")
         q.add_argument("--seed", type=int, default=20261015)
     r = sub.add_parser("run")
-    r.add_argument("--model", required=True)
+    who = r.add_mutually_exclusive_group(required=True)
+    who.add_argument("--cli", help='agent CLI to start once per participant, e.g. "claude -p --model haiku"')
+    who.add_argument("--model", help="model id for an OpenAI-compatible API (key from the environment)")
     r.add_argument("--n", type=int)
     r.add_argument("--arm", action="append")
     r.add_argument("--seed", type=int, default=20261015)
@@ -476,7 +507,7 @@ def main(argv=None):
     elif a.cmd == "replay":
         show(s.replay(json.loads(Path(a.replies).read_text(encoding="utf-8")), a.n, a.arm, a.seed)["evaluation"])
     elif a.cmd == "run":
-        result = s.run(http_llm(a.model), a.seed, a.n, a.arm)
+        result = s.run(cli_llm(a.cli) if a.cli else http_llm(a.model), a.seed, a.n, a.arm)
         if a.out:
             Path(a.out).write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         show(result["evaluation"])
