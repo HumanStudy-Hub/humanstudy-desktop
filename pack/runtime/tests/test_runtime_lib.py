@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -239,6 +240,74 @@ class PdfTests(unittest.TestCase):
         out2 = self.run_tool("hs-pdf", "pages", self.pdf, "--from", "2", "--to", "2")[1]
         self.assertTrue(out2.startswith("=== page 2 ==="))
         self.assertNotIn("page 1", out2)
+
+    def test_pages_arrive_before_the_next_page_and_release_parser_cache(self):
+        original = T.page_text
+
+        def observe(pdf, index, layout):
+            if index:
+                self.assertIn(f"=== page {index} ===", sys.stdout.buffer.getvalue().decode())
+                self.assertFalse(hasattr(pdf.pages[index - 1], "_layout"),
+                                 "Previous page layout must not accumulate across a long paper")
+            return original(pdf, index, layout)
+
+        with patch.object(T, "page_text", side_effect=observe):
+            rc, out, _ = self.run_tool("hs-pdf", "pages", self.pdf)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out, "=== page 1 ===\nAlpha one\n\n=== page 2 ===\nBeta two\n\n"
+                             "=== page 3 ===\n\n\n=== page 4 ===\nDelta four\n")
+
+    def test_image_heavy_pdf_over_25mb_is_read_without_inline_media_or_source_changes(self):
+        from pypdf import PdfReader, PdfWriter
+        from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject, NumberObject
+        writer = PdfWriter()
+        writer.append_pages_from_reader(PdfReader(io.BytesIO(make_pdf(["First passage", "Last passage"]))))
+        image = DecodedStreamObject()
+        image.set_data(b"\0" * (3000 * 3000 * 3))
+        image.update({NameObject("/Type"): NameObject("/XObject"),
+                      NameObject("/Subtype"): NameObject("/Image"),
+                      NameObject("/Width"): NumberObject(3000), NameObject("/Height"): NumberObject(3000),
+                      NameObject("/ColorSpace"): NameObject("/DeviceRGB"),
+                      NameObject("/BitsPerComponent"): NumberObject(8)})
+        reference = writer._add_object(image)
+        for page in writer.pages:
+            page["/Resources"][NameObject("/XObject")] = DictionaryObject({NameObject("/Figure"): reference})
+            content = DecodedStreamObject()
+            content.set_data(page.get_contents().get_data() + b"\nq 1 0 0 1 0 0 cm /Figure Do Q\n")
+            page[NameObject("/Contents")] = writer._add_object(content)
+        large = Path(self.dir) / "image-heavy.pdf"
+        writer.write(large)
+        import hashlib
+        digest = hashlib.sha256(large.read_bytes()).digest()
+        self.assertGreater(large.stat().st_size, 25 * 1024 * 1024)
+        extracted = []
+        for page in (1, 2):
+            rc, text, _ = self.run_tool("hs-pdf", "pages", str(large), "--from", str(page), "--to", str(page))
+            self.assertEqual(rc, 0)
+            extracted.append(text)
+        self.assertIn("First passage", extracted[0])
+        self.assertIn("Last passage", extracted[1])
+        self.assertLess(sum(len(t.encode()) for t in extracted), 1024)
+        self.assertEqual(hashlib.sha256(large.read_bytes()).digest(), digest)
+
+    def test_long_paper_keeps_all_pages(self):
+        long = Path(self.dir) / "long.pdf"
+        long.write_bytes(make_pdf([f"Passage {i}" for i in range(1, 101)]))
+        rc, text, _ = self.run_tool("hs-pdf", "pages", str(long))
+        self.assertEqual(rc, 0)
+        self.assertEqual(text.count("=== page "), 100)
+        self.assertIn("=== page 100 ===\nPassage 100", text)
+
+    def test_password_protected_paper_reports_failure(self):
+        from pypdf import PdfReader, PdfWriter
+        writer = PdfWriter()
+        writer.append_pages_from_reader(PdfReader(self.pdf))
+        writer.encrypt("test-password")
+        encrypted = Path(self.dir) / "locked.pdf"
+        writer.write(encrypted)
+        rc, _, error = self.run_tool("hs-pdf", "pages", str(encrypted))
+        self.assertEqual(rc, 1)
+        self.assertIn("Couldn't read", error)
 
     def test_errors_exit_1(self):
         rc, _, err = self.run_tool("pdftotext", "/nonexistent.pdf", "-")
