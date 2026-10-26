@@ -240,8 +240,8 @@ def hs_pdf(argv: list[str]) -> int:
     if blank:
         shown = ", ".join(map(str, blank[:20])) + (" ..." if len(blank) > 20 else "")
         sys.stderr.write(
-            f"hs-pdf: no text on page(s) {shown}: scanned or image-only. OCR is not available in this runtime; "
-            "say so to the researcher instead of guessing the content.\n"
+            f"hs-pdf: no text on page(s) {shown}: scanned or image-only. Run the build skill's "
+            "scan_pages.py on this PDF to render (and, with Tesseract, OCR) them; never guess the content.\n"
         )
     return 0
 

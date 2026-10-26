@@ -1,6 +1,7 @@
 """Agent package export: one program becomes a skill folder and an MCP server, verified before it appears.
    python -m unittest discover -s pack/runtime/tests"""
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -126,7 +127,7 @@ class AgentPackage(unittest.TestCase):
         sys.path.insert(0, str(REPO / "pack/skills/export/agent"))
         import study_core
         fake = ('%s -c "import os,sys; sys.stdin.read(); '
-                'print(\'yes\' if not os.listdir(\'.\') else \'saw files\', os.getpid())"' % sys.executable)
+                'print(\'yes\' if not os.listdir(\'.\') else \'saw files\', os.getpid())"' % shlex.quote(sys.executable))
         result = study_core.Study(self.root).run(study_core.cli_llm(fake), n=2)
         replies = [x["reply"] for x in result["sessions"]]
         self.assertTrue(all(r.startswith("yes ") for r in replies), replies)
@@ -152,6 +153,40 @@ class AgentPackage(unittest.TestCase):
         report = check_quotes.check(self.root / "program.json")
         status = {r["id"]: r["status"] for r in report["results"]}
         self.assertEqual(status, {"ok": "found", "slip": "close", "page": "other_page", "gone": "not_found"})
+
+    def test_quote_check_uses_ocr_text_of_the_same_pdf_and_names_missed_studies(self):
+        sys.path.insert(0, str(REPO / "pack/skills/build"))
+        import check_quotes
+        import scan_pages
+        pages = ["Experiment 1 and Experiment 2 follow. Participants were 80 undergraduates.",
+                 "Experiment 2 replicated the design with 120 adults.", "", ""]
+        original = check_quotes.Pdf.load
+        check_quotes.Pdf.load = lambda self: (setattr(self, "reader", "test") or pages)
+        self.addCleanup(setattr, check_quotes.Pdf, "load", original)
+        pdf = self.root / "paper.pdf"
+        folder = scan_pages.pages_dir(pdf)
+        folder.mkdir(parents=True)
+        # two columns read across, as OCR does on a scanned page
+        (folder / "page-003.txt").write_text(
+            "The mean anchoring index was .49 and the median | Payment was five dollars for\n"
+            "subject moved almost halfway toward the anchor. | the forty minute session.\n", encoding="utf-8")
+        manifest = {"sha256": scan_pages.sha256(pdf), "pages": {"3": {"mode": "ocr", "text": "page-003.txt"}}}
+        (folder / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        program = json.loads(PROGRAM.read_text(encoding="utf-8"))
+        program.update(studies=[{"id": "s1", "title": "Experiment 1"}], nodes=[], steps=[])
+        program["evidence"] = [
+            {"id": "ocr", "locator": {"page": 3}, "quote": "The mean anchoring index was .49 and the median subject "
+                                                            "moved almost halfway toward the anchor."},
+            {"id": "digit", "locator": {"page": 3}, "quote": "The mean anchoring index was .94 and the median"},
+            {"id": "scan", "locator": {"page": 4}, "quote": "A page nobody has OCRed yet"}]
+        (self.root / "program.json").write_text(json.dumps(program), encoding="utf-8")
+        report = check_quotes.check(self.root / "program.json")
+        status = {r["id"]: r["status"] for r in report["results"]}
+        self.assertEqual(status, {"ocr": "found_ocr", "digit": "check_ocr", "scan": "unchecked"})
+        self.assertEqual(report["unnamedStudies"], ["2"])
+        pdf.write_bytes(pdf.read_bytes() + b"\n% changed")
+        report = check_quotes.check(self.root / "program.json")
+        self.assertEqual(report["results"][0]["status"], "unchecked", "OCR of another file is not used")
 
     def test_never_overwrites_and_respects_sharing_flags(self):
         self.assertEqual(export(self.root).returncode, 0)

@@ -13,9 +13,15 @@ can actually run as the original participants did, so the researcher can check i
 - Extract text from `paper.pdf` page by page with `hs-pdf pages paper.pdf` (prints one
   `=== page N ===` block per page; add `--from N --to M` for a range, `--layout` for column-aligned
   tables). `pdftotext -layout paper.pdf -` and `pdfinfo` also work (form feed between pages). If
-  `hs-pdf` reports pages with no text, the PDF is scanned: OCR is not available, so say which
-  pages could not be read instead of guessing. Keep the physical page number of every passage
-  you may cite.
+  `hs-pdf` reports pages with no text, the PDF is scanned: run
+  `python .opencode/skills/build/scan_pages.py paper.pdf`. It renders those pages to
+  `.humanstudy/pages/` and, when Tesseract is installed, prints their OCR text. OCR confuses
+  0/O, 1/l, minus signs and decimals and can interleave two columns: open the page image to
+  confirm every number and verbatim passage you take from it. Without OCR, read the page images
+  and mark their quotes `unverified`. Keep the physical page number of every passage you may cite.
+- Results tables: transcribe every cell the paper's comparisons use (each condition's mean, SD,
+  n, percentage), not a summary of the table. For a dense or scanned table, render the page with
+  `scan_pages.py paper.pdf --pages N --image` and read the image.
 - Read `sources/` only if present. Use the network only for URLs the researcher explicitly gave;
   record each URL consulted in `source/paper_metadata.json` → `external_sources`.
 - List every empirical study in the paper before modelling any of them.
@@ -115,9 +121,12 @@ researcher; a clean check is the standard.
 Before reporting completion run `python .opencode/skills/build/check_program.py program.json --complete`.
 Then run `python .opencode/skills/build/check_quotes.py program.json`: it compares every evidence
 quote with the text of its cited page. Fix `other_page` (wrong page number) and `not_found` (wrong or
-reconstructed quote) by rereading the page; if the page is a garbled table or scan, set the evidence
+reconstructed quote) by rereading the page. For `check_ocr`, open the page image named by
+`scan_pages.py` and correct the quote or its numbers; if the image is unreadable, set the evidence
 `verification` to `unverified` and say so in the report. Never mark a quote `verified` that this check
-cannot find.
+cannot find. The check also names Experiment/Study labels the paper uses that the program never
+mentions, and pages full of statistics that no evidence cites: model each missed study or result, or
+say in the report why it is out of scope.
 For every identified empirical study account for participants, design, procedure, variables/records,
 analysis and results. For an analysis-only scope account for analysis and results. These are coverage
 checks, not a fixed experimental template: information the paper omits is an explicit `missing` field
