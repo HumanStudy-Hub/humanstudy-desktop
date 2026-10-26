@@ -103,7 +103,7 @@ class AgentPackage(unittest.TestCase):
         self.assertIn("plan_participants", names)
         self.assertIn("Experiment 1", res[3]["result"]["content"][0]["text"])
         plan = json.loads(res[4]["result"]["content"][0]["text"])
-        self.assertEqual(len(plan["participants"]), 4)
+        self.assertEqual(len(plan["prompts"]), 4)
         scored = json.loads(res[5]["result"]["content"][0]["text"])
         self.assertEqual(scored["evaluation"]["yes"], {"condition-harm": {"yes": 2, "n": 2}, "condition-help": {"yes": 0, "n": 2}})
         self.assertTrue(res[6]["result"]["isError"], "a bad id is a tool error, not a dropped connection")
@@ -135,6 +135,87 @@ class AgentPackage(unittest.TestCase):
         run = export(self.root)
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("Reading only", (self.root / "exports/agent/skill/study-5/SKILL.md").read_text(encoding="utf-8"))
+
+
+def raw_server(server, lines):
+    run = subprocess.run([sys.executable, str(server)], input=b"\n".join(lines) + b"\n",
+                         capture_output=True, timeout=120)
+    return [json.loads(l) for l in run.stdout.decode("utf-8").splitlines()], run.returncode
+
+
+class ReviewRegressions(unittest.TestCase):
+    """Findings of the independent review on 2026-10-25."""
+
+    def setUp(self):
+        sys.path.insert(0, str(REPO / "pack/skills/export/agent"))
+        import study_core
+        self.core = study_core
+        self.root = make_project()
+        self.addCleanup(shutil.rmtree, self.root, True)
+
+    def test_server_survives_malformed_input_and_follows_jsonrpc(self):
+        self.assertEqual(export(self.root).returncode, 0)
+        server = self.root / "exports/agent/mcp/study-5-mcp/server.py"
+        out, code = raw_server(server, [
+            b"1", b"\xff\xfe", b'{"jsonrpc":"2.0","id":2,"method":"ping","params":[1]}',
+            b'{"jsonrpc":"2.0","id":3,"result":{}}',
+            b'{"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":"2099-01-01"}}',
+            b'[{"jsonrpc":"2.0","id":5,"method":"ping"},{"jsonrpc":"2.0","method":"notifications/initialized"}]',
+            b'{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"search_study","arguments":{"query":"x","limit":"3"}}}',
+            b'{"jsonrpc":"2.0","id":7,"method":"ping"}'])
+        self.assertEqual(code, 0)
+        self.assertEqual(out[0]["error"]["code"], -32600)
+        self.assertEqual(out[1]["error"]["code"], -32700)
+        self.assertEqual(out[2]["error"]["code"], -32602)
+        self.assertEqual(out[3]["result"]["protocolVersion"], "2025-06-18", "a client response (id 3) gets no reply")
+        self.assertEqual(out[4], [{"jsonrpc": "2.0", "id": 5, "result": {}}], "a batch is answered as one array")
+        self.assertTrue(out[5]["result"]["isError"])
+        self.assertEqual(out[6]["id"], 7)
+
+    def test_blocked_study_refuses_every_running_tool(self):
+        root = make_project(ready=False)
+        self.addCleanup(shutil.rmtree, root, True)
+        s = self.core.Study(root)
+        for call in [lambda: s.participant_prompt("exp-1", "condition-harm"), lambda: s.evaluate([]),
+                     lambda: s.parse_reply("exp-1", "condition-harm", "yes")]:
+            with self.assertRaisesRegex(RuntimeError, "iss-x"):
+                call()
+
+    def test_replay_rejects_unused_replies(self):
+        s = self.core.Study(self.root)
+        with self.assertRaisesRegex(RuntimeError, "expected 2"):
+            s.replay(["yes", "no", "extra"], 1)
+        self.assertEqual(s.replay(["yes", "no"], 1)["evaluation"]["status"], "ok")
+
+    def test_adapter_with_dataclasses_and_positional_llm_arguments(self):
+        (self.root / "package/knobe/task/adapter.py").write_text(
+            "from __future__ import annotations\nfrom dataclasses import dataclass\n"
+            "@dataclass\nclass P:\n    c: str\n"
+            "def run_sessions(llm, seed, n, arms=None):\n"
+            "    return [{'condition': c, 'arm': c, 'answer': llm('q ' + P(c).c, 'system text')}"
+            " for c in ['condition-harm'] for _ in range(n)]\n", encoding="utf-8")
+        s = self.core.Study(self.root)
+        self.assertEqual(len(s.plan(2)["prompts"]), 2)
+
+    def test_rendering_keeps_flags_rules_cycles_and_safe_file_names(self):
+        program = json.loads(PROGRAM.read_text(encoding="utf-8"))
+        program["studies"].append({"id": "exp:3", "title": "Colon study", "type": "empirical"})
+        program["nodes"].append({"id": "m3", "kind": "material", "title": "M", "studyIds": ["exp:3"], "fields": [
+            {"id": "t", "label": "Text", "value": "OCR text", "origin": "verbatim", "state": "check", "evidenceIds": []}]})
+        program["steps"] += [
+            {"id": "a3", "studyId": "exp:3", "kind": "action", "title": "Step A", "children": ["b3"], "conditionIds": ["condition-harm"],
+             "rule": {"id": "r", "label": "Order", "value": None, "origin": "unknown", "state": "missing", "evidenceIds": []}},
+            {"id": "b3", "studyId": "exp:3", "kind": "action", "title": "Step B", "children": ["a3"]}]
+        (self.root / "program.json").write_text(json.dumps(program), encoding="utf-8")
+        md = self.core.Study(self.root).study_markdown("exp:3")
+        self.assertIn("(verbatim, to check)", md)
+        self.assertIn("Step A", md)
+        self.assertIn("Step B", md)
+        self.assertIn("Order**: Not stated in the paper.", md)
+        self.assertIn("conditions:", md)
+        run = export(self.root)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertTrue((self.root / "exports/agent/skill/study-5/references/study-exp-3.md").is_file())
 
 
 if __name__ == "__main__":

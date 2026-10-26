@@ -25,7 +25,7 @@ sys.path.insert(0, str(HERE / "agent"))
 from study_core import Study  # noqa: E402
 
 VERSION = "humanstudy-agent-package/1"
-SKIP = {"__pycache__", ".pytest_cache", ".DS_Store"}
+SKIP = {"__pycache__", ".pytest_cache", ".DS_Store", ".env", ".git", ".humanstudy", "node_modules"}
 
 
 def sha(path):
@@ -42,13 +42,20 @@ def paper_path(root, study):
     """The project's paper: paper.pdf by the project format, else the file the program names."""
     named = study.program.get("source", {}).get("filename")
     for candidate in ["paper.pdf", named]:
-        if candidate and (root / candidate).is_file():
-            return root / candidate
+        path = (root / candidate).resolve() if candidate else None
+        if path and path.parent == root.resolve() and path.is_file():  # never a file outside the project
+            return path
     return root / "paper.pdf"
 
 
 def copy_tree(src, dest):
-    shutil.copytree(src, dest, ignore=lambda d, names: [n for n in names if n in SKIP or n.endswith(".pyc")])
+    shutil.copytree(src, dest, ignore=lambda d, names: [n for n in names if n in SKIP or n.endswith(".pyc")
+                                                       or n.startswith(".env")])
+
+
+def file_id(value):
+    """A study id as a file name that is valid on every platform (ids may contain ':')."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip(".-") or "study"
 
 
 def year_of(study):
@@ -92,7 +99,8 @@ def readiness_text(study):
     if not study.package:
         return "Reading only: no replay package was built, so AI participants cannot be run yet."
     if r.get("status") == "ready":
-        return "Ready to run: the replay package passed its checks when it was exported."
+        return ("Ready to run the parts the replay package covers (see `package/%s/task/task.json`). "
+                "Results from AI participants are a simulation, not observations of people." % study.package.name)
     blocking = ", ".join(r.get("blocking") or []) or "see open-issues.md"
     return "Not ready to run: the study still needs decisions (%s). Reading and querying work." % blocking
 
@@ -111,7 +119,7 @@ def skill_md(study, name):
     rows = []
     for s in ov["studies"]:
         conds = ", ".join("`%s`" % c["id"] for c in study.conditions(s["id"])) or "none recorded"
-        rows.append("| `%s` | %s | [study-%s.md](references/study-%s.md) | %s |" % (s["id"], s["title"], s["id"], s["id"], conds))
+        rows.append("| `%s` | %s | [study-%s.md](references/study-%s.md) | %s |" % (s["id"], s["title"], file_id(s["id"]), file_id(s["id"]), conds))
     pkg = study.package.name if study.package else None
     run = [
         "## Run AI participants", "",
@@ -183,19 +191,20 @@ def readme(study, name):
         "- `%s/`: a skill folder (`SKILL.md`, readable references, `program.json`, the replay package)." % skill,
         "- `mcp/%s-mcp/`: an MCP server with tools to read, search, prompt and score the study." % name, "",
         readiness_text(study), "",
-        "Both need only Python 3.8+ (no packages). Use absolute paths below.", "",
+        "Both need only Python 3.8+ (no packages). On Windows use `python` or `py` where these lines say "
+        "`python3`, and absolute paths.", "",
         "## Claude Code", "",
         "```bash",
-        "cp -R %s ~/.claude/skills/" % skill,
+        "mkdir -p ~/.claude/skills && cp -R %s ~/.claude/skills/" % skill,
         "claude mcp add %s -- python3 \"$PWD/%s\"" % (name, server),
         "```", "",
         "## Codex", "",
         "```bash",
-        "cp -R %s ~/.codex/skills/" % skill,
+        "mkdir -p ~/.agents/skills && cp -R %s ~/.agents/skills/" % skill,
         "codex mcp add %s -- python3 \"$PWD/%s\"" % (name, server),
         "```", "",
         "## OpenCode", "",
-        "Copy `%s` into `.opencode/skills/` and add to `opencode.json`:" % skill, "",
+        "Copy `%s` into your project's `.opencode/skills/` folder and add to `opencode.json`:" % skill, "",
         "```json",
         json.dumps({"mcp": {name: {"type": "local", "command": ["python3", "/absolute/path/" + server], "enabled": True}}}, indent=2),
         "```", "",
@@ -241,7 +250,7 @@ def build(root, out, include_paper=False, include_sources=False):
     (skill / "SKILL.md").write_text(skill_md(study, name), encoding="utf-8")
     (refs / "paper.md").write_text("# Paper context\n\n" + study.paper_markdown(), encoding="utf-8")
     for s in study.studies:
-        (refs / ("study-%s.md" % s["id"])).write_text(study.study_markdown(s["id"]), encoding="utf-8")
+        (refs / ("study-%s.md" % file_id(s["id"]))).write_text(study.study_markdown(s["id"]), encoding="utf-8")
     issues = study.open_issues()
     (refs / "open-issues.md").write_text(
         "# Open issues\n\nWhat the paper does not state or what still needs a decision.\n\n"
@@ -332,13 +341,24 @@ def verify(out, name):
 
     for folder, s in copies.items():
         if s.package:
-            run = subprocess.run([sys.executable, str(s.package / "task/adapter.py"), "--smoke-test"],
-                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                 timeout=300, cwd=str(s.package))
+            with tempfile.TemporaryDirectory() as tmp:
+                pkg = Path(tmp) / s.package.name  # a copy: files the test writes never reach the export
+                shutil.copytree(s.package, pkg)
+                run = subprocess.run([sys.executable, str(pkg / "task/adapter.py"), "--smoke-test"],
+                                     capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                     timeout=300, cwd=str(pkg))
             assert run.returncode == 0, "replay package smoke test failed in %s:\n%s%s" % (folder, run.stdout[-800:], run.stderr[-800:])
     if first.package:
         checks.append("replay package smoke test in both folders")
     return checks
+
+
+def inside(path, folder):
+    try:
+        path.relative_to(folder)
+        return True
+    except ValueError:
+        return False
 
 
 def main(argv=None):
@@ -356,15 +376,18 @@ def main(argv=None):
     if not (root / "program.json").is_file():
         print("error: no program.json in %s; build the study first" % root, file=sys.stderr)
         return 1
-    staging = Path(tempfile.mkdtemp(prefix=".agent-package-", dir=str(out.parent if out.parent.exists() else root)))
+    if a.include_sources and inside(out, (root / "sources").resolve()):
+        print("error: choose an output folder outside sources/", file=sys.stderr)
+        return 1
+    out.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".agent-package-", dir=str(out.parent)))
     work = staging / out.name
     try:
         work.mkdir()
         name = build(root, work, a.include_paper, a.include_sources)
         checks = verify(work, name)
-        out.parent.mkdir(parents=True, exist_ok=True)
         work.rename(out)
-    except AssertionError as exc:
+    except (AssertionError, OSError, RuntimeError, KeyError) as exc:
         print("FAIL %s" % exc, file=sys.stderr)
         return 2
     finally:

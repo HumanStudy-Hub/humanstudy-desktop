@@ -29,6 +29,7 @@ KIND_TITLES = {"hypothesis": "Hypotheses", "participants": "Participants", "desi
                "simulation": "Simulation scope", "overview": "Overview", "background": "Background",
                "finding": "Findings", "limitation": "Limitations"}
 MISSING_TEXT = "Not stated in the paper."
+SIMULATION_NOTE = "AI participants: a simulation, not observations of people."
 
 
 def find_root(start=None):
@@ -85,14 +86,16 @@ class Study:
         return ", ".join(out)
 
     def readiness(self):
+        blocking = [i["id"] for i in self.issues if i.get("severity") == "blocking"]
         if self.package and (self.package / "study.json").is_file():
             try:
                 r = json.loads((self.package / "study.json").read_text(encoding="utf-8")).get("readiness")
                 if isinstance(r, dict):
+                    if blocking and r.get("status") != "blocked":  # program changed after the package
+                        return {"status": "blocked", "blocking": blocking}
                     return r
             except ValueError:
                 pass
-        blocking = [i["id"] for i in self.issues if i.get("severity") == "blocking"]
         return {"status": "blocked" if blocking or not self.package else "unknown", "blocking": blocking,
                 "note": None if self.package else "no replay package was built"}
 
@@ -125,7 +128,9 @@ class Study:
                 lines.append("- **%s**: %s%s" % (f.get("label"), MISSING_TEXT, tail))
             elif f.get("origin") == "verbatim":
                 body = text(f.get("value")).strip()
-                lines.append("- **%s** (verbatim%s):" % (f.get("label"), ", " + cite if cite else ""))
+                flags = ["verbatim"] + [x for x in ["to check" if f.get("state") == "check" else None,
+                                                    "open decision" if f.get("state") == "decision" else None] if x]
+                lines.append("- **%s** (%s%s):" % (f.get("label"), ", ".join(flags), ", " + cite if cite else ""))
                 lines.extend("  > " + ln if ln.strip() else "  >" for ln in body.splitlines() or [""])
             else:
                 label = f.get("label")
@@ -144,6 +149,11 @@ class Study:
                "`%s`" % node.get("id")]
         if node.get("summary"):
             out += ["", node["summary"]]
+        if node.get("description") and node.get("description") != node.get("summary"):
+            out += ["", node["description"]]
+        conds = [self.node_by_id[c].get("title", c) if c in self.node_by_id else c for c in node.get("conditionIds", [])]
+        if conds:
+            out += ["", "Conditions: " + "; ".join(conds)]
         lines = self.field_lines(node)
         if lines:
             out += [""] + lines
@@ -174,6 +184,12 @@ class Study:
             if cite:
                 line += " (%s)" % cite
             out.append(line)
+            pad = "  " * (depth + 1)
+            conds = [self.node_by_id[c].get("title", c) if c in self.node_by_id else c for c in step.get("conditionIds", [])]
+            if conds:
+                out.append("%s- conditions: %s" % (pad, "; ".join(conds)))
+            if isinstance(step.get("rule"), dict):
+                out.extend(pad + ln for ln in self.field_lines({"fields": [dict(step["rule"], label=step["rule"].get("label") or "Rule")]}))
             for cid in step.get("children", []):
                 if cid in by_id:
                     visit(by_id[cid], depth + 1)
@@ -189,7 +205,7 @@ class Study:
 
         for s in starts:
             visit(s, 0)
-        for s in roots:
+        for s in steps:  # roots first, then anything only reachable through a cycle
             if s["id"] not in seen:
                 visit(s, 0)
         return out
@@ -251,7 +267,8 @@ class Study:
         return {"item": n, "evidence": [self.evidence[e] for e in sorted(ids) if e in self.evidence]}
 
     def search(self, query, limit=20):
-        words = [w for w in query.lower().split() if w]
+        limit = max(1, min(int(limit), 50))
+        words = [w for w in str(query).lower().split() if w]
         if not words:
             return []
         hits = []
@@ -283,11 +300,14 @@ class Study:
             path = self.package / ("task/adapter.py" if name == "adapter" else "evaluation/evaluation.py")
             spec = importlib.util.spec_from_file_location("hs_" + name, path)
             mod = importlib.util.module_from_spec(spec)
-            sys.path.insert(0, str(path.parent))
+            if str(path.parent) not in sys.path:
+                sys.path.insert(0, str(path.parent))  # kept: adapters may import siblings lazily
+            sys.modules[spec.name] = mod  # dataclasses and pickling look the module up here
             try:
                 spec.loader.exec_module(mod)
-            finally:
-                sys.path.remove(str(path.parent))
+            except BaseException:
+                sys.modules.pop(spec.name, None)
+                raise
             self._modules[name] = mod
         return self._modules[name]
 
@@ -298,24 +318,32 @@ class Study:
         return fn
 
     def participant_prompt(self, study_id, condition_id):
+        self.require_ready()
         return self.adapter_function("build_prompt")(study_id, condition_id)
 
     def parse_reply(self, study_id, condition_id, reply):
+        self.require_ready()
         return self.adapter_function("parse_reply")(study_id, condition_id, reply)
 
     def evaluate(self, sessions):
+        self.require_ready()
         return self.module("evaluation").evaluate(sessions)
 
-    def _sessions(self, llm, seed, n, arms):
+    def require_ready(self):
         ready = self.readiness()
         if ready.get("status") == "blocked":
-            raise RuntimeError("the study is not ready to run; open decisions: %s" % (ready.get("blocking") or ready.get("note")))
+            open_ids = ready.get("blocking") or [i["id"] for i in self.issues if i.get("severity") in ("blocking", "decision")]
+            raise RuntimeError("the study is not ready to run AI participants; settle these first: %s"
+                               % (", ".join(open_ids) if open_ids else ready.get("note") or "see list_open_issues"))
+
+    def _sessions(self, llm, seed, n, arms):
+        self.require_ready()
         return self.module("adapter").run_sessions(llm, seed, n or 5, arms)
 
     def run(self, llm, seed=20261015, n=None, arms=None):
         """Run AI participants through the package's own run_sessions with a model you provide."""
         sessions = self._sessions(llm, seed, n, arms)
-        return {"sessions": sessions, "evaluation": self.evaluate(sessions)}
+        return {"note": SIMULATION_NOTE, "evaluation": self.evaluate(sessions), "sessions": sessions}
 
     def plan(self, n=5, arms=None, seed=20261015):
         """Every prompt the participants will read, in order, so another agent can answer them itself.
@@ -324,27 +352,40 @@ class Study:
         n, arms and seed, to replay()."""
         calls = []
 
-        def record(prompt, **kw):
-            calls.append({"index": len(calls), "prompt": prompt, "options": kw or None})
+        def record(prompt, *args, **kw):
+            calls.append({"index": len(calls), "prompt": prompt, "options": (list(args) or None, kw or None)})
             return ""
         self._sessions(record, seed, n, arms)
-        return {"n": n, "arms": arms, "seed": seed, "participants": calls}
+        for c in calls:
+            if c["options"] == (None, None):
+                del c["options"]
+        return {"n": n, "arms": arms, "seed": seed, "prompts": calls,
+                "note": "One entry per model call the package makes, in order (usually one per AI participant). "
+                        "Answer each in a fresh context that sees only that prompt."}
 
     def replay(self, replies, n=5, arms=None, seed=20261015):
         """Score replies collected for plan(): the package rebuilds each session and runs the paper's analysis."""
-        planned = self.plan(n, arms, seed)["participants"]
+        planned = self.plan(n, arms, seed)["prompts"]
         if len(replies) != len(planned):
             raise RuntimeError("expected %d replies (one per planned prompt), got %d" % (len(planned), len(replies)))
         queue = iter(enumerate(replies))
 
-        def answer(prompt, **kw):
-            i, reply = next(queue)
+        def answer(prompt, *args, **kw):
+            try:
+                i, reply = next(queue)
+            except StopIteration:
+                raise RuntimeError("the package asked for more answers than planned: the study is not "
+                                   "deterministic for plan/replay; use run with a model instead")
             if prompt != planned[i]["prompt"]:
                 raise RuntimeError("prompt %d depends on earlier answers, so this study must be run turn by turn: "
                                    "use run with a model instead" % i)
             return reply if isinstance(reply, str) else json.dumps(reply)
         sessions = self._sessions(answer, seed, n, arms)
-        return {"sessions": sessions, "evaluation": self.evaluate(sessions)}
+        left = sum(1 for _ in queue)
+        if left:
+            raise RuntimeError("%d replies were not used: the package's calls differed from the plan; use run "
+                               "with a model instead" % left)
+        return {"note": SIMULATION_NOTE, "evaluation": self.evaluate(sessions), "sessions": sessions}
 
 
 def http_llm(model, temperature=1.0):
