@@ -44,7 +44,8 @@ def one(p, work, a):
         for s in p.get("sources", []):
             shutil.copy2(s, stage / Path(s).name)
         sh([sys.executable, REPO / "scripts/batch_build.py", "--pdfs", stage, "--work", work / "_build" / p["id"],
-            "--jobs", 1, "--python", py, "--model", a.build_model], log=log)
+            "--jobs", 1, "--python", py, "--agent", a.build_agent]
+           + (["--model", a.build_model] if a.build_model else []), log=log)
         built = work / "_build" / p["id"] / p["id"]
         if built.is_dir():
             shutil.rmtree(project, ignore_errors=True)
@@ -63,7 +64,7 @@ def one(p, work, a):
         except Exception:
             row["readiness"] = None
     if "human" in a.steps and pkg and p.get("data") and not (project / "human-check.json").is_file():
-        args = [py, HERE / "attach_human.py", project, "--python", py, "--model", a.build_model]
+        args = [py, HERE / "attach_human.py", project, "--python", py]
         for d in p["data"]:
             args += ["--data", d]
         sh(args, log=log, timeout=3600)
@@ -101,7 +102,9 @@ def main(argv=None):
     ap.add_argument("--jobs", type=int, default=3)
     ap.add_argument("--n", type=int, default=10, help="AI participants per arm")
     ap.add_argument("--participant-jobs", type=int, default=6)
-    ap.add_argument("--build-model", default="sonnet")
+    ap.add_argument("--build-agent", choices=["claude", "opencode"], default="claude",
+                    help="opencode = the desktop app's OpenCode on its hosted models (needs HUMANSTUDY_DESKTOP_KEY)")
+    ap.add_argument("--build-model", default=None, help="default: sonnet (claude) or anthropic/claude-sonnet-5.5")
     ap.add_argument("--steps", default=",".join(STEPS))
     ap.add_argument("--only", help="comma-separated pilot ids")
     ap.add_argument("--python", default=sys.executable)

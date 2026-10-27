@@ -6,6 +6,11 @@
 
 A paper with supplements is a folder holding paper.pdf and the other PDFs; those go to sources/.
 
+--agent opencode runs the HumanStudy edition of OpenCode that ships with the desktop app against the
+app's hosted model API (the same models and billing as builds in the app). It needs the desktop key in
+HUMANSTUDY_DESKTOP_KEY (never printed or written to the projects); --model is a hosted model id such
+as anthropic/claude-sonnet-5.5.
+
 Each PDF gets its own project folder `<work>/<pdf name>/` (paper.pdf + the skill), and one
 non-interactive agent session builds program.json and the replay package with every check passing.
 No simulation is run. A paper whose project already holds a passing program is skipped, so the
@@ -40,7 +45,7 @@ def slug(name):
 def setup(pdf, project, skill):
     if project.exists():
         shutil.rmtree(project)
-    for where in (".claude/skills", ".agents/skills"):
+    for where in (".claude/skills", ".agents/skills", ".opencode/skills"):
         (project / where).mkdir(parents=True)
         shutil.copytree(skill, project / where / "humanstudy")
     if pdf.is_dir():  # paper.pdf plus supplements
@@ -63,7 +68,42 @@ def find_papers(src):
     return folders + sorted(p for p in src.rglob("*") if p.suffix.lower() == ".pdf" and not inside(p))
 
 
+HOSTED = "https://humanstudy-hub.com/api/desktop/v1"
+
+
+def opencode_binary():
+    """The OpenCode build the desktop app installed (newest), or HUMANSTUDY_OPENCODE_BIN."""
+    if os.environ.get("HUMANSTUDY_OPENCODE_BIN"):
+        return os.environ["HUMANSTUDY_OPENCODE_BIN"]
+    homes = [Path.home() / "Library/Application Support/HumanStudy Hub/opencode",
+             Path(os.environ.get("APPDATA", "~")).expanduser() / "HumanStudy Hub/opencode",
+             Path.home() / ".config/HumanStudy Hub/opencode"]
+    found = sorted((b for h in homes if h.is_dir() for b in h.glob("*/opencode*") if b.is_file()),
+                   key=lambda b: [int(x) if x.isdigit() else x for x in re.split(r"[.-]", b.parent.name)])
+    return str(found[-1]) if found else None
+
+
+def opencode_env(env, model, work):
+    """Hosted provider, auto-approved tools inside the project, and XDG dirs of our own."""
+    cfg = {"$schema": "https://opencode.ai/config.json", "model": "humanstudy/" + model,
+           "small_model": "humanstudy/" + model,
+           "permission": {"edit": "allow", "bash": "allow", "external_directory": "deny"},
+           "provider": {"humanstudy": {"options": {"baseURL": os.environ.get("HUMANSTUDY_HOSTED_BASEURL", HOSTED),
+                                                   "apiKey": "{env:HUMANSTUDY_DESKTOP_KEY}"}}}}
+    env = dict(env, OPENCODE_CONFIG_CONTENT=json.dumps(cfg), OPENCODE_DISABLE_AUTOUPDATE="1",
+               OPENCODE_DISABLE_CLAUDE_CODE_PROMPT="1", HUMANSTUDY_PROVIDER="humanstudy", HUMANSTUDY_MODEL=model)
+    for k in ("CONFIG", "DATA", "CACHE", "STATE"):
+        d = work / "_opencode" / k.lower()
+        d.mkdir(parents=True, exist_ok=True)
+        env["XDG_%s_HOME" % k] = str(d)
+    env.pop("OPENCODE_CONFIG", None)
+    env.pop("OPENCODE_CONFIG_DIR", None)
+    return env
+
+
 def agent_command(agent, model):
+    if agent == "opencode":
+        return [opencode_binary(), "run", "--format", "json", PROMPT]
     if agent == "claude":
         return ["claude", "-p", PROMPT, "--model", model, "--dangerously-skip-permissions",
                 "--strict-mcp-config", "--output-format", "json"]
@@ -130,21 +170,29 @@ def main(argv=None):
     ap.add_argument("--pdfs", required=True, help="a folder of PDFs (searched recursively) or one PDF")
     ap.add_argument("--work", required=True)
     ap.add_argument("--jobs", type=int, default=4)
-    ap.add_argument("--agent", choices=["claude", "codex"], default="claude")
-    ap.add_argument("--model", default=None, help="default: sonnet for claude, the CLI default for codex")
+    ap.add_argument("--agent", choices=["claude", "codex", "opencode"], default="claude")
+    ap.add_argument("--model", default=None, help="default: sonnet for claude, anthropic/claude-sonnet-5.5 for "
+                                                  "opencode, the CLI default for codex")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--timeout", type=int, default=3600, help="seconds per paper")
     ap.add_argument("--rebuild", action="store_true", help="rebuild papers that already passed")
     ap.add_argument("--python", default=sys.executable, help="Python with pypdf, for the checks")
     a = ap.parse_args(argv)
-    model = a.model or ("sonnet" if a.agent == "claude" else None)
+    model = a.model or {"claude": "sonnet", "opencode": "anthropic/claude-sonnet-5.5"}.get(a.agent)
     src = Path(a.pdfs)
     pdfs = find_papers(src)
     pdfs = pdfs[:a.limit] if a.limit else pdfs
     if not pdfs:
         print("no PDFs found in %s" % src, file=sys.stderr)
         return 1
-    if not shutil.which(a.agent):
+    if a.agent == "opencode":
+        if not opencode_binary():
+            print("no HumanStudy OpenCode found: install the desktop app or set HUMANSTUDY_OPENCODE_BIN", file=sys.stderr)
+            return 1
+        if not os.environ.get("HUMANSTUDY_DESKTOP_KEY"):
+            print("set HUMANSTUDY_DESKTOP_KEY to use the app's hosted models", file=sys.stderr)
+            return 1
+    elif not shutil.which(a.agent):
         print("the %s CLI is not on PATH" % a.agent, file=sys.stderr)
         return 1
     work = Path(a.work).resolve()
@@ -154,6 +202,8 @@ def main(argv=None):
     subprocess.run([sys.executable, str(REPO / "scripts/build_standalone_skill.py"), "--out", str(skill)],
                    check=True, capture_output=True)
     env = dict(os.environ, PATH=str(Path(a.python).parent) + os.pathsep + os.environ.get("PATH", ""))
+    if a.agent == "opencode":
+        env = opencode_env(env, model, work)
     names, rows = {}, []
     for pdf in pdfs:  # unique project names even when two PDFs share a file name
         base = slug(pdf.name if pdf.is_file() else pdf.name + ".pdf")

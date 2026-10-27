@@ -29,6 +29,10 @@ sessions load, have the right shape, the package's analysis runs on them and key
 `artifacts/replay/` so the community export carries them, and links the project to its catalog entry
 (`.humanstudy/community.json`) so the contribution attaches to the right paper.
 
+Builds can run through the desktop app's OpenCode on its hosted models: `pilot.py --build-agent opencode`
+(or `batch_build.py --agent opencode`) with `HUMANSTUDY_DESKTOP_KEY` set. The key is read from the
+environment only, never written to a project.
+
 The default participant command is a fresh `claude -p --model haiku` process per participant with no
 tools, settings or MCP servers. Claude Code still adds a short environment note (platform, date), so
 use it for testing; formal runs should use the app's model API or `study_core.http_llm`.
