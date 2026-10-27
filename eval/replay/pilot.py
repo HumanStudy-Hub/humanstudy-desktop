@@ -117,6 +117,8 @@ def one(p, work, a):
     if (project / "human-check.json").is_file():
         hc = json.loads((project / "human-check.json").read_text())
         row["humanSessions"] = hc.get("sessions")
+        (project / "artifacts/replay").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(project / "human-check.json", project / "artifacts/replay/human-check.json")
     if "replay" in a.steps and (project / "human-check.json").is_file() and not (project / "replay-compare.json").is_file():
         sh([py, HERE / "compare.py", project, "--n", a.n, "--jobs", a.participant_jobs], log=log, timeout=7200)
     if (project / "replay-compare.json").is_file():
