@@ -37,10 +37,10 @@ Check your work before you finish:
 python - <<'PY'
 import sys, json; sys.path.insert(0, "<skill>/scripts/export/agent")  # path to study_core.py
 import study_core, importlib.util
-st = study_core.Study("package/<slug>")
+st = study_core.Study(".")  # the project folder (holds program.json)
 spec = importlib.util.spec_from_file_location("h", "package/<slug>/human/human_sessions.py")
 h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
-s = h.load("human-data"); ev = st.evaluate(s)
+s = h.load("human-data"); ev = st.module("evaluation").evaluate(s)
 print(len(s), json.dumps(h.key_effects(ev), indent=1))
 PY
 ```

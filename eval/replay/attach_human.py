@@ -47,7 +47,8 @@ def check(project):
         raise SystemExit("sessions %s lack %s" % (bad[:5], sorted(need)))
     arms = sorted({s["arm"] for s in sessions})
     known = {"%s:%s" % a for a in getattr(load_module(pkg / "task/adapter.py"), "ARMS", [])}
-    evaluation = study_core.Study(str(pkg)).evaluate(sessions)
+    # the human side needs only the analysis, not the materials, so readiness does not gate it
+    evaluation = study_core.Study(str(project)).module("evaluation").evaluate(sessions)
     effects = mod.key_effects(evaluation)
     return {"package": pkg.name, "sessions": len(sessions), "valid": sum(1 for s in sessions if s.get("valid")),
             "arms": arms, "unknownArms": sorted(set(arms) - known) if known else [],

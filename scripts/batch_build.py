@@ -4,7 +4,8 @@
     python scripts/batch_build.py --pdfs papers/ --work runs/batch-1 [--jobs 4] [--model sonnet]
                                   [--agent claude|codex] [--limit 20] [--python <python with pypdf>]
 
-A paper with supplements is a folder holding paper.pdf and the other PDFs; those go to sources/.
+A paper with supplements is a folder holding paper.pdf and its other files (supplements, materials); those go to
+sources/.
 
 --agent opencode runs the HumanStudy edition of OpenCode that ships with the desktop app against the
 app's hosted model API (the same models and billing as builds in the app). It needs the desktop key in
@@ -50,7 +51,7 @@ def setup(pdf, project, skill):
         shutil.copytree(skill, project / where / "humanstudy")
     if pdf.is_dir():  # paper.pdf plus supplements
         shutil.copy2(pdf / "paper.pdf", project / "paper.pdf")
-        extra = sorted(p for p in pdf.glob("*.pdf") if p.name != "paper.pdf")
+        extra = sorted(p for p in pdf.iterdir() if p.is_file() and p.name != "paper.pdf" and not p.name.startswith("."))
         if extra:
             (project / "sources").mkdir()
             for p in extra:

@@ -96,10 +96,10 @@ def main(argv=None):
     a = ap.parse_args(argv)
     project = Path(a.project).resolve()
     pkg = package_dir(project)
-    study = study_core.Study(str(pkg))
+    study = study_core.Study(str(project))
     human_mod = load_module(pkg / "human/human_sessions.py")
     human_sessions = human_mod.load(str(project / "human-data"))
-    human = {e["id"]: e for e in human_mod.key_effects(study.evaluate(human_sessions))}
+    human = {e["id"]: e for e in human_mod.key_effects(study.module("evaluation").evaluate(human_sessions))}
     agent, mode, minutes = {}, None, None
     if not a.human_only:
         start = time.time()
