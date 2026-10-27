@@ -3,8 +3,8 @@
 
     python pdf_pages.py paper.pdf [--from N] [--to M]
 
-Prints one `=== page N ===` block per page. Pages with no text layer are scanned images: there is no
-OCR here, so say which pages could not be read instead of guessing. Uses pypdf, pdfplumber or the
+Prints one `=== page N ===` block per page. Pages with no text layer are scanned images: read them
+with scripts/build/scan_pages.py (page images, plus OCR text when Tesseract is installed). Uses pypdf, pdfplumber or the
 pdftotext command, whichever is available.
 """
 import argparse
@@ -36,7 +36,7 @@ def main(argv=None):
         if len(text) < 40:
             empty.append(n)
         print("=== page %d ===" % n)
-        print(text or "[no text layer: scanned page]")
+        print(text or "[no text layer: scanned page; run scripts/build/scan_pages.py]")
     print("=== %d pages in %s%s ===" % (len(pages), Path(a.pdf).name,
                                         "; no text on pages " + ", ".join(map(str, empty)) if empty else ""))
     return 0

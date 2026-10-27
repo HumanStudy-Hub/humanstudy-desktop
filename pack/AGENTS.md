@@ -143,7 +143,8 @@ when changing them, keep every other id untouched.
 `python`, `python3` and `pip` are a managed research runtime (CPython 3.12 with numpy, scipy,
 pandas, statsmodels, matplotlib, pingouin, pypdf, pdfplumber, openpyxl, python-docx, pyreadstat,
 jinja2, jsonschema), not the computer's own Python. Never call `/usr/bin/python3` or `brew`/`apt`.
-PDF text comes from `hs-pdf pages paper.pdf` (or `pdftotext`/`pdfinfo`); there is no OCR. If a
+PDF text comes from `hs-pdf pages paper.pdf` (or `pdftotext`/`pdfinfo`). Scanned pages: the build
+skill's `scan_pages.py` renders them as images and OCRs them when Tesseract is installed. If a
 tool answers that the runtime is not installed yet, tell the researcher and stop that step.
 
 ## Views
