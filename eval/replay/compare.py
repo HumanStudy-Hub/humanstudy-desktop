@@ -51,13 +51,30 @@ def agree(x, h):
     return same_sign and ((x["p"] < ALPHA) == (h["p"] < ALPHA))
 
 
-def run_agents(study, cli, n, jobs, seed):
+def partial_gate(study):
+    """For --partial: allow a blocked study only when the package itself skips every blocked effect.
+
+    Each blocking issue must match an effect that run_sessions reports as not_run, so nothing the
+    issues leave open is ever simulated. Returns the skipped effects, or raises."""
+    blocking = [i for i in study.issues if i.get("severity") == "blocking"]
+    probe = study.module("adapter").run_sessions(lambda *a, **k: "", 1, 1, None)
+    skipped = sorted({str(r.get("effect")) for r in probe if r.get("status") == "not_run" and r.get("effect")})
+    open_ = [i["id"] for i in blocking
+             if not any(e and (e in i["id"] or e == str(i.get("nodeId", "")).split("-")[-1]) for e in skipped)]
+    if open_:
+        raise SystemExit("--partial refused: blocking issues not skipped by the package: %s" % ", ".join(open_))
+    return skipped
+
+
+def run_agents(study, cli, n, jobs, seed, partial=False):
     llm = study_core.cli_llm(cli)
-    try:
-        prompts = study.plan(n=n, seed=seed)["prompts"]
-    except Exception:
-        prompts = None
-    if prompts:
+    prompts = None
+    if not partial:
+        try:
+            prompts = study.plan(n=n, seed=seed)["prompts"]
+        except Exception:
+            prompts = None
+    if prompts and not partial:
         with ThreadPoolExecutor(jobs) as pool:
             replies = list(pool.map(lambda c: _safe(llm, c["prompt"]), prompts))
         try:
@@ -69,7 +86,11 @@ def run_agents(study, cli, n, jobs, seed):
     sizes = [n // shards + (i < n % shards) for i in range(shards)]
 
     def shard(i):
-        out = study.run(lambda p, *a, **k: _safe(llm, p, *a, **k), seed=seed + 1000 * i, n=sizes[i])["sessions"]
+        ask = lambda p, *a, **k: _safe(llm, p, *a, **k)
+        if partial:  # main() has checked that the package itself skips every blocked effect
+            out = study.module("adapter").run_sessions(ask, seed + 1000 * i, sizes[i], None)
+        else:
+            out = study.run(ask, seed=seed + 1000 * i, n=sizes[i])["sessions"]
         for s in out:
             if isinstance(s.get("participant"), int):
                 s["participant"] += sum(sizes[:i])
@@ -77,7 +98,7 @@ def run_agents(study, cli, n, jobs, seed):
         return out
     with ThreadPoolExecutor(shards) as pool:
         parts = list(pool.map(shard, range(shards)))
-    return [s for part in parts for s in part], "sharded x%d" % shards
+    return [s for part in parts for s in part], ("partial, " if partial else "") + "sharded x%d" % shards
 
 
 def _safe(llm, prompt, *a, **k):
@@ -106,6 +127,8 @@ def main(argv=None):
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--seed", type=int, default=20261027)
     ap.add_argument("--human-only", action="store_true")
+    ap.add_argument("--partial", action="store_true",
+                    help="run a blocked study when the package itself skips every blocked effect (checked)")
     a = ap.parse_args(argv)
     project = Path(a.project).resolve()
     pkg = package_dir(project)
@@ -113,14 +136,16 @@ def main(argv=None):
     human_mod = load_module(pkg / "human/human_sessions.py")
     human_sessions = human_mod.load(str(project / "human-data"))
     human = {e["id"]: e for e in human_mod.key_effects(study.module("evaluation").evaluate(human_sessions))}
-    agent, mode, minutes = {}, None, None
+    agent, mode, minutes, skipped = {}, None, None, None
     if not a.human_only:
         start = time.time()
-        sessions, mode = run_agents(study, a.cli, a.n, a.jobs, a.seed)
+        skipped = partial_gate(study) if a.partial else None
+        sessions, mode = run_agents(study, a.cli, a.n, a.jobs, a.seed, partial=a.partial)
         minutes = round((time.time() - start) / 60, 1)
         (project / "replay-sessions.jsonl").write_text("\n".join(json.dumps(s) for s in sessions) + "\n",
                                                      encoding="utf-8")
-        agent = {e["id"]: e for e in human_mod.key_effects(study.evaluate(sessions))}
+        evaluate = study.module("evaluation").evaluate if a.partial else study.evaluate
+        agent = {e["id"]: e for e in human_mod.key_effects(evaluate(sessions))}
     rows = []
     for eid, h in human.items():
         x = agent.get(eid, {})
@@ -132,6 +157,7 @@ def main(argv=None):
     count = lambda k: [sum(1 for r in rows if r[k] is True), sum(1 for r in rows if r[k] is not None)]
     result = {"package": pkg.name, "humanSessions": len(human_sessions), "agentN": None if a.human_only else a.n,
               "participantCommand": None if a.human_only else a.cli, "mode": mode, "minutes": minutes,
+              "skippedEffects": skipped,
               "humanMatchesPaper": count("humanMatchesPaper"), "agentAgrees": count("agentAgrees"), "effects": rows,
               "note": "Agent results are a simulation; agreement with people is measured, not assumed."}
     (project / "replay-compare.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

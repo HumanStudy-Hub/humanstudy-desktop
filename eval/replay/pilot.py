@@ -60,6 +60,12 @@ def readiness(project):
 
 def run_agent(prompt, project, a, log):
     import os
+    if a.build_agent == "desktop":
+        with open(log, "w", encoding="utf-8") as out:
+            subprocess.run([sys.executable, str(HERE / "desktop_build.py"), "--project", str(project), "--paper",
+                            str(project / "paper.pdf"), "--research-auth", a.research_auth, "--send", prompt],
+                           stdout=out, stderr=subprocess.STDOUT, timeout=3 * 3600)
+        return
     sys.path.insert(0, str(REPO / "scripts"))
     import batch_build
     env = dict(os.environ, PATH=str(Path(a.python).parent) + os.pathsep + os.environ.get("PATH", ""))
@@ -80,7 +86,14 @@ def one(p, work, a):
     row = {"id": p["id"]}
     t0 = time.time()
     py = a.python
-    if "build" in a.steps and not (project / "program.json").is_file():
+    if "build" in a.steps and a.build_agent == "desktop" and not (project / "program.json").is_file():
+        # formal: the desktop kernel on hosted models under the signed-in research account
+        args = [sys.executable, HERE / "desktop_build.py", "--project", project, "--paper", p["paper"],
+                "--research-auth", a.research_auth] + (["--model", a.build_model] if a.build_model else [])
+        for s in p.get("sources", []):
+            args += ["--resource", s]
+        sh(args, log=log, timeout=4 * 3600)
+    if "build" in a.steps and a.build_agent != "desktop" and not (project / "program.json").is_file():
         stage = work / "_in" / p["id"]
         shutil.rmtree(stage, ignore_errors=True)
         stage.mkdir(parents=True)
@@ -150,14 +163,18 @@ def main(argv=None):
     ap.add_argument("--jobs", type=int, default=3)
     ap.add_argument("--n", type=int, default=10, help="AI participants (the package decides whether n is per arm or in total)")
     ap.add_argument("--participant-jobs", type=int, default=6)
-    ap.add_argument("--build-agent", choices=["claude", "opencode"], default="claude",
-                    help="opencode = the desktop app's OpenCode on its hosted models (needs HUMANSTUDY_DESKTOP_KEY)")
+    ap.add_argument("--build-agent", choices=["claude", "opencode", "desktop"], default="claude",
+                    help="desktop = formal build through the app's kernel and hosted models (needs --research-auth); "
+                         "opencode = the app's OpenCode with HUMANSTUDY_DESKTOP_KEY; claude = local tests")
+    ap.add_argument("--research-auth", help="private research profile from app/scripts/research-auth.mjs")
     ap.add_argument("--build-model", default=None, help="default: sonnet (claude) or anthropic/claude-sonnet-5.5")
     ap.add_argument("--steps", default=",".join(STEPS))
     ap.add_argument("--only", help="comma-separated pilot ids")
     ap.add_argument("--python", default=sys.executable)
     a = ap.parse_args(argv)
     a.steps = a.steps.split(",")
+    if a.build_agent == "desktop" and not a.research_auth:
+        ap.error("--build-agent desktop needs --research-auth (see docs/headless-research.md)")
     pilots = json.loads(Path(a.pilots).read_text(encoding="utf-8"))
     if a.only:
         keep = set(a.only.split(","))
