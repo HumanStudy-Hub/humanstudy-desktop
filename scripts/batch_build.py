@@ -4,6 +4,8 @@
     python scripts/batch_build.py --pdfs papers/ --work runs/batch-1 [--jobs 4] [--model sonnet]
                                   [--agent claude|codex] [--limit 20] [--python <python with pypdf>]
 
+A paper with supplements is a folder holding paper.pdf and the other PDFs; those go to sources/.
+
 Each PDF gets its own project folder `<work>/<pdf name>/` (paper.pdf + the skill), and one
 non-interactive agent session builds program.json and the replay package with every check passing.
 No simulation is run. A paper whose project already holds a passing program is skipped, so the
@@ -41,7 +43,24 @@ def setup(pdf, project, skill):
     for where in (".claude/skills", ".agents/skills"):
         (project / where).mkdir(parents=True)
         shutil.copytree(skill, project / where / "humanstudy")
-    shutil.copy2(pdf, project / "paper.pdf")
+    if pdf.is_dir():  # paper.pdf plus supplements
+        shutil.copy2(pdf / "paper.pdf", project / "paper.pdf")
+        extra = sorted(p for p in pdf.glob("*.pdf") if p.name != "paper.pdf")
+        if extra:
+            (project / "sources").mkdir()
+            for p in extra:
+                shutil.copy2(p, project / "sources" / p.name)
+    else:
+        shutil.copy2(pdf, project / "paper.pdf")
+
+
+def find_papers(src):
+    """PDF files, plus folders holding a paper.pdf (a paper with its supplements)."""
+    if src.is_file() or (src / "paper.pdf").is_file():
+        return [src]
+    folders = sorted(p.parent for p in src.rglob("paper.pdf"))
+    inside = lambda f: any(d in f.parents or d == f for d in folders)
+    return folders + sorted(p for p in src.rglob("*") if p.suffix.lower() == ".pdf" and not inside(p))
 
 
 def agent_command(agent, model):
@@ -120,7 +139,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     model = a.model or ("sonnet" if a.agent == "claude" else None)
     src = Path(a.pdfs)
-    pdfs = [src] if src.is_file() else sorted(p for p in src.rglob("*") if p.suffix.lower() == ".pdf")
+    pdfs = find_papers(src)
     pdfs = pdfs[:a.limit] if a.limit else pdfs
     if not pdfs:
         print("no PDFs found in %s" % src, file=sys.stderr)
@@ -137,7 +156,7 @@ def main(argv=None):
     env = dict(os.environ, PATH=str(Path(a.python).parent) + os.pathsep + os.environ.get("PATH", ""))
     names, rows = {}, []
     for pdf in pdfs:  # unique project names even when two PDFs share a file name
-        base = slug(pdf.name)
+        base = slug(pdf.name if pdf.is_file() else pdf.name + ".pdf")
         name, k = base, 2
         while name in names.values():
             name, k = "%s-%d" % (base, k), k + 1
