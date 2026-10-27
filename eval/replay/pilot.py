@@ -77,7 +77,7 @@ def run_agent(prompt, project, a, log):
                "--strict-mcp-config", "--output-format", "json"]
     with open(log, "w", encoding="utf-8") as out:
         subprocess.run(cmd, cwd=str(project), stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                       env=env, timeout=3600)
+                       env=dict(env, PWD=str(project)), timeout=3600)
 
 
 def one(p, work, a):

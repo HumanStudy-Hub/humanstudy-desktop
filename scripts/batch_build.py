@@ -92,7 +92,8 @@ def opencode_env(env, model, work):
            "provider": {"humanstudy": {"options": {"baseURL": os.environ.get("HUMANSTUDY_HOSTED_BASEURL", HOSTED),
                                                    "apiKey": "{env:HUMANSTUDY_DESKTOP_KEY}"}}}}
     env = dict(env, OPENCODE_CONFIG_CONTENT=json.dumps(cfg), OPENCODE_DISABLE_AUTOUPDATE="1",
-               OPENCODE_DISABLE_CLAUDE_CODE_PROMPT="1", HUMANSTUDY_PROVIDER="humanstudy", HUMANSTUDY_MODEL=model)
+               OPENCODE_DISABLE_CLAUDE_CODE_PROMPT="1", OPENCODE_DISABLE_CLAUDE_CODE_SKILLS="1",
+               OPENCODE_DISABLE_EXTERNAL_SKILLS="1", HUMANSTUDY_PROVIDER="humanstudy", HUMANSTUDY_MODEL=model)
     for k in ("CONFIG", "DATA", "CACHE", "STATE"):
         d = work / "_opencode" / k.lower()
         d.mkdir(parents=True, exist_ok=True)
@@ -115,8 +116,10 @@ def build(project, agent, model, env, timeout):
     start = time.time()
     with open(project / "build.log", "w", encoding="utf-8") as log:
         try:
+            # PWD too: OpenCode resolves the project (and its skills) from it, not from the process cwd
             run = subprocess.run(agent_command(agent, model), cwd=str(project), stdin=subprocess.DEVNULL,
-                                 stdout=log, stderr=subprocess.STDOUT, env=env, timeout=timeout)
+                                 stdout=log, stderr=subprocess.STDOUT, env=dict(env, PWD=str(project)),
+                                 timeout=timeout)
             code = run.returncode
         except subprocess.TimeoutExpired:
             code = "timeout"
