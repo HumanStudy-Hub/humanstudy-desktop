@@ -1,0 +1,666 @@
+{
+  "model": "sonnet",
+  "date": "2026-10-26",
+  "rows": [
+    {
+      "study": "study_001",
+      "costUsd": 1.4567027,
+      "turns": 31,
+      "minutes": 8.5,
+      "exit": 0,
+      "programComplete": true,
+      "package": true,
+      "readiness": "blocked",
+      "score": {
+        "study": "study_001",
+        "programStudies": 4,
+        "scanned": false,
+        "sampleSizes": {
+          "found": 3,
+          "total": 3,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "statistics": {
+          "found": 4,
+          "total": 5,
+          "notInPaper": 0,
+          "missed": [
+            "Multiple t-values ranging from < 1 to 6.19, p < .10 to p < .001"
+          ]
+        },
+        "dataPoints": {
+          "found": 54,
+          "total": 90,
+          "notInPaper": 15,
+          "missed": [
+            "trait_rating_diff_choosers_1=-29.1",
+            "trait_rating_diff_choosers_1=-41.6",
+            "trait_rating_diff_choosers_2=-19.2",
+            "estimate_by_cat2=35.9",
+            "t=2.66",
+            "estimate_by_cat1=61.9",
+            "estimate_by_cat2=50.4",
+            "estimate_by_cat2=33.4",
+            "estimate_by_cat1=52.5",
+            "t=3.26",
+            "estimate_by_cat1=51.6",
+            "estimate_by_cat2=43.4",
+            "estimate_by_cat1=56.9",
+            "t=2.76",
+            "estimate_by_cat2=51.9",
+            "t=1.68",
+            "estimate_by_cat2=25.6",
+            "t=2.87",
+            "estimate_by_cat2=27.9",
+            "t=3.26"
+          ]
+        },
+        "materials": {
+          "items": 6,
+          "median": 1.0,
+          "atLeast90": 6,
+          "notInPaper": 20
+        },
+        "quotes": {
+          "found": 82,
+          "close": 2
+        }
+      }
+    },
+    {
+      "study": "study_002",
+      "costUsd": 0.9214241,
+      "turns": 26,
+      "minutes": 5.3,
+      "exit": 0,
+      "programComplete": true,
+      "package": true,
+      "readiness": "blocked",
+      "score": {
+        "study": "study_002",
+        "programStudies": 1,
+        "scanned": true,
+        "sampleSizes": {
+          "found": 4,
+          "total": 4,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "statistics": {
+          "found": 12,
+          "total": 12,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "dataPoints": {
+          "found": 55,
+          "total": 57,
+          "notInPaper": 0,
+          "missed": [
+            "calibration_baseline=4.2",
+            "calibration_baseline=4.6"
+          ]
+        },
+        "materials": {
+          "items": 78,
+          "median": 0.278,
+          "atLeast90": 7,
+          "notInPaper": 0
+        },
+        "quotes": {
+          "not_found": 4,
+          "unchecked": 35
+        }
+      }
+    },
+    {
+      "study": "study_003",
+      "costUsd": 0.8334655999999999,
+      "turns": 22,
+      "minutes": 4.5,
+      "exit": 0,
+      "programComplete": true,
+      "package": true,
+      "readiness": "ready",
+      "score": {
+        "study": "study_003",
+        "programStudies": 5,
+        "scanned": false,
+        "sampleSizes": {
+          "found": 4,
+          "total": 4,
+          "notInPaper": 7,
+          "missed": []
+        },
+        "statistics": {
+          "found": 8,
+          "total": 9,
+          "notInPaper": 1,
+          "missed": [
+            "Problem 3: 73% chose A & D, 3% chose B & C. Problem 4: 0% chose A & D, 100% chose B & C."
+          ]
+        },
+        "dataPoints": {
+          "found": 21,
+          "total": 21,
+          "notInPaper": 8,
+          "missed": []
+        },
+        "materials": {
+          "items": 7,
+          "median": 1.0,
+          "atLeast90": 7,
+          "notInPaper": 1
+        },
+        "quotes": {
+          "found": 43
+        }
+      }
+    },
+    {
+      "study": "study_004",
+      "costUsd": 1.3675673,
+      "turns": 30,
+      "minutes": 7.2,
+      "exit": 0,
+      "programComplete": true,
+      "package": true,
+      "readiness": "ready",
+      "score": {
+        "study": "study_004",
+        "programStudies": 8,
+        "scanned": false,
+        "sampleSizes": {
+          "found": 7,
+          "total": 7,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "statistics": {
+          "found": 1,
+          "total": 1,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "dataPoints": {
+          "found": 17,
+          "total": 17,
+          "notInPaper": 1,
+          "missed": []
+        },
+        "materials": {
+          "items": 8,
+          "median": 1.0,
+          "atLeast90": 8,
+          "notInPaper": 14
+        },
+        "quotes": {
+          "found": 78
+        }
+      }
+    },
+    {
+      "study": "study_005",
+      "costUsd": 0.5057749,
+      "turns": 15,
+      "minutes": 2.2,
+      "exit": 0,
+      "programComplete": true,
+      "package": true,
+      "readiness": "ready",
+      "score": {
+        "study": "study_005",
+        "programStudies": 3,
+        "scanned": false,
+        "sampleSizes": {
+          "found": 2,
+          "total": 2,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "statistics": {
+          "found": 4,
+          "total": 4,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "dataPoints": {
+          "found": 8,
+          "total": 8,
+          "notInPaper": 4,
+          "missed": []
+        },
+        "materials": {
+          "items": 5,
+          "median": 0.975,
+          "atLeast90": 4,
+          "notInPaper": 0
+        },
+        "quotes": {
+          "found": 24
+        }
+      }
+    },
+    {
+      "study": "study_006",
+      "costUsd": 2.4719921,
+      "turns": 43,
+      "minutes": 11.7,
+      "exit": 0,
+      "programComplete": true,
+      "package": true,
+      "readiness": "ready",
+      "score": {
+        "study": "study_006",
+        "programStudies": 12,
+        "scanned": false,
+        "sampleSizes": {
+          "found": 9,
+          "total": 10,
+          "notInPaper": 1,
+          "missed": [
+            "Experiment IXa n=55"
+          ]
+        },
+        "statistics": {
+          "found": 36,
+          "total": 37,
+          "notInPaper": 0,
+          "missed": [
+            "41% warm vs 59% cold, n=56"
+          ]
+        },
+        "dataPoints": {
+          "found": 82,
+          "total": 85,
+          "notInPaper": 18,
+          "missed": [
+            "n=55",
+            "n=55",
+            "n=55"
+          ]
+        },
+        "materials": {
+          "items": 16,
+          "median": 0.914,
+          "atLeast90": 10,
+          "notInPaper": 40
+        },
+        "quotes": {
+          "found": 163
+        }
+      }
+    },
+    {
+      "study": "study_007",
+      "costUsd": 1.7390531,
+      "turns": 35,
+      "minutes": 9.4,
+      "exit": 0,
+      "programComplete": true,
+      "package": true,
+      "readiness": "blocked",
+      "score": {
+        "study": "study_007",
+        "programStudies": 1,
+        "scanned": false,
+        "sampleSizes": {
+          "found": 1,
+          "total": 1,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "statistics": {
+          "found": 7,
+          "total": 7,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "dataPoints": {
+          "found": 19,
+          "total": 19,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "materials": {
+          "items": 0,
+          "median": null,
+          "atLeast90": 0,
+          "notInPaper": 4
+        },
+        "quotes": {
+          "found": 121
+        }
+      }
+    },
+    {
+      "study": "study_008",
+      "costUsd": 1.7082770000000003,
+      "turns": 33,
+      "minutes": 9.3,
+      "exit": 0,
+      "programComplete": true,
+      "package": true,
+      "readiness": "ready",
+      "score": {
+        "study": "study_008",
+        "programStudies": 4,
+        "scanned": false,
+        "sampleSizes": {
+          "found": 3,
+          "total": 3,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "statistics": {
+          "found": 8,
+          "total": 8,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "dataPoints": {
+          "found": 31,
+          "total": 31,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "materials": {
+          "items": 6,
+          "median": 1.0,
+          "atLeast90": 5,
+          "notInPaper": 3
+        },
+        "quotes": {
+          "found": 133
+        }
+      }
+    },
+    {
+      "study": "study_009",
+      "costUsd": 0.6729893,
+      "turns": 18,
+      "minutes": 3.4,
+      "exit": 0,
+      "programComplete": true,
+      "package": true,
+      "readiness": "blocked",
+      "score": {
+        "study": "study_009",
+        "programStudies": 1,
+        "scanned": true,
+        "sampleSizes": {
+          "found": 3,
+          "total": 3,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "statistics": {
+          "found": 2,
+          "total": 4,
+          "notInPaper": 0,
+          "missed": [
+            "p < 0.01 (6 out of 7 sessions reject at 1% level)",
+            "p = 0.0078 (0.5^7) < 0.01"
+          ]
+        },
+        "dataPoints": {
+          "found": 33,
+          "total": 50,
+          "notInPaper": 0,
+          "missed": [
+            "estimated_k=24",
+            "estimated_k=28",
+            "estimated_k=35",
+            "success_rate=0.9375",
+            "success_rate=0.8109",
+            "success_rate=0.8693",
+            "median_rates=0.88",
+            "median_rates=0.98",
+            "median_rates=0.97",
+            "median_rates=0.7",
+            "median_rates=0.91",
+            "median_rates=0.71",
+            "median_rates=0.76",
+            "p_value=0.05",
+            "p_value=0.01",
+            "p_value=0.01",
+            "p_value=0.0078"
+          ]
+        },
+        "materials": {
+          "items": 6,
+          "median": 0.0,
+          "atLeast90": 0,
+          "notInPaper": 0
+        },
+        "quotes": {
+          "unchecked": 44
+        }
+      }
+    },
+    {
+      "study": "study_010",
+      "costUsd": 1.149321,
+      "turns": 22,
+      "minutes": 6.0,
+      "exit": 0,
+      "programComplete": true,
+      "package": true,
+      "readiness": "blocked",
+      "score": {
+        "study": "study_010",
+        "programStudies": 3,
+        "scanned": false,
+        "sampleSizes": {
+          "found": 2,
+          "total": 2,
+          "notInPaper": 1,
+          "missed": []
+        },
+        "statistics": {
+          "found": 3,
+          "total": 3,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "dataPoints": {
+          "found": 13,
+          "total": 13,
+          "notInPaper": 2,
+          "missed": []
+        },
+        "materials": {
+          "items": 2,
+          "median": 0.992,
+          "atLeast90": 1,
+          "notInPaper": 4
+        },
+        "quotes": {
+          "found": 63
+        }
+      }
+    },
+    {
+      "study": "study_011",
+      "costUsd": 0.1226265,
+      "turns": 8,
+      "minutes": 0.3,
+      "exit": 0,
+      "program": "missing"
+    },
+    {
+      "study": "study_012",
+      "costUsd": 0.9206216000000002,
+      "turns": 24,
+      "minutes": 5.7,
+      "exit": 0,
+      "programComplete": true,
+      "package": true,
+      "readiness": "ready",
+      "score": {
+        "study": "study_012",
+        "programStudies": 1,
+        "scanned": true,
+        "sampleSizes": {
+          "found": 0,
+          "total": 2,
+          "notInPaper": 0,
+          "missed": [
+            "no_history_investment_game n=64",
+            "social_history_investment_game n=56"
+          ]
+        },
+        "statistics": {
+          "found": 7,
+          "total": 7,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "dataPoints": {
+          "found": 16,
+          "total": 16,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "materials": {
+          "items": 6,
+          "median": 0.231,
+          "atLeast90": 1,
+          "notInPaper": 0
+        },
+        "quotes": {
+          "unchecked": 59
+        }
+      }
+    },
+    {
+      "study": "study_013",
+      "costUsd": 1.3172073000000002,
+      "turns": 31,
+      "minutes": 6.9,
+      "exit": 0,
+      "programComplete": true,
+      "package": true,
+      "readiness": "ready",
+      "score": {
+        "study": "study_013",
+        "programStudies": 1,
+        "scanned": false,
+        "sampleSizes": {
+          "found": 1,
+          "total": 1,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "statistics": {
+          "found": 5,
+          "total": 5,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "dataPoints": {
+          "found": 40,
+          "total": 40,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "materials": {
+          "items": 10,
+          "median": 1.0,
+          "atLeast90": 10,
+          "notInPaper": 0
+        },
+        "quotes": {
+          "found": 58
+        }
+      }
+    },
+    {
+      "study": "study_014",
+      "costUsd": 1.0416471,
+      "turns": 21,
+      "minutes": 5.0,
+      "exit": 0,
+      "programComplete": true,
+      "package": true,
+      "readiness": "blocked",
+      "score": {
+        "study": "study_014",
+        "programStudies": 2,
+        "scanned": false,
+        "sampleSizes": {
+          "found": 1,
+          "total": 1,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "statistics": {
+          "found": 0,
+          "total": 0,
+          "notInPaper": 2,
+          "missed": []
+        },
+        "dataPoints": {
+          "found": 3,
+          "total": 4,
+          "notInPaper": 18,
+          "missed": [
+            "sd_reserve_price=19.15"
+          ]
+        },
+        "materials": {
+          "items": 0,
+          "median": null,
+          "atLeast90": 0,
+          "notInPaper": 1
+        },
+        "quotes": {
+          "found": 69
+        }
+      }
+    },
+    {
+      "study": "study_015",
+      "costUsd": 0.9941388999999999,
+      "turns": 20,
+      "minutes": 5.1,
+      "exit": 0,
+      "programComplete": true,
+      "package": true,
+      "readiness": "ready",
+      "score": {
+        "study": "study_015",
+        "programStudies": 2,
+        "scanned": false,
+        "sampleSizes": {
+          "found": 0,
+          "total": 0,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "statistics": {
+          "found": 0,
+          "total": 0,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "dataPoints": {
+          "found": 0,
+          "total": 0,
+          "notInPaper": 0,
+          "missed": []
+        },
+        "materials": {
+          "items": 5,
+          "median": 1.0,
+          "atLeast90": 3,
+          "notInPaper": 6
+        },
+        "quotes": {
+          "found": 63
+        }
+      }
+    }
+  ]
+}
