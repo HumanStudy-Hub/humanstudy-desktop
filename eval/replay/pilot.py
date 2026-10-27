@@ -146,7 +146,7 @@ def main(argv=None):
     ap.add_argument("pilots")
     ap.add_argument("--work", required=True)
     ap.add_argument("--jobs", type=int, default=3)
-    ap.add_argument("--n", type=int, default=10, help="AI participants per arm")
+    ap.add_argument("--n", type=int, default=10, help="AI participants (the package decides whether n is per arm or in total)")
     ap.add_argument("--participant-jobs", type=int, default=6)
     ap.add_argument("--build-agent", choices=["claude", "opencode"], default="claude",
                     help="opencode = the desktop app's OpenCode on its hosted models (needs HUMANSTUDY_DESKTOP_KEY)")

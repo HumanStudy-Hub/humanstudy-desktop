@@ -64,7 +64,20 @@ def run_agents(study, cli, n, jobs, seed):
             return study.replay(replies, n=n, seed=seed)["sessions"], "parallel"
         except RuntimeError:
             pass  # adaptive prompts: fall back to one by one
-    return study.run(lambda p, *a, **k: _safe(llm, p, *a, **k), seed=seed, n=n)["sessions"], "sequential"
+    # turn-by-turn study: split the participants into shards with their own seeds and run the shards in parallel
+    shards = max(1, min(jobs, n))
+    sizes = [n // shards + (i < n % shards) for i in range(shards)]
+
+    def shard(i):
+        out = study.run(lambda p, *a, **k: _safe(llm, p, *a, **k), seed=seed + 1000 * i, n=sizes[i])["sessions"]
+        for s in out:
+            if isinstance(s.get("participant"), int):
+                s["participant"] += sum(sizes[:i])
+            s["shard"] = i
+        return out
+    with ThreadPoolExecutor(shards) as pool:
+        parts = list(pool.map(shard, range(shards)))
+    return [s for part in parts for s in part], "sharded x%d" % shards
 
 
 def _safe(llm, prompt, *a, **k):
@@ -89,7 +102,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("project")
     ap.add_argument("--cli", default=PARTICIPANT, help="participant command: prompt on stdin, reply on stdout")
-    ap.add_argument("--n", type=int, default=10, help="AI participants per arm")
+    ap.add_argument("--n", type=int, default=10, help="AI participants (the package decides whether n is per arm or in total)")
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--seed", type=int, default=20261027)
     ap.add_argument("--human-only", action="store_true")
@@ -123,7 +136,7 @@ def main(argv=None):
               "note": "Agent results are a simulation; agreement with people is measured, not assumed."}
     (project / "replay-compare.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     md = ["# %s: replay vs human data" % pkg.name, "",
-          "Human sessions: %d. AI participants: %s per arm (%s)." % (len(human_sessions), result["agentN"], a.cli),
+          "Human sessions: %d. AI participants: n=%s as the package counts it (per arm or in total) (%s)." % (len(human_sessions), result["agentN"], a.cli),
           "", table(rows), "",
           "Human data reproduces the paper on %d of %d effects; agents agree with humans on %d of %d." % (
               *result["humanMatchesPaper"], *result["agentAgrees"])]
