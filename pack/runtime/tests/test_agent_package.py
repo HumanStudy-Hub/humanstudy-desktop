@@ -2,6 +2,7 @@
    python -m unittest discover -s pack/runtime/tests"""
 import json
 import shlex
+import os
 import shutil
 import subprocess
 import sys
@@ -73,6 +74,11 @@ def mcp(server, calls):
     return {m["id"]: m for m in map(json.loads, run.stdout.splitlines())}
 
 
+def quote(path):
+    """Quote an executable path for a command line on this platform."""
+    return '"%s"' % path if os.name == "nt" else shlex.quote(path)
+
+
 class AgentPackage(unittest.TestCase):
     def setUp(self):
         self.root = make_project()
@@ -123,11 +129,20 @@ class AgentPackage(unittest.TestCase):
         self.assertFalse((out / "mcp").exists())
         self.assertNotIn("mcp add", (out / "README.md").read_text(encoding="utf-8"))
 
+    def test_command_split_drops_quotes_and_keeps_windows_paths(self):
+        sys.path.insert(0, str(REPO / "pack/skills/export/agent"))
+        import study_core
+        line = '"C:\\Program Files\\Python\\python.exe" -c "print(1)" --model haiku'
+        self.assertEqual(study_core.split_command(line, windows=True),
+                         ["C:\\Program Files\\Python\\python.exe", "-c", "print(1)", "--model", "haiku"])
+        self.assertEqual(study_core.split_command("claude -p --model 'haiku 4'", windows=False),
+                         ["claude", "-p", "--model", "haiku 4"])
+
     def test_cli_participants_each_get_a_fresh_process_in_an_empty_folder(self):
         sys.path.insert(0, str(REPO / "pack/skills/export/agent"))
         import study_core
         fake = ('%s -c "import os,sys; sys.stdin.read(); '
-                'print(\'yes\' if not os.listdir(\'.\') else \'saw files\', os.getpid())"' % shlex.quote(sys.executable))
+                'print(\'yes\' if not os.listdir(\'.\') else \'saw files\', os.getpid())"' % quote(sys.executable))
         result = study_core.Study(self.root).run(study_core.cli_llm(fake), n=2)
         replies = [x["reply"] for x in result["sessions"]]
         self.assertTrue(all(r.startswith("yes ") for r in replies), replies)
