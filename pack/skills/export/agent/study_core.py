@@ -415,13 +415,25 @@ def http_llm(model, temperature=1.0):
     return llm
 
 
+def split_command(command, windows=None):
+    """Split a command line. On Windows keep backslashes in paths but drop the quotes around an argument."""
+    if not (os.name == "nt" if windows is None else windows):
+        return shlex.split(command)
+    out = []
+    for token in shlex.split(command, posix=False):
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+            token = token[1:-1]
+        out.append(token)
+    return out
+
+
 def cli_llm(command, timeout=600):
     """llm(prompt) -> str by starting a new agent CLI process per call (one fresh context per participant).
 
     The prompt goes to stdin, the reply is the process's stdout. The process runs in a new empty folder,
     so it cannot read the study, its hypotheses or other participants' answers. Uses the CLI's own login.
     """
-    argv = shlex.split(command, posix=os.name != "nt")
+    argv = split_command(command)
     if not argv:
         raise RuntimeError("--cli needs a command, e.g. \"claude -p --model haiku\"")
 
