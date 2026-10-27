@@ -41,17 +41,19 @@ def check(project):
     pkg = package_dir(project)
     mod = load_module(pkg / "human/human_sessions.py")
     sessions = mod.load(str(project / "human-data"))
-    need = {"study", "condition", "arm", "parsed", "valid"}
-    bad = [i for i, s in enumerate(sessions) if not need <= set(s)]
+    # a session is one arm ({study, condition, arm, parsed, ...}) or one participant holding several
+    # arms in "responses", whichever shape the package's run_sessions returns
+    units = [r for s in sessions for r in (s["responses"] if isinstance(s.get("responses"), list) else [s])]
+    need = {"study", "condition", "parsed"}
+    bad = [i for i, u in enumerate(units) if not need <= set(u)]
     if bad:
-        raise SystemExit("sessions %s lack %s" % (bad[:5], sorted(need)))
-    arms = sorted({s["arm"] for s in sessions})
-    known = {"%s:%s" % a for a in getattr(load_module(pkg / "task/adapter.py"), "ARMS", [])}
+        raise SystemExit("responses %s lack %s" % (bad[:5], sorted(need)))
+    arms = sorted({str(u.get("arm") or "%s:%s" % (u["study"], u["condition"])) for u in units})
     # the human side needs only the analysis, not the materials, so readiness does not gate it
     evaluation = study_core.Study(str(project)).module("evaluation").evaluate(sessions)
     effects = mod.key_effects(evaluation)
     return {"package": pkg.name, "sessions": len(sessions), "valid": sum(1 for s in sessions if s.get("valid")),
-            "arms": arms, "unknownArms": sorted(set(arms) - known) if known else [],
+            "arms": arms,
             "notMapped": getattr(mod, "NOT_MAPPED", []), "exclusions": getattr(mod, "EXCLUSIONS", None),
             "effects": effects}
 
