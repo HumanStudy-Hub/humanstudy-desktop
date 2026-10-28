@@ -10,12 +10,26 @@ can actually run as the original participants did, so the researcher can check i
 
 ## 1. Read the sources
 
-- Extract text from `paper.pdf` page by page with `hs-pdf pages paper.pdf` (prints one
-  `=== page N ===` block per page; add `--from N --to M` for a range, `--layout` for column-aligned
-  tables). `pdftotext -layout paper.pdf -` and `pdfinfo` also work (form feed between pages). If
-  `hs-pdf` reports pages with no text, the PDF is scanned: OCR is not available, so say which
-  pages could not be read instead of guessing. Keep the physical page number of every passage
-  you may cite.
+- Inspect `hs-pdf info paper.pdf` first. Read the entire paper in successive small batches,
+  normally five physical pages per command. Create `.humanstudy/tmp/` if needed, then save
+  each batch there before reading it:
+
+  ```bash
+  hs-pdf pages paper.pdf --from 1 --to 5 > .humanstudy/tmp/paper-pages-001-005.txt
+  ```
+
+  Read the saved text, then continue with pages 6–10 and every remaining range through the
+  page count. Never stop after the first batch. Use fewer pages if a range contains very large
+  tables or instruments; `--layout` preserves column alignment. Do not attach or read the whole
+  PDF as inline model media, and do not send a whole-paper extraction in one tool response.
+  All original PDF bytes and complete page text stay on disk; batching never authorizes
+  truncating quotations or skipping pages. Save the first program checkpoint once the study
+  map is known, then continue extraction and checkpoints while reading the remaining pages.
+- Each extraction prints physical `=== page N ===` markers. Preserve these for every citation.
+  If a page has no text, inspect it visually using a single page or crop; identify scanned pages
+  and missing information explicitly. OCR is not available in this runtime. If a page is
+  encrypted, damaged or cannot be parsed, report the affected page and keep saved work instead
+  of repeatedly retrying an unchanged whole-paper read or inventing its content.
 - Read `sources/` only if present. Use the network only for URLs the researcher explicitly gave;
   record each URL consulted in `source/paper_metadata.json` → `external_sources`.
 - List every empirical study in the paper before modelling any of them.
