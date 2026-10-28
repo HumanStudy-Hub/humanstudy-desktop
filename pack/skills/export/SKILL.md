@@ -1,6 +1,6 @@
 ---
 name: export
-description: Export the study protocol, analyses or replay package as .docx, .pdf or .zip into exports/. Use when the researcher asks to download, share, send, print or archive the study.
+description: Export the study protocol, analyses or replay package as .docx, .pdf or .zip into exports/, or as an agent skill (optionally with an MCP server) for other AI agents. Use when the researcher asks to download, share, send, print or archive the study, or to use it in Claude Code, Codex, OpenCode or another agent.
 ---
 
 # Export: files into exports/
@@ -25,6 +25,19 @@ Exports are derived from `program.json` and existing artifacts; they add no fact
   Never manufacture a new baseline or substitute the current recommendation for the version
   actually forked. PDF redistribution is off by default; `--include-paper` requires the researcher's
   explicit permission and the right to redistribute it. Before export run the build checks.
+
+- **Agent skill (folder)**: for using the study in another AI agent (Claude Code, Codex,
+  OpenCode, anything that reads skills). Run
+  `python .opencode/skills/export/agent_package.py --output exports/<project>-agent-<date>`.
+  It writes one skill folder: SKILL.md, one readable reference per study with pages, open issues,
+  `references/accuracy.md` (every quote compared with its cited page), `program.json`, the replay
+  package and `scripts/study_core.py`, then verifies hashes, the scripts and the package smoke test
+  before the folder appears. Add `--mcp` only when the researcher's client cannot run commands or
+  read files (it adds an MCP server over the same folder). It prints `PASS`; on `FAIL` fix the cause
+  and run it again. The paper and `sources/` stay out unless the researcher confirms the right to
+  share them (`--include-paper`, `--include-sources`). Reply with the folder path, the install line
+  from its `README.md` for the agent the researcher named, and the quote-check line it printed.
+  Readable without a package; runnable only when `study.json.readiness.status` is `ready`.
 
 ## Rules
 

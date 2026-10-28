@@ -113,6 +113,11 @@ that does not exist. The app tolerates a few slips by setting them aside, but it
 researcher; a clean check is the standard.
 
 Before reporting completion run `python .opencode/skills/build/check_program.py program.json --complete`.
+Then run `python .opencode/skills/build/check_quotes.py program.json`: it compares every evidence
+quote with the text of its cited page. Fix `other_page` (wrong page number) and `not_found` (wrong or
+reconstructed quote) by rereading the page; if the page is a garbled table or scan, set the evidence
+`verification` to `unverified` and say so in the report. Never mark a quote `verified` that this check
+cannot find.
 For every identified empirical study account for participants, design, procedure, variables/records,
 analysis and results. For an analysis-only scope account for analysis and results. These are coverage
 checks, not a fixed experimental template: information the paper omits is an explicit `missing` field

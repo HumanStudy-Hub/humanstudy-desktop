@@ -64,3 +64,22 @@ jobs:
       - name: Build and publish (Windows preview)
         if: runner.os == 'Windows'
         run: node scripts/dist.mjs ${{ matrix.target }} --unsigned --publish always
+
+  # The standalone humanstudy skill (no app needed: Codex, Claude Code, OpenCode), generated from the
+  # same pack, attached to the same release as humanstudy-skill.zip.
+  skill:
+    needs: build
+    if: always() && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s scripts/tests -p 'test_standalone_skill.py' -v
+      - run: python scripts/build_standalone_skill.py --out dist/humanstudy --zip
+      - run: mv dist/humanstudy.zip dist/humanstudy-skill.zip
+      - name: Attach to the release
+        run: gh release upload "${GITHUB_REF_NAME}" dist/humanstudy-skill.zip --clobber

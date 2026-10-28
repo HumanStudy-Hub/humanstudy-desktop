@@ -22,6 +22,13 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
 - [ ] Real-paper owner dogfood, PDF zoom/text annotations/quote highlights, sample attachment repair,
       and collaborator dev-backend access before sharing. See detailed acceptance criteria.
 
+## Next · #14 Paper2Agent integration
+
+- [~] Agent skill export ([docs/agent-package.md](docs/agent-package.md)): one skill folder, `--mcp` optional, quote check, CLI participants;
+      Claude Code acceptance done on two private papers. Next: Bench ground-truth accuracy rate.
+      Open: in-app request through the `export` skill on Mac/Windows, Codex/OpenCode client check,
+      turn-by-turn sessions for multi-turn studies, Paper2Skill-style source review in `build`.
+
 ## Next · 0.6.x tester reports
 
 - [~] #15 Importing a paper starts the build automatically (import = authorization): Study view shows
