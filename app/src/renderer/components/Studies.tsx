@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useState, type Ref } from 'react'
 import type { CommunityStudy, CommunityStudyDetail } from '../../preload/types'
-import { matchesResearch, researchAvailability, researchRank } from '../../shared/research-search'
+import { isExtracted, matchesResearch, researchAvailability, researchRank } from '../../shared/research-search'
 import { relativeTime } from './Home'
 import { track } from '../telemetry'
 
@@ -73,6 +73,7 @@ export function Studies({ query, onOpenProject, ref }: Props) {
   const [openId, setOpenId] = useState<string | null>(null)
   const [topic, setTopic] = useState<{ id: string; label: string } | null>(null)
   const [visibleCount, setVisibleCount] = useState(30)
+  const [pending, setPending] = useState(false)
 
   const load = useCallback(async () => {
     setError('')
@@ -101,13 +102,15 @@ export function Studies({ query, onOpenProject, ref }: Props) {
   useEffect(() => {
     if (query) setOpenId(null)
   }, [query])
-  useEffect(() => setVisibleCount(30), [query, topic?.id])
+  useEffect(() => setVisibleCount(30), [query, topic?.id, pending])
 
+  // The library lists extracted papers; indexed papers without materials live on their own page.
+  const pendingCount = useMemo(() => (list ?? []).filter((s) => !isExtracted(s)).length, [list])
   const shown = useMemo(() => {
     const q = query.trim()
-    return (list ?? []).filter((s) => matchesResearch(s, q, topic?.id))
+    return (list ?? []).filter((s) => isExtracted(s) !== pending && matchesResearch(s, q, topic?.id))
       .sort((a, b) => researchRank(b, q) - researchRank(a, q) || a.id.localeCompare(b.id))
-  }, [list, query, topic])
+  }, [list, query, topic, pending])
 
   useImperativeHandle(ref, () => ({ openFirst: () => shown[0] && setOpenId(shown[0].id) }), [shown])
 
@@ -122,8 +125,9 @@ export function Studies({ query, onOpenProject, ref }: Props) {
     <div className="home-inner">
       <header className="lib-head">
         <div>
-          <h1 className="lib-title">Studies</h1>
-          <p className="muted lib-lead">Papers, study materials and community Human Programs.</p>
+          {pending && <button className="link small" onClick={() => setPending(false)}>‹ All studies</button>}
+          <h1 className="lib-title">{pending ? 'Not yet extracted' : 'Studies'}</h1>
+          <p className="muted lib-lead">{pending ? 'Indexed papers without a Human Program, materials or artifacts yet.' : 'Papers with study materials or a community Human Program.'}</p>
         </div>
         <button className="lib-link" onClick={() => open(REPO_URL)}>
           Contribute on GitHub ↗
@@ -185,6 +189,7 @@ export function Studies({ query, onOpenProject, ref }: Props) {
         </ul>
       )}
       {shown.length > visibleCount && <button className="ghost lib-retry" onClick={() => setVisibleCount(count => count + 30)}>Show more ({shown.length - visibleCount})</button>}
+      {!pending && pendingCount > 0 && <p className="muted small"><button className="link" onClick={() => setPending(true)}>{pendingCount} indexed {pendingCount === 1 ? 'paper' : 'papers'} not yet extracted ›</button></p>}
     </div>
   )
 }

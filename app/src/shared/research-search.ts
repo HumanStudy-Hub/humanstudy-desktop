@@ -16,9 +16,14 @@ export function catalogSearchFields(paper: Record<string, unknown>, concepts: Re
   }
 }
 
+/** Extracted papers have a community Human Program or a benchmark study package. */
+export function isExtracted(study: Pick<CommunityStudy, 'id' | 'currentRevision' | 'legacyStudyId'>): boolean {
+  return Boolean(study.currentRevision || study.legacyStudyId || /^study_\d+$/.test(study.id))
+}
+
 export function researchAvailability(study: CommunityStudy): string {
   return study.currentRevision ? 'Human Program available' : study.legacyStudyId || /^study_\d+$/.test(study.id)
-    ? 'Study materials' : 'Source indexed'
+    ? 'Study materials' : 'Not yet extracted'
 }
 
 /** Same relevance order as the website snapshot: identity, assigned topic, title, body. */

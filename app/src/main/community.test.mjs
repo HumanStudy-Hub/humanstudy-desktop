@@ -33,7 +33,7 @@ test('shared catalog topics distinguish an assignment from lexical matches and p
  assert.equal(matchesResearch(untagged,'','phenomenon:framing'),false)
  assert.deepEqual(proposed.topics,[]);assert.equal(matchesResearch(proposed,'风险'),false)
  assert.equal(researchAvailability(tagged),'Human Program available')
- assert.equal(researchAvailability({...untagged,currentRevision:null}),'Source indexed')
+ assert.equal(researchAvailability({...untagged,currentRevision:null}),'Not yet extracted')
  assert.equal(researchAvailability({...untagged,currentRevision:null,legacyStudyId:'study_003'}),'Study materials')
 })
 
