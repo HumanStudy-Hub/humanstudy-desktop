@@ -10,6 +10,11 @@ facts. Standard library only, Python 3.8+, so the folder works outside the Human
     python study_core.py replay replies.json --n 5     score those answers (same n, arms and seed)
     python study_core.py run --cli "claude -p --model haiku" [--n 5]   one new CLI process per participant
     python study_core.py run --model <id> [--n 5] [--arm A]   needs OPENROUTER_API_KEY or OPENAI_API_KEY
+    python study_core.py capabilities                  what this study can do, each answer with its reason
+
+Work the study cannot do is refused, never approximated: the CLI prints
+{"status": "refused", "reason", "capability", "next_steps"} and exits 3; over MCP the same object is the
+tool result. Answers that run only part of the paper carry status "partial".
 """
 import argparse
 import importlib.util
@@ -34,6 +39,31 @@ KIND_TITLES = {"hypothesis": "Hypotheses", "participants": "Participants", "desi
                "finding": "Findings", "limitation": "Limitations"}
 MISSING_TEXT = "Not stated in the paper."
 SIMULATION_NOTE = "AI participants: a simulation, not observations of people."
+
+
+class Refusal(RuntimeError):
+    """Work this study cannot do. Carries why, which capability it depends on, and what to do instead."""
+
+    def __init__(self, reason, capability, next_steps=()):
+        RuntimeError.__init__(self, reason)
+        self.reason, self.capability, self.next_steps = reason, capability, list(next_steps)
+
+    def to_dict(self):
+        return {"status": "refused", "reason": self.reason, "capability": self.capability,
+                "next_steps": self.next_steps}
+
+
+def has_not_ready(value):
+    """True when an evaluation leaves any part not_ready (so the answer is partial)."""
+    if isinstance(value, dict):
+        return value.get("status") == "not_ready" or "not_ready" in value or any(has_not_ready(v) for v in value.values())
+    if isinstance(value, list):
+        return any(has_not_ready(v) for v in value)
+    return value == "not_ready"
+
+
+def status_of(value):
+    return "partial" if has_not_ready(value) else "ok"
 
 
 def find_root(start=None):
@@ -69,6 +99,10 @@ class Study:
             if (self.root / "package").is_dir() else []
         self.package = packages[0] if len(packages) == 1 else None
         self._modules = {}
+        try:
+            self.caps = json.loads((self.root / "capabilities.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.caps = None
 
     # ---- reading -------------------------------------------------------------------------------
 
@@ -113,7 +147,18 @@ class Study:
                 "doi": src.get("doi"),
                 "studies": [{"id": s.get("id"), "title": s.get("title"), "type": s.get("type")} for s in self.studies],
                 "openIssues": counts, "readiness": self.readiness(),
+                "capabilities": self.capabilities(),
                 "package": self.package.name if self.package else None}
+
+    def capabilities(self):
+        """capabilities.json as built; without one, only what readiness alone shows."""
+        if isinstance(self.caps, dict):
+            return self.caps
+        ready = self.readiness()
+        run = {"status": "yes" if ready.get("status") == "ready" else "no" if ready.get("status") == "blocked" else "unknown",
+               "reason": ready.get("note") or ("blocked by: " + ", ".join(ready.get("blocking") or []) if ready.get("status") == "blocked" else None)}
+        return {"schemaVersion": 1, "read": {"status": "yes", "reason": None}, "run": run,
+                "note": "No capabilities.json in this export; human data, author code and reproduction are unknown."}
 
     def study_nodes(self, study_id):
         return [n for n in self.nodes if study_id in (n.get("studyIds") or [])
@@ -299,7 +344,8 @@ class Study:
 
     def module(self, name):
         if not self.package:
-            raise RuntimeError("this export has no replay package; only reading is available")
+            raise Refusal("this export has no replay package; only reading is available", "run",
+                          ["read the study with study/read_study", "build the package in the HumanStudy app"])
         if name not in self._modules:
             path = self.package / ("task/adapter.py" if name == "adapter" else "evaluation/evaluation.py")
             spec = importlib.util.spec_from_file_location("hs_" + name, path)
@@ -318,7 +364,8 @@ class Study:
     def adapter_function(self, name):
         fn = getattr(self.module("adapter"), name, None)
         if not callable(fn):
-            raise RuntimeError("the replay package's adapter has no %s(); use run with a model instead" % name)
+            raise Refusal("the replay package's adapter has no %s()" % name, "run",
+                          ["use run with a model or CLI instead, which calls run_sessions()"])
         return fn
 
     def participant_prompt(self, study_id, condition_id):
@@ -337,17 +384,29 @@ class Study:
         ready = self.readiness()
         if ready.get("status") == "blocked":
             open_ids = ready.get("blocking") or [i["id"] for i in self.issues if i.get("severity") in ("blocking", "decision")]
-            raise RuntimeError("the study is not ready to run AI participants; settle these first: %s"
-                               % (", ".join(open_ids) if open_ids else ready.get("note") or "see list_open_issues"))
+            raise Refusal("the study is not ready to run AI participants; settle these first: %s"
+                          % (", ".join(open_ids) if open_ids else ready.get("note") or "see list_open_issues"), "run",
+                          ["list_open_issues shows what the paper does not state",
+                           "a researcher settles each blocking issue in the HumanStudy app (never fill it in silently)"])
+
+    def require_arms(self, arms):
+        """Refuse arms the study declares it cannot run (capabilities.json run.excluded[].arms)."""
+        excluded = ((self.caps or {}).get("run") or {}).get("excluded") or []
+        for item in excluded:
+            hit = sorted(set(arms or []) & set(item.get("arms") or []))
+            if hit:
+                raise Refusal("%s cannot be run: %s" % (", ".join(hit), item.get("reason")), "run.excluded",
+                              ["run the other arms", "see capabilities for what is excluded and why"])
 
     def _sessions(self, llm, seed, n, arms):
         self.require_ready()
+        self.require_arms(arms)
         return self.module("adapter").run_sessions(llm, seed, n or 5, arms)
 
     def run(self, llm, seed=20261015, n=None, arms=None):
         """Run AI participants through the package's own run_sessions with a model you provide."""
         sessions = self._sessions(llm, seed, n, arms)
-        return {"note": SIMULATION_NOTE, "evaluation": self.evaluate(sessions), "sessions": sessions}
+        return self.result(sessions, arms)
 
     def plan(self, n=5, arms=None, seed=20261015):
         """Every prompt the participants will read, in order, so another agent can answer them itself.
@@ -378,18 +437,29 @@ class Study:
             try:
                 i, reply = next(queue)
             except StopIteration:
-                raise RuntimeError("the package asked for more answers than planned: the study is not "
-                                   "deterministic for plan/replay; use run with a model instead")
+                raise Refusal("the package asked for more answers than planned: the study is not "
+                              "deterministic for plan/replay", "run.plan", ["use run with a model or CLI instead"])
             if prompt != planned[i]["prompt"]:
-                raise RuntimeError("prompt %d depends on earlier answers, so this study must be run turn by turn: "
-                                   "use run with a model instead" % i)
+                raise Refusal("prompt %d depends on earlier answers, so this study must be run turn by turn" % i,
+                              "run.plan", ["use run with a model or CLI instead"])
             return reply if isinstance(reply, str) else json.dumps(reply)
         sessions = self._sessions(answer, seed, n, arms)
         left = sum(1 for _ in queue)
         if left:
-            raise RuntimeError("%d replies were not used: the package's calls differed from the plan; use run "
-                               "with a model instead" % left)
-        return {"note": SIMULATION_NOTE, "evaluation": self.evaluate(sessions), "sessions": sessions}
+            raise Refusal("%d replies were not used: the package's calls differed from the plan" % left,
+                          "run.plan", ["use run with a model or CLI instead"])
+        return self.result(sessions, arms)
+
+    def result(self, sessions, arms):
+        """Sessions plus the paper's analysis; partial when part of the paper was not run or analysed."""
+        evaluation = self.evaluate(sessions)
+        run = (self.capabilities().get("run") or {})
+        skipped = [] if arms else list(run.get("excluded") or [])  # chosen arms: excluded ones were refused
+        status = "partial" if skipped or has_not_ready(evaluation) else "ok"
+        out = {"status": status, "note": SIMULATION_NOTE, "evaluation": evaluation, "sessions": sessions}
+        if skipped:
+            out["notRun"] = [{"what": x.get("what"), "reason": x.get("reason")} for x in skipped]
+        return out
 
 
 def http_llm(model, temperature=1.0):
@@ -464,6 +534,7 @@ def main(argv=None):
     ap.add_argument("--root", help="folder with program.json (default: found from this file)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("overview")
+    sub.add_parser("capabilities")
     sub.add_parser("studies")
     sub.add_parser("paper")
     sub.add_parser("study").add_argument("id")
@@ -498,6 +569,8 @@ def main(argv=None):
     show = lambda v: print(v if isinstance(v, str) else json.dumps(v, ensure_ascii=False, indent=2, default=str))
     if a.cmd == "overview":
         show(s.overview())
+    elif a.cmd == "capabilities":
+        show(s.capabilities())
     elif a.cmd == "studies":
         show([dict(st, conditions=s.conditions(st["id"])) for st in s.overview()["studies"]])
     elif a.cmd == "paper":
@@ -529,6 +602,9 @@ def main(argv=None):
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except Refusal as exc:
+        print(json.dumps(exc.to_dict(), ensure_ascii=False, indent=2))
+        sys.exit(3)
     except (KeyError, RuntimeError, FileNotFoundError) as exc:
         print("error: %s" % (exc.args[0] if exc.args else exc), file=sys.stderr)
         sys.exit(1)

@@ -52,7 +52,7 @@ test('the required files are the ones check_package.py requires', () => {
 test('issue #19: a package with only a comment-only adapter.py is not ready', async () => {
   const problems = await S.packageProblems(reader(COMMENT_ONLY))
   const missing = problems.filter((p) => p.kind === 'missing').map((p) => p.file)
-  assert.equal(missing.length, 7)
+  assert.equal(missing.length, 5)
   assert.deepEqual(missing, S.PACKAGE_FILES.filter((f) => f !== 'task/adapter.py'))
   assert.deepEqual(problems.find((p) => p.file === 'task/adapter.py'), { file: 'task/adapter.py', kind: 'no-entry', entry: 'run_sessions' })
   const r = await S.packageReadiness(['knobe'], (_slug, f) => reader(COMMENT_ONLY)(f))
@@ -72,7 +72,7 @@ test('invalid JSON and missing entry points are problems; unread files cannot en
     { file: 'task/task.json', kind: 'invalid-json' },
     { file: 'evaluation/evaluation.py', kind: 'no-entry', entry: 'evaluate' },
   ])
-  assert.deepEqual(await S.packageProblems(async (f) => (f === 'source/evidence.json' ? undefined : COMPLETE[f])), [{ file: 'source/evidence.json', kind: 'unvalidated' }])
+  assert.deepEqual(await S.packageProblems(async (f) => (f === 'materials/materials.json' ? undefined : COMPLETE[f])), [{ file: 'materials/materials.json', kind: 'unvalidated' }])
   assert.deepEqual(await S.packageProblems(reader({ ...COMPLETE, 'task/adapter.py': 'async def run_sessions(llm, seed, n, arms=None):\n    return []\n' })), [])
 })
 
@@ -93,7 +93,7 @@ test('main process: reads the package from disk', async () => {
   assert.equal((await M.projectPackageReadiness(project({ knobe: COMPLETE }))).ready, true)
   const r = await M.projectPackageReadiness(project({ knobe: COMMENT_ONLY }))
   assert.equal(r.ready, false)
-  assert.equal(r.problems.filter((p) => p.kind === 'missing').length, 7)
+  assert.equal(r.problems.filter((p) => p.kind === 'missing').length, 5)
   assert.equal((await M.projectPackageReadiness(mkdtempSync(join(tmpdir(), 'pkg-none-')))).exists, false)
 })
 
@@ -111,7 +111,7 @@ test('large invalid files are checked; large valid files are retained in full', 
   const allInvalid = project({ broken: Object.fromEntries(S.PACKAGE_FILES.map(f => [f, large])) })
   const r = await M.projectPackageReadiness(allInvalid, 's1')
   assert.equal(r.ready, false)
-  assert.equal(r.problems.length, 8)
+  assert.equal(r.problems.length, 6)
   const valid = project({ valid: { ...COMPLETE, 'source/evidence.json': JSON.stringify([{ quote: 'x'.repeat(5 * 1024 * 1024) }]) } })
   assert.equal((await M.projectPackageReadiness(valid, 's1')).ready, true, 'large valid resources are not truncated or arbitrarily rejected')
   await M.assertRunnablePackage(valid, APPROVAL)
@@ -130,6 +130,21 @@ test('a complete unrelated or outdated package cannot certify the selected study
   await assert.rejects(M.assertRunnablePackage(stale, approval(next)), /stale-program/)
   await assert.rejects(M.assertRunnablePackage(stale, '[Simulation scope approved]\n{}'), /selected study/)
   await assert.rejects(M.assertRunnablePackage(stale, '[Simulation scope approved]\nnot-json'), /unreadable/)
+})
+
+test('issue #45: a slim package refers to program.json instead of copying it', async () => {
+  const { 'source/evidence.json': _e, 'audit/missing_information.json': _a, ...rest } = COMPLETE
+  const slim = { ...rest, 'study.json': JSON.stringify({ title: 'Fixture', programRef: { path: '../../program.json', id: PROGRAM.id } }) }
+  const dir = project({ slim })
+  assert.equal((await M.projectPackageReadiness(dir, 's1')).ready, true)
+  await M.assertRunnablePackage(dir, APPROVAL)
+  assert.equal((await M.projectPackageReadiness(dir, 'other')).ready, false, 'a study the program does not have')
+  const wrongId = project({ slim: { ...slim, 'study.json': JSON.stringify({ programRef: { path: '../../program.json', id: 'another-program' } }) } })
+  const r = await M.projectPackageReadiness(wrongId, 's1')
+  assert.equal(r.ready, false)
+  assert.ok(r.problems.some(p => p.kind === 'stale-program'))
+  const noRef = project({ slim: { ...slim, 'study.json': JSON.stringify({ title: 'no program, no ref' }) } })
+  assert.equal((await M.projectPackageReadiness(noRef, 's1')).ready, false)
 })
 
 test('malformed package metadata and missing task bindings fail closed rather than escaping context validation', async () => {

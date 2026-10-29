@@ -1,6 +1,6 @@
 ---
 name: build
-description: Turn the project's paper.pdf (and any authorized open materials) into a schema-valid Human Program v2 program.json and a runnable replay package that agents can execute (the HumanStudy-Bench eight-file contract). Use when a project has a paper but no program, or the researcher asks to (re)build the study or make it runnable.
+description: Turn the project's paper.pdf (and any authorized open materials) into a schema-valid Human Program v2 program.json, a runnable replay package that agents can execute, and capabilities.json (what the study can and cannot do). Use when a project has a paper but no program, or the researcher asks to (re)build the study or make it runnable.
 ---
 
 # Build: paper → program.json → runnable package
@@ -136,27 +136,30 @@ program until these auxiliary artifacts exist.
 ## 3. Package: make the study runnable
 
 Unless the researcher only asked for the program, continue and write `package/<paper-slug>/`
-with exactly these eight core files (the HumanStudy-Bench contract; additional participant
-materials are allowed, no other sidecars):
+with exactly these six core files (additional participant materials are allowed, no other
+sidecars). `program.json` stays the single source: the package refers to it and never copies it.
 
 ```text
-study.json                     overview; study.json.program is an exact copy of program.json;
+study.json                     overview; programRef: {"path": "../../program.json", "id": <program id>};
                                readiness: {status: ready|blocked, blocking: [...issue ids]}
+                               (no copy of the program)
 source/paper_metadata.json     bibliography + external_sources (empty if none authorized)
-source/evidence.json           every claim/material → source, page, label, derivation
 materials/materials.json       participant-visible material by study and condition, verbatim
 task/task.json                 agents, roles, order, visibility, scripted roles + justification,
                                conditions, sampling/assignment/observation units, programBindings
 task/adapter.py                offline; --smoke-test; run_sessions(llm, seed, n, arms=None)
 evaluation/evaluation.py       evaluate(sessions) -> dict; not_ready when a test cannot run
-audit/missing_information.json entries: study, field, reason, impact, suggested_action
 ```
+
+Do not write `source/evidence.json` or `audit/missing_information.json`: the evidence and the
+missing information are `program.json`'s `evidence` and `issues`, and every tool reads them there.
+(Older packages that still hold a program copy and those two files keep working.)
 
 Rules the runner depends on:
 
 - `task/task.json.programBindings` = `{programId, stepIds, recordNodeIds, analysisNodeIds}`,
   exactly the program's id, every step id in order, every `record`/`variable` node id, every
-  `analysis` node id. `audit/missing_information.json` uses the same issue ids as `program.json`.
+  `analysis` node id.
 - `run_sessions(llm, seed, n, arms=None)`: `llm(prompt) -> str` is injected; call it for every
   original human participant (never a script, distribution or fixed answer for a role the paper
   did not script). `n` is the sampling unit stated in `task.json`. `arms=None` runs every arm the
@@ -168,8 +171,30 @@ Rules the runner depends on:
   an exact number of AI participants per condition in parallel (`simulate` skill).
 - `evaluate(sessions)` derives every metric from `sessions` alone and returns the paper's own
   comparison (test, statistic, effect size) or a structured `not_ready` with what is missing.
-- Run `python .opencode/skills/build/check_program.py program.json` (it also runs inside check_package.py), then `python .opencode/skills/build/check_package.py package/<paper-slug>` (eight files,
+- Run `python .opencode/skills/build/check_program.py program.json` (it also runs inside check_package.py), then `python .opencode/skills/build/check_package.py package/<paper-slug>` (required files,
   JSON validity, bindings, smoke test) and repair until it passes.
+
+### Capabilities and failure cases
+
+Every tool checks `capabilities.json` before doing work and refuses what it says the study cannot
+do. After the package check passes:
+
+1. If part of the paper cannot be run as published, first record it in `capabilities.json` →
+   `run.excluded` (create the file with `{"schemaVersion": 1, "run": {"excluded": [...]}}` if it does
+   not exist): one entry per part, `{"what": "...", "reason": "...", "arms": [...]}`, with `arms`
+   the package arm names it covers. Typical parts: picture or audio stimuli, reaction times, eye
+   tracking or physiology, materials the paper does not print, participants that are not people.
+   Never run a proxy for an excluded part.
+2. Run `python .opencode/skills/build/capabilities.py .` It derives everything else from the files
+   (program check, readiness, human-data check, author-code key, reproduction) and keeps your
+   `run.excluded`. Do not edit the derived fields by hand.
+3. Write `artifacts/failures.json`: a list with one entry per place where the template does not fit
+   this paper, `{"pattern", "where", "what", "fallback", "suggestion"}`. `pattern` is one of
+   `non-text-stimuli`, `materials-not-public`, `missing-information`, `interaction`,
+   `sequential-dependence`, `modelling`, `non-human-participants`, `unsimulable-measure`,
+   `author-code-unusable`, `author-code-not-reproducing`, `human-data-incomplete`, `other`.
+   State only what the program, the package or the paper shows; `[]` when nothing applies.
+4. `python .opencode/skills/build/capabilities.py . --check` must print `PASS`.
 
 ## 4. Views: two artifacts, automatically
 
@@ -193,7 +218,8 @@ A view failing its check is fixed, not dropped. Do not add new study facts in a 
 ## 5. Report
 
 Reply with: studies found; counts of nodes, steps, conditions, issues (by severity); the
-readiness verdict ("can be run as published" / "blocked by: …"); checks run and their result;
+readiness verdict ("can be run as published" / "blocked by: …"); what capabilities.json says
+cannot be run and why; checks run and their result;
 and the paths written (including the two views). Reply in the researcher's language.
 
 ## Clarifying decisions with the researcher

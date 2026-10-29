@@ -44,7 +44,7 @@ description can surface them without extra configuration. Skills refer to the sc
 
 The contract is distilled from the HumanStudy-Bench agent package builder
 (`agent_pipeline/CLAUDE.md`, the Human Program v2 prompt in `agent_pipeline/build_prompt.py`,
-the eight-file package contract with `programBindings` checked by
+the package contract (slim inside a project: study.json refers to program.json) with `programBindings` checked by
 `agent_pipeline/validate_package.py`, and the harness interface `run_sessions`/`evaluate` used by
 `playground/run_package.py`) and the humanstudy-hub-web Human Program design notes. A package
 built in the app is therefore the same artefact the website's GitHub Actions pipeline produces. The schema is copied from
