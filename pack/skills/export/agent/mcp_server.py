@@ -22,7 +22,7 @@ os.dup2(2, 1)
 sys.stdout = sys.stderr
 sys.path.insert(0, str(HERE))
 with contextlib.redirect_stdout(sys.stderr):
-    from study_core import Study  # noqa: E402
+    from study_core import Refusal, Study, status_of  # noqa: E402
 
 SUPPORTED = ["2025-06-18", "2025-03-26", "2024-11-05"]
 STUDY = Study()  # the skill folder this script sits in
@@ -37,6 +37,9 @@ S = {"type": "string"}
 TOOLS = [
     ("study_overview", "Title, authors, the studies in the paper, open issues and whether the study can be run.",
      obj({}), lambda a: STUDY.overview()),
+    ("capabilities", "What this study can do (read, run, human data, author code, reproduction, profiles), each "
+     "yes / partial / no with its reason. Work outside these is refused with a reason, never approximated.",
+     obj({}), lambda a: STUDY.capabilities()),
     ("list_conditions", "Conditions of one study, with ids for participant_prompt.",
      obj({"study_id": S}, ["study_id"]), lambda a: STUDY.conditions(a["study_id"])),
     ("read_study", "One study in full: participants, design, conditions, verbatim materials, ordered procedure, "
@@ -151,8 +154,17 @@ def handle(msg):
         try:
             with contextlib.redirect_stdout(sys.stderr):
                 out = tool[3](args)
+            if not isinstance(out, str):  # text answers (study, paper) are status ok
+                if isinstance(out, dict) and out.get("status") in ("ok", "partial"):
+                    pass
+                elif isinstance(out, dict) and "status" not in out:
+                    out = dict({"status": status_of(out)}, **out)
+                else:  # lists, and dicts with a status of their own (an evaluation's not_ready)
+                    out = {"status": status_of(out), "result": out}
             return ok(mid, tool_result(out if isinstance(out, str) else
                                        json.dumps(out, ensure_ascii=False, indent=2, default=str)))
+        except Refusal as exc:  # the study cannot do this: say why and what to do instead
+            return ok(mid, tool_result(json.dumps(exc.to_dict(), ensure_ascii=False, indent=2), True))
         except Exception as exc:  # report to the agent instead of dropping the connection
             detail = exc.args[0] if isinstance(exc, (KeyError, RuntimeError)) and exc.args else repr(exc)
             print(traceback.format_exc(), file=sys.stderr)

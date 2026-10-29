@@ -17,7 +17,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 PACK = REPO / "pack"
 SCRIPTS = {
-    "build": ["program_io.py", "program_lock.py", "check_program.py", "check_package.py", "check_quotes.py"],
+    "build": ["program_io.py", "program_lock.py", "check_program.py", "check_package.py", "check_quotes.py",
+              "capabilities.py"],
     "export": ["agent_package.py", "agent/study_core.py", "agent/mcp_server.py"],
 }
 PATHS = [

@@ -10,6 +10,8 @@ A simulation runs the participants of `package/<paper-slug>/` (prompts and reply
 is no package yet, run the `build` skill first (section 3). If `study.json.readiness.status` is
 `blocked`, stop and tell the researcher which decisions are needed; never fill them in to make the
 run possible.
+Read `capabilities.json` too: parts listed in `run.excluded` are not run (say so in the report, with
+the reason), and a `partial` run is reported as partial, never as the whole paper.
 
 The researcher follows the run in the app's **Simulation** tab, which reads the files below while
 you work. They do not read code: every sentence you write for them (progress messages, the
