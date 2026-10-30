@@ -209,7 +209,9 @@ With the original data files in `human-data/` and a loader `package/<slug>/human
  "repository": {"url": "landing page", "title": "...", "license": "CC0 | CC-BY-4.0 | null", "licenseEvidence": "where it says so"},
  "pinnedAt": "YYYY-MM-DD",
  "files": [{"path": "relative to human-data/", "sha256": "...", "bytes": 0, "role": "data | documentation",
-            "url": "direct download URL serving exactly these bytes, or null"}]}
+            "url": "direct download URL serving exactly these bytes, or null",
+            "archiveMember": "path inside the zip at url, when the file is only published inside one",
+            "note": "anything a user needs, e.g. where an unavailable file can be obtained"}]}
 ```
 
 Give a `url` only after downloading it and seeing the same SHA-256. Then run

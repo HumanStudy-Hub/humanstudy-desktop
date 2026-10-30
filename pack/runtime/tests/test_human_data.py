@@ -97,6 +97,26 @@ class HumanData(unittest.TestCase):
             s.reproduce_paper()
         self.assertEqual(ctx.exception.capability, "humanData")
 
+    def test_files_inside_a_zip_are_extracted_and_checked(self):
+        import io
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("Exp2/test.csv", DATA)
+            z.writestr("Exp1/test.csv", b"other")
+        self.routes["/data.zip"] = buf.getvalue()
+        s = self.key(url="/data.zip")
+        key = json.loads((self.root / "package/knobe/human/key.json").read_text())
+        key["files"][0]["archiveMember"] = "Exp2/test.csv"
+        (self.root / "package/knobe/human/key.json").write_text(json.dumps(key))
+        s = study_core.Study(str(self.root))
+        self.assertEqual(s.get_human_data()["status"], "ok")
+        self.assertEqual((self.root / "human-data/test.csv").read_bytes(), DATA)
+        (self.root / "human-data/test.csv").unlink()
+        key["files"][0]["archiveMember"] = "Exp3/test.csv"
+        (self.root / "package/knobe/human/key.json").write_text(json.dumps(key))
+        self.assertEqual(study_core.Study(str(self.root)).get_human_data()["status"], "changed")
+
     def test_withdrawn_unavailable_and_no_key(self):
         self.assertEqual(self.key(url="/gone.csv").get_human_data()["status"], "withdrawn")
         data = self.key(url=None).get_human_data()

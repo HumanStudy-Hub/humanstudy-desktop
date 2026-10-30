@@ -498,7 +498,7 @@ class Study:
         silently), withdrawn (the source answers 404/410), unavailable (no URL or no network)."""
         key = self.human_key()
         folder = self.human_dir()
-        files, states = [], []
+        files, states, archives = [], [], {}
         for f in key.get("files", []):
             target = folder / f["path"]
             state, actual = "unavailable", None
@@ -506,14 +506,22 @@ class Study:
                 actual = sha256_file(target)
                 state = "ok" if actual == f.get("sha256") else "changed"
             elif download and f.get("url"):
-                state, actual = fetch_pinned(f["url"], target, f.get("sha256"))
+                state, actual = fetch_pinned(f["url"], target, f.get("sha256"), f.get("archiveMember"), archives)
             entry = {"path": f["path"], "status": state, "pinned": f.get("sha256"), "url": f.get("url"),
                      "role": f.get("role", "data")}
+            if f.get("archiveMember"):
+                entry["archiveMember"] = f["archiveMember"]
+            if f.get("note") and state != "ok":
+                entry["note"] = f["note"]
             if actual and actual != f.get("sha256"):
                 entry["actual"] = actual
             files.append(entry)
             if entry["role"] == "data":
                 states.append(state)
+        for zpath in archives.values():  # downloaded archives are temporary
+            if isinstance(zpath, Path):
+                import shutil
+                shutil.rmtree(zpath.parent, ignore_errors=True)
         order = ["withdrawn", "changed", "unavailable"]
         status = next((s for s in order if s in states), "ok")
         caps = (self.capabilities().get("humanData") or {})
@@ -600,24 +608,49 @@ def sha256_file(path):
     return h.hexdigest()
 
 
-def fetch_pinned(url, target, pinned):
-    """Download url; keep it at target only when its sha256 is the pinned one."""
+def download(url, dest):
+    """url -> dest. Returns None, or the failure status (withdrawn for 404/410, else unavailable)."""
     import urllib.error
-    target.parent.mkdir(parents=True, exist_ok=True)
-    part = target.with_name(target.name + ".part")
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "humanstudy-study-core"})
-        with urllib.request.urlopen(req, timeout=300) as r, open(part, "wb") as out:
+        with urllib.request.urlopen(req, timeout=300) as r, open(dest, "wb") as out:
             for chunk in iter(lambda: r.read(1 << 20), b""):
                 out.write(chunk)
+        return None
     except urllib.error.HTTPError as exc:
-        if part.exists():
-            part.unlink()
-        return ("withdrawn" if exc.code in (404, 410) else "unavailable"), None
+        status = "withdrawn" if exc.code in (404, 410) else "unavailable"
     except (OSError, ValueError):
-        if part.exists():
-            part.unlink()
-        return "unavailable", None
+        status = "unavailable"
+    if Path(dest).exists():
+        Path(dest).unlink()
+    return status
+
+
+def fetch_pinned(url, target, pinned, member=None, archives=None):
+    """Download url (or one member of the zip at url); keep it at target only when its sha256 is pinned."""
+    import shutil
+    import zipfile
+    target.parent.mkdir(parents=True, exist_ok=True)
+    part = target.with_name(target.name + ".part")
+    if member:
+        archives = {} if archives is None else archives
+        if url not in archives:  # several files can come from one archive
+            zpath = Path(tempfile.mkdtemp(prefix="hs-archive-")) / "archive.zip"
+            archives[url] = download(url, zpath) or zpath
+        zpath = archives[url]
+        if isinstance(zpath, str):
+            return zpath, None
+        try:
+            with zipfile.ZipFile(zpath) as z, z.open(member) as src, open(part, "wb") as out:
+                shutil.copyfileobj(src, out)
+        except (KeyError, zipfile.BadZipFile, OSError):
+            if part.exists():
+                part.unlink()
+            return "changed", None  # the archive no longer holds this file as pinned
+    else:
+        failed = download(url, part)
+        if failed:
+            return failed, None
     actual = sha256_file(part)
     if actual == pinned:
         os.replace(part, target)
