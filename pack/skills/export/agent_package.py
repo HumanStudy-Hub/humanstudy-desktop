@@ -143,6 +143,15 @@ def skill_md(study, name, quote_line=None):
             "`OPENAI_BASE_URL`). To collect answers some other way: `plan --n 5` lists every prompt, and "
             "`replay replies.json --n 5` scores the replies given in the same order.", "",
         ]
+        if (study.package / "human/key.json").is_file():
+            run += [
+                "## Human data", "",
+                "The original human data are not in this folder. `python scripts/study_core.py human-data` "
+                "downloads them from their source and checks every file against its pinned SHA-256. "
+                "`python scripts/study_core.py reproduce` recomputes the paper's key results from them with "
+                "the package's analysis: trust the analysis on AI participants only as far as it recovers "
+                "the paper here. If the data are a replication sample, say so when you report.", "",
+            ]
     return "\n".join([
         "---",
         "name: %s" % name,

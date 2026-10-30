@@ -11,6 +11,8 @@ facts. Standard library only, Python 3.8+, so the folder works outside the Human
     python study_core.py run --cli "claude -p --model haiku" [--n 5]   one new CLI process per participant
     python study_core.py run --model <id> [--n 5] [--arm A]   needs OPENROUTER_API_KEY or OPENAI_API_KEY
     python study_core.py capabilities                  what this study can do, each answer with its reason
+    python study_core.py human-data [--no-download]     fetch the original human data and check their hashes
+    python study_core.py reproduce                      the paper's results recomputed from the human data
 
 Work the study cannot do is refused, never approximated: the CLI prints
 {"status": "refused", "reason", "capability", "next_steps"} and exits 3; over MCP the same object is the
@@ -461,6 +463,201 @@ class Study:
             out["notRun"] = [{"what": x.get("what"), "reason": x.get("reason")} for x in skipped]
         return out
 
+    # ---- human data ----------------------------------------------------------------------------
+
+    def human_key(self):
+        """package/<slug>/human/key.json: where each original data file comes from, pinned by sha256."""
+        path = self.package / HUMAN_KEY if self.package else None
+        if not path or not path.is_file():
+            raise Refusal("this study has no human-data key, so its human data cannot be fetched or checked",
+                          "humanData", ["compare with the numbers the paper reports (read_study, Reported results)",
+                                        "a researcher can add package/<slug>/human/key.json with the data's source"])
+        key = json.loads(path.read_text(encoding="utf-8"))
+        for f in key.get("files", []):
+            rel = Path(f.get("path", ""))
+            if rel.is_absolute() or ".." in rel.parts or not rel.parts:
+                raise Refusal("human/key.json has an unsafe file path %r" % f.get("path"), "humanData",
+                              ["fix the key's file paths (relative, inside the data folder)"])
+        return key
+
+    def human_dir(self):
+        """Where human data live: $HUMANSTUDY_HUMAN_DATA, else <project>/human-data, but never inside a git
+        repository (a community checkout); there a per-user folder is used instead."""
+        if os.environ.get("HUMANSTUDY_HUMAN_DATA"):
+            return Path(os.environ["HUMANSTUDY_HUMAN_DATA"]).expanduser().resolve()
+        if any((p / ".git").exists() for p in [self.root, *self.root.parents]):
+            safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in str(self.program.get("id") or "study"))
+            return Path.home() / ".humanstudy" / "human-data" / safe
+        return self.root / "human-data"
+
+    def get_human_data(self, download=True):
+        """Fetch the human data from their original location into the data folder and check every hash.
+
+        status: ok (every data file present and identical to the pinned version), changed (a file differs
+        from the pinned version; the new bytes are kept beside it as <name>.changed and never used
+        silently), withdrawn (the source answers 404/410), unavailable (no URL or no network)."""
+        key = self.human_key()
+        folder = self.human_dir()
+        files, states, archives = [], [], {}
+        for f in key.get("files", []):
+            target = folder / f["path"]
+            state, actual = "unavailable", None
+            if target.is_file():
+                actual = sha256_file(target)
+                state = "ok" if actual == f.get("sha256") else "changed"
+            elif download and f.get("url"):
+                state, actual = fetch_pinned(f["url"], target, f.get("sha256"), f.get("archiveMember"), archives)
+            entry = {"path": f["path"], "status": state, "pinned": f.get("sha256"), "url": f.get("url"),
+                     "role": f.get("role", "data")}
+            if f.get("archiveMember"):
+                entry["archiveMember"] = f["archiveMember"]
+            if f.get("note") and state != "ok":
+                entry["note"] = f["note"]
+            if actual and actual != f.get("sha256"):
+                entry["actual"] = actual
+            files.append(entry)
+            if entry["role"] == "data":
+                states.append(state)
+        for zpath in archives.values():  # downloaded archives are temporary
+            if isinstance(zpath, Path):
+                import shutil
+                shutil.rmtree(zpath.parent, ignore_errors=True)
+        order = ["withdrawn", "changed", "unavailable"]
+        status = next((s for s in order if s in states), "ok")
+        caps = (self.capabilities().get("humanData") or {})
+        out = {"status": status, "path": str(folder), "sample": key.get("sample"),
+               "sampleEvidence": key.get("sampleEvidence"), "repository": key.get("repository"),
+               "pinnedAt": key.get("pinnedAt"), "files": files,
+               "coverage": caps.get("coverage"), "notInData": caps.get("missing")}
+        steps = {"changed": "the source now serves different bytes: check the repository's history; a researcher "
+                            "decides whether to re-pin the key (results then record the new version)",
+                 "withdrawn": "the source has withdrawn the data: earlier results keep their version label; use a "
+                              "mirror only if the license allows it",
+                 "unavailable": "download the files listed with status unavailable yourself and place them under "
+                                "%s; their hashes are checked" % folder}
+        if status != "ok":
+            out["next_steps"] = [steps[status]]
+        return out
+
+    def human_module(self):
+        loader = self.package / "human" / self.human_key().get("loader", "human_sessions.py")
+        if not loader.is_file():
+            raise Refusal("the human-data loader %s is missing" % loader.name, "humanData",
+                          ["rebuild the package's human data step"])
+        if "human" not in self._modules:
+            spec = importlib.util.spec_from_file_location("hs_human", loader)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            spec.loader.exec_module(mod)
+            self._modules["human"] = mod
+        return self._modules["human"]
+
+    def reproduce_paper(self, method="package"):
+        """Run the analysis on the original human data and compare each key result with the paper.
+
+        A result counts as recovered when it is within max(0.05, 15%) of the reported value."""
+        if method == "author":
+            raise Refusal("running the authors' own analysis code is not available yet", "authorCode",
+                          ["use method package (our evaluation.py)", "see capabilities.authorCode"])
+        if method != "package":
+            raise Refusal("unknown method %r" % method, "reproduced", ["use method package"])
+        data = self.get_human_data()
+        if data["status"] != "ok":
+            raise Refusal("human data are %s, so the paper cannot be reproduced from them" % data["status"],
+                          "humanData", data.get("next_steps", []) + ["get_human_data shows each file's status"])
+        mod = self.human_module()
+        sessions = mod.load(data["path"])
+        evaluation = self.module("evaluation").evaluate(sessions)
+        checks = []
+        for e in mod.key_effects(evaluation):
+            ok = within_tolerance(e.get("estimate"), e.get("reported"))
+            checks.append({"key": e.get("id"), "label": e.get("label"), "reported": e.get("reported"),
+                           "computed": e.get("estimate"), "p": e.get("p"), "withinTolerance": ok})
+        judged = [c["withinTolerance"] for c in checks if c["withinTolerance"] is not None]
+        verdict = None if not judged else "pass" if all(judged) else "fail" if not any(judged) else "partial"
+        not_mapped = list(getattr(mod, "NOT_MAPPED", []) or [])
+        out = {"status": "partial" if not_mapped or verdict is None else "ok", "method": "package",
+               "verdict": verdict, "recovered": [sum(judged), len(judged)], "tolerance": TOLERANCE,
+               "checks": checks, "humanSessions": len(sessions), "exclusions": getattr(mod, "EXCLUSIONS", None),
+               "notMapped": not_mapped, "sample": data["sample"],
+               "data": [{"path": f["path"], "sha256": f["pinned"]} for f in data["files"]]}
+        if verdict is None:
+            out["note"] = "The paper reports no number comparable with these results."
+        if data["sample"] and data["sample"] != "original":
+            out["caveat"] = ("These human data are a %s sample, not the paper's own participants; a difference can "
+                             "come from the sample, not the analysis." % data["sample"])
+        return out
+
+
+HUMAN_KEY = "human/key.json"
+TOLERANCE = "a result is recovered when |computed - reported| <= max(0.05, 0.15 * |reported|)"
+
+
+def within_tolerance(computed, reported):
+    if computed is None or reported is None:
+        return None
+    return abs(computed - reported) <= max(0.05, 0.15 * abs(reported))
+
+
+def sha256_file(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def download(url, dest):
+    """url -> dest. Returns None, or the failure status (withdrawn for 404/410, else unavailable)."""
+    import urllib.error
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "humanstudy-study-core"})
+        with urllib.request.urlopen(req, timeout=300) as r, open(dest, "wb") as out:
+            for chunk in iter(lambda: r.read(1 << 20), b""):
+                out.write(chunk)
+        return None
+    except urllib.error.HTTPError as exc:
+        status = "withdrawn" if exc.code in (404, 410) else "unavailable"
+    except (OSError, ValueError):
+        status = "unavailable"
+    if Path(dest).exists():
+        Path(dest).unlink()
+    return status
+
+
+def fetch_pinned(url, target, pinned, member=None, archives=None):
+    """Download url (or one member of the zip at url); keep it at target only when its sha256 is pinned."""
+    import shutil
+    import zipfile
+    target.parent.mkdir(parents=True, exist_ok=True)
+    part = target.with_name(target.name + ".part")
+    if member:
+        archives = {} if archives is None else archives
+        if url not in archives:  # several files can come from one archive
+            zpath = Path(tempfile.mkdtemp(prefix="hs-archive-")) / "archive.zip"
+            archives[url] = download(url, zpath) or zpath
+        zpath = archives[url]
+        if isinstance(zpath, str):
+            return zpath, None
+        try:
+            with zipfile.ZipFile(zpath) as z, z.open(member) as src, open(part, "wb") as out:
+                shutil.copyfileobj(src, out)
+        except (KeyError, zipfile.BadZipFile, OSError):
+            if part.exists():
+                part.unlink()
+            return "changed", None  # the archive no longer holds this file as pinned
+    else:
+        failed = download(url, part)
+        if failed:
+            return failed, None
+    actual = sha256_file(part)
+    if actual == pinned:
+        os.replace(part, target)
+        return "ok", actual
+    os.replace(part, target.with_name(target.name + ".changed"))
+    return "changed", actual
+
 
 def http_llm(model, temperature=1.0):
     """llm(prompt) -> str over an OpenAI-compatible API. Keys are read from the environment only."""
@@ -535,6 +732,8 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("overview")
     sub.add_parser("capabilities")
+    sub.add_parser("human-data").add_argument("--no-download", action="store_true")
+    sub.add_parser("reproduce").add_argument("--method", default="package", choices=["package", "author"])
     sub.add_parser("studies")
     sub.add_parser("paper")
     sub.add_parser("study").add_argument("id")
@@ -571,6 +770,10 @@ def main(argv=None):
         show(s.overview())
     elif a.cmd == "capabilities":
         show(s.capabilities())
+    elif a.cmd == "human-data":
+        show(s.get_human_data(download=not a.no_download))
+    elif a.cmd == "reproduce":
+        show(s.reproduce_paper(a.method))
     elif a.cmd == "studies":
         show([dict(st, conditions=s.conditions(st["id"])) for st in s.overview()["studies"]])
     elif a.cmd == "paper":

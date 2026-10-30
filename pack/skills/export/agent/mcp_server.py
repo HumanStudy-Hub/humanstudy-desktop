@@ -40,6 +40,15 @@ TOOLS = [
     ("capabilities", "What this study can do (read, run, human data, author code, reproduction, profiles), each "
      "yes / partial / no with its reason. Work outside these is refused with a reason, never approximated.",
      obj({}), lambda a: STUDY.capabilities()),
+    ("get_human_data", "Fetch the original human data from their source into the local data folder and check each "
+     "file against its pinned sha256. Status ok, changed (the source now differs; never used silently), withdrawn "
+     "or unavailable, with what to do next. Says whether the data are the paper's own sample or a replication.",
+     obj({"download": {"type": "boolean"}}), lambda a: STUDY.get_human_data(a.get("download", True))),
+    ("reproduce_paper", "Recompute the paper's key results from the original human data with the package's "
+     "analysis and compare each with the reported value (verdict pass, partial or fail). Do this before trusting "
+     "the analysis on AI participants.",
+     obj({"method": {"type": "string", "enum": ["package", "author"]}}),
+     lambda a: STUDY.reproduce_paper(a.get("method", "package"))),
     ("list_conditions", "Conditions of one study, with ids for participant_prompt.",
      obj({"study_id": S}, ["study_id"]), lambda a: STUDY.conditions(a["study_id"])),
     ("read_study", "One study in full: participants, design, conditions, verbatim materials, ordered procedure, "
@@ -82,7 +91,7 @@ TOOLS = [
 BY_NAME = {t[0]: t for t in TOOLS}
 
 
-TYPES = {"string": str, "integer": int, "array": list, "object": dict}
+TYPES = {"string": str, "integer": int, "array": list, "object": dict, "boolean": bool}
 
 
 def check_args(schema, args):
