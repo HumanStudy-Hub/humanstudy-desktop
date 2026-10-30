@@ -81,6 +81,16 @@ class Effects(unittest.TestCase):
         self.assertIn("program hypothesis hypothesis", run.stdout)
         self.assertIn("'nope' is not a program node", run.stdout)
 
+    def test_model_results_name_their_population_and_own_phenomena(self):
+        doc = effects_doc()
+        doc["effects"][0]["population"] = {"kind": "ai-model"}
+        doc["effects"][0]["phenomena"] = ["Knobe effect"]
+        problems, _ = effects_core.check(self.root, doc)
+        self.assertTrue(any("population.models" in p for p in problems))
+        self.assertEqual(effects_core.phenomena_of(doc["effects"][0], doc["hypotheses"]), ["Knobe effect"])
+        del doc["effects"][0]["phenomena"]
+        self.assertEqual(effects_core.phenomena_of(doc["effects"][0], doc["hypotheses"]), ["side-effect effect"])
+
     def test_ops_must_read_fields_ai_sessions_carry(self):
         doc = effects_doc()
         doc["effects"][0]["compute"]["field"] = "parsed.answer"  # only a human loader would write this

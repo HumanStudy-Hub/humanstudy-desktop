@@ -33,6 +33,7 @@ CONTRASTS = ("two_groups", "paired", "association", "interaction", "omnibus", "s
 DIRECTIONS = ("positive", "negative", "nonzero", "none", "unspecified")
 OPS = ("mean_difference", "paired_difference", "proportion_difference", "contingency", "correlation", "package")
 ROLES = ("test", "robustness", "check", "descriptive")
+POPULATIONS = ("human", "ai-model", "human-vs-ai-model", "ai-model-vs-ai-model")
 UNTESTED = ("not-an-effect", "not-tested-in-paper", "not-computable", "out-of-scope")
 ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 NUMBER_FIELDS = ("value", "se", "df", "p", "n", "lower", "upper")
@@ -182,6 +183,13 @@ def check(root, effects=None, program=None):
             tested.add(h)
         if e.get("studyId") not in studies:
             P("%s: studyId %r is not a program study" % (where, e.get("studyId")))
+        pop = e.get("population") or {"kind": "human"}
+        if pop.get("kind") not in POPULATIONS:
+            P("%s: population.kind must be one of %s" % (where, ", ".join(POPULATIONS)))
+        if pop.get("kind") != "human" and not pop.get("models"):
+            P("%s: a population with AI models names them in population.models" % where)
+        if "phenomena" in e and not isinstance(e["phenomena"], list):
+            P("%s: phenomena must be a list (it replaces the hypothesis's phenomena for this effect)" % where)
         if e.get("design") not in DESIGNS:
             P("%s: design must be one of %s" % (where, ", ".join(DESIGNS)))
         out = e.get("outcome") or {}
@@ -658,6 +666,14 @@ def _share(cell):
 def _cmp(computed, reported, basis):
     ok = abs(computed - reported) <= max(0.05, 0.15 * abs(reported))
     return {"comparable": True, "computed": computed, "reported": reported, "basis": basis, "withinTolerance": ok}
+
+
+def phenomena_of(effect, hypotheses):
+    """The effect's own phenomena when it lists them, else those of its hypotheses."""
+    if isinstance(effect.get("phenomena"), list):
+        return sorted(set(effect["phenomena"]))
+    by_id = {h.get("id"): h for h in hypotheses or []}
+    return sorted({p for h in effect.get("hypothesisIds") or [] for p in (by_id.get(h) or {}).get("phenomena") or []})
 
 
 def _rounded(x):

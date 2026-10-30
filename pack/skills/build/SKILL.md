@@ -235,6 +235,12 @@ Rules:
   `{"status": "not_ready", "reason"}`). Keep cells raw (n, mean, sd, or counts).
 - `compute.compareAs` only when the computed and reported numbers are the same quantity under
   another name, with the reason (an OLS coefficient on one condition dummy is the mean difference).
+- `population` says whose responses the reported numbers describe: omit it for human participants;
+  a paper that itself tests AI models records each model's result as an effect with
+  `{"kind": "ai-model", "models": ["gpt-4o"]}` (or `human-vs-ai-model`, `ai-model-vs-ai-model`), so a
+  human-only analysis can leave them out.
+- An effect may list its own `phenomena` when its hypothesis spans several (a yes-no bias effect under
+  a hypothesis about yes-no and omission bias); otherwise it inherits the hypothesis's.
 - `phenomena` and `topics` are plain keywords as the literature names them; a shared vocabulary
   comes later, so do not invent codes.
 

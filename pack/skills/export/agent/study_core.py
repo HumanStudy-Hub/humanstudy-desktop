@@ -492,7 +492,7 @@ class Study:
             if hypothesis and hypothesis not in (e.get("hypothesisIds") or []) and \
                     not any(hypothesis == h.get("nodeId") for h in hs):
                 continue
-            phen = sorted({p for h in hs for p in h.get("phenomena") or []})
+            phen = effects_core.phenomena_of(e, eff.get("hypotheses"))
             if phenomenon and not any(phenomenon.lower() in p.lower() for p in phen):
                 continue
             if role and e.get("role") != role:

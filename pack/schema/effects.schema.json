@@ -615,6 +615,39 @@
           },
           "notes": {
             "type": "string"
+          },
+          "population": {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "human",
+                  "ai-model",
+                  "human-vs-ai-model",
+                  "ai-model-vs-ai-model"
+                ]
+              },
+              "models": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "note": {
+                "type": "string"
+              }
+            },
+            "description": "whose responses the paper's reported numbers describe; omitted means human participants. Papers that themselves test AI models report model results as effects too."
+          },
+          "phenomena": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "this effect's own phenomena; replaces the hypothesis phenomena for this effect when a hypothesis spans several"
           }
         }
       }
