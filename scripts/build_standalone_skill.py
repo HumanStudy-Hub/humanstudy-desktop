@@ -18,8 +18,8 @@ REPO = Path(__file__).resolve().parents[1]
 PACK = REPO / "pack"
 SCRIPTS = {
     "build": ["program_io.py", "program_lock.py", "check_program.py", "check_package.py", "check_quotes.py",
-              "capabilities.py"],
-    "export": ["agent_package.py", "agent/study_core.py", "agent/mcp_server.py"],
+              "capabilities.py", "effects.py"],
+    "export": ["agent_package.py", "agent/study_core.py", "agent/mcp_server.py", "agent/effects_core.py"],
 }
 PATHS = [
     (".opencode/skills/build/", "$HS/scripts/build/"),
@@ -87,7 +87,7 @@ def generate(out):
             shutil.copy2(PACK / "skills" / skill / rel, dest)
     shutil.copy2(PACK / "standalone/pdf_pages.py", out / "scripts/pdf_pages.py")
     (out / "schema").mkdir()
-    for name in ["human-program.schema.json", "build-coverage.json"]:
+    for name in ["human-program.schema.json", "build-coverage.json", "effects.schema.json"]:
         shutil.copy2(PACK / "schema" / name, out / "schema" / name)
     shutil.copy2(REPO / "LICENSE", out / "LICENSE")
     check(out)

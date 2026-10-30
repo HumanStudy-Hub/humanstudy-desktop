@@ -13,6 +13,9 @@ facts. Standard library only, Python 3.8+, so the folder works outside the Human
     python study_core.py capabilities                  what this study can do, each answer with its reason
     python study_core.py human-data [--no-download]     fetch the original human data and check their hashes
     python study_core.py reproduce                      the paper's results recomputed from the human data
+    python study_core.py effects [--hypothesis H] [--phenomenon P] [--topic T] [--role R]
+                                                        the paper's effects: hypothesis, outcome, contrast,
+                                                        predicted direction, reported numbers, how computed
 
 Work the study cannot do is refused, never approximated: the CLI prints
 {"status": "refused", "reason", "capability", "next_steps"} and exits 3; over MCP the same object is the
@@ -30,6 +33,11 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+try:
+    import effects_core  # same folder; standard library only
+except ImportError:  # an older copy of this script without its effects_core.py: effects are unavailable
+    effects_core = None
 
 PAPER_KINDS = ["overview", "background", "finding", "limitation"]
 STUDY_KINDS = ["hypothesis", "participants", "design", "condition", "material", "procedure",
@@ -105,6 +113,10 @@ class Study:
             self.caps = json.loads((self.root / "capabilities.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             self.caps = None
+        try:
+            self.effects = effects_core.load(self.root) if effects_core else None
+        except ValueError:
+            self.effects = None
 
     # ---- reading -------------------------------------------------------------------------------
 
@@ -452,6 +464,54 @@ class Study:
                           "run.plan", ["use run with a model or CLI instead"])
         return self.result(sessions, arms)
 
+    # ---- effects ---------------------------------------------------------------------------------
+
+    def require_effects(self):
+        if not self.effects:
+            raise Refusal("this study has no effects.json, so its hypotheses are not linked to computable effects",
+                          "effects", ["read the hypotheses and reported results with read_study",
+                                      "the build skill writes effects.json (hypotheses -> effects)"])
+        return self.effects
+
+    def effect_list(self, hypothesis=None, phenomenon=None, topic=None, role=None):
+        """The paper's effects, each with its hypothesis statement, outcome, contrast, predicted direction,
+        the paper's reported numbers (with their quotes cited) and how it is computed from sessions."""
+        eff = self.require_effects()
+        topics = list(eff.get("topics") or [])
+        if topic and not any(topic.lower() in str(t).lower() for t in topics):
+            return {"topics": topics, "effects": []}
+        hyps = {}
+        for h in eff.get("hypotheses") or []:
+            node = self.node_by_id.get(h.get("nodeId")) or {}
+            statement = next((text(f.get("value")) for f in node.get("fields", []) if f.get("id") == "statement"),
+                             node.get("title"))
+            hyps[h["id"]] = dict(h, statement=statement, title=node.get("title"))
+        out = []
+        for e in eff.get("effects") or []:
+            hs = [hyps[h] for h in e.get("hypothesisIds") or [] if h in hyps]
+            if hypothesis and hypothesis not in (e.get("hypothesisIds") or []) and \
+                    not any(hypothesis == h.get("nodeId") for h in hs):
+                continue
+            phen = sorted({p for h in hs for p in h.get("phenomena") or []})
+            if phenomenon and not any(phenomenon.lower() in p.lower() for p in phen):
+                continue
+            if role and e.get("role") != role:
+                continue
+            rep = e.get("reported") or {}
+            out.append(dict(e, hypotheses=[{k: h.get(k) for k in ("id", "nodeId", "title", "statement", "phenomena")}
+                                           for h in hs], phenomena=phen,
+                            reportedSource=self.cite(rep.get("evidenceIds"))))
+        return {"programId": self.program.get("id"), "topics": topics, "effects": out,
+                "untested": [{"id": h["id"], "statement": h["statement"], "because": h.get("untestedBecause"),
+                              "reason": h.get("reason")} for h in hyps.values() if h.get("status") == "untested"]}
+
+    def effect_results(self, sessions, evaluation=None, key_effects=None, source=None):
+        """One result block per effect, computed the same way for human and AI-participant sessions."""
+        eff = self.require_effects()
+        module = self._modules.get("evaluation")
+        blocks = effects_core.compute(eff, sessions, evaluation, module, key_effects, source)
+        return [effects_core._rounded(b) for b in blocks]
+
     def result(self, sessions, arms):
         """Sessions plus the paper's analysis; partial when part of the paper was not run or analysed."""
         evaluation = self.evaluate(sessions)
@@ -459,6 +519,8 @@ class Study:
         skipped = [] if arms else list(run.get("excluded") or [])  # chosen arms: excluded ones were refused
         status = "partial" if skipped or has_not_ready(evaluation) else "ok"
         out = {"status": status, "note": SIMULATION_NOTE, "evaluation": evaluation, "sessions": sessions}
+        if self.effects:
+            out["effects"] = self.effect_results(sessions, evaluation, source="agent")
         if skipped:
             out["notRun"] = [{"what": x.get("what"), "reason": x.get("reason")} for x in skipped]
         return out
@@ -568,11 +630,21 @@ class Study:
         mod = self.human_module()
         sessions = mod.load(data["path"])
         evaluation = self.module("evaluation").evaluate(sessions)
-        checks = []
-        for e in mod.key_effects(evaluation):
-            ok = within_tolerance(e.get("estimate"), e.get("reported"))
-            checks.append({"key": e.get("id"), "label": e.get("label"), "reported": e.get("reported"),
-                           "computed": e.get("estimate"), "p": e.get("p"), "withinTolerance": ok})
+        checks, blocks = [], None
+        if self.effects:
+            legacy = mod.key_effects(evaluation) if hasattr(mod, "key_effects") else None
+            blocks = self.effect_results(sessions, evaluation, legacy, source="human")
+            for e, b in zip(self.effects.get("effects") or [], blocks):
+                c = effects_core.compare(e, b)
+                checks.append({"key": e["id"], "label": e.get("label"), "role": e.get("role"),
+                               "reported": c.get("reported"), "computed": c.get("computed"),
+                               "basis": c.get("basis") or c.get("reason"),
+                               "p": (b.get("test") or {}).get("p"), "withinTolerance": c.get("withinTolerance")})
+        else:
+            for e in mod.key_effects(evaluation):
+                ok = within_tolerance(e.get("estimate"), e.get("reported"))
+                checks.append({"key": e.get("id"), "label": e.get("label"), "reported": e.get("reported"),
+                               "computed": e.get("estimate"), "p": e.get("p"), "withinTolerance": ok})
         judged = [c["withinTolerance"] for c in checks if c["withinTolerance"] is not None]
         verdict = None if not judged else "pass" if all(judged) else "fail" if not any(judged) else "partial"
         not_mapped = list(getattr(mod, "NOT_MAPPED", []) or [])
@@ -581,6 +653,9 @@ class Study:
                "checks": checks, "humanSessions": len(sessions), "exclusions": getattr(mod, "EXCLUSIONS", None),
                "notMapped": not_mapped, "sample": data["sample"],
                "data": [{"path": f["path"], "sha256": f["pinned"]} for f in data["files"]]}
+        if blocks is not None:
+            out["source"] = "effects.json"
+            out["effects"] = blocks
         if verdict is None:
             out["note"] = "The paper reports no number comparable with these results."
         if data["sample"] and data["sample"] != "original":
@@ -734,6 +809,9 @@ def main(argv=None):
     sub.add_parser("capabilities")
     sub.add_parser("human-data").add_argument("--no-download", action="store_true")
     sub.add_parser("reproduce").add_argument("--method", default="package", choices=["package", "author"])
+    q = sub.add_parser("effects")
+    for flag in ("hypothesis", "phenomenon", "topic", "role"):
+        q.add_argument("--" + flag)
     sub.add_parser("studies")
     sub.add_parser("paper")
     sub.add_parser("study").add_argument("id")
@@ -774,6 +852,8 @@ def main(argv=None):
         show(s.get_human_data(download=not a.no_download))
     elif a.cmd == "reproduce":
         show(s.reproduce_paper(a.method))
+    elif a.cmd == "effects":
+        show(s.effect_list(a.hypothesis, a.phenomenon, a.topic, a.role))
     elif a.cmd == "studies":
         show([dict(st, conditions=s.conditions(st["id"])) for st in s.overview()["studies"]])
     elif a.cmd == "paper":

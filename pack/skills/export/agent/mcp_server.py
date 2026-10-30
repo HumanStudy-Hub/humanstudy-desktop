@@ -49,6 +49,12 @@ TOOLS = [
      "the analysis on AI participants.",
      obj({"method": {"type": "string", "enum": ["package", "author"]}}),
      lambda a: STUDY.reproduce_paper(a.get("method", "package"))),
+    ("list_effects", "The paper's effects, linked from its hypotheses: outcome, contrast (treatment minus "
+     "reference), predicted direction, the paper's reported numbers with their pages, and how each is computed "
+     "from sessions. Filter by hypothesis id, phenomenon or topic keyword, or role (test, robustness, check, "
+     "descriptive). Runs and reproduce_paper return one result block per effect in the same shape.",
+     obj({"hypothesis": S, "phenomenon": S, "topic": S, "role": S}),
+     lambda a: STUDY.effect_list(a.get("hypothesis"), a.get("phenomenon"), a.get("topic"), a.get("role"))),
     ("list_conditions", "Conditions of one study, with ids for participant_prompt.",
      obj({"study_id": S}, ["study_id"]), lambda a: STUDY.conditions(a["study_id"])),
     ("read_study", "One study in full: participants, design, conditions, verbatim materials, ordered procedure, "
