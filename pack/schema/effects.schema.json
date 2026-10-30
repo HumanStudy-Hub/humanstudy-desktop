@@ -208,6 +208,14 @@
               },
               "valueMeans": {
                 "type": "string"
+              },
+              "factorIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+                },
+                "description": "program variable nodes the contrast manipulates or uses as predictors (independent variables, moderators)"
               }
             }
           },

@@ -192,7 +192,8 @@ facts: every number in it is written in a quote of the program's `evidence`.
    "outcome": {"variableId": "<variable node>", "type": "binary", "scale": "risky / sure",
                "higherMeans": "more risky choices"},
    "contrast": {"kind": "two_groups", "treatment": "loss", "reference": "gain",
-                "conditionIds": ["<condition node>", "<condition node>"], "valueMeans": "loss minus gain"},
+                "conditionIds": ["<condition node>", "<condition node>"], "factorIds": ["<IV variable node>"],
+                "valueMeans": "loss minus gain"},
    "prediction": {"direction": "positive", "evidenceIds": ["<evidence>"]},
    "analysisIds": ["<analysis node>"], "resultIds": ["<result node>"],
    "compute": {"op": "proportion_difference", "field": "responses.choice", "success": ["risky"]},
@@ -237,7 +238,9 @@ Rules:
 - `phenomena` and `topics` are plain keywords as the literature names them; a shared vocabulary
   comes later, so do not invent codes.
 
-Run `python .opencode/skills/build/effects.py .` until it prints `PASS`. Its warnings list program
+A built-in op must read fields that both the human loader's sessions and the adapter's sessions
+carry (the same path in both; `trials.0.answer` indexes a list); the check runs the adapter with a
+stand-in model to make sure. Run `python .opencode/skills/build/effects.py .` until it prints `PASS`. Its warnings list program
 nodes no hypothesis or effect reaches; link them where the paper links them. With human data, run
 `study_core.py reproduce` (it uses `effects.json`) and report the verdict per effect.
 

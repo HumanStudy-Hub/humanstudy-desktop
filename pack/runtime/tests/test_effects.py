@@ -81,6 +81,14 @@ class Effects(unittest.TestCase):
         self.assertIn("program hypothesis hypothesis", run.stdout)
         self.assertIn("'nope' is not a program node", run.stdout)
 
+    def test_ops_must_read_fields_ai_sessions_carry(self):
+        doc = effects_doc()
+        doc["effects"][0]["compute"]["field"] = "parsed.answer"  # only a human loader would write this
+        self.write(doc)
+        run = self.check()
+        self.assertEqual(run.returncode, 1, run.stdout)
+        self.assertIn("reads 'parsed.answer', which AI-participant sessions do not carry", run.stdout)
+
     def test_untested_needs_a_reason_and_graph_reaches_program_nodes(self):
         doc = effects_doc()
         doc["hypotheses"][0].update(status="untested")
