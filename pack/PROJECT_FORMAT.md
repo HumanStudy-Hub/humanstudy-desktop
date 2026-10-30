@@ -8,6 +8,9 @@ shows the whole folder as the **Program** explorer and `program.json` as the **S
   paper.pdf                 the source paper (read-only for the agent)
   sources/                  open materials, supplements, large instruments, datasets
   program.json              Human Program v2 (canonical design; schema/human-program.schema.json)
+  effects.json              hypotheses -> computable effects: outcome, contrast, predicted direction,
+                            the paper's reported numbers (each quoted) and how each is computed from
+                            sessions (schema/effects.schema.json; checked by build/effects.py)
   capabilities.json         what the study can do (read, run, human data, author code, reproduction),
                             each with its reason; written by build/capabilities.py
   package/<paper-slug>/     runnable replay package (build): study.json (refers to program.json),
@@ -31,6 +34,9 @@ Rules:
 - The package refers to `program.json` (`study.json.programRef`) and never copies it; the evidence
   and the missing information are read from `program.json`. Older packages with a program copy,
   `source/evidence.json` and `audit/missing_information.json` still work.
+- Runs and reproductions return one result block per effect (`effects`), the same shape for human
+  and AI-participant sessions: raw cells (n, mean, sd or counts), the test and the metric. Converting
+  between effect-size metrics is left to later tools.
 - Tools refuse work that `capabilities.json` says the study cannot do, with the reason.
 - Citations use the physical page of `paper.pdf` (starting at 1) or a path under `sources/`.
 - Paths inside the project are relative. Artifacts load nothing from the network.

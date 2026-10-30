@@ -152,6 +152,18 @@ def skill_md(study, name, quote_line=None):
                 "the package's analysis: trust the analysis on AI participants only as far as it recovers "
                 "the paper here. If the data are a replication sample, say so when you report.", "",
             ]
+    if study.effects:
+        n_eff = len(study.effects.get("effects") or [])
+        n_hyp = len(study.effects.get("hypotheses") or [])
+        run += [
+            "## Effects", "",
+            "`effects.json` links the paper's %d hypothes%s to %d effect%s: outcome, contrast (treatment minus "
+            "reference), predicted direction, the paper's reported numbers (each quoted, with its page) and how "
+            "each is computed from sessions. `python scripts/study_core.py effects` lists them (filter with "
+            "`--hypothesis`, `--phenomenon`, `--topic` or `--role`). Every run and every reproduction returns "
+            "one result block per effect in the same shape (cells, test, metric), for human and AI-participant "
+            "sessions alike." % (n_hyp, "is" if n_hyp == 1 else "es", n_eff, "" if n_eff == 1 else "s"), "",
+        ]
     return "\n".join([
         "---",
         "name: %s" % name,
@@ -319,6 +331,7 @@ def build(root, out, include_paper=False, include_sources=False, with_mcp=False)
         copy_tree(root / "sources", skill / "sources")
     (skill / "scripts").mkdir()
     shutil.copy2(HERE / "agent/study_core.py", skill / "scripts/study_core.py")
+    shutil.copy2(HERE / "agent/effects_core.py", skill / "scripts/effects_core.py")
     if with_mcp:
         shutil.copy2(HERE / "agent/mcp_server.py", skill / "scripts/mcp_server.py")
     report, line = quote_report(root)
@@ -336,6 +349,8 @@ def build(root, out, include_paper=False, include_sources=False, with_mcp=False)
     (refs / "accuracy.md").write_text(accuracy_md(report, line), encoding="utf-8")
     if (root / "capabilities.json").is_file():
         shutil.copy2(root / "capabilities.json", skill / "capabilities.json")
+    if (root / "effects.json").is_file():
+        shutil.copy2(root / "effects.json", skill / "effects.json")
     try:
         failures = json.loads((root / "artifacts/failures.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -403,6 +418,12 @@ def verify(out, name):
                          capture_output=True, text=True, encoding="utf-8", timeout=120, cwd=str(tempfile.gettempdir()))
     assert cli.returncode == 0 and json.loads(cli.stdout).get("id") == s.program.get("id"), "study_core.py: " + cli.stderr[-500:]
     checks.append("scripts/study_core.py runs from outside the folder")
+    if (skill / "effects.json").is_file():
+        sys.path.insert(0, str(skill / "scripts"))
+        import effects_core
+        problems, _ = effects_core.check(skill)
+        assert not problems, "effects.json: %s" % problems[:5]
+        checks.append("effects.json: hypotheses, effects and quoted numbers check")
 
     if manifest.get("mcpServer"):
         calls = [("study_overview", {}), ("capabilities", {})]
@@ -413,7 +434,7 @@ def verify(out, name):
         assert responses.get(0, {}).get("result", {}).get("capabilities", {}).get("tools") is not None, \
             "MCP initialize failed: %s" % stderr[-500:]
         tools = [t["name"] for t in responses.get(1, {}).get("result", {}).get("tools", [])]
-        assert {"read_study", "score_replies", "capabilities"} <= set(tools), "MCP tools/list: %s" % tools
+        assert {"read_study", "score_replies", "capabilities", "list_effects"} <= set(tools), "MCP tools/list: %s" % tools
         for i, (tool, _) in enumerate(calls):
             res = responses.get(i + 2, {}).get("result", {})
             assert res and not res.get("isError"), "MCP %s failed: %s %s" % (tool, res, stderr[-500:])

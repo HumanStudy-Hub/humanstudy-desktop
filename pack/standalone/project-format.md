@@ -8,6 +8,8 @@ derived from it and from the paper.
   paper.pdf                 the source paper (read-only)
   sources/                  open materials, supplements, large instruments, datasets (optional)
   program.json              Human Program v2 ($HS/schema/human-program.schema.json)
+  effects.json              hypotheses -> computable effects, each reported number quoted
+                            (schema/effects.schema.json; scripts/build/effects.py)
   capabilities.json         what the study can do, each with its reason (scripts/build/capabilities.py)
   package/<paper-slug>/     runnable replay package, build.md section 3 (study.json refers to program.json)
   artifacts/                reports, figures and simulation results you write

@@ -174,6 +174,82 @@ Rules the runner depends on:
 - Run `python .opencode/skills/build/check_program.py program.json` (it also runs inside check_package.py), then `python .opencode/skills/build/check_package.py package/<paper-slug>` (required files,
   JSON validity, bindings, smoke test) and repair until it passes.
 
+### Effects: from hypotheses to computable effects
+
+`effects.json` (beside `program.json`, schema `schema/effects.schema.json`) is the executable link
+from the paper's hypotheses to its data. Write it after the package check passes. It adds no study
+facts: every number in it is written in a quote of the program's `evidence`.
+
+```json
+{"schemaVersion": 1, "programId": "<program id>",
+ "topics": ["keywords for the paper, as the field names them"],
+ "hypotheses": [{"id": "h1", "nodeId": "<hypothesis node>", "status": "tested",
+                 "backgroundIds": ["<background node>"], "phenomena": ["framing effect"]}],
+ "effects": [{
+   "id": "loss_frame_risky", "label": "Loss vs gain frame: share choosing the risky option",
+   "role": "test", "hypothesisIds": ["h1"], "studyId": "<study id>",
+   "design": "between", "unit": "participant",
+   "outcome": {"variableId": "<variable node>", "type": "binary", "scale": "risky / sure",
+               "higherMeans": "more risky choices"},
+   "contrast": {"kind": "two_groups", "treatment": "loss", "reference": "gain",
+                "conditionIds": ["<condition node>", "<condition node>"], "factorIds": ["<IV variable node>"],
+                "valueMeans": "loss minus gain"},
+   "prediction": {"direction": "positive", "evidenceIds": ["<evidence>"]},
+   "analysisIds": ["<analysis node>"], "resultIds": ["<result node>"],
+   "compute": {"op": "proportion_difference", "field": "responses.choice", "success": ["risky"]},
+   "reported": {"estimates": [{"metric": "risk_difference", "value": 0.44, "variant": "as printed",
+                               "evidenceIds": ["<evidence>"]}],
+                "cells": {"loss": {"n": 155, "percent": 72}, "gain": {"n": 152, "percent": 28}},
+                "test": {"statistic": "chi_square", "df": 1, "p": 0.001, "pRelation": "<"},
+                "missing": ["what the paper does not report"], "evidenceIds": ["<evidence>"]}}]}
+```
+
+Rules:
+
+- Every `hypothesis` node of the program appears once in `hypotheses`: `tested` (at least one effect
+  names it) or `untested` with `untestedBecause` (`not-an-effect`, `not-tested-in-paper`,
+  `not-computable`, `out-of-scope`) and a `reason`. When the paper states no hypothesis but tests
+  effects, add the hypothesis node to the program first (from its aims or predictions, with evidence).
+- One effect per comparison the paper reports for a hypothesis (per outcome, per contrast, per study).
+  `role`: `test` (it tests a hypothesis), `robustness` (the same test another way), `check`
+  (manipulation, attention, recall or balance check), `descriptive`.
+- The value is always **treatment minus reference** in the outcome's own units. Name them as the
+  sessions do (`condition` values). Do not flip signs: `prediction.direction` says which sign the
+  hypothesis expects.
+- `reported` holds raw quantities exactly as printed: estimates (with `metric` from the schema's list
+  and `variant` naming the model or weighting), the test, cell n / mean / sd / k / proportion or
+  percent, as printed (a paper printing 72% gives `"percent": 72`, not 0.72).
+  Each number must be written in a quote of one of `reported.evidenceIds`; when the program's quotes
+  do not hold a number, add an evidence entry with the verbatim table row or sentence and its page
+  (`program_io.py`, then `check_quotes.py`). List what the paper does not report in `missing`; never
+  compute it or fill it in. `reported` is `null` when the paper prints no number for the effect.
+  Order `estimates` so the first one is the variant the package computes (for example unweighted).
+- `compute`: prefer a built-in op when each session holds the participant's value:
+  `mean_difference` (Welch t), `paired_difference` (`field` minus `referenceField` within a session),
+  `proportion_difference` (`success` values), `contingency` (chi-square, phi / Cramér's V over
+  `groups` x `levels`), `correlation` (`field` with `withField`). Use `where` for exclusions that are a
+  session flag (`{"valid": true}`) and `study` when the session's `study` differs from `studyId`.
+  Otherwise use `{"op": "package", "key": "<id>"}` and add to `evaluation/evaluation.py`
+  `effect_estimates(evaluation) -> {key: block}` returning, from the evaluation it already computed,
+  the block `{"status": "computed", "metric", "value", "se", "n", "cells", "test", "method"}` (or
+  `{"status": "not_ready", "reason"}`). Keep cells raw (n, mean, sd, or counts).
+- `compute.compareAs` only when the computed and reported numbers are the same quantity under
+  another name, with the reason (an OLS coefficient on one condition dummy is the mean difference).
+- `population` says whose responses the reported numbers describe: omit it for human participants;
+  a paper that itself tests AI models records each model's result as an effect with
+  `{"kind": "ai-model", "models": ["gpt-4o"]}` (or `human-vs-ai-model`, `ai-model-vs-ai-model`), so a
+  human-only analysis can leave them out.
+- An effect may list its own `phenomena` when its hypothesis spans several (a yes-no bias effect under
+  a hypothesis about yes-no and omission bias); otherwise it inherits the hypothesis's.
+- `phenomena` and `topics` are plain keywords as the literature names them; a shared vocabulary
+  comes later, so do not invent codes.
+
+A built-in op must read fields that both the human loader's sessions and the adapter's sessions
+carry (the same path in both; `trials.0.answer` indexes a list); the check runs the adapter with a
+stand-in model to make sure. Run `python .opencode/skills/build/effects.py .` until it prints `PASS`. Its warnings list program
+nodes no hypothesis or effect reaches; link them where the paper links them. With human data, run
+`study_core.py reproduce` (it uses `effects.json`) and report the verdict per effect.
+
 ### Capabilities and failure cases
 
 Every tool checks `capabilities.json` before doing work and refuses what it says the study cannot

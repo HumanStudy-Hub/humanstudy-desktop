@@ -1,0 +1,752 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://humanstudy-hub.org/contracts/effects-v1",
+  "title": "effects.json: hypotheses linked to computable effects",
+  "description": "Beside program.json. Every hypothesis node of the program is listed as tested or untested; every effect names its hypotheses, outcome, contrast (value = treatment minus reference), predicted direction, the program nodes it binds, the paper's reported numbers (each written in a cited evidence quote) and how it is computed from sessions. Checked by effects_core.py check.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "programId",
+    "topics",
+    "hypotheses",
+    "effects"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "programId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "topics": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "paper-level keywords; free text until a vocabulary is chosen"
+    },
+    "hypotheses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "nodeId",
+          "status",
+          "phenomena"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          },
+          "nodeId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          },
+          "status": {
+            "enum": [
+              "tested",
+              "untested"
+            ]
+          },
+          "untestedBecause": {
+            "enum": [
+              "not-an-effect",
+              "not-tested-in-paper",
+              "not-computable",
+              "out-of-scope"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "backgroundIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          },
+          "phenomena": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "named effects or phenomena this hypothesis is an instance of, e.g. 'framing effect'; free text until a vocabulary is chosen"
+          }
+        }
+      }
+    },
+    "effects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "role",
+          "hypothesisIds",
+          "studyId",
+          "design",
+          "outcome",
+          "contrast",
+          "prediction",
+          "compute",
+          "reported"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          },
+          "label": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "test",
+              "robustness",
+              "check",
+              "descriptive"
+            ]
+          },
+          "hypothesisIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          },
+          "studyId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          },
+          "design": {
+            "enum": [
+              "between",
+              "within",
+              "mixed",
+              "correlational",
+              "other"
+            ]
+          },
+          "unit": {
+            "type": "string",
+            "description": "unit of analysis: participant, respondent, trial, item, group"
+          },
+          "outcome": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "variableId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+              },
+              "type": {
+                "enum": [
+                  "continuous",
+                  "ordinal",
+                  "binary",
+                  "categorical",
+                  "count",
+                  "other"
+                ]
+              },
+              "scale": {
+                "type": "string"
+              },
+              "higherMeans": {
+                "type": "string"
+              },
+              "treatedAs": {
+                "type": "string"
+              }
+            }
+          },
+          "contrast": {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "two_groups",
+                  "paired",
+                  "association",
+                  "interaction",
+                  "omnibus",
+                  "single_group",
+                  "other"
+                ]
+              },
+              "treatment": {
+                "type": "string"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "groups": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "conditionIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+                }
+              },
+              "valueMeans": {
+                "type": "string"
+              },
+              "factorIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+                },
+                "description": "program variable nodes the contrast manipulates or uses as predictors (independent variables, moderators)"
+              }
+            }
+          },
+          "prediction": {
+            "type": "object",
+            "required": [
+              "direction"
+            ],
+            "properties": {
+              "direction": {
+                "enum": [
+                  "positive",
+                  "negative",
+                  "nonzero",
+                  "none",
+                  "unspecified"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "evidenceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+                }
+              }
+            }
+          },
+          "analysisIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          },
+          "resultIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+            }
+          },
+          "compute": {
+            "type": "object",
+            "required": [
+              "op"
+            ],
+            "properties": {
+              "op": {
+                "enum": [
+                  "mean_difference",
+                  "paired_difference",
+                  "proportion_difference",
+                  "contingency",
+                  "correlation",
+                  "package"
+                ]
+              },
+              "key": {
+                "type": "string",
+                "description": "op package: the effect's key in the evaluation's effect_estimates() (or key_effects())"
+              },
+              "field": {
+                "type": "string",
+                "description": "dotted path to the value in a session, e.g. responses.favorable"
+              },
+              "referenceField": {
+                "type": "string"
+              },
+              "withField": {
+                "type": "string"
+              },
+              "groupBy": {
+                "type": "string"
+              },
+              "groups": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "levels": {
+                "type": "array"
+              },
+              "success": {},
+              "study": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "where": {
+                "type": "object"
+              },
+              "metric": {
+                "enum": [
+                  "mean",
+                  "mean_difference",
+                  "standardized_mean_difference",
+                  "hedges_g",
+                  "proportion",
+                  "risk_difference",
+                  "risk_ratio",
+                  "odds_ratio",
+                  "log_odds_ratio",
+                  "correlation",
+                  "phi",
+                  "cramers_v",
+                  "chi_square",
+                  "regression_coefficient",
+                  "standardized_coefficient",
+                  "t",
+                  "F",
+                  "z",
+                  "bayes_factor",
+                  "eta_squared",
+                  "partial_eta_squared",
+                  "count",
+                  "other"
+                ]
+              },
+              "compareAs": {
+                "type": "object",
+                "required": [
+                  "metric",
+                  "reason"
+                ],
+                "properties": {
+                  "metric": {
+                    "enum": [
+                      "mean",
+                      "mean_difference",
+                      "standardized_mean_difference",
+                      "hedges_g",
+                      "proportion",
+                      "risk_difference",
+                      "risk_ratio",
+                      "odds_ratio",
+                      "log_odds_ratio",
+                      "correlation",
+                      "phi",
+                      "cramers_v",
+                      "chi_square",
+                      "regression_coefficient",
+                      "standardized_coefficient",
+                      "t",
+                      "F",
+                      "z",
+                      "bayes_factor",
+                      "eta_squared",
+                      "partial_eta_squared",
+                      "count",
+                      "other"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "reported": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "evidenceIds"
+                ],
+                "properties": {
+                  "estimates": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "metric",
+                        "value"
+                      ],
+                      "properties": {
+                        "metric": {
+                          "enum": [
+                            "mean",
+                            "mean_difference",
+                            "standardized_mean_difference",
+                            "hedges_g",
+                            "proportion",
+                            "risk_difference",
+                            "risk_ratio",
+                            "odds_ratio",
+                            "log_odds_ratio",
+                            "correlation",
+                            "phi",
+                            "cramers_v",
+                            "chi_square",
+                            "regression_coefficient",
+                            "standardized_coefficient",
+                            "t",
+                            "F",
+                            "z",
+                            "bayes_factor",
+                            "eta_squared",
+                            "partial_eta_squared",
+                            "count",
+                            "other"
+                          ]
+                        },
+                        "value": {
+                          "type": "number"
+                        },
+                        "se": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "ci": {
+                          "type": "array",
+                          "items": {
+                            "type": "number"
+                          },
+                          "minItems": 2,
+                          "maxItems": 2
+                        },
+                        "ciLevel": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "df": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "p": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "pRelation": {
+                          "enum": [
+                            "=",
+                            "<",
+                            ">",
+                            "<=",
+                            ">="
+                          ]
+                        },
+                        "variant": {
+                          "type": "string",
+                          "description": "which model or weighting the paper used for this number, e.g. 'OLS without weights (p. 23)'"
+                        },
+                        "evidenceIds": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "test": {
+                    "type": "object",
+                    "properties": {
+                      "statistic": {
+                        "enum": [
+                          "t",
+                          "F",
+                          "z",
+                          "chi_square",
+                          "W",
+                          "U",
+                          "other"
+                        ]
+                      },
+                      "value": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "df": {
+                        "type": [
+                          "number",
+                          "array",
+                          "null"
+                        ]
+                      },
+                      "p": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "pRelation": {
+                        "enum": [
+                          "=",
+                          "<",
+                          ">",
+                          "<=",
+                          ">="
+                        ]
+                      },
+                      "pText": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "cells": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "n": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "mean": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "sd": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "se": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "median": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "k": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "proportion": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "percent": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        }
+                      },
+                      "description": "raw numbers for one arm as printed: n, mean, sd, se, median, k (count), proportion or percent"
+                    }
+                  },
+                  "n": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "missing": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "what the paper does not report (never filled in)"
+                  },
+                  "evidenceIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "notes": {
+            "type": "string"
+          },
+          "population": {
+            "type": "object",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "human",
+                  "ai-model",
+                  "human-vs-ai-model",
+                  "ai-model-vs-ai-model"
+                ]
+              },
+              "models": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "note": {
+                "type": "string"
+              }
+            },
+            "description": "whose responses the paper's reported numbers describe; omitted means human participants. Papers that themselves test AI models report model results as effects too."
+          },
+          "phenomena": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "this effect's own phenomena; replaces the hypothesis phenomena for this effect when a hypothesis spans several"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "resultBlock": {
+      "description": "What compute() returns per effect, for human and AI-participant sessions alike",
+      "type": "object",
+      "required": [
+        "effectId",
+        "status"
+      ],
+      "properties": {
+        "effectId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "source": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "computed",
+            "not_ready"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "metric": {
+          "enum": [
+            "mean",
+            "mean_difference",
+            "standardized_mean_difference",
+            "hedges_g",
+            "proportion",
+            "risk_difference",
+            "risk_ratio",
+            "odds_ratio",
+            "log_odds_ratio",
+            "correlation",
+            "phi",
+            "cramers_v",
+            "chi_square",
+            "regression_coefficient",
+            "standardized_coefficient",
+            "t",
+            "F",
+            "z",
+            "bayes_factor",
+            "eta_squared",
+            "partial_eta_squared",
+            "count",
+            "other"
+          ]
+        },
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "se": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "n": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "cells": {
+          "type": "object"
+        },
+        "table": {
+          "type": "object",
+          "properties": {
+            "rows": {
+              "type": "array"
+            },
+            "columns": {
+              "type": "array"
+            },
+            "counts": {
+              "type": "array"
+            }
+          }
+        },
+        "test": {
+          "type": "object"
+        },
+        "method": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
