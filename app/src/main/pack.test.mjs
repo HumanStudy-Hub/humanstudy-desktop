@@ -23,9 +23,10 @@ const globPlugin = {
     b.onLoad({ filter: /pack\.ts$/ }, (args) => {
       let src = readFileSync(args.path, 'utf8')
       const included = walk(packDir).map((f) => relative(packDir, f).split('\\').join('/')).filter((r) =>
-        r === 'AGENTS.md' || r === 'PROJECT_FORMAT.md' || r.startsWith('schema/') || r.startsWith('skills/') || /^artifact-kit\/[^/]+$/.test(r))
+        (r === 'AGENTS.md' || r === 'PROJECT_FORMAT.md' || r.startsWith('schema/') || r.startsWith('skills/') || /^artifact-kit\/[^/]+$/.test(r))
+        && !r.split('/').includes('__pycache__') && !r.endsWith('.pyc'))
       const obj = Object.fromEntries(included.map((r) => ['../../../pack/' + r, readFileSync(join(packDir, r), 'utf8')]))
-      src = src.replace(/import\.meta\.glob\([\s\S]*?\)\s*as Record<string, string>/, JSON.stringify(obj))
+      src = src.replace(/import\.meta\.glob\([\s\S]*?\)\s*as Record<string, string>/, () => JSON.stringify(obj)) // no $ patterns
       return { contents: src, loader: 'ts' }
     })
   },

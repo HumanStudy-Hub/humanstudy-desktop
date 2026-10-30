@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_agent_package import REPO, make_project  # noqa: E402
 
+sys.dont_write_bytecode = True  # no __pycache__ inside pack/skills: the app embeds that folder
 sys.path.insert(0, str(REPO / "pack/skills/export/agent"))
 import study_core  # noqa: E402
 

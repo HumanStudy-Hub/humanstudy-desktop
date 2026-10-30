@@ -13,7 +13,8 @@ import { dirname, join } from 'node:path'
 
 const PREFIX = '../../../pack/'
 const files = import.meta.glob(
-  ['../../../pack/AGENTS.md', '../../../pack/PROJECT_FORMAT.md', '../../../pack/schema/**/*', '../../../pack/skills/**/*', '../../../pack/artifact-kit/*'],
+  ['../../../pack/AGENTS.md', '../../../pack/PROJECT_FORMAT.md', '../../../pack/schema/**/*', '../../../pack/skills/**/*', '../../../pack/artifact-kit/*',
+    '!**/__pycache__/**', '!**/*.pyc'],
   { query: '?raw', import: 'default', eager: true }
 ) as Record<string, string>
 
