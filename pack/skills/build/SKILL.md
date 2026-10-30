@@ -196,6 +196,25 @@ do. After the package check passes:
    State only what the program, the package or the paper shows; `[]` when nothing applies.
 4. `python .opencode/skills/build/capabilities.py . --check` must print `PASS`.
 
+### Human data (when the researcher provides or points to them)
+
+Human data never go into the package or any repository; the package carries a key instead.
+With the original data files in `human-data/` and a loader `package/<slug>/human/human_sessions.py`
+(`load(data_dir)`, `key_effects(evaluation)`, `SOURCE`, `EXCLUSIONS`, `NOT_MAPPED`), write
+`package/<slug>/human/key.json`:
+
+```json
+{"schemaVersion": 1, "loader": "human_sessions.py",
+ "sample": "original | replication | other", "sampleEvidence": "why, in one sentence",
+ "repository": {"url": "landing page", "title": "...", "license": "CC0 | CC-BY-4.0 | null", "licenseEvidence": "where it says so"},
+ "pinnedAt": "YYYY-MM-DD",
+ "files": [{"path": "relative to human-data/", "sha256": "...", "bytes": 0, "role": "data | documentation",
+            "url": "direct download URL serving exactly these bytes, or null"}]}
+```
+
+Give a `url` only after downloading it and seeing the same SHA-256. Then run
+`python .opencode/skills/export/agent/study_core.py --root . reproduce` and report its verdict.
+
 ## 4. Views: two artifacts, automatically
 
 After the program check prints `PASS` (and the package check, if you built the package), write
