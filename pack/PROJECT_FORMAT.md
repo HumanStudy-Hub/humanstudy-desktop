@@ -10,7 +10,8 @@ shows the whole folder as the **Program** explorer and `program.json` as the **S
   program.json              Human Program v2 (canonical design; schema/human-program.schema.json)
   effects.json              hypotheses -> computable effects: outcome, contrast, predicted direction,
                             the paper's reported numbers (each quoted) and how each is computed from
-                            sessions (schema/effects.schema.json; checked by build/effects.py)
+                            sessions (schema/effects.schema.json; checked by build/effects.py);
+                            with program.json it forms one typed graph (schema/graph-types.json)
   capabilities.json         what the study can do (read, run, human data, author code, reproduction),
                             each with its reason; written by build/capabilities.py
   package/<paper-slug>/     runnable replay package (build): study.json (refers to program.json),

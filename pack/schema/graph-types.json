@@ -1,0 +1,447 @@
+{
+  "vocabulary": "2.0.0",
+  "effectsSchemaVersions": [
+    1,
+    2
+  ],
+  "nodeKinds": [
+    "paper",
+    "construct",
+    "background",
+    "overview",
+    "hypothesis",
+    "design",
+    "participants",
+    "condition",
+    "material",
+    "procedure",
+    "step",
+    "variable",
+    "record",
+    "measure",
+    "analysis",
+    "model",
+    "result",
+    "finding",
+    "limitation",
+    "simulation",
+    "effect"
+  ],
+  "edgeTypes": {
+    "about": {
+      "from": [
+        "paper"
+      ],
+      "to": [
+        "construct"
+      ],
+      "definition": "the paper is about this construct or topic",
+      "procedure": false
+    },
+    "motivates": {
+      "from": [
+        "background"
+      ],
+      "to": [
+        "hypothesis"
+      ],
+      "definition": "background that motivates the hypothesis",
+      "procedure": false
+    },
+    "instance-of": {
+      "from": [
+        "hypothesis",
+        "effect"
+      ],
+      "to": [
+        "construct"
+      ],
+      "definition": "tests a case of this phenomenon or construct",
+      "procedure": false
+    },
+    "predicts": {
+      "from": [
+        "hypothesis"
+      ],
+      "to": [
+        "construct"
+      ],
+      "definition": "the hypothesis predicts a change in this construct",
+      "procedure": false
+    },
+    "tested-by": {
+      "from": [
+        "hypothesis"
+      ],
+      "to": [
+        "effect",
+        "analysis",
+        "finding"
+      ],
+      "definition": "evidence that tests the hypothesis",
+      "procedure": false
+    },
+    "supports": {
+      "from": [
+        "result",
+        "finding"
+      ],
+      "to": [
+        "hypothesis"
+      ],
+      "definition": "the paper reads this result as support",
+      "procedure": false
+    },
+    "contradicts": {
+      "from": [
+        "result",
+        "finding"
+      ],
+      "to": [
+        "hypothesis"
+      ],
+      "definition": "the paper reads this result as counter-evidence",
+      "procedure": false
+    },
+    "measures": {
+      "from": [
+        "effect"
+      ],
+      "to": [
+        "variable",
+        "record",
+        "measure"
+      ],
+      "definition": "the effect's outcome variable",
+      "procedure": false
+    },
+    "contrasts": {
+      "from": [
+        "effect"
+      ],
+      "to": [
+        "condition"
+      ],
+      "definition": "a condition the effect compares",
+      "procedure": false
+    },
+    "varies": {
+      "from": [
+        "effect"
+      ],
+      "to": [
+        "variable",
+        "record",
+        "measure"
+      ],
+      "definition": "a predictor the effect varies",
+      "procedure": false
+    },
+    "estimated-by": {
+      "from": [
+        "effect"
+      ],
+      "to": [
+        "analysis",
+        "model"
+      ],
+      "definition": "the analysis that estimates the effect",
+      "procedure": false
+    },
+    "reported-in": {
+      "from": [
+        "effect"
+      ],
+      "to": [
+        "result",
+        "finding"
+      ],
+      "definition": "where the paper reports the effect",
+      "procedure": false
+    },
+    "moderates": {
+      "from": [
+        "variable",
+        "record",
+        "measure",
+        "condition"
+      ],
+      "to": [
+        "effect"
+      ],
+      "definition": "the effect differs across its levels",
+      "procedure": false
+    },
+    "mediates": {
+      "from": [
+        "variable",
+        "record",
+        "measure"
+      ],
+      "to": [
+        "effect"
+      ],
+      "definition": "the effect runs through it",
+      "procedure": false
+    },
+    "replicates": {
+      "from": [
+        "effect"
+      ],
+      "to": [
+        "effect"
+      ],
+      "definition": "the same effect estimated again, in another sample or paper",
+      "procedure": false
+    },
+    "compares": {
+      "from": [
+        "effect"
+      ],
+      "to": [
+        "effect"
+      ],
+      "definition": "the effect is defined as a difference between these effects",
+      "procedure": false
+    },
+    "operationalizes": {
+      "from": [
+        "variable",
+        "record",
+        "measure"
+      ],
+      "to": [
+        "construct"
+      ],
+      "definition": "the variable measures the construct",
+      "procedure": false
+    },
+    "manipulates": {
+      "from": [
+        "condition"
+      ],
+      "to": [
+        "construct"
+      ],
+      "definition": "the condition manipulates the construct",
+      "procedure": false
+    },
+    "input-of": {
+      "from": [
+        "variable",
+        "record",
+        "measure",
+        "condition"
+      ],
+      "to": [
+        "analysis",
+        "model"
+      ],
+      "definition": "the analysis uses it",
+      "procedure": false
+    },
+    "reports": {
+      "from": [
+        "analysis",
+        "model"
+      ],
+      "to": [
+        "result",
+        "finding"
+      ],
+      "definition": "the analysis produced this reported result",
+      "procedure": false
+    },
+    "concerns": {
+      "from": [
+        "result",
+        "finding"
+      ],
+      "to": [
+        "variable",
+        "record",
+        "measure",
+        "condition",
+        "hypothesis"
+      ],
+      "definition": "the reported result is about it",
+      "procedure": false
+    },
+    "derived-from": {
+      "from": [
+        "variable",
+        "record",
+        "measure",
+        "analysis",
+        "model"
+      ],
+      "to": [
+        "variable",
+        "record",
+        "measure",
+        "analysis",
+        "model"
+      ],
+      "definition": "computed from it",
+      "procedure": false
+    },
+    "shows": {
+      "from": [
+        "step",
+        "condition"
+      ],
+      "to": [
+        "*"
+      ],
+      "definition": "what a participant sees at this step or in this condition",
+      "procedure": true
+    },
+    "produces": {
+      "from": [
+        "step"
+      ],
+      "to": [
+        "*"
+      ],
+      "definition": "what the step records",
+      "procedure": true
+    },
+    "uses": {
+      "from": [
+        "step"
+      ],
+      "to": [
+        "*"
+      ],
+      "definition": "an input of the step",
+      "procedure": true
+    },
+    "in-condition": {
+      "from": [
+        "step"
+      ],
+      "to": [
+        "condition"
+      ],
+      "definition": "the step belongs to this condition",
+      "procedure": true
+    },
+    "part-of": {
+      "from": [
+        "step"
+      ],
+      "to": [
+        "step"
+      ],
+      "definition": "a sub-step",
+      "procedure": true
+    },
+    "next": {
+      "from": [
+        "step"
+      ],
+      "to": [
+        "step"
+      ],
+      "definition": "the step that follows",
+      "procedure": true
+    },
+    "performed-by": {
+      "from": [
+        "step"
+      ],
+      "to": [
+        "*"
+      ],
+      "definition": "who acts at this step",
+      "procedure": true
+    }
+  },
+  "relationAliases": {
+    "uses": [
+      "input-of"
+    ],
+    "outcome": [
+      "input-of",
+      "concerns"
+    ],
+    "estimates": [
+      "input-of"
+    ],
+    "sees": [
+      "shows"
+    ],
+    "analysed-by": [
+      "estimated-by"
+    ],
+    "reported-by": [
+      "reports"
+    ],
+    "reports": [
+      "concerns"
+    ]
+  },
+  "contrasts": {
+    "two_groups": "treatment minus reference, two independent groups",
+    "paired": "treatment minus reference, measured on the same units",
+    "association": "a correlation or slope between two variables",
+    "interaction": "a difference between two contrasts (difference of differences, or across samples)",
+    "omnibus": "an undirected test over more than two levels; not poolable as a signed effect",
+    "single_group": "one group's value, or its difference from a fixed constant",
+    "linear": "sum of weight x cell over named cells, plus an optional constant (e.g. 1 vs mean of 2 others)",
+    "ratio": "treatment divided by reference",
+    "model_comparison": "evidence for one model of the data over another (e.g. a Bayes factor)",
+    "other": "schema 1 only"
+  },
+  "metrics": [
+    "mean",
+    "mean_difference",
+    "standardized_mean_difference",
+    "hedges_g",
+    "proportion",
+    "risk_difference",
+    "risk_ratio",
+    "odds_ratio",
+    "log_odds_ratio",
+    "correlation",
+    "phi",
+    "cramers_v",
+    "chi_square",
+    "regression_coefficient",
+    "standardized_coefficient",
+    "t",
+    "F",
+    "z",
+    "bayes_factor",
+    "eta_squared",
+    "partial_eta_squared",
+    "count",
+    "cohens_q",
+    "auc",
+    "ratio",
+    "percent_change",
+    "other"
+  ],
+  "noOtherInSchema2": [
+    "contrast",
+    "metric"
+  ],
+  "promoted": {
+    "contrast": {},
+    "metric": {},
+    "edge": {},
+    "node": {}
+  },
+  "extensions": {
+    "name": "x: followed by lower-case letters, digits, _ . or -",
+    "categories": [
+      "contrast",
+      "metric",
+      "edge",
+      "node"
+    ],
+    "declare": "effects.json extensions[]: {name, category, parent (a core term), definition, from/to node kinds for an edge}",
+    "promote": "when several papers declare the same need, add it to the core, bump the vocabulary minor version, and map each old x: name to it in PROMOTED; files are never rewritten",
+    "merge": "two extensions that mean the same thing are both mapped in PROMOTED to one core term"
+  }
+}

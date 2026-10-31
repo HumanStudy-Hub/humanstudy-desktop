@@ -181,7 +181,7 @@ from the paper's hypotheses to its data. Write it after the package check passes
 facts: every number in it is written in a quote of the program's `evidence`.
 
 ```json
-{"schemaVersion": 1, "programId": "<program id>",
+{"schemaVersion": 2, "programId": "<program id>",
  "topics": ["keywords for the paper, as the field names them"],
  "hypotheses": [{"id": "h1", "nodeId": "<hypothesis node>", "status": "tested",
                  "backgroundIds": ["<background node>"], "phenomena": ["framing effect"]}],
@@ -243,6 +243,26 @@ Rules:
   a hypothesis about yes-no and omission bias); otherwise it inherits the hypothesis's.
 - `phenomena` and `topics` are plain keywords as the literature names them; a shared vocabulary
   comes later, so do not invent codes.
+
+The paper is one typed graph (`study_core.py graph`): program nodes and steps, effects, and the
+constructs named by `phenomena`/`topics`, joined by the core edge types in `schema/graph-types.json`.
+Schema 2 rules:
+
+- Never write `other` for `contrast.kind` or a metric. Use the core terms: besides `two_groups`,
+  `paired`, `single_group`, `association`, `interaction` and `omnibus` there are `linear` (weights
+  per named cell plus an optional `constant`, e.g. `{"simple": 1, "complex": -0.5, "ambiguous": -0.5}`),
+  `ratio` (treatment / reference) and `model_comparison` (evidence for one model over another);
+  metrics include `cohens_q`, `auc`, `ratio` and `percent_change`.
+- If nothing fits, do not force it in. Either declare an extension in `extensions`
+  (`{"name": "x:...", "category": "contrast" | "metric" | "edge" | "node", "parent": "<core term>",
+  "definition": "..."}`; tools that do not know it read it as its parent), or list the hypothesis as
+  `untested` with `untestedBecause: "out-of-scope"` and say what kind of claim it is. Extensions that
+  several papers need are promoted into the core later; files are never rewritten for it.
+- `links` adds edges the effects do not state, between any two nodes (program node or step ids,
+  `effect:<id>`, `construct:<label>`, `paper:<programId>/effect:<id>` for another paper):
+  `{"from", "to", "type", "origin": "verbatim" | "reported" | "derived", "evidenceIds"}`, e.g. a
+  variable that `mediates` an effect, a condition that `manipulates` a construct, an effect that
+  `replicates` another paper's. Each type has fixed from/to node kinds; the check enforces them.
 
 A built-in op must read fields that both the human loader's sessions and the adapter's sessions
 carry (the same path in both; `trials.0.answer` indexes a list); the check runs the adapter with a

@@ -55,6 +55,11 @@ TOOLS = [
      "descriptive). Runs and reproduce_paper return one result block per effect in the same shape.",
      obj({"hypothesis": S, "phenomenon": S, "topic": S, "role": S}),
      lambda a: STUDY.effect_list(a.get("hypothesis"), a.get("phenomenon"), a.get("topic"), a.get("role"))),
+    ("study_graph", "The paper as one typed graph: hypotheses, effects, constructs, conditions, variables, "
+     "materials, procedure steps, analyses and reported results, joined by core edge types (tested-by, measures, "
+     "contrasts, estimated-by, reported-in, input-of, reports, shows, produces, instance-of, ...). Give node to see "
+     "what one node connects to, or type for one kind of edge. gaps lists what fits no core type.",
+     obj({"node": S, "type": S}), lambda a: STUDY.graph(a.get("node"), a.get("type"))),
     ("list_conditions", "Conditions of one study, with ids for participant_prompt.",
      obj({"study_id": S}, ["study_id"]), lambda a: STUDY.conditions(a["study_id"])),
     ("read_study", "One study in full: participants, design, conditions, verbatim materials, ordered procedure, "
