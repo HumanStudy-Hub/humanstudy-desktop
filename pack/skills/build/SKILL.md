@@ -241,8 +241,8 @@ Rules:
   human-only analysis can leave them out.
 - An effect may list its own `phenomena` when its hypothesis spans several (a yes-no bias effect under
   a hypothesis about yes-no and omission bias); otherwise it inherits the hypothesis's.
-- `phenomena` and `topics` are plain keywords as the literature names them; a shared vocabulary
-  comes later, so do not invent codes.
+- `phenomena` and `topics` are plain keywords in the paper's own wording (as it names its effect or
+  construct); do not normalise, translate or merge them with other papers' terms, and do not invent codes.
 
 The paper is one typed graph (`study_core.py graph`): program nodes and steps, effects, and the
 constructs named by `phenomena`/`topics`, joined by the core edge types in `schema/graph-types.json`.
