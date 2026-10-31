@@ -457,7 +457,7 @@ CONTRAST_DEFS = {
 # Older program relation names -> core edge candidates (tried forwards, then reversed, against the kinds).
 RELATION_ALIASES = {"uses": ["input-of"], "outcome": ["input-of", "concerns"], "estimates": ["input-of"],
                     "sees": ["shows"], "analysed-by": ["estimated-by"], "reported-by": ["reports"],
-                    "reports": ["concerns"]}
+                    "reports": ["concerns"], "produces": ["reports"]}
 # Promoted extensions: {category: {"x:old-name": "core-name"}}. Empty in 2.0.0.
 PROMOTED = {"contrast": {}, "metric": {}, "edge": {}, "node": {}}
 
