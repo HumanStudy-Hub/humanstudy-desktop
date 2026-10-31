@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://humanstudy-hub.org/contracts/effects-v1",
+  "$id": "https://humanstudy-hub.org/contracts/effects-v2",
   "title": "effects.json: hypotheses linked to computable effects",
   "description": "Beside program.json. Every hypothesis node of the program is listed as tested or untested; every effect names its hypotheses, outcome, contrast (value = treatment minus reference), predicted direction, the program nodes it binds, the paper's reported numbers (each written in a cited evidence quote) and how it is computed from sessions. Checked by effects_core.py check.",
   "type": "object",
@@ -14,7 +14,11 @@
   "additionalProperties": false,
   "properties": {
     "schemaVersion": {
-      "const": 1
+      "enum": [
+        1,
+        2
+      ],
+      "description": "2 for new files: no 'other' contrast or metric, plus extensions and links. 1 stays valid."
     },
     "programId": {
       "type": "string",
@@ -177,14 +181,26 @@
             ],
             "properties": {
               "kind": {
-                "enum": [
-                  "two_groups",
-                  "paired",
-                  "association",
-                  "interaction",
-                  "omnibus",
-                  "single_group",
-                  "other"
+                "anyOf": [
+                  {
+                    "enum": [
+                      "two_groups",
+                      "paired",
+                      "association",
+                      "interaction",
+                      "omnibus",
+                      "single_group",
+                      "linear",
+                      "ratio",
+                      "model_comparison",
+                      "other"
+                    ]
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^x:[a-z0-9][a-z0-9_.-]*$",
+                    "description": "an extension declared in extensions[]"
+                  }
                 ]
               },
               "treatment": {
@@ -216,6 +232,17 @@
                   "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
                 },
                 "description": "program variable nodes the contrast manipulates or uses as predictors (independent variables, moderators)"
+              },
+              "weights": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "description": "linear: weight per named cell (condition or response category)"
+              },
+              "constant": {
+                "type": "number",
+                "description": "linear: added after the weighted sum"
               }
             }
           },
@@ -313,40 +340,8 @@
                 "type": "object"
               },
               "metric": {
-                "enum": [
-                  "mean",
-                  "mean_difference",
-                  "standardized_mean_difference",
-                  "hedges_g",
-                  "proportion",
-                  "risk_difference",
-                  "risk_ratio",
-                  "odds_ratio",
-                  "log_odds_ratio",
-                  "correlation",
-                  "phi",
-                  "cramers_v",
-                  "chi_square",
-                  "regression_coefficient",
-                  "standardized_coefficient",
-                  "t",
-                  "F",
-                  "z",
-                  "bayes_factor",
-                  "eta_squared",
-                  "partial_eta_squared",
-                  "count",
-                  "other"
-                ]
-              },
-              "compareAs": {
-                "type": "object",
-                "required": [
-                  "metric",
-                  "reason"
-                ],
-                "properties": {
-                  "metric": {
+                "anyOf": [
+                  {
                     "enum": [
                       "mean",
                       "mean_difference",
@@ -370,7 +365,65 @@
                       "eta_squared",
                       "partial_eta_squared",
                       "count",
+                      "cohens_q",
+                      "auc",
+                      "ratio",
+                      "percent_change",
                       "other"
+                    ]
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^x:[a-z0-9][a-z0-9_.-]*$",
+                    "description": "an extension declared in extensions[]"
+                  }
+                ]
+              },
+              "compareAs": {
+                "type": "object",
+                "required": [
+                  "metric",
+                  "reason"
+                ],
+                "properties": {
+                  "metric": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "mean",
+                          "mean_difference",
+                          "standardized_mean_difference",
+                          "hedges_g",
+                          "proportion",
+                          "risk_difference",
+                          "risk_ratio",
+                          "odds_ratio",
+                          "log_odds_ratio",
+                          "correlation",
+                          "phi",
+                          "cramers_v",
+                          "chi_square",
+                          "regression_coefficient",
+                          "standardized_coefficient",
+                          "t",
+                          "F",
+                          "z",
+                          "bayes_factor",
+                          "eta_squared",
+                          "partial_eta_squared",
+                          "count",
+                          "cohens_q",
+                          "auc",
+                          "ratio",
+                          "percent_change",
+                          "other"
+                        ]
+                      },
+                      {
+                        "type": "string",
+                        "pattern": "^x:[a-z0-9][a-z0-9_.-]*$",
+                        "description": "an extension declared in extensions[]"
+                      }
                     ]
                   },
                   "reason": {
@@ -401,30 +454,43 @@
                       ],
                       "properties": {
                         "metric": {
-                          "enum": [
-                            "mean",
-                            "mean_difference",
-                            "standardized_mean_difference",
-                            "hedges_g",
-                            "proportion",
-                            "risk_difference",
-                            "risk_ratio",
-                            "odds_ratio",
-                            "log_odds_ratio",
-                            "correlation",
-                            "phi",
-                            "cramers_v",
-                            "chi_square",
-                            "regression_coefficient",
-                            "standardized_coefficient",
-                            "t",
-                            "F",
-                            "z",
-                            "bayes_factor",
-                            "eta_squared",
-                            "partial_eta_squared",
-                            "count",
-                            "other"
+                          "anyOf": [
+                            {
+                              "enum": [
+                                "mean",
+                                "mean_difference",
+                                "standardized_mean_difference",
+                                "hedges_g",
+                                "proportion",
+                                "risk_difference",
+                                "risk_ratio",
+                                "odds_ratio",
+                                "log_odds_ratio",
+                                "correlation",
+                                "phi",
+                                "cramers_v",
+                                "chi_square",
+                                "regression_coefficient",
+                                "standardized_coefficient",
+                                "t",
+                                "F",
+                                "z",
+                                "bayes_factor",
+                                "eta_squared",
+                                "partial_eta_squared",
+                                "count",
+                                "cohens_q",
+                                "auc",
+                                "ratio",
+                                "percent_change",
+                                "other"
+                              ]
+                            },
+                            {
+                              "type": "string",
+                              "pattern": "^x:[a-z0-9][a-z0-9_.-]*$",
+                              "description": "an extension declared in extensions[]"
+                            }
                           ]
                         },
                         "value": {
@@ -651,6 +717,138 @@
           }
         }
       }
+    },
+    "extensions": {
+      "type": "array",
+      "description": "vocabulary this file needs and the core lacks; each has a core parent that tools fall back to",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "category",
+          "parent",
+          "definition"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^x:[a-z0-9][a-z0-9_.-]*$"
+          },
+          "category": {
+            "enum": [
+              "contrast",
+              "metric",
+              "edge",
+              "node"
+            ]
+          },
+          "parent": {
+            "type": "string"
+          },
+          "definition": {
+            "type": "string"
+          },
+          "from": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "evidenceIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "links": {
+      "type": "array",
+      "description": "typed edges between any nodes (program nodes or steps, effect:<id>, construct:<label>, paper:<programId>/effect:<id>) that the effects themselves do not state",
+      "items": {
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "type",
+          "origin"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "about",
+                  "motivates",
+                  "instance-of",
+                  "predicts",
+                  "tested-by",
+                  "supports",
+                  "contradicts",
+                  "measures",
+                  "contrasts",
+                  "varies",
+                  "estimated-by",
+                  "reported-in",
+                  "moderates",
+                  "mediates",
+                  "replicates",
+                  "compares",
+                  "operationalizes",
+                  "manipulates",
+                  "input-of",
+                  "reports",
+                  "concerns",
+                  "derived-from",
+                  "shows",
+                  "produces",
+                  "uses",
+                  "in-condition",
+                  "part-of",
+                  "next",
+                  "performed-by"
+                ]
+              },
+              {
+                "type": "string",
+                "pattern": "^x:[a-z0-9][a-z0-9_.-]*$",
+                "description": "an extension declared in extensions[]"
+              }
+            ]
+          },
+          "origin": {
+            "enum": [
+              "verbatim",
+              "reported",
+              "derived"
+            ]
+          },
+          "evidenceIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -679,30 +877,43 @@
           "type": "string"
         },
         "metric": {
-          "enum": [
-            "mean",
-            "mean_difference",
-            "standardized_mean_difference",
-            "hedges_g",
-            "proportion",
-            "risk_difference",
-            "risk_ratio",
-            "odds_ratio",
-            "log_odds_ratio",
-            "correlation",
-            "phi",
-            "cramers_v",
-            "chi_square",
-            "regression_coefficient",
-            "standardized_coefficient",
-            "t",
-            "F",
-            "z",
-            "bayes_factor",
-            "eta_squared",
-            "partial_eta_squared",
-            "count",
-            "other"
+          "anyOf": [
+            {
+              "enum": [
+                "mean",
+                "mean_difference",
+                "standardized_mean_difference",
+                "hedges_g",
+                "proportion",
+                "risk_difference",
+                "risk_ratio",
+                "odds_ratio",
+                "log_odds_ratio",
+                "correlation",
+                "phi",
+                "cramers_v",
+                "chi_square",
+                "regression_coefficient",
+                "standardized_coefficient",
+                "t",
+                "F",
+                "z",
+                "bayes_factor",
+                "eta_squared",
+                "partial_eta_squared",
+                "count",
+                "cohens_q",
+                "auc",
+                "ratio",
+                "percent_change",
+                "other"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^x:[a-z0-9][a-z0-9_.-]*$",
+              "description": "an extension declared in extensions[]"
+            }
           ]
         },
         "value": {

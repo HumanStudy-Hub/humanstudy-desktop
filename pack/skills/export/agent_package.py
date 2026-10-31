@@ -162,7 +162,10 @@ def skill_md(study, name, quote_line=None):
             "each is computed from sessions. `python scripts/study_core.py effects` lists them (filter with "
             "`--hypothesis`, `--phenomenon`, `--topic` or `--role`). Every run and every reproduction returns "
             "one result block per effect in the same shape (cells, test, metric), for human and AI-participant "
-            "sessions alike." % (n_hyp, "is" if n_hyp == 1 else "es", n_eff, "" if n_eff == 1 else "s"), "",
+            "sessions alike. `python scripts/study_core.py graph` (MCP: `study_graph`) gives the paper as one typed "
+            "graph: hypotheses, effects, constructs, conditions, variables, materials, steps, analyses and results, "
+            "joined by core edge types; `--node <id>` shows what one node connects to." % (
+                n_hyp, "is" if n_hyp == 1 else "es", n_eff, "" if n_eff == 1 else "s"), "",
         ]
     return "\n".join([
         "---",
@@ -434,7 +437,7 @@ def verify(out, name):
         assert responses.get(0, {}).get("result", {}).get("capabilities", {}).get("tools") is not None, \
             "MCP initialize failed: %s" % stderr[-500:]
         tools = [t["name"] for t in responses.get(1, {}).get("result", {}).get("tools", [])]
-        assert {"read_study", "score_replies", "capabilities", "list_effects"} <= set(tools), "MCP tools/list: %s" % tools
+        assert {"read_study", "score_replies", "capabilities", "list_effects", "study_graph"} <= set(tools), "MCP tools/list: %s" % tools
         for i, (tool, _) in enumerate(calls):
             res = responses.get(i + 2, {}).get("result", {})
             assert res and not res.get("isError"), "MCP %s failed: %s %s" % (tool, res, stderr[-500:])

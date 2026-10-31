@@ -65,7 +65,7 @@ class Effects(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stdout)
         self.assertIn("PASS (1 hypotheses, 1 effects)", run.stdout)
         schema = json.loads((REPO / "pack/schema/effects.schema.json").read_text(encoding="utf-8"))
-        self.assertEqual(schema["properties"]["schemaVersion"]["const"], effects_core.SCHEMA_VERSION)
+        self.assertEqual(schema["properties"]["schemaVersion"]["enum"], list(effects_core.SCHEMA_VERSIONS))
         self.assertEqual(schema["properties"]["effects"]["items"]["properties"]["compute"]["properties"]["op"]["enum"],
                          list(effects_core.OPS))
 
@@ -136,12 +136,16 @@ class Effects(unittest.TestCase):
         self.assertIn("## Effects", (skill / "SKILL.md").read_text(encoding="utf-8"))
         res = mcp(skill / "scripts/mcp_server.py", [
             ("list_effects", {"phenomenon": "side-effect"}),
+            ("study_graph", {"node": "effect:harm_vs_help"}),
             ("score_replies", {"n": 2, "replies": ["Yes.", "yes", "No", "no way"]})])
         listed = json.loads(res[2]["result"]["content"][0]["text"])
         self.assertEqual([e["id"] for e in listed["effects"]], ["harm_vs_help"])
         self.assertIn("statement", listed["effects"][0]["hypotheses"][0])
         self.assertEqual(listed["effects"][0]["reportedSource"], "p. 2")
-        scored = json.loads(res[3]["result"]["content"][0]["text"])
+        g = json.loads(res[3]["result"]["content"][0]["text"])
+        self.assertIn({"from": "effect:harm_vs_help", "to": "intentionality", "type": "measures", "source": "effects"},
+                      g["edges"])
+        scored = json.loads(res[4]["result"]["content"][0]["text"])
         self.assertEqual(scored["effects"][0]["source"], "agent")
         self.assertEqual(scored["effects"][0]["value"], 1.0)
 
@@ -162,6 +166,61 @@ class Effects(unittest.TestCase):
         rep = study_core.Study(str(self.root)).reproduce_paper()
         self.assertEqual((rep["source"], rep["verdict"], rep["recovered"]), ("effects.json", "pass", [1, 1]))
         self.assertEqual(rep["effects"][0]["cells"]["condition-harm"], {"n": 10, "k": 8, "proportion": 0.8})
+
+    def test_schema_2_rejects_other_and_grows_by_declared_extensions(self):
+        doc = effects_doc()
+        doc["schemaVersion"] = 2
+        doc["effects"][0]["contrast"]["kind"] = "other"
+        problems, _ = effects_core.check(self.root, doc)
+        self.assertTrue(any("'other' is not accepted in schema 2" in p for p in problems), problems)
+        doc["effects"][0]["contrast"]["kind"] = "x:odds-of-change"
+        problems, _ = effects_core.check(self.root, doc)
+        self.assertTrue(any("not a core contrast or a declared extension" in p for p in problems), problems)
+        doc["extensions"] = [{"name": "x:odds-of-change", "category": "contrast", "parent": "two_groups",
+                              "definition": "odds of a changed answer, treatment over reference"}]
+        problems, _ = effects_core.check(self.root, doc)
+        self.assertEqual(problems, [])
+        self.assertEqual(effects_core.resolve("contrast", "x:odds-of-change", doc), "two_groups")
+        effects_core.PROMOTED["contrast"]["x:odds-of-change"] = "ratio"  # promoted: read as core, file unchanged
+        try:
+            del doc["extensions"]
+            self.assertEqual(effects_core.resolve("contrast", "x:odds-of-change", doc), "ratio")
+        finally:
+            effects_core.PROMOTED["contrast"].clear()
+        doc = effects_doc()
+        doc["effects"][0]["contrast"] = {"kind": "linear", "conditionIds": ["condition-harm"],
+                                         "valueMeans": "harm minus help", "weights": {"condition-harm": "a"}}
+        problems, _ = effects_core.check(self.root, doc)
+        self.assertTrue(any("linear contrast needs weights" in p for p in problems), problems)
+        doc["schemaVersion"] = 1  # schema 1 files keep their other values
+        doc["effects"][0]["contrast"] = {"kind": "other", "valueMeans": "harm minus help"}
+        problems, _ = effects_core.check(self.root, doc)
+        self.assertEqual(problems, [])
+
+    def test_links_and_the_typed_graph(self):
+        doc = effects_doc()
+        doc["schemaVersion"] = 2
+        doc["links"] = [{"from": "condition-harm", "to": "construct:harm", "type": "manipulates",
+                         "origin": "reported", "evidenceIds": ["e-result"]},
+                        {"from": "effect:harm_vs_help", "to": "paper:other-study/effect:x", "type": "replicates",
+                         "origin": "derived"},
+                        {"from": "intentionality", "to": "condition-help", "type": "manipulates", "origin": "derived"}]
+        problems, _ = effects_core.check(self.root, doc)
+        self.assertEqual(problems, ["links[2]: manipulates goes from condition, not from a variable node",
+                                    "links[2]: manipulates goes to construct, not to a condition node"])
+        doc["links"].pop()
+        program = json.loads((self.root / "program.json").read_text(encoding="utf-8"))
+        g = effects_core.kg(doc, program)
+        types = {(e["from"], e["type"], e["to"]) for e in g["edges"]}
+        self.assertIn(("effect:harm_vs_help", "measures", "intentionality"), types)
+        self.assertIn(("condition-harm", "manipulates", "construct:harm"), types)
+        self.assertIn(("hypothesis", "instance-of", "construct:side-effect effect"), types)
+        self.assertTrue(all(e["type"] in effects_core.EDGE_TYPES for e in g["edges"]))
+        self.assertEqual(effects_core.map_relation("input_of", "variable", "analysis"), ("input-of", False))
+        self.assertEqual(effects_core.map_relation("uses", "analysis", "variable"), ("input-of", True))
+        self.assertIsNone(effects_core.map_relation("blocking variable for", "variable", "design"))
+        registry = json.loads((REPO / "pack/schema/graph-types.json").read_text(encoding="utf-8"))
+        self.assertEqual(registry, json.loads(json.dumps(effects_core.types_registry())))
 
 
 if __name__ == "__main__":

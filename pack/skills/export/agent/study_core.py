@@ -505,6 +505,20 @@ class Study:
                 "untested": [{"id": h["id"], "statement": h["statement"], "because": h.get("untestedBecause"),
                               "reason": h.get("reason")} for h in hyps.values() if h.get("status") == "untested"]}
 
+    def graph(self, node=None, edge_type=None):
+        """The paper's typed graph (program nodes, steps, effects, constructs; core edge types). With node,
+        only the edges that touch it (and their nodes); with edge_type, only edges of that core type."""
+        g = effects_core.kg(self.require_effects(), self.program)
+        if not node and not edge_type:
+            return g
+        edges = [e for e in g["edges"] if (not node or node in (e["from"], e["to"]))
+                 and (not edge_type or (e.get("core") or e["type"]) == edge_type)]
+        if node and not edges and not any(n["id"] == node for n in g["nodes"]):
+            raise Refusal("%r is not a node of this paper's graph" % node, "effects",
+                          ["node ids: program node or step ids, effect:<id>, construct:<label>"])
+        keep = {x for e in edges for x in (e["from"], e["to"])} | ({node} if node else set())
+        return dict(g, nodes=[n for n in g["nodes"] if n["id"] in keep], edges=edges)
+
     def effect_results(self, sessions, evaluation=None, key_effects=None, source=None):
         """One result block per effect, computed the same way for human and AI-participant sessions."""
         eff = self.require_effects()
@@ -812,6 +826,9 @@ def main(argv=None):
     q = sub.add_parser("effects")
     for flag in ("hypothesis", "phenomenon", "topic", "role"):
         q.add_argument("--" + flag)
+    q = sub.add_parser("graph")
+    q.add_argument("--node")
+    q.add_argument("--type")
     sub.add_parser("studies")
     sub.add_parser("paper")
     sub.add_parser("study").add_argument("id")
@@ -854,6 +871,8 @@ def main(argv=None):
         show(s.reproduce_paper(a.method))
     elif a.cmd == "effects":
         show(s.effect_list(a.hypothesis, a.phenomenon, a.topic, a.role))
+    elif a.cmd == "graph":
+        show(s.graph(a.node, a.type))
     elif a.cmd == "studies":
         show([dict(st, conditions=s.conditions(st["id"])) for st in s.overview()["studies"]])
     elif a.cmd == "paper":

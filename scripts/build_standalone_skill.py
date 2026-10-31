@@ -87,7 +87,7 @@ def generate(out):
             shutil.copy2(PACK / "skills" / skill / rel, dest)
     shutil.copy2(PACK / "standalone/pdf_pages.py", out / "scripts/pdf_pages.py")
     (out / "schema").mkdir()
-    for name in ["human-program.schema.json", "build-coverage.json", "effects.schema.json"]:
+    for name in ["human-program.schema.json", "build-coverage.json", "effects.schema.json", "graph-types.json"]:
         shutil.copy2(PACK / "schema" / name, out / "schema" / name)
     shutil.copy2(REPO / "LICENSE", out / "LICENSE")
     check(out)
