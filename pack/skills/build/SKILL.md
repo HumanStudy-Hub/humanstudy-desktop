@@ -167,6 +167,13 @@ prints `PASS`: a table field that is malformed, a result node whose numbers are 
 quotes, a quote that reads like a table nobody transcribed, and a printed table caption (`Table 2`)
 with no table field of that label. Fix by transcribing, never by deleting the quote or the evidence.
 Run `python .opencode/skills/build/sources.py . --check` too; it must print `PASS`.
+Run `python .opencode/skills/build/check_verbatim.py program.json` until it prints `PASS`: every field
+labelled `verbatim` must hold the printed words of its cited page, word for word (`40` for a printed
+"Forty" is not verbatim). For each problem, reread the page and either copy the exact printed words
+(and cite the page they are on) or, when the field is a description, summary or paraphrase (a
+stimulus-generation description, a hypothesis restated, a sample size written as a number), relabel
+it `reported` (or `derived` with its `derivation`). Never invent or pad text to make it match. Fields
+it reports as unchecked (scanned pages) you compare with the page image yourself.
 Then run `python .opencode/skills/build/check_quotes.py program.json`: it compares every evidence
 quote with the text of its cited page. Fix `other_page` (wrong page number) and `not_found` (wrong or
 reconstructed quote) by rereading the page; if the page is a garbled table or scan, set the evidence

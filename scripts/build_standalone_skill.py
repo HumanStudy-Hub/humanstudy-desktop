@@ -18,7 +18,7 @@ REPO = Path(__file__).resolve().parents[1]
 PACK = REPO / "pack"
 SCRIPTS = {
     "build": ["program_io.py", "program_lock.py", "check_program.py", "check_package.py", "check_quotes.py",
-              "check_results.py", "sources.py", "capabilities.py", "effects.py"],
+              "check_results.py", "check_verbatim.py", "sources.py", "capabilities.py", "effects.py"],
     "export": ["agent_package.py", "agent/study_core.py", "agent/mcp_server.py", "agent/effects_core.py"],
 }
 PATHS = [

@@ -18,7 +18,7 @@ No simulation is run. A paper whose project already holds a passing program is s
 command can be rerun after an interruption; `--rebuild` starts those again.
 
 Writes `<work>/results.json` and `<work>/results.csv`: per paper the build time, cost, checks,
-readiness, issue counts, quote check, table fields and the source record check. Projects contain
+readiness, issue counts, quote check, table fields, verbatim fields and the source record check. Projects contain
 the papers' text: keep `<work>` private.
 Codex support is untested.
 """
@@ -158,6 +158,12 @@ def checks(project, python):
     try:
         r = json.loads(results.read_text(encoding="utf-8"))
         out["tables"], out["resultProblems"] = r["tables"], len(r["problems"])
+    except Exception:
+        pass
+    verbatim = project / ".humanstudy" / "verbatim-check.json"
+    out["verbatim"] = run(hs / "check_verbatim.py", "program.json", "--json", verbatim).returncode == 0
+    try:
+        out.update({"verbatim_" + k: v for k, v in json.loads(verbatim.read_text(encoding="utf-8"))["counts"].items()})
     except Exception:
         pass
     report = project / ".humanstudy" / "quote-check.json"

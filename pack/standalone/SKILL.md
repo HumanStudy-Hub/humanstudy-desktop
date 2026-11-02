@@ -37,6 +37,7 @@ python $HS/scripts/build/check_program.py program.json          # after every sa
 python $HS/scripts/build/check_program.py program.json --complete
 python $HS/scripts/build/check_results.py program.json          # printed tables and numbers are data
 python $HS/scripts/build/check_quotes.py program.json           # every quote on its cited page
+python $HS/scripts/build/check_verbatim.py program.json         # verbatim fields are the printed words
 python $HS/scripts/build/check_package.py package/<paper-slug>  # the runnable package
 ```
 
