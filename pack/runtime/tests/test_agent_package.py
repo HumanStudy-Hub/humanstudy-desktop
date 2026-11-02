@@ -134,6 +134,11 @@ class AgentPackage(unittest.TestCase):
         run = export(self.root)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn("replay package smoke test", run.stdout)
+        shutil.rmtree(self.root / "exports")  # a shared paper beside program.json is readable too
+        adapter.write_text(adapter.read_text().replace('print("smoke ok", program["id"])',
+                                                       'assert (ROOT.parent.parent / "paper.pdf").is_file()'))
+        run = export(self.root, "--include-paper")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
     def test_skill_only_by_default(self):
         self.assertEqual(export(self.root).returncode, 0)

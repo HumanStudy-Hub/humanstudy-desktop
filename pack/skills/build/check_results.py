@@ -33,6 +33,7 @@ LABEL = re.compile(r"\b(?:tables?|figs?\.?|figures?|stud(?:y|ies)|experiments?|e
                    r"sections?|items?|questions?|q|footnotes?|notes?|waves?|rounds?|sessions?|blocks?|phases?|"
                    r"panels?|samples?|conditions?|groups?|stories|story|scenarios?|pp?\.|pages?|vol\.?|no\.)"
                    r"\s*(?:\d+[a-z]?|[ivx]+\b)(?:\s*(?:,|and|&|-|–)\s*\d+[a-z]?)*", re.I)
+THOUSANDS = re.compile(r"(?<![\d.(])\d{1,3}(?:,\d{3})+(?![\d,])")
 YEAR = re.compile(r"(?<![\d.])(?:19|20)\d\d(?![\d.])")
 CAPTION = re.compile(r"^\s*(TABLE|Table)\s+([0-9]+[A-Za-z]?|[IVXL]+|[A-Z][0-9]*|S[0-9]+)\s*(?:[.:|—–-]|$)")
 ROMAN = {"I": 1, "V": 5, "X": 10, "L": 50}
@@ -45,6 +46,7 @@ def numbers(text):
     """Printed values in text, as floats, without labels, page numbers and years."""
     if not isinstance(text, str):
         return []
+    text = THOUSANDS.sub(lambda m: m.group(0).replace(",", ""), text)  # 1,234 is one number
     text = YEAR.sub(" ", LABEL.sub(" ", text))
     out = []
     for m in NUM.findall(text):
@@ -105,6 +107,9 @@ def table_problems(where, f):
     if not rows:
         add("table has no rows", "transcribe every printed row, or mark the field missing with an issue")
     uncertain = v.get("uncertain") or []
+    if not isinstance(uncertain, list):
+        add("uncertain must be a list of cells", 'write [{"row": 0, "column": 1, "reason": "..."}]')
+        uncertain = []
     flagged = {(u.get("row"), u.get("column")) for u in uncertain if isinstance(u, dict)}
     for i, row in enumerate(rows):
         if not isinstance(row, list):
@@ -179,7 +184,7 @@ def check(program_path):
     # table quote: quotes that read like a printed table, with numbers no field holds
     cited_by_table = {i for _, f in tables for i in f.get("evidenceIds") or []}
     for eid, e in evidence.items():
-        quote = e.get("quote") or ""
+        quote = e.get("quote") if isinstance(e.get("quote"), str) else ""
         nums = numbers(quote)
         words = len(re.findall(r"[A-Za-z]{2,}", YEAR.sub(" ", LABEL.sub(" ", quote))))
         if len(nums) >= TABLE_NUMBERS and len(nums) / max(1, len(nums) + words) >= TABLE_SHARE:
@@ -226,7 +231,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     try:
         report = check(a.program)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
         print("FAIL %s: cannot read: %s" % (a.program, exc))
         return 1
     if a.json:

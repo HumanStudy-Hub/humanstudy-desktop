@@ -122,20 +122,22 @@ class CheckVerbatim(unittest.TestCase):
     PAGE = ("Method. Participants and procedure. Forty participants (22 female, 16 male) completed the task. "
             "We predicted that losses loom larger than gains. Table 2. Mean estimates. Item 1 65.7 48.5 Item 2 41.0")
 
-    def statuses(self, fields):
+    def statuses(self, fields, pages=None, verification=None):
         root = Path(tempfile.mkdtemp(prefix="check-verbatim-"))
         self.addCleanup(shutil.rmtree, root, True)
-        p = program_with(fields, [dict(EVIDENCE[0], quote="Table 2. Mean estimates")])
+        ev = dict(EVIDENCE[0], quote="Table 2. Mean estimates", **({"verification": verification} if verification else {}))
+        p = program_with(fields, [ev])
         (root / "program.json").write_text(json.dumps(p), encoding="utf-8")
         (root / "paper.pdf").write_bytes(b"%PDF-1.4 stub")
         page = self.PAGE
+        doc = pages or ["front matter long enough to be a text layer of a page", "", "", "", "", "", page]
 
         class FakePdf:
             def __init__(self, path):
                 pass
 
             def load(self):
-                return ["front matter long enough to be a text layer of a page", "", "", "", "", "", page]
+                return doc
         original = check_verbatim.check_quotes.Pdf
         check_verbatim.check_quotes.Pdf = FakePdf
         self.addCleanup(setattr, check_verbatim.check_quotes, "Pdf", original)
@@ -154,6 +156,32 @@ class CheckVerbatim(unittest.TestCase):
             dict(TABLE, value=dict(TABLE["value"], rows=[["Item 1", "65.7", "48.5", ""], ["Item 2", "41.0", "", ""]],
                                    columns=["Item", "M", "M", "t"], title="Mean estimates"))])
         self.assertEqual(got, {"exact": "found", "number-for-word": "close", "invented": "not_found", "table-2": "found"})
+
+
+    def test_page_breaks_ocr_noise_and_noisy_tables(self):
+        pages = ["front matter long enough to be a text layer of a page", "", "", "", "", "",
+                 "Each subject read that the council must decide upon which they",
+                 "282 ROSS ET AL. must vote, and opponents argue it will dram money from domestic priorities."]
+        spans = self.field("spans", "the council must decide upon which they must vote")
+        ocr = self.field("ocr", "opponents argue it will drain money from domestic priorities.")
+        noisy = dict(TABLE, value={"table": "Table 2", "page": 7, "columns": ["Story", "Sign release (n = 53)"],
+                                    "rows": [["Supermarket", "75.6"], ["Term paper", "67.4"]]})
+        pages[6] = "Table 2. Story Sign re1ease (n = 53) Supermarket 75.6 Term paper 67.4 " + pages[6]
+        got = self.statuses([spans, ocr, noisy], pages)
+        self.assertEqual(got, {"spans": "found", "ocr": "close", "table-2": "table_text_layer"})
+        self.assertEqual(self.statuses([ocr], pages, verification="unverified"), {"ocr": "close_unverified"})
+
+    def test_bad_inputs_do_not_crash(self):
+        bad = copy.deepcopy(TABLE)
+        bad["value"]["uncertain"] = 5
+        ev = [dict(EVIDENCE[0], quote=5, locator=None)]
+        found = CheckResults.run_check(self, program_with([bad], ev))
+        self.assertTrue(any("uncertain must be a list" in m for m in found), found)
+        self.assertEqual(check_results.numbers("1,234 participants; F(1,312) = 4.5"), [1234.0, 1.0, 312.0, 4.5])
+        root = Path(tempfile.mkdtemp(prefix="check-verbatim-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "program.json").write_text(json.dumps(program_with([self.field("x", "some words here")], ev)))
+        self.assertEqual(check_verbatim.check(root / "program.json")["results"][0]["field"], "result-1.x")
 
 
 class Sources(unittest.TestCase):
@@ -194,6 +222,13 @@ class Sources(unittest.TestCase):
         data = json.loads((self.root / "sources/SOURCE.json").read_text(encoding="utf-8"))
         self.assertEqual(data["pdf"]["license"], "CC-BY-4.0", "a rerun keeps the recorded license")
         self.assertEqual(self.cli("--check").returncode, 0)
+
+    def test_a_missing_paper_is_a_problem(self):
+        (self.root / "paper.pdf").unlink()
+        self.assertEqual(self.cli().returncode, 0)
+        run = self.cli("--check")
+        self.assertEqual(run.returncode, 1)
+        self.assertIn("is not in the project folder", run.stdout)
 
     def test_package_check_requires_the_record(self):
         p = json.loads(PROGRAM.read_text(encoding="utf-8"))

@@ -447,12 +447,13 @@ def verify(out, name):
         with tempfile.TemporaryDirectory() as tmp:
             # A copy, so files the test writes never reach the export. The copy keeps the project layout,
             # because a package may read what the format puts beside it: ../../program.json (study.json
-            # programRef) and the files next to program.json (effects.json, capabilities.json, sources/).
+            # programRef) and the files next to program.json (effects.json, capabilities.json, the paper
+            # when it is shared, sources/).
             pkg = Path(tmp) / "package" / s.package.name
             shutil.copytree(s.package, pkg)
-            for rel in ("program.json", "effects.json", "capabilities.json"):
-                if (skill / rel).is_file():
-                    shutil.copy2(skill / rel, Path(tmp) / rel)
+            for f in skill.iterdir():
+                if f.is_file():
+                    shutil.copy2(f, Path(tmp) / f.name)
             if (skill / "sources").is_dir():
                 shutil.copytree(skill / "sources", Path(tmp) / "sources")
             run = subprocess.run([sys.executable, str(pkg / "task/adapter.py"), "--smoke-test"],

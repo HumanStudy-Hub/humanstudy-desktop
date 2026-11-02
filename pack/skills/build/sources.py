@@ -39,10 +39,10 @@ def load(path):
 
 
 def paper_name(root, program):
-    name = ((program or {}).get("source") or {}).get("filename")
-    if name and (root / name).is_file():
-        return name
-    return "paper.pdf" if (root / "paper.pdf").is_file() else name
+    """paper.pdf, else program.json source.filename: the file check_quotes.py reads page numbers from."""
+    if (root / "paper.pdf").is_file():
+        return "paper.pdf"
+    return ((program or {}).get("source") or {}).get("filename")
 
 
 def inside(root, rel):
@@ -127,7 +127,10 @@ def problems(root):
         elif not f.get("license"):
             out.append(("%s: %s has no license entry" % (NAME, rel), 'record the stated license, or "unknown"'))
     paper = paper_name(root, program)
-    if paper and (root / paper).is_file() and ((data.get("pdf") or {}).get("sha256") != sha256(root / paper)):
+    if not paper or not (root / paper).is_file():
+        out.append(("the paper (%s) is not in the project folder, so its hash cannot be recorded" % (paper or "paper.pdf"),
+                    "put the PDF the page numbers refer to at paper.pdf"))
+    elif ((data.get("pdf") or {}).get("sha256") != sha256(root / paper)):
         out.append(("%s#pdf does not hold the current SHA-256 of %s" % (NAME, paper), fix))
     return out
 

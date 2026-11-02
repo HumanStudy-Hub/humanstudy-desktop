@@ -172,8 +172,10 @@ labelled `verbatim` must hold the printed words of its cited page, word for word
 "Forty" is not verbatim). For each problem, reread the page and either copy the exact printed words
 (and cite the page they are on) or, when the field is a description, summary or paraphrase (a
 stimulus-generation description, a hypothesis restated, a sample size written as a number), relabel
-it `reported` (or `derived` with its `derivation`). Never invent or pad text to make it match. Fields
-it reports as unchecked (scanned pages) you compare with the page image yourself.
+it `reported` (or `derived` with its `derivation`). Never invent or pad text to make it match. When
+the page image shows your text is right and the text layer misreads it (OCR noise such as "dram" for
+"drain"), keep the printed words and set the cited evidence's `verification` to `unverified`. Fields it
+reports as unchecked (scanned pages) you compare with the page image yourself.
 Then run `python .opencode/skills/build/check_quotes.py program.json`: it compares every evidence
 quote with the text of its cited page. Fix `other_page` (wrong page number) and `not_found` (wrong or
 reconstructed quote) by rereading the page; if the page is a garbled table or scan, set the evidence
