@@ -28,7 +28,6 @@ import hashlib
 import json
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -47,6 +46,7 @@ for p in (HERE, AGENT, EXPORT):
 import capabilities  # noqa: E402
 import check_program  # noqa: E402
 import check_quotes  # noqa: E402
+import sandbox_run  # noqa: E402
 
 try:
     import effects_core  # noqa: E402
@@ -534,14 +534,16 @@ def run_probe(s, ctx):
         ctx["probe"] = None
         return None
     copy = ctx["copy"]()
-    try:
-        run = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--probe", str(copy), "--n", "2"],
-                             capture_output=True, text=True, timeout=ctx.get("timeout", 600), cwd=str(copy))
-        lines = [l for l in run.stdout.splitlines() if l.startswith("{\"probe\":")]
+    # Package code is untrusted: it runs only in the confined child (no keys, no network, writes only in the
+    # scratch folder; see sandbox_run.py), which prints the probe result as JSON.
+    run = sandbox_run.run_python(Path(__file__).resolve(), ["--probe", str(copy), "--n", "2"], cwd=copy,
+                                 work=copy.parent, timeout=ctx.get("timeout", 600))
+    lines = [l for l in run.stdout.splitlines() if l.startswith("{\"probe\":")]
+    if run.timed_out:
+        ctx["probe"] = {"error": "stub run timed out"}
+    else:
         ctx["probe"] = json.loads(lines[-1])["probe"] if lines else {
             "error": "probe produced no result (exit %s): %s" % (run.returncode, (run.stderr or run.stdout)[-400:])}
-    except subprocess.TimeoutExpired:
-        ctx["probe"] = {"error": "stub run timed out"}
     return ctx["probe"]
 
 
@@ -870,10 +872,10 @@ def run_export(s, ctx):
         return None
     copy = ctx["copy"]()
     out = copy / "exports" / "audit-agent"
-    run = subprocess.run([sys.executable, str(EXPORT / "agent_package.py"), "--root", str(copy), "--output", str(out), "--mcp"],
-                         capture_output=True, text=True, timeout=ctx.get("timeout", 600))
+    run = sandbox_run.run_python(EXPORT / "agent_package.py", ["--root", str(copy), "--output", str(out), "--mcp"],
+                                 cwd=copy, work=copy.parent, timeout=ctx.get("timeout", 600))
     ctx["export"] = {"ok": run.returncode == 0 and out.is_dir(), "out": out,
-                     "log": (run.stdout + run.stderr)[-1500:]}
+                     "log": (run.stdout + run.stderr + ("\nFAIL timed out" if run.timed_out else ""))[-1500:]}
     return ctx["export"]
 
 
@@ -1031,8 +1033,8 @@ def check_C4(s, ctx):
     if s.caps.get("run", {}).get("status") in ("yes", "partial") and s.package and not ctx.get("no_run"):
         copy = ctx["copy"]()
         pkg = copy / "package" / s.package.name
-        run = subprocess.run([sys.executable, str(HERE / "check_package.py"), str(pkg)], capture_output=True, text=True,
-                             timeout=ctx.get("timeout", 600))
+        run = sandbox_run.run_python(HERE / "check_package.py", [str(pkg)], cwd=copy, work=copy.parent,
+                                     timeout=ctx.get("timeout", 600))
         if run.returncode != 0:
             msg = next((l for l in run.stdout.splitlines() if l.startswith("FAIL")), run.stdout[-200:])
             out.append(("fail", "capabilities.json#run.status=%s but check_package.py fails: %s" % (s.caps["run"]["status"], msg[:300])))

@@ -23,7 +23,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "agent"))
+sys.path.append(str(HERE.parent / "build"))
 from study_core import Study  # noqa: E402
+import sandbox_run  # noqa: E402
 
 VERSION = "humanstudy-agent-package/1"
 SKIP = {"__pycache__", ".pytest_cache", ".DS_Store", ".env", ".git", ".humanstudy", "node_modules"}
@@ -447,9 +449,9 @@ def verify(out, name):
         with tempfile.TemporaryDirectory() as tmp:
             pkg = Path(tmp) / s.package.name  # a copy: files the test writes never reach the export
             shutil.copytree(s.package, pkg)
-            run = subprocess.run([sys.executable, str(pkg / "task/adapter.py"), "--smoke-test"],
-                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                 timeout=300, cwd=str(pkg))
+            # Package code runs confined: no keys, no network, writes only in the copy (build/sandbox_run.py).
+            run = sandbox_run.run_python(pkg / "task/adapter.py", ["--smoke-test"], cwd=pkg, work=tmp, timeout=300)
+        assert not run.timed_out, "replay package smoke test timed out after 300 s"
         assert run.returncode == 0, "replay package smoke test failed:\n%s%s" % (run.stdout[-800:], run.stderr[-800:])
         checks.append("replay package smoke test")
     return checks

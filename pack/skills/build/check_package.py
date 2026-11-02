@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import shutil
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sandbox_run  # noqa: E402
 
 REQUIRED = [
     "study.json",
@@ -120,13 +123,16 @@ def main() -> None:
     if audit_path.is_file():
         print(f"ok   audit checklist well-formed ({len(entries)} entries)")
 
-    result = subprocess.run(
-        [sys.executable, str(root / "task/adapter.py"), "--smoke-test"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    # The adapter is package code, possibly someone else's: run it confined (sandbox_run.py) on a copy laid out
+    # like the project (package/<slug> beside program.json), so it cannot read keys or write outside the copy.
+    with sandbox_run.work_dir(prefix="check-package-") as work:
+        copy = work / "project" / "package" / root.name
+        shutil.copytree(root, copy, ignore=shutil.ignore_patterns("__pycache__", ".git"))
+        if (root.parent.parent / "program.json").is_file():
+            shutil.copy2(root.parent.parent / "program.json", work / "project" / "program.json")
+        result = sandbox_run.run_python(copy / "task/adapter.py", ["--smoke-test"], cwd=copy, work=work, timeout=120)
+    if result.timed_out:
+        fail("adapter smoke test timed out after 120 s")
     if result.returncode != 0:
         fail("adapter smoke test failed:\n" + result.stdout + result.stderr)
     print("ok   task/adapter.py --smoke-test")
