@@ -84,11 +84,30 @@ def find_root(start=None):
     raise FileNotFoundError("program.json not found next to study_core.py or in a parent folder")
 
 
+def table_text(value):
+    """A transcribed table field ({table, title, page, columns, rows, notes, uncertain}) as a Markdown table."""
+    cell = lambda c: "?" if c is None else str(c).replace("|", "\\|").replace("\n", " ")
+    cols = [cell(c) for c in value["columns"]]
+    head = " ".join(str(value.get(k)) for k in ("table", "title") if value.get(k))
+    out = [head + (" (p. %s)" % value["page"] if value.get("page") else "")] if head or value.get("page") else []
+    if cols:
+        out += ["", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
+        out += ["| " + " | ".join(cell(c) for c in row) + " |" for row in value["rows"] if isinstance(row, list)]
+    notes = value.get("notes")
+    out += [""] + ([str(n) for n in notes] if isinstance(notes, list) else [str(notes)]) if notes else []
+    for u in value.get("uncertain") or []:
+        if isinstance(u, dict):
+            out.append("? row %s, column %s: %s" % (u.get("row"), u.get("column"), u.get("reason")))
+    return "\n".join(out)
+
+
 def text(value):
     if value is None:
         return ""
     if isinstance(value, str):
         return value
+    if isinstance(value, dict) and isinstance(value.get("columns"), list) and isinstance(value.get("rows"), list):
+        return table_text(value)
     if isinstance(value, list) and all(isinstance(v, (str, int, float)) for v in value):
         return "; ".join(str(v) for v in value)
     return json.dumps(value, ensure_ascii=False)

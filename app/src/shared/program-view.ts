@@ -177,9 +177,20 @@ export function wordDiff(text:string,reference:string):{text:string;changed:bool
  return out;
 }
 
+/** A transcribed table field ({table, title, page, columns, rows, notes, uncertain}) as one line per
+ * printed row, cells separated by " | "; an unreadable cell (null) shows as "?". */
+function tableText(v:{[key:string]:JsonValue},indent=''):string {
+ const cell=(c:JsonValue)=>c===null?'?':programText(c),row=(r:JsonValue)=>`${indent}${(Array.isArray(r)?r:[r]).map(cell).join(' | ')}`;
+ const head=[v.table,v.title].filter(x=>typeof x==='string'&&x.trim()).join(' ')+(typeof v.page==='number'?` (p. ${v.page})`:'');
+ const notes=Array.isArray(v.notes)?v.notes:v.notes==null?[]:[v.notes];
+ const unsure=(Array.isArray(v.uncertain)?v.uncertain:[]).filter(isRecord).map(u=>`${indent}? row ${programText(u.row??null)}, column ${programText(u.column??null)}: ${programText(u.reason??null)}`);
+ return [head?`${indent}${head}`:'',row(v.columns as JsonValue),...(v.rows as JsonValue[]).map(row),...notes.map(n=>`${indent}${programText(n)}`),...unsure].filter(Boolean).join('\n');
+}
+
 /** A field value as readable text: transcribed questions as a question with its options, lists one item
  * per line, and records as `key: value` lines, so a diff marks words rather than punctuation. */
 export function fieldText(v:JsonValue,indent=''):string {
+ if(isRecord(v)&&Array.isArray(v.columns)&&Array.isArray(v.rows))return tableText(v,indent);
  if(isRecord(v)&&typeof v.question==='string')return `${indent}${v.question}${Array.isArray(v.options)&&v.options.length?` [${v.options.map(o=>programText(o)).join(' / ')}]`:''}`;
  if(Array.isArray(v))return v.map(item=>fieldText(item,indent)).join('\n');
  if(isRecord(v))return Object.entries(v).map(([k,item])=>item!==null&&typeof item==='object'?`${indent}${k.replace(/_/g,' ')}:\n${fieldText(item,indent+'  ')}`:`${indent}${k.replace(/_/g,' ')}: ${programText(item)}`).join('\n');

@@ -7,6 +7,8 @@ derived from it and from the paper.
 <project>/
   paper.pdf                 the source paper (read-only)
   sources/                  open materials, supplements, large instruments, datasets (optional)
+    SOURCE.json             every source file's path, SHA-256, size and license ("unknown" unless
+                            stated); written by scripts/build/sources.py
   program.json              Human Program v2 ($HS/schema/human-program.schema.json)
   effects.json              hypotheses -> computable effects, each reported number quoted
                             (schema/effects.schema.json; scripts/build/effects.py;
