@@ -1,0 +1,735 @@
+{
+  "book": "audit-book/0.1",
+  "source": "docs/audit-book.md",
+  "results": [
+    "pass",
+    "concern",
+    "fail",
+    "n/a"
+  ],
+  "evidenceRule": "Every result other than pass or n/a needs evidence: a file and field, plus a page or quote.",
+  "severity": {
+    "S1": "gives users wrong research content",
+    "S2": "hides or misstates what the study can do, or breaks a surface",
+    "S3": "quality or cost"
+  },
+  "sections": [
+    {
+      "id": "S",
+      "title": "Source intake"
+    },
+    {
+      "id": "X",
+      "title": "Extraction fidelity (program.json)"
+    },
+    {
+      "id": "P",
+      "title": "Procedure and participants (package)"
+    },
+    {
+      "id": "A",
+      "title": "Analysis and human data"
+    },
+    {
+      "id": "T",
+      "title": "Tools and agent export"
+    },
+    {
+      "id": "C",
+      "title": "Publishing and catalog"
+    },
+    {
+      "id": "U",
+      "title": "Product surfaces"
+    },
+    {
+      "id": "R",
+      "title": "Runs, cost and release process"
+    }
+  ],
+  "items": [
+    {
+      "id": "S1",
+      "section": "S",
+      "check": "The paper is the right paper and version: DOI resolves to the same title; preprint and published versions are not confused",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "sources/SOURCE.json or program.json#source: the DOI and the two titles that disagree",
+      "notes": "Incident I-01"
+    },
+    {
+      "id": "S2",
+      "section": "S",
+      "check": "The source files used are hashed and the hashes recorded (PDF, supplements, data)",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "the source file and the recorded vs computed sha256",
+      "notes": "Bench#34"
+    },
+    {
+      "id": "S3",
+      "section": "S",
+      "check": "License of PDF, materials, data and author code is recorded, or recorded as unknown",
+      "how": "auto + human",
+      "methods": [
+        "auto",
+        "human"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "the file (sources/SOURCE.json, package/*/human/key.json) and the field that lacks a license entry",
+      "notes": "Bench#34"
+    },
+    {
+      "id": "S4",
+      "section": "S",
+      "check": "All supplements, appendices and OSF materials the paper points to were looked for, and the result is recorded (found / not public / not found)",
+      "how": "agent",
+      "methods": [
+        "agent"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "each pointer in the paper (page + quote) and the search result recorded for it",
+      "notes": null
+    },
+    {
+      "id": "S5",
+      "section": "S",
+      "check": "Scanned or image-only pages were OCR'd or read as images, not skipped",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "the PDF pages without a text layer and the program evidence that cites them",
+      "notes": "Desktop PR #42"
+    },
+    {
+      "id": "S6",
+      "section": "S",
+      "check": "Every study in the paper is found, including pilots and studies reported only in the supplement",
+      "how": "agent → EVAL 1",
+      "methods": [
+        "agent"
+      ],
+      "eval": "EVAL 1",
+      "severity": "S1",
+      "evidence": "the study in the paper (page + quote) that program.json#studies lacks",
+      "notes": "Desktop PR #42 (missed-study check)"
+    },
+    {
+      "id": "X1",
+      "section": "X",
+      "check": "Every `verbatim` field appears word for word in the source at the cited page",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "program.json#node:<id>.<field> and the cited page where the value is not found",
+      "notes": "Quote check (`check_quotes.py`)"
+    },
+    {
+      "id": "X2",
+      "section": "X",
+      "check": "Nothing paraphrased is labelled `verbatim`; nothing quoted is labelled `derived`",
+      "how": "agent",
+      "methods": [
+        "agent"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "program.json#node:<id>.<field>, its origin, and the page + quote that shows the right label",
+      "notes": null
+    },
+    {
+      "id": "X3",
+      "section": "X",
+      "check": "Gaps are labelled `missing`, never filled with plausible text. The auditor picks the 5 fields most likely to be guessed (exact wording, response scales, counterbalancing, stimuli lists) and checks each against the source",
+      "how": "agent",
+      "methods": [
+        "agent"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "program.json#node:<id>.<field>, the value, and the page showing the paper does not state it",
+      "notes": "Core contract, `agent_pipeline/CLAUDE.md`"
+    },
+    {
+      "id": "X4",
+      "section": "X",
+      "check": "Sample sizes (recruited, excluded, analysed), conditions and assignment match the paper",
+      "how": "auto (where Bench GT exists) + agent → EVAL 1",
+      "methods": [
+        "auto",
+        "agent"
+      ],
+      "eval": "EVAL 1",
+      "severity": "S1",
+      "evidence": "program.json#node:<participants>.<field> and the page + quote with the paper's number",
+      "notes": null
+    },
+    {
+      "id": "X5",
+      "section": "X",
+      "check": "Reported statistics are exact: numbers, signs, inequality direction (p < .001 vs p > .001), df",
+      "how": "auto + agent → EVAL 1",
+      "methods": [
+        "auto",
+        "agent"
+      ],
+      "eval": "EVAL 1",
+      "severity": "S1",
+      "evidence": "effects.json#effect:<id>.reported or program.json#node:<result>.<field>, and the page + quote",
+      "notes": "Fixed in 0.6.7 for source lookup"
+    },
+    {
+      "id": "X6",
+      "section": "X",
+      "check": "Each open issue is real (the paper does not state it) and specific; no filler issues",
+      "how": "agent",
+      "methods": [
+        "agent"
+      ],
+      "eval": null,
+      "severity": "S3",
+      "evidence": "program.json#issue:<id> and the page + quote where the paper states it, or why it is filler",
+      "notes": null
+    },
+    {
+      "id": "X7",
+      "section": "X",
+      "check": "Evidence pages are right: a sample of 10 quotes is found on the cited page",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "program.json#evidence:<id>, its cited page, and where the quote was (or was not) found",
+      "notes": null
+    },
+    {
+      "id": "X8",
+      "section": "X",
+      "check": "Every study and condition in the paper appears in the program, or is listed as excluded with a reason",
+      "how": "agent → EVAL 1",
+      "methods": [
+        "agent"
+      ],
+      "eval": "EVAL 1",
+      "severity": "S1",
+      "evidence": "the study or condition in the paper (page + quote) missing from program.json",
+      "notes": null
+    },
+    {
+      "id": "X9",
+      "section": "X",
+      "check": "Commercial or copyrighted instruments are marked location-only; their items are not included",
+      "how": "auto + agent",
+      "methods": [
+        "auto",
+        "agent"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "program.json#node:<id>.<field> holding instrument items, and the instrument's name",
+      "notes": "Bench#34"
+    },
+    {
+      "id": "P1",
+      "section": "P",
+      "check": "**Participant independence:** each AI participant answers in a fresh context, with no access to study files, hypotheses or other participants' answers",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "package/<slug>/task/adapter.py and the prompt index that carries another participant's reply",
+      "notes": "Incident I-02"
+    },
+    {
+      "id": "P2",
+      "section": "P",
+      "check": "Sequential visibility: a participant sees each screen only when the original participants did; nothing later leaks into an earlier prompt",
+      "how": "agent → EVAL 2",
+      "methods": [
+        "agent"
+      ],
+      "eval": "EVAL 2",
+      "severity": "S1",
+      "evidence": "the step or prompt that shows a later screen too early (materials.json or adapter prompt), and the paper page",
+      "notes": "Core contract"
+    },
+    {
+      "id": "P3",
+      "section": "P",
+      "check": "Prompts contain no hypothesis, condition names or study labels that the original participants did not see",
+      "how": "auto + agent",
+      "methods": [
+        "auto",
+        "agent"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "the prompt index and the word that reveals a hypothesis, condition name or study label",
+      "notes": null
+    },
+    {
+      "id": "P4",
+      "section": "P",
+      "check": "Every original human subject role is an agent participant; scripted partners are used only where the paper used them, and are labelled",
+      "how": "agent",
+      "methods": [
+        "agent"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "task/task.json#agents or scriptedRoles and the paper page describing the role",
+      "notes": "Core contract"
+    },
+    {
+      "id": "P5",
+      "section": "P",
+      "check": "Conditions are assigned as in the paper (random, counterbalanced, blocked); counts per arm are balanced as designed",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "task/task.json#arms and the per-arm session counts from a stub run",
+      "notes": null
+    },
+    {
+      "id": "P6",
+      "section": "P",
+      "check": "Replies are parsed into the paper's response format; unparseable replies are counted and reported, never dropped silently",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "the session fields after unparseable replies (dropped, or mapped to a value)",
+      "notes": null
+    },
+    {
+      "id": "P7",
+      "section": "P",
+      "check": "Studies that cannot run (missing materials, unsupported modality) refuse to run; nothing is substituted",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "capabilities.json#run, study.json#readiness, the blocking issue ids and the stub-run outcome",
+      "notes": "Burton 2022, Kreis 2025"
+    },
+    {
+      "id": "P8",
+      "section": "P",
+      "check": "Profiles, if used, are recorded per session and the run is labelled as a deviation",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "capabilities.json#profiles and the session fields",
+      "notes": "Desktop #45"
+    },
+    {
+      "id": "A1",
+      "section": "A",
+      "check": "The analysis reproduces the paper's reported statistics from the original human data, within the stated tolerance",
+      "how": "auto → EVAL 1/2",
+      "methods": [
+        "auto"
+      ],
+      "eval": "EVAL 1/2",
+      "severity": "S1",
+      "evidence": "artifacts/replay/replay-compare.json#humanMatchesPaper and the effects that did not match",
+      "notes": "`reproduce_paper`, desktop #45"
+    },
+    {
+      "id": "A2",
+      "section": "A",
+      "check": "Exclusion rules are applied as in the paper, and the counts match",
+      "how": "auto + agent",
+      "methods": [
+        "auto",
+        "agent"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "artifacts/replay/human-check.json#exclusions and the paper page with the exclusion rule and counts",
+      "notes": null
+    },
+    {
+      "id": "A3",
+      "section": "A",
+      "check": "Effect definitions and directions match the paper (which group minus which)",
+      "how": "agent",
+      "methods": [
+        "agent"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "effects.json#effect:<id>.contrast (treatment/reference) and the page + quote with the paper's direction",
+      "notes": null
+    },
+    {
+      "id": "A4",
+      "section": "A",
+      "check": "Author code is never edited to make numbers match; differences are reported",
+      "how": "human",
+      "methods": [
+        "human"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "the author-code file and the diff against the published code",
+      "notes": null
+    },
+    {
+      "id": "A5",
+      "section": "A",
+      "check": "The parts of the design missing from the human data are listed (`notMapped`) and not compared",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "artifacts/replay/human-check.json#notMapped vs capabilities.json#humanData.missing",
+      "notes": "Thomas Exp. 2–3, 14 Many Labs 2 effects"
+    },
+    {
+      "id": "A6",
+      "section": "A",
+      "check": "Human data are not in any repository; the key (source, version, hash, license) is recorded",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "the data file path inside the study folder, or package/<slug>/human/key.json and the missing key field",
+      "notes": "Standing rule"
+    },
+    {
+      "id": "A7",
+      "section": "A",
+      "check": "AI vs human comparisons report n, the uncertainty and the direction match, not only a pass/fail",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S3",
+      "evidence": "artifacts/replay/replay-compare.json#effects[] and the missing n, uncertainty or direction field",
+      "notes": null
+    },
+    {
+      "id": "T1",
+      "section": "T",
+      "check": "Export self-test passes (files and hashes, every study renders, scripts run, MCP tools respond, replay smoke test)",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "the self-test step that failed and its message",
+      "notes": "`agent_package.py`"
+    },
+    {
+      "id": "T2",
+      "section": "T",
+      "check": "No local paths, user names, keys or private project files in any export or published file",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "the file and line holding the path, user name or key (never the key itself)",
+      "notes": "Checked by hand for the first 12 skills"
+    },
+    {
+      "id": "T3",
+      "section": "T",
+      "check": "No duplicated content inside a published revision",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S3",
+      "evidence": "the duplicated files (paths and sha256)",
+      "notes": "Incident I-05"
+    },
+    {
+      "id": "T4",
+      "section": "T",
+      "check": "Tools refuse what `capabilities` declares impossible; no substitute output",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "the capability that says no and the call that returned output instead of a refusal",
+      "notes": "Desktop #45"
+    },
+    {
+      "id": "T5",
+      "section": "T",
+      "check": "Install lines in README work on macOS and Windows (`python3` vs `py`)",
+      "how": "auto (CI)",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S3",
+      "evidence": "the README line and the platform where it fails",
+      "notes": null
+    },
+    {
+      "id": "T6",
+      "section": "T",
+      "check": "The skill answers 5 standard questions correctly from the files alone: what was the design, what did a participant see in condition X, what was the main result, what is missing, can it run",
+      "how": "agent → EVAL 3",
+      "methods": [
+        "agent"
+      ],
+      "eval": "EVAL 3",
+      "severity": "S2",
+      "evidence": "the question, the skill's answer and the paper page with the right answer",
+      "notes": null
+    },
+    {
+      "id": "C1",
+      "section": "C",
+      "check": "Catalog entry has title, authors, year, DOI and a description",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "the catalog source (program.json#source, SOURCE.json, paper_metadata.json) and the empty field",
+      "notes": "Incident I-04"
+    },
+    {
+      "id": "C2",
+      "section": "C",
+      "check": "One paper, one entry: no duplicates across DOI, preprint DOI and title keys",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "the entries that share a DOI or title key",
+      "notes": "Incident I-01"
+    },
+    {
+      "id": "C3",
+      "section": "C",
+      "check": "Published files follow the sources policy: no PDFs, `sources/` or human data unless the license allows",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "the published path that the sources policy excludes",
+      "notes": "Bench#34; incident I-06"
+    },
+    {
+      "id": "C4",
+      "section": "C",
+      "check": "Capabilities are honest: `traceable` only after a human line check, `replayable` only with a passing replay",
+      "how": "auto + human",
+      "methods": [
+        "auto",
+        "human"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "capabilities.json#<capability> and the check result that contradicts it",
+      "notes": null
+    },
+    {
+      "id": "C5",
+      "section": "C",
+      "check": "Revision manifest hashes match the files; the previous revision is kept",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "the revision manifest entry and the file whose hash differs",
+      "notes": "`catalog.py`"
+    },
+    {
+      "id": "C6",
+      "section": "C",
+      "check": "The website database, the GitHub snapshot and the desktop library show the same revision after a sync (allow for the 30 s search cache)",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "the three revisions seen (website, snapshot, desktop)",
+      "notes": null
+    },
+    {
+      "id": "C7",
+      "section": "C",
+      "check": "A paper with missing optional fields (no authors, no resources) still renders on web and desktop",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "the catalog entry and the surface that failed to render",
+      "notes": "Incident I-03"
+    },
+    {
+      "id": "U1",
+      "section": "U",
+      "check": "The library lists only extracted studies; not-yet-extracted papers are in their own view",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "the library entry without extracted content",
+      "notes": "Incident I-07"
+    },
+    {
+      "id": "U2",
+      "section": "U",
+      "check": "Opening a study gives a project with content (program, materials, artifacts); never an empty project",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "the study that opened empty",
+      "notes": "Incident I-07"
+    },
+    {
+      "id": "U3",
+      "section": "U",
+      "check": "Library and study pages refresh after a publish without restarting the app",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S3",
+      "evidence": "the steps to reproduce the stale view",
+      "notes": "Incident I-08"
+    },
+    {
+      "id": "U4",
+      "section": "U",
+      "check": "Each study shows what it can and cannot do, in words a researcher understands",
+      "how": "human",
+      "methods": [
+        "human"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "the study page and the statement a researcher could not understand",
+      "notes": null
+    },
+    {
+      "id": "R1",
+      "section": "R",
+      "check": "\"Done\" is checked against files, not against the model going idle; a schema pass is not taken as completeness",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "the check that failed (check_program --complete, effects check, capabilities --check) and its message",
+      "notes": "Paper2Agent research findings"
+    },
+    {
+      "id": "R2",
+      "section": "R",
+      "check": "Request size stays under the gateway limits; failures name the cause (size vs context)",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "the request, its size and the error returned",
+      "notes": "`docs/request-transport.md`"
+    },
+    {
+      "id": "R3",
+      "section": "R",
+      "check": "Cost per study is recorded; batch runs stop before the hosted quota is exhausted",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S3",
+      "evidence": "the run log without a cost record, or the batch that ran past the quota",
+      "notes": "Incident I-09"
+    },
+    {
+      "id": "R4",
+      "section": "R",
+      "check": "Release: version bumped after all intended PRs are merged and not drafts; tag only on the merged commit; all 15 release files present; Mac app notarized; update feeds show the new version",
+      "how": "auto (checklist)",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S2",
+      "evidence": "the release step that failed",
+      "notes": "Incident I-10"
+    },
+    {
+      "id": "R5",
+      "section": "R",
+      "check": "No secrets in logs, issues, PRs or published files",
+      "how": "auto",
+      "methods": [
+        "auto"
+      ],
+      "eval": null,
+      "severity": "S1",
+      "evidence": "the file and line (never the secret itself)",
+      "notes": null
+    }
+  ]
+}
