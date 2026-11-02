@@ -6,7 +6,7 @@ original paper.
 
 - **Three panes**, each foldable: the study agent, the original paper, and the Human
   Program (a readable protocol plus generated artifacts).
-- **Projects** live as plain folders in `~/Documents/HumanStudy Projects`.
+- **Projects** live as plain folders in `~/HumanStudy Hub`.
 - **Studies**: a community library backed by
   [HumanStudy-Bench](https://github.com/HumanStudy-Hub/HumanStudy-Bench); fork a study into
   a local project.
