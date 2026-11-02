@@ -122,6 +122,19 @@ class AgentPackage(unittest.TestCase):
         cli = subprocess.run([sys.executable, str(core), "search", "chairman"], capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(cli.returncode, 0, cli.stderr)
 
+    def test_smoke_test_can_read_the_program_the_package_refers_to(self):
+        """T1: an adapter that reads ../../program.json (study.json programRef) passes the export self-test."""
+        adapter = self.root / "package/knobe/task/adapter.py"
+        adapter.write_text(ADAPTER.replace(
+            'print("smoke ok")',
+            'program = json.loads((ROOT.parent.parent / "program.json").read_text(encoding="utf-8"))\n'
+            '    assert program["id"], "no program id"\n    print("smoke ok", program["id"])'))
+        self.assertEqual(subprocess.run([sys.executable, str(adapter), "--smoke-test"], cwd=str(adapter.parents[1]),
+                                        capture_output=True).returncode, 0, "the adapter works in the project")
+        run = export(self.root)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("replay package smoke test", run.stdout)
+
     def test_skill_only_by_default(self):
         self.assertEqual(export(self.root).returncode, 0)
         out = self.root / "exports/agent"

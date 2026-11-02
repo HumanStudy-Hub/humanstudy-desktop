@@ -13,9 +13,17 @@ can actually run as the original participants did, so the researcher can check i
 - Extract text from `paper.pdf` page by page with `hs-pdf pages paper.pdf` (prints one
   `=== page N ===` block per page; add `--from N --to M` for a range, `--layout` for column-aligned
   tables). `pdftotext -layout paper.pdf -` and `pdfinfo` also work (form feed between pages). If
-  `hs-pdf` reports pages with no text, the PDF is scanned: OCR is not available, so say which
-  pages could not be read instead of guessing. Keep the physical page number of every passage
-  you may cite.
+  `hs-pdf` reports pages with no text, the PDF is scanned. There is no OCR tool; if you can view a
+  page as an image (some agents can read PDF pages or images directly), read the scanned page,
+  and above all its tables, from the image. Pages you cannot see are listed as unreadable, never
+  guessed. Keep the physical page number of every passage you may cite.
+- List every table the paper prints (caption and page) while reading: each is transcribed in step 2.
+- Record the source files once you have read them: `python .opencode/skills/build/sources.py .`
+  writes `sources/SOURCE.json` (path, SHA-256, size, license of `paper.pdf`, every file in
+  `sources/` and every file evidence cites). The license is `unknown` unless the file itself states
+  one (for example a CC BY line on the first page): then add
+  `--license paper.pdf=CC-BY-4.0 --license-evidence "paper.pdf=p. 1: <the printed line>"`. Never guess
+  a license. Rerun it whenever a source file changes; the package check requires it.
 - Read `sources/` only if present. Use the network only for URLs the researcher explicitly gave;
   record each URL consulted in `source/paper_metadata.json` → `external_sources`.
 - List every empirical study in the paper before modelling any of them.
@@ -50,6 +58,8 @@ Validate against `schema/human-program.schema.json`. Work in this order:
 3. Nodes: participants, design, `condition` nodes (one per condition), materials, variables,
    analyses, `result` nodes (`result_kind = reported`). Transcribe printed instruments exactly
    as `verbatim` fields; put long instruments in `sources/` and reference them.
+   Every number the paper reports for a group, item, condition, session or round is a field value,
+   not only text inside an evidence quote: see "Result tables" below.
 4. Steps: per study, with actors, inputs, outputs, `visibleIds` (who sees what earlier
    responses), `conditionIds` on condition-specific branches and materials, and `next` edges
    only where the paper states order.
@@ -58,6 +68,45 @@ Validate against `schema/human-program.schema.json`. Work in this order:
    "Is there enough information to reproduce this study?" from these issues, so be complete and
    honest here rather than optimistic.
 6. Optional `extensions.presentation` (`open`, `collapsed`).
+
+### Result tables: every printed table, cell by cell
+
+Transcribe every table the paper prints (results, descriptives, per-item, per-condition, per-session
+or per-round values, and sample or stimulus tables) into a table field, so the numbers can be
+queried, compared and checked. A quote only locates a table; it does not store it. One field per
+table, on the result node it reports (sample tables on `participants`, stimulus tables on `material`):
+
+```json
+{"id": "table-2", "label": "Table 2: mean estimates by item", "origin": "verbatim", "state": "confirmed",
+ "evidenceIds": ["ev-table-2"], "studyIds": ["study-2"],
+ "value": {"table": "Table 2", "title": "the caption as printed", "page": 7,
+           "columns": ["Item", "Raters choosing A: M", "Raters choosing B: M", "t"],
+           "rows": [["1. First item as printed", "65.7", "48.5", "2.31*"],
+                    ["2. Second item", "41.0", null, ".84"]],
+           "notes": ["* p < .05 (the footnote as printed)"],
+           "uncertain": [{"row": 1, "column": 2, "reason": "smudged in the scan: 3?.4"}]}}
+```
+
+- One list per printed row, in printed order; the first cell is the row label; one cell per column.
+  Cells are copied as printed, as text: keep `*`, `—`, parentheses, leading-dot decimals and units.
+  A printed blank is `""`. Stacked headers are joined with ` / ` (`"Study 1 / M"`). Row groups or
+  panels become a column (`"Panel"`) or one field per panel with the same `table` label.
+- A cell you cannot read with certainty (scan, garbled text layer) is `null` and listed in
+  `uncertain` (0-based `row` and `column`, with what you can see). Never write a plausible value.
+  Try the column-aligned text (`--layout`) first, then the page image. A table you cannot read at all is
+  a field with `state: "missing"`, value `{"table", "page", "columns": [], "rows": []}` and an issue.
+- Its evidence record locates the table: page and the caption as the quote. Do not paste the
+  table into the quote instead of transcribing it.
+- Long tables stay complete: save a long table in its own batch; never shorten, sample or summarise it.
+- Numbers the text prints per group, item or condition (n, %, M, SD, test statistics) are data
+  too: a table field built from the text (origin `reported`, columns named after the paper's
+  quantities, `table` omitted and `title` saying it was assembled from the text) when there are
+  several groups or items, otherwise one field per quantity (`n-condition-a`, `m-condition-a`, ...).
+  The descriptive sentence may stay; the numbers must also be in fields.
+- Effects keep pointing to the cells they use: the effect's `resultIds` name the result node,
+  its `reported` numbers are the cells, its `reported.evidenceIds` cite an evidence record whose
+  quote is the printed row(s) (also listed in the table field's `evidenceIds`), and its `notes`
+  name the cells (`table-2: rows 1-2, columns 1-2`).
 
 **Sections the Study document expects** (kind: field ids). State what the paper states; leave the rest out or `missing`.
 
@@ -69,7 +118,7 @@ Validate against `schema/human-program.schema.json`. Work in this order:
 - 06 Procedure: `procedure`: `task`, `goal`, `actions`, `visible`, `feedback`, `payoff`, `stopping`; `steps`; `material` (verbatim).
 - 07 Variables: `variable`: `role` (iv/dv/moderator/mediator/covariate), `type`, `definition`, `scale`, `scoring`, `timing`, `observation-unit` (what one data row is); `record`.
 - 08 Analysis: `analysis`: `aim`, `inputs`, `method`, `criterion`, `coding`, `robustness`.
-- 09 Results: `result` (`result_kind = reported`): `descriptives`, `effect`, `uncertainty`, `test`, `heterogeneity`, `themes`.
+- 09 Results: `result` (`result_kind = reported`): `descriptives`, `effect`, `uncertainty`, `test`, `heterogeneity`, `themes`; one `table-<n>` field per printed table.
 - 10 Findings: `finding`: `answer`, `support`, `mechanism-tested`, `mechanism-proposed`, `contribution`, `design-principles`.
 - 11 Validity: `limitation`: `validity`, `scope`, `limitations`, `replications`, `openness`.
 - 12 Simulation scope: `simulation`: `steps`, `roles`, `conditions`, `outcomes`, `limits`.
@@ -113,6 +162,11 @@ that does not exist. The app tolerates a few slips by setting them aside, but it
 researcher; a clean check is the standard.
 
 Before reporting completion run `python .opencode/skills/build/check_program.py program.json --complete`.
+Run `python .opencode/skills/build/check_results.py program.json` and fix what it prints until it
+prints `PASS`: a table field that is malformed, a result node whose numbers are only inside evidence
+quotes, a quote that reads like a table nobody transcribed, and a printed table caption (`Table 2`)
+with no table field of that label. Fix by transcribing, never by deleting the quote or the evidence.
+Run `python .opencode/skills/build/sources.py . --check` too; it must print `PASS`.
 Then run `python .opencode/skills/build/check_quotes.py program.json`: it compares every evidence
 quote with the text of its cited page. Fix `other_page` (wrong page number) and `not_found` (wrong or
 reconstructed quote) by rereading the page; if the page is a garbled table or scan, set the evidence
@@ -172,7 +226,9 @@ Rules the runner depends on:
 - `evaluate(sessions)` derives every metric from `sessions` alone and returns the paper's own
   comparison (test, statistic, effect size) or a structured `not_ready` with what is missing.
 - Run `python .opencode/skills/build/check_program.py program.json` (it also runs inside check_package.py), then `python .opencode/skills/build/check_package.py package/<paper-slug>` (required files,
-  JSON validity, bindings, smoke test) and repair until it passes.
+  JSON validity, bindings, `sources/SOURCE.json`, smoke test) and repair until it passes. The
+  smoke test and every export run the package in the project layout, so `task/adapter.py` may read
+  `../../program.json` (and `effects.json`, `capabilities.json`, `sources/` beside it), nothing else outside the package.
 
 ### Effects: from hypotheses to computable effects
 
@@ -334,7 +390,8 @@ A view failing its check is fixed, not dropped. Do not add new study facts in a 
 
 ## 5. Report
 
-Reply with: studies found; counts of nodes, steps, conditions, issues (by severity); the
+Reply with: studies found; counts of nodes, steps, conditions, issues (by severity); tables
+transcribed and cells left uncertain; the
 readiness verdict ("can be run as published" / "blocked by: …"); what capabilities.json says
 cannot be run and why; checks run and their result;
 and the paths written (including the two views). Reply in the researcher's language.
