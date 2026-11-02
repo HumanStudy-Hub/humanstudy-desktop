@@ -143,6 +143,30 @@ def skill_md(study, name, quote_line=None):
             "`OPENAI_BASE_URL`). To collect answers some other way: `plan --n 5` lists every prompt, and "
             "`replay replies.json --n 5` scores the replies given in the same order.", "",
         ]
+        if (study.package / "human/key.json").is_file():
+            run += [
+                "## Human data", "",
+                "The original human data are not in this folder. `python scripts/study_core.py human-data` "
+                "downloads them from their source and checks every file against its pinned SHA-256. "
+                "`python scripts/study_core.py reproduce` recomputes the paper's key results from them with "
+                "the package's analysis: trust the analysis on AI participants only as far as it recovers "
+                "the paper here. If the data are a replication sample, say so when you report.", "",
+            ]
+    if study.effects:
+        n_eff = len(study.effects.get("effects") or [])
+        n_hyp = len(study.effects.get("hypotheses") or [])
+        run += [
+            "## Effects", "",
+            "`effects.json` links the paper's %d hypothes%s to %d effect%s: outcome, contrast (treatment minus "
+            "reference), predicted direction, the paper's reported numbers (each quoted, with its page) and how "
+            "each is computed from sessions. `python scripts/study_core.py effects` lists them (filter with "
+            "`--hypothesis`, `--phenomenon`, `--topic` or `--role`). Every run and every reproduction returns "
+            "one result block per effect in the same shape (cells, test, metric), for human and AI-participant "
+            "sessions alike. `python scripts/study_core.py graph` (MCP: `study_graph`) gives the paper as one typed "
+            "graph: hypotheses, effects, constructs, conditions, variables, materials, steps, analyses and results, "
+            "joined by core edge types; `--node <id>` shows what one node connects to." % (
+                n_hyp, "is" if n_hyp == 1 else "es", n_eff, "" if n_eff == 1 else "s"), "",
+        ]
     return "\n".join([
         "---",
         "name: %s" % name,
@@ -160,7 +184,9 @@ def skill_md(study, name, quote_line=None):
         "Also: [paper.md](references/paper.md) (background, findings, limitations), "
         "[open-issues.md](references/open-issues.md) (what the paper does not state) and "
         "[sources.md](references/sources.md) (source files and hashes) and "
-        "[accuracy.md](references/accuracy.md) (%s)." % (quote_line or "what has been checked"), "",
+        "[accuracy.md](references/accuracy.md) (%s) and "
+        "[capabilities.md](references/capabilities.md) (what can and cannot be done with this study, and why)."
+        % (quote_line or "what has been checked"), "",
         "Search everything: `python scripts/study_core.py search <words>`.", "",
         *run,
         "## Rules", "",
@@ -169,8 +195,40 @@ def skill_md(study, name, quote_line=None):
         "- Items that read \"Not stated in the paper\" and open issues stay open: ask the researcher; "
         "never fill them with plausible text.",
         "- Results from AI participants are a simulation. They are not observations of people.",
+        "- Do only what capabilities.md allows. A refused request (status `refused`) is reported with its "
+        "reason; never replace it with an approximation of your own.",
         "",
     ])
+
+
+def capabilities_md(study, failures):
+    caps = study.capabilities()
+    out = ["# Capabilities", "", "What this study can do, each with its reason. A tool refuses anything else "
+           "(`status: refused`, with the reason and what to do instead).", "",
+           "| Capability | Status | Why |", "| --- | --- | --- |"]
+    names = [("read", "Read and search"), ("run", "Run AI participants"), ("humanData", "Human data"),
+             ("authorCode", "Authors' analysis code"), ("profiles", "Participant profiles")]
+    for key, label in names:
+        part = caps.get(key)
+        if isinstance(part, dict):
+            out.append("| %s | %s | %s |" % (label, part.get("status"), (part.get("reason") or "").replace("|", "/")))
+    rep = caps.get("reproduced") or {}
+    if rep:
+        out.append("| Paper reproduced from human data | %s | %s |" % (rep.get("package") or "not checked", rep.get("detail") or ""))
+    excluded = (caps.get("run") or {}).get("excluded") or []
+    if excluded:
+        out += ["", "## Not runnable", ""] + ["- **%s**: %s" % (x.get("what"), x.get("reason")) for x in excluded]
+    missing = (caps.get("humanData") or {}).get("missing") or []
+    if missing:
+        out += ["", "## Not in the human data", ""] + ["- **%s**: %s" % (x.get("what"), x.get("reason")) for x in missing]
+    if failures:
+        out += ["", "## Where the template does not fit", "",
+                "| Pattern | Where | What | Fallback |", "| --- | --- | --- | --- |"]
+        out += ["| %s | %s | %s | %s |" % tuple((f.get(k) or "").replace("|", "/") for k in ("pattern", "where", "what", "fallback"))
+                for f in failures]
+    if caps.get("note"):
+        out += ["", caps["note"]]
+    return "\n".join(out) + "\n"
 
 
 def sources_md(study, root, include_paper, include_sources):
@@ -276,6 +334,7 @@ def build(root, out, include_paper=False, include_sources=False, with_mcp=False)
         copy_tree(root / "sources", skill / "sources")
     (skill / "scripts").mkdir()
     shutil.copy2(HERE / "agent/study_core.py", skill / "scripts/study_core.py")
+    shutil.copy2(HERE / "agent/effects_core.py", skill / "scripts/effects_core.py")
     if with_mcp:
         shutil.copy2(HERE / "agent/mcp_server.py", skill / "scripts/mcp_server.py")
     report, line = quote_report(root)
@@ -291,6 +350,16 @@ def build(root, out, include_paper=False, include_sources=False, with_mcp=False)
         + ("\n".join(study.issue_line(i) for i in issues) if issues else "None recorded.") + "\n", encoding="utf-8")
     (refs / "sources.md").write_text(sources_md(study, root, include_paper, include_sources), encoding="utf-8")
     (refs / "accuracy.md").write_text(accuracy_md(report, line), encoding="utf-8")
+    if (root / "capabilities.json").is_file():
+        shutil.copy2(root / "capabilities.json", skill / "capabilities.json")
+    if (root / "effects.json").is_file():
+        shutil.copy2(root / "effects.json", skill / "effects.json")
+    try:
+        failures = json.loads((root / "artifacts/failures.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        failures = []
+    (refs / "capabilities.md").write_text(capabilities_md(study, failures if isinstance(failures, list) else []),
+                                          encoding="utf-8")
     (out / "README.md").write_text(readme(study, name, with_mcp), encoding="utf-8")
 
     files = {p.relative_to(out).as_posix(): sha(p) for p in sorted(out.rglob("*")) if p.is_file()}
@@ -298,7 +367,7 @@ def build(root, out, include_paper=False, include_sources=False, with_mcp=False)
     manifest = {"format": VERSION, "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "programId": study.program.get("id"), "programSha256": sha(root / "program.json"),
                 "paperSha256": sha(paper) if paper.is_file() else None,
-                "readiness": study.readiness(), "skill": name,
+                "readiness": study.readiness(), "capabilities": study.capabilities(), "skill": name,
                 "mcpServer": name + "/scripts/mcp_server.py" if with_mcp else None,
                 "quoteCheck": report["counts"] if report else None,
                 "files": files}
@@ -352,9 +421,15 @@ def verify(out, name):
                          capture_output=True, text=True, encoding="utf-8", timeout=120, cwd=str(tempfile.gettempdir()))
     assert cli.returncode == 0 and json.loads(cli.stdout).get("id") == s.program.get("id"), "study_core.py: " + cli.stderr[-500:]
     checks.append("scripts/study_core.py runs from outside the folder")
+    if (skill / "effects.json").is_file():
+        sys.path.insert(0, str(skill / "scripts"))
+        import effects_core
+        problems, _ = effects_core.check(skill)
+        assert not problems, "effects.json: %s" % problems[:5]
+        checks.append("effects.json: hypotheses, effects and quoted numbers check")
 
     if manifest.get("mcpServer"):
-        calls = [("study_overview", {})]
+        calls = [("study_overview", {}), ("capabilities", {})]
         if s.studies:
             calls.append(("read_study", {"study_id": s.studies[0]["id"]}))
         calls.append(("search_study", {"query": (s.program.get("title") or "study").split()[0]}))
@@ -362,7 +437,7 @@ def verify(out, name):
         assert responses.get(0, {}).get("result", {}).get("capabilities", {}).get("tools") is not None, \
             "MCP initialize failed: %s" % stderr[-500:]
         tools = [t["name"] for t in responses.get(1, {}).get("result", {}).get("tools", [])]
-        assert "read_study" in tools and "score_replies" in tools, "MCP tools/list: %s" % tools
+        assert {"read_study", "score_replies", "capabilities", "list_effects", "study_graph"} <= set(tools), "MCP tools/list: %s" % tools
         for i, (tool, _) in enumerate(calls):
             res = responses.get(i + 2, {}).get("result", {})
             assert res and not res.get("isError"), "MCP %s failed: %s %s" % (tool, res, stderr[-500:])

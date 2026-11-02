@@ -1,20 +1,20 @@
 // Is the replay package under package/<slug>/ complete enough to run? The static part of
-// pack/skills/build/check_package.py (the agent's full check): the eight required files exist, every
+// pack/skills/build/check_package.py (the agent's full check): the required files exist, every
 // required JSON file parses, task/adapter.py defines run_sessions() and evaluation/evaluation.py defines
 // evaluate(). The bindings and the adapter smoke test stay with the agent's check; this only decides
 // whether the app may offer a run at all. The renderer (Simulation tab) and the main process (refusing
 // a run approval) both use it, so they cannot disagree.
 
 /** Same list and order as REQUIRED in pack/skills/build/check_package.py (a test keeps them equal). */
+/** Inside a project the package is slim: study.json refers to ../../program.json (programRef), and the
+ *  evidence and missing-information lists are read from program.json itself (issue #45). */
 export const PACKAGE_FILES = [
   'study.json',
   'source/paper_metadata.json',
-  'source/evidence.json',
   'materials/materials.json',
   'task/task.json',
   'task/adapter.py',
   'evaluation/evaluation.py',
-  'audit/missing_information.json',
 ] as const
 export type PackageFile = (typeof PACKAGE_FILES)[number]
 
@@ -77,10 +77,16 @@ export async function packageReadiness(slugs: string[], read: (slug: string, fil
     if (context) {
       try {
         const study = JSON.parse((await once('study.json')) ?? '')
-        if (!study.program?.studies?.some((s: { id: string }) => s.id === context.studyId))
+        const program = context.program as { id: string; studies?: { id: string }[]; steps: { id: string }[]; nodes: { id: string; kind: string }[] }
+        if (study.program !== undefined) { // standalone layout: a full copy of the program
+          if (!study.program?.studies?.some((s: { id: string }) => s.id === context.studyId))
+            problems.push({ file: 'study.json', kind: 'wrong-study' })
+          if (canonical(study.program) !== canonical(context.program)) problems.push({ file: 'study.json', kind: 'stale-program' })
+        } else if (study.programRef?.path !== '../../program.json' || study.programRef?.id !== program.id) {
+          problems.push({ file: 'study.json', kind: 'stale-program' })
+        } else if (!program.studies?.some((s) => s.id === context.studyId)) {
           problems.push({ file: 'study.json', kind: 'wrong-study' })
-        if (canonical(study.program) !== canonical(context.program)) problems.push({ file: 'study.json', kind: 'stale-program' })
-        const program = context.program as { id: string; steps: { id: string }[]; nodes: { id: string; kind: string }[] }
+        }
         const expected = {
           programId: program.id,
           stepIds: program.steps.map(s => s.id),

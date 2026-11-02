@@ -10,6 +10,16 @@ facts. Standard library only, Python 3.8+, so the folder works outside the Human
     python study_core.py replay replies.json --n 5     score those answers (same n, arms and seed)
     python study_core.py run --cli "claude -p --model haiku" [--n 5]   one new CLI process per participant
     python study_core.py run --model <id> [--n 5] [--arm A]   needs OPENROUTER_API_KEY or OPENAI_API_KEY
+    python study_core.py capabilities                  what this study can do, each answer with its reason
+    python study_core.py human-data [--no-download]     fetch the original human data and check their hashes
+    python study_core.py reproduce                      the paper's results recomputed from the human data
+    python study_core.py effects [--hypothesis H] [--phenomenon P] [--topic T] [--role R]
+                                                        the paper's effects: hypothesis, outcome, contrast,
+                                                        predicted direction, reported numbers, how computed
+
+Work the study cannot do is refused, never approximated: the CLI prints
+{"status": "refused", "reason", "capability", "next_steps"} and exits 3; over MCP the same object is the
+tool result. Answers that run only part of the paper carry status "partial".
 """
 import argparse
 import importlib.util
@@ -23,6 +33,11 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+try:
+    import effects_core  # same folder; standard library only
+except ImportError:  # an older copy of this script without its effects_core.py: effects are unavailable
+    effects_core = None
 
 PAPER_KINDS = ["overview", "background", "finding", "limitation"]
 STUDY_KINDS = ["hypothesis", "participants", "design", "condition", "material", "procedure",
@@ -34,6 +49,31 @@ KIND_TITLES = {"hypothesis": "Hypotheses", "participants": "Participants", "desi
                "finding": "Findings", "limitation": "Limitations"}
 MISSING_TEXT = "Not stated in the paper."
 SIMULATION_NOTE = "AI participants: a simulation, not observations of people."
+
+
+class Refusal(RuntimeError):
+    """Work this study cannot do. Carries why, which capability it depends on, and what to do instead."""
+
+    def __init__(self, reason, capability, next_steps=()):
+        RuntimeError.__init__(self, reason)
+        self.reason, self.capability, self.next_steps = reason, capability, list(next_steps)
+
+    def to_dict(self):
+        return {"status": "refused", "reason": self.reason, "capability": self.capability,
+                "next_steps": self.next_steps}
+
+
+def has_not_ready(value):
+    """True when an evaluation leaves any part not_ready (so the answer is partial)."""
+    if isinstance(value, dict):
+        return value.get("status") == "not_ready" or "not_ready" in value or any(has_not_ready(v) for v in value.values())
+    if isinstance(value, list):
+        return any(has_not_ready(v) for v in value)
+    return value == "not_ready"
+
+
+def status_of(value):
+    return "partial" if has_not_ready(value) else "ok"
 
 
 def find_root(start=None):
@@ -69,6 +109,14 @@ class Study:
             if (self.root / "package").is_dir() else []
         self.package = packages[0] if len(packages) == 1 else None
         self._modules = {}
+        try:
+            self.caps = json.loads((self.root / "capabilities.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.caps = None
+        try:
+            self.effects = effects_core.load(self.root) if effects_core else None
+        except ValueError:
+            self.effects = None
 
     # ---- reading -------------------------------------------------------------------------------
 
@@ -113,7 +161,18 @@ class Study:
                 "doi": src.get("doi"),
                 "studies": [{"id": s.get("id"), "title": s.get("title"), "type": s.get("type")} for s in self.studies],
                 "openIssues": counts, "readiness": self.readiness(),
+                "capabilities": self.capabilities(),
                 "package": self.package.name if self.package else None}
+
+    def capabilities(self):
+        """capabilities.json as built; without one, only what readiness alone shows."""
+        if isinstance(self.caps, dict):
+            return self.caps
+        ready = self.readiness()
+        run = {"status": "yes" if ready.get("status") == "ready" else "no" if ready.get("status") == "blocked" else "unknown",
+               "reason": ready.get("note") or ("blocked by: " + ", ".join(ready.get("blocking") or []) if ready.get("status") == "blocked" else None)}
+        return {"schemaVersion": 1, "read": {"status": "yes", "reason": None}, "run": run,
+                "note": "No capabilities.json in this export; human data, author code and reproduction are unknown."}
 
     def study_nodes(self, study_id):
         return [n for n in self.nodes if study_id in (n.get("studyIds") or [])
@@ -299,7 +358,8 @@ class Study:
 
     def module(self, name):
         if not self.package:
-            raise RuntimeError("this export has no replay package; only reading is available")
+            raise Refusal("this export has no replay package; only reading is available", "run",
+                          ["read the study with study/read_study", "build the package in the HumanStudy app"])
         if name not in self._modules:
             path = self.package / ("task/adapter.py" if name == "adapter" else "evaluation/evaluation.py")
             spec = importlib.util.spec_from_file_location("hs_" + name, path)
@@ -318,7 +378,8 @@ class Study:
     def adapter_function(self, name):
         fn = getattr(self.module("adapter"), name, None)
         if not callable(fn):
-            raise RuntimeError("the replay package's adapter has no %s(); use run with a model instead" % name)
+            raise Refusal("the replay package's adapter has no %s()" % name, "run",
+                          ["use run with a model or CLI instead, which calls run_sessions()"])
         return fn
 
     def participant_prompt(self, study_id, condition_id):
@@ -337,17 +398,29 @@ class Study:
         ready = self.readiness()
         if ready.get("status") == "blocked":
             open_ids = ready.get("blocking") or [i["id"] for i in self.issues if i.get("severity") in ("blocking", "decision")]
-            raise RuntimeError("the study is not ready to run AI participants; settle these first: %s"
-                               % (", ".join(open_ids) if open_ids else ready.get("note") or "see list_open_issues"))
+            raise Refusal("the study is not ready to run AI participants; settle these first: %s"
+                          % (", ".join(open_ids) if open_ids else ready.get("note") or "see list_open_issues"), "run",
+                          ["list_open_issues shows what the paper does not state",
+                           "a researcher settles each blocking issue in the HumanStudy app (never fill it in silently)"])
+
+    def require_arms(self, arms):
+        """Refuse arms the study declares it cannot run (capabilities.json run.excluded[].arms)."""
+        excluded = ((self.caps or {}).get("run") or {}).get("excluded") or []
+        for item in excluded:
+            hit = sorted(set(arms or []) & set(item.get("arms") or []))
+            if hit:
+                raise Refusal("%s cannot be run: %s" % (", ".join(hit), item.get("reason")), "run.excluded",
+                              ["run the other arms", "see capabilities for what is excluded and why"])
 
     def _sessions(self, llm, seed, n, arms):
         self.require_ready()
+        self.require_arms(arms)
         return self.module("adapter").run_sessions(llm, seed, n or 5, arms)
 
     def run(self, llm, seed=20261015, n=None, arms=None):
         """Run AI participants through the package's own run_sessions with a model you provide."""
         sessions = self._sessions(llm, seed, n, arms)
-        return {"note": SIMULATION_NOTE, "evaluation": self.evaluate(sessions), "sessions": sessions}
+        return self.result(sessions, arms)
 
     def plan(self, n=5, arms=None, seed=20261015):
         """Every prompt the participants will read, in order, so another agent can answer them itself.
@@ -378,18 +451,301 @@ class Study:
             try:
                 i, reply = next(queue)
             except StopIteration:
-                raise RuntimeError("the package asked for more answers than planned: the study is not "
-                                   "deterministic for plan/replay; use run with a model instead")
+                raise Refusal("the package asked for more answers than planned: the study is not "
+                              "deterministic for plan/replay", "run.plan", ["use run with a model or CLI instead"])
             if prompt != planned[i]["prompt"]:
-                raise RuntimeError("prompt %d depends on earlier answers, so this study must be run turn by turn: "
-                                   "use run with a model instead" % i)
+                raise Refusal("prompt %d depends on earlier answers, so this study must be run turn by turn" % i,
+                              "run.plan", ["use run with a model or CLI instead"])
             return reply if isinstance(reply, str) else json.dumps(reply)
         sessions = self._sessions(answer, seed, n, arms)
         left = sum(1 for _ in queue)
         if left:
-            raise RuntimeError("%d replies were not used: the package's calls differed from the plan; use run "
-                               "with a model instead" % left)
-        return {"note": SIMULATION_NOTE, "evaluation": self.evaluate(sessions), "sessions": sessions}
+            raise Refusal("%d replies were not used: the package's calls differed from the plan" % left,
+                          "run.plan", ["use run with a model or CLI instead"])
+        return self.result(sessions, arms)
+
+    # ---- effects ---------------------------------------------------------------------------------
+
+    def require_effects(self):
+        if not self.effects:
+            raise Refusal("this study has no effects.json, so its hypotheses are not linked to computable effects",
+                          "effects", ["read the hypotheses and reported results with read_study",
+                                      "the build skill writes effects.json (hypotheses -> effects)"])
+        return self.effects
+
+    def effect_list(self, hypothesis=None, phenomenon=None, topic=None, role=None):
+        """The paper's effects, each with its hypothesis statement, outcome, contrast, predicted direction,
+        the paper's reported numbers (with their quotes cited) and how it is computed from sessions."""
+        eff = self.require_effects()
+        topics = list(eff.get("topics") or [])
+        if topic and not any(topic.lower() in str(t).lower() for t in topics):
+            return {"topics": topics, "effects": []}
+        hyps = {}
+        for h in eff.get("hypotheses") or []:
+            node = self.node_by_id.get(h.get("nodeId")) or {}
+            statement = next((text(f.get("value")) for f in node.get("fields", []) if f.get("id") == "statement"),
+                             node.get("title"))
+            hyps[h["id"]] = dict(h, statement=statement, title=node.get("title"))
+        out = []
+        for e in eff.get("effects") or []:
+            hs = [hyps[h] for h in e.get("hypothesisIds") or [] if h in hyps]
+            if hypothesis and hypothesis not in (e.get("hypothesisIds") or []) and \
+                    not any(hypothesis == h.get("nodeId") for h in hs):
+                continue
+            phen = effects_core.phenomena_of(e, eff.get("hypotheses"))
+            if phenomenon and not any(phenomenon.lower() in p.lower() for p in phen):
+                continue
+            if role and e.get("role") != role:
+                continue
+            rep = e.get("reported") or {}
+            out.append(dict(e, hypotheses=[{k: h.get(k) for k in ("id", "nodeId", "title", "statement", "phenomena")}
+                                           for h in hs], phenomena=phen,
+                            reportedSource=self.cite(rep.get("evidenceIds"))))
+        return {"programId": self.program.get("id"), "topics": topics, "effects": out,
+                "untested": [{"id": h["id"], "statement": h["statement"], "because": h.get("untestedBecause"),
+                              "reason": h.get("reason")} for h in hyps.values() if h.get("status") == "untested"]}
+
+    def graph(self, node=None, edge_type=None):
+        """The paper's typed graph (program nodes, steps, effects, constructs; core edge types). With node,
+        only the edges that touch it (and their nodes); with edge_type, only edges of that core type."""
+        g = effects_core.kg(self.require_effects(), self.program)
+        if not node and not edge_type:
+            return g
+        edges = [e for e in g["edges"] if (not node or node in (e["from"], e["to"]))
+                 and (not edge_type or (e.get("core") or e["type"]) == edge_type)]
+        if node and not edges and not any(n["id"] == node for n in g["nodes"]):
+            raise Refusal("%r is not a node of this paper's graph" % node, "effects",
+                          ["node ids: program node or step ids, effect:<id>, construct:<label>"])
+        keep = {x for e in edges for x in (e["from"], e["to"])} | ({node} if node else set())
+        return dict(g, nodes=[n for n in g["nodes"] if n["id"] in keep], edges=edges)
+
+    def effect_results(self, sessions, evaluation=None, key_effects=None, source=None):
+        """One result block per effect, computed the same way for human and AI-participant sessions."""
+        eff = self.require_effects()
+        module = self._modules.get("evaluation")
+        blocks = effects_core.compute(eff, sessions, evaluation, module, key_effects, source)
+        return [effects_core._rounded(b) for b in blocks]
+
+    def result(self, sessions, arms):
+        """Sessions plus the paper's analysis; partial when part of the paper was not run or analysed."""
+        evaluation = self.evaluate(sessions)
+        run = (self.capabilities().get("run") or {})
+        skipped = [] if arms else list(run.get("excluded") or [])  # chosen arms: excluded ones were refused
+        status = "partial" if skipped or has_not_ready(evaluation) else "ok"
+        out = {"status": status, "note": SIMULATION_NOTE, "evaluation": evaluation, "sessions": sessions}
+        if self.effects:
+            out["effects"] = self.effect_results(sessions, evaluation, source="agent")
+        if skipped:
+            out["notRun"] = [{"what": x.get("what"), "reason": x.get("reason")} for x in skipped]
+        return out
+
+    # ---- human data ----------------------------------------------------------------------------
+
+    def human_key(self):
+        """package/<slug>/human/key.json: where each original data file comes from, pinned by sha256."""
+        path = self.package / HUMAN_KEY if self.package else None
+        if not path or not path.is_file():
+            raise Refusal("this study has no human-data key, so its human data cannot be fetched or checked",
+                          "humanData", ["compare with the numbers the paper reports (read_study, Reported results)",
+                                        "a researcher can add package/<slug>/human/key.json with the data's source"])
+        key = json.loads(path.read_text(encoding="utf-8"))
+        for f in key.get("files", []):
+            rel = Path(f.get("path", ""))
+            if rel.is_absolute() or ".." in rel.parts or not rel.parts:
+                raise Refusal("human/key.json has an unsafe file path %r" % f.get("path"), "humanData",
+                              ["fix the key's file paths (relative, inside the data folder)"])
+        return key
+
+    def human_dir(self):
+        """Where human data live: $HUMANSTUDY_HUMAN_DATA, else <project>/human-data, but never inside a git
+        repository (a community checkout); there a per-user folder is used instead."""
+        if os.environ.get("HUMANSTUDY_HUMAN_DATA"):
+            return Path(os.environ["HUMANSTUDY_HUMAN_DATA"]).expanduser().resolve()
+        if any((p / ".git").exists() for p in [self.root, *self.root.parents]):
+            safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in str(self.program.get("id") or "study"))
+            return Path.home() / ".humanstudy" / "human-data" / safe
+        return self.root / "human-data"
+
+    def get_human_data(self, download=True):
+        """Fetch the human data from their original location into the data folder and check every hash.
+
+        status: ok (every data file present and identical to the pinned version), changed (a file differs
+        from the pinned version; the new bytes are kept beside it as <name>.changed and never used
+        silently), withdrawn (the source answers 404/410), unavailable (no URL or no network)."""
+        key = self.human_key()
+        folder = self.human_dir()
+        files, states, archives = [], [], {}
+        for f in key.get("files", []):
+            target = folder / f["path"]
+            state, actual = "unavailable", None
+            if target.is_file():
+                actual = sha256_file(target)
+                state = "ok" if actual == f.get("sha256") else "changed"
+            elif download and f.get("url"):
+                state, actual = fetch_pinned(f["url"], target, f.get("sha256"), f.get("archiveMember"), archives)
+            entry = {"path": f["path"], "status": state, "pinned": f.get("sha256"), "url": f.get("url"),
+                     "role": f.get("role", "data")}
+            if f.get("archiveMember"):
+                entry["archiveMember"] = f["archiveMember"]
+            if f.get("note") and state != "ok":
+                entry["note"] = f["note"]
+            if actual and actual != f.get("sha256"):
+                entry["actual"] = actual
+            files.append(entry)
+            if entry["role"] == "data":
+                states.append(state)
+        for zpath in archives.values():  # downloaded archives are temporary
+            if isinstance(zpath, Path):
+                import shutil
+                shutil.rmtree(zpath.parent, ignore_errors=True)
+        order = ["withdrawn", "changed", "unavailable"]
+        status = next((s for s in order if s in states), "ok")
+        caps = (self.capabilities().get("humanData") or {})
+        out = {"status": status, "path": str(folder), "sample": key.get("sample"),
+               "sampleEvidence": key.get("sampleEvidence"), "repository": key.get("repository"),
+               "pinnedAt": key.get("pinnedAt"), "files": files,
+               "coverage": caps.get("coverage"), "notInData": caps.get("missing")}
+        steps = {"changed": "the source now serves different bytes: check the repository's history; a researcher "
+                            "decides whether to re-pin the key (results then record the new version)",
+                 "withdrawn": "the source has withdrawn the data: earlier results keep their version label; use a "
+                              "mirror only if the license allows it",
+                 "unavailable": "download the files listed with status unavailable yourself and place them under "
+                                "%s; their hashes are checked" % folder}
+        if status != "ok":
+            out["next_steps"] = [steps[status]]
+        return out
+
+    def human_module(self):
+        loader = self.package / "human" / self.human_key().get("loader", "human_sessions.py")
+        if not loader.is_file():
+            raise Refusal("the human-data loader %s is missing" % loader.name, "humanData",
+                          ["rebuild the package's human data step"])
+        if "human" not in self._modules:
+            spec = importlib.util.spec_from_file_location("hs_human", loader)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
+            spec.loader.exec_module(mod)
+            self._modules["human"] = mod
+        return self._modules["human"]
+
+    def reproduce_paper(self, method="package"):
+        """Run the analysis on the original human data and compare each key result with the paper.
+
+        A result counts as recovered when it is within max(0.05, 15%) of the reported value."""
+        if method == "author":
+            raise Refusal("running the authors' own analysis code is not available yet", "authorCode",
+                          ["use method package (our evaluation.py)", "see capabilities.authorCode"])
+        if method != "package":
+            raise Refusal("unknown method %r" % method, "reproduced", ["use method package"])
+        data = self.get_human_data()
+        if data["status"] != "ok":
+            raise Refusal("human data are %s, so the paper cannot be reproduced from them" % data["status"],
+                          "humanData", data.get("next_steps", []) + ["get_human_data shows each file's status"])
+        mod = self.human_module()
+        sessions = mod.load(data["path"])
+        evaluation = self.module("evaluation").evaluate(sessions)
+        checks, blocks = [], None
+        if self.effects:
+            legacy = mod.key_effects(evaluation) if hasattr(mod, "key_effects") else None
+            blocks = self.effect_results(sessions, evaluation, legacy, source="human")
+            for e, b in zip(self.effects.get("effects") or [], blocks):
+                c = effects_core.compare(e, b)
+                checks.append({"key": e["id"], "label": e.get("label"), "role": e.get("role"),
+                               "reported": c.get("reported"), "computed": c.get("computed"),
+                               "basis": c.get("basis") or c.get("reason"),
+                               "p": (b.get("test") or {}).get("p"), "withinTolerance": c.get("withinTolerance")})
+        else:
+            for e in mod.key_effects(evaluation):
+                ok = within_tolerance(e.get("estimate"), e.get("reported"))
+                checks.append({"key": e.get("id"), "label": e.get("label"), "reported": e.get("reported"),
+                               "computed": e.get("estimate"), "p": e.get("p"), "withinTolerance": ok})
+        judged = [c["withinTolerance"] for c in checks if c["withinTolerance"] is not None]
+        verdict = None if not judged else "pass" if all(judged) else "fail" if not any(judged) else "partial"
+        not_mapped = list(getattr(mod, "NOT_MAPPED", []) or [])
+        out = {"status": "partial" if not_mapped or verdict is None else "ok", "method": "package",
+               "verdict": verdict, "recovered": [sum(judged), len(judged)], "tolerance": TOLERANCE,
+               "checks": checks, "humanSessions": len(sessions), "exclusions": getattr(mod, "EXCLUSIONS", None),
+               "notMapped": not_mapped, "sample": data["sample"],
+               "data": [{"path": f["path"], "sha256": f["pinned"]} for f in data["files"]]}
+        if blocks is not None:
+            out["source"] = "effects.json"
+            out["effects"] = blocks
+        if verdict is None:
+            out["note"] = "The paper reports no number comparable with these results."
+        if data["sample"] and data["sample"] != "original":
+            out["caveat"] = ("These human data are a %s sample, not the paper's own participants; a difference can "
+                             "come from the sample, not the analysis." % data["sample"])
+        return out
+
+
+HUMAN_KEY = "human/key.json"
+TOLERANCE = "a result is recovered when |computed - reported| <= max(0.05, 0.15 * |reported|)"
+
+
+def within_tolerance(computed, reported):
+    if computed is None or reported is None:
+        return None
+    return abs(computed - reported) <= max(0.05, 0.15 * abs(reported))
+
+
+def sha256_file(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def download(url, dest):
+    """url -> dest. Returns None, or the failure status (withdrawn for 404/410, else unavailable)."""
+    import urllib.error
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "humanstudy-study-core"})
+        with urllib.request.urlopen(req, timeout=300) as r, open(dest, "wb") as out:
+            for chunk in iter(lambda: r.read(1 << 20), b""):
+                out.write(chunk)
+        return None
+    except urllib.error.HTTPError as exc:
+        status = "withdrawn" if exc.code in (404, 410) else "unavailable"
+    except (OSError, ValueError):
+        status = "unavailable"
+    if Path(dest).exists():
+        Path(dest).unlink()
+    return status
+
+
+def fetch_pinned(url, target, pinned, member=None, archives=None):
+    """Download url (or one member of the zip at url); keep it at target only when its sha256 is pinned."""
+    import shutil
+    import zipfile
+    target.parent.mkdir(parents=True, exist_ok=True)
+    part = target.with_name(target.name + ".part")
+    if member:
+        archives = {} if archives is None else archives
+        if url not in archives:  # several files can come from one archive
+            zpath = Path(tempfile.mkdtemp(prefix="hs-archive-")) / "archive.zip"
+            archives[url] = download(url, zpath) or zpath
+        zpath = archives[url]
+        if isinstance(zpath, str):
+            return zpath, None
+        try:
+            with zipfile.ZipFile(zpath) as z, z.open(member) as src, open(part, "wb") as out:
+                shutil.copyfileobj(src, out)
+        except (KeyError, zipfile.BadZipFile, OSError):
+            if part.exists():
+                part.unlink()
+            return "changed", None  # the archive no longer holds this file as pinned
+    else:
+        failed = download(url, part)
+        if failed:
+            return failed, None
+    actual = sha256_file(part)
+    if actual == pinned:
+        os.replace(part, target)
+        return "ok", actual
+    os.replace(part, target.with_name(target.name + ".changed"))
+    return "changed", actual
 
 
 def http_llm(model, temperature=1.0):
@@ -464,6 +820,15 @@ def main(argv=None):
     ap.add_argument("--root", help="folder with program.json (default: found from this file)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("overview")
+    sub.add_parser("capabilities")
+    sub.add_parser("human-data").add_argument("--no-download", action="store_true")
+    sub.add_parser("reproduce").add_argument("--method", default="package", choices=["package", "author"])
+    q = sub.add_parser("effects")
+    for flag in ("hypothesis", "phenomenon", "topic", "role"):
+        q.add_argument("--" + flag)
+    q = sub.add_parser("graph")
+    q.add_argument("--node")
+    q.add_argument("--type")
     sub.add_parser("studies")
     sub.add_parser("paper")
     sub.add_parser("study").add_argument("id")
@@ -498,6 +863,16 @@ def main(argv=None):
     show = lambda v: print(v if isinstance(v, str) else json.dumps(v, ensure_ascii=False, indent=2, default=str))
     if a.cmd == "overview":
         show(s.overview())
+    elif a.cmd == "capabilities":
+        show(s.capabilities())
+    elif a.cmd == "human-data":
+        show(s.get_human_data(download=not a.no_download))
+    elif a.cmd == "reproduce":
+        show(s.reproduce_paper(a.method))
+    elif a.cmd == "effects":
+        show(s.effect_list(a.hypothesis, a.phenomenon, a.topic, a.role))
+    elif a.cmd == "graph":
+        show(s.graph(a.node, a.type))
     elif a.cmd == "studies":
         show([dict(st, conditions=s.conditions(st["id"])) for st in s.overview()["studies"]])
     elif a.cmd == "paper":
@@ -529,6 +904,9 @@ def main(argv=None):
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except Refusal as exc:
+        print(json.dumps(exc.to_dict(), ensure_ascii=False, indent=2))
+        sys.exit(3)
     except (KeyError, RuntimeError, FileNotFoundError) as exc:
         print("error: %s" % (exc.args[0] if exc.args else exc), file=sys.stderr)
         sys.exit(1)

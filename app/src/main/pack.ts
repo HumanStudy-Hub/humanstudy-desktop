@@ -13,7 +13,8 @@ import { dirname, join } from 'node:path'
 
 const PREFIX = '../../../pack/'
 const files = import.meta.glob(
-  ['../../../pack/AGENTS.md', '../../../pack/PROJECT_FORMAT.md', '../../../pack/schema/**/*', '../../../pack/skills/**/*', '../../../pack/artifact-kit/*'],
+  ['../../../pack/AGENTS.md', '../../../pack/PROJECT_FORMAT.md', '../../../pack/schema/**/*', '../../../pack/skills/**/*', '../../../pack/artifact-kit/*',
+    '!**/__pycache__/**', '!**/*.pyc'],
   { query: '?raw', import: 'default', eager: true }
 ) as Record<string, string>
 
@@ -43,7 +44,9 @@ export async function installPack(projectDir: string): Promise<void> {
 
 /** Pack-relative helper scripts that refreshPack keeps current (see refreshPack). */
 const HELPERS = ['skills/build/program_io.py', 'skills/build/program_lock.py', 'skills/build/check_program.py', 'schema/build-coverage.json',
-  'skills/build/check_quotes.py', 'skills/export/agent_package.py', 'skills/export/agent/study_core.py', 'skills/export/agent/mcp_server.py']
+  'skills/build/check_quotes.py', 'skills/export/agent_package.py', 'skills/export/agent/study_core.py', 'skills/export/agent/mcp_server.py',
+  'skills/export/agent/effects_core.py', 'skills/build/effects.py', 'schema/effects.schema.json',
+  'schema/graph-types.json']
 
 export const packFileCount = (): number => Object.keys(files).length
 
