@@ -46,6 +46,9 @@ import signal
 import subprocess
 import sys
 import tempfile
+import json
+import threading
+import select
 import uuid
 from pathlib import Path
 
@@ -67,9 +70,10 @@ _unshare = None
 
 
 class Result:
-    def __init__(self, returncode, stdout, stderr, timed_out, confinement):
+    def __init__(self, returncode, stdout, stderr, timed_out, confinement, service_error=None):
         self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
         self.timed_out, self.confinement = timed_out, confinement
+        self.service_error = service_error
 
 
 @contextlib.contextmanager
@@ -312,9 +316,15 @@ def copy_tree(src, dst, ignore=None):
     return Path(dst)
 
 
-def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=None):
+def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=None, serve=None):
     """Run `python script args...` confined; `work` is the only folder it may write to (made if missing;
     use a fresh one per call).
+
+    `serve(request) -> str`, when supplied, serves bounded NDJSON model requests over an inherited
+    write-only request pipe and stdin responses. Stdout/stderr remain untrusted diagnostic files.
+    The parent owns the callback and transcript; the child shim is not a secrecy boundary. Windows
+    passes only the explicit request handle (close_fds=True). `Result.service_error` fails closed
+    on malformed/over-limit protocol.
 
     `read` names extra folders whose files the code may read (on macOS the home folder is otherwise
     unreadable); `cwd` and the script's folder are added. `env` adds non-secret variables."""
@@ -335,9 +345,101 @@ def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=N
     nonce = uuid.uuid4().hex
     child_env = env_for(work, env)
     child_env[RUN_MARK] = nonce
+    request_read = request_write = None
+    service_errors = []
+    stopped = threading.Event()
+    service_thread = None
+    if serve is not None:
+        request_read, request_write = os.pipe()
+        if os.name == 'nt':
+            import msvcrt
+            handle = msvcrt.get_osfhandle(request_write)
+            os.set_handle_inheritable(handle, True)
+            startup = subprocess.STARTUPINFO()
+            startup.lpAttributeList = {'handle_list': [handle]}
+            kw['startupinfo'] = startup
+            child_env['HUMANSTUDY_PROBE_HANDLE'] = str(handle)
+        else:
+            kw['pass_fds'] = (request_write,)
+            child_env['HUMANSTUDY_PROBE_FD'] = str(request_write)
+
+    def service(proc):
+        # Raw descriptor I/O avoids buffered-file locks when timeout closes the channel.
+        pending = b''
+        count = total = 0
+        try:
+            while not stopped.is_set():
+                if os.name == 'nt':
+                    import msvcrt
+                    available = ctypes.c_ulong()
+                    ok = ctypes.windll.kernel32.PeekNamedPipe(ctypes.c_void_p(msvcrt.get_osfhandle(request_read)), None, 0, None, ctypes.byref(available), None)
+                    if not ok:
+                        break
+                    if not available.value:
+                        stopped.wait(0.05)
+                        continue
+                    chunk = os.read(request_read, min(4096, available.value))
+                else:
+                    if not select.select([request_read], [], [], 0.1)[0]:
+                        continue
+                    chunk = os.read(request_read, 4096)
+                if not chunk:
+                    break
+                pending += chunk
+                while b'\n' in pending:
+                    line, pending = pending.split(b'\n', 1)
+                    count += 1; total += len(line)
+                    if len(line) > 256 * 1024 or count > 2000 or total > 8 * 1024 * 1024:
+                        raise ValueError('model channel limit')
+                    request = json.loads(line)
+                    if not isinstance(request, dict) or request.get('op') != 'llm' or not isinstance(request.get('prompt'), str) or not isinstance(request.get('extra', ''), str):
+                        raise ValueError('invalid model request')
+                    if stopped.is_set():
+                        return
+                    reply = serve(request)
+                    if not isinstance(reply, str) or len(reply.encode('utf-8')) > 4096:
+                        raise ValueError('invalid model reply')
+                    data = (json.dumps({'reply': reply}) + '\n').encode('utf-8')
+                    while data and not stopped.is_set():
+                        try:
+                            data = data[os.write(proc.stdin.fileno(), data):]
+                        except BlockingIOError:
+                            stopped.wait(0.01)
+                if len(pending) > 256 * 1024:
+                    raise ValueError('model channel limit')
+            if pending and not stopped.is_set():
+                raise ValueError('incomplete model request')
+        except Exception:
+            if not stopped.is_set():
+                service_errors.append('model channel malformed, closed, or limit exceeded')
+        finally:
+            try:
+                proc.stdin.close()
+            except (OSError, ValueError):
+                pass
+
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(argv, cwd=str(cwd or work), env=child_env, stdin=subprocess.DEVNULL,
-                                stdout=out, stderr=err, close_fds=True, **kw)
+        try:
+            proc = subprocess.Popen(argv, cwd=str(cwd or work), env=child_env, stdin=subprocess.PIPE if serve is not None else subprocess.DEVNULL,
+                                    stdout=out, stderr=err, close_fds=True, bufsize=0, **kw)
+        except BaseException:
+            for fd in (request_read, request_write):
+                if fd is not None:
+                    os.close(fd)
+            raise
+        if request_write is not None:
+            os.close(request_write)
+            try:
+                # Managed Python 3.12 supports nonblocking anonymous pipes on Windows too.
+                # Fail closed on older interpreters rather than leaving a blocked writer thread.
+                os.set_blocking(proc.stdin.fileno(), False)
+                service_thread = threading.Thread(target=service, args=(proc,), daemon=True)
+                service_thread.start()
+            except (OSError, AttributeError):
+                service_errors.append('model channel requires nonblocking pipe support')
+                proc.stdin.close()
+                os.close(request_read)
+                request_read = None
         timed_out = False
         try:
             proc.wait(timeout=timeout)
@@ -346,4 +448,19 @@ def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=N
         _kill_tree(proc, timed_out)  # on POSIX also ends anything the code left running in its group
         proc.wait()
         _kill_leftovers(nonce)
-        return Result(proc.returncode, _tail(out), _tail(err), timed_out, label)
+        if service_thread:
+            service_thread.join(timeout=0.3)  # drain final queued requests/EOF before cancellation
+        stopped.set()
+        if service_thread:
+            service_thread.join(timeout=1)
+            # Killing the child tree normally closes every writer. A deliberately detached
+            # survivor may retain one; closing the raw fd never waits on a Python buffered lock.
+            try:
+                os.close(request_read)
+            except OSError:
+                pass
+            try:
+                proc.stdin.close()
+            except (OSError, ValueError):
+                pass
+        return Result(proc.returncode, _tail(out), _tail(err), timed_out, label, service_errors[0] if service_errors else None)

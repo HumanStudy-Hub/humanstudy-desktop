@@ -258,7 +258,7 @@
       "eval": null,
       "severity": "S1",
       "evidence": "package/<slug>/task/adapter.py and the prompt index that carries another participant's reply",
-      "notes": "Incident I-02 A probe cannot establish independence when replies are parsed or its transcript is forgeable; treat as a concern requiring review."
+      "notes": "Incident I-02. Parent-recorded calls detect literal nonce markers and unique numeric reply reuse. Participant ownership and transformed replies remain unverified; session-based attribution is package-reported."
     },
     {
       "id": "P2",
@@ -285,7 +285,7 @@
       "eval": null,
       "severity": "S1",
       "evidence": "the prompt index and the word that reveals a hypothesis, condition name or study label",
-      "notes": null
+      "notes": "Scans only parent-served stub requests. This does not prove absence of paraphrased leakage or requests made through another channel on a platform without network confinement."
     },
     {
       "id": "P4",
@@ -324,7 +324,7 @@
       "eval": null,
       "severity": "S2",
       "evidence": "the session fields after unparseable replies (dropped, or mapped to a value)",
-      "notes": null
+      "notes": "Parent-observed call counts are trustworthy; parsing flags, returned sessions and omissions remain package-reported and cannot independently prove correct unparseable-reply accounting."
     },
     {
       "id": "P7",
