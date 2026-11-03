@@ -2,8 +2,12 @@
 """Export public research assets with their exact community baseline; never chat or credentials."""
 import argparse
 import json
+import sys
 import zipfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "build"))
+import check_materials  # noqa: E402  (materials the researcher supplied stay in the project)
 
 PRIVATE = {".env", ".git", ".opencode", ".humanstudy", "node_modules", "__pycache__", "threads", "conversations", "chat", "chats", "credentials", "account.json", "settings.json"}
 
@@ -41,6 +45,7 @@ def export(root, output, include_paper=False):
             if folder.is_symlink():
                 raise ValueError("Symlinked source folders cannot be published")
             candidates.extend(sorted(folder.rglob("*")))
+    private = check_materials.private_paths(root)  # sources/researcher/ and researcher-supplied files
     files = []
     for path in candidates:
         if path.is_symlink():
@@ -54,6 +59,8 @@ def export(root, output, include_paper=False):
             continue
         if path.suffix.lower() == ".pdf" and not include_paper:
             continue
+        if rel.as_posix() in private or check_materials.researcher_rel(rel.as_posix()):
+            continue  # the researcher's own materials: used in their project, never published by us
         if rel.as_posix() == "sources/study.json" and (source_path == path or source_path.is_file() and source_path.read_bytes() == path.read_bytes()):
             continue  # Local source/fork metadata is represented by the minimal baseline above.
         files.append((path, rel.as_posix()))
@@ -73,8 +80,15 @@ def export(root, output, include_paper=False):
             continue
         if source.suffix.lower() == ".pdf" and not include_paper:
             continue
+        if relative.as_posix() in private or check_materials.researcher_rel(relative.as_posix()):
+            continue
         if not any(path == source for path, _ in files):
             files.append((source, "sources/attached/" + relative.as_posix()))
+    leaked = check_materials.leaks(root, [path for path, _ in files])
+    if leaked:
+        raise ValueError("Researcher-supplied materials appear in %s (from %s); they stay in the project and are not "
+                         "published. Keep the text only in sources/researcher/ and reference the file."
+                         % (leaked[0][0], leaked[0][1]))
     meta["includesPdf"] = include_paper
     output.parent.mkdir(parents=True, exist_ok=True)
     try:

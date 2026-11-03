@@ -195,6 +195,25 @@ class AgentPackage(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertTrue((self.root / "exports/agent/study-5/paper.pdf").is_file())
 
+    def test_researcher_materials_never_leave_the_project(self):
+        text = ("These are the original instruction screens the researcher pasted into the chat, "
+                "word for word, for the vignette study.")
+        (self.root / "sources/researcher").mkdir(parents=True)
+        (self.root / "sources/researcher/instructions.txt").write_text(text, encoding="utf-8")
+        (self.root / "sources/open.txt").write_text("An openly licensed supplement.", encoding="utf-8")
+        run = export(self.root, "--include-sources")
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        skill = self.root / "exports/agent/study-5"
+        self.assertTrue((skill / "sources/open.txt").is_file())
+        self.assertFalse((skill / "sources/researcher").exists(), "researcher-supplied materials stay in the project")
+        self.assertIn("no (researcher-supplied)", (skill / "references/sources.md").read_text(encoding="utf-8"))
+        shutil.rmtree(self.root / "exports")
+        (self.root / "package/knobe/materials/materials.json").write_text(json.dumps({"intro": text}), encoding="utf-8")
+        run = export(self.root)
+        self.assertNotEqual(run.returncode, 0, "a copy of the researcher's text in the package stops the export")
+        self.assertIn("researcher-supplied materials appear", run.stderr)
+        self.assertFalse((self.root / "exports/agent").exists())
+
     def test_blocked_study_reads_but_does_not_run(self):
         root = make_project(ready=False)
         self.addCleanup(shutil.rmtree, root, True)

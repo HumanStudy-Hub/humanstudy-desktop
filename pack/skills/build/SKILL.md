@@ -31,8 +31,10 @@ can actually run as the original participants did, so the researcher can check i
   recognise: then add `--license paper.pdf=CC-BY-4.0 --license-evidence "paper.pdf=p. 1: <the printed line>"`.
   Never guess a license. Rerun it whenever a source file changes; the package check requires it, and
   `--check` fails while a PDF that prints a license is recorded as `unknown`.
-- Read `sources/` only if present. Use the network only for URLs the researcher explicitly gave;
-  record each URL consulted in `source/paper_metadata.json` → `external_sources`.
+- Read `sources/` only if present. Use the network only for URLs the researcher explicitly gave, and
+  for the supplement and repositories the paper itself links when you look for materials it does not
+  print ("Materials the paper does not print" below); record each URL consulted in
+  `source/paper_metadata.json` → `external_sources`.
 - List every empirical study in the paper before modelling any of them.
 
 ## 2. Write program.json (the Study document)
@@ -68,7 +70,8 @@ Validate against `schema/human-program.schema.json`. Work in this order:
    Participant instructions the paper does not print are one rule everywhere: a `missing` field
    (origin `unknown`) with a `decision` issue (`blocking` only when the adapter refuses to run without
    the text; never `check`) whose `suggestedAction` says the researcher supplies the printed text or
-   accepts the stand-in wording the adapter uses.
+   accepts the stand-in wording the adapter uses. Like every material the paper does not print, it is
+   classified and asked about as "Materials the paper does not print" (below) says.
    Never write your own wording into a `verbatim` or `reported` instructions field.
    **What participants were not told.** Collect every passage saying participants were not told,
    not informed, not shown or unaware of something, had to learn, discover or infer it, or were given a
@@ -93,6 +96,76 @@ Validate against `schema/human-program.schema.json`. Work in this order:
    "Is there enough information to reproduce this study?" from these issues, so be complete and
    honest here rather than optimistic.
 6. Optional `extensions.presentation` (`open`, `collapsed`).
+
+### Materials the paper does not print
+
+Papers often describe what participants saw without printing it. Do not let that stop the build, and
+never fill it with your own words. As soon as the study map is known (the first checkpoints), list every
+participant-facing material each study needs that the paper does not print in full (instruction screens,
+items, vignettes, stimuli, trial lists, sequences, orders, key mappings, display format) and classify each
+item on its program field as `extensions.material` (`kind`, `what`, `mentioned`, and the keys below;
+format in `check_materials.py`). Name `what` as the researcher would: "Study 4 instruction screens (both
+framings)", not "m-s4.instruction-wording".
+
+1. **`schema-enough`**: the study runs faithfully from a structure the paper describes: sequences drawn
+   from a printed distribution, the number of trials per condition, a stated (random, counterbalanced)
+   order, a key mapping, a display format. Fill it from that description: origin `derived` with its
+   `derivation` (or `implementation` with `basis`), the passage as evidence, a seeded generator in the
+   adapter with the seed recorded in each session. It does not block; a choice the paper leaves open
+   within the description (which seed, which side first) is a `decision` issue, not a gap. It is never
+   wording: anything participants read, hear or see as a picture is needs-original even when the paper
+   summarises it, and the value holds structure (numbers, counts, orders, short labels the paper prints),
+   not sentences. If filling it would mean writing text participants read, or choosing values the paper
+   does not constrain (the actual lotteries of a list it only characterises), it is needs-original.
+2. **`needs-original`**: verbatim instrument text or stimuli that cannot be reconstructed: instruction
+   screens, questionnaire items, vignettes, word or picture lists, images, audio, a specific stimulus list
+   the paper does not print. Never invented. In this order:
+   - **Look in open places first.** The paper's supplement and the repositories it links (OSF, GitHub,
+     Zenodo, its printed URLs or DOIs), nothing found by searching the web. Use a file only when the file,
+     its page or the repository states an open license (Creative Commons, CC0, an open-source license);
+     save it under `sources/`, record the license and where it is stated with `sources.py --license ...
+     --license-evidence ...`, and transcribe the item `verbatim` from it (`status: "found-open"`). Take
+     materials only, never participant data: no response, trial-by-trial, demographic or session data
+     files, not even to read the sequences participants saw from them; a file that holds both is not used.
+     No license stated, or not found: the item is asked about. List every place looked in `search`
+     (`{"where", "url", "license", "found"}`; `[]` when the paper links nothing).
+   - **Ask once, early.** Put every item still missing, from all studies, into ONE question with the
+     native `question` tool, right after the inventory, then continue the build. Write it in the
+     researcher's language, one numbered line per item (study, what it is, where the paper mentions it):
+
+     > The paper does not print some materials participants saw. Do you have them?
+     > 1. Study 4: the instruction screens of both framings (the ball-and-bag description), mentioned in the
+     >    SI, p. 2, Study 4 procedure.
+     > 2. Study 5: the repeated-choice screens and outcome sequences, SI p. 3.
+     > For each one you can upload or paste it (it stays in this project, marked as supplied by you, and
+     > HumanStudy never publishes or shares it), accept a clearly labelled stand-in written from the
+     > paper's description, or leave that part out of the simulation.
+
+     Offer "I will upload or paste them", "Use labelled stand-ins", "Leave them out", and a written answer
+     (per item). Set `asked` to the date.
+   - **Record the answer per item** (`status`):
+     - `supplied`: save pasted text as `sources/researcher/<item>.txt`; move an uploaded file from
+       `sources/` into `sources/researcher/`. The field is origin `researcher`, state `confirmed`, value
+       `{"file": "sources/researcher/<item>.txt"}`, and `file` names it. The text stays only in that file:
+       never copy it into program.json, materials.json, the adapter, views or reports, because those can be
+       published. The adapter reads it at run time (`Path(__file__).resolve().parents[3] / "sources/researcher/..."`)
+       and raises a clear error naming the file when it is absent (another copy of the package has no
+       researcher materials). Run `sources.py` (it records the folder as `researcher-supplied`).
+     - `stand-in`: the researcher accepted a stand-in. Origin `implementation`, the label says "stand-in",
+       `answer` holds their words; materials.json and task.json `replayAdaptations` mark it.
+     - `left-out`: state `missing`, `answer`, a `decision` issue titled "Left out by the researcher: <what>",
+       and a `capabilities.json` `run.excluded` entry `{"what": "<what>", "field": "<node>.<field>",
+       "reason": "left out by the researcher", "arms": [...]}`.
+     - no answer, dismissed, or nobody to ask (a batch build): `pending`, state `missing`, no value, an issue
+       titled "Needs the original <what>" (`blocking` when the adapter refuses those arms; the instruction
+       rule above otherwise). The title is what the Simulation tab shows, so it must say exactly what is
+       needed. A dismissed question is never an acceptance.
+
+Run `python .opencode/skills/build/check_materials.py .` until it prints `PASS`: it fails a schema-enough
+item that is wording, holds prose no cited quote prints, lacks evidence or blocks; a needs-original item
+with invented content, without an issue naming it, from a source without an open license, or from a
+participant-data file; and researcher-supplied text found in program.json, package/ or artifacts/. Community
+and agent exports leave `sources/researcher/` out and refuse to export while its text appears elsewhere.
 
 ### Result tables: every printed table, cell by cell
 
@@ -302,7 +375,8 @@ Rules the runner depends on:
   `../../program.json` (and `effects.json`, `capabilities.json`, `sources/` beside it), nothing else outside the package.
 - The desktop app shows a package as ready to simulate only when all of these pass on its own copy of
   the checks (`check_readiness.py`): `check_program.py --complete`, `sources.py --check`,
-  `check_package.py`, `check_validity.py`, `check_verbatim.py`, `check_results.py` and `effects.py`.
+  `check_package.py`, `check_validity.py`, `check_verbatim.py`, `check_results.py`, `effects.py` and
+  `check_materials.py`.
   Each failing check shows its first problem in the Simulation tab. Editing the checkers inside the
   project changes nothing there: fix the program, the package or effects.json.
 
@@ -487,8 +561,9 @@ A view failing its check is fixed, not dropped. Do not add new study facts in a 
 ## 5. Report
 
 Reply with: studies found; counts of nodes, steps, conditions, issues (by severity); tables
-transcribed and cells left uncertain; the
-readiness verdict ("can be run as published" / "blocked by: …"); what capabilities.json says
+transcribed and cells left uncertain; materials the paper does not print (schema-enough filled,
+needs-original found open, supplied, stand-in, left out, still needed, by name); the
+readiness verdict ("can be run as published" / "blocked by: " and what exactly is needed); what capabilities.json says
 cannot be run and why; checks run and their result;
 and the paths written (including the two views). Reply in the researcher's language.
 
@@ -497,7 +572,8 @@ and the paths written (including the two views). Reply in the researcher's langu
 When missing information or conflicting sources require a researcher decision, use the native
 `question` tool with a few clear alternatives and allow a written answer. Ask only the next
 necessary question in the currently selected study; do not force the same wizard on every
-experiment. Retain the source evidence and label actual user choices `researcher`; never
+experiment. The one exception is the materials question ("Materials the paper does not print"): one
+question for every missing material of the paper, asked once. Retain the source evidence and label actual user choices `researcher`; never
 convert a suggested default or dismissed question into a confirmed study fact.
 
 ### Text-layer numeric sign loss

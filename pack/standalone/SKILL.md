@@ -41,6 +41,7 @@ python $HS/scripts/build/check_verbatim.py program.json         # verbatim field
 python $HS/scripts/build/check_package.py package/<paper-slug>  # the runnable package (runs check_validity.py)
 python $HS/scripts/build/check_validity.py .                     # no prompt tells what participants were not told
 python $HS/scripts/build/effects.py .                            # effects: quoted numbers, N, signs
+python $HS/scripts/build/check_materials.py .                    # unprinted materials: classified, never invented
 ```
 
 Where build.md mentions the app's Study document or Simulation tab, show the researcher the file

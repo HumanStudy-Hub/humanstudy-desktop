@@ -428,10 +428,19 @@ def static_texts(pkg):
     return texts
 
 
-def participant_text(program):
-    """Normalised pieces of verbatim participant materials (the participants' own text, not a leak)."""
+def participant_text(program, root=None):
+    """Normalised pieces of verbatim participant materials (the participants' own text, not a leak), including the
+    original materials the researcher supplied (sources/researcher/, see check_materials.py)."""
     pieces = []
     for n, f in _fields(program):
+        m = (f.get("extensions") or {}).get("material") if isinstance(f.get("extensions"), dict) else None
+        if root is not None and isinstance(m, dict) and m.get("kind") == "needs-original" and m.get("status") == "supplied":
+            import check_materials
+            rel = str(m.get("file") or "")
+            if check_materials.researcher_rel(rel) and (Path(root) / rel).is_file():
+                pieces += [p for p in check_verbatim.segments(check_materials.text_of(Path(root) / rel))
+                           if len(p.split()) >= 3]
+            continue
         if f.get("origin") != "verbatim":
             continue
         if n.get("kind") not in ("material", "materials") and not MATERIAL_FIELD.search("%s %s" % (f.get("id"), f.get("label"))):
@@ -604,7 +613,7 @@ def check(root, package=None, capture_prompts=True):
             method = "string literals of task/adapter.py and materials/materials.json (the adapter did not run: %s)" % (
                 cap.get("error") or next((r.get("error") for r in cap.get("runs") or [] if r.get("error")), "no prompts"))
             texts = static_texts(pkg)
-        pieces = participant_text(program)
+        pieces = participant_text(program, root)
         written = [authored(t, pieces) for t in dict.fromkeys(texts)]
         for e in entries:
             if str(e.get("notApplicable") or "").strip():

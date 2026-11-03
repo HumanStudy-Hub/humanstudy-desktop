@@ -19,7 +19,7 @@ PACK = REPO / "pack"
 SCRIPTS = {
     "build": ["program_io.py", "program_lock.py", "check_program.py", "check_package.py", "check_quotes.py",
               "check_results.py", "check_verbatim.py", "check_validity.py", "sources.py", "capabilities.py", "effects.py",
-              "sandbox_run.py"],
+              "sandbox_run.py", "check_materials.py"],
     "export": ["agent_package.py", "agent/study_core.py", "agent/mcp_server.py", "agent/effects_core.py"],
 }
 PATHS = [

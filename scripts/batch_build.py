@@ -152,6 +152,7 @@ def checks(project, python):
     except Exception:
         pass
     out["sources"] = run(hs / "sources.py", ".", "--check").returncode == 0
+    out["materials"] = run(hs / "check_materials.py", ".").returncode == 0
     results = project / ".humanstudy" / "results-check.json"
     results.parent.mkdir(exist_ok=True)
     out["results"] = run(hs / "check_results.py", "program.json", "--json", results).returncode == 0

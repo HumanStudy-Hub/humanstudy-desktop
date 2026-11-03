@@ -13,7 +13,7 @@ REPO = Path(__file__).resolve().parents[3]
 BUILD = REPO / "pack/skills/build"
 READINESS = BUILD / "check_readiness.py"
 PROGRAM = json.loads((REPO / "app/src/main/fixtures/complete-program.json").read_text(encoding="utf-8"))
-CHECKS = ["program", "sources", "package", "validity", "verbatim", "results", "effects"]
+CHECKS = ["program", "sources", "package", "validity", "verbatim", "results", "effects", "materials"]
 
 ADAPTER = '''import sys
 def build_prompt(study, condition):

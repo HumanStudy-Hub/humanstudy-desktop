@@ -8,8 +8,9 @@
 
 Recorded files: the paper (program.json source.filename, else paper.pdf), every file under sources/ and
 every file an evidence record cites by `path`. A license is the one the file itself (or the page that
-served it) states; otherwise "unknown". Never guess one. A rerun refreshes hashes and sizes and keeps the
-license, evidence and any other keys already written (by you or the researcher).
+served it) states; otherwise "unknown". Never guess one. Files under sources/researcher/ are materials the
+researcher supplied: they are always recorded as `researcher-supplied`, and no export publishes them. A rerun
+refreshes hashes and sizes and keeps the license, evidence and any other keys already written (by you or the researcher).
 
 A PDF's printed license statement is read automatically ("This article is licensed under a Creative Commons
 Attribution 4.0 International License", "It is made available under a CC-BY-NC-ND 4.0 International
@@ -151,11 +152,18 @@ def source_files(root, program):
     return list(dict.fromkeys(out))
 
 
+RESEARCHER_DIR = "sources/researcher/"
+RESEARCHER_LICENSE = "researcher-supplied"
+
+
 def record(root, rel, old):
     path = root / rel
     entry = dict(old or {})
     entry.update({"path": rel, "sha256": sha256(path), "bytes": path.stat().st_size})
     entry.setdefault("license", "unknown")
+    if rel.startswith(RESEARCHER_DIR):  # the researcher's own materials: used in this project, never published
+        entry["license"] = RESEARCHER_LICENSE
+        entry.setdefault("licenseEvidence", "supplied by the researcher for this project; kept out of every export")
     return entry
 
 
@@ -173,7 +181,7 @@ def build(root, licenses=None, evidence=None):
             printed = printed_license(root / f["path"])
             if printed:
                 f["license"], f["licenseEvidence"] = printed
-        if f["path"] in (licenses or {}):
+        if f["path"] in (licenses or {}) and not f["path"].startswith(RESEARCHER_DIR):
             f["license"] = licenses[f["path"]]
         if f["path"] in (evidence or {}):
             f["licenseEvidence"] = evidence[f["path"]]

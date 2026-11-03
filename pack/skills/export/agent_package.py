@@ -8,7 +8,8 @@ reads SKILL.md folders can read, query and run the study. `--mcp` adds an MCP se
 folder for clients that cannot run commands. Before the folder appears it is verified: file hashes,
 every study renders, the scripts run, real MCP calls (with --mcp), and the package smoke test; every
 quote is also compared with its cited page (references/accuracy.md).
-The paper PDF and sources/ stay out unless the researcher has the right to share them.
+The paper PDF and sources/ stay out unless the researcher has the right to share them; materials the
+researcher supplied (sources/researcher/) never go into the folder.
 """
 import argparse
 import hashlib
@@ -26,6 +27,7 @@ sys.path.insert(0, str(HERE / "agent"))
 sys.path.append(str(HERE.parent / "build"))
 from study_core import RUN_NOTICE, Study  # noqa: E402
 import sandbox_run  # noqa: E402
+import check_materials  # noqa: E402
 
 VERSION = "humanstudy-agent-package/1"
 SKIP = {"__pycache__", ".pytest_cache", ".DS_Store", ".env", ".git", ".humanstudy", "node_modules"}
@@ -246,7 +248,10 @@ def sources_md(study, root, include_paper, include_sources):
         out.append("| `%s` | `%s` | %s |" % (paper.name, sha(paper), "yes" if include_paper else "no"))
     if (root / "sources").is_dir():
         for f in sorted(p for p in (root / "sources").rglob("*") if p.is_file() and p.name not in SKIP):
-            out.append("| `%s` | `%s` | %s |" % (f.relative_to(root).as_posix(), sha(f), "yes" if include_sources else "no"))
+            rel = f.relative_to(root).as_posix()
+            shared = include_sources and not check_materials.researcher_rel(rel) and rel not in check_materials.private_paths(root)
+            out.append("| `%s` | `%s` | %s |" % (rel, sha(f), "yes" if shared else "no (researcher-supplied)"
+                                                  if include_sources else "no"))
     return "\n".join(out) + "\n"
 
 
@@ -340,6 +345,11 @@ def build(root, out, include_paper=False, include_sources=False, with_mcp=False)
             shutil.copy2(paper, skill / paper.name)
     if include_sources and (root / "sources").is_dir():
         copy_tree(root / "sources", skill / "sources")
+        for rel in sorted(check_materials.private_paths(root)):  # the researcher's own materials never leave
+            if (skill / rel).is_file():
+                (skill / rel).unlink()
+        if (skill / check_materials.RESEARCHER_DIR).is_dir():
+            shutil.rmtree(skill / check_materials.RESEARCHER_DIR)
     (skill / "scripts").mkdir()
     shutil.copy2(HERE / "agent/study_core.py", skill / "scripts/study_core.py")
     shutil.copy2(HERE / "agent/effects_core.py", skill / "scripts/effects_core.py")
@@ -369,6 +379,10 @@ def build(root, out, include_paper=False, include_sources=False, with_mcp=False)
     (refs / "capabilities.md").write_text(capabilities_md(study, failures if isinstance(failures, list) else []),
                                           encoding="utf-8")
     (out / "README.md").write_text(readme(study, name, with_mcp), encoding="utf-8")
+    leaked = check_materials.leaks(root, [p for p in out.rglob("*") if p.is_file()])
+    if leaked:
+        raise RuntimeError("researcher-supplied materials appear in %s (from %s); they stay in the project. Keep the "
+                           "text only in sources/researcher/ and reference the file" % leaked[0][:2])
 
     files = {p.relative_to(out).as_posix(): sha(p) for p in sorted(out.rglob("*")) if p.is_file()}
     paper = paper_path(root, study)

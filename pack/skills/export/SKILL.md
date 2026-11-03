@@ -18,13 +18,15 @@ Exports are derived from `program.json` and existing artifacts; they add no fact
   from the same HTML/markdown source (e.g. pandoc, or headless Chrome on a self-contained HTML).
 - **Analysis (.pdf / .docx)**: convert an `artifacts/*.md` report with its figures.
 - **Package (.zip)**: zip `artifacts/package/<paper-slug>/` plus `program.json`. Exclude
-  `.humanstudy/`, caches and `__pycache__`.
+  `.humanstudy/`, caches, `__pycache__` and `sources/researcher/`.
 - **Community contribution (.zip)**: run `python .opencode/skills/export/community.py --output exports/community-<date>.zip`.
   This includes the complete program, `package/`, research `artifacts/` and `sources/`, records
   the original paper ID and baseline revision, and excludes chat, credentials and local state.
   Never manufacture a new baseline or substitute the current recommendation for the version
   actually forked. PDF redistribution is off by default; `--include-paper` requires the researcher's
-  explicit permission and the right to redistribute it. Before export run the build checks.
+  explicit permission and the right to redistribute it. Materials the researcher supplied
+  (`sources/researcher/`, recorded as `researcher-supplied`) are never included, and the export stops
+  while their text appears in another file. Before export run the build checks.
 
 - **Agent skill (folder)**: for using the study in another AI agent (Claude Code, Codex,
   OpenCode, anything that reads skills). Run
@@ -35,7 +37,7 @@ Exports are derived from `program.json` and existing artifacts; they add no fact
   before the folder appears. Add `--mcp` only when the researcher's client cannot run commands or
   read files (it adds an MCP server over the same folder). It prints `PASS`; on `FAIL` fix the cause
   and run it again. The paper and `sources/` stay out unless the researcher confirms the right to
-  share them (`--include-paper`, `--include-sources`). Reply with the folder path, the install line
+  share them (`--include-paper`, `--include-sources`); `sources/researcher/` never goes in. Reply with the folder path, the install line
   from its `README.md` for the agent the researcher named, and the quote-check line it printed.
   Readable without a package; runnable only when `study.json.readiness.status` is `ready`.
 
