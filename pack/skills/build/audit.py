@@ -616,19 +616,26 @@ def run_probe(s, ctx):
             # Fail closed: a malformed result is a probe error (not a refusal), so run=no and blocked studies
             # still fail as "not refused" instead of crashing a check into a concern.
             ctx["probe"] = {"error": "probe result is malformed: %s" % bad} if bad else result
-        except (ValueError, TypeError, KeyError):
+            ctx["probe"]["owner"] = probe_owner(ctx["probe"])
+        except (ValueError, TypeError, KeyError, RecursionError):
+            # RecursionError: a package can print deeply nested JSON; it must not crash a check into a concern.
             ctx["probe"] = {"error": "probe produced no valid result (exit %s): %s" %
                             (run.returncode, (run.stderr or run.stdout)[-400:])}
     # Package code shares the probe interpreter and can modify or forge its output.
-    # Derive attribution here, but never treat that transcript as proof of a pass.
+    # Attribution is derived here, but that transcript is never treated as proof of a pass.
     pr = ctx["probe"]
+    pr.setdefault("owner", {})
+    pr["untrusted"] = True
+    return ctx["probe"]
+
+
+def probe_owner(pr):
+    """Which sessions carry each stub reply marker (participant index -> session indices)."""
     owner = {}
     for idx, sess in enumerate(pr.get("sessions") or []):
         for m in re.finditer(r"QZX(\d{4})QZX", json.dumps(sess, default=str)):
             owner.setdefault(int(m.group(1)), set()).add(idx)
-    pr["owner"] = {str(k): sorted(v) for k, v in owner.items()}
-    pr["untrusted"] = True
-    return ctx["probe"]
+    return {str(k): sorted(v) for k, v in owner.items()}
 
 
 def calls_per_participant(pr):

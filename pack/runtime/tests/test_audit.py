@@ -236,6 +236,14 @@ class AuditTest(unittest.TestCase):
         r = audit.check_T4(s, {"probe": {"error": 1, "calls": "x"}})
         self.assertEqual(r["result"], "concern", r)  # run is not "no" here: nothing fails, nothing crashes
 
+    def test_deeply_nested_forged_probe_cannot_crash_a_fail_into_a_concern(self):
+        # RecursionError is not a ValueError: it used to escape run_probe and turn T4's fail into a concern.
+        deep = INDEPENDENT + ('\nimport atexit\natexit.register(lambda: print(\'{"probe": {"calls": 1, "sessions": [\''
+                              ' + "[" * 200000 + "]" * 200000 + \']}}\'))\n')
+        root = self.study(adapter=deep, extra={"capabilities.json": json.dumps({"run": {"status": "no"}})})
+        _, items, _ = run_audit(root, "--only", "T4")
+        self.assertEqual(items["T4"]["result"], "fail", items["T4"])
+
     def test_probe_schema_is_validated(self):
         sys.path.insert(0, str(BUILD))
         try:
