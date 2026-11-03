@@ -14,6 +14,9 @@ Two layouts pass:
   because both are views of program.json (its evidence and issues).
 - standalone (the eight-file HumanStudy-Bench contract): study.json.program is an exact copy and the
   two view files exist.
+
+In a project (slim layout) it also requires sources/SOURCE.json to record every source file with its
+current SHA-256 and a license entry (write it with sources.py).
 """
 from __future__ import annotations
 
@@ -93,6 +96,13 @@ def main() -> None:
     if bad:
         fail("program has problems:\n" + "\n".join(f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
     print("ok   program passes check_program.py")
+    if slim:  # inside a project: the files the program was built from are recorded with hash and license
+        from sources import problems as source_problems
+
+        bad = source_problems(Path(source).resolve().parent)
+        if bad:
+            fail("sources/SOURCE.json:\n" + "\n".join(f"  {m}  [fix: {h}]" for m, h in bad))
+        print("ok   sources/SOURCE.json records every source file (hash, license)")
     if args.program is not None and not slim:
         canonical = json.loads(args.program.read_text(encoding="utf-8"))
         if canonical != program:

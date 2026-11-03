@@ -7,6 +7,8 @@ shows the whole folder as the **Program** explorer and `program.json` as the **S
 <project>/
   paper.pdf                 the source paper (read-only for the agent)
   sources/                  open materials, supplements, large instruments, datasets
+    SOURCE.json             every source file's path, SHA-256, size and license ("unknown" unless
+                            stated); written by build/sources.py
   program.json              Human Program v2 (canonical design; schema/human-program.schema.json)
   effects.json              hypotheses -> computable effects: outcome, contrast, predicted direction,
                             the paper's reported numbers (each quoted) and how each is computed from

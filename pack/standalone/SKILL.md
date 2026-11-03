@@ -31,10 +31,13 @@ Follow [references/build.md](references/build.md) step by step. Short version:
 
 ```bash
 python $HS/scripts/pdf_pages.py paper.pdf --from 1 --to 4       # page texts with page numbers
+python $HS/scripts/build/sources.py .                            # sources/SOURCE.json: hashes, licenses
 python $HS/scripts/build/program_io.py .humanstudy/tmp/batch-01.json   # save each checkpoint
 python $HS/scripts/build/check_program.py program.json          # after every save, until PASS
 python $HS/scripts/build/check_program.py program.json --complete
+python $HS/scripts/build/check_results.py program.json          # printed tables and numbers are data
 python $HS/scripts/build/check_quotes.py program.json           # every quote on its cited page
+python $HS/scripts/build/check_verbatim.py program.json         # verbatim fields are the printed words
 python $HS/scripts/build/check_package.py package/<paper-slug>  # the runnable package
 ```
 
