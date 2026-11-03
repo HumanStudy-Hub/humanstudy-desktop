@@ -22,6 +22,8 @@ def main():
     final = args[0] == '--final'
     if final:
         args.pop(0)
+    if not args:
+        raise SystemExit('usage: run_confined.py [--final] RUN_SCRIPT [args...]')
     script = Path(args[0]).resolve()
     project = next((p for p in script.parents if (p / '.humanstudy').is_dir()), None)
     if project is None:
@@ -41,14 +43,15 @@ def main():
            'HUMANSTUDY_SIM_MODEL': config['model'], 'HUMANSTUDY_PROJECT_DIR': str(project)}
     try:
         result = run_python(script, args[1:], cwd=project, work=script.parent,
-                            read=[project], timeout=86400, env=env, relay_port=url.port)
+                            read=[project / 'package', project / 'sources', project / 'program.json', project / '.opencode/skills'], timeout=1800, env=env, relay_port=url.port)
     finally:
-      if final:
-        try:
-            request = urllib.request.Request(config['baseURL'] + '/run/complete', data=b'', headers={'Authorization': 'Bearer ' + config['token']})
-            urllib.request.urlopen(request, timeout=5).close()
-        except OSError:
-            pass
+        if final:
+            try:
+                request = urllib.request.Request(config['baseURL'] + '/run/complete', data=b'',
+                                                 headers={'Authorization': 'Bearer ' + config['token']})
+                urllib.request.urlopen(request, timeout=5).close()
+            except OSError:
+                pass
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     raise SystemExit(result.returncode)

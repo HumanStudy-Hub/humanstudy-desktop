@@ -52,7 +52,7 @@ environment variable; do not call the endpoint any other way.
 
 Before starting any real run or reproduction, check `.humanstudy/community.json` in the project.
 If present (including unreadable or malformed provenance), say exactly:
-"This study's code will run on your computer with access to your model key."
+"This study's code will run on your computer through a limited model relay (up to 200,000 tokens and 30 minutes)."
 Include it in the existing run confirmation, before any package code executes; do not add a
 button or dialog. Community revision provenance currently carries no authenticated maintainer
 review attestation, so show the notice for every such fork. A local `reviewed` flag is not proof

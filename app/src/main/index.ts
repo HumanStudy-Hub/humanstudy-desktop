@@ -687,10 +687,10 @@ app.whenReady().then(() => {
       if (!key) throw Error('Sign in before running a simulation.')
       relayProjects.add(projectDir)
       try {
-      const relay = await startModelRelay({ project: projectDir, model, key, storage: process.env.HUMANSTUDY_RELAY_DIR!, onClose: () => { runRelays.delete(id); relayProjects.delete(projectDir!) },
+        const relay = await startModelRelay({ project: projectDir, model, key, storage: process.env.HUMANSTUDY_RELAY_DIR!, onClose: () => { runRelays.delete(id); relayProjects.delete(projectDir!) },
         upstream: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_HOSTED_BASEURL || 'https://humanstudy-hub.com/api/desktop/v1' : 'https://openrouter.ai/api/v1',
         bypass: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_SERVER_BYPASS : undefined })
-      runRelays.set(id, { project: projectDir, close: relay.close })
+        runRelays.set(id, { project: projectDir, close: relay.close })
       } catch (error) { relayProjects.delete(projectDir); throw error }
     }
     telemetry.trackTurnStart(id, text, actionRef(action))

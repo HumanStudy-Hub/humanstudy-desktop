@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { join, sep } from 'node:path'
 import { packageReadiness, type PackageReadiness } from '../shared/package-readiness'
 
-export const COMMUNITY_RUN_NOTICE = "This study's code will run on your computer with access to your model key."
+export const COMMUNITY_RUN_NOTICE = "This study's code will run on your computer through a limited model relay (up to 200,000 tokens and 30 minutes)."
 
 /** Local community provenance is informational, not a security attestation. Until the catalog
  * provides authenticated review state, conservatively show the notice for every revision fork. */

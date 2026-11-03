@@ -87,7 +87,7 @@ const ROWS: Row[] = [
   ['sim.run', 'Run simulation', '运行模拟'],
   ['sim.ask', 'Ask the agent', '询问助手'],
   ['sim.agent_busy', 'The agent is still working on something else', '助手正在处理其他任务'],
-  ['sim.note', 'Pressing Run confirms this plan. The agent runs only what is listed here and asks before changing the study.', '点击“运行模拟”即确认以上内容。助手只运行这里列出的部分，修改研究前会先问你。'],
+  ['sim.note', 'Pressing Run confirms this plan. Model access is limited to 200,000 tokens and 30 minutes. The agent runs only what is listed here and asks before changing the study.', '点击“运行模拟”即确认以上内容。模型访问上限为 200,000 个词元和 30 分钟。助手只运行这里列出的部分，修改研究前会先问你。'],
   ['sim.ask_prompt', 'About simulating “{study}”: ', '关于模拟“{study}”：'],
   ['sim.resolve_prompt', 'Help me get “{study}” ready to simulate: explain in plain words what still needs deciding and settle it with me. Do not run a simulation yet.', '请帮我让“{study}”可以模拟：用简单的话说明还需要确定什么，并和我一起解决。先不要运行模拟。'],
   ['sim.not_built', 'Before AI participants can take part, the agent turns the study document into a runnable study (the materials, the questions and how answers are scored).', '在 AI 参与者参加之前，助手需要先把研究文档做成可运行的研究（材料、问题以及答案的计分方式）。'],

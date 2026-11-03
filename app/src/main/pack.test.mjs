@@ -69,7 +69,7 @@ test('refreshPack upgrades an untouched previous visualize skill but keeps a cus
   assert.equal(readFileSync(dest, 'utf8'), 'my own visualize rules')
 })
 
-test('refreshPack upgrades an untouched previous simkit.py (run heartbeat, #16) but keeps an edited one', async () => {
+test('refreshPack always upgrades the app-owned simulation security entry point', async () => {
   const proj = mkdtempSync(join(tmpdir(), 'proj-'))
   const prev = spawnSync('git', ['show', 'fc0c465:pack/skills/simulate/simkit.py'], { cwd: packDir, encoding: 'utf8' })
   if (prev.status !== 0) return // shallow checkout without the base commit
@@ -81,7 +81,7 @@ test('refreshPack upgrades an untouched previous simkit.py (run heartbeat, #16) 
   assert.match(readFileSync(dest, 'utf8'), /heartbeatAt/)
   writeFileSync(dest, '# my own runner')
   await P.refreshPack(proj)
-  assert.equal(readFileSync(dest, 'utf8'), '# my own runner')
+  assert.equal(readFileSync(dest, 'utf8'), readFileSync(join(packDir, 'skills/simulate/simkit.py'), 'utf8'))
 })
 
 const python = ['python3', 'python'].find((p) => spawnSync(p, ['--version']).status === 0)
