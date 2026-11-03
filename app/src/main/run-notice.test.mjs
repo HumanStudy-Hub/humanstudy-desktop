@@ -18,4 +18,25 @@ test('community forks display the key notice; local flags cannot attest maintain
     assert.equal(await communityRunNotice(project), COMMUNITY_RUN_NOTICE)
   }
 })
+test('revisions opened with Open folder are recognised by their package metadata', async () => {
+  const cases = [
+    ['sources/study.json', JSON.stringify({ id: 'paper_x', baseRevision: 'abc', commit: 'f'.repeat(40) })],
+    ['sources/study.json', JSON.stringify({ id: 'study_014', repoUrl: 'https://example.org', commit: 'f'.repeat(40) })],
+    ['sources/study.json', 'not json'],
+    ['CONTRIBUTION.json', JSON.stringify({ schemaVersion: 2, baseRevision: null })],
+    ['scripts/study_core.py', ''],
+  ]
+  for (const [i, [file, contents]] of cases.entries()) {
+    const project = join(temp, `open-${i}`)
+    await mkdir(join(project, dirname(file)), { recursive: true })
+    await writeFile(join(project, 'program.json'), '{}')
+    await writeFile(join(project, file), contents)
+    assert.equal(await communityRunNotice(project), COMMUNITY_RUN_NOTICE, file + ' ' + contents)
+  }
+  const own = join(temp, 'own')
+  await mkdir(join(own, 'sources'), { recursive: true })
+  await writeFile(join(own, 'program.json'), '{}')
+  await writeFile(join(own, 'sources/notes.json'), '{}')
+  assert.equal(await communityRunNotice(own), undefined, 'a study built here is not a revision')
+})
 test.after(() => rm(temp, { recursive: true, force: true }))

@@ -78,6 +78,7 @@ const ROWS: Row[] = [
   ['sim.list_sep', ', ', '、'],
   ['sim.cannot', 'What a simulation cannot show', '模拟无法体现的部分'],
   ['sim.decision_default', 'not settled yet; the agent follows the paper or asks you', '尚未确定；助手会按论文处理或先问你'],
+  ['sim.run_notice', "This study's code will run on your computer with access to your model key.", '这项研究的代码会在你的电脑上运行，并能使用你的模型密钥。'],
   ['sim.blocked', 'Before it can run: {what}. Ask the agent to settle these with you.', '运行前需要先确定：{what}。请让助手和你一起解决。'],
   ['sim.need.steps', 'which steps AI participants perform', 'AI 参与者执行哪些环节'],
   ['sim.need.roles', 'who is simulated', '模拟哪些参与者'],

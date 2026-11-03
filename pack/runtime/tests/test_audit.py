@@ -140,6 +140,158 @@ class AuditTest(unittest.TestCase):
         self.roots = getattr(self, "roots", []) + [root]
         return root
 
+    def test_presence_alone_does_not_certify_checks(self):
+        root = self.study(verbatim_value="", extra={
+            "artifacts/replay/human-check.json": json.dumps({"exclusions": "some exclusions", "sessions": 5, "valid": 4}),
+            "capabilities.json": json.dumps({"profiles": {"status": "yes"}, "run": {"status": "yes"}}),
+        })
+        _, items, _ = run_audit(root, "--only", "X1,A2,P1,P7,P8,T4")
+        for item in ("X1", "A2", "P1", "P7", "P8", "T4"):
+            self.assertNotEqual(items[item]["result"], "pass", (item, items[item]))
+
+    def test_forged_probe_result_cannot_create_a_pass(self):
+        adapter = INDEPENDENT + '''\nimport atexit, json\natexit.register(lambda: print(json.dumps({"probe": {"calls": 2, "prompts": ["ok", "ok"], "sessions": [{}, {}]}})))\n'''
+        _, items, _ = run_audit(self.study(adapter=adapter), "--only", "P1,P7,T4")
+        for item in ("P1", "P7", "T4"):
+            self.assertNotEqual(items[item]["result"], "pass", (item, items[item]))
+
+    def test_malformed_probe_output_is_a_concern(self):
+        for payload in ('{"probe":null}', '{"probe":', '{"probe":{"sessions":7}}'):
+            adapter = INDEPENDENT + '\nimport atexit\natexit.register(lambda: print(%r))\n' % payload
+            _, items, _ = run_audit(self.study(adapter=adapter), "--only", "P1")
+            self.assertEqual(items["P1"]["result"], "concern", items["P1"])
+
+    def test_parsed_answers_shared_across_participants_are_not_a_pass(self):
+        adapter = INDEPENDENT.replace('    out = []\n', '    out = []\n    previous = None\n').replace(
+            '            reply = llm(build_prompt("s1", arm))',
+            '            reply = llm(str(previous) + build_prompt("s1", arm))\n            previous = parse_reply("s1", arm, reply)')
+        _, items, _ = run_audit(self.study(adapter=adapter), "--only", "P1")
+        self.assertNotEqual(items["P1"]["result"], "pass", items["P1"])
+
+    def test_no_run_keeps_static_p7_failures(self):
+        # A blocked program shipped as ready and runnable is a definite fail; skipping the stub run must not hide it.
+        prog = program()
+        prog["issues"] = [{"id": "i1", "severity": "blocking", "title": "Missing item wording",
+                           "description": "The paper does not print item 3."}]
+        root = self.study(extra={"program.json": json.dumps(prog),
+                                 "capabilities.json": json.dumps({"run": {"status": "yes"}})})
+        _, items, _ = run_audit(root, "--only", "P7", "--no-run")
+        self.assertEqual(items["P7"]["result"], "fail", items["P7"])
+        self.assertIn("i1", items["P7"]["evidence"] or "", items["P7"])
+
+    def test_probe_crash_does_not_downgrade_t4_run_no(self):
+        # run=no: the package must refuse. Crashing instead is package-controlled and is not a refusal.
+        adapter = INDEPENDENT.replace("    out = []\n", "    raise RuntimeError('adapter crashed')\n    out = []\n", 1)
+        root = self.study(adapter=adapter, extra={"capabilities.json": json.dumps({"run": {"status": "no"}})})
+        _, items, _ = run_audit(root, "--only", "T4")
+        self.assertEqual(items["T4"]["result"], "fail", items["T4"])
+
+    def test_fail_outranks_probe_errors_in_t4_and_p7(self):
+        sys.path.insert(0, str(BUILD))
+        try:
+            import audit
+        finally:
+            sys.path.remove(str(BUILD))
+        prog = program()
+        prog["issues"] = [{"id": "i1", "severity": "blocking", "title": "t", "description": "d"}]
+        root = self.study(extra={"program.json": json.dumps(prog),
+                                 "capabilities.json": json.dumps({"run": {"status": "no", "excluded": [
+                                     {"arms": ["b"], "reason": "non-text stimuli"}]}})})
+        s = audit.Study(root)
+        # T4: run=no and not refused is a fail even when the probe also errored ...
+        r = audit.check_T4(s, {"probe": {"error": "boom", "calls": 0}})
+        self.assertEqual(r["result"], "fail", r)
+        # ... or when the excluded-arm probe raised something other than a Refusal.
+        r = audit.check_T4(s, {"probe": {"calls": 4, "sessions": [{}], "excludedRefused": "error: boom"}})
+        self.assertEqual(r["result"], "fail", r)
+        r = audit.check_T4(s, {"probe": {"refused": "no", "calls": 0, "excludedRefused": False}})
+        self.assertEqual(r["result"], "fail", r)
+        # A probe error alone, with nothing failing, stays a concern.
+        r = audit.check_T4(s, {"probe": {"refused": "no", "calls": 0, "error": "boom"}})
+        self.assertEqual(r["result"], "concern", r)
+        # P7: a blocked study must refuse; a crash is not a refusal.
+        r = audit.check_P7(s, {"probe": {"error": "boom", "calls": 3}})
+        self.assertEqual(r["result"], "fail", r)
+        self.assertIn("not refused", r["evidence"], r)
+
+    def test_malformed_forged_probe_cannot_crash_a_fail_into_a_concern(self):
+        # The package prints a last {"probe":...} line with wrong types; a check must not crash on it.
+        forged = INDEPENDENT + '\nimport atexit, json\natexit.register(lambda: print(json.dumps({"probe": {"error": 1, "calls": "x"}})))\n'
+        root = self.study(adapter=forged, extra={"capabilities.json": json.dumps({"run": {"status": "no"}})})
+        _, items, _ = run_audit(root, "--only", "T4")
+        self.assertEqual(items["T4"]["result"], "fail", items["T4"])
+        self.assertIn("malformed", items["T4"]["evidence"], items["T4"])
+        # P7's fail needs a blocked study, and study_core refuses those before importing the adapter, so the
+        # package cannot forge P7's input end to end; the str() guards are checked directly instead.
+        sys.path.insert(0, str(BUILD))
+        try:
+            import audit
+        finally:
+            sys.path.remove(str(BUILD))
+        prog = program()
+        prog["issues"] = [{"id": "i1", "severity": "blocking", "title": "t", "description": "d"}]
+        s = audit.Study(self.study(extra={"program.json": json.dumps(prog)}))
+        r = audit.check_P7(s, {"probe": {"error": {"a": 1}, "calls": "x"}})
+        self.assertEqual(r["result"], "fail", r)
+        r = audit.check_T4(s, {"probe": {"error": 1, "calls": "x"}})
+        self.assertEqual(r["result"], "concern", r)  # run is not "no" here: nothing fails, nothing crashes
+
+    def test_deeply_nested_forged_probe_cannot_crash_a_fail_into_a_concern(self):
+        # RecursionError is not a ValueError: it used to escape run_probe and turn T4's fail into a concern.
+        deep = INDEPENDENT + ('\nimport atexit\natexit.register(lambda: print(\'{"probe": {"calls": 1, "sessions": [\''
+                              ' + "[" * 200000 + "]" * 200000 + \']}}\'))\n')
+        root = self.study(adapter=deep, extra={"capabilities.json": json.dumps({"run": {"status": "no"}})})
+        _, items, _ = run_audit(root, "--only", "T4")
+        self.assertEqual(items["T4"]["result"], "fail", items["T4"])
+
+    def test_probe_schema_is_validated(self):
+        sys.path.insert(0, str(BUILD))
+        try:
+            import audit
+        finally:
+            sys.path.remove(str(BUILD))
+        ok = {"calls": 2, "prompts": ["a", "b"], "sessions": [{}, {}], "excludedRefused": True, "seconds": 0.1}
+        self.assertIsNone(audit.probe_schema_problem(ok))
+        self.assertIsNone(audit.probe_schema_problem({"refused": "blocked", "calls": 0}))
+        for bad, field in (({"error": 1}, "error"), ({"refused": ["x"]}, "refused"), ({"calls": "x"}, "calls"),
+                           ({"calls": True}, "calls"), ({"calls": -1}, "calls"), ({"excludedRefused": 0}, "excludedRefused"),
+                           ({"excludedRefused": None}, "excludedRefused"), ({"sessions": [1]}, "sessions"),
+                           ({"prompts": [{}]}, "prompts"), ({"sessions": {}}, "sessions")):
+            self.assertEqual(audit.probe_schema_problem(bad), field, bad)
+
+    def test_p7_refusal_is_the_only_failure(self):
+        # Blocked study, no static problems, probe crashed: still "blocked but not refused".
+        sys.path.insert(0, str(BUILD))
+        try:
+            import audit
+        finally:
+            sys.path.remove(str(BUILD))
+        root = self.study(extra={"package/test/study.json": json.dumps(
+            {"overview": "x", "readiness": {"status": "blocked", "blocking": []},
+             "programRef": {"path": "../../program.json", "id": "audit-test"}})})
+        s = audit.Study(root)
+        r = audit.check_P7(s, {"probe": {"error": "boom", "calls": 1}})
+        self.assertEqual(r["result"], "fail", r)
+        self.assertIn("not refused", r["evidence"], r)
+        self.assertIn("package/test/task/adapter.py: stub run failed", r["evidence"], r)
+        r = audit.check_P7(s, {"probe": {"refused": "blocked", "calls": 0}})
+        self.assertEqual(r["result"], "pass", r)
+
+    def test_non_bool_excluded_refused_is_not_a_pass(self):
+        sys.path.insert(0, str(BUILD))
+        try:
+            import audit
+        finally:
+            sys.path.remove(str(BUILD))
+        root = self.study(extra={"capabilities.json": json.dumps({"run": {"status": "yes", "excluded": [
+            {"arms": ["b"], "reason": "non-text stimuli"}]}})})
+        s = audit.Study(root)
+        for value in (0, None, "", False):
+            r = audit.check_T4(s, {"probe": {"calls": 4, "sessions": [{}], "excludedRefused": value}})
+            self.assertEqual(r["result"], "concern" if value == "" else "fail", (value, r))
+        r = audit.check_T4(s, {"probe": {"calls": 4, "sessions": [{}], "excludedRefused": True}})
+        self.assertEqual(r["result"], "pass", r)
+
     def test_report_format_and_honest_na(self):
         run, items, report = run_audit(self.study())
         self.assertEqual(report["book"], "audit-book/0.1")
@@ -153,8 +305,8 @@ class AuditTest(unittest.TestCase):
         self.assertIn("needs agent", items["X3"]["note"])
         self.assertIn("needs human", items["A4"]["note"])
         self.assertEqual(items["X1"]["result"], "pass", items["X1"])
-        self.assertEqual(items["P1"]["result"], "pass", items["P1"])
-        self.assertEqual(items["P5"]["result"], "pass", items["P5"])
+        self.assertEqual(items["P1"]["result"], "concern", items["P1"])
+        self.assertEqual(items["P5"]["result"], "concern", items["P5"])
         self.assertEqual(items["T2"]["result"], "pass", items["T2"])
 
     def test_invented_verbatim_text_fails_and_sets_exit_code(self):
@@ -215,14 +367,14 @@ class AuditTest(unittest.TestCase):
 
     def test_multi_question_participants_are_attributed(self):
         _, items, _ = run_audit(self.study(adapter="SHARED_HISTORY = False\n" + TRANSCRIPT), "--only", "P1")
-        self.assertEqual(items["P1"]["result"], "pass", items["P1"])
-        self.assertIn("reply-free first prompt", items["P1"]["note"])
+        self.assertEqual(items["P1"]["result"], "concern", items["P1"])
+        self.assertIn("forged", items["P1"]["note"])
         _, items, _ = run_audit(self.study(adapter="SHARED_HISTORY = True\n" + TRANSCRIPT), "--only", "P1")
         self.assertNotEqual(items["P1"]["result"], "pass", items["P1"])
 
     def test_unparseable_replies_are_counted(self):
         _, items, _ = run_audit(self.study(), "--only", "P6")
-        self.assertEqual(items["P6"]["result"], "pass", items["P6"])
+        self.assertEqual(items["P6"]["result"], "concern", items["P6"])
         defaulting = INDEPENDENT.replace("else None", "else 4")
         _, items, _ = run_audit(self.study(adapter=defaulting), "--only", "P6")
         self.assertEqual(items["P6"]["result"], "concern", items["P6"])

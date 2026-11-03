@@ -47,7 +47,7 @@ const HELPERS = ['skills/build/program_io.py', 'skills/build/program_lock.py', '
   'skills/build/check_quotes.py', 'skills/build/check_results.py', 'skills/build/check_verbatim.py', 'skills/build/check_validity.py',
   'skills/build/sources.py', 'skills/export/agent_package.py', 'skills/export/agent/study_core.py', 'skills/export/agent/mcp_server.py',
   'skills/export/agent/effects_core.py', 'skills/build/effects.py', 'schema/effects.schema.json',
-  'skills/simulate/run_confined.py', 'skills/simulate/simkit.py', 'schema/graph-types.json', 'skills/build/sandbox_run.py', 'skills/build/check_package.py']
+  'skills/simulate/run_confined.py', 'skills/simulate/simkit.py', 'schema/graph-types.json', 'skills/build/sandbox_run.py', 'skills/build/check_package.py', 'skills/build/check_readiness.py']
 
 export const packFileCount = (): number => Object.keys(files).length
 
@@ -91,4 +91,13 @@ export async function refreshPack(projectDir: string): Promise<void> {
     await mkdir(dirname(abs), { recursive: true })
     await writeFile(abs, content, 'utf8')
   }
+}
+
+/** The checker files the app runs itself (scientific-readiness.ts): the build checks, the schemas and
+ *  effects_core.py, as shipped. Never the project's editable .opencode copy, so editing a checker inside a
+ *  project cannot change what the app accepts as ready. */
+export function trustedCheckFiles(): [string, string][] {
+  return Object.entries(files)
+    .filter(([key]) => key.startsWith(PREFIX + 'skills/build/') || key.startsWith(PREFIX + 'schema/') || key === PREFIX + 'skills/export/agent/effects_core.py')
+    .map(([key, content]) => [key.slice(PREFIX.length), content])
 }

@@ -49,6 +49,18 @@ KIND_TITLES = {"hypothesis": "Hypotheses", "participants": "Participants", "desi
                "finding": "Findings", "limitation": "Limitations"}
 MISSING_TEXT = "Not stated in the paper."
 SIMULATION_NOTE = "AI participants: a simulation, not observations of people."
+# Same sentence as the app (COMMUNITY_RUN_NOTICE in app/src/main/package-readiness.ts). This copy runs outside the app, where nothing tells
+# whether the package was reviewed, so it is printed whenever package code is about to run.
+RUN_NOTICE = "This study's code will run on your computer with access to your model key."
+_notice_shown = False
+
+
+def run_notice():
+    """Print RUN_NOTICE to stderr once per process, before any package code executes."""
+    global _notice_shown
+    if not _notice_shown:
+        _notice_shown = True
+        print(RUN_NOTICE, file=sys.stderr, flush=True)
 
 
 class Refusal(RuntimeError):
@@ -383,6 +395,7 @@ class Study:
                           ["read the study with study/read_study", "build the package in the HumanStudy app"])
         if name not in self._modules:
             path = self.package / ("task/adapter.py" if name == "adapter" else "evaluation/evaluation.py")
+            run_notice()
             spec = importlib.util.spec_from_file_location("hs_" + name, path)
             mod = importlib.util.module_from_spec(spec)
             if str(path.parent) not in sys.path:
@@ -644,6 +657,7 @@ class Study:
             raise Refusal("the human-data loader %s is missing" % loader.name, "humanData",
                           ["rebuild the package's human data step"])
         if "human" not in self._modules:
+            run_notice()
             spec = importlib.util.spec_from_file_location("hs_human", loader)
             mod = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = mod
@@ -882,6 +896,8 @@ def main(argv=None):
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
         pass
+    if a.cmd in ("run", "reproduce"):
+        run_notice()
     s = Study(a.root)
     show = lambda v: print(v if isinstance(v, str) else json.dumps(v, ensure_ascii=False, indent=2, default=str))
     if a.cmd == "overview":

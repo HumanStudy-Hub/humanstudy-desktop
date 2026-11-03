@@ -84,6 +84,26 @@ test('refreshPack always upgrades the app-owned simulation security entry point'
   assert.equal(readFileSync(dest, 'utf8'), readFileSync(join(packDir, 'skills/simulate/simkit.py'), 'utf8'))
 })
 
+test('every shipped human-program schema is upgraded in existing projects (evidence note, #65)', async () => {
+  const log = spawnSync('git', ['log', '--format=%H', '--', 'schema/human-program.schema.json'], { cwd: packDir, encoding: 'utf8' })
+  const commits = log.status === 0 ? log.stdout.split('\n').filter(Boolean) : []
+  if (commits.length < 2) return // shallow checkout without history
+  const current = readFileSync(join(packDir, 'schema/human-program.schema.json'), 'utf8')
+  const sha = (s) => createHash('sha256').update(s).digest('hex')
+  const listed = JSON.parse(readFileSync(join(here, 'previous-pack-hashes.json'), 'utf8'))['schema/human-program.schema.json']
+  for (const c of commits) {
+    const old = spawnSync('git', ['show', `${c}:pack/schema/human-program.schema.json`], { cwd: packDir, encoding: 'utf8' }).stdout
+    if (old === current) continue
+    assert.ok(listed.includes(sha(old)), `previous-pack-hashes.json lacks the schema shipped at ${c.slice(0, 7)}`)
+    const proj = mkdtempSync(join(tmpdir(), 'proj-'))
+    const dest = join(proj, 'schema/human-program.schema.json')
+    mkdirSync(dirname(dest), { recursive: true })
+    writeFileSync(dest, old)
+    await P.refreshPack(proj)
+    assert.equal(readFileSync(dest, 'utf8'), current, `schema from ${c.slice(0, 7)} is upgraded`)
+  }
+})
+
 const python = ['python3', 'python'].find((p) => spawnSync(p, ['--version']).status === 0)
 test('inline.py inlines the kit, embeds the program and checks the page', { skip: !python }, () => {
   const proj = mkdtempSync(join(tmpdir(), 'proj-'))
@@ -133,4 +153,48 @@ test('existing projects get the shared lock/checker/policy and old default build
   writeFileSync(skill, 'Researcher custom instructions')
   await P.refreshPack(proj)
   assert.equal(readFileSync(skill, 'utf8'), 'Researcher custom instructions')
+})
+
+// T11: the readiness gate runs the app's bundled checkers (scientific-readiness.ts + check_readiness.py).
+await build({ entryPoints: [join(here, 'scientific-readiness.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'science.mjs'), logLevel: 'error' })
+const SR = await import(pathToFileURL(join(out, 'science.mjs')).href)
+// A python with jsonschema, as the research runtime has (HUMANSTUDY_TEST_PYTHON on CI).
+// The real interpreter path (not a version-manager shim), since the checker runs with a minimal PATH.
+const sciencePython = [process.env.HUMANSTUDY_TEST_PYTHON, 'python3', 'python'].filter(Boolean)
+  .map((p) => spawnSync(p, ['-I', '-c', 'import jsonschema, sys; print(sys.executable)'], { encoding: 'utf8' }))
+  .find((r) => r.status === 0 && r.stdout.trim())?.stdout.trim()
+
+test('T11: the trusted checker set holds every script check_readiness.py needs', () => {
+  const rels = P.trustedCheckFiles().map(([rel]) => rel)
+  for (const rel of ['skills/build/check_readiness.py', 'skills/build/check_package.py', 'skills/build/check_validity.py', 'skills/build/check_verbatim.py',
+    'skills/build/check_results.py', 'skills/build/effects.py', 'skills/build/sources.py', 'skills/build/check_program.py', 'skills/build/check_quotes.py',
+    'skills/build/sandbox_run.py', 'skills/export/agent/effects_core.py', 'schema/human-program.schema.json', 'schema/build-coverage.json', 'schema/effects.schema.json'])
+    assert.ok(rels.includes(rel), rel)
+  assert.ok(rels.every((rel) => !rel.startsWith('skills/simulate/')), 'only the checks, not the runners')
+})
+
+test('T11: no runtime or an unreadable report never passes', async () => {
+  assert.deepEqual(await SR.scientificReadiness(null, P.trustedCheckFiles(), '/nowhere', 'k', ''), [SR.RUNTIME_MISSING])
+  assert.throws(() => SR.parseScientificReport('PASS'))
+  assert.throws(() => SR.parseScientificReport('{"problems": [{"check": 1}]}'))
+  assert.deepEqual(SR.parseScientificReport('noise\n{"problems": []}\n'), [])
+  const fake = process.platform === 'win32' ? 'C:\\nonexistent\\python.exe' : '/nonexistent/python3'
+  assert.deepEqual(await SR.scientificReadiness(fake, P.trustedCheckFiles(), '/nowhere', 'k', ''), [SR.CHECKS_FAILED])
+})
+
+test('T11: end to end, a good package passes and a failed check blocks, whatever the project\'s own checker says', { skip: !sciencePython, timeout: 600_000 }, async () => {
+  const fixture = (args) => {
+    const r = spawnSync(sciencePython, ['-c', `import sys, json; sys.path.insert(0, sys.argv[1]); import test_check_readiness as T; print(T.make_project(**json.loads(sys.argv[2])))`,
+      join(packDir, 'runtime/tests'), JSON.stringify(args)], { encoding: 'utf8' })
+    assert.equal(r.status, 0, r.stderr)
+    return r.stdout.trim()
+  }
+  const good = fixture({})
+  assert.deepEqual(await SR.scientificReadiness(sciencePython, P.trustedCheckFiles(), good, 'fixture', ''), [])
+  const bad = fixture({ effects: false })
+  mkdirSync(join(bad, '.opencode/skills/build'), { recursive: true })
+  writeFileSync(join(bad, '.opencode/skills/build/check_readiness.py'), 'print(\'{"problems": []}\')\n')
+  writeFileSync(join(bad, '.opencode/skills/build/effects.py'), 'def build_rules(*a):\n    return []\n')
+  const problems = await SR.scientificReadiness(sciencePython, P.trustedCheckFiles(), bad, 'fixture', '')
+  assert.deepEqual(problems, [{ check: 'effects', reason: 'effects.json is missing' }])
 })
