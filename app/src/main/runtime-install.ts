@@ -34,6 +34,7 @@ function set(s: PartStatus): void {
   status = s
   for (const l of listeners) l(status)
 }
+export const installedPython = (): string | null => status.state === 'ready' ? runtimePaths(installDir(), process.platform).python : null
 export const runtimeStatus = (): PartStatus => status
 export function onRuntimeProgress(cb: (s: PartStatus) => void): () => void {
   listeners.add(cb)

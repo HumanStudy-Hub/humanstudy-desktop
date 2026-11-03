@@ -31,8 +31,10 @@ import { createThreads, threads } from './threads'
 import { saveProjectText } from './program-save'
 import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
-import { refreshPack } from './pack'
-import { assertRunnablePackage, projectPackageReadiness } from './package-readiness'
+import { refreshPack, installTrustedChecks } from './pack'
+import { scientificReadiness } from './scientific-readiness'
+import { installedPython } from './runtime-install'
+import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks } from './package-readiness'
 import type { Kernel, KernelEvent } from './kernel-types'
 import { actionRef } from '../shared/research-operations'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
@@ -368,6 +370,11 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(() => {
+  const checks = installTrustedChecks(join(app.getPath('userData'), 'scientific-checks'))
+  configureScientificChecks(async (project, slug) => {
+    const checker = await checks
+    return scientificReadiness(installedPython(), checker, project, slug, process.env.HUMANSTUDY_RUNTIME_BIN || '')
+  }, app.getVersion())
   if (!primaryInstance) return
   applyCredentials()
   try {

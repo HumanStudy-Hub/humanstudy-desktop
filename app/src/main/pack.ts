@@ -92,3 +92,16 @@ export async function refreshPack(projectDir: string): Promise<void> {
     await writeFile(abs, content, 'utf8')
   }
 }
+
+/** Install a separate app-owned copy: a project's editable helpers never decide its readiness. */
+export async function installTrustedChecks(root: string): Promise<string> {
+  const selected = Object.entries(files).filter(([key]) => key.startsWith(PREFIX + 'skills/build/') || key.startsWith(PREFIX + 'schema/') || key === PREFIX + 'skills/export/agent/effects_core.py')
+  const version = createHash('sha256').update(JSON.stringify(selected)).digest('hex')
+  const dest = join(root, version)
+  for (const [key, content] of selected) {
+    const path = join(dest, key.slice(PREFIX.length))
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, content, 'utf8')
+  }
+  return join(dest, 'skills/build/check_readiness.py')
+}

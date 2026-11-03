@@ -330,6 +330,7 @@ export function SimulationPanel(props: Props) {
 }
 
 function problemText(p: PackageProblem): string {
+  if (p.kind === 'scientific') return `${p.check}: ${p.reason}`
   const vars = { what: t(`sim.pkg.${p.file}`), file: p.file }
   if (p.kind === 'unvalidated') return t('sim.pkg_unvalidated', vars)
   if (p.kind === 'wrong-study' || p.kind === 'stale-program' || p.kind === 'bindings') return t('sim.pkg_stale', vars)

@@ -25,6 +25,7 @@ export const PACKAGE_ENTRY_POINTS: Partial<Record<PackageFile, string>> = {
 }
 
 export type PackageProblem =
+  | { file: 'study.json'; kind: 'scientific'; check: string; reason: string }
   | { file: PackageFile; kind: 'missing' }
   | { file: PackageFile; kind: 'invalid-json' }
   | { file: PackageFile; kind: 'unvalidated' | 'wrong-study' | 'stale-program' | 'bindings' }
@@ -115,5 +116,5 @@ function canonical(value: unknown): string {
 
 /** A one-line fingerprint of the package files (names, sizes, times), to recheck when they change. */
 export function packageStamp(entries: { rel: string; size?: number; mtime?: number }[]): string {
-  return entries.filter((e) => e.rel === 'package' || e.rel.startsWith('package/')).map((e) => `${e.rel}:${e.size ?? ''}:${e.mtime ?? ''}`).sort().join('|')
+  return entries.filter((e) => e.rel === 'package' || e.rel.startsWith('package/') || e.rel.startsWith('sources/') || ['program.json', 'effects.json', 'capabilities.json', 'paper.pdf'].includes(e.rel) || /^[^/]+[.]pdf$/i.test(e.rel)).map((e) => `${e.rel}:${e.size ?? ''}:${e.mtime ?? ''}`).sort().join('|')
 }
