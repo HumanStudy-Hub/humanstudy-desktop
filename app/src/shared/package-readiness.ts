@@ -34,6 +34,10 @@ export type PackageProblem =
 export interface PackageReadiness {
   /** Community revisions currently have no authenticated maintainer-review attestation. */
   runNotice?: string
+  /** How a simulation reaches the model on this computer, decided by the main process:
+   *  'relay' (macOS sandbox + per-run relay; package code never holds the key) or 'key' (Linux,
+   *  Windows: the pre-relay path, package code can read the key). Absent counts as 'key'. */
+  modelAccess?: 'relay' | 'key'
   /** At least one folder under package/. */
   exists: boolean
   ready: boolean
@@ -125,4 +129,12 @@ export function readinessStamp(entries: { rel: string; size?: number; mtime?: nu
   const read = (rel: string) => rel === 'package' || rel.startsWith('package/') || rel === 'sources' || rel.startsWith('sources/') ||
     rel === 'human-data' || rel.startsWith('human-data/') || ['effects.json', 'capabilities.json', 'README.md'].includes(rel) || /^[^/]+[.]pdf$/i.test(rel)
   return entries.filter((e) => read(e.rel)).map((e) => `${e.rel}:${e.size ?? ''}:${e.mtime ?? ''}`).sort().join('|')
+}
+
+/** The i18n keys of the run confirmation text shown next to Run simulation. Without the relay the
+ *  confirmation always says that the study's code can read the key; anything but an explicit
+ *  'relay' from the main process gets that wording. */
+export function runConfirmation(r: Pick<PackageReadiness, 'modelAccess' | 'runNotice'> | null | undefined): { note: 'sim.note' | 'sim.note_key'; notice: 'sim.run_notice' | 'sim.run_notice_relay' | null } {
+  const relay = r?.modelAccess === 'relay'
+  return { note: relay ? 'sim.note' : 'sim.note_key', notice: r?.runNotice ? (relay ? 'sim.run_notice_relay' : 'sim.run_notice') : null }
 }

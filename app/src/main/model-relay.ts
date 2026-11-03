@@ -3,8 +3,20 @@
 import { createServer } from 'node:http'
 import { randomBytes, timingSafeEqual, createHash } from 'node:crypto'
 import { mkdir, writeFile, realpath, open, unlink } from 'node:fs/promises'
-import { constants, readFileSync, unlinkSync } from 'node:fs'
+import { constants, readFileSync, unlinkSync, statSync } from 'node:fs'
 import { join, sep } from 'node:path'
+
+/** The only sandbox-exec the relay trusts; never looked up on PATH. */
+export const SANDBOX_EXEC = '/usr/bin/sandbox-exec'
+/** Relay + sandbox only where the OS can confine package code (macOS with its system sandbox-exec).
+ *  Elsewhere simulations use the pre-relay path, where package code can read the user's key, and
+ *  the run confirmation says so. Decided in the main process; nothing in a project can change it. */
+export function relaySupported(platform: string = process.platform, exists: (path: string) => boolean = isFile): boolean {
+  return platform === 'darwin' && exists(SANDBOX_EXEC)
+}
+function isFile(path: string): boolean {
+  try { return statSync(path).isFile() } catch { return false }
+}
 
 export interface RelayOptions {
   project: string

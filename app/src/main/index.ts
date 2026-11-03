@@ -36,11 +36,14 @@ import { refreshPack, trustedCheckFiles } from './pack'
 import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks } from './package-readiness'
-import { startModelRelay } from './model-relay'
+import { startModelRelay, relaySupported } from './model-relay'
 import type { Kernel, KernelEvent } from './kernel-types'
 import { actionRef } from '../shared/research-operations'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
 
+// macOS with /usr/bin/sandbox-exec: simulations go through a per-run relay. Elsewhere they use the
+// pre-relay path and the run confirmation says that the study's code can read the key.
+const RELAY = relaySupported()
 const relayProjects = new Set<string>()
 const runRelays = new Map<string, { project: string; close(): Promise<void> }>()
 async function closeRunRelay(id: string) {
@@ -459,7 +462,7 @@ app.whenReady().then(() => {
     await copyFile(q, r.filePath)
     return r.filePath
   })
-  ipcMain.handle('project:packageReadiness', async (_e, dir: string, studyId: string) => projectPackageReadiness(ownedPath(dir), studyId))
+  ipcMain.handle('project:packageReadiness', async (_e, dir: string, studyId: string) => ({ ...await projectPackageReadiness(ownedPath(dir), studyId), modelAccess: RELAY ? 'relay' as const : 'key' as const }))
   ipcMain.handle('project:readText', async (_e, p: string) => {
     const q = ownedPath(p)
     if ((await stat(q)).size > TEXT_LIMIT) throw new Error('file is larger than 4 MB')
@@ -685,7 +688,7 @@ app.whenReady().then(() => {
     let projectDir = sessionProject.get(id)
     try { projectDir ??= k.directory?.(id) } catch { /* unknown to the kernel; it will refuse the send itself */ }
     await assertRunnablePackage(projectDir, text)
-    if (text.startsWith('[Simulation scope approved]')) {
+    if (RELAY && text.startsWith('[Simulation scope approved]')) {
       if (!projectDir || relayProjects.has(projectDir)) throw Error('A simulation is already active in this project.')
       const approved = JSON.parse(text.split('\n')[1])
       const model = approved.plan?.model

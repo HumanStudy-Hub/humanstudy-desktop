@@ -71,6 +71,77 @@ print('confined and relay completion passed')
             sandbox.macos_profile('/private/tmp/work', relay_port=True)
 
 
+class PlatformChoice(unittest.TestCase):
+    """macOS uses the relay inside the system sandbox-exec; Linux/Windows keep the pre-relay path."""
+    LAUNCHER = BUILD.parents[1] / 'simulate/run_confined.py'
+
+    def env(self, **extra):
+        env = {k: v for k, v in os.environ.items() if not k.startswith('HUMANSTUDY_RELAY')}
+        env.update(extra)
+        return env
+
+    def run_folder(self, body):
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__('shutil').rmtree, folder, True)
+        run = folder / 'artifacts/simulations/t'
+        run.mkdir(parents=True)
+        (folder / '.humanstudy').mkdir()
+        (run / 'run.py').write_text(body)
+        return run / 'run.py'
+
+    def test_without_relay_marker_the_script_runs_unconfined_with_its_key(self):
+        script = self.run_folder("import os\nassert os.environ['OPENROUTER_API_KEY'] == 'fake-dev-sentinel'\nprint('legacy ok')\n")
+        result = subprocess.run([sys.executable, str(self.LAUNCHER), '--final', str(script)], capture_output=True, text=True,
+                                env=self.env(OPENROUTER_API_KEY='fake-dev-sentinel'), timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr.replace('fake-dev-sentinel', '[key]'))
+        self.assertIn('legacy ok', result.stdout)
+        self.assertNotIn('fake-dev-sentinel', result.stdout + result.stderr)
+
+    def test_relay_marker_without_an_approved_relay_refuses(self):
+        script = self.run_folder("open('ran', 'w').write('x')\n")
+        result = subprocess.run([sys.executable, str(self.LAUNCHER), str(script)], capture_output=True, text=True,
+                                env=self.env(HUMANSTUDY_RELAY_REQUIRED='1'), timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('No approved desktop model relay', result.stderr)
+        self.assertFalse((script.parent / 'ran').exists())
+
+    def test_simkit_start_without_relay_runs_run_py_directly(self):
+        script = self.run_folder("print('started directly')\n")
+        skills = BUILD.parents[1]
+        subprocess.run([sys.executable, str(skills / 'simulate/simkit.py'), 'start', str(script.parent)], check=True,
+                       capture_output=True, text=True, env=self.env(), timeout=60)
+        log = script.parent / 'run.log'
+        for _ in range(100):
+            if log.is_file() and 'started directly' in log.read_text():
+                break
+            __import__('time').sleep(0.1)
+        self.assertIn('started directly', log.read_text())
+
+    def test_relay_refused_off_macos(self):
+        real = sys.platform
+        try:
+            for platform in ('linux', 'win32'):
+                sys.platform = platform
+                with self.assertRaises(RuntimeError):
+                    sandbox.wrapper('/tmp/w', relay_port=1234)
+        finally:
+            sys.platform = real
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS sandbox-exec')
+    def test_relay_uses_only_the_system_sandbox_exec_not_one_on_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            fake = Path(folder) / 'sandbox-exec'
+            fake.write_text('#!/bin/sh\nexec "$@"\n'); fake.chmod(0o755)
+            old = os.environ['PATH']
+            os.environ['PATH'] = folder + os.pathsep + old
+            try:
+                pre, _ = sandbox.wrapper(folder, relay_port=1234)
+            finally:
+                os.environ['PATH'] = old
+        self.assertEqual(pre[0], '/usr/bin/sandbox-exec')
+        self.assertIn('(remote ip "localhost:1234")', pre[2])
+
+
 class DesktopGuards(unittest.TestCase):
     def test_canonical_imports_refuse_unconfined_desktop_execution(self):
         skills = BUILD.parents[1]

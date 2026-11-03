@@ -7,7 +7,7 @@ import type { HumanProgram } from '../../shared/human-program'
 import type { ProjectEntry, ProjectSnapshot } from '../../preload/types'
 import { simulationScope, simulationLimits } from '../../shared/simulation-scope'
 import { estimateRun, hasParticipantData, isResult, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
-import { packageStamp, readinessStamp, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
+import { packageStamp, readinessStamp, runConfirmation, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
 import { shortModelName } from './ModelPicker'
 import { listenToArtifact } from '../bridge'
 import { getLang, t } from '../i18n'
@@ -95,6 +95,7 @@ export function SimulationPanel(props: Props) {
   const limits = useMemo(() => simulationLimits(program, studyId), [program, studyId])
   const { slugs, readiness, checking } = usePackageReadiness(dir, project.tree, studyId, program)
   const built = Boolean(readiness?.ready)
+  const confirmation = runConfirmation(readiness)
   const [perCondition, setPerCondition] = useState(plan.defaultPerCondition)
   useEffect(() => setPerCondition(plan.defaultPerCondition), [plan.defaultPerCondition])
   const estimate = estimateRun({ conditions: plan.conditions.length, perCondition, model, needsBuild: !built })
@@ -294,12 +295,12 @@ export function SimulationPanel(props: Props) {
                 </div>
               )}
               {!scope.ready && <p className="sim-blocked">{t('sim.blocked', { what: [...scope.missing.map((m) => t(`sim.need.${m}`)), ...scope.blocking.map((b) => b.title)].join(t('sim.list_sep')) })}</p>}
-              {readiness?.runNotice && <p className="sim-note">{t('sim.run_notice')}</p>}
+              {confirmation.notice && <p className="sim-note">{t(confirmation.notice)}</p>}
               <div className="sim-actions">
                 <button className="primary" disabled={!scope.ready || agentBusy} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
                 <button className="ghost" onClick={() => props.onAsk(scope.ready ? t('sim.ask_prompt', { study: studyTitle }) : t('sim.resolve_prompt', { study: studyTitle }))}>{t('sim.ask')}</button>
               </div>
-              <p className="muted small sim-note">{t('sim.note')}</p>
+              <p className="muted small sim-note">{t(confirmation.note)}</p>
             </section>
           )}
         </>

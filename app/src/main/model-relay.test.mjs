@@ -81,11 +81,46 @@ print('normal confined run succeeded')
 `)
 
   try {
-    const child = spawn(process.env.HUMANSTUDY_TEST_PYTHON || 'python3', [join(dirname(fileURLToPath(import.meta.url)), '../../../pack/skills/simulate/run_confined.py'), '--final', script], { env: { ...process.env, HUMANSTUDY_RELAY_DESCRIPTOR: relayDescriptor(storage, project) } })
+    const child = spawn(process.env.HUMANSTUDY_TEST_PYTHON || 'python3', [join(dirname(fileURLToPath(import.meta.url)), '../../../pack/skills/simulate/run_confined.py'), '--final', script], { env: { ...process.env, HUMANSTUDY_RELAY_REQUIRED: '1', HUMANSTUDY_RELAY_DESCRIPTOR: relayDescriptor(storage, project) } })
     let out = '', err = ''; child.stdout.on('data', p => { out += p }); child.stderr.on('data', p => { err += p })
     const code = await new Promise(resolve => child.once('exit', resolve))
     assert.equal(code, 0, err); assert.match(out, /normal confined run succeeded/)
     assert.ok(closed)
     await assert.rejects(readFile(relayDescriptor(storage, project)))
   } finally { await relay.close(); await new Promise(resolve => stub.close(resolve)) }
+})
+
+test('relay only on macOS with the system sandbox-exec; never decided from PATH', async () => {
+  const { relaySupported, SANDBOX_EXEC } = await import(pathToFileURL(join(temp, 'relay.mjs')))
+  assert.equal(SANDBOX_EXEC, '/usr/bin/sandbox-exec')
+  const asked = []
+  const has = (path) => { asked.push(path); return true }
+  assert.equal(relaySupported('darwin', has), true)
+  assert.deepEqual(asked, ['/usr/bin/sandbox-exec'])
+  assert.equal(relaySupported('darwin', () => false), false, 'macOS without sandbox-exec takes the pre-relay path')
+  for (const platform of ['linux', 'win32', 'freebsd']) assert.equal(relaySupported(platform, has), false, platform)
+  const { existsSync } = await import('node:fs')
+  assert.equal(relaySupported(), process.platform === 'darwin' && existsSync('/usr/bin/sandbox-exec'))
+})
+
+test('without the relay (Linux, Windows) the launcher runs the script exactly as before, with its key', async () => {
+  const { spawn } = await import('node:child_process')
+  const { writeFile } = await import('node:fs/promises')
+  const run = join(temp, 'legacy-project/artifacts/simulations/test')
+  await mkdir(run, { recursive: true })
+  await writeFile(join(run, 'run.py'), `import os, sys
+from pathlib import Path
+assert Path.cwd().resolve() == Path(__file__).resolve().parent, 'runs in its run folder, as python run.py did'
+assert os.environ['HUMANSTUDY_DESKTOP_KEY'] == 'fake-hosted-sentinel', 'pre-relay path: the key is in the environment'
+assert 'HUMANSTUDY_RELAY_DESCRIPTOR' not in os.environ
+print('legacy run ok', sys.argv[1:])
+`)
+  const env = { ...process.env, HUMANSTUDY_DESKTOP_KEY: 'fake-hosted-sentinel' }
+  delete env.HUMANSTUDY_RELAY_REQUIRED; delete env.HUMANSTUDY_RELAY_DESCRIPTOR
+  const child = spawn(process.env.HUMANSTUDY_TEST_PYTHON || 'python3', [join(dirname(fileURLToPath(import.meta.url)), '../../../pack/skills/simulate/run_confined.py'), '--final', join(run, 'run.py'), '--trial'], { env })
+  let out = '', err = ''; child.stdout.on('data', p => { out += p }); child.stderr.on('data', p => { err += p })
+  const code = await new Promise(resolve => child.once('exit', resolve))
+  assert.equal(code, 0, err.replace(/fake-hosted-sentinel/g, '[key]'))
+  assert.match(out, /legacy run ok \['--trial'\]/)
+  assert.ok(!out.includes('fake-hosted-sentinel') && !err.includes('fake-hosted-sentinel'), 'the launcher never prints the key')
 })

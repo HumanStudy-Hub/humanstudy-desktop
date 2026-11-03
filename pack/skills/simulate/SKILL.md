@@ -24,13 +24,19 @@ summary) is plain language about participants, conditions and results.
 
 Always launch the complete run script through `.opencode/skills/simulate/run_confined.py`,
 including trials and `study_core.py run/reproduce` wrappers. Never import package code in an
-unconfined process. The app creates an approved-run local relay; its per-run capability is not
-an upstream model key. The relay permits only the approved model and reserves at most 200,000
+unconfined process.
+
+On macOS the app sets `HUMANSTUDY_RELAY_REQUIRED=1`: it creates an approved-run local relay whose
+per-run capability is not an upstream model key, and `run_confined.py` runs the script inside
+macOS sandbox-exec. The relay permits only the approved model and reserves at most 200,000
 input/output tokens per run, with at most 4,096 output tokens per call. Only text messages are
 supported. Do not retry a token-cap refusal. Real upstream credentials stay in the app process.
-Relay simulations currently require macOS sandbox-exec; Linux/Windows refuse them because
-relay-only networking and process-environment isolation are not implemented there. Researchers
-may still invoke standalone study_core.py manually with their own credentials.
+
+On Linux and Windows the variable is not set: there is no relay and no sandbox, and
+`run_confined.py` runs the script exactly as `python run.py` would. The study's code can read the
+signed-in key in its environment there; the run confirmation tells the researcher. Do not try to
+work around either mode. Researchers may still invoke standalone study_core.py manually with their
+own credentials.
 
 Use the runtime's `humanstudy_llm` module. It is importable as is from the bundled `python` (never
 add a `sys.path` entry for it), and needs no key handling and no package install:
@@ -51,8 +57,13 @@ environment variable; do not call the endpoint any other way.
 ## Approval
 
 Before starting any real run or reproduction, check `.humanstudy/community.json` in the project.
-If present (including unreadable or malformed provenance), say exactly:
+If present (including unreadable or malformed provenance), say exactly, when
+`HUMANSTUDY_RELAY_REQUIRED` is `1` (macOS):
 "This study's code will run on your computer through a limited model relay (up to 200,000 tokens and 30 minutes)."
+and otherwise (Linux, Windows):
+"This study's code will run on your computer with access to your model key."
+Without the relay, also say for every run, community or not:
+"On this computer, the study's code can read your API key. Only run studies you trust."
 Include it in the existing run confirmation, before any package code executes; do not add a
 button or dialog. Community revision provenance currently carries no authenticated maintainer
 review attestation, so show the notice for every such fork. A local `reviewed` flag is not proof

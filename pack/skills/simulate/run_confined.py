@@ -1,18 +1,22 @@
 """Trusted entry point: confine the complete run script before any package imports.
 
-Desktop runs use the app's per-approval relay capability; no real credential is inherited.
-Linux/Windows refuse relay runs until relay-only network and process isolation exist.
-Hand-run study_core.py remains available to researchers using their own credentials.
+macOS desktop runs (the app sets HUMANSTUDY_RELAY_REQUIRED=1) use the app's per-approval relay
+capability inside sandbox-exec; no real credential is inherited. On Linux and Windows the app does
+not set it: the script runs as before, unconfined, and can read the key in its environment (the
+run confirmation tells the researcher). Hand-run study_core.py keeps using the researcher's own key.
 """
 import json
 import os
+import subprocess
 import urllib.request
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'build'))
-from sandbox_run import run_python
+
+def run_unconfined(script, args):
+    """Pre-relay path: exactly what `python run.py ...` in the run folder did."""
+    return subprocess.call([sys.executable, str(script), *args], cwd=str(script.parent))
 
 
 def main():
@@ -25,6 +29,10 @@ def main():
     if not args:
         raise SystemExit('usage: run_confined.py [--final] RUN_SCRIPT [args...]')
     script = Path(args[0]).resolve()
+    if os.environ.get('HUMANSTUDY_RELAY_REQUIRED') != '1':
+        raise SystemExit(run_unconfined(script, args[1:]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'build'))
+    from sandbox_run import run_python
     project = next((p for p in script.parents if (p / '.humanstudy').is_dir()), None)
     if project is None:
         raise SystemExit('No approved desktop project.')

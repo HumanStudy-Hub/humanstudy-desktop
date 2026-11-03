@@ -192,6 +192,9 @@ def already_confined():
     return False
 
 
+RELAY_SANDBOX_EXEC = "/usr/bin/sandbox-exec"
+
+
 def wrapper(work, read=(), relay_port=None):
     """(argv prefix, confinement label) for this platform."""
     if relay_port is not None and sys.platform != "darwin":
@@ -202,7 +205,10 @@ def wrapper(work, read=(), relay_port=None):
         if sys.platform == "darwin":  # someone else's sandbox: ours cannot be added on top, so do not run
             return None, "foreign sandbox"
     if sys.platform == "darwin":
-        exe = shutil.which("sandbox-exec") or ("/usr/bin/sandbox-exec" if os.path.exists("/usr/bin/sandbox-exec") else None)
+        if relay_port is not None:  # the relay trusts only the system binary, never one found on PATH
+            exe = RELAY_SANDBOX_EXEC if os.path.isfile(RELAY_SANDBOX_EXEC) else None
+        else:
+            exe = shutil.which("sandbox-exec") or ("/usr/bin/sandbox-exec" if os.path.exists("/usr/bin/sandbox-exec") else None)
         if exe:  # the profile goes inline: a file in the work folder could be rewritten by a leftover process
             return [exe, "-p", macos_profile(work, read, relay_port)], \
                 "sandbox-exec (no network, writes only in the work folder, home folder unreadable)"
