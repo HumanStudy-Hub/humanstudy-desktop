@@ -55,12 +55,28 @@ def is_table(value):
     return isinstance(value, dict) and isinstance(value.get("columns"), list) and isinstance(value.get("rows"), list)
 
 
+TABLE_META = ("table", "page", "uncertain")  # table keys that are not printed text
+
+
+def table_cells(value):
+    """Every printed cell of a table value as a string: title, headers (nested ones too), row cells (rows
+    given as dicts too), notes, and any other key except TABLE_META, so nothing in a table goes unchecked."""
+    def flat(v):
+        if isinstance(v, str):
+            return [v]
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return [str(v)]
+        if isinstance(v, list):
+            return [c for x in v for c in flat(x)]
+        if isinstance(v, dict):
+            return [c for x in v.values() for c in flat(x)]
+        return []
+    return [c for k, v in value.items() if k not in TABLE_META for c in flat(v)]
+
+
 def raw_pieces(value):
     if is_table(value):  # cell order in a PDF text layer is not the table's order: compare cell by cell
-        cells = [value.get("title")] + list(value["columns"]) + [c for r in value["rows"] if isinstance(r, list) for c in r]
-        notes = value.get("notes")
-        cells += notes if isinstance(notes, list) else [notes]
-        return [p for c in cells if isinstance(c, str) for p in re.split(r"\s+/\s+", c)]
+        return [p for c in table_cells(value) for p in re.split(r"\s+/\s+", c)]
     if isinstance(value, list):
         return [p for v in value for p in raw_pieces(v)]
     if isinstance(value, dict):
@@ -154,6 +170,19 @@ def compare(segs, evidence, ids, sources, default):
     return "not_found", "not on the cited page(s)", share
 
 
+def field_status(value, evidence, ids, sources, default):
+    """(status, info) of one verbatim value; shared with audit.py's X1 so both decide the same way."""
+    status, info, share = compare(segments(value), evidence, ids, sources, default)
+    if is_table(value) and status in ("close", "elsewhere", "partial") and share >= TABLE_SHARE:
+        # a text layer garbles table cells (OCR noise, cell order); the cells were read from the page
+        # image, so most text cells agreeing is the check; a wrong or invented table still fails
+        status, info = "table_text_layer", "%s; %d%% of text cells match the text layer" % (info, round(100 * share))
+    elif status == "close" and all((evidence.get(i) or {}).get("verification") == "unverified" for i in ids):
+        # a garbled text layer (OCR) misreads the printed words; the evidence says the text layer cannot verify them
+        status, info = "close_unverified", info + "; its evidence is marked unverified (garbled text layer)"
+    return status, info
+
+
 def check(program_path):
     program_path = Path(program_path).resolve()
     root = program_path.parent
@@ -173,14 +202,7 @@ def check(program_path):
         if not ids:
             results.append({"field": where, "status": "no_evidence", "info": "verbatim with no evidence"})
             continue
-        status, info, share = compare(segments(f.get("value")), evidence, ids, sources, default)
-        if is_table(f.get("value")) and status in ("close", "elsewhere", "partial") and share >= TABLE_SHARE:
-            # a text layer garbles table cells (OCR noise, cell order); the cells were read from the page
-            # image, so most text cells agreeing is the check; a wrong or invented table still fails
-            status, info = "table_text_layer", "%s; %d%% of text cells match the text layer" % (info, round(100 * share))
-        elif status == "close" and all((evidence.get(i) or {}).get("verification") == "unverified" for i in ids):
-            # a garbled text layer (OCR) misreads the printed words; the evidence says the text layer cannot verify them
-            status, info = "close_unverified", info + "; its evidence is marked unverified (garbled text layer)"
+        status, info = field_status(f.get("value"), evidence, ids, sources, default)
         pages = sorted({str(((evidence.get(i) or {}).get("locator") or {}).get("page")) for i in ids if i in evidence})
         results.append({"field": where, "status": status, "info": info, "pages": pages})
     counts = {}

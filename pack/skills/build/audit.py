@@ -46,6 +46,7 @@ for p in (HERE, AGENT, EXPORT):
 import capabilities  # noqa: E402
 import check_program  # noqa: E402
 import check_quotes  # noqa: E402
+import check_verbatim  # noqa: E402
 import sandbox_run  # noqa: E402
 
 try:
@@ -335,73 +336,98 @@ def check_S5(s, ctx):
 
 # ---- X: extraction fidelity -------------------------------------------------------------------------
 
-def segments(value):
-    """A verbatim value split into the pieces that should each appear in the source: list items, lines,
-    '; '-separated parts, and sentences of long parts."""
-    parts = value if isinstance(value, list) else re.split(r"\n+|;\s+|\s\|\s", text_of(value))
-    out = []
-    for part in parts:
-        part = text_of(part)
-        pieces = re.split(r"(?<=[.?!])\s+(?=[A-Z\u201c\"])", part) if len(part) > 300 else [part]
-        out += [x for x in (check_quotes.normalise(p) for p in pieces) if len(x) >= 3]
-    return out
-
-
 def find_text(s, value, evidence_ids):
-    """Compare a verbatim value with the pages its evidence cites.
+    """Compare a verbatim value with the pages its evidence cites: check_verbatim.py's comparison (the build
+    check), so a table field is checked by title, headers, row labels, text cells and notes, not as one string.
 
-    Returns (status, info): found (every piece on the cited pages), close (each piece found or nearly so),
-    elsewhere (found, but on other pages), partial (some pieces not in the source: added or reworded text),
-    not_found, or unchecked (a cited file is not readable here and the readable ones do not hold it)."""
-    segs = [q for q in segments(value) if re.search(r"[a-z]", q)]
-    if not segs:  # numbers only (a matrix, a list of values): text order in a PDF table cannot confirm them
-        return "unchecked", "numbers only"
-    by_file, unreadable = {}, []
-    for eid in evidence_ids:
+    Returns (status, info): found, table_text_layer / close_unverified (accepted by the build check on a
+    garbled text layer; a concern here), close, elsewhere, partial (added or reworded text), not_found, or
+    unchecked (a cited file is not readable here)."""
+    evidence = {eid: dict(e, path=s.ev_rel(e)) for eid, e in s.evidence.items() if isinstance(e, dict)}
+    return check_verbatim.field_status(value, evidence, evidence_ids, s.sources, s.pdf or "paper.pdf")
+
+
+def cited_windows(s, ids):
+    """The text of the cited pages and their neighbours, one window per readable file (as check_verbatim)."""
+    by_file, out = {}, []
+    for eid in ids:
         e = s.evidence.get(eid)
-        if not e:
-            continue
-        by_file.setdefault(s.ev_rel(e), set()).add((e.get("locator") or {}).get("page"))
-    windows, wholes = [], []
+        if isinstance(e, dict):
+            by_file.setdefault(s.ev_rel(e), set()).add((e.get("locator") or {}).get("page"))
     for rel, pages in by_file.items():
         doc = s.sources.pages(rel)
         if not doc:
-            unreadable.append(rel)
             continue
         nums = sorted(p for p in pages if isinstance(p, int) and 1 <= p <= len(doc))
-        if (nums and all(len(doc[n - 1]) < 40 for n in nums)) or sum(len(d) for d in doc) < 40:
-            unreadable.append("%s (no text layer on the cited page(s))" % rel)  # scanned: read as images, not here
-            continue
         near = sorted({x for n in nums for x in (n - 1, n, n + 1) if 1 <= x <= len(doc)})
-        windows.append(" ".join(doc[p - 1] for p in near) if len(doc) > 1 and near else " ".join(doc))
-        wholes.append(" ".join(doc))
+        out.append(" " + (" ".join(doc[p - 1] for p in near) if len(doc) > 1 and near else " ".join(doc)) + " ")
+    return out
+
+
+ADDED_HEADERS = {"panel"}  # build/SKILL.md: row groups or panels may become an added "Panel" column
+
+
+def table_units(cell):
+    """The parts of one table cell to find on the page, split as the text comparison splits them (stacked
+    headers on " / ", long cells into sentences): text pieces as (words, True), searched as a substring;
+    one- or two-character text and every number as (token, False), searched as a whole token (an estimate
+    and its interval are often printed on different lines)."""
+    out = []
+    for piece in re.split(r"\s+/\s+", str(cell)):
+        q = check_quotes.normalise(piece)
+        if not q:
+            continue
+        if not re.search(r"[a-z]", q):
+            out += [(check_quotes.normalise(n), False) for n in re.findall(r"\d*\.?\d+", piece)]
+        elif len(q) < 3:
+            out.append((q, False))
+        else:
+            out += [(x, True) for x in check_verbatim.segments(piece)]
+    return out
+
+
+def table_gaps(s, value, ids):
+    """What the text comparison of a table leaves open, checked on the cited pages: every number and every
+    one- or two-character cell as a whole token, and each row's cells (the header row too) within a short span
+    of each other. Text pieces the text comparison could not find exactly are left to it (they are already a
+    finding there), so a row is never flagged twice. Not decidable from a text layer, and so not checked:
+    minus signs (normalised away), column order, which of two nearby rows a value or label belongs to,
+    rows left out or repeated, and one-digit numbers (they are everywhere on a page).
+    Returns (cells with a part not found, rows whose cells are not together, rows checked)."""
+    windows = cited_windows(s, ids)
     if not windows:
-        return "unchecked", "cited file(s) not readable here: " + ", ".join(unreadable)
-    exact = close = elsewhere = 0
-    for q in segs:
-        if any(q in w for w in windows):
-            exact += 1
-        elif max(check_quotes.match(q, w) if len(q) < 6000 else 0.0 for w in windows) >= check_quotes.CLOSE:
-            close += 1
-        elif any(q in w for w in wholes):
-            elsewhere += 1
-    n = len(segs)
-    if exact == n:
-        return "found", None
-    if exact + close == n:
-        return "close", "%d of %d piece(s) nearly verbatim" % (close, n)
-    if exact + close + elsewhere == n:
-        return "elsewhere", "%d of %d piece(s) only on other pages" % (elsewhere, n)
-    if unreadable:
-        return "unchecked", "%d of %d piece(s) not in the readable files; also cites %s" % (
-            n - exact - close - elsewhere, n, ", ".join(unreadable))
-    if exact + close + elsewhere:
-        return "partial", "%d of %d piece(s) not in the source" % (n - exact - close - elsewhere, n)
-    return "not_found", None
+        return [], [], 0
+
+    def where(unit, w):
+        q, sub = unit
+        return [m.start() for m in re.finditer(re.escape(q) if sub else " %s%%? " % re.escape(q), w)]
+    missing = [c for c in check_verbatim.table_cells(value)
+               if any(not sub and not any(where((q, sub), w) for w in windows) for q, sub in table_units(c))]
+    apart, checked = [], 0
+    header = [c for c in (value.get("columns") or []) if check_quotes.normalise(str(c)) not in ADDED_HEADERS]
+    for row in [header] + list(value.get("rows") or []):  # the header row counts as a row
+        units = [u for c in check_verbatim.table_cells({"r": row}) for u in table_units(c)]
+        if len(units) < 2:
+            continue
+        checked += 1
+        span = 200 + sum(len(q) for q, _ in units)
+        ok = False
+        for w in windows:
+            hits = [h for h in ((u, where(u, w)) for u in units) if h[1] or not h[0][1]]  # drop text it did not find
+            hits = [h for _, h in hits]
+            if len(hits) < 2:
+                ok = ok or all(hits)
+                continue
+            if all(hits) and any(all(any(abs(p - a) <= span for p in h) for h in hits) for a in hits[0]):
+                ok = True
+                break
+        if not ok:
+            apart.append(" | ".join(str(c) for c in (row if isinstance(row, list) else [row]))[:80])
+    return missing, apart, checked
 
 
 def check_X1(s, ctx):
-    found, problems, unchecked = 0, [], []
+    found, problems, unchecked, tables = 0, [], [], 0
     for nid, n in s.nodes.items():
         for f in n.get("fields") or []:
             if f.get("origin") != "verbatim" or not text_of(f.get("value")).strip():
@@ -413,8 +439,27 @@ def check_X1(s, ctx):
                 continue
             status, info = find_text(s, f.get("value"), ids)
             pages = sorted({str((s.evidence.get(i) or {}).get("locator", {}).get("page")) for i in ids if i in s.evidence})
-            if status == "found":
+            if check_verbatim.is_table(f.get("value")) and status in ("found", "table_text_layer", "close"):
+                # Text cells are matched one by one, anywhere on the cited pages; numbers, short cells and
+                # which cells share a row are checked here. Column order is not verifiable from a text layer.
+                missing, apart, rows = table_gaps(s, f.get("value"), ids)
+                gaps = (["%d numeric or short cell(s) not on the page (%s)" % (len(missing), short(missing, 4))]
+                        if missing else []) + \
+                       (["%d of %d row(s) whose cells are not together on the page (%s)" % (len(apart), rows, short(apart, 3))]
+                        if apart else [])
+                if status != "found" or gaps:
+                    problems.append(("concern", "%s: table (cited page(s) %s): %s; needs human: compare the table with "
+                                     "the page image" % (where, ",".join(pages), "; ".join(
+                                         ([info] if status != "found" and info else []) + gaps))))
+                    continue
                 found += 1
+                tables += 1
+            elif status == "found":
+                found += 1
+            elif status == "close_unverified":
+                # the build check accepts this on a garbled text layer; the audit does not take that on trust
+                problems.append(("concern", "%s: %s (cited page(s) %s); needs human: compare with the page image"
+                                 % (where, info, ",".join(pages))))
             elif status == "unchecked":
                 unchecked.append("%s (%s)" % (where, info) if info else where)
             elif status == "not_found":
@@ -428,6 +473,10 @@ def check_X1(s, ctx):
         return R("n/a", None, "no verbatim fields")
     note = "%d verbatim field(s): %d found word for word, %d problem(s), %d unchecked (cited file not readable here)" % (
         total, found, len(problems), len(unchecked))
+    if tables:
+        note += "; %d table(s) found cell by cell with each row's cells together (not verifiable from a text " \
+                "layer: minus signs, column order, values swapped between neighbouring rows, left-out or repeated rows, " \
+                "one-digit numbers)" % tables
     if problems:
         worst = "fail" if any(p[0] == "fail" for p in problems) else "concern"
         return R(worst, short(p[1] for p in problems), note, details=[p[1] for p in problems] + ["unchecked: " + u for u in unchecked])

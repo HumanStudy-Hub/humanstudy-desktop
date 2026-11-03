@@ -164,6 +164,50 @@ class AuditTest(unittest.TestCase):
         self.assertIn("program.json#node:m1.text", items["X1"]["evidence"])
         self.assertEqual(run.returncode, 1)
 
+    def test_table_fields_are_checked_cell_by_cell(self):
+        # A text layer prints a table cell by cell, in an order that is not the table's: joined into one
+        # string, a correctly transcribed table was "not found". Each cell must still be on the page.
+        page = (SOURCE_TEXT + " Table 2 Mean confidence by condition Condition Mean rating Heads framing 4.2 "
+                "Tails framing 3.1 Note. Ratings on a scale from 1 to 7.")
+        table = {"table": "table-2", "title": "Table 2 Mean confidence by condition",
+                 "columns": ["Condition", "Mean rating"],
+                 "rows": [["Heads framing", "4.2"], ["Tails framing", "3.1"]],
+                 "notes": ["Note. Ratings on a scale from 1 to 7."]}
+        _, items, _ = run_audit(self.study(verbatim_value=table, extra={"sources/materials.txt": page}), "--only", "X1")
+        self.assertEqual(items["X1"]["result"], "pass", items["X1"])
+        self.assertIn("1 table(s) found cell by cell", items["X1"]["note"])
+        # Stacked headers are joined with " / " (build/SKILL.md) although the page prints them on two lines
+        # with other headers in between; an added "Panel" column is not printed at all.
+        stacked_page = (SOURCE_TEXT + " Table 3 Ratings by study Study 1 Study 2 Panel A Mean Mean SD "
+                        "Heads framing 4.2 3.9 0.8 Tails framing 3.1 2.8 0.7 Note. Ratings on a scale from 1 to 7.")
+        stacked = {"table": "table-3", "title": "Table 3 Ratings by study",
+                   "columns": ["Panel", "Condition", "Study 1 / Mean", "Study 2 / Mean", "Study 2 / SD"],
+                   "rows": [["Panel A", "Heads framing", "4.2", "3.9", "0.8"], ["Panel A", "Tails framing", "3.1", "2.8", "0.7"]],
+                   "notes": ["Note. Ratings on a scale from 1 to 7."]}
+        stacked["columns"][1] = ""  # the stub column has no printed header
+        _, items, _ = run_audit(self.study(verbatim_value=stacked, extra={"sources/materials.txt": stacked_page}),
+                                "--only", "X1")
+        self.assertEqual(items["X1"]["result"], "pass", items["X1"])
+        reworded = json.loads(json.dumps(table))
+        reworded["rows"][1][0] = "Tails condition"  # a reworded cell
+        _, items, _ = run_audit(self.study(verbatim_value=reworded, extra={"sources/materials.txt": page}), "--only", "X1")
+        self.assertNotEqual(items["X1"]["result"], "pass", items["X1"])
+        self.assertIn("program.json#node:m1.text", items["X1"]["evidence"])
+        self.assertEqual(items["X1"]["result"], "concern", items["X1"])
+        invented = json.loads(json.dumps(table))
+        invented["rows"].append(["Edge framing", "5.0"])  # a row the paper does not have
+        _, items, _ = run_audit(self.study(verbatim_value=invented, extra={"sources/materials.txt": page}), "--only", "X1")
+        self.assertEqual(items["X1"]["result"], "concern", items["X1"])
+        # Text cells all match, so only the number and row checks can see these.
+        for change in (lambda t: t["rows"][1].__setitem__(1, "3.7"),            # a wrong number
+                       lambda t: t["rows"].append(["Tails framing", "4.9"]),     # an invented row of page words
+                       lambda t: t["columns"].__setitem__(1, "M")):              # a header the page does not print
+            altered = json.loads(json.dumps(table))
+            change(altered)
+            _, items, _ = run_audit(self.study(verbatim_value=altered, extra={"sources/materials.txt": page}), "--only", "X1")
+            self.assertEqual(items["X1"]["result"], "concern", (altered, items["X1"]))
+            self.assertIn("program.json#node:m1.text: table", items["X1"]["evidence"])
+
     def test_shared_context_between_participants_fails(self):
         run, items, _ = run_audit(self.study(adapter=SHARED), "--only", "P1")
         self.assertEqual(items["P1"]["result"], "fail", items["P1"])
