@@ -4,9 +4,9 @@ import { readdir, readFile, realpath } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { join, sep } from 'node:path'
 import { packageReadiness, type PackageReadiness } from '../shared/package-readiness'
-import { looksLikeRevision } from './run-notice'
 
 export const COMMUNITY_RUN_NOTICE = "This study's code will run on your computer with access to your model key."
+import { looksLikeRevision } from './run-notice' // run-notice.ts imports nothing from here; kept next to its only use
 
 /** Local community provenance is informational, not a security attestation. Until the catalog
  * provides authenticated review state, conservatively show the notice for every revision fork. */
