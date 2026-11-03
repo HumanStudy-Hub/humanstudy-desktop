@@ -16,7 +16,9 @@ These build rules are checked here only (effects_core.py, which HumanStudy-Bench
                 participant count in program.json, records it in reported.n (or cells.<arm>.n), or says in
                 reported.missing why this effect's N is not printed (a subgroup, a different unit). A recorded
                 reported.n must be accounted for by its quotes (printed, a printed total minus a printed
-                exclusion count, a multiple of a per-group N, the sum of the cells, df + 1 or df + 2).
+                exclusion count, a per-group N times the arms when the quote says "per group", the sum of
+                the cells, df + 1 or df + 2).
+                Limit: a study N copied onto a subgroup passes when the subgroup's count is not printed as an N.
   sign          a difference-type estimate (d, dz, g, mean or risk difference, log odds ratio) is treatment
                 minus reference: when the cells print both arms, its sign must be the sign of their
                 difference; when they do not and the paper prints the value without a sign, the estimate
@@ -147,15 +149,22 @@ def _study_n(program, study):
     return None
 
 
-def _n_follows(n, printed, cells, quotes):
-    """True when the quotes account for n: printed, a printed total minus a printed exclusion count, a small
-    multiple of a printed per-group N, the sum of the cells' n, or df + 1 / df + 2 of a printed test."""
-    numbers = {int(x) for q in quotes for x in effects_core.numbers_in(q) if float(x).is_integer() and x > 0}
+EXCLUDED = re.compile(r"(\d[\d,]*)\s+(?:\w+\s+){0,3}?(?:were|was)\s+(?:excluded|removed|dropped|discarded|omitted)|"
+                      r"(?:excluded|excluding|removed|removing|dropped|discarded|omitted)\s+(?:\w+\s+){0,2}?(\d[\d,]*)|"
+                      r"(\d[\d,]*)\s+(?:\w+\s+){0,3}?(?:did not|failed to) (?:complete|finish|pass)", re.I)
+PER_GROUP = re.compile(r"\b(?:per|each|every|in each) (?:group|condition|cell|arm)\b|\bper (?:group|condition)\b", re.I)
+
+
+def _n_follows(n, printed, cells, quotes, arms=2):
+    """True when the quotes account for n: printed; a printed total minus a printed exclusion count ("30 were
+    excluded"); a per-group N ("60 per group") times the number of arms; the sum of the cells' n; or
+    df + 1 / df + 2 of a printed test."""
     if n in printed or (cells and sum(cells) == n):
         return True
-    if any(a - b == n for a in printed for b in numbers if b < a):
+    excluded = {int(x.replace(",", "")) for q in quotes for m in EXCLUDED.finditer(q) for x in m.groups() if x}
+    if any(a - b == n for a in printed for b in excluded if b < a):
         return True
-    if any(n == k * p for p in printed for k in range(2, 7)):
+    if any(PER_GROUP.search(q) for q in quotes) and any(n == arms * p for p in printed):
         return True
     dfs = {int(m.group(1)) for q in quotes for m in DF.finditer(q)}
     return any(n in (d + 1, d + 2) for d in dfs)
@@ -199,9 +208,9 @@ def build_rules(effects, program):
                        "effect is computed on, as printed, or say in reported.missing why none of these is its N"
                        % (where, ", ".join(dict.fromkeys(printed))))
         elif has_n and printed_values and _num(rep.get("n")) is not None \
-                and not _n_follows(rep["n"], printed_values, given[1:], quotes):
+                and not _n_follows(rep["n"], printed_values, given[1:], quotes, max(2, len(cells))):
             out.append("%s: reported.n = %g, but its quotes print N = %s and nothing they print gives %g (a printed "
-                       "N, a total minus exclusions, a multiple of a per-group N, the sum of the cells, or df + 1 or "
+                       "N, a total minus a printed exclusion count, a per-group N times the arms, the sum of the cells, or df + 1 or "
                        "df + 2 of a printed test); record the N this effect is computed on and cite the quote that "
                        "prints it" % (where, rep["n"], ", ".join(map(str, sorted(printed_values))), rep["n"]))
         elif not has_n and not said:

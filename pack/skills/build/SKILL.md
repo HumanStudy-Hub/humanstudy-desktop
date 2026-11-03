@@ -403,8 +403,8 @@ A built-in op must read fields that both the human loader's sessions and the ada
 carry (the same path in both; `trials.0.answer` indexes a list); the check runs the adapter with a
 stand-in model to make sure. Run `python .opencode/skills/build/effects.py .` until it prints `PASS`; it
 also fails an effect whose quotes or study print N while `reported.n` is empty and `missing` says
-nothing about it, a `reported.n` its quotes do not account for (printed, a total minus printed exclusions, a multiple of
-a per-group N, the sum of the cells, or df + 1 / df + 2 of a printed test),
+nothing about it, a `reported.n` its quotes do not account for (printed, a printed total minus a printed exclusion
+count, a printed per-group N times the arms, the sum of the cells, or df + 1 / df + 2 of a printed test),
 a signed estimate whose sign disagrees with its own cells, a CI that does not contain its value, and
 an unsigned printed estimate without cells or `signBasis`. Its warnings list program
 nodes no hypothesis or effect reaches; link them where the paper links them. With human data, run

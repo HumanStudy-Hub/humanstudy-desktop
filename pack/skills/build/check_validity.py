@@ -90,27 +90,28 @@ explicitly directly initially ever specifically cued explained explanation infor
 cover story believe led deceived kept remained participant participants subject subjects respondent respondents
 volunteers player players children student students individuals people patients observers listeners raters
 workers infants adults never were was are task experiment study""".split())
-_SEEN = r"(?:choices?|outcomes?|trials?|responses?|rounds?|decisions?|selections?|rewards?|earnings|payoffs?|results?)"
+# plural or "all": the earlier trials, not the last one ("the outcome of the previous trial" is last-trial)
+_SEEN = r"(?:choices|outcomes|trials|responses|rounds|decisions|selections|rewards|earnings|payoffs|results)"
 HISTORY_WORDS = re.compile(
-    r"\b(?:their|his|her|own|participants'?|subjects'?|the) (?:own )?(?:previous|earlier|past|prior|preceding) " + _SEEN +
-    r"|\bhistory of (?:their |the |all )?(?:previous |past )?" + _SEEN +
+    r"\b(?:their|his|her|own|participants'?|subjects'?|the|all) (?:own )?(?:previous|earlier|past|prior|preceding) " + _SEEN +
+    r"|\bhistory of (?:their |the |all )?(?:previous |past )?(?:choices?|outcomes?|trials?|responses?|rewards?)"
     r"|\b(?:choice|outcome|reward|trial|response|payoff) histor(?:y|ies)\b"
     r"|\ball (?:of )?(?:their|the) (?:previous |earlier |past )?" + _SEEN + r" (?:so far|were (?:shown|displayed|visible))"
     r"|\b(?:shown|displayed|visible|presented)\b[^.]{0,60}\b(?:previous|earlier|past|prior|preceding) " + _SEEN +
-    r"|\b(?:previous|earlier|past|prior|preceding) " + _SEEN + r"[^.]{0,40}\b(?:were|was|remained) (?:shown|displayed|visible|presented)",
+    r"|\b(?:previous|earlier|past|prior|preceding) " + _SEEN + r"[^.]{0,40}\b(?:were|remained) (?:shown|displayed|visible|presented)",
     re.I)
 MATERIAL_FIELD = re.compile(r"instruction|debrief|briefing|item|question|prompt|stimul|scenario|vignette|scale|"
                             r"script|screen|message|text|wording|consent|cover", re.I)
 DESIGNS = ("none", "last-trial", "summary", "same-screen", "full-log", "conversation", "other")
-SCREEN_WORDS = re.compile(r"\b(?:same|one|single|a) (?:web ?)?(?:page|screen)\b|\ball (?:of )?(?:the )?(?:\w+ )?(?:items|questions)\b"
+SCREEN_WORDS = re.compile(r"\b(?:same|one|single) (?:web ?)?(?:page|screen)\b|\ball (?:of )?(?:the )?(?:\w+ )?(?:items|questions)\b"
                           r"[^.]{0,60}\b(?:together|simultaneously|at once|on (?:one|a single|the same) (?:page|screen))"
                           r"|\b(?:items|questions) (?:were |was )?(?:presented|shown|displayed) (?:together|simultaneously|at once)",
                           re.I)
+FORM_WORDS = re.compile(r"\b(?:items?|questions?|questionnaires?|survey|form|scales?|inventory)\b", re.I)
 MAX_TERM_WORDS = 3
 # a not-told sentence about someone other than the participants (blind experimenters, other studies)
-OTHERS = re.compile(r"experimenters?|researchers?|raters?|coders?|assessors?|interviewers?|confederates?|"
-                    r"investigators?|staff|clinicians?|blind to|double.blind|et al|(?:previous|prior|other|earlier) "
-                    r"(?:studies|work|research)|animals?|rats?|mice|monkeys?", re.I)
+OTHERS = re.compile(r"\b(?:experimenters?|researchers?|raters?|coders?|assessors?|interviewers?|confederates?|"
+                    r"investigators?|staff|clinicians?|animals?|rats?|mice|monkeys?)\b", re.I)
 FULL = ("full-log", "conversation")
 CALL_CAP = 2500          # stand-in calls over all arms before the capture stops
 ARM_CAP = 600            # per arm (every arm study.json or task.json names is run on its own)
@@ -254,6 +255,13 @@ def content_words(text):
     return {w for w in norm(text or "").split() if len(w) >= 3 and w not in STOP and w not in FRAME and not w.isdigit()}
 
 
+def subject_of(statement):
+    """The words just before the "were not told" phrase: whose knowledge the sentence is about."""
+    text = re.sub(r"\s+", " ", str(statement or ""))
+    m = next((m for pat in TRIGGERS for m in [pat.search(text)] if m), None)
+    return " ".join(text[:m.start()].split()[-4:]) if m else text
+
+
 def _on_page(entry, pages):
     page = entry.get("page")
     if not isinstance(page, int) or not pages:
@@ -302,7 +310,7 @@ def capture(pkg):
                 raise _Stop()
             prompts.append(prompt if isinstance(prompt, str) else json.dumps(prompt, ensure_ascii=False))
             return _standin(prompts[-1])
-        rec = {"arms": arms, "calls": 0, "sessions": None, "capped": False, "error": None}
+        rec = {"arms": arms, "calls": 0, "sessions": None, "capped": False, "error": None, "n": n}
         try:
             sessions = mod.run_sessions(llm, 20261102, n, arms=arms) if arms else mod.run_sessions(llm, 20261102, n)
             rec["sessions"] = len(sessions) if isinstance(sessions, list) else None
@@ -547,15 +555,21 @@ def check(root, package=None, capture_prompts=True):
             'add to the procedure node a field {"id": "not-told", "label": "What participants were not told", '
             '"origin": "reported", "state": "confirmed", "value": [...], "evidenceIds": [...]} ([] when the paper '
             'says nothing was withheld)')
-    issues_on = {(i.get("nodeId"), i.get("fieldId")) for i in program.get("issues") or [] if isinstance(i, dict)
-                 and i.get("severity") in ("check", "decision")}
+    issues_on = {}
+    for i in program.get("issues") or []:
+        if isinstance(i, dict) and i.get("severity") in ("check", "decision"):
+            key = (i.get("nodeId"), i.get("fieldId"))
+            issues_on[key] = issues_on.get(key, 0) + 1
+    need = {}   # notApplicable entries about the participants, per node: one check issue each
     not_applicable = 0
     for e in entries:
         if str(e.get("notApplicable") or "").strip():
             not_applicable += 1
             notes.append("%s marked not applicable: %s" % (e["_where"], str(e["notApplicable"])[:200]))
             node_id = e["_where"].split(".not-told", 1)[0]
-            if not OTHERS.search(str(e.get("statement") or "")) and (node_id, "not-told") not in issues_on:
+            if not OTHERS.search(subject_of(e.get("statement"))):
+                need[node_id] = need.get(node_id, 0) + 1
+            if need.get(node_id, 0) > issues_on.get((node_id, "not-told"), 0):
                 add("%s: marked not applicable, but the statement is about the participants" % e["_where"],
                     "list what was withheld and its terms; if it truly does not limit what participants may be told, "
                     "add a `check` issue on this field (nodeId %s, fieldId not-told) saying why, so the researcher "
@@ -615,8 +629,7 @@ def check(root, package=None, capture_prompts=True):
         # memory
         params, full_static = history_params(pkg)
         growth = any(grows(r.get("lengths") or []) for r in runs)
-        per_participant = max([r["calls"] / max(1, r["sessions"] or 1) for r in runs if r.get("sessions")] or
-                              [r["calls"] for r in runs] or [0])
+        per_participant = max([r["calls"] / max(1, r.get("sessions") or r.get("n") or 1) for r in runs] or [0])
         carries = growth or (full_static and params)
         memory = [(n, f) for n, f in _fields(program) if f.get("id") == "replay-memory"]
         if (carries or params or per_participant >= MIN_TRIALS) and not memory:
@@ -649,9 +662,11 @@ def check(root, package=None, capture_prompts=True):
                     "default to what participants plausibly saw (the current screen, the last outcome, a counter "
                     "they saw), or cite the evidence that says participants saw their earlier trials (a quote about "
                     "their previous choices, history or record); a researcher may decide otherwise")
-            if v.get("design") == "same-screen" and not researcher and not any(SCREEN_WORDS.search(q) for q in quotes):
+            if v.get("design") == "same-screen" and not researcher and not any(
+                    SCREEN_WORDS.search(q) and FORM_WORDS.search(q) for q in quotes):
                 add("%s: design same-screen (earlier items stay visible) needs evidence that they were shown together"
-                    % where, "cite the quote that says the items were on one page or screen (a questionnaire, a form)")
+                    % where, "cite the quote that says the questionnaire's items were on one page or shown together; a trial "
+                    "task is not a questionnaire")
             if carries and v.get("design") not in FULL + ("other", "same-screen"):
                 add("%s: design is %r but the prompts carry every earlier trial (%s)"
                     % (where, v.get("design"), "growing prompts" if growth else ", ".join(params)),
@@ -681,18 +696,19 @@ def check(root, package=None, capture_prompts=True):
         if f.get("state") != "missing" or not INSTRUCTION.search("%s %s" % (f.get("id"), f.get("label"))):
             continue
         mine = [i for i in issues if i.get("nodeId") == n.get("id") and i.get("fieldId") in (f.get("id"), None, "")]
-        if not any(i.get("severity") == "decision" or (i.get("severity") == "blocking" and not runs_whole) for i in mine):
+        wrong = [i for i in mine if i.get("severity") == "check" or (i.get("severity") == "blocking" and runs_whole)]
+        if not wrong and not any(i.get("severity") == "decision" or (i.get("severity") == "blocking" and not runs_whole)
+                                 for i in mine):
             add("%s.%s: missing participant instructions have no `decision` issue" % (n.get("id"), f.get("id")),
                 "add a decision issue on this field: the researcher supplies the printed text or accepts the "
                 "stand-in wording the adapter uses (say which in suggestedAction)")
-        for i in mine:
-            if i.get("severity") == "check" or (i.get("severity") == "blocking" and runs_whole):
-                add("%s: issue %s on missing participant instructions has severity %r" % (
-                    "%s.%s" % (n.get("id"), f.get("id")), i.get("id"), i.get("severity")),
-                    "missing instruction wording is a `decision` (the researcher supplies the printed text or accepts "
-                    "the stand-in wording the adapter uses; say which in suggestedAction), or `blocking` only when the "
-                    "adapter refuses to run without it (this one runs); never a `check`, and never written into a "
-                    "verbatim field")
+        for i in wrong:
+            add("%s: issue %s on missing participant instructions has severity %r" % (
+                "%s.%s" % (n.get("id"), f.get("id")), i.get("id"), i.get("severity")),
+                "missing instruction wording is a `decision` (the researcher supplies the printed text or accepts "
+                "the stand-in wording the adapter uses; say which in suggestedAction), or `blocking` only when the "
+                "adapter refuses to run without it (this one runs); never a `check`, and never written into a "
+                "verbatim field")
     return {"problems": problems, "notes": notes, "method": method, "notApplicable": not_applicable}
 
 

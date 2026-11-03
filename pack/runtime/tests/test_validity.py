@@ -94,7 +94,11 @@ class Validity(FakePdfMixin, unittest.TestCase):
                           {"id": "e-cross", "path": "paper.pdf", "locator": {"page": 2},
                            "quote": "A fixation cross was displayed on the screen and removed after 500 ms."},
                           {"id": "e-rec", "path": "paper.pdf", "locator": {"page": 2},
-                           "quote": "Responses were recorded with a keypress. Past research has shown that learning is slow."}]
+                           "quote": "Responses were recorded with a keypress. Past research has shown that learning is slow."},
+                          {"id": "e-last", "path": "paper.pdf", "locator": {"page": 2},
+                           "quote": "After each choice, the outcome of the previous trial was displayed for 1 s."},
+                          {"id": "e-a-screen", "path": "paper.pdf", "locator": {"page": 2},
+                           "quote": "Stimuli were presented on a screen at 60 cm; each trial was shown on one screen."}]
         (root / "program.json").write_text(json.dumps(p), encoding="utf-8")
         (root / "paper.pdf").write_bytes(b"%PDF-1.4 stub")
         pkg = root / "package/x"
@@ -166,6 +170,15 @@ class Validity(FakePdfMixin, unittest.TestCase):
         dodge = dict(ENTRY, terms=[], withheld="", notApplicable="describes the computational model")
         found = self.problems(self.project([self.not_told([dodge])]))
         self.assertTrue(any("marked not applicable, but the statement is about the participants" in m for m in found), found)
+        # "researchers" or "et al" elsewhere in the sentence does not make it about someone else
+        for text in ("Participants were not told the researchers' hypothesis that the red key paid more often.",
+                     "Following Smith et al. (2019), participants were not told that the red key paid more often."):
+            entry = dict(dodge, statement=text)
+            found = self.problems(self.project([self.not_told([entry])], pages=[PAGES[0], text]))
+            self.assertTrue(any("marked not applicable, but" in m for m in found), (text, found))
+        blind = "The experimenters were not told which condition each participant was in."
+        found = self.problems(self.project([self.not_told([dict(dodge, statement=blind)])], pages=[PAGES[0], blind]))
+        self.assertFalse(any("marked not applicable, but" in m for m in found), found)
         na = dict(ENTRY, terms=[], withheld="", notApplicable="about the experimenters")
         confirm = {"id": "i-na", "title": "Not applicable", "severity": "check", "reason": "r", "impact": "i",
                    "suggestedAction": "s", "evidenceIds": [], "nodeId": "task", "fieldId": "not-told"}
@@ -195,8 +208,12 @@ class Validity(FakePdfMixin, unittest.TestCase):
         # a methods sentence that merely mentions a screen, or "recorded"/"past", is not that evidence
         found = self.problems(self.project([nt, self.memory("same-screen", evidence=["e-cross"])], issues=[self.MEMORY_ISSUE]))
         self.assertTrue(any("same-screen" in m and "needs evidence" in m for m in found), found)
-        found = self.problems(self.project([nt, self.memory("full-log", evidence=["e-rec"])], issues=[self.MEMORY_ISSUE]))
-        self.assertTrue(any("(design 'full-log') is not what participants saw" in m for m in found), found)
+        for ev in ("e-rec", "e-last"):   # last-trial feedback does not justify a full log
+            found = self.problems(self.project([nt, self.memory("full-log", evidence=[ev])], issues=[self.MEMORY_ISSUE]))
+            self.assertTrue(any("(design 'full-log') is not what participants saw" in m for m in found), (ev, found))
+        found = self.problems(self.project([nt, self.memory("same-screen", evidence=["e-a-screen"])],
+                                           issues=[self.MEMORY_ISSUE]))
+        self.assertTrue(any("same-screen" in m and "needs evidence" in m for m in found), found)
         found = self.problems(self.project([nt, self.memory("last-trial")], issues=[self.MEMORY_ISSUE]))
         self.assertTrue(any("design is 'last-trial' but the prompts carry every earlier trial" in m for m in found), found)
         found = self.problems(self.project([nt, self.memory("full-log")]))
@@ -282,6 +299,8 @@ class Validity(FakePdfMixin, unittest.TestCase):
                  "impact": "i", "suggestedAction": "s", "evidenceIds": [], "nodeId": "task", "fieldId": "briefing"}
         found = self.problems(self.project([self.not_told([ENTRY]), field], issues=[issue]))
         self.assertTrue(any("missing participant instructions has severity 'check'" in m for m in found), found)
+        self.assertFalse(any("no `decision` issue" in m for m in found), found)   # one problem per field
+        found = self.problems(self.project([self.not_told([ENTRY]), field]))
         self.assertTrue(any("missing participant instructions have no `decision` issue" in m for m in found), found)
         found = self.problems(self.project([self.not_told([ENTRY]), field], issues=[dict(issue, severity="decision")]))
         self.assertFalse(any("missing participant instructions" in m for m in found), found)
@@ -350,10 +369,14 @@ class EffectRules(unittest.TestCase):
         self.assertTrue(any("reported.n = 81, but its quotes print N = 40" in m for m in found), found)
         found = self.rules(self.effect(n=81, missing=["SDs n/a"]))
         self.assertTrue(any("reported.n = 81" in m for m in found), found)
-        # an N the quotes account for: twice a per-group N, total minus exclusions, df + 1 (t(39))
+        # an N the quotes account for: a per-group N times the arms, total minus printed exclusions, df + 1
+        self.assertTrue(any("reported.n = 80" in m for m in self.rules(self.effect(n=80))))   # no "per group"
+        self.program["evidence"][-1]["quote"] = "Forty participants (N = 40) per group took part."
         self.assertEqual(self.rules(self.effect(n=80)), [])
         self.program["evidence"][-1]["quote"] = "Of the 48 participants, 8 were excluded."
         self.assertEqual(self.rules(self.effect(n=40)), [])
+        self.program["evidence"][-1]["quote"] = "N = 48 participants completed 8 blocks each."
+        self.assertTrue(any("reported.n = 38" in m for m in self.rules(self.effect(n=38))))
         self.assertEqual(self.rules(self.effect(n=None, missing=["SDs n/a"]))[:1],
                          [m for m in self.rules(self.effect(n=None)) if "print N" in m][:1])
 
