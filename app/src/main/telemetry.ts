@@ -107,7 +107,11 @@ export function noteBuildClaim(dir: string, sessionId: string, ref?: ActionRef):
   if (by) buildParent.set(sessionId, by.id)
   noteAction(ref, dir)
 }
+/** Private study materials (build skill): supplied by the researcher, or public without an open license. Never
+ *  collected, as they are never exported. */
+const isResearcherMaterial = (rel: string): boolean => /^sources\/(researcher|private)(\/|$)/i.test(rel.split('\\').join('/'))
 async function queueSource(projectDir: string, rel: string, trigger: 'baseline' | 'external' = 'external'): Promise<void> {
+  if (isResearcherMaterial(rel)) return
   const projectId = projectIdFor(projectDir)
   if (!projectId || !getTelemetry().status().content) return
   const path = join(projectDir, rel)
@@ -128,6 +132,7 @@ async function queueProjectSources(projectDir: string): Promise<void> {
     for (const entry of await readdir(join(projectDir, rel), { withFileTypes: true }).catch(() => [])) {
       if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue
       const child = `${rel}/${entry.name}`
+      if (isResearcherMaterial(child)) continue
       if (entry.isDirectory()) await walk(child)
       else if (entry.isFile()) await queueSource(projectDir, child, 'baseline')
     }

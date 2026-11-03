@@ -2,8 +2,12 @@
 """Export public research assets with their exact community baseline; never chat or credentials."""
 import argparse
 import json
+import sys
 import zipfile
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "build"))
+import check_materials  # noqa: E402  (researcher-supplied and not-openly-licensed materials stay in the project)
 
 PRIVATE = {".env", ".git", ".opencode", ".humanstudy", "node_modules", "__pycache__", "threads", "conversations", "chat", "chats", "credentials", "account.json", "settings.json"}
 
@@ -41,6 +45,7 @@ def export(root, output, include_paper=False):
             if folder.is_symlink():
                 raise ValueError("Symlinked source folders cannot be published")
             candidates.extend(sorted(folder.rglob("*")))
+    private = {p.lower() for p in check_materials.private_paths(root)}  # sources/researcher/, sources/private/
     files = []
     for path in candidates:
         if path.is_symlink():
@@ -54,6 +59,8 @@ def export(root, output, include_paper=False):
             continue
         if path.suffix.lower() == ".pdf" and not include_paper:
             continue
+        if rel.as_posix().lower() in private or check_materials.private_rel(rel.as_posix()):
+            continue  # the researcher's own materials: used in their project, never published by us
         if rel.as_posix() == "sources/study.json" and (source_path == path or source_path.is_file() and source_path.read_bytes() == path.read_bytes()):
             continue  # Local source/fork metadata is represented by the minimal baseline above.
         files.append((path, rel.as_posix()))
@@ -73,14 +80,36 @@ def export(root, output, include_paper=False):
             continue
         if source.suffix.lower() == ".pdf" and not include_paper:
             continue
+        if relative.as_posix().lower() in private or check_materials.private_rel(relative.as_posix()):
+            continue
         if not any(path == source for path, _ in files):
             files.append((source, "sources/attached/" + relative.as_posix()))
+    # A copy of private text in an artifact (a simulation log, a report) is left out and listed; in the program or
+    # the package it stops the export, because the contribution would not be what the researcher reviewed.
+    omitted = []
+    for shown, src, _ in check_materials.leaks(root, [path for path, _ in files]):
+        if not shown.startswith("artifacts/"):
+            raise ValueError("Private materials appear in %s (from %s); researcher-supplied and not openly licensed "
+                             "materials stay in the project and are not published. Keep the text only in "
+                             "sources/researcher/ or sources/private/ and reference the file." % (shown, src))
+        omitted.append(shown)
+    files = [(path, name) for path, name in files if path.relative_to(root).as_posix() not in omitted]
+    if omitted:
+        meta["omitted"] = [{"path": p, "reason": "contains private materials (researcher-supplied or not openly licensed)"}
+                           for p in omitted]
     meta["includesPdf"] = include_paper
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
         with zipfile.ZipFile(output, "x", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("CONTRIBUTION.json", json.dumps(meta, ensure_ascii=False, indent=2))
             for path, name in files:
+                if name == "sources/SOURCE.json":  # without the records of files that stay private
+                    record = json.loads(path.read_text(encoding="utf-8"))
+                    record["files"] = [f for f in record.get("files") or [] if not (isinstance(f, dict) and (
+                        str(f.get("path", "")).lower() in private or check_materials.private_rel(f.get("path", ""))
+                        or f.get("private") is True or f.get("license") == check_materials.RESEARCHER_LICENSE))]
+                    archive.writestr(name, json.dumps(record, ensure_ascii=False, indent=2) + "\n")
+                    continue
                 archive.write(path, name)
     except Exception:
         output.unlink(missing_ok=True)

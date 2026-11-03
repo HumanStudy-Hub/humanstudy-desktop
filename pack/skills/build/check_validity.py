@@ -428,10 +428,20 @@ def static_texts(pkg):
     return texts
 
 
-def participant_text(program):
-    """Normalised pieces of verbatim participant materials (the participants' own text, not a leak)."""
+def participant_text(program, root=None):
+    """Normalised pieces of verbatim participant materials (the participants' own text, not a leak), including the
+    original materials the researcher supplied (sources/researcher/, see check_materials.py)."""
     pieces = []
     for n, f in _fields(program):
+        m = (f.get("extensions") or {}).get("material") if isinstance(f.get("extensions"), dict) else None
+        if root is not None and isinstance(m, dict) and m.get("kind") == "needs-original" and m.get("status") in (
+                "supplied", "found-private"):
+            import check_materials
+            rel = str(m.get("file") or "")
+            if check_materials.private_rel(rel) and (Path(root) / rel).is_file():
+                pieces += [p for p in check_verbatim.segments(check_materials.text_of(Path(root) / rel))
+                           if len(p.split()) >= 3]
+            continue
         if f.get("origin") != "verbatim":
             continue
         if n.get("kind") not in ("material", "materials") and not MATERIAL_FIELD.search("%s %s" % (f.get("id"), f.get("label"))):
@@ -584,12 +594,13 @@ def check(root, package=None, capture_prompts=True):
                 "contain; or `notApplicable` with the reason when it is not about what participants knew")
 
     # prompts
-    method, runs, texts = None, [], []
+    method, runs, texts, arm_refused = None, [], [], False
     if pkg is None:
         notes.append("no package/<slug>/task/adapter.py: prompts not checked")
     else:
         cap = prompts_of(pkg) if capture_prompts else {"runs": [], "error": "capture off"}
         runs = [r for r in cap.get("runs") or [] if r.get("calls")]
+        arm_refused = any(r.get("error") and r.get("arms") for r in cap.get("runs") or [])
         if cap.get("unfinished"):
             add("%s: run_sessions must finish with a stand-in model (no network, sleeps skipped)" % cap["error"],
                 "a loop that retries until the reply parses never ends with a model that does not comply: record "
@@ -604,7 +615,7 @@ def check(root, package=None, capture_prompts=True):
             method = "string literals of task/adapter.py and materials/materials.json (the adapter did not run: %s)" % (
                 cap.get("error") or next((r.get("error") for r in cap.get("runs") or [] if r.get("error")), "no prompts"))
             texts = static_texts(pkg)
-        pieces = participant_text(program)
+        pieces = participant_text(program, root)
         written = [authored(t, pieces) for t in dict.fromkeys(texts)]
         for e in entries:
             if str(e.get("notApplicable") or "").strip():
@@ -690,7 +701,9 @@ def check(root, package=None, capture_prompts=True):
                     "`# exclusion: <evidence id>` on the line above (the quote must state the exclusion)")
 
     # missing instructions: one rule (blocking only when the adapter refuses to run without the text)
-    runs_whole = any(r.get("calls") and not r.get("error") for r in runs)
+    # Blocking is right when the adapter refuses to run without the text: the whole study, or the arms that need it
+    # (some arm run stops with an error while others run).
+    runs_whole = any(r.get("calls") and not r.get("error") for r in runs) and not arm_refused
     issues = [i for i in program.get("issues") or [] if isinstance(i, dict)]
     for n, f in _fields(program):
         if f.get("state") != "missing" or not INSTRUCTION.search("%s %s" % (f.get("id"), f.get("label"))):

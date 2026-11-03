@@ -6,9 +6,14 @@ shows the whole folder as the **Program** explorer and `program.json` as the **S
 ```text
 <project>/
   paper.pdf                 the source paper (read-only for the agent)
-  sources/                  open materials, supplements, large instruments, datasets
+  sources/                  open materials, supplements, large instruments (never participant data:
+                            that goes in human-data/)
+    open/                   materials downloaded under an open license (url, version, link to the paper)
+    private/                public materials without an open license: this project only, never exported
     SOURCE.json             every source file's path, SHA-256, size and license ("unknown" unless
                             stated); written by build/sources.py
+    researcher/             materials the researcher supplied (instructions, stimuli); recorded as
+                            `researcher-supplied`, read by the package at run time, never exported
   program.json              Human Program v2 (canonical design; schema/human-program.schema.json)
   effects.json              hypotheses -> computable effects: outcome, contrast, predicted direction,
                             the paper's reported numbers (each quoted) and how each is computed from

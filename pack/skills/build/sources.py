@@ -8,8 +8,12 @@
 
 Recorded files: the paper (program.json source.filename, else paper.pdf), every file under sources/ and
 every file an evidence record cites by `path`. A license is the one the file itself (or the page that
-served it) states; otherwise "unknown". Never guess one. A rerun refreshes hashes and sizes and keeps the
-license, evidence and any other keys already written (by you or the researcher).
+served it) states; otherwise "unknown". Never guess one. Files under sources/researcher/ are materials the
+researcher supplied: they are always recorded as `researcher-supplied`; files under sources/private/ (public but
+without an open license) are recorded `private`; no export publishes either. A downloaded file also records
+--url, --linked (how it is tied to this paper) and --source-version; keep `searches` (where the build looked)
+at the top level. A rerun
+refreshes hashes and sizes and keeps the license, evidence and any other keys already written (by you or the researcher).
 
 A PDF's printed license statement is read automatically ("This article is licensed under a Creative Commons
 Attribution 4.0 International License", "It is made available under a CC-BY-NC-ND 4.0 International
@@ -151,15 +155,25 @@ def source_files(root, program):
     return list(dict.fromkeys(out))
 
 
+RESEARCHER_DIR = "sources/researcher/"
+PRIVATE_DIR = "sources/private/"
+RESEARCHER_LICENSE = "researcher-supplied"
+
+
 def record(root, rel, old):
     path = root / rel
     entry = dict(old or {})
     entry.update({"path": rel, "sha256": sha256(path), "bytes": path.stat().st_size})
     entry.setdefault("license", "unknown")
+    if rel.lower().startswith(RESEARCHER_DIR):  # the researcher's own materials: used in this project, never published
+        entry["license"] = RESEARCHER_LICENSE
+        entry.setdefault("licenseEvidence", "supplied by the researcher for this project; kept out of every export")
+    if rel.lower().startswith(PRIVATE_DIR):  # public, but without an open license: used in this project only
+        entry["private"] = True
     return entry
 
 
-def build(root, licenses=None, evidence=None):
+def build(root, licenses=None, evidence=None, extra=None):
     root = Path(root).resolve()
     program = load(root / "program.json") or {}
     old = load(root / NAME) or {}
@@ -173,10 +187,13 @@ def build(root, licenses=None, evidence=None):
             printed = printed_license(root / f["path"])
             if printed:
                 f["license"], f["licenseEvidence"] = printed
-        if f["path"] in (licenses or {}):
+        if f["path"] in (licenses or {}) and not f["path"].lower().startswith(RESEARCHER_DIR):
             f["license"] = licenses[f["path"]]
         if f["path"] in (evidence or {}):
             f["licenseEvidence"] = evidence[f["path"]]
+        for key, values in (extra or {}).items():   # url, linkedToPaper, version of a downloaded file
+            if f["path"] in values:
+                f[key] = values[f["path"]]
     src = program.get("source") or {}
     out = dict(old)
     out["schemaVersion"] = 1
@@ -242,6 +259,11 @@ def main(argv=None):
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--license", action="append", metavar="PATH=LICENSE", help="the license the file states")
     ap.add_argument("--license-evidence", action="append", metavar="PATH=TEXT", help="where it says so")
+    ap.add_argument("--url", action="append", metavar="PATH=URL", help="where a downloaded file came from")
+    ap.add_argument("--linked", action="append", metavar="PATH=TEXT",
+                    help="how a downloaded file is tied to this paper (linked from p. 9; DOI on the OSF page)")
+    ap.add_argument("--source-version", action="append", metavar="PATH=TEXT",
+                    help="which version it is (published SI, preprint v2, OSF snapshot of a date)")
     a = ap.parse_args(argv)
     root = Path(a.root)
     if a.check:
@@ -250,7 +272,9 @@ def main(argv=None):
             print("PROBLEM %s\n        fix: %s" % (msg, hint))
         print("FAIL %d problem(s) in %s" % (len(found), NAME) if found else "PASS %s" % NAME)
         return 1 if found else 0
-    data = build(root, pairs(a.license, "--license"), pairs(a.license_evidence, "--license-evidence"))
+    data = build(root, pairs(a.license, "--license"), pairs(a.license_evidence, "--license-evidence"),
+                 {"url": pairs(a.url, "--url"), "linkedToPaper": pairs(a.linked, "--linked"),
+                  "version": pairs(a.source_version, "--source-version")})
     (root / "sources").mkdir(exist_ok=True)
     (root / NAME).write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     for f in data["files"]:

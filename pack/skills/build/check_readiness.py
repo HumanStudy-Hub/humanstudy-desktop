@@ -14,6 +14,8 @@ the script the build skill (SKILL.md) tells the agent to run until it prints PAS
   verbatim   check_verbatim.py program.json
   results    check_results.py program.json (a printed table left untranscribed needs its reason)
   effects    effects.py . (reported.n, signs against cells and contrast, fields the sessions carry)
+  materials  check_materials.py . (materials the paper does not print: schema-enough or needs-original, never
+             invented; researcher-supplied text stays in sources/researcher/)
 
 The desktop app runs its own bundled copy of this folder, never the project's editable .opencode copy, so
 editing a checker inside a project does not change what the app accepts. This script never imports or runs
@@ -123,6 +125,11 @@ def results_problems(root):
     return check_results.check(root / "program.json")["problems"]
 
 
+def materials_problems(root):
+    import check_materials
+    return check_materials.check(root)["problems"]
+
+
 def effects_problems(root):
     import effects
     doc = effects.effects_core.load(root)
@@ -137,7 +144,7 @@ def effects_problems(root):
 
 
 CHECK_MODULES = ("check_program", "check_package", "sources", "check_validity", "check_verbatim", "check_results",
-                 "effects", "effects_core", "check_quotes", "sandbox_run")
+                 "effects", "effects_core", "check_quotes", "sandbox_run", "check_materials")
 OPTIONAL_MODULES = ("jsonschema", "pdfplumber", "pypdf")  # lazily imported by the checks when present
 
 
@@ -173,6 +180,7 @@ def run_checks(root, slug):
         ("verbatim", lambda: verbatim_problems(root)),
         ("results", lambda: results_problems(root)),
         ("effects", lambda: effects_problems(root)),
+        ("materials", lambda: materials_problems(root)),
     ]
     problems, status = [], {}
     for name, fn in checks:

@@ -39,11 +39,18 @@ one is wrong even if every file is present and valid.
    spirit" or substitute an equivalent instrument.
 4. **Label gaps `missing`; never fill them.** When the source does not contain the wording or
    rule, mark it `missing` and raise a review issue. A researcher can supply real text but
-   cannot detect an invented one. Never use placeholder text such as `[TODO]` or `[填写]`.
+   cannot detect an invented one. (A structure the paper describes exactly enough to run, such as
+   a sequence drawn from a printed distribution, is filled as `derived` from that description;
+   wording and stimuli participants saw never are.) Never use placeholder text such as `[TODO]` or `[填写]`.
 5. **Do not invent study facts**: no invented hypotheses, citations, statistics, stimuli,
    questionnaire wording, quotes or page numbers.
 6. **External research is opt-in.** Without an explicitly provided URL or uploaded open
    materials, use no web search, DOI lookup or repository discovery. Record every URL consulted.
+   One exception, for participant materials the paper does not print: the build searches public
+   sources of this paper (its availability statement and links, the journal SI, OSF, the authors'
+   repositories, preprints, task-hosting sites, lab pages), checks each file is tied to this paper,
+   records its URL, version, SHA-256 and license, and never downloads participant data (build skill,
+   "Materials the paper does not print"). What is not found is asked of the researcher.
    The researcher's request to search the Hub authorizes the read-only `catalog` skill;
    it does not authorize external code execution, recruiting participants or simulations.
 
