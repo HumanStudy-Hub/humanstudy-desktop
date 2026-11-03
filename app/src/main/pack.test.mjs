@@ -84,6 +84,26 @@ test('refreshPack upgrades an untouched previous simkit.py (run heartbeat, #16) 
   assert.equal(readFileSync(dest, 'utf8'), '# my own runner')
 })
 
+test('every shipped human-program schema is upgraded in existing projects (evidence note, #65)', async () => {
+  const log = spawnSync('git', ['log', '--format=%H', '--', 'schema/human-program.schema.json'], { cwd: packDir, encoding: 'utf8' })
+  const commits = log.status === 0 ? log.stdout.split('\n').filter(Boolean) : []
+  if (commits.length < 2) return // shallow checkout without history
+  const current = readFileSync(join(packDir, 'schema/human-program.schema.json'), 'utf8')
+  const sha = (s) => createHash('sha256').update(s).digest('hex')
+  const listed = JSON.parse(readFileSync(join(here, 'previous-pack-hashes.json'), 'utf8'))['schema/human-program.schema.json']
+  for (const c of commits) {
+    const old = spawnSync('git', ['show', `${c}:pack/schema/human-program.schema.json`], { cwd: packDir, encoding: 'utf8' }).stdout
+    if (old === current) continue
+    assert.ok(listed.includes(sha(old)), `previous-pack-hashes.json lacks the schema shipped at ${c.slice(0, 7)}`)
+    const proj = mkdtempSync(join(tmpdir(), 'proj-'))
+    const dest = join(proj, 'schema/human-program.schema.json')
+    mkdirSync(dirname(dest), { recursive: true })
+    writeFileSync(dest, old)
+    await P.refreshPack(proj)
+    assert.equal(readFileSync(dest, 'utf8'), current, `schema from ${c.slice(0, 7)} is upgraded`)
+  }
+})
+
 const python = ['python3', 'python'].find((p) => spawnSync(p, ['--version']).status === 0)
 test('inline.py inlines the kit, embeds the program and checks the page', { skip: !python }, () => {
   const proj = mkdtempSync(join(tmpdir(), 'proj-'))
