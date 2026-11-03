@@ -2,7 +2,7 @@
 // a simulation approval for a package that is not complete, whatever the renderer showed.
 import { readdir, readFile, realpath, lstat, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
-import { join, sep } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { packageReadiness, type PackageReadiness, type PackageFile } from '../shared/package-readiness'
 
 export const COMMUNITY_RUN_NOTICE = "This study's code will run on your computer with access to your model key."
@@ -19,54 +19,99 @@ export async function communityRunNotice(projectDir: string): Promise<string | u
   }
 }
 
-type ScientificCheck = (project: string, slug: string) => Promise<{ check: string; reason: string }[]>
-let scientificCheck: ScientificCheck = async () => [{ check: 'runtime', reason: 'The research runtime is unavailable. Install it before validating this package.' }]
-let checkVersion = 'unavailable'
-const cache = new Map<string, Promise<{ check: string; reason: string }[]>>()
+export interface ScientificProblem { check: string; reason: string }
+type ScientificCheck = (project: string, slug: string) => Promise<ScientificProblem[]>
+const NOT_CONFIGURED: ScientificProblem = { check: 'runtime', reason: 'The build checks are not available yet, so the package cannot be confirmed.' }
+const CHANGED: ScientificProblem = { check: 'changed', reason: 'The study changed while the build checks ran. They run again once edits finish.' }
+const UNREADABLE: ScientificProblem = { check: 'runtime', reason: 'The study files could not be listed for the build checks. Retry.' }
+// Fails closed until the app configures the real checker (index.ts): nothing is ready unchecked.
+let scientificCheck: ScientificCheck = async () => [NOT_CONFIGURED]
+let checkVersion = 'unconfigured'
+/** Finished results by [project, slug, checker version, input stamp]; a changed input is a new key. */
+const results = new Map<string, ScientificProblem[]>()
+/** One check at a time per package; later requests wait and then usually find the result above. */
+const lanes = new Map<string, Promise<unknown>>()
+
+/** Install the checker the gate runs (the app's bundled check_readiness.py). Tests pass a stub. */
 export function configureScientificChecks(check: ScientificCheck, version: string): void {
-  scientificCheck = check; checkVersion = version; cache.clear()
+  scientificCheck = check; checkVersion = version; results.clear()
 }
 
-/** Async metadata only: includes ctime/inode so preserved size/mtime cannot revive a stale pass. */
-async function checkStamp(project: string): Promise<string> {
+/** What the build checks read, as metadata: package/, sources/, human-data/, the files beside program.json
+ *  and every evidence `path`. ctime and inode are included, so restoring a size and mtime cannot bring
+ *  back an earlier pass. Throws when the inputs cannot be listed. */
+export async function scientificStamp(project: string): Promise<string> {
   const rows: unknown[] = []
+  const seen = new Set<string>()
   const walk = async (path: string): Promise<void> => {
-    if (rows.length > 10000) throw Error('Too many scientific inputs')
+    if (seen.has(path)) return
+    seen.add(path)
+    if (rows.length > 50_000) throw Error('Too many files for the build checks')
     try {
       const link = await lstat(path)
       const info = link.isSymbolicLink() ? await stat(path) : link
       rows.push([path, info.size, info.mtimeMs, info.ctimeMs, info.ino, info.mode, link.isSymbolicLink() ? await realpath(path) : ''])
       if (info.isDirectory() && !link.isSymbolicLink())
-        for (const name of (await readdir(path)).sort()) if (!['__pycache__', '.git'].includes(name)) await walk(join(path, name))
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; rows.push([path, 'missing']) }
+        for (const name of (await readdir(path)).sort()) if (name !== '__pycache__' && name !== '.git') await walk(join(path, name))
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error
+      rows.push([path, 'missing'])
+    }
   }
-  await walk(join(project, 'package')); await walk(join(project, 'sources'))
+  for (const dir of ['package', 'sources', 'human-data']) await walk(join(project, dir))
   for (const name of (await readdir(project)).sort())
-    if (['program.json', 'effects.json', 'capabilities.json'].includes(name) || /[.]pdf$/i.test(name)) await walk(join(project, name))
+    if (STAMPED_BESIDE.includes(name) || /[.]pdf$/i.test(name)) await walk(join(project, name))
+  try {
+    const program = JSON.parse(await readFile(join(project, 'program.json'), 'utf8'))
+    const root = resolve(project)
+    for (const e of Array.isArray(program?.evidence) ? program.evidence : []) {
+      const p = typeof e?.path === 'string' ? resolve(root, e.path) : null
+      if (p && p.startsWith(root + sep)) await walk(p)
+    }
+  } catch { /* no readable program: the checks report it */ }
   return JSON.stringify(rows)
 }
+/** Files beside program.json that the checks read or copy next to the package (check_package BESIDE_PROGRAM). */
+const STAMPED_BESIDE = ['program.json', 'effects.json', 'capabilities.json', 'README.md']
 
-async function checkedScience(project: string, slug: string, fresh: boolean) {
-  try {
-    const before = await checkStamp(project)
-    const key = JSON.stringify([project, slug, checkVersion, before])
-    let pending = fresh ? undefined : cache.get(key)
-    if (!pending) {
-      pending = scientificCheck(project, slug)
-      if (cache.size > 100) cache.clear()
-      cache.set(key, pending)
+/** The build checks for one package, run once per input state. */
+export async function scientificProblems(project: string, slug: string): Promise<ScientificProblem[]> {
+  const lane = JSON.stringify([project, slug])
+  const previous = lanes.get(lane) ?? Promise.resolve()
+  const mine = previous.catch(() => undefined).then(async (): Promise<ScientificProblem[]> => {
+    // An agent may still be writing: a check whose inputs changed under it is repeated, a few times at most.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let before: string
+      try { before = await scientificStamp(project) } catch { return [UNREADABLE] }
+      const key = JSON.stringify([project, slug, checkVersion, before])
+      const known = results.get(key)
+      if (known) return known
+      const version = checkVersion
+      let problems: ScientificProblem[]
+      try { problems = await scientificCheck(project, slug) } catch { problems = [{ check: 'runtime', reason: 'The build checks could not complete. Retry.' }] }
+      let after: string | null = null
+      try { after = await scientificStamp(project) } catch { /* treated as changed */ }
+      if (after !== before) continue
+      // A runtime that was missing may be installed later without any study file changing: never keep that.
+      if (version === checkVersion && !problems.some((p) => p.check === 'runtime')) {
+        if (results.size > 200) results.clear()
+        results.set(key, problems)
+      }
+      return problems
     }
-    const problems = await pending
-    if (before !== await checkStamp(project)) return [{ check: 'changed', reason: 'The study changed during scientific validation. Retry after edits finish.' }]
-    // Runtime installation may finish without a project file changing.
-    if (problems.some(p => p.check === 'runtime')) cache.delete(key)
-    return problems
-  } catch { return [{ check: 'runtime', reason: 'Scientific checks could not complete. Check the research runtime and retry.' }] }
+    return [CHANGED]
+  })
+  lanes.set(lane, mine)
+  void mine.finally(() => { if (lanes.get(lane) === mine) lanes.delete(lane) })
+  return mine
 }
 
 export const SIMULATION_APPROVAL = '[Simulation scope approved]'
 
-export async function projectPackageReadiness(projectDir: string, studyId?: string, fresh = false): Promise<PackageReadiness> {
+/** Ready = the static package contract (shared/package-readiness) AND every build check (check_readiness.py).
+ *  The build checks run only for a package that already passes the static part. */
+export async function projectPackageReadiness(projectDir: string, studyId?: string): Promise<PackageReadiness> {
   const root = join(projectDir, 'package')
   const slugs = await readdir(root, { withFileTypes: true })
     .then((ds) => ds.filter((d) => d.isDirectory() && !d.name.startsWith('.') && d.name !== '__pycache__').map((d) => d.name))
@@ -79,18 +124,23 @@ export async function projectPackageReadiness(projectDir: string, studyId?: stri
     if (!real || !real.startsWith(realRoot + sep)) return null
     return readFile(p, 'utf8')
   }
-  const candidates = await Promise.all(slugs.sort().map(async slug => {
-    const result = await packageReadiness([slug], read, studyId ? { studyId, program } : undefined)
-    if (result.ready) {
-      const science = await checkedScience(projectDir, slug, fresh)
-      result.problems.push(...science.map(p => ({ file: 'study.json' as const, kind: 'scientific' as const, ...p })))
-      result.ready = result.problems.length === 0
+  const runNotice = await communityRunNotice(projectDir)
+  if (!slugs.length) return { exists: false, ready: false, slug: null, problems: [], runNotice }
+  const checked: PackageReadiness[] = []
+  for (const slug of [...slugs].sort()) {
+    const r = await packageReadiness([slug], read, studyId ? { studyId, program } : undefined)
+    if (r.ready) {
+      const science = await scientificProblems(projectDir, slug)
+      if (science.length) r.problems = science.map((p) => ({ file: 'study.json' as const, kind: 'scientific' as const, check: p.check, reason: p.reason }))
+      r.ready = r.problems.length === 0
+      if (r.ready) return { ...r, runNotice }
     }
-    return result
-  }))
-  const readiness = candidates.reduce((best, current) => current.problems.length < best.problems.length ? current : best, { exists: false, ready: false, slug: null, problems: [] } as PackageReadiness)
-  const best = candidates.length ? candidates.reduce((a, b) => b.problems.length < a.problems.length ? b : a) : readiness
-  return { ...best, runNotice: await communityRunNotice(projectDir) }
+    checked.push(r)
+  }
+  // None is ready: report the one closest to it, preferring a package that passed the static part.
+  const rank = (r: PackageReadiness) => (r.problems.some((p) => p.kind !== 'scientific') ? 1000 : 0) + r.problems.length
+  const best = checked.reduce((a, b) => (rank(b) < rank(a) ? b : a))
+  return { ...best, runNotice }
 }
 
 /** Throws when `text` approves a simulation and the project's package cannot run. */
@@ -105,7 +155,7 @@ export async function assertRunnablePackage(projectDir: string | undefined, text
     throw new Error('The selected study is unavailable. Review the simulation scope again.')
   if (approved.programId !== program.id || approved.programHash !== createHash('sha256').update(bytes).digest('hex'))
     throw new Error('The study changed after approval. Review the simulation scope again.')
-  const r = await projectPackageReadiness(projectDir, approved.studyId, true)
+  const r = await projectPackageReadiness(projectDir, approved.studyId)
   if (r.ready) {
     const latest = await readFile(join(projectDir, 'program.json'))
     if (approved.programHash !== createHash('sha256').update(latest).digest('hex'))

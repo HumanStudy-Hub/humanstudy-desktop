@@ -93,15 +93,11 @@ export async function refreshPack(projectDir: string): Promise<void> {
   }
 }
 
-/** Install a separate app-owned copy: a project's editable helpers never decide its readiness. */
-export async function installTrustedChecks(root: string): Promise<string> {
-  const selected = Object.entries(files).filter(([key]) => key.startsWith(PREFIX + 'skills/build/') || key.startsWith(PREFIX + 'schema/') || key === PREFIX + 'skills/export/agent/effects_core.py')
-  const version = createHash('sha256').update(JSON.stringify(selected)).digest('hex')
-  const dest = join(root, version)
-  for (const [key, content] of selected) {
-    const path = join(dest, key.slice(PREFIX.length))
-    await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, content, 'utf8')
-  }
-  return join(dest, 'skills/build/check_readiness.py')
+/** The checker files the app runs itself (scientific-readiness.ts): the build checks, the schemas and
+ *  effects_core.py, as shipped. Never the project's editable .opencode copy, so editing a checker inside a
+ *  project cannot change what the app accepts as ready. */
+export function trustedCheckFiles(): [string, string][] {
+  return Object.entries(files)
+    .filter(([key]) => key.startsWith(PREFIX + 'skills/build/') || key.startsWith(PREFIX + 'schema/') || key === PREFIX + 'skills/export/agent/effects_core.py')
+    .map(([key, content]) => [key.slice(PREFIX.length), content])
 }

@@ -7,7 +7,7 @@ import type { HumanProgram } from '../../shared/human-program'
 import type { ProjectEntry, ProjectSnapshot } from '../../preload/types'
 import { simulationScope, simulationLimits } from '../../shared/simulation-scope'
 import { estimateRun, hasParticipantData, isResult, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
-import { packageStamp, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
+import { packageStamp, readinessStamp, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
 import { shortModelName } from './ModelPicker'
 import { listenToArtifact } from '../bridge'
 import { getLang, t } from '../i18n'
@@ -54,15 +54,17 @@ const STOP_GRACE = 10_000
 
 // A package can run only when its eight files are there and valid (shared/package-readiness, the same
 // check the main process applies before it lets a run approval through). Rechecked when they change.
+const allEntries = (es: ProjectEntry[]): ProjectEntry[] => es.flatMap((e) => [e, ...allEntries(e.children ?? [])])
 const packageEntries = (tree: ProjectEntry[]): ProjectEntry[] => {
   const pkg = tree.find((e) => e.kind === 'dir' && e.rel === 'package')
-  const all = (es: ProjectEntry[]): ProjectEntry[] => es.flatMap((e) => [e, ...all(e.children ?? [])])
-  return pkg ? [pkg, ...all(pkg.children ?? [])] : []
+  return pkg ? [pkg, ...allEntries(pkg.children ?? [])] : []
 }
 function usePackageReadiness(dir: string, tree: ProjectEntry[], studyId: string, program: HumanProgram): { slugs: string[]; readiness: PackageReadiness | null; checking: boolean } {
   const entries = useMemo(() => packageEntries(tree), [tree])
   const slugs = useMemo(() => entries.filter((e) => e.kind === 'dir' && /^package\/[^/]+$/.test(e.rel) && !e.name.startsWith('.') && e.name !== '__pycache__').map((e) => e.name), [entries])
-  const stamp = JSON.stringify([dir, studyId, packageStamp(entries), program])
+  // The build checks also read sources/, effects.json and the paper, so a change there rechecks too.
+  const inputs = useMemo(() => readinessStamp(allEntries(tree)), [tree])
+  const stamp = JSON.stringify([dir, studyId, packageStamp(entries), inputs, program])
   const [checked, setChecked] = useState<{ stamp: string; readiness: PackageReadiness } | null>(null)
   useEffect(() => {
     let live = true
@@ -246,7 +248,7 @@ export function SimulationPanel(props: Props) {
             <section className="sim-card" aria-live="polite">
               {readiness ? (<>
                 <p>{t('sim.incomplete')}</p>
-                <ul className="sim-missing">{readiness.problems.map((p) => <li key={`${p.file}:${p.kind}`}>{problemText(p)}</li>)}</ul>
+                <ul className="sim-missing">{readiness.problems.map((p) => <li key={p.kind === 'scientific' ? `${p.check}:${p.reason}` : `${p.file}:${p.kind}`}>{problemText(p)}</li>)}</ul>
                 <button className="link" onClick={() => props.onAsk(t('sim.complete_prompt', { pkg: `package/${readiness.slug}`, what: readiness.problems.map(problemText).join(t('sim.list_sep')) }))}>{t('sim.ask_complete')}</button>
               </>) : <p className="muted small">{t('sim.checking')}</p>}
             </section>
