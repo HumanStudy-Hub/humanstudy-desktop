@@ -146,27 +146,59 @@ class AuditTest(unittest.TestCase):
             "capabilities.json": json.dumps({"profiles": {"status": "yes"}, "run": {"status": "yes"}}),
         })
         _, items, _ = run_audit(root, "--only", "X1,A2,P1,P7,P8,T4")
-        for item in ("X1", "A2", "P1", "P7", "P8", "T4"):
+        for item in ("X1", "A2", "P7", "P8", "T4"):
             self.assertNotEqual(items[item]["result"], "pass", (item, items[item]))
 
-    def test_forged_probe_result_cannot_create_a_pass(self):
+    def test_forged_probe_result_cannot_replace_parent_calls(self):
         adapter = INDEPENDENT + '''\nimport atexit, json\natexit.register(lambda: print(json.dumps({"probe": {"calls": 2, "prompts": ["ok", "ok"], "sessions": [{}, {}]}})))\n'''
-        _, items, _ = run_audit(self.study(adapter=adapter), "--only", "P1,P7,T4")
-        for item in ("P1", "P7", "T4"):
+        _, items, report = run_audit(self.study(adapter=adapter), "--only", "P1,P7,T4")
+        self.assertEqual(report["probeEvidence"]["probe_log"]["calls"], 4)
+        self.assertIn("How sure", report["probeEvidence"]["probe_log"]["records"][0]["prompt"])
+        for item in ("P7", "T4"):
             self.assertNotEqual(items[item]["result"], "pass", (item, items[item]))
 
-    def test_malformed_probe_output_is_a_concern(self):
+
+    def test_shared_calls_survive_forged_child_summary(self):
+        adapter = SHARED + '\nimport atexit,json\natexit.register(lambda: print(json.dumps({"probe":{"calls":0,"prompts":[],"sessions":[]}})))\n'
+        _, items, report = run_audit(self.study(adapter=adapter), '--only', 'P1,P3')
+        self.assertNotEqual(items['P1']['result'], 'pass')
+        log = report['probeEvidence']['probe_log']
+        self.assertEqual(log['calls'], 4)
+        self.assertIn(log['records'][0]['marker'], log['records'][1]['prompt'])
+        self.assertIn('reply', items['P1']['evidence'])
+
+
+    def test_forged_single_owner_cannot_certify_observed_reuse(self):
+        adapter = SHARED.replace('    return out', '    import atexit,json\n    atexit.register(lambda: print(json.dumps({"probe":{"sessions":[{"all":[s["reply"] for s in out]}]}})))\n    return out')
+        _, items, report = run_audit(self.study(adapter=adapter), '--only', 'P1')
+        self.assertEqual(items['P1']['result'], 'concern', items['P1'])
+        self.assertIn('package-reported', items['P1']['note'])
+        self.assertEqual(report['probeEvidence']['probe_log']['calls'], 4)
+
+    def test_parent_nonce_changes_and_p3_scans_actual_prompts(self):
+        adapter = INDEPENDENT.replace('Condition text', 'hypothesis control condition')
+        adapter += '\nimport atexit,json\natexit.register(lambda: print(json.dumps({"probe":{"calls":0,"prompts":[],"sessions":[]}})))\n'
+        root = self.study(adapter=adapter)
+        _, first, report = run_audit(root, '--only', 'P3')
+        _, second, again = run_audit(root, '--only', 'P3')
+        self.assertEqual(first['P3']['result'], 'concern')
+        self.assertIn('hypothesis', first['P3']['evidence'])
+        self.assertNotEqual(report['probeEvidence']['probe_log']['records'][0]['marker'], again['probeEvidence']['probe_log']['records'][0]['marker'])
+
+    def test_malformed_child_output_does_not_replace_parent_observations(self):
         for payload in ('{"probe":null}', '{"probe":', '{"probe":{"sessions":7}}'):
             adapter = INDEPENDENT + '\nimport atexit\natexit.register(lambda: print(%r))\n' % payload
             _, items, _ = run_audit(self.study(adapter=adapter), "--only", "P1")
-            self.assertEqual(items["P1"]["result"], "concern", items["P1"])
+            self.assertEqual(items["P1"]["result"], "pass" if sys.platform == "darwin" else "concern", items["P1"])
 
     def test_parsed_answers_shared_across_participants_are_not_a_pass(self):
         adapter = INDEPENDENT.replace('    out = []\n', '    out = []\n    previous = None\n').replace(
             '            reply = llm(build_prompt("s1", arm))',
             '            reply = llm(str(previous) + build_prompt("s1", arm))\n            previous = parse_reply("s1", arm, reply)')
-        _, items, _ = run_audit(self.study(adapter=adapter), "--only", "P1")
-        self.assertNotEqual(items["P1"]["result"], "pass", items["P1"])
+        adapter = adapter.replace('    digits = [c for c in reply if c.isdigit()]\n    return int(digits[0]) if digits and 1 <= int(digits[0]) <= 7 else None', '    return int(reply.split()[1])')
+        _, items, report = run_audit(self.study(adapter=adapter), "--only", "P1")
+        self.assertEqual(items["P1"]["result"], "fail", items["P1"])
+        self.assertIn(report['probeEvidence']['probe_log']['records'][0]['number'], report['probeEvidence']['probe_log']['records'][1]['prompt'])
 
     def test_no_run_keeps_static_p7_failures(self):
         # A blocked program shipped as ready and runnable is a definite fail; skipping the stub run must not hide it.
@@ -305,7 +337,7 @@ class AuditTest(unittest.TestCase):
         self.assertIn("needs agent", items["X3"]["note"])
         self.assertIn("needs human", items["A4"]["note"])
         self.assertEqual(items["X1"]["result"], "pass", items["X1"])
-        self.assertEqual(items["P1"]["result"], "concern", items["P1"])
+        self.assertEqual(items["P1"]["result"], "pass" if sys.platform == "darwin" else "concern", items["P1"])
         self.assertEqual(items["P5"]["result"], "concern", items["P5"])
         self.assertEqual(items["T2"]["result"], "pass", items["T2"])
 
@@ -368,7 +400,7 @@ class AuditTest(unittest.TestCase):
     def test_multi_question_participants_are_attributed(self):
         _, items, _ = run_audit(self.study(adapter="SHARED_HISTORY = False\n" + TRANSCRIPT), "--only", "P1")
         self.assertEqual(items["P1"]["result"], "concern", items["P1"])
-        self.assertIn("forged", items["P1"]["note"])
+        self.assertIn("participant", items["P1"]["note"])
         _, items, _ = run_audit(self.study(adapter="SHARED_HISTORY = True\n" + TRANSCRIPT), "--only", "P1")
         self.assertNotEqual(items["P1"]["result"], "pass", items["P1"])
 

@@ -531,7 +531,7 @@ def check_X7(s, ctx):
 
 # ---- P: procedure and participants (stub run) --------------------------------------------------------
 
-def probe(root, n):
+def probe(root, n, excluded_only=False):
     """Run in a child process: drive the package with a stub model and report what it did."""
     import study_core
     out = {}
@@ -539,21 +539,17 @@ def probe(root, n):
         st = study_core.Study(root)
     except Exception as exc:
         return {"error": "study_core could not load the study: %s" % exc}
+    from probe_channel import llm
     excluded = [a for item in ((st.caps or {}).get("run") or {}).get("excluded") or [] for a in item.get("arms") or []]
-    if excluded:
+    if excluded_only:
         try:
-            st._sessions(lambda p, *a, **k: "", 1, 1, excluded[:1])
-            out["excludedRefused"] = False
+            st._sessions(llm, 1, 1, excluded[:1])
+            return {"excludedRefused": False}
         except study_core.Refusal:
-            out["excludedRefused"] = True
-        except Exception as exc:
-            out["excludedRefused"] = "error: %s" % str(exc)[:200]
-    calls = []
-
-    def llm(prompt, *args, **kw):
-        extra = " ".join(text_of(a) for a in args) + " " + " ".join(text_of(v) for v in kw.values())
-        calls.append(str(prompt) + ("\n" + extra if extra.strip() else ""))
-        return "Reply " + TOKEN % (len(calls) - 1) + " ."
+            return {"excludedRefused": True}
+        except BaseException as exc:
+            return {"excludedRefused": "error: %s" % str(exc)[:200]}
+    calls = []  # Child fields are advisory only; authoritative calls live in the parent.
     started = time.time()
     try:
         sessions = st._sessions(llm, 20261015, n, None)
@@ -593,20 +589,38 @@ def probe_schema_problem(result):
     return None
 
 
-def run_probe(s, ctx):
-    if "probe" in ctx:
-        return ctx["probe"]
+def run_probe(s, ctx, unparseable=False):
+    cachekey = "unparseable_probe" if unparseable else "probe"
+    if cachekey in ctx:
+        return ctx[cachekey]
     if ctx.get("no_run") or not s.package:
-        ctx["probe"] = None
+        ctx[cachekey] = None
         return None
     copy = ctx["copy"](fresh=True)
     # Package code is untrusted: it runs only in the confined child (no keys, no network, writes only in the
     # scratch folder; see sandbox_run.py), which prints the probe result as JSON.
+    import secrets
+    nonce = secrets.token_hex(8)
+    observations = []
+    def serve(request):
+        k = len(observations)
+        marker = "QZX%s%04dQZX" % (nonce, k)
+        number = str(800000000000000 + int(nonce[:6], 16) * 2001 + k)
+        if unparseable:
+            marker = 'QZX' + ''.join(chr(65 + int(c, 16)) for c in nonce + ('%06x' % k)) + 'QZX'
+            number = None
+            reply = 'Reply %s .' % marker
+        else:
+            reply = "Reply %s %s ." % (number, marker)
+        prompt = request['prompt'] + ("\n" + request.get('extra', '') if request.get('extra', '').strip() else '')
+        observations.append({'k': k, 'prompt': prompt, 'reply': reply, 'marker': marker, 'number': number})
+        return reply
     run = sandbox_run.run_python(Path(__file__).resolve(), ["--probe", str(copy), "--n", "2"], cwd=copy,
-                                 work=copy.parent, timeout=ctx.get("timeout", 600))
+                                 work=copy.parent, timeout=ctx.get("timeout", 600), serve=serve)
+    ctx['unparseable_probe_log' if unparseable else 'probe_log'] = observations
     lines = [l for l in run.stdout.splitlines() if l.startswith("{\"probe\":")]
     if run.timed_out:
-        ctx["probe"] = {"error": "stub run timed out"}
+        ctx[cachekey] = {"error": "stub run timed out"}
     else:
         try:
             result = json.loads(lines[-1])["probe"] if lines else None
@@ -615,23 +629,62 @@ def run_probe(s, ctx):
             bad = probe_schema_problem(result)
             # Fail closed: a malformed result is a probe error (not a refusal), so run=no and blocked studies
             # still fail as "not refused" instead of crashing a check into a concern.
-            ctx["probe"] = {"error": "probe result is malformed: %s" % bad} if bad else result
-            ctx["probe"]["owner"] = probe_owner(ctx["probe"])
+            ctx[cachekey] = {"error": "probe result is malformed: %s" % bad} if bad else result
+            ctx[cachekey]["owner"] = probe_owner(ctx[cachekey])
         except (ValueError, TypeError, KeyError, RecursionError):
             # RecursionError: a package can print deeply nested JSON; it must not crash a check into a concern.
-            ctx["probe"] = {"error": "probe produced no valid result (exit %s): %s" %
+            ctx[cachekey] = {"error": "probe produced no valid result (exit %s): %s" %
                             (run.returncode, (run.stderr or run.stdout)[-400:])}
     # Package code shares the probe interpreter and can modify or forge its output.
     # Attribution is derived here, but that transcript is never treated as proof of a pass.
-    pr = ctx["probe"]
-    pr.setdefault("owner", {})
-    pr["untrusted"] = True
-    return ctx["probe"]
+    pr = ctx[cachekey]
+    pr['observations'] = observations
+    pr['calls'] = len(observations)
+    pr['prompts'] = [o['prompt'] for o in observations]
+    pr['parent_observed'] = True
+    pr['owner'] = probe_owner(pr)
+    pr['channel_error'] = run.service_error
+    pr['network_denied'] = run.confinement.startswith(('sandbox-exec', 'unshare'))
+    pr['untrusted'] = True  # Sessions, refusal claims and participant identities remain child-controlled.
+    if run.service_error:
+        pr['error'] = run.service_error
+    excluded = [a for item in ((s.caps or {}).get('run') or {}).get('excluded') or [] for a in item.get('arms') or []]
+    if excluded and not unparseable:
+        ex_copy = ctx['copy'](fresh=True)
+        ex_log = []
+        def ex_serve(request):
+            ex_log.append({'prompt': request['prompt'], 'reply': 'Reply excluded .'})
+            return 'Reply excluded .'
+        ex_run = sandbox_run.run_python(Path(__file__).resolve(), ['--probe', str(ex_copy), '--probe-excluded'],
+                                        cwd=ex_copy, work=ex_copy.parent, timeout=ctx.get('timeout', 600), serve=ex_serve)
+        ctx['excluded_probe_log'] = ex_log
+        ex_lines = [line for line in ex_run.stdout.splitlines() if line.startswith('{"probe":')]
+        try:
+            ex_result = json.loads(ex_lines[-1])['probe']
+            if probe_schema_problem(ex_result): raise ValueError('malformed')
+            pr['excludedRefused'] = ex_result.get('excludedRefused', 'error: no refusal report')
+        except (ValueError, TypeError, KeyError, IndexError, RecursionError):
+            pr['excludedRefused'] = 'error: excluded-arm result invalid'
+        pr['excluded_calls'] = len(ex_log)
+        if ex_log:
+            pr['excludedRefused'] = False
+        if ex_run.service_error and not ex_log:
+            pr['excludedRefused'] = 'error: ' + ex_run.service_error
+    if pr.get('refused') and observations:
+        pr['refusal_with_calls'] = True
+    return ctx[cachekey]
 
 
 def probe_owner(pr):
     """Which sessions carry each stub reply marker (participant index -> session indices)."""
     owner = {}
+    if pr.get('parent_observed'):
+        for idx, sess in enumerate(pr.get('sessions') or []):
+            text = json.dumps(sess, default=str)
+            for record in pr.get('observations', []):
+                if record['marker'] in text or (record.get('number') and re.search(r'(?<!\d)%s(?!\d)' % re.escape(record['number']), text)):
+                    owner.setdefault(record['k'], set()).add(idx)
+        return {str(k): sorted(v) for k, v in owner.items()}
     for idx, sess in enumerate(pr.get("sessions") or []):
         for m in re.finditer(r"QZX(\d{4})QZX", json.dumps(sess, default=str)):
             owner.setdefault(int(m.group(1)), set()).add(idx)
@@ -651,9 +704,9 @@ def check_P1(s, ctx):
     pr = run_probe(s, ctx)
     if pr is None:
         return R("n/a", None, "stub run skipped (--no-run)")
-    if pr.get("refused"):
+    if pr.get("refused") and not pr.get("prompts"):
         return R("n/a", None, "the package refuses to run (%s); nothing to check" % pr["refused"][:160])
-    if pr.get("error"):
+    if pr.get("error") and not pr.get("prompts"):
         return R("concern", "package/%s/task/adapter.py" % s.package.name,
                  "the package could not be exercised with a stub model: %s" % pr["error"][:300])
     prompts = pr.get("prompts") or []
@@ -662,6 +715,9 @@ def check_P1(s, ctx):
     owner = {int(k): v for k, v in (pr.get("owner") or {}).items()}
     tok = re.compile(r"QZX(\d{4})QZX")
     seen = [[int(m.group(1)) for m in tok.finditer(p)] for p in prompts]
+    if pr.get('parent_observed'):
+        seen = [[r['k'] for r in pr['observations'][:i] if r['marker'] in prompt or
+                 re.search(r'(?<!\d)%s(?!\d)' % re.escape(r['number']), prompt)] for i, prompt in enumerate(prompts)]
     # A participant's first prompt carries no earlier reply. When the reply-free prompts are exactly one per
     # session, they mark where each participant starts.
     starts = [i for i, t in enumerate(seen) if not t]
@@ -697,16 +753,17 @@ def check_P1(s, ctx):
         return R("concern", short("reply %d appears in prompt %d" % (j, i) for j, i, _ in leaks),
                  note + "; earlier replies reappear in later prompts and calls cannot be assigned to participants; needs agent")
     if not any(seen):
-        return R("concern", "package/%s/task/adapter.py: no stub reply markers in later prompts" % s.package.name,
-                 note + "; parsed or transformed answers may still be shared; needs agent review")
-    return R("pass", None, note + "; earlier replies reappear only within the same participant (%s)" % method)
+        return R("pass" if pr.get('parent_observed') and not pr.get('channel_error') and not pr.get('error') and not pr.get('refused') else "concern",
+                 "package/%s/task/adapter.py: no parent-issued marker or unique numeric reply in later observed prompts" % s.package.name,
+                 note + "; limited to literal marker/numeric reuse in observed calls; transformed answers and participant identity are not proved")
+    return R("concern", None, note + "; reply reuse was observed, but the compatible participant grouping is package-reported (%s), not independently proved" % method)
 
 
 def check_P3(s, ctx):
     if not s.package:
         return R("n/a", None, "no replay package", covers="auto part")
     pr = run_probe(s, ctx)
-    if not pr or pr.get("refused") or pr.get("error"):
+    if not pr or ((pr.get("refused") or pr.get("error")) and not pr.get("prompts")):
         why = "stub run skipped" if pr is None else pr.get("refused") or pr.get("error")
         return R("n/a", None, "no prompts to scan (%s); needs agent" % str(why)[:160], covers="auto part")
     labels = set()
@@ -765,7 +822,7 @@ def check_P5(s, ctx):
     if not s.package:
         return R("n/a", None, "no replay package")
     pr = run_probe(s, ctx)
-    if not pr or pr.get("refused") or pr.get("error"):
+    if not pr or ((pr.get("refused") or pr.get("error")) and not pr.get("prompts")):
         return R("n/a", None, "no stub run (%s)" % str((pr or {}).get("refused") or (pr or {}).get("error") or "skipped")[:160])
     counts = {}
     for sess in pr.get("sessions") or []:
@@ -789,7 +846,7 @@ def check_P5(s, ctx):
 def check_P6(s, ctx):
     if not s.package:
         return R("n/a", None, "no replay package")
-    pr = run_probe(s, ctx)
+    pr = run_probe(s, ctx, unparseable=True)
     if pr is None:
         return R("n/a", None, "stub run skipped (--no-run)")
     if pr.get("refused"):
@@ -843,7 +900,7 @@ def check_P7(s, ctx):
         if pr.get("error"):
             probs.append(("concern", "package/%s/task/adapter.py: stub run failed: %s" % (s.package.name, str(pr["error"])[:300])))
         # A crash is not a refusal, and the package controls whether it crashes: keep the fail.
-        if (blocking or ready == "blocked") and not pr.get("refused"):
+        if (blocking or ready == "blocked") and (not pr.get("refused") or pr.get("refusal_with_calls")):
             probs.append(("fail", "study is blocked but the stub run was not refused (%s calls)" % str(pr.get("calls", 0))[:20]))
         if not (blocking or ready == "blocked") and pr.get("refused"):
             probs.append(("concern", "study is not blocked but the run was refused: %s" % str(pr["refused"])[:160]))
@@ -1055,7 +1112,7 @@ def check_T4(s, ctx):
     probs = []
     if pr.get("error"):
         probs.append(("concern", "package/%s/task/adapter.py: stub run failed: %s" % (s.package.name, str(pr["error"])[:300])))
-    if run == "no" and not pr.get("refused"):
+    if run == "no" and (not pr.get("refused") or pr.get("refusal_with_calls")):
         probs.append(("fail", "capabilities.json#run.status=no but the run was not refused (%s model calls%s)"
                       % (str(pr.get("calls", 0))[:20], ", then it crashed" if pr.get("error") else "")))
     if "excludedRefused" in pr:
@@ -1211,6 +1268,18 @@ def not_auto(item):
     return "not automated yet"
 
 
+def parent_probe_evidence(ctx):
+    out = {}
+    for key in ('probe_log', 'unparseable_probe_log', 'excluded_probe_log'):
+        records = ctx.get(key)
+        if records is None: continue
+        raw = json.dumps(records, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+        excerpt = [dict(r, prompt=sandbox_run.redact(r['prompt'][:2048]), reply=sandbox_run.redact(r['reply'])) for r in records[:20]]
+        out[key] = {'calls': len(records), 'sha256': hashlib.sha256(raw).hexdigest(),
+                    'bytes': len(raw), 'records': excerpt, 'truncated': len(records) > 20 or any(len(r['prompt']) > 2048 for r in records[:20])}
+    return out
+
+
 def audit_one(root, items, ctx_base):
     s = Study(root)
     work = {}
@@ -1238,9 +1307,10 @@ def audit_one(root, items, ctx_base):
             if iid in CHECKS:
                 try:
                     r = CHECKS[iid](s, ctx)
-                    if iid in ("P1", "P3", "P5", "P6", "P7", "P8", "T4") and r["result"] in ("pass", "n/a") and (ctx.get("probe") or {}).get("untrusted"):
+                    if iid in ("P1", "P3", "P5", "P6", "P7", "P8", "T4") and r["result"] in ("pass", "n/a") and (ctx.get("unparseable_probe" if iid == "P6" else "probe") or {}).get("untrusted") and not (
+                            iid in ('P1', 'P3') and (ctx.get('probe') or {}).get('parent_observed') and (ctx.get('probe') or {}).get('network_denied') and (ctx.get('probe') or {}).get('calls') and not (ctx.get('probe') or {}).get('channel_error')):
                         r = R("concern", "package/%s/task/adapter.py" % s.package.name,
-                              "the stub transcript is produced in the same interpreter as package code and can be forged; independent review required")
+                              "this verdict depends on package-reported sessions/refusal or lacks network isolation; parent-observed calls do not certify those claims; independent review required")
                 except Exception as exc:
                     r = R("concern", "audit.py", "the check crashed: %s" % "".join(
                         traceback.format_exception_only(type(exc), exc)).strip()[:300])
@@ -1259,7 +1329,7 @@ def audit_one(root, items, ctx_base):
     return {"book": BOOK, "target": s.root.name + ("/revisions/" + revision if revision else ""),
             "program": {"id": s.program.get("id"), "sha256": sha256(s.root / "program.json")},
             "auditor": "auto:audit.py", "date": time.strftime("%Y-%m-%d"), "counts": counts,
-            "items": results}, s
+            "items": results, "probeEvidence": parent_probe_evidence(ctx)}, s
 
 
 def batch_items(studies):
@@ -1292,10 +1362,11 @@ def main(argv=None):
     ap.add_argument("--only", help="comma-separated item ids")
     ap.add_argument("--timeout", type=int, default=600)
     ap.add_argument("--probe", help=argparse.SUPPRESS)
+    ap.add_argument("--probe-excluded", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--n", type=int, default=2, help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
     if a.probe:
-        print(json.dumps({"probe": probe(a.probe, a.n)}, ensure_ascii=False, default=str))
+        print(json.dumps({"probe": probe(a.probe, a.n, a.probe_excluded)}, ensure_ascii=False, default=str))
         return 0
     if not a.studies:
         ap.error("name at least one study folder")

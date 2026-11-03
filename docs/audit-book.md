@@ -103,7 +103,7 @@ anything over several batches should be reviewed: either the problem is gone, or
 
 | ID | Check | How | Sev | Notes |
 |---|---|---|---|---|
-| P1 | **Participant independence:** each AI participant answers in a fresh context, with no access to study files, hypotheses or other participants' answers | auto | S1 | Incident I-02 |
+| P1 | **Participant independence:** each AI participant answers in a fresh context, with no access to study files, hypotheses or other participants' answers | auto | S1 | Incident I-02. Parent-observed literal marker/numeric reuse; participant identity and transformed reuse need review. |
 | P2 | Sequential visibility: a participant sees each screen only when the original participants did; nothing later leaks into an earlier prompt | agent → EVAL 2 | S1 | Core contract |
 | P3 | Prompts contain no hypothesis, condition names or study labels that the original participants did not see | auto + agent | S1 | |
 | P4 | Every original human subject role is an agent participant; scripted partners are used only where the paper used them, and are labelled | agent | S1 | Core contract |
