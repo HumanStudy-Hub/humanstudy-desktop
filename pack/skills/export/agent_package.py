@@ -24,7 +24,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "agent"))
 sys.path.append(str(HERE.parent / "build"))
-from study_core import Study  # noqa: E402
+from study_core import RUN_NOTICE, Study  # noqa: E402
 import sandbox_run  # noqa: E402
 
 VERSION = "humanstudy-agent-package/1"
@@ -130,6 +130,9 @@ def skill_md(study, name, quote_line=None):
     ]
     if pkg:
         run += [
+            RUN_NOTICE + " `run`, `plan`, `replay`, `score` and `reproduce` execute the package's own "
+            "Python (`task/adapter.py`, `evaluation/evaluation.py`, the human-data loader) in your shell, with "
+            "your environment, API key and agent CLI sign-in. Read that code first if you did not write it.", "",
             "The replay package `package/%s/` holds the participant prompts (`task/adapter.py`) and the "
             "paper's analysis (`evaluation/evaluation.py`)." % pkg, "",
             "Each AI participant must answer in its own fresh context that sees only its prompt. Never "
@@ -148,6 +151,7 @@ def skill_md(study, name, quote_line=None):
         if (study.package / "human/key.json").is_file():
             run += [
                 "## Human data", "",
+                RUN_NOTICE + " `reproduce` runs the package's human-data loader and analysis.", "",
                 "The original human data are not in this folder. `python scripts/study_core.py human-data` "
                 "downloads them from their source and checks every file against its pinned SHA-256. "
                 "`python scripts/study_core.py reproduce` recomputes the paper's key results from them with "

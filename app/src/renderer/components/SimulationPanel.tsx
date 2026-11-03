@@ -292,7 +292,7 @@ export function SimulationPanel(props: Props) {
                 </div>
               )}
               {!scope.ready && <p className="sim-blocked">{t('sim.blocked', { what: [...scope.missing.map((m) => t(`sim.need.${m}`)), ...scope.blocking.map((b) => b.title)].join(t('sim.list_sep')) })}</p>}
-              {readiness?.runNotice && <p className="sim-note">{readiness.runNotice}</p>}
+              {readiness?.runNotice && <p className="sim-note">{t('sim.run_notice')}</p>}
               <div className="sim-actions">
                 <button className="primary" disabled={!scope.ready || agentBusy} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
                 <button className="ghost" onClick={() => props.onAsk(scope.ready ? t('sim.ask_prompt', { study: studyTitle }) : t('sim.resolve_prompt', { study: studyTitle }))}>{t('sim.ask')}</button>

@@ -293,5 +293,57 @@ class ReviewRegressions(unittest.TestCase):
         self.assertTrue((self.root / "exports/agent/study-5/references/study-exp-3.md").is_file())
 
 
+
+class KeyNotice(unittest.TestCase):
+    """Review of desktop #64: an exported skill runs package code in the user's own shell, with their key."""
+
+    NOTICE = "This study's code will run on your computer with access to your model key."
+
+    def setUp(self):
+        self.root = make_project()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        (self.root / "package/knobe/task/adapter.py").write_text(
+            ADAPTER.replace('print("adapter imported")', 'print("adapter imported"); sys.stderr.write("ADAPTER RAN\\n")'))
+        (self.root / "package/knobe/human").mkdir()
+        (self.root / "package/knobe/human/key.json").write_text("{}")
+        run = export(self.root)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.skill = self.root / "exports/agent/study-5"
+
+    def test_same_sentence_as_the_app(self):
+        main = "".join(p.read_text(encoding="utf-8") for p in (REPO / "app/src/main").glob("*.ts"))
+        self.assertIn(json.dumps(self.NOTICE), main, "the app's COMMUNITY_RUN_NOTICE")
+        self.assertIn(json.dumps(self.NOTICE), (REPO / "app/src/renderer/i18n-dict.ts").read_text(encoding="utf-8"))
+
+    def test_skill_md_shows_the_notice_where_it_says_how_to_run(self):
+        text = (self.skill / "SKILL.md").read_text(encoding="utf-8")
+        run = text.split("## Run AI participants", 1)[1].split("\n## ", 1)[0]
+        human = text.split("## Human data", 1)[1].split("\n## ", 1)[0]
+        self.assertIn(self.NOTICE, run)
+        self.assertIn(self.NOTICE, human)
+
+    def cli(self, *args):
+        return subprocess.run([sys.executable, str(self.skill / "scripts/study_core.py"), *args],
+                              capture_output=True, text=True, encoding="utf-8", timeout=120)
+
+    def test_run_prints_the_notice_once_before_package_code(self):
+        fake = '%s -c "import sys; sys.stdin.read(); print(\'yes\')"' % quote(sys.executable)
+        run = self.cli("run", "--n", "1", "--cli", fake)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stderr.count(self.NOTICE), 1, run.stderr)
+        self.assertLess(run.stderr.index(self.NOTICE), run.stderr.index("ADAPTER RAN"))
+        self.assertNotIn(self.NOTICE, run.stdout, "stdout stays machine-readable")
+
+    def test_reproduce_prints_the_notice_even_when_it_refuses(self):
+        run = self.cli("reproduce")
+        self.assertEqual(run.stderr.count(self.NOTICE), 1, run.stdout + run.stderr)
+
+    def test_every_command_that_loads_package_code_prints_it(self):
+        plan = self.cli("plan", "--n", "1")
+        self.assertEqual(plan.returncode, 0, plan.stderr)
+        self.assertEqual(plan.stderr.count(self.NOTICE), 1, plan.stderr)
+        self.assertNotIn(self.NOTICE, self.cli("search", "chairman").stderr, "reading runs no package code")
+
+
 if __name__ == "__main__":
     unittest.main()
