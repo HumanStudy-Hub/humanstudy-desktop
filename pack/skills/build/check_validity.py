@@ -62,8 +62,8 @@ Limits (heuristics, documented so nobody mistakes a PASS for proof):
     story", ...). A withheld fact phrased otherwise is found only if you list it yourself: do so.
   - A leak is found only when the prompt contains one of the entry's terms. Choose terms a leaking prompt
     would have to contain (the words of the withheld rule: "yellow", "can be selected", "upper circle");
-    the terms must include a content word of the printed statement (not "told", "participants", "the")
-    and share a word with `withheld`. Entries marked `notApplicable` are printed with their reason. Words of other not-told
+    the terms must share a content word with `withheld`. The printed statement must be cited on its page.
+    Entries marked `notApplicable` are printed with their reason. Words of other not-told
     sentences are printed as notes when build-written text contains them; read them.
   - Timing is not checked: verbatim text that reveals a rule later (a debriefing) is accepted anywhere.
   - The memory check reads prompt growth and the prompt function's parameters; a log passed in another
@@ -82,6 +82,7 @@ import random
 import re
 import shutil
 import sys
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -109,6 +110,7 @@ being it its their they them he she his her we our you your not no only both how
 whether if then than so such could would should can may might must had has have do did does about into
 also there here each other more most less any all some one two first second""".split())
 PROVENANCE = re.compile(r"quote|evidence|source|citation|provenance|note|comment|page", re.I)
+MATERIAL_METADATA = re.compile(r"^(?:licen[cs]e|copyright|numbering)(?:[_-]?.*)?$", re.I)
 HISTORY_PARAM = re.compile(r"hist|past|previous|earlier|log|memory|transcript|record|trials?_so_far|seen", re.I)
 PARSE_STATUS = re.compile(r"pars|\bvalid\b|\bok\b|\b(?:choice|response|answer|reply|rating|decision)\w*\b.{0,40}\bis (?:not )?None",
                           re.I)
@@ -279,13 +281,12 @@ def inventory(program):
                 problems.append(("%s: needs `withheld` (what participants did not know) and `terms` (words a prompt "
                                  "that leaks it would contain)" % at,
                                  'or `notApplicable` with the reason when the sentence is not about participants'))
-            elif not any(has_phrase(norm(e.get("statement")), norm(t)) and content_words(t) for t in terms):
-                problems.append(("%s: no term is a content word of the printed statement (words like \"told\", "
-                                 "\"participants\" or \"the\" do not count)" % at,
-                                 "include the statement's own words for the withheld rule among the terms"))
-            elif not any(content_words(t) & content_words(e.get("withheld")) for t in terms):
-                problems.append(("%s: no term shares a word with `withheld`" % at,
-                                 "the terms are the words of the withheld fact: a prompt that leaks it would contain them"))
+            else:
+                ungrounded = [t for t in terms if not content_words(t) & content_words(e.get("withheld"))]
+                if ungrounded:
+                    problems.append(("%s: terms do not share a content word with `withheld`: %s" %
+                                     (at, ", ".join(repr(t) for t in ungrounded[:3])),
+                                     "each term must name the withheld fact, not unrelated wording"))
     return entries, problems, has_field
 
 
@@ -311,6 +312,16 @@ def _on_page(entry, pages):
         return True   # no text layer: compared with the page image by the researcher
     stmt = norm(entry.get("statement") or "")
     return stmt in near or check_quotes.match(stmt, near) >= check_quotes.CLOSE
+
+
+def _exact_on_page(entry, pages):
+    """The semantic-term exception needs the actual cited page, not a fuzzy or adjacent match."""
+    page = entry.get("page")
+    if not isinstance(page, int) or not 1 <= page <= len(pages):
+        return False
+    canonical = lambda text: " ".join(unicodedata.normalize("NFKC", text).split())
+    stmt = canonical(str(entry.get("statement") or ""))
+    return bool(stmt and stmt in canonical(pages[page - 1]))
 
 
 # ---- the package: the prompts ----------------------------------------------------------------------
@@ -596,7 +607,7 @@ def _docstrings(tree):
 
 
 def static_texts(pkg):
-    """String literals of the adapter (not docstrings) and every string of materials.json."""
+    """String literals of the adapter and materials, excluding provenance and license metadata."""
     texts = []
     try:
         tree = ast.parse((pkg / "task/adapter.py").read_text(encoding="utf-8"))
@@ -611,7 +622,7 @@ def static_texts(pkg):
             texts.append(v)
         elif isinstance(v, dict):
             for k, x in v.items():
-                if not PROVENANCE.search(str(k)):   # the paper's own sentences quoted as evidence are not prompts
+                if not PROVENANCE.search(str(k)) and not MATERIAL_METADATA.match(str(k)):
                     walk(x)
         elif isinstance(v, list):
             for x in v:
@@ -1036,6 +1047,13 @@ def check(root, package=None, capture_prompts=True):
         if not _on_page(e, pages):
             add("%s: the statement is not on p. %s" % (e["_where"], e.get("page")),
                 "copy the sentence as printed and cite the page it is on")
+        if not str(e.get("notApplicable") or "").strip():
+            terms = [t for t in e.get("terms") or [] if isinstance(t, str)]
+            uses_statement = any(has_phrase(norm(e.get("statement") or ""), norm(t)) and content_words(t)
+                                 for t in terms)
+            if terms and not uses_statement and not _exact_on_page(e, pages):
+                add("%s: semantic terms require the exact statement on the cited page" % e["_where"],
+                    "copy the printed statement and cite its page, or include a content term from the statement")
     for hit in statements(pages):
         if not _covered(hit, entries):
             add("p. %d says \"...%s...\" but no not-told entry lists it" % (hit[0], hit[2][:220]),

@@ -160,15 +160,15 @@ class Validity(FakePdfMixin, unittest.TestCase):
         empty = {"statement": NOT_TOLD, "page": 2}
         found = self.problems(self.project([self.not_told([moved, wrong_terms, empty])]))
         self.assertTrue(any("not-told[0]: the statement is not on p. 9" in m for m in found), found)
-        self.assertTrue(any("not-told[1]: no term is a content word of the printed statement" in m for m in found), found)
+        self.assertTrue(any("not-told[1]: terms do not share a content word with `withheld`" in m for m in found), found)
         self.assertTrue(any("not-told[2]: needs `withheld`" in m for m in found), found)
-        # a frame word of the statement ("told") grounds nothing; a term must be a word of what was withheld
+        # A frame word ("told") grounds nothing; a term must name the withheld fact.
         gamed = dict(ENTRY, terms=["told", "participants"])
         unrelated = dict(ENTRY, terms=["blue key"], withheld="the payout schedule")
         long_term = dict(ENTRY, terms=["they had to learn that the red key"])
         found = self.problems(self.project([self.not_told([gamed, unrelated, long_term])]))
-        self.assertTrue(any("not-told[0]: no term is a content word" in m for m in found), found)
-        self.assertTrue(any("not-told[1]: no term shares a word with `withheld`" in m for m in found), found)
+        self.assertTrue(any("not-told[0]: terms do not share a content word with `withheld`" in m for m in found), found)
+        self.assertTrue(any("not-told[1]: terms do not share a content word with `withheld`" in m for m in found), found)
         self.assertTrue(any("not-told[2]: terms are short phrases" in m for m in found), found)
         # notApplicable on a sentence about the participants needs a check issue the researcher sees
         dodge = dict(ENTRY, terms=[], withheld="", notApplicable="describes the computational model")
@@ -285,6 +285,40 @@ class Validity(FakePdfMixin, unittest.TestCase):
             {"id": "instructions", "origin": "verbatim", "value": "At the end we will tell you whether the red key "
                                                                  "pays more often than the blue one."}]}]})
         self.assertEqual(check_validity.authored("whether the red key pays", pieces), "")
+
+    def test_static_material_metadata_is_not_presented_as_prompt(self):
+        pkg = self.project([self.not_told([ENTRY])], adapter(blocked='raise RuntimeError("blocked")')) / "package/x"
+        (pkg / "materials").mkdir()
+        path = pkg / "materials/materials.json"
+        path.write_text(json.dumps({"license_notice": "fitness for a particular purpose; red key pays more",
+                                    "numbering_scheme": "red key", "items": [{"text": "Press a key."}]}))
+        self.assertFalse(any("red key" in t for t in check_validity.static_texts(pkg)))
+        self.assertFalse(any("tells participants what they were not told" in m for m in self.problems(pkg.parent.parent)))
+        data = json.loads(path.read_text()); data["items"][0]["text"] = "The red key pays more."
+        path.write_text(json.dumps(data))
+        self.assertTrue(any("red key" in t.lower() for t in check_validity.static_texts(pkg)))
+        self.assertTrue(any("tells participants what they were not told (red key)" in m
+                            for m in self.problems(pkg.parent.parent)))
+
+    def test_withheld_terms_can_describe_the_concealed_fact(self):
+        statement = "Participants had to learn the reward associated with each option as it changed over time."
+        entry = {"statement": statement, "page": 2, "withheld": "the current reward probability",
+                 "terms": ["current probability"]}
+        root = self.project([self.not_told([entry])], adapter(legend="The current probability is 80 percent."),
+                            pages=[PAGES[0], statement])
+        found = self.problems(root)
+        self.assertFalse(any("content word of the printed statement" in m for m in found), found)
+        self.assertTrue(any("tells participants what they were not told (current probability)" in m for m in found), found)
+        mixed = dict(entry, terms=["current probability", "unrelated purpose"])
+        found = self.problems(self.project([self.not_told([mixed])], pages=[PAGES[0], statement]))
+        self.assertTrue(any("unrelated purpose" in m and "share a content word with `withheld`" in m for m in found), found)
+        # A nearby page or a fuzzy paraphrase cannot establish this exception.
+        for pages, candidate in (([PAGES[0], statement, "Another page with enough text to be readable."], dict(entry, page=3)),
+                                 ([PAGES[0], statement], dict(entry, statement=statement.replace("over time", "over trials"))),
+                                 ([PAGES[0], statement], dict(entry, statement=statement.replace("option as", "option, as"))),
+                                 ([PAGES[0], ""], entry)):
+            found = self.problems(self.project([self.not_told([candidate])], pages=pages))
+            self.assertTrue(any("semantic terms require the exact statement" in m for m in found), found)
 
     def test_blocked_adapters_are_read_statically_and_valid_all_is_a_problem(self):
         text = adapter(legend="Hint: the red key pays more often.", blocked='raise RuntimeError("blocked")',
