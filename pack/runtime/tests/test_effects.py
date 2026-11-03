@@ -108,7 +108,8 @@ class Effects(unittest.TestCase):
                 self.assertFalse(effects_core.rendered_quote(value, {**record, "quote": quote}))
         # A true minus (U+2212) separated from its digits after =, (, [, , or at the start of the quote.
         for value, quote in [(-0.011, "b = − 0.011"), (-0.5, "(− 0.5)"), (-0.2, "95% CI [− 0.2, 0.4]"),
-                             (-0.4, "95% CI [0.1, − 0.4]"), (-1.25, "− 1.25 points")]:
+                             (-0.4, "95% CI [0.1, − 0.4]"), (-1.25, "− 1.25 points"),
+                             (-0.011, "b =\u00a0− 0.011"), (-1.9e-11, "b =\u00a0−\u202f1.9e 11")]:
             with self.subTest(quote=quote):
                 self.assertTrue(effects_core.rendered_quote(value, {**record, "quote": quote}))
 

@@ -25,9 +25,9 @@ These build rules are checked here only (effects_core.py, which HumanStudy-Bench
                 states `signBasis` (the printed words that say which arm was higher). A sign is never
                 chosen to match the prediction. A printed CI must contain its value (a flipped sign flips it).
 """
-import math
 import importlib.util
 import json
+import math
 import os
 import re
 import sys
