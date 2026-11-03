@@ -140,6 +140,34 @@ class AuditTest(unittest.TestCase):
         self.roots = getattr(self, "roots", []) + [root]
         return root
 
+    def test_presence_alone_does_not_certify_checks(self):
+        root = self.study(verbatim_value="", extra={
+            "artifacts/replay/human-check.json": json.dumps({"exclusions": "some exclusions", "sessions": 5, "valid": 4}),
+            "capabilities.json": json.dumps({"profiles": {"status": "yes"}, "run": {"status": "yes"}}),
+        })
+        _, items, _ = run_audit(root, "--only", "X1,A2,P1,P7,P8,T4")
+        for item in ("X1", "A2", "P1", "P7", "P8", "T4"):
+            self.assertNotEqual(items[item]["result"], "pass", (item, items[item]))
+
+    def test_forged_probe_result_cannot_create_a_pass(self):
+        adapter = INDEPENDENT + '''\nimport atexit, json\natexit.register(lambda: print(json.dumps({"probe": {"calls": 2, "prompts": ["ok", "ok"], "sessions": [{}, {}]}})))\n'''
+        _, items, _ = run_audit(self.study(adapter=adapter), "--only", "P1,P7,T4")
+        for item in ("P1", "P7", "T4"):
+            self.assertNotEqual(items[item]["result"], "pass", (item, items[item]))
+
+    def test_malformed_probe_output_is_a_concern(self):
+        for payload in ('{"probe":null}', '{"probe":', '{"probe":{"sessions":7}}'):
+            adapter = INDEPENDENT + '\nimport atexit\natexit.register(lambda: print(%r))\n' % payload
+            _, items, _ = run_audit(self.study(adapter=adapter), "--only", "P1")
+            self.assertEqual(items["P1"]["result"], "concern", items["P1"])
+
+    def test_parsed_answers_shared_across_participants_are_not_a_pass(self):
+        adapter = INDEPENDENT.replace('    out = []\n', '    out = []\n    previous = None\n').replace(
+            '            reply = llm(build_prompt("s1", arm))',
+            '            reply = llm(str(previous) + build_prompt("s1", arm))\n            previous = parse_reply("s1", arm, reply)')
+        _, items, _ = run_audit(self.study(adapter=adapter), "--only", "P1")
+        self.assertNotEqual(items["P1"]["result"], "pass", items["P1"])
+
     def test_report_format_and_honest_na(self):
         run, items, report = run_audit(self.study())
         self.assertEqual(report["book"], "audit-book/0.1")
@@ -153,8 +181,8 @@ class AuditTest(unittest.TestCase):
         self.assertIn("needs agent", items["X3"]["note"])
         self.assertIn("needs human", items["A4"]["note"])
         self.assertEqual(items["X1"]["result"], "pass", items["X1"])
-        self.assertEqual(items["P1"]["result"], "pass", items["P1"])
-        self.assertEqual(items["P5"]["result"], "pass", items["P5"])
+        self.assertEqual(items["P1"]["result"], "concern", items["P1"])
+        self.assertEqual(items["P5"]["result"], "concern", items["P5"])
         self.assertEqual(items["T2"]["result"], "pass", items["T2"])
 
     def test_invented_verbatim_text_fails_and_sets_exit_code(self):
@@ -215,14 +243,14 @@ class AuditTest(unittest.TestCase):
 
     def test_multi_question_participants_are_attributed(self):
         _, items, _ = run_audit(self.study(adapter="SHARED_HISTORY = False\n" + TRANSCRIPT), "--only", "P1")
-        self.assertEqual(items["P1"]["result"], "pass", items["P1"])
-        self.assertIn("reply-free first prompt", items["P1"]["note"])
+        self.assertEqual(items["P1"]["result"], "concern", items["P1"])
+        self.assertIn("forged", items["P1"]["note"])
         _, items, _ = run_audit(self.study(adapter="SHARED_HISTORY = True\n" + TRANSCRIPT), "--only", "P1")
         self.assertNotEqual(items["P1"]["result"], "pass", items["P1"])
 
     def test_unparseable_replies_are_counted(self):
         _, items, _ = run_audit(self.study(), "--only", "P6")
-        self.assertEqual(items["P6"]["result"], "pass", items["P6"])
+        self.assertEqual(items["P6"]["result"], "concern", items["P6"])
         defaulting = INDEPENDENT.replace("else None", "else 4")
         _, items, _ = run_audit(self.study(adapter=defaulting), "--only", "P6")
         self.assertEqual(items["P6"]["result"], "concern", items["P6"])

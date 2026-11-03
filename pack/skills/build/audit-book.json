@@ -138,7 +138,7 @@
       "eval": null,
       "severity": "S1",
       "evidence": "program.json#node:<id>.<field> and the cited page where the value is not found",
-      "notes": "Quote check (`check_quotes.py`)"
+      "notes": "Quote check (`check_quotes.py`) No verbatim fields is a concern, not evidence that all wording was captured."
     },
     {
       "id": "X2",
@@ -258,7 +258,7 @@
       "eval": null,
       "severity": "S1",
       "evidence": "package/<slug>/task/adapter.py and the prompt index that carries another participant's reply",
-      "notes": "Incident I-02"
+      "notes": "Incident I-02 A probe cannot establish independence when replies are parsed or its transcript is forgeable; treat as a concern requiring review."
     },
     {
       "id": "P2",
@@ -337,7 +337,7 @@
       "eval": null,
       "severity": "S1",
       "evidence": "capabilities.json#run, study.json#readiness, the blocking issue ids and the stub-run outcome",
-      "notes": "Burton 2022, Kreis 2025"
+      "notes": "Burton 2022, Kreis 2025 A stub transcript is untrusted when package code shares its interpreter; refusal needs independent verification."
     },
     {
       "id": "P8",
@@ -350,7 +350,7 @@
       "eval": null,
       "severity": "S2",
       "evidence": "capabilities.json#profiles and the session fields",
-      "notes": "Desktop #45"
+      "notes": "Desktop #45 Profile use must be recorded for every session and explicitly identified as a deviation; field presence alone is insufficient."
     },
     {
       "id": "A1",
@@ -377,7 +377,7 @@
       "eval": null,
       "severity": "S1",
       "evidence": "artifacts/replay/human-check.json#exclusions and the paper page with the exclusion rule and counts",
-      "notes": null
+      "notes": "An exclusions statement alone does not verify the rule or counts against the paper."
     },
     {
       "id": "A3",
@@ -494,7 +494,7 @@
       "eval": null,
       "severity": "S1",
       "evidence": "the capability that says no and the call that returned output instead of a refusal",
-      "notes": "Desktop #45"
+      "notes": "Desktop #45 An untrusted stub transcript cannot prove tools refused impossible operations; errors are concerns."
     },
     {
       "id": "T5",

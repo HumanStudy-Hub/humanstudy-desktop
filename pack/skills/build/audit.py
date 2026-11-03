@@ -470,7 +470,7 @@ def check_X1(s, ctx):
                 problems.append(("concern", "%s: %s (cited page(s) %s)" % (where, info, ",".join(pages))))
     total = found + len(problems) + len(unchecked)
     if not total:
-        return R("n/a", None, "no verbatim fields")
+        return R("concern", "program.json#nodes: no nonempty verbatim fields", "no verbatim fields were available to check against the source")
     note = "%d verbatim field(s): %d found word for word, %d problem(s), %d unchecked (cited file not readable here)" % (
         total, found, len(problems), len(unchecked))
     if tables:
@@ -565,11 +565,6 @@ def probe(root, n):
                    prompts=calls[:400])
         return out
     sessions = list(sessions or [])
-    owner = {}  # stub reply number -> sessions whose content holds it (the participant it belongs to)
-    for idx, sess in enumerate(sessions):
-        for m in re.finditer(r"QZX(\d{4})QZX", json.dumps(sess, default=str)):
-            owner.setdefault(int(m.group(1)), set()).add(idx)
-    out["owner"] = {str(k): sorted(v) for k, v in owner.items()}
     out.update(seconds=round(time.time() - started, 1), calls=len(calls), prompts=calls[:2000],
                sessions=[{k: v for k, v in s.items() if k not in ("prompt", "prompts", "transcript")}
                          if isinstance(s, dict) else {"_": text_of(s)} for s in sessions][:2000])
@@ -591,8 +586,25 @@ def run_probe(s, ctx):
     if run.timed_out:
         ctx["probe"] = {"error": "stub run timed out"}
     else:
-        ctx["probe"] = json.loads(lines[-1])["probe"] if lines else {
-            "error": "probe produced no result (exit %s): %s" % (run.returncode, (run.stderr or run.stdout)[-400:])}
+        try:
+            result = json.loads(lines[-1])["probe"] if lines else None
+            if not isinstance(result, dict):
+                raise ValueError("probe result is not an object")
+            if not isinstance(result.get("sessions", []), list) or not isinstance(result.get("prompts", []), list):
+                raise ValueError("probe sessions or prompts are not lists")
+            ctx["probe"] = result
+        except (ValueError, TypeError, KeyError):
+            ctx["probe"] = {"error": "probe produced no valid result (exit %s): %s" %
+                            (run.returncode, (run.stderr or run.stdout)[-400:])}
+    # Package code shares the probe interpreter and can modify or forge its output.
+    # Derive attribution here, but never treat that transcript as proof of a pass.
+    pr = ctx["probe"]
+    owner = {}
+    for idx, sess in enumerate(pr.get("sessions") or []):
+        for m in re.finditer(r"QZX(\d{4})QZX", json.dumps(sess, default=str)):
+            owner.setdefault(int(m.group(1)), set()).add(idx)
+    pr["owner"] = {str(k): sorted(v) for k, v in owner.items()}
+    pr["untrusted"] = True
     return ctx["probe"]
 
 
@@ -654,8 +666,10 @@ def check_P1(s, ctx):
     if leaks:
         return R("concern", short("reply %d appears in prompt %d" % (j, i) for j, i, _ in leaks),
                  note + "; earlier replies reappear in later prompts and calls cannot be assigned to participants; needs agent")
-    return R("pass", None, note + ("; earlier replies reappear only within the same participant (%s)" % method
-                                   if any(seen) else "; no reply reappears in a later prompt"))
+    if not any(seen):
+        return R("concern", "package/%s/task/adapter.py: no stub reply markers in later prompts" % s.package.name,
+                 note + "; parsed or transformed answers may still be shared; needs agent review")
+    return R("pass", None, note + "; earlier replies reappear only within the same participant (%s)" % method)
 
 
 def check_P3(s, ctx):
@@ -792,8 +806,12 @@ def check_P7(s, ctx):
         probs.append(("concern", "artifacts/failures.json lists %s but capabilities.json#run is yes with nothing excluded"
                       % ", ".join(sorted({f["pattern"] for f in nonrun}))))
     pr = run_probe(s, ctx)
+    if pr is None:
+        return R("concern", "package/%s/task/adapter.py" % s.package.name, "refusal behavior was not tested")
     if pr is not None:
-        if (blocking or ready == "blocked") and not pr.get("refused"):
+        if pr.get("error"):
+            probs.append(("concern", "stub run failed: %s" % pr["error"][:300]))
+        if (blocking or ready == "blocked") and not pr.get("refused") and not pr.get("error"):
             probs.append(("fail", "study is blocked but the stub run was not refused (%d calls)" % pr.get("calls", 0)))
         if not (blocking or ready == "blocked") and pr.get("refused"):
             probs.append(("concern", "study is not blocked but the run was refused: %s" % pr["refused"][:160]))
@@ -809,13 +827,16 @@ def check_P7(s, ctx):
 def check_P8(s, ctx):
     prof = ((s.caps or {}).get("profiles") or {}).get("status")
     pr = run_probe(s, ctx) if s.package else None
+    if pr and pr.get("error"):
+        return R("concern", "package/%s/task/adapter.py" % s.package.name, "profile use could not be checked: %s" % pr["error"][:300])
     with_profile = sum(1 for sess in (pr or {}).get("sessions") or [] if any(k in sess for k in ("profile", "persona")))
     if with_profile and prof != "yes":
         return R("concern", "capabilities.json#profiles=%s but %d session(s) carry a profile" % (prof, with_profile),
                  "profiles used without being declared")
     if prof in (None, "no") and not with_profile:
         return R("n/a", None, "no participant profiles are used")
-    return R("pass", None, "profiles declared and recorded per session")
+    return R("concern", "capabilities.json#profiles and session profile fields",
+             "profile use requires checking every session and a recorded deviation from the original study")
 
 
 # ---- A: analysis and human data ---------------------------------------------------------------------
@@ -844,7 +865,7 @@ def check_A2(s, ctx):
     exc = s.hcheck.get("exclusions")
     if not exc:
         return R("concern", "artifacts/replay/human-check.json#exclusions", "no statement of the exclusions applied", covers="auto part")
-    return R("pass", None, "auto part: exclusions are stated (%d sessions, %s valid); needs agent to compare with the paper's rule and counts"
+    return R("concern", "artifacts/replay/human-check.json#exclusions", "exclusions are stated (%d sessions, %s valid); needs agent to compare application and counts with the paper"
              % (s.hcheck.get("sessions") or 0, s.hcheck.get("valid")), covers="auto part")
 
 
@@ -997,11 +1018,15 @@ def check_T4(s, ctx):
         return R("n/a", None, "stub run skipped (--no-run)")
     if not s.package:
         return R("n/a", None, "no replay package: the tools have nothing to run")
+    if pr.get("error"):
+        return R("concern", "package/%s/task/adapter.py" % s.package.name, "stub run failed: %s" % pr["error"][:300])
     probs = []
     if run == "no" and not pr.get("refused"):
         probs.append("capabilities.json#run.status=no but run produced %d model calls" % pr.get("calls", 0))
     if pr.get("excludedRefused") is False:
         probs.append("capabilities.json#run.excluded arms produced output")
+    if isinstance(pr.get("excludedRefused"), str):
+        return R("concern", "capabilities.json#run.excluded", "excluded-arm probe failed: %s" % pr["excludedRefused"])
     if probs:
         return R("fail", short(probs))
     tested = ["run refused" if pr.get("refused") else "run allowed (run=%s)" % run]
@@ -1175,6 +1200,9 @@ def audit_one(root, items, ctx_base):
             if iid in CHECKS:
                 try:
                     r = CHECKS[iid](s, ctx)
+                    if iid in ("P1", "P3", "P5", "P6", "P7", "P8", "T4") and r["result"] in ("pass", "n/a") and (ctx.get("probe") or {}).get("untrusted"):
+                        r = R("concern", "package/%s/task/adapter.py" % s.package.name,
+                              "the stub transcript is produced in the same interpreter as package code and can be forged; independent review required")
                 except Exception as exc:
                     r = R("concern", "audit.py", "the check crashed: %s" % "".join(
                         traceback.format_exception_only(type(exc), exc)).strip()[:300])
