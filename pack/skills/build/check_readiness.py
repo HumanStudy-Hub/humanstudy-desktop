@@ -153,6 +153,10 @@ def load_checkers():
             importlib.import_module(name)
         except ImportError:
             pass
+    drop_checker_paths()
+
+
+def drop_checker_paths():
     for folder in (str(HERE), str(HERE.parent / "export" / "agent")):
         while folder in sys.path:
             sys.path.remove(folder)
@@ -178,6 +182,7 @@ def run_checks(root, slug):
                 found = fn()
         except Exception as exc:  # a check that cannot run never counts as passed
             found = ["the check could not complete (%s: %s)" % (type(exc).__name__, one_line(exc)[:120])]
+        drop_checker_paths()  # a check may put its folder back (sources.py does); keep later imports failing closed
         line = summary(found)
         status[name] = "fail" if line else "pass"
         if line:
