@@ -586,8 +586,16 @@ def run_probe(s, ctx):
     if run.timed_out:
         ctx["probe"] = {"error": "stub run timed out"}
     else:
-        ctx["probe"] = json.loads(lines[-1])["probe"] if lines else {
-            "error": "probe produced no result (exit %s): %s" % (run.returncode, (run.stderr or run.stdout)[-400:])}
+        try:
+            result = json.loads(lines[-1])["probe"] if lines else None
+            if not isinstance(result, dict):
+                raise ValueError("probe result is not an object")
+            if not isinstance(result.get("sessions", []), list) or not isinstance(result.get("prompts", []), list):
+                raise ValueError("probe sessions or prompts are not lists")
+            ctx["probe"] = result
+        except (ValueError, TypeError, KeyError):
+            ctx["probe"] = {"error": "probe produced no valid result (exit %s): %s" %
+                            (run.returncode, (run.stderr or run.stdout)[-400:])}
     # Package code shares the probe interpreter and can modify or forge its output.
     # Derive attribution here, but never treat that transcript as proof of a pass.
     pr = ctx["probe"]
@@ -804,11 +812,11 @@ def check_P7(s, ctx):
         if pr.get("error"):
             probs.append(("concern", "stub run failed: %s" % pr["error"][:300]))
         if (blocking or ready == "blocked") and not pr.get("refused") and not pr.get("error"):
-            probs.append(("concern", "study is blocked but the untrusted stub transcript reports no refusal (%d calls)" % pr.get("calls", 0)))
+            probs.append(("fail", "study is blocked but the stub run was not refused (%d calls)" % pr.get("calls", 0)))
         if not (blocking or ready == "blocked") and pr.get("refused"):
             probs.append(("concern", "study is not blocked but the run was refused: %s" % pr["refused"][:160]))
         if pr.get("excludedRefused") is False:
-            probs.append(("concern", "untrusted stub transcript reports capabilities.json#run.excluded arms ran instead of being refused"))
+            probs.append(("fail", "capabilities.json#run.excluded arms ran instead of being refused"))
     if probs:
         worst = "fail" if any(p[0] == "fail" for p in probs) else "concern"
         return R(worst, short(p[1] for p in probs))
@@ -1192,9 +1200,6 @@ def audit_one(root, items, ctx_base):
             if iid in CHECKS:
                 try:
                     r = CHECKS[iid](s, ctx)
-                    if iid in ("P1", "P3", "P5", "P6", "T4") and r["result"] == "fail" and (ctx.get("probe") or {}).get("untrusted"):
-                        r = R("concern", r.get("evidence") or "package/%s/task/adapter.py" % s.package.name,
-                              "the untrusted stub transcript suggests a problem but can be forged; independent review required: " + (r.get("note") or ""))
                     if iid in ("P1", "P3", "P5", "P6", "P7", "P8", "T4") and r["result"] in ("pass", "n/a") and (ctx.get("probe") or {}).get("untrusted"):
                         r = R("concern", "package/%s/task/adapter.py" % s.package.name,
                               "the stub transcript is produced in the same interpreter as package code and can be forged; independent review required")

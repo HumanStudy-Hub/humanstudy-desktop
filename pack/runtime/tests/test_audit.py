@@ -155,6 +155,12 @@ class AuditTest(unittest.TestCase):
         for item in ("P1", "P7", "T4"):
             self.assertNotEqual(items[item]["result"], "pass", (item, items[item]))
 
+    def test_malformed_probe_output_is_a_concern(self):
+        for payload in ('{"probe":null}', '{"probe":', '{"probe":{"sessions":7}}'):
+            adapter = INDEPENDENT + '\nimport atexit\natexit.register(lambda: print(%r))\n' % payload
+            _, items, _ = run_audit(self.study(adapter=adapter), "--only", "P1")
+            self.assertEqual(items["P1"]["result"], "concern", items["P1"])
+
     def test_parsed_answers_shared_across_participants_are_not_a_pass(self):
         adapter = INDEPENDENT.replace('    out = []\n', '    out = []\n    previous = None\n').replace(
             '            reply = llm(build_prompt("s1", arm))',
@@ -232,8 +238,8 @@ class AuditTest(unittest.TestCase):
 
     def test_shared_context_between_participants_fails(self):
         run, items, _ = run_audit(self.study(adapter=SHARED), "--only", "P1")
-        self.assertEqual(items["P1"]["result"], "concern", items["P1"])
-        self.assertEqual(run.returncode, 0)
+        self.assertEqual(items["P1"]["result"], "fail", items["P1"])
+        self.assertEqual(run.returncode, 1)
 
     def test_multi_question_participants_are_attributed(self):
         _, items, _ = run_audit(self.study(adapter="SHARED_HISTORY = False\n" + TRANSCRIPT), "--only", "P1")
