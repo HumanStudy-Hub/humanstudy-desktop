@@ -23,7 +23,9 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "agent"))
+sys.path.append(str(HERE.parent / "build"))
 from study_core import Study  # noqa: E402
+import sandbox_run  # noqa: E402
 
 VERSION = "humanstudy-agent-package/1"
 SKIP = {"__pycache__", ".pytest_cache", ".DS_Store", ".env", ".git", ".humanstudy", "node_modules"}
@@ -450,15 +452,15 @@ def verify(out, name):
             # programRef) and the files next to program.json (effects.json, capabilities.json, the paper
             # when it is shared, sources/).
             pkg = Path(tmp) / "package" / s.package.name
-            shutil.copytree(s.package, pkg)
+            sandbox_run.copy_tree(s.package, pkg)  # symlinks are not followed out of the package
             for f in skill.iterdir():
-                if f.is_file():
+                if f.is_file() and not f.is_symlink() and not f.name.startswith("."):
                     shutil.copy2(f, Path(tmp) / f.name)
-            if (skill / "sources").is_dir():
-                shutil.copytree(skill / "sources", Path(tmp) / "sources")
-            run = subprocess.run([sys.executable, str(pkg / "task/adapter.py"), "--smoke-test"],
-                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                 timeout=300, cwd=str(pkg))
+            if (skill / "sources").is_dir() and not (skill / "sources").is_symlink():
+                sandbox_run.copy_tree(skill / "sources", Path(tmp) / "sources")
+            # Package code runs confined: no keys, no network, writes only in the copy (build/sandbox_run.py).
+            run = sandbox_run.run_python(pkg / "task/adapter.py", ["--smoke-test"], cwd=pkg, work=tmp, timeout=300)
+        assert not run.timed_out, "replay package smoke test timed out after 300 s"
         assert run.returncode == 0, "replay package smoke test failed:\n%s%s" % (run.stdout[-800:], run.stderr[-800:])
         checks.append("replay package smoke test")
     return checks

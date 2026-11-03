@@ -22,9 +22,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import shutil
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sandbox_run  # noqa: E402
 
 REQUIRED = [
     "study.json",
@@ -37,6 +40,8 @@ REQUIRED = [
 # Views of program.json: required only in the standalone layout (study.json.program is a copy).
 STANDALONE_VIEWS = ["source/evidence.json", "audit/missing_information.json"]
 PROGRAM_REF = "../../program.json"
+# Files the project format puts beside program.json that a package may read (plus the paper PDF, sources/).
+BESIDE_PROGRAM = {"program.json", "effects.json", "capabilities.json", "README.md"}
 
 
 def fail(msg: str) -> None:
@@ -130,13 +135,23 @@ def main() -> None:
     if audit_path.is_file():
         print(f"ok   audit checklist well-formed ({len(entries)} entries)")
 
-    result = subprocess.run(
-        [sys.executable, str(root / "task/adapter.py"), "--smoke-test"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    # The adapter is package code, possibly someone else's: run it confined (sandbox_run.py) on a copy laid out
+    # like the project, so it cannot read keys or write outside the copy. A package may read what the format
+    # puts beside it (../../program.json, the files next to program.json, sources/), as agent_package.py's
+    # self-test allows; symlinks are not followed out of what is copied.
+    with sandbox_run.work_dir(prefix="check-package-") as work:
+        copy = work / "project" / "package" / root.name
+        sandbox_run.copy_tree(root, copy, ignore=shutil.ignore_patterns("__pycache__", ".git"))
+        project = root.parent.parent
+        if root.parent.name == "package" and (project / "program.json").is_file():
+            for f in project.iterdir():  # only what the format puts there; never .env or tool configuration
+                if f.is_file() and not f.is_symlink() and (f.name in BESIDE_PROGRAM or f.suffix.lower() == ".pdf"):
+                    shutil.copy2(f, work / "project" / f.name)
+            if (project / "sources").is_dir() and not (project / "sources").is_symlink():
+                sandbox_run.copy_tree(project / "sources", work / "project" / "sources")
+        result = sandbox_run.run_python(copy / "task/adapter.py", ["--smoke-test"], cwd=copy, work=work, timeout=120)
+    if result.timed_out:
+        fail("adapter smoke test timed out after 120 s")
     if result.returncode != 0:
         fail("adapter smoke test failed:\n" + result.stdout + result.stderr)
     print("ok   task/adapter.py --smoke-test")
