@@ -78,6 +78,7 @@ class CheckResults(unittest.TestCase):
                       "Scores: [52, 53].", "[52, 53, 54, 55]", "The range was [52–55].",
                       "Group A [52, 53]", "The distribution contained [52, 53].",
                       "Participants chose different numbers [52, 53].",
+                      "The observed model [52, 53] has two values.",
                       "Table 1\ncontrol 9 10 group [52, 53]"):
             result = [dict(citation[0], quote=quote)]
             found = self.run_check(program_with([], result))

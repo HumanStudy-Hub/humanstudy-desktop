@@ -119,6 +119,7 @@ def numbers(text, citations=False):
             prefix = text[start:m.start()]
             if (m.group(1).lower() in RESULT_CONTEXT or not CITATION_CONTEXT.search(prefix + m.group(1))
                     or len(re.findall(r"[A-Za-z]{2,}", prefix)) < 2
+                    or any(word.lower() in RESULT_CONTEXT for word in re.findall(r"[A-Za-z]+", prefix))
                     or len(NUM.findall(prefix)) >= 2):
                 return m.group(0)
             return m.group(1) + m.group(2)
