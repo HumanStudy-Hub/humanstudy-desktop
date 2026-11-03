@@ -85,6 +85,12 @@ class Validity(FakePdfMixin, unittest.TestCase):
         task = next(n for n in p["nodes"] if n["id"] == "task")
         task["fields"] += [copy.deepcopy(f) for f in fields]
         p["issues"] += [copy.deepcopy(i) for i in issues]
+        p["evidence"] += [{"id": "e-hist", "path": "paper.pdf", "locator": {"page": 2},
+                           "quote": "A table of all their previous choices stayed on the screen."},
+                          {"id": "e-form", "path": "paper.pdf", "locator": {"page": 2},
+                           "quote": "All twelve items were displayed on one page."},
+                          {"id": "e-excl", "path": "paper.pdf", "locator": {"page": 2},
+                           "quote": "Participants with any missing response were excluded from the analysis."}]
         (root / "program.json").write_text(json.dumps(p), encoding="utf-8")
         (root / "paper.pdf").write_bytes(b"%PDF-1.4 stub")
         pkg = root / "package/x"
@@ -121,7 +127,7 @@ class Validity(FakePdfMixin, unittest.TestCase):
         self.assertTrue(any("p. 2 says" in m and "no not-told entry lists it" in m for m in found), found)
 
     def test_a_leak_in_build_written_text_is_caught_and_verbatim_text_is_not(self):
-        mem = [self.memory("full-log", evidence=["e-1"])]
+        mem = [self.memory("full-log", evidence=["e-hist"])]
         clean = self.project([self.not_told([ENTRY])] + mem, issues=[self.MEMORY_ISSUE])
         self.assertEqual(self.problems(clean), [])
         leak = self.project([self.not_told([ENTRY])] + mem, adapter(legend="Hint: the red key pays more often."),
@@ -142,24 +148,97 @@ class Validity(FakePdfMixin, unittest.TestCase):
         empty = {"statement": NOT_TOLD, "page": 2}
         found = self.problems(self.project([self.not_told([moved, wrong_terms, empty])]))
         self.assertTrue(any("not-told[0]: the statement is not on p. 9" in m for m in found), found)
-        self.assertTrue(any("not-told[1]: no term is a word of the printed statement" in m for m in found), found)
+        self.assertTrue(any("not-told[1]: no term is a content word of the printed statement" in m for m in found), found)
         self.assertTrue(any("not-told[2]: needs `withheld`" in m for m in found), found)
+        # a frame word of the statement ("told") grounds nothing; a term must be a word of what was withheld
+        gamed = dict(ENTRY, terms=["told", "participants"])
+        unrelated = dict(ENTRY, terms=["blue key"], withheld="the payout schedule")
+        found = self.problems(self.project([self.not_told([gamed, unrelated])]))
+        self.assertTrue(any("not-told[0]: no term is a content word" in m for m in found), found)
+        self.assertTrue(any("not-told[1]: no term shares a word with `withheld`" in m for m in found), found)
         na = dict(ENTRY, terms=[], withheld="", notApplicable="about the experimenters")
-        found = self.problems(self.project([self.not_told([na])]))
-        self.assertFalse(any("not-told" in m for m in found), found)
+        report = check_validity.check(self.project([self.not_told([na])]))
+        self.assertFalse(any("not-told" in m for m, _ in report["problems"]), report["problems"])
+        self.assertTrue(any("not applicable: about the experimenters" in n for n in report["notes"]), report["notes"])
 
     def test_memory_design_is_a_recorded_decision_that_matches_the_prompts(self):
         nt = self.not_told([ENTRY])
         found = self.problems(self.project([nt]))
         self.assertTrue(any("records no `replay-memory` decision" in m for m in found), found)
         found = self.problems(self.project([nt, self.memory("full-log")], issues=[self.MEMORY_ISSUE]))
-        self.assertTrue(any("full-log is not what participants saw" in m for m in found), found)
+        self.assertTrue(any("(design 'full-log') is not what participants saw" in m for m in found), found)
+        # any evidence id does not do: the quote must say participants saw their earlier trials
+        found = self.problems(self.project([nt, self.memory("full-log", evidence=["e-form"])], issues=[self.MEMORY_ISSUE]))
+        self.assertTrue(any("(design 'full-log') is not what participants saw" in m for m in found), found)
+        # "other" over prompts that carry every trial is a full log too
+        found = self.problems(self.project([nt, self.memory("other")], issues=[self.MEMORY_ISSUE]))
+        self.assertTrue(any("(design 'other') is not what participants saw" in m for m in found), found)
+        self.assertEqual(self.problems(self.project([nt, self.memory("full-log", evidence=["e-hist"])],
+                                                    issues=[self.MEMORY_ISSUE])), [])
+        # a questionnaire whose items share a page: same-screen, with a quote that says so
+        self.assertEqual(self.problems(self.project([nt, self.memory("same-screen", evidence=["e-form"])],
+                                                    issues=[self.MEMORY_ISSUE])), [])
+        found = self.problems(self.project([nt, self.memory("same-screen")], issues=[self.MEMORY_ISSUE]))
+        self.assertTrue(any("same-screen" in m and "needs evidence" in m for m in found), found)
         found = self.problems(self.project([nt, self.memory("last-trial")], issues=[self.MEMORY_ISSUE]))
         self.assertTrue(any("design is 'last-trial' but the prompts carry every earlier trial" in m for m in found), found)
         found = self.problems(self.project([nt, self.memory("full-log")]))
         self.assertTrue(any("needs its decision issue" in m for m in found), found)
         self.assertEqual(self.problems(self.project([nt, self.memory("full-log", origin="researcher")],
                                                     issues=[self.MEMORY_ISSUE])), [])
+
+    def test_unparsed_rule_reads_parse_status_only_and_accepts_the_papers_rule(self):
+        mem = [self.not_told([ENTRY]), self.memory("full-log", evidence=["e-hist"])]
+        ok = adapter(valid='"complete": all(len(k) > 0 for k in ("a", "b"))  # valid = all( in a comment')
+        self.assertEqual(self.problems(self.project(mem, ok, issues=[self.MEMORY_ISSUE])), [])
+        dodge = adapter(valid='"ok": not any(t["key"] is None for t in trials)')
+        code = Path(tempfile.mkdtemp(prefix="check-validity-")) / "evaluation.py"
+        self.addCleanup(shutil.rmtree, code.parent, True)
+        code.write_text("rows = [{'risky': None}]\nassert all(r['risky'] is not None for r in rows)\n"
+                        "abort = all(not r['valid'] for r in rows)\nmeans = all(x is not None for x in (1, 2))\n"
+                        "s = {'valid': all(r['risky'] is not None for r in rows)}\n", encoding="utf-8")
+        self.assertEqual([n for n, _ in check_validity.drops_participant(code)], [5])   # not asserts or all(not ...)
+        found = self.problems(self.project(mem, dodge, issues=[self.MEMORY_ISSUE]))
+        self.assertTrue(any("one unparsed reply drops the whole participant" in m for m in found), found)
+        cited = adapter(valid='\n            # exclusion: e-excl\n            "valid": all(t["parsed"] for t in trials)')
+        self.assertEqual(self.problems(self.project(mem, cited, issues=[self.MEMORY_ISSUE])), [])
+        wrong = adapter(valid='\n            # exclusion: e-hist\n            "valid": all(t["parsed"] for t in trials)')
+        found = self.problems(self.project(mem, wrong, issues=[self.MEMORY_ISSUE]))
+        self.assertTrue(any("one unparsed reply drops the whole participant" in m for m in found), found)
+
+    def test_a_hanging_adapter_fails_and_sleeps_are_skipped(self):
+        mem = [self.not_told([ENTRY]), self.memory("full-log", evidence=["e-hist"])]
+        slow = adapter(blocked="import time; time.sleep(3600)")
+        self.assertEqual(self.problems(self.project(mem, slow, issues=[self.MEMORY_ISSUE])), [])
+        hang = adapter(blocked="while True: pass")
+        root = self.project(mem, hang, issues=[self.MEMORY_ISSUE])
+        original = check_validity.prompts_of
+        check_validity.prompts_of = lambda pkg: original(pkg, timeout=5)
+        self.addCleanup(setattr, check_validity, "prompts_of", original)
+        found = self.problems(root)
+        self.assertTrue(any("did not finish" in m for m in found), found)
+
+    def test_every_named_arm_is_run(self):
+        text = adapter().replace("    pass\n    out = []", "    if arms and arms[0] == 'hint':\n"
+                                 "        llm('Hint: the red key pays more often.')\n    out = []")
+        mem = [self.not_told([ENTRY]), self.memory("full-log", evidence=["e-hist"])]
+        root = self.project(mem, text, issues=[self.MEMORY_ISSUE])
+        self.assertEqual(self.problems(root), [])
+        (root / "package/x/study.json").write_text(json.dumps({"runnableArms": ["c", "hint"]}), encoding="utf-8")
+        found = self.problems(root)
+        self.assertTrue(any("tells participants what they were not told (red key)" in m for m in found), found)
+
+    def test_static_reading_skips_the_papers_quotes_and_wrapped_verbatim_lines_are_exempt(self):
+        pkg = self.project([self.not_told([ENTRY])]) / "package/x"
+        (pkg / "materials").mkdir()
+        (pkg / "materials/materials.json").write_text(json.dumps(
+            {"items": [{"text": "Press a key.", "quote": "the red key pays more often", "source": "p. 2"}]}),
+            encoding="utf-8")
+        self.assertFalse(any("red key" in t for t in check_validity.static_texts(pkg)))
+        pieces = check_validity.participant_text({"nodes": [{"id": "m", "kind": "material", "fields": [
+            {"id": "instructions", "origin": "verbatim", "value": "At the end we will tell you whether the red key "
+                                                                 "pays more often than the blue one."}]}]})
+        self.assertEqual(check_validity.authored("whether the red key pays", pieces), "")
 
     def test_blocked_adapters_are_read_statically_and_valid_all_is_a_problem(self):
         text = adapter(legend="Hint: the red key pays more often.", blocked='raise RuntimeError("blocked")',
@@ -172,13 +251,20 @@ class Validity(FakePdfMixin, unittest.TestCase):
         self.assertTrue(any("records no `replay-memory` decision" in m for m in found), found)
 
     def test_missing_instructions_are_a_decision(self):
-        field = {"id": "instructions", "label": "Instructions", "origin": "unknown", "state": "missing",
+        field = {"id": "briefing", "label": "Briefing", "origin": "unknown", "state": "missing",
                  "evidenceIds": [], "value": None}
-        issue = {"id": "i-instr", "title": "Instructions not printed", "severity": "blocking", "reason": "r",
-                 "impact": "i", "suggestedAction": "s", "evidenceIds": [], "nodeId": "task", "fieldId": "instructions"}
+        issue = {"id": "i-instr", "title": "Instructions not printed", "severity": "check", "reason": "r",
+                 "impact": "i", "suggestedAction": "s", "evidenceIds": [], "nodeId": "task", "fieldId": "briefing"}
         found = self.problems(self.project([self.not_told([ENTRY]), field], issues=[issue]))
-        self.assertTrue(any("missing participant instructions has severity 'blocking'" in m for m in found), found)
+        self.assertTrue(any("missing participant instructions has severity 'check'" in m for m in found), found)
         found = self.problems(self.project([self.not_told([ENTRY]), field], issues=[dict(issue, severity="decision")]))
+        self.assertFalse(any("missing participant instructions" in m for m in found), found)
+        # blocking only when the adapter refuses to run without the text
+        blocking = [dict(issue, severity="blocking")]
+        found = self.problems(self.project([self.not_told([ENTRY]), field], issues=blocking))
+        self.assertTrue(any("severity 'blocking'" in m for m in found), found)
+        refuses = adapter(blocked='raise RuntimeError("the briefing is not printed")')
+        found = self.problems(self.project([self.not_told([ENTRY]), field], refuses, issues=blocking))
         self.assertFalse(any("missing participant instructions" in m for m in found), found)
 
 
@@ -227,6 +313,18 @@ class EffectRules(unittest.TestCase):
         self.assertTrue(any("program.json records the study's sample" in m for m in found), found)
         doc["effects"][0]["reported"]["missing"] = ["N of this subgroup is not printed"]
         self.assertEqual(self.rules(doc), [])
+        # printed N for the whole sample, a subgroup effect: missing says why, so no N is forced on it
+        self.assertEqual(self.rules(self.effect(n=None, missing=["N of the LAC subgroup is not printed"])), [])
+        # an N the quotes do not print is not this effect's N
+        found = self.rules(self.effect(n=80))
+        self.assertTrue(any("reported.n = 80 but its quotes print N = 40" in m for m in found), found)
+
+    def test_a_ci_must_contain_its_value(self):
+        found = self.rules(self.effect(estimates=[{"metric": "standardized_mean_difference", "value": -0.322,
+                                                   "ci": [0.01, 0.63]}]))
+        self.assertTrue(any("does not contain the value" in m for m in found), found)
+        self.assertEqual(self.rules(self.effect(estimates=[{"metric": "standardized_mean_difference",
+                                                            "value": -0.322, "ci": [-0.63, -0.01]}])), [])
 
 
 class VerbatimSplits(FakePdfMixin, unittest.TestCase):
@@ -255,9 +353,13 @@ class VerbatimSplits(FakePdfMixin, unittest.TestCase):
         values = {"split": "That number may not have direct correspon dence with the final amount",
                   "split-like-one-reader": "press the l ateral key", "wide": "That number  may not have direct",
                   "good": "That number may not have direct correspondence with the final amount"}
-        got = self.statuses(values, [[self.PAGE]])
+        got = self.statuses(values, [[self.PAGE], [self.PAGE]])
         self.assertEqual(got, {"split": "layout_split", "split-like-one-reader": "layout_split",
                                "wide": "layout_split", "good": "found"})
+        # one reader each way is a tie, not evidence; two spaces after a full stop are not column padding
+        got = self.statuses({"split-like-one-reader": "press the l ateral key"}, [[self.PAGE]])
+        self.assertEqual(got, {"split-like-one-reader": "found"})
+        self.assertEqual(check_verbatim.wide_spaces("the final amount.  That number"), [])
 
     def test_a_reader_that_drops_spaces_is_ignored(self):
         merged = "".join(w if i % 2 else " " + w for i, w in enumerate(self.PAGE.split())) * 3
@@ -290,6 +392,14 @@ class SkippedTables(FakePdfMixin, unittest.TestCase):
         found = self.problems(self.GRID)
         self.assertTrue(any("Table A1 is marked missing, but p. 2 has a clean text layer" in m for m in found), found)
 
+    def test_another_tables_rows_on_the_same_page_do_not_count(self):
+        layout = "Table 2\nResults\n" + self.GRID + "\nTable A1\nParameter correlations (image)\n"
+        found = self.problems(layout, caption="Table 2\nResults\nTable A1\nParameter correlations")
+        self.assertFalse(any("marked missing" in m for m in found), found)
+        layout = "Table 2\nResults\nTable A1\nParameter correlations\n" + self.GRID
+        found = self.problems(layout, caption="Table 2\nResults\nTable A1\nParameter correlations")
+        self.assertTrue(any("Table A1 is marked missing" in m for m in found), found)
+
     def test_prose_with_statistics_and_cited_supplementary_tables_are_not(self):
         prose = "\n".join(["we found r(578) = 0.198, p < 0.001 and r(573) = 0.159, p < 0.001 in the sample"] * 4)
         self.assertFalse(any("marked missing" in m for m in self.problems(prose)))
@@ -308,13 +418,20 @@ class PrintedLicense(FakePdfMixin, unittest.TestCase):
              "which permits use.", "CC-BY-4.0"),
             ("It is made available under a CC-BY-NC-ND 4.0 International license.", "CC-BY-NC-ND-4.0"),
             ("Figure 2 is adapted from Smith (2019), licensed under CC BY 4.0.", None),
-            ("Copies can be used for personal research under the following conditions.", None)]
+            ("Copies can be used for personal research under the following conditions.", None),
+            ("Our preregistration, materials and scripts are on OSF and licensed under CC BY 4.0.", None),
+            ("The responses are distributed under a CC0 license.", None),
+            ("This is an open access article under the CC BY-NC-ND license "
+             "(http://creativecommons.org/licenses/by-nc-nd/4.0/).", "CC-BY-NC-ND-4.0")]
         for text, want in cases:
             self.fake_pdf(check_quotes, ["front page", text])
             got = sources.printed_license(Path("paper.pdf"))
             self.assertEqual(got[0] if got else None, want, text)
             if got:
                 self.assertTrue(got[1].startswith("p. 2: "), got)
+        self.fake_pdf(check_quotes, ["front page", "Our preregistration is open access under CC BY 4.0."])
+        got = sources.printed_license(Path("paper.pdf"))
+        self.assertTrue(got is None or "Our" in got[1], got)   # the sentence keeps its first character
 
     def test_unknown_is_replaced_and_check_fails_while_unknown(self):
         root = Path(tempfile.mkdtemp(prefix="sources-"))

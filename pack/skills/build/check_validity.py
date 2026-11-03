@@ -15,17 +15,18 @@ check_package.py runs it; it must print PASS before the package can be marked re
                  later prompts records that design as a `replay-memory` decision field; the default is
                  what participants plausibly saw, so a full trial log needs evidence that participants
                  saw one, or a researcher's decision.
-  unparsed       one unparsed reply must not drop a whole participant (`valid = all(...)` over trials):
-                 record unparsed replies per trial and apply the paper's own exclusion rule.
+  unparsed       one unparsed reply must not drop a whole participant (all(...)/any(...) over the trials'
+                 parse status): record unparsed replies per trial and apply the paper's own exclusion rule
+                 (a line that applies it carries `# exclusion: <evidence id>` whose quote states the rule).
   instructions   a participant-instruction field the paper does not print is `missing` with a
-                 `decision` issue (the researcher supplies the text or accepts the stand-in wording),
-                 never `blocking` and never `check`.
+                 `decision` issue (the researcher supplies the text or accepts the stand-in wording), or
+                 `blocking` when the adapter refuses to run without it; never `check`.
   not-told field program.json has a `not-told` field (a list; [] when the paper says nothing was withheld).
 
 How the prompts are read: the adapter's run_sessions is run with a stand-in model in a confined child
 (sandbox_run.py, on a copy of the package laid out like the project: no keys, no network, writes only in a
-scratch folder), once over all arms and, when that stops at the call cap, once per arm; every distinct
-prompt line is recorded. When the adapter cannot run (a blocked study), its string literals and
+scratch folder; sleeps are skipped), once over all arms and once per arm study.json or task.json names; every
+distinct prompt line is recorded. An adapter that does not finish with the stand-in model fails. When the adapter cannot run (a blocked study), its string literals and
 materials/materials.json are read instead.
 
 Limits (heuristics, documented so nobody mistakes a PASS for proof):
@@ -33,7 +34,8 @@ Limits (heuristics, documented so nobody mistakes a PASS for proof):
     story", ...). A withheld fact phrased otherwise is found only if you list it yourself: do so.
   - A leak is found only when the prompt contains one of the entry's terms. Choose terms a leaking prompt
     would have to contain (the words of the withheld rule: "yellow", "can be selected", "upper circle");
-    the terms must include at least one word of the printed statement. Words of other not-told
+    the terms must include a content word of the printed statement (not "told", "participants", "the")
+    and share a word with `withheld`. Entries marked `notApplicable` are printed with their reason. Words of other not-told
     sentences are printed as notes when build-written text contains them; read them.
   - Timing is not checked: verbatim text that reveals a rule later (a debriefing) is accepted anywhere.
   - The memory check reads prompt growth and the prompt function's parameters; a log passed in another
@@ -55,12 +57,13 @@ import check_verbatim  # noqa: E402
 
 PARTICIPANT = re.compile(
     r"\b(?:participants?|subjects?|respondents?|volunteers?|players?|children|students?|individuals|people|"
-    r"they|patients|observers?|listeners?|raters?|workers|decision.makers|infants|adults)\b", re.I)
+    r"patients|observers?|listeners?|raters?|workers|decision.makers|infants|adults)\b", re.I)
+REFERENCES = re.compile(r"^\s*(?:references|bibliography|literature cited|works cited)\s*$", re.I | re.M)
 TRIGGERS = [re.compile(p, re.I) for p in (
     r"\b(?:were|was|are|is) (?:not|never) (?:explicitly |directly |initially |ever |specifically )?"
     r"(?:told|informed|instructed|shown|given|made aware|explained|cued)\b",
     r"\bwithout (?:being|having been) (?:explicitly )?(?:told|informed|instructed|shown)\b",
-    r"\b(?:were|was|remained|are|kept) (?:unaware|naive|naïve|uninformed|blind)\b",
+    r"\b(?:were|was|remained|are|kept) (?:unaware|naive|naïve|uninformed)\b",
     r"\bhad to (?:learn|discover|infer|figure out|work out|find out)\b",
     r"\b(?:received|given|provided with|had) no (?:explicit |prior |further )?(?:information|instructions?|explanation|knowledge)\b",
     r"\bno (?:explicit |prior )?(?:information|instructions?|explanation) (?:was|were) (?:given|provided)\b",
@@ -69,15 +72,32 @@ STOP = set("""a an the and or of to in on at by for with from as that this these
 being it its their they them he she his her we our you your not no only both how when what which who whom
 whether if then than so such could would should can may might must had has have do did does about into
 also there here each other more most less any all some one two first second""".split())
+PROVENANCE = re.compile(r"quote|evidence|source|citation|provenance|note|comment|page", re.I)
 HISTORY_PARAM = re.compile(r"hist|past|previous|earlier|log|memory|transcript|record|trials?_so_far|seen", re.I)
-UNPARSED = re.compile(r"""["']?\bvalid["']?\s*[:=]\s*all\s*\(""")
-INSTRUCTION = re.compile(r"instruction", re.I)
+PARSE_STATUS = re.compile(r"pars|\bvalid\b|\bok\b|\b(?:choice|response|answer|reply|rating|decision)\w*\b.{0,40}\bis (?:not )?None",
+                          re.I)
+VALID_FLAG = re.compile(r"valid|\bok\b|complete|includ|keep|usable|exclu", re.I)
+TRIALS = re.compile(r"trial|resp|answer|choice|repl|round|item|rating", re.I)
+EXCLUSION_MARK = re.compile(r"#\s*exclusion:\s*([\w.-]+)", re.I)
+EXCLUSION_WORDS = re.compile(r"exclu|remov|discard|omit|drop|not (?:included|analy[sz]ed)", re.I)
+INSTRUCTION = re.compile(r"instruction|briefing|wording", re.I)
+# words that say "not told" (or name the participants) and so ground nothing about what was withheld
+FRAME = set("""told tell informed inform instructed instruct instructions instruction shown show given give aware unaware
+naive naïve uninformed blind learn learned learnt discover discovered infer inferred figure work find out explicit
+explicitly directly initially ever specifically cued explained explanation information knowledge prior further
+cover story believe led deceived kept remained participant participants subject subjects respondent respondents
+volunteers player players children student students individuals people patients observers listeners raters
+workers infants adults never were was are task experiment study""".split())
+HISTORY_WORDS = re.compile(r"previous|earlier|past|history|histories|record|log\b|cumulative|so far|running total|"
+                           r"preceding|prior (?:trials?|choices?|outcomes?|rounds?)|all (?:of )?(?:their|the) "
+                           r"(?:choices|trials|outcomes|rounds)|feedback (?:on|about) (?:all|each)", re.I)
 MATERIAL_FIELD = re.compile(r"instruction|debrief|briefing|item|question|prompt|stimul|scenario|vignette|scale|"
                             r"script|screen|message|text|wording|consent|cover", re.I)
-DESIGNS = ("none", "last-trial", "summary", "full-log", "conversation", "other")
+DESIGNS = ("none", "last-trial", "summary", "same-screen", "full-log", "conversation", "other")
+SCREEN_WORDS = re.compile(r"\b(?:page|screen|visible|displayed|questionnaire|survey|form|scale|items)\b", re.I)
 FULL = ("full-log", "conversation")
 CALL_CAP = 2500          # stand-in calls over all arms before the capture stops
-ARM_CAP = 600            # per arm, when the first pass hit CALL_CAP
+ARM_CAP = 600            # per arm (every arm study.json or task.json names is run on its own)
 MIN_TRIALS = 10          # calls per participant that make a task a repeated-trial task
 
 
@@ -131,6 +151,9 @@ def statements(pages):
     """[(page, trigger, context)]: sentences that say participants were not told something (one per passage)."""
     out = []
     for number, text in enumerate(pages, 1):
+        ref = REFERENCES.search(text or "")
+        if ref and number > 1:   # the reference list: titles of other studies, not this one's procedure
+            text = text[:ref.start()]
         flat = re.sub(r"\s+", " ", re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", text or ""))
         found = sorted((m for pat in TRIGGERS for m in pat.finditer(flat)), key=lambda m: m.start())
         last = -10 ** 6
@@ -144,6 +167,8 @@ def statements(pages):
             if PARTICIPANT.search(context):
                 out.append((number, m.group(0), context.strip()))
                 last = m.start()
+        if ref and number > 1:
+            break
     return out
 
 
@@ -194,10 +219,18 @@ def inventory(program):
                 problems.append(("%s: needs `withheld` (what participants did not know) and `terms` (words a prompt "
                                  "that leaks it would contain)" % at,
                                  'or `notApplicable` with the reason when the sentence is not about participants'))
-            elif not any(has_phrase(norm(e.get("statement")), norm(t)) for t in terms):
-                problems.append(("%s: no term is a word of the printed statement" % at,
+            elif not any(has_phrase(norm(e.get("statement")), norm(t)) and content_words(t) for t in terms):
+                problems.append(("%s: no term is a content word of the printed statement (words like \"told\", "
+                                 "\"participants\" or \"the\" do not count)" % at,
                                  "include the statement's own words for the withheld rule among the terms"))
+            elif not any(content_words(t) & content_words(e.get("withheld")) for t in terms):
+                problems.append(("%s: no term shares a word with `withheld`" % at,
+                                 "the terms are the words of the withheld fact: a prompt that leaks it would contain them"))
     return entries, problems, has_field
+
+
+def content_words(text):
+    return {w for w in norm(text or "").split() if len(w) >= 3 and w not in STOP and w not in FRAME and not w.isdigit()}
 
 
 def _on_page(entry, pages):
@@ -219,12 +252,16 @@ def _standin(prompt):
     """A reply that parses in most tasks: an option the prompt's last lines offer, else "1"."""
     tail = (prompt if isinstance(prompt, str) else json.dumps(prompt))[-300:]
     options = re.findall(r"\b([A-Z]{2,6}|[1-9])\b", tail)
+    options += re.findall(r"[\"'\u201c\u2018]([a-z][a-z-]{1,15})[\"'\u201d\u2019]", tail)   # 'left' / "accept"
+    options += [w for w in ("yes", "no") if re.search(r"\b%s\b" % w, tail, re.I)]
     return random.Random(len(tail)).choice(options) if options else "1"
 
 
 def capture(pkg):
     """Run in a child process: record every prompt run_sessions sends. Prints one JSON line."""
     import importlib.util
+    import time
+    time.sleep = lambda *a, **k: None   # a pause between trials (rate limits, pacing) is not waited out
     sys.path.insert(0, str(pkg / "task"))
     spec = importlib.util.spec_from_file_location("hs_validity_adapter", pkg / "task/adapter.py")
     mod = importlib.util.module_from_spec(spec)
@@ -260,21 +297,23 @@ def capture(pkg):
                 if line.strip() and len(lines) < 50000:
                     lines.setdefault(line[:4000], None)
         rec["lines"] = list(lines)
+        print("@@RUN@@" + json.dumps(rec, ensure_ascii=False), flush=True)   # kept if a later run hangs
         return rec
 
     first = run(None, CALL_CAP)
     out["runs"].append(first)
-    if first["capped"]:
-        study = _json(pkg / "study.json") or {}
-        task = _json(pkg / "task/task.json") or {}
-        names = list(study.get("runnableArms") or [])
-        arms = task.get("arms")
-        names += [a for a in arms if isinstance(a, str)] if isinstance(arms, list) else []
-        names += [c.get("arm") or c.get("id") for c in task.get("conditions") or [] if isinstance(c, dict)
-                  and c.get("runnable", True)] if isinstance(task.get("conditions"), list) else []
-        for arm in [a for a in dict.fromkeys(names) if a][:8]:
-            out["runs"].append(run([arm], ARM_CAP))
-    print("@@CAPTURE@@" + json.dumps(out, ensure_ascii=False))
+    # every named arm on its own: an arm the default call never reaches is still read
+    study = _json(pkg / "study.json") or {}
+    task = _json(pkg / "task/task.json") or {}
+    names = list(study.get("runnableArms") or [])
+    arms = task.get("arms")
+    names += [a if isinstance(a, str) else a.get("id") or a.get("name") for a in arms
+              if isinstance(a, (str, dict))] if isinstance(arms, list) else []
+    names += [c.get("arm") or c.get("id") for c in task.get("conditions") or [] if isinstance(c, dict)
+              and c.get("runnable", True)] if isinstance(task.get("conditions"), list) else []
+    for arm in [a for a in dict.fromkeys(names) if isinstance(a, str) and a][:12]:
+        out["runs"].append(run([arm], ARM_CAP))
+    print("@@CAPTURE@@" + json.dumps({"error": out["error"]}, ensure_ascii=False), flush=True)
 
 
 def prompts_of(pkg, timeout=300):
@@ -293,15 +332,23 @@ def prompts_of(pkg, timeout=300):
                 sandbox_run.copy_tree(project / "sources", work / "project" / "sources")
         run = sandbox_run.run_python(Path(__file__).resolve(), ["--capture", str(copy)], cwd=copy, work=work,
                                      timeout=timeout)
+    runs = []
+    for l in run.stdout.splitlines():
+        if l.startswith("@@RUN@@"):
+            try:
+                runs.append(json.loads(l[len("@@RUN@@"):]))
+            except ValueError:
+                pass
     if run.timed_out:
-        return {"runs": [], "error": "the adapter did not finish within %ds with a stand-in model" % timeout}
+        return {"runs": runs, "error": "the adapter did not finish within %ds with a stand-in model" % timeout,
+                "unfinished": True}
     line = next((l for l in run.stdout.splitlines()[::-1] if l.startswith("@@CAPTURE@@")), None)
     if line is None:
-        return {"runs": [], "error": "the adapter could not be run: " + (run.stderr or run.stdout)[-400:]}
+        return {"runs": runs, "error": "the adapter could not be run: " + (run.stderr or run.stdout)[-400:]}
     try:
-        return json.loads(line[len("@@CAPTURE@@"):])
+        return dict(json.loads(line[len("@@CAPTURE@@"):]), runs=runs)
     except ValueError:
-        return {"runs": [], "error": "the prompt capture was cut off"}
+        return {"runs": runs, "error": "the prompt capture was cut off"}
 
 
 def _docstrings(tree):
@@ -329,8 +376,9 @@ def static_texts(pkg):
         if isinstance(v, str):
             texts.append(v)
         elif isinstance(v, dict):
-            for x in v.values():
-                walk(x)
+            for k, x in v.items():
+                if not PROVENANCE.search(str(k)):   # the paper's own sentences quoted as evidence are not prompts
+                    walk(x)
         elif isinstance(v, list):
             for x in v:
                 walk(x)
@@ -352,6 +400,8 @@ def participant_text(program):
 
 def authored(text, pieces):
     t = norm(text)
+    if len(t.split()) >= 2 and any(t in p for p in pieces):
+        return ""   # one line of a verbatim passage the prompt wraps over several lines
     for p in pieces:
         if p in t:
             t = t.replace(p, " | ")
@@ -397,6 +447,50 @@ def grows(lengths):
     return bool(changes) and sum(1 for c in changes if c > 0) >= 0.6 * len(changes) and lengths[-1] >= 2 * min(lengths[:3])
 
 
+def drops_participant(path):
+    """[(line, code)] for all(...)/any(...) over the trials' parse status: one reply decides for the participant.
+
+    Read: all(t["parsed"] ...), all(t["valid"] ...), all(t["choice"] is not None ...) and their any() forms,
+    over the trials or assigned to a validity flag. Not read: asserts (a smoke test) and all(not ...) (every
+    reply unparsed: the model does not answer the task at all)."""
+    try:
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+    except (OSError, SyntaxError, ValueError):
+        return []
+    lines = source.splitlines()
+    asserts = {id(n) for a in ast.walk(tree) if isinstance(a, ast.Assert) for n in ast.walk(a)}
+    out = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("all", "any")
+                and len(node.args) == 1 and isinstance(node.args[0], (ast.GeneratorExp, ast.ListComp, ast.SetComp))):
+            continue
+        arg = node.args[0]
+        if id(node) in asserts or (isinstance(arg.elt, ast.UnaryOp) and isinstance(arg.elt.op, ast.Not)):
+            continue
+        status = ast.get_source_segment(source, arg.elt) or ""
+        over = " ".join(ast.get_source_segment(source, g.iter) or "" for g in arg.generators)
+        before = lines[node.lineno - 1][:node.col_offset]
+        none_test = isinstance(arg.elt, ast.Compare) and any(isinstance(op, (ast.Is, ast.IsNot)) for op in arg.elt.ops) \
+            and any(isinstance(c, ast.Constant) and c.value is None for c in arg.elt.comparators)
+        if PARSE_STATUS.search(status) or (none_test and (TRIALS.search(over) or VALID_FLAG.search(before))):
+            out.append((node.lineno, lines[node.lineno - 1].strip()))
+    return sorted(set(out))
+
+
+def excused(path, line_no, evidence):
+    """A `# exclusion: <evidence id>` comment just above, citing a quote that states an exclusion rule."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    for text in lines[max(0, line_no - 3):line_no]:
+        m = EXCLUSION_MARK.search(text)
+        if m and EXCLUSION_WORDS.search((evidence.get(m.group(1)) or {}).get("quote") or ""):
+            return True
+    return False
+
+
 # ---- the check -------------------------------------------------------------------------------------
 
 def check(root, package=None, capture_prompts=True):
@@ -419,6 +513,8 @@ def check(root, package=None, capture_prompts=True):
             '"origin": "reported", "state": "confirmed", "value": [...], "evidenceIds": [...]} ([] when the paper '
             'says nothing was withheld)')
     for e in entries:
+        if str(e.get("notApplicable") or "").strip():
+            notes.append("%s marked not applicable: %s" % (e["_where"], str(e["notApplicable"])[:200]))
         if not _on_page(e, pages):
             add("%s: the statement is not on p. %s" % (e["_where"], e.get("page")),
                 "copy the sentence as printed and cite the page it is on")
@@ -435,6 +531,10 @@ def check(root, package=None, capture_prompts=True):
     else:
         cap = prompts_of(pkg) if capture_prompts else {"runs": [], "error": "capture off"}
         runs = [r for r in cap.get("runs") or [] if r.get("calls")]
+        if cap.get("unfinished"):
+            add("%s: run_sessions must finish with a stand-in model (no network, sleeps skipped)" % cap["error"],
+                "a loop that retries until the reply parses never ends with a model that does not comply: record "
+                "the reply as unparsed and go on")
         if runs:
             method = "prompts sent by run_sessions with a stand-in model (%s calls)" % sum(r["calls"] for r in runs)
             texts = [p for r in runs for p in r.get("lines") or []]
@@ -482,9 +582,10 @@ def check(root, package=None, capture_prompts=True):
                 "decision" % (int(per_participant) or "many", " or more" if any(r.get("capped") for r in runs) else "", how),
                 'add to the procedure node {"id": "replay-memory", "label": "What a participant remembers between '
                 'trials", "origin": "implementation", "state": "decision", "value": {"design": "none | last-trial | '
-                'summary | full-log | conversation | other", "shows": "...", "participantsSaw": "...", '
+                'summary | same-screen | full-log | conversation | other", "shows": "...", "participantsSaw": "...", '
                 '"expectedImpact": "..."}, "evidenceIds": [...]} and a decision issue; the default is what '
-                'participants plausibly saw')
+                'participants plausibly saw (a questionnaire whose items share a page: same-screen, so earlier '
+                'items stay visible)')
         for n, f in memory:
             v = f.get("value") if isinstance(f.get("value"), dict) else {}
             where = "%s.replay-memory" % n.get("id")
@@ -494,11 +595,19 @@ def check(root, package=None, capture_prompts=True):
                 if not str(v.get(k) or "").strip():
                     add("%s: value.%s is empty" % (where, k), "say it in one sentence")
             researcher = f.get("origin") == "researcher"
-            if v.get("design") in FULL and not researcher and not f.get("evidenceIds"):
-                add("%s: a %s is not what participants saw unless the paper says so" % (where, v.get("design")),
+            full = v.get("design") in FULL or (carries and v.get("design") == "other")
+            quotes = [ev.get("quote") or "" for ev in program.get("evidence") or [] if isinstance(ev, dict)
+                      and ev.get("id") in (f.get("evidenceIds") or [])]
+            if full and not researcher and not any(HISTORY_WORDS.search(q) for q in quotes):
+                add("%s: a prompt that carries every earlier trial (design %r) is not what participants saw unless "
+                    "the paper says so" % (where, v.get("design")),
                     "default to what participants plausibly saw (the current screen, the last outcome, a counter "
-                    "they saw), or cite the evidence that they saw their earlier trials; a researcher may decide otherwise")
-            if carries and v.get("design") not in FULL + ("other",):
+                    "they saw), or cite the evidence that says participants saw their earlier trials (a quote about "
+                    "their previous choices, history or record); a researcher may decide otherwise")
+            if v.get("design") == "same-screen" and not researcher and not any(SCREEN_WORDS.search(q) for q in quotes):
+                add("%s: design same-screen (earlier items stay visible) needs evidence that they were shown together"
+                    % where, "cite the quote that says the items were on one page or screen (a questionnaire, a form)")
+            if carries and v.get("design") not in FULL + ("other", "same-screen"):
                 add("%s: design is %r but the prompts carry every earlier trial (%s)"
                     % (where, v.get("design"), "growing prompts" if growth else ", ".join(params)),
                     "make the adapter match the recorded design, or record the design it implements")
@@ -508,29 +617,31 @@ def check(root, package=None, capture_prompts=True):
                     "state the expected impact in the issue so the researcher can choose")
 
         # unparsed replies
+        evidence = {ev.get("id"): ev for ev in program.get("evidence") or [] if isinstance(ev, dict)}
         for rel in ("task/adapter.py", "evaluation/evaluation.py"):
-            try:
-                lines = (pkg / rel).read_text(encoding="utf-8").splitlines()
-            except OSError:
-                continue
-            for i, line in enumerate(lines, 1):
-                if UNPARSED.search(line):
-                    add("%s:%d: one unparsed reply drops the whole participant (%s)" % (rel, i, line.strip()[:120]),
-                        "record unparsed replies per trial (e.g. trial['parsed'] = False) and exclude trials or "
-                        "participants only by the paper's own rule")
+            for line_no, code in drops_participant(pkg / rel):
+                if excused(pkg / rel, line_no, evidence):
+                    continue
+                add("%s:%d: one unparsed reply drops the whole participant (%s)" % (rel, line_no, code[:120]),
+                    "record unparsed replies per trial (e.g. trial['parsed'] = False) and exclude trials or "
+                    "participants only by the paper's own rule; when the paper prints that rule, put "
+                    "`# exclusion: <evidence id>` on the line above (the quote must state the exclusion)")
 
-    # missing instructions: one rule
+    # missing instructions: one rule (blocking only when the adapter refuses to run without the text)
+    runs_whole = any(r.get("calls") and not r.get("error") for r in runs)
     issues = [i for i in program.get("issues") or [] if isinstance(i, dict)]
     for n, f in _fields(program):
         if f.get("state") != "missing" or not INSTRUCTION.search("%s %s" % (f.get("id"), f.get("label"))):
             continue
         for i in issues:
-            if i.get("nodeId") == n.get("id") and i.get("fieldId") == f.get("id") and i.get("severity") != "decision":
+            if i.get("nodeId") == n.get("id") and i.get("fieldId") == f.get("id") and (
+                    i.get("severity") == "check" or (i.get("severity") == "blocking" and runs_whole)):
                 add("%s: issue %s on missing participant instructions has severity %r" % (
                     "%s.%s" % (n.get("id"), f.get("id")), i.get("id"), i.get("severity")),
-                    "missing instruction wording is a `decision`: the researcher supplies the printed text or accepts "
-                    "the stand-in wording the adapter uses (say which in suggestedAction); it is never written "
-                    "into a verbatim field")
+                    "missing instruction wording is a `decision` (the researcher supplies the printed text or accepts "
+                    "the stand-in wording the adapter uses; say which in suggestedAction), or `blocking` only when the "
+                    "adapter refuses to run without it (this one runs); never a `check`, and never written into a "
+                    "verbatim field")
     return {"problems": problems, "notes": notes, "method": method}
 
 

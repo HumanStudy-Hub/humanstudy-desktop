@@ -49,10 +49,14 @@ def load(path):
 
 
 CC = re.compile(r"creative\s*commons\s*(?:attribution|cc0|zero|public\s*domain)|\bcc[\s-]?(?:by|0)\b", re.I)
-ABOUT_ITSELF = re.compile(r"open\s*access|this\s*(?:article|work|paper|preprint|manuscript|is\s*an\s*open)|"
-                          r"made\s*available\s*under|distributed\s*under|licensed\s*under|published\s*under", re.I)
-NOT_ITSELF = re.compile(r"\b(?:figure|fig\.|image|photo|data(?:set)?s?|code|software|material\s+from|adapted|reproduced|"
-                        r"icons?|map)\b", re.I)
+# the statement must be about the paper itself: "Open Access", "This article/work/paper/preprint ..."
+ABOUT_ITSELF = re.compile(r"open\s*access|this\s*(?:open\s*access\s*)?(?:article|work|paper|preprint|manuscript|chapter|"
+                          r"is\s*an\s*open)|\bit\s*is\s*(?:made\s*available|distributed|licensed)\s*under", re.I)
+NOT_ITSELF = re.compile(r"\b(?:figures?|fig\.|images?|photos?|data(?:set)?s?|code|software|materials?|adapted|reproduced|"
+                        r"icons?|maps?|scripts?|pre-?registrations?|responses|supplement(?:ary|al)?|osf|repositor(?:y|ies)|"
+                        r"stimul(?:i|us)|questionnaires?|analys[ie]s|appendi(?:x|ces)|github|zenodo|figshare)\b", re.I)
+CC_URL = re.compile(r"creativecommons\s*\.\s*org\s*/\s*(?:licen[sc]es\s*/\s*([a-z][a-z\s-]*?)\s*/\s*([1-4]\s*\.\s*0)|"
+                    r"publicdomain\s*/\s*zero)", re.I)
 
 
 def spdx(statement):
@@ -73,6 +77,19 @@ def spdx(statement):
     return "-".join(parts) + ("-" + version.group(1) if version else "")
 
 
+def url_license(text):
+    """The license a creativecommons.org URL names (by-nc-nd/4.0 -> CC-BY-NC-ND-4.0), or None."""
+    m = CC_URL.search(text or "")
+    if not m:
+        return None
+    if not m.group(1):
+        return "CC0-1.0"
+    kinds = re.sub(r"\s+", "", m.group(1)).lower().split("-")
+    if not kinds or kinds[0] != "by":
+        return None
+    return "-".join(["CC"] + [k.upper() for k in kinds]) + "-" + re.sub(r"\s+", "", m.group(2))
+
+
 def printed_license(path):
     """(license, "p. N: <sentence>") from the PDF's own license statement, or None."""
     try:
@@ -85,13 +102,18 @@ def printed_license(path):
     for number, text in enumerate(pages or [], 1):
         flat = re.sub(r"\s+", " ", re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", text or ""))
         for m in CC.finditer(flat):
-            start = max(flat.rfind(". ", 0, m.start()) + 2, m.start() - 250, 0)
+            left = flat.rfind(". ", 0, m.start())
+            start = max(left + 2 if left >= 0 else 0, m.start() - 250)
             stop = flat.find(". ", m.end())
             sentence = flat[start:stop + 1 if 0 <= stop < m.end() + 300 else m.end() + 150].strip()
             before = flat[start:m.start()]
             if not ABOUT_ITSELF.search(sentence) or NOT_ITSELF.search(before):
                 continue
-            found = (spdx(flat[m.start():m.end() + 80]), "p. %d: %s" % (number, sentence[:300]))
+            named = spdx(flat[m.start():m.end() + 80])
+            linked = url_license(flat[m.start():m.end() + 400])
+            if linked and (not re.search(r"\d\.0$", named) or linked.startswith(named.rsplit("-", 1)[0])):
+                named = linked   # the URL carries the version (and the NC/ND/SA terms) the sentence may leave out
+            found = (named, "p. %d: %s" % (number, sentence[:300]))
             # prefer a statement that names a version; then the first one
             if best is None or (re.search(r"\d\.0$", found[0]) and not re.search(r"\d\.0$", best[0])):
                 best = found

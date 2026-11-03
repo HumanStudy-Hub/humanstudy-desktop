@@ -132,6 +132,36 @@ def grid_rows(text):
     return out
 
 
+FIGURE_CAPTION = re.compile(r"^\s*(?:FIGURE|Figure|FIG\.|Fig\.)\s*[0-9A-Z]")
+# the column-aligned text may drop the space after "Table" ("TableA1")
+LAYOUT_CAPTION = re.compile(r"^\s*(TABLE|Table)\s*([0-9]+[A-Za-z]?|[IVXL]+|[A-Z][0-9]*|S[0-9]+)\s*(?:[.:|—–-]|$|\s)")
+
+
+def _starts(lines):
+    return [i for i, l in enumerate(lines) if LAYOUT_CAPTION.match(l) or FIGURE_CAPTION.match(l)]
+
+
+def table_section(text, key, following=""):
+    """The lines of one table: from its caption to the next table or figure caption.
+
+    A page that prints only this table is read whole (its caption may sit below it); a page with several
+    captions is read from this table's caption on, so another table's rows are never counted for it. A
+    caption at the foot of a page continues on the next page (`following`) up to that page's first caption."""
+    lines = (text or "").splitlines()
+    starts = _starts(lines)
+    own = [i for i in starts if LAYOUT_CAPTION.match(lines[i])
+           and label_key("table " + LAYOUT_CAPTION.match(lines[i]).group(2)) == key]
+    if not own:
+        return "" if starts else text
+    if len(starts) == 1:
+        return text
+    stop = next((i for i in starts if i > own[0]), None)
+    if stop is not None:
+        return "\n".join(lines[own[0]:stop])
+    nxt = (following or "").splitlines()
+    return "\n".join(lines[own[0]:] + nxt[:(_starts(nxt) or [len(nxt)])[0]])
+
+
 def table_problems(where, f):
     v, out = f["value"], []
     add = lambda msg, hint: out.append(("%s: %s" % (where, msg), hint))
@@ -267,14 +297,15 @@ def check(program_path):
             printed_on = seen.get(label_key(v.get("table")))
             if printed_on is None or abs(printed_on - page) > 1:
                 continue  # the paper does not print this table here (a supplementary table it only cites)
-            rows = grid_rows(layout_page(pdf_path, page))
+            rows = grid_rows(table_section(layout_page(pdf_path, printed_on), label_key(v.get("table")),
+                                          layout_page(pdf_path, printed_on + 1) if printed_on < len(pages) else ""))
             if len(rows) >= GRID_ROWS:
                 out.append(("%s: %s is marked missing, but p. %d has a clean text layer with %d table rows in its "
                             "column-aligned text (e.g. %r)" % (where, v.get("table") or "the table", page, len(rows),
                                                                re.sub(r"\s+", " ", rows[0]).strip()[:80]),
                             "read it with `hs-pdf pages paper.pdf --from %d --to %d --layout` and transcribe it cell by "
                             "cell; a cell you cannot place is null and listed in uncertain. Never state that a text "
-                            "layer is scrambled without reading the column-aligned text" % (page, page)))
+                            "layer is scrambled without reading the column-aligned text" % (printed_on, min(printed_on + 1, len(pages)))))
         if blank:
             info.append("pages without a text layer (scanned): %s; read their tables from the page images"
                         % ", ".join(map(str, blank[:30])))

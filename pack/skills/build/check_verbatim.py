@@ -127,7 +127,7 @@ def splits(value, layers, pages):
     """[(as written, as printed)]: words of a verbatim value split where the raw text layer prints them whole.
 
     Only readers that keep word spaces on the cited pages count; a split is reported when at least one of
-    them prints the word whole and no more of them print it split ("l ateral" from one reader, "lateral"
+    them prints the word whole and fewer of them print it split ("l ateral" from one reader, "lateral"
     from the others). Table fields are not checked: their cells are read from the column-aligned text."""
     if is_table(value):
         return []
@@ -143,7 +143,7 @@ def splits(value, layers, pages):
             continue  # printed with a hyphen or slash ("re-evaluate"): not a split
         whole = sum(1 for t in texts if (" %s " % (a + b)) in t and (" %s %s " % (a, b)) not in t)
         split = sum(1 for t in texts if (" %s %s " % (a, b)) in t)
-        if whole and whole >= split:
+        if whole > split:   # a tie (one reader each way) is not evidence
             found.append((a + " " + b, a + b))
     return found
 
@@ -152,7 +152,9 @@ def wide_spaces(value):
     """Runs of spaces inside a line of a text value (column padding of a --layout extraction)."""
     if is_table(value):
         return []
-    return [m.group(0) for p in raw_pieces(value) if isinstance(p, str) for m in re.finditer(r"\S+ {2,}\S+", p)]
+    # two spaces after a full stop are a typing habit, not column padding
+    return [m.group(0) for p in raw_pieces(value) if isinstance(p, str)
+            for m in re.finditer(r"\S*[^\s.!?:;] {2,}\S+", p)]
 
 
 class Sources:

@@ -173,9 +173,17 @@ def build_rules(effects, program):
         has_n = _num(rep.get("n")) is not None or any(_num((c or {}).get("n")) is not None for c in cells.values())
         said = any(N_MISSING.search(str(m)) for m in rep.get("missing") or [])
         printed = [m.group(1) or m.group(2) for q in quotes for m in PRINTED_N.finditer(q)]
-        if not has_n and printed:
+        printed_values = {int(x.replace(",", "")) for x in printed if x.replace(",", "").isdigit()}
+        given = [_num(rep.get("n"))] + [_num((c or {}).get("n")) for c in cells.values()]
+        given = [x for x in given if x is not None]
+        if not has_n and printed and not said:
             out.append("%s: its quotes print N (%s) but reported.n and cells.<arm>.n are empty; record the N this "
-                       "effect is computed on, as printed" % (where, ", ".join(dict.fromkeys(printed))))
+                       "effect is computed on, as printed, or say in reported.missing why none of these is its N"
+                       % (where, ", ".join(dict.fromkeys(printed))))
+        elif has_n and printed_values and not said and _num(rep.get("n")) is not None \
+                and rep["n"] not in printed_values and sum(given[1:]) != rep["n"]:
+            out.append("%s: reported.n = %g but its quotes print N = %s; use the N printed for this effect, or say in "
+                       "reported.missing where its N comes from" % (where, rep["n"], ", ".join(map(str, sorted(printed_values)))))
         elif not has_n and not said:
             study = _study_n(program, e.get("studyId"))
             if study:
@@ -193,11 +201,18 @@ def build_rules(effects, program):
             if est.get("metric") not in SIGNED or not value:
                 continue
             at = "%s reported.estimates[%d] (%s = %g)" % (where, j, est.get("metric"), value)
-            scale = max(abs(_share(t) or 0), abs(_share(r) or 0))
-            if diff is not None and abs(diff) > 0.02 * scale:  # a 2% gap or less is too close to call a sign
+            ci = [_num(x) for x in est.get("ci") or []]
+            if len(ci) == 2 and None not in ci and not min(ci) - 1e-9 <= value <= max(ci) + 1e-9:
+                out.append("%s: the CI [%g, %g] does not contain the value; a value whose sign was changed needs its "
+                           "CI negated as well ([-hi, -lo])" % (at, ci[0], ci[1]))
+            sds = [c.get("sd") for c in (t, r) if _num(c.get("sd")) is not None and _num(c.get("mean")) is not None]
+            # too close to call a sign: within a tenth of the printed SD, or (no SDs) within 2% of the cell values
+            close = 0.1 * sum(sds) / len(sds) if len(sds) == 2 else 0.02 * max(abs(_share(t) or 0), abs(_share(r) or 0))
+            if diff is not None and abs(diff) > close:
                 if (value > 0) != (diff > 0):
                     out.append("%s: the value is treatment minus reference (%s), but the cells give %s - %s = %+.4g; "
-                               "sign it as the cells show, or swap treatment and reference (and the prediction)"
+                               "sign it as the cells show (negate the CI too: [-hi, -lo]), or swap treatment and "
+                               "reference (and the prediction)"
                                % (at, con.get("valueMeans") or "%s minus %s" % (con.get("treatment"), con.get("reference")),
                                   con.get("treatment"), con.get("reference"), diff))
             elif diff is None and not _printed_signed(value, quotes) and not str(est.get("signBasis") or "").strip():
