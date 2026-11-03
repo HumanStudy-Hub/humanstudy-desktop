@@ -36,7 +36,7 @@ test('run capability, model allow-list, reservation cap, safe forwarding, and re
     assert.equal(seen.length, 1)
     const log = await readFile(relayDescriptor(storage, project) + '.usage.jsonl', 'utf8')
     assert.ok(!log.includes('hello')); assert.ok(!log.includes('fake-upstream-only'))
-    assert.ok(log.includes('total_tokens'))
+    assert.ok(log.includes('total_tokens')); assert.ok(log.includes('reserved'))
   } finally { await relay.close(); await new Promise(resolve => stub.close(resolve)) }
   await assert.rejects(readFile(relayDescriptor(storage, project)))
   await assert.rejects(call(body))
@@ -45,7 +45,7 @@ test.after(() => rm(temp, { recursive: true, force: true }))
 
 test('trusted launcher completes a real confined script through the relay and revokes it', { skip: process.platform !== 'darwin' }, async () => {
   const { spawn } = await import('node:child_process')
-  const { writeFile } = await import('node:fs/promises')
+  const { writeFile, copyFile } = await import('node:fs/promises')
   const project = join(temp, 'integration-project')
   const storage = join(temp, 'integration-app')
   const run = join(project, 'artifacts/simulations/test')
@@ -58,7 +58,28 @@ test('trusted launcher completes a real confined script through the relay and re
   let closed = false
   const relay = await startModelRelay({ project, storage, model: 'allowed', key: 'fake-upstream-sentinel', upstream: `http://127.0.0.1:${stub.address().port}`, onClose: () => { closed = true } })
   const script = join(run, 'run.py')
-  await writeFile(script, `import os,json,urllib.request\nassert os.environ['OPENROUTER_API_KEY'] != 'fake-upstream-sentinel'\nbody=json.dumps({'model':'allowed','messages':[{'role':'user','content':'hello'}]}).encode()\nr=urllib.request.Request(os.environ['OPENAI_BASE_URL']+'/chat/completions',data=body,headers={'Authorization':'Bearer '+os.environ['OPENROUTER_API_KEY']})\nassert json.load(urllib.request.urlopen(r))['choices'][0]['message']['content']=='normal completion'\nprint('normal confined run succeeded')\n`)
+  const repo = join(dirname(fileURLToPath(import.meta.url)), '../../..')
+  await copyFile(join(repo, 'pack/runtime/lib/humanstudy_llm.py'), join(run, 'humanstudy_llm.py'))
+  await copyFile(join(repo, 'pack/skills/export/agent/study_core.py'), join(run, 'study_core.py'))
+  const helpers = join(project, '.opencode/skills/simulate'); await mkdir(helpers, { recursive: true })
+  await copyFile(join(repo, 'pack/skills/simulate/simkit.py'), join(helpers, 'simkit.py'))
+  await writeFile(script, `import os,sys
+from pathlib import Path
+RUN=Path(__file__).resolve().parent
+sys.path.insert(0,str(RUN.parents[2]/'.opencode/skills/simulate'))
+from simkit import SimRun
+from humanstudy_llm import llm,model_name
+from study_core import http_llm
+assert model_name()=='allowed'
+assert os.environ['OPENROUTER_API_KEY']!='fake-upstream-sentinel'
+run=SimRun(RUN,plan={'A':1},model=model_name(),seed=1)
+sessions=run.participants(lambda condition,index,rng: {'reply':llm('hello')})
+assert sessions[0]['reply']=='normal completion'
+assert http_llm(model_name())('study core completion')=='normal completion'
+run.finish()
+print('normal confined run succeeded')
+`)
+
   try {
     const child = spawn(process.env.HUMANSTUDY_TEST_PYTHON || 'python3', [join(dirname(fileURLToPath(import.meta.url)), '../../../pack/skills/simulate/run_confined.py'), '--final', script], { env: { ...process.env, HUMANSTUDY_RELAY_DESCRIPTOR: relayDescriptor(storage, project) } })
     let out = '', err = ''; child.stdout.on('data', p => { out += p }); child.stderr.on('data', p => { err += p })

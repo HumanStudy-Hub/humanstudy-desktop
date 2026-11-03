@@ -28,9 +28,17 @@ export async function startModelRelay(options: RelayOptions) {
   const path = relayDescriptor(folder, options.project)
   await mkdir(folder, { recursive: true })
   const root = await realpath(options.project)
-  if ((await realpath(folder)).startsWith(root + sep)) throw Error('Run relay storage must be outside the project.')
+  if ((await realpath(folder)) === root || (await realpath(folder)).startsWith(root + sep)) throw Error('Run relay storage must be outside the project.')
   let finish = async () => {}
   let closed = false
+  async function logUsage(entry: Record<string, unknown>) {
+    const log = await open(path + '.usage.jsonl', constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
+    try {
+      const info = await log.stat()
+      if (!info.isFile() || info.nlink !== 1) throw Error('Unsafe relay log.')
+      await log.write(JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n')
+    } finally { await log.close() }
+  }
   const requests = new Set<AbortController>()
   const server = createServer(async (req, res) => {
     const fail = (status: number, message: string) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { message } })) }
@@ -59,6 +67,7 @@ export async function startModelRelay(options: RelayOptions) {
       const charge = bytes + 256 * body.messages.length + max
       if (reserved + charge > cap) return fail(402, 'Run token cap reached.')
       reserved += charge // synchronous: concurrent requests cannot oversubscribe; never refunded
+      await logUsage({ event: 'reserved', model: options.model, reserved: charge })
       const outgoing = { model: options.model, messages: body.messages.map((m: any) => ({ role: m.role, content: m.content })), max_tokens: max,
         ...(typeof body.temperature === 'number' ? { temperature: body.temperature } : {}),
         ...(Number.isSafeInteger(body.seed) ? { seed: body.seed } : {}) }
@@ -72,12 +81,7 @@ export async function startModelRelay(options: RelayOptions) {
       // Return only completion text and usage; upstream diagnostic fields cannot expose credentials.
       const choices = Array.isArray(reply.choices) ? reply.choices.map((c: any, index: number) => ({ index, message: { role: 'assistant', content: typeof c.message?.content === 'string' ? c.message.content : '' }, finish_reason: c.finish_reason })) : []
       const usage = Object.fromEntries(['prompt_tokens', 'completion_tokens', 'total_tokens'].map(k => [k, Number.isSafeInteger(reply.usage?.[k]) && reply.usage[k] >= 0 ? reply.usage[k] : 0]))
-      const log = await open(path + '.usage.jsonl', constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
-      try {
-        const info = await log.stat()
-        if (!info.isFile() || info.nlink !== 1) throw Error('Unsafe relay log.')
-        await log.write(JSON.stringify({ at: new Date().toISOString(), model: options.model, reserved: charge, usage }) + '\n')
-      } finally { await log.close() }
+      await logUsage({ event: 'completed', model: options.model, reserved: charge, usage })
       res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ choices, usage, model: options.model }))
     } catch { if (!res.headersSent) fail(502, 'Run model request failed.') }
     finally { requests.delete(controller) }

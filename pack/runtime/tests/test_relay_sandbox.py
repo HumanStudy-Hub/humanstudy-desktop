@@ -71,5 +71,20 @@ print('confined and relay completion passed')
             sandbox.macos_profile('/private/tmp/work', relay_port=True)
 
 
+class DesktopGuards(unittest.TestCase):
+    def test_canonical_imports_refuse_unconfined_desktop_execution(self):
+        skills = BUILD.parents[1]
+        commands = [
+            "import sys; sys.path.insert(0, %r); import simkit" % str(skills / 'simulate'),
+            "import sys; sys.path.insert(0, %r); from study_core import Study; Study.__new__(Study).module('adapter')" % str(skills / 'export/agent'),
+            "import sys; sys.path.insert(0, %r); from study_core import Study; Study.__new__(Study).human_module()" % str(skills / 'export/agent'),
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                result = subprocess.run([sys.executable, '-c', command], env={**os.environ, 'HUMANSTUDY_RELAY_REQUIRED': '1'}, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('run_confined.py', result.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()
