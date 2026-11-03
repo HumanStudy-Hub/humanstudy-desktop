@@ -282,7 +282,9 @@ Rules the runner depends on:
     shown together; do not choose `none` there and break the sequential visibility of the form.
   - Instructions between blocks, sessions or phases appear in the first prompt of the new block when
     the paper shows them there ("the upcoming block is completely independent", a break of one week),
-    never only inside a later trial log.
+    never only inside a later trial log. No script checks this (the captured prompts carry no block
+    boundary to compare with the paper), so check it yourself on the first prompt of every block and
+    say in the report where each between-block instruction is delivered.
   - An unparsed reply is recorded on its trial (`"parsed": false`), the participant is kept, and
     trials or participants are excluded only by the paper's own rule. Never `valid = all(...)` over the
     trials' parse status; a line that applies the paper's printed exclusion rule carries
@@ -298,6 +300,11 @@ Rules the runner depends on:
   severity `check` (or `blocking` while the adapter runs) or without a `decision` issue. Fix the prompt, never the inventory: removing a term or an entry to pass is a fabrication. The
   smoke test and every export run the package in the project layout, so `task/adapter.py` may read
   `../../program.json` (and `effects.json`, `capabilities.json`, `sources/` beside it), nothing else outside the package.
+- The desktop app shows a package as ready to simulate only when all of these pass on its own copy of
+  the checks (`check_readiness.py`): `check_program.py --complete`, `sources.py --check`,
+  `check_package.py`, `check_validity.py`, `check_verbatim.py`, `check_results.py` and `effects.py`.
+  Each failing check shows its first problem in the Simulation tab. Editing the checkers inside the
+  project changes nothing there: fix the program, the package or effects.json.
 
 ### Effects: from hypotheses to computable effects
 

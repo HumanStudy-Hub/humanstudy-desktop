@@ -1,5 +1,6 @@
 import { NATIVE_TURNS, NATIVE_MUTATIONS, type NativeRequest, type NativeSelection } from '../shared/native'
 import { nativeMessages } from './native-history'
+import { createHash } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron'
 import { applyCredentials, providers, setKey } from './credentials'
 import { applyAccount, getAccount } from './account'
@@ -31,8 +32,10 @@ import { createThreads, threads } from './threads'
 import { saveProjectText } from './program-save'
 import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
-import { refreshPack } from './pack'
-import { assertRunnablePackage, projectPackageReadiness } from './package-readiness'
+import { refreshPack, trustedCheckFiles } from './pack'
+import { scientificReadiness } from './scientific-readiness'
+import { readyPython } from './runtime-install'
+import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks } from './package-readiness'
 import type { Kernel, KernelEvent } from './kernel-types'
 import { actionRef } from '../shared/research-operations'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
@@ -368,6 +371,10 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(() => {
+  // `ready` needs every build check (pack/skills/build/check_readiness.py), run from the app's own copy.
+  const checkFiles = trustedCheckFiles()
+  configureScientificChecks(async (project, slug) => scientificReadiness(await readyPython(), checkFiles, project, slug, process.env.HUMANSTUDY_RUNTIME_BIN || ''),
+    app.getVersion() + ':' + createHash('sha256').update(JSON.stringify(checkFiles)).digest('hex').slice(0, 16))
   if (!primaryInstance) return
   applyCredentials()
   try {

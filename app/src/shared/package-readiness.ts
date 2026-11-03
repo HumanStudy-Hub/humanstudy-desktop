@@ -25,6 +25,7 @@ export const PACKAGE_ENTRY_POINTS: Partial<Record<PackageFile, string>> = {
 }
 
 export type PackageProblem =
+  | { file: 'study.json'; kind: 'scientific'; check: string; reason: string }
   | { file: PackageFile; kind: 'missing' }
   | { file: PackageFile; kind: 'invalid-json' }
   | { file: PackageFile; kind: 'unvalidated' | 'wrong-study' | 'stale-program' | 'bindings' }
@@ -116,4 +117,12 @@ function canonical(value: unknown): string {
 /** A one-line fingerprint of the package files (names, sizes, times), to recheck when they change. */
 export function packageStamp(entries: { rel: string; size?: number; mtime?: number }[]): string {
   return entries.filter((e) => e.rel === 'package' || e.rel.startsWith('package/')).map((e) => `${e.rel}:${e.size ?? ''}:${e.mtime ?? ''}`).sort().join('|')
+}
+
+/** The same for everything else the build checks read (check_readiness.py), except program.json, which
+ *  callers compare by content: sources/, human-data/, the files beside program.json and root-level PDFs. */
+export function readinessStamp(entries: { rel: string; size?: number; mtime?: number }[]): string {
+  const read = (rel: string) => rel === 'package' || rel.startsWith('package/') || rel === 'sources' || rel.startsWith('sources/') ||
+    rel === 'human-data' || rel.startsWith('human-data/') || ['effects.json', 'capabilities.json', 'README.md'].includes(rel) || /^[^/]+[.]pdf$/i.test(rel)
+  return entries.filter((e) => read(e.rel)).map((e) => `${e.rel}:${e.size ?? ''}:${e.mtime ?? ''}`).sort().join('|')
 }

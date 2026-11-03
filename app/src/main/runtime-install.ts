@@ -34,6 +34,20 @@ function set(s: PartStatus): void {
   status = s
   for (const l of listeners) l(status)
 }
+export const installedPython = (): string | null => status.state === 'ready' ? runtimePaths(installDir(), process.platform).python : null
+/** The runtime's python once it is usable: waits for a check or download in progress (starting one if
+ *  needed) instead of answering "not installed" while the app is still starting. Null when it fails. */
+let lastRetry = 0
+export async function readyPython(): Promise<string | null> {
+  // A failed install (offline, say) is retried at most every ten minutes from here, so a readiness request
+  // does not wait on a doomed download each time the project changes.
+  const failed = status.state === 'error'
+  if (status.state !== 'ready' && (!failed || Date.now() - lastRetry > 10 * 60_000)) {
+    if (failed) lastRetry = Date.now()
+    await ensureRuntime().catch(() => undefined)
+  }
+  return installedPython()
+}
 export const runtimeStatus = (): PartStatus => status
 export function onRuntimeProgress(cb: (s: PartStatus) => void): () => void {
   listeners.add(cb)
