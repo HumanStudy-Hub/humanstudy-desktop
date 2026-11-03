@@ -413,10 +413,44 @@ class Materials(unittest.TestCase):
 
     def test_private_file_without_readable_text_needs_a_text_copy(self):
         self.supply()
-        (self.root / "sources/researcher/scan.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00")
+        (self.root / "sources/researcher/scan.doc").write_bytes(b"\xd0\xcf\x11\xe0" + bytes(40))
         self.assertTrue(any("no readable text" in p for p in self.problems()))
         self.write("sources/researcher/scan.txt", "The words on the scanned instruction sheet, as supplied.")
         self.assertFalse(any("no readable text" in p for p in self.problems()))
+
+    def test_supplied_pictures_need_no_text_copy_but_pictured_wording_does(self):
+        self.supply()
+        self.write("sources/researcher/faces/f01.png", "")
+        (self.root / "sources/researcher/faces/f01.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(40))
+        self.assertFalse(any("no readable text" in p for p in self.problems()))
+        # instructions supplied only as a picture: the words go beside it, and a one-word note does not count
+        (self.root / "sources/researcher/instr.png").write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(40))
+        f = self.field("instruction-text")
+        f["value"] = {"file": "sources/researcher/instr.png"}
+        f["extensions"]["material"]["file"] = "sources/researcher/instr.png"
+        self.assertTrue(any("instr.png has no readable text" in p for p in self.problems()))
+        self.write("sources/researcher/instr.txt", "scan")
+        self.assertTrue(any("instr.png has no readable text" in p for p in self.problems()))
+
+    def test_structural_screen_and_scale_fields_are_not_wording(self):
+        for fid, value in (("likert-points", 7), ("screen-background", "#808080"), ("intro-duration", 30),
+                           ("welcome-delay", 500)):
+            self.assertIsNone(check_materials.WORDING.search(fid), fid)
+        for fid in ("welcome-screen", "intro-text", "scale-labels", "screen-text"):
+            self.assertIsNotNone(check_materials.WORDING.search(fid), fid)
+
+    def test_absolute_and_linked_paths_into_human_data_are_caught(self):
+        self.write("human-data/s1.csv", "pp,latency_ms\n1,500\n")
+        self.program["evidence"].append({"id": "ev-abs", "path": str(self.root / "human-data/s1.csv"), "locator": {"page": 1}})
+        self.field("dividend-sequences")["evidenceIds"].append("ev-abs")
+        self.assertTrue(any("cites human-data/s1.csv" in p for p in self.problems()))
+
+    def test_task_platform_data_headers_are_found(self):
+        self.write("sources/open/task.csv", "participant,session,date,key_resp.keys,key_resp.rt\n1,1,x,f,0.5\n")
+        self.assertTrue(any("task.csv looks like participant data" in p for p in self.problems()))
+        (self.root / "sources/open/task.csv").unlink()
+        self.write("sources/open/g.csv", "Participant Public ID,Reaction Time,Response\nab,512,left\n")
+        self.assertTrue(any("g.csv looks like participant data" in p for p in self.problems()))
 
     def test_researcher_answer_does_not_excuse_wording(self):
         self.program["nodes"][0]["fields"].append({

@@ -81,9 +81,9 @@ WORDING = re.compile(
     r"question(?:naire)?s?\b|vignette|scenario|\bstory|stories|passage|narrative|\bscripts?\b|dialog|message|prompt|"
     r"statement|sentence|word.?list|\bwords\b|image|picture|photo|drawing|video|audio|sound|recording|\bfaces?\b|"
     r"verbatim|transcript|anchor|response.?option|answer.?option|feedback.?(?:text|message|screen|wording)|"
-    r"\blabels?\b(?!.{0,12}\bkeys?\b)|caption|title.?screen|greeting|thank.?you|likert|scale.?(?:points|labels)|"
-    r"\bwelcome|\bintro(?:duction)?\b|\bscreens?\b(?!.{0,20}(?:layout|order|position|size|count|number|timing|"
-    r"duration|format|sequence))", re.I)
+    r"\blabels?\b(?!.{0,12}\bkeys?\b)|caption|title.?screen|greeting|thank.?you|scale.?labels|"
+    r"(?:\bwelcome|\bintro(?:duction)?\b|\bscreens?\b)(?!.{0,20}(?:layout|order|position|size|count|number|timing|"
+    r"duration|delay|format|sequence|background|colou?r|resolution|width|height|refresh))", re.I)
 MATERIAL = re.compile(r"instruction|debrief|briefing|item|question|prompt|stimul|scenario|vignette|scale|script|screen|"
                       r"message|text|wording|consent|cover|sequence|trial.?list|material|lotter|image|picture|order|"
                       r"block|practice|display|feedback|distribution|range|pairing|break|layout", re.I)
@@ -101,8 +101,11 @@ DATA_EXT = {".csv", ".tsv", ".xlsx", ".xls", ".sav", ".dta", ".rds", ".rdata", "
 DATA_NAME = re.compile(r"data|subj|sub-|participant|respon|raw|session|ppt|choices|behav|results|demograph", re.I)
 DATA_COLUMNS = re.compile(r"^(?:subj(?:ect)?(?:_?id|_?nr|num|_?number)?|sub|participant(?:_?(?:id|nr|number))?|ppt|pp|pid|"
                           r"worker_?id|prolific_?id|rt|rt_?ms|reaction_?time|latency(?:_?ms)?|response(?:_?time|_?key)?|"
-                          r"resp(?:_?key)?|choice|key_?press|keypress|accuracy|acc|age|gender|sex|session_?id|"
+                          r"resp(?:_?key)?|keys|session|choice|key_?press|keypress|accuracy|acc|age|gender|sex|session_?id|"
                           r"trial_?index|time_?elapsed)$", re.I)
+PICTURE = re.compile(r"image|picture|photo|drawing|video|audio|sound|recording|\bfaces?\b|stimul|figure|clip", re.I)
+MEDIA_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp", ".heic", ".wav", ".mp3",
+             ".ogg", ".flac", ".m4a", ".aac", ".mp4", ".mov", ".webm", ".avi", ".mkv"}
 TEXT_EXT = {".txt", ".md", ".json", ".jsonl", ".csv", ".tsv", ".html", ".htm", ".py", ".xml", ".yaml", ".yml", ".js",
             ".css", ".svg", ".log", ".r", ".rmd", ".qmd", ".ipynb", ".tex", ".bib", ".toml", ".ini", ".rtf", ".m"}
 CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
@@ -218,6 +221,18 @@ def norm_rel(rel):
         return ""
     rel = posixpath.normpath(rel)
     return "" if rel == "." else rel.lstrip("/")
+
+
+def project_rel(root, raw):
+    """A cited path as a path inside the project, following `..`, absolute paths and links; or as written."""
+    raw = _str(raw).replace("\\", "/")
+    if not raw:
+        return ""
+    try:
+        target = (Path(raw) if Path(raw).is_absolute() else root / raw).resolve()
+        return target.relative_to(root).as_posix()
+    except (OSError, ValueError, RuntimeError):
+        return norm_rel(raw)
 
 
 def under(rel, folder):
@@ -436,6 +451,14 @@ def _keys(data, depth=0):
     return out
 
 
+def column_name(col):
+    """'key_resp.rt' -> 'rt', 'Reaction Time' -> 'reaction_time', 'RT (ms)' -> 'rt', 'Participant Public ID' -> 'participant_id'."""
+    col = re.sub(r"\(.*?\)", "", _str(col)).strip().lower()
+    col = col.rsplit(".", 1)[-1]
+    col = re.sub(r"\bpublic\b|\bprivate\b", "", col)
+    return re.sub(r"[\s-]+", "_", col.strip()).strip("_")
+
+
 def looks_like_data(path):
     """Why a file looks like participant data (trial-level responses), or ''."""
     path = Path(path)
@@ -463,7 +486,7 @@ def looks_like_data(path):
             cols = [c.strip() for c in re.split(r"[\n\t]", text[:4000])]
     except (OSError, ValueError):
         return ""
-    hits = sorted({c for c in cols if DATA_COLUMNS.match(c)})
+    hits = sorted({c for c in cols if DATA_COLUMNS.match(c) or DATA_COLUMNS.match(column_name(c))})
     if len(hits) >= 2:
         return "its columns (%s)" % ", ".join(hits[:4])
     return ""
@@ -502,7 +525,7 @@ def check(root):
         quotes = " ".join(_str(e.get("quote")) for e in cited)
         material_like = n.get("kind") in ("material", "materials") or bool(MATERIAL.search("%s %s" % (f.get("id"), f.get("label"))))
         for e in cited:
-            rel = norm_rel(e.get("path"))
+            rel = project_rel(root, e.get("path"))
             if under(rel, "human-data") and (m is not None or material_like or f.get("origin") in ("derived", "implementation")):
                 add("%s cites %s: participant data never feeds the study's materials or design" % (where, rel),
                     "cite the paper or a materials file; human data are only for comparing results (Human data)")
@@ -742,12 +765,25 @@ def check(root):
     for rel in sorted(p.relative_to(root).as_posix() for p in researcher_files(root)):
         if _str(_dict(recorded.get(rel)).get("license")) != RESEARCHER_LICENSE:
             add("sources/SOURCE.json does not record %s as %s" % (rel, RESEARCHER_LICENSE), "run the build skill's sources.py")
+    # files that hold wording (instructions, questions ...) rather than pictures or sounds
+    worded = set()
+    for n, f in fields(program):
+        name = "%s %s" % (f.get("id"), f.get("label"))
+        if WORDING.search(name) and not PICTURE.search(name):
+            m = _dict(material_of(f))
+            for raw in (m.get("file"), _dict(f.get("value")).get("file")):
+                if _str(raw):
+                    worded.add(project_rel(root, raw))
     for p in private_files(root):
         rel = p.relative_to(root).as_posix()
-        if not text_of(p).strip() and not any(q != p and q.stem == p.stem and text_of(q).strip()
-                                              for q in p.parent.glob(p.stem + ".*")):
+        # pictures, sounds and films are compared by sha256; anything else unreadable, or a picture of
+        # wording, needs its words beside it
+        if text_of(p).strip() or (p.suffix.lower() in MEDIA_EXT and rel not in worded):
+            continue
+        if not any(q != p and q.stem == p.stem and len(words(text_of(q))) >= 4 for q in p.parent.glob(p.stem + ".*")):
             flag("%s has no readable text, so no check can see whether it is copied elsewhere" % rel,
-                 "save a text copy beside it (%s.txt) with its words as supplied" % Path(rel).with_suffix(""))
+                 "save a text copy beside it (%s.txt) with its words as supplied; pictures, audio and video "
+                 "need none" % Path(rel).with_suffix(""))
     for shown, src, text in leaks(root, gate_files(root)):
         add("%s copies the private material %s (\"%s ...\")" % (shown, src, text[:60]),
             "keep researcher-supplied and not-openly-licensed materials only in %s/ or %s/; reference the file "
