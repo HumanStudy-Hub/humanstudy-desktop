@@ -271,6 +271,9 @@ class Materials(unittest.TestCase):
         self.assertTrue(any("does not occur in" in p for p in self.problems(**self.provenance(rel))))
         self.field("instruction-text")["value"] = {"Read every word of this before you go on": INSTRUCTIONS}
         self.assertTrue(any("does not occur in" in p for p in self.problems(**self.provenance(rel))))
+        # a structural single-word key around file text is fine
+        self.field("instruction-text")["value"] = {"text": INSTRUCTIONS}
+        self.assertFalse(any("does not occur in" in p for p in self.problems(**self.provenance(rel))))
 
     def test_license_evidence_saying_there_is_none_is_refused(self):
         rel = self.open_item()
@@ -299,6 +302,9 @@ class Materials(unittest.TestCase):
         self.write("sources/open/stimuli.csv", "subject,trial_index,rt,choice\n1,1,532,left\n")
         self.assertTrue(any("participant data" in p and "columns" in p for p in self.problems()))
         (self.root / "sources/open/stimuli.csv").unlink()
+        self.write("sources/open/sequences.csv", "pp,trial,latency_ms,resp_key\n1,1,532,f\n")
+        self.assertTrue(any("participant data" in p and "columns" in p for p in self.problems()))
+        (self.root / "sources/open/sequences.csv").unlink()
         # JSON records of responses, and data dropped anywhere under sources/
         self.write("sources/open/sequences.json", json.dumps([{"participant": 1, "trial": 1, "choice": "A", "rt": 512}]))
         self.assertTrue(any("sequences.json looks like participant data" in p for p in self.problems()))
@@ -306,6 +312,12 @@ class Materials(unittest.TestCase):
         self.write("sources/osf/raw_data.csv", "x\n1\n")
         self.assertTrue(any("raw_data.csv looks like participant data" in p for p in self.problems()))
         (self.root / "sources/osf/raw_data.csv").unlink()
+        # a path that climbs out of sources/ into human-data/
+        self.write("human-data/s1.csv", "pp,latency_ms\n1,500\n")
+        self.program["evidence"].append({"id": "ev-up", "path": "sources/../human-data/s1.csv", "locator": {"page": 1}})
+        self.field("dividend-sequences")["evidenceIds"].append("ev-up")
+        self.assertTrue(any("cites human-data/s1.csv" in p for p in self.problems()))
+        self.field("dividend-sequences")["evidenceIds"].remove("ev-up")
         # cited from human-data/
         self.write("human-data/trials.csv", "participant,trial,choice,rt\n1,1,A,500\n")
         self.program["evidence"].append({"id": "ev-hd", "path": "human-data/trials.csv", "locator": {"page": 1}})
@@ -393,6 +405,27 @@ class Materials(unittest.TestCase):
         self.material("instruction-text")["file"] = "sources/researcher/items.csv"
         self.field("instruction-text")["value"] = {"file": "sources/researcher/items.csv"}
         self.assertTrue(any("copies the private material" in p for p in self.problems()))
+
+    def test_private_text_in_json_keys_is_found(self):
+        self.supply()
+        self.write("package/p/materials/materials.json", json.dumps({"screens": {INSTRUCTIONS: "s1"}}))
+        self.assertTrue(any("materials.json copies the private material" in p for p in self.problems()))
+
+    def test_private_file_without_readable_text_needs_a_text_copy(self):
+        self.supply()
+        (self.root / "sources/researcher/scan.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00")
+        self.assertTrue(any("no readable text" in p for p in self.problems()))
+        self.write("sources/researcher/scan.txt", "The words on the scanned instruction sheet, as supplied.")
+        self.assertFalse(any("no readable text" in p for p in self.problems()))
+
+    def test_researcher_answer_does_not_excuse_wording(self):
+        self.program["nodes"][0]["fields"].append({
+            "id": "welcome-screen", "label": "Welcome screen", "origin": "researcher", "state": "confirmed",
+            "value": INSTRUCTIONS, "evidenceIds": [], "extensions": {"material": {
+                "kind": "schema-enough", "what": "Study 1 welcome screen", "mentioned": "p. 3",
+                "asked": "2026-11-03", "answer": INSTRUCTIONS}}})
+        found = self.problems()
+        self.assertTrue(any("never schema-enough" in p for p in found) and any("holds prose" in p for p in found), found)
 
     def test_short_scale_items_are_found(self):
         self.supply()

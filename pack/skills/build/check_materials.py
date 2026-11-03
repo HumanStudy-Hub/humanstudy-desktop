@@ -57,6 +57,7 @@ Standard library plus the PDF reader check_quotes.py uses.
 """
 import argparse
 import hashlib
+import posixpath
 import json
 import re
 import sys
@@ -80,7 +81,9 @@ WORDING = re.compile(
     r"question(?:naire)?s?\b|vignette|scenario|\bstory|stories|passage|narrative|\bscripts?\b|dialog|message|prompt|"
     r"statement|sentence|word.?list|\bwords\b|image|picture|photo|drawing|video|audio|sound|recording|\bfaces?\b|"
     r"verbatim|transcript|anchor|response.?option|answer.?option|feedback.?(?:text|message|screen|wording)|"
-    r"\blabels?\b(?!.{0,12}\bkeys?\b)|caption|title.?screen|greeting|thank.?you", re.I)
+    r"\blabels?\b(?!.{0,12}\bkeys?\b)|caption|title.?screen|greeting|thank.?you|likert|scale.?(?:points|labels)|"
+    r"\bwelcome|\bintro(?:duction)?\b|\bscreens?\b(?!.{0,20}(?:layout|order|position|size|count|number|timing|"
+    r"duration|format|sequence))", re.I)
 MATERIAL = re.compile(r"instruction|debrief|briefing|item|question|prompt|stimul|scenario|vignette|scale|script|screen|"
                       r"message|text|wording|consent|cover|sequence|trial.?list|material|lotter|image|picture|order|"
                       r"block|practice|display|feedback|distribution|range|pairing|break|layout", re.I)
@@ -96,9 +99,10 @@ LICENSE_WORDS = re.compile(r"licen[cs]|creativecommons|\bcc[\s-]?(?:by|0)\b|publ
 DATA_EXT = {".csv", ".tsv", ".xlsx", ".xls", ".sav", ".dta", ".rds", ".rdata", ".feather", ".parquet", ".mat", ".zip",
             ".json", ".jsonl", ".txt", ".dat"}
 DATA_NAME = re.compile(r"data|subj|sub-|participant|respon|raw|session|ppt|choices|behav|results|demograph", re.I)
-DATA_COLUMNS = re.compile(r"^(?:subj(?:ect)?(?:_?id|_?nr|num)?|sub|participant(?:_?id)?|ppt|pid|worker_?id|prolific_?id|"
-                          r"subject_?number|rt|reaction_?time|response(?:_?time)?|resp|choice|key_?press|age|gender|"
-                          r"sex|session_?id|trial_?index|time_?elapsed)$", re.I)
+DATA_COLUMNS = re.compile(r"^(?:subj(?:ect)?(?:_?id|_?nr|num|_?number)?|sub|participant(?:_?(?:id|nr|number))?|ppt|pp|pid|"
+                          r"worker_?id|prolific_?id|rt|rt_?ms|reaction_?time|latency(?:_?ms)?|response(?:_?time|_?key)?|"
+                          r"resp(?:_?key)?|choice|key_?press|keypress|accuracy|acc|age|gender|sex|session_?id|"
+                          r"trial_?index|time_?elapsed)$", re.I)
 TEXT_EXT = {".txt", ".md", ".json", ".jsonl", ".csv", ".tsv", ".html", ".htm", ".py", ".xml", ".yaml", ".yml", ".js",
             ".css", ".svg", ".log", ".r", ".rmd", ".qmd", ".ipynb", ".tex", ".bib", ".toml", ".ini", ".rtf", ".m"}
 CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
@@ -210,9 +214,10 @@ def prose_words(value, quotes):
 
 def norm_rel(rel):
     rel = _str(rel).replace("\\", "/")
-    while rel.startswith("./"):
-        rel = rel[2:]
-    return rel.lstrip("/")
+    if not rel:
+        return ""
+    rel = posixpath.normpath(rel)
+    return "" if rel == "." else rel.lstrip("/")
 
 
 def under(rel, folder):
@@ -254,12 +259,12 @@ def text_of(path):
         if suffix in (".json", ".ipynb"):
             data = _json(path)
             if data is not None:
-                return "\n".join(strings(data, keys=False))
+                return "\n".join(strings(data))
         if suffix in (".jsonl",):
             lines = []
             for line in text.splitlines():
                 try:
-                    lines += list(strings(json.loads(line), keys=False))
+                    lines += list(strings(json.loads(line)))
                 except ValueError:
                     lines.append(line)
             return "\n".join(lines)
@@ -498,6 +503,10 @@ def check(root):
         material_like = n.get("kind") in ("material", "materials") or bool(MATERIAL.search("%s %s" % (f.get("id"), f.get("label"))))
         for e in cited:
             rel = norm_rel(e.get("path"))
+            if under(rel, "human-data") and (m is not None or material_like or f.get("origin") in ("derived", "implementation")):
+                add("%s cites %s: participant data never feeds the study's materials or design" % (where, rel),
+                    "cite the paper or a materials file; human data are only for comparing results (Human data)")
+                continue
             if rel and rel != paper and (root / rel).is_file() and (m is not None or material_like):
                 why = "it is in human-data/" if under(rel, "human-data") else looks_like_data(root / rel)
                 if why:
@@ -520,7 +529,7 @@ def check(root):
                         i.get("severity") == "decision" and i.get("nodeId") == n.get("id") for i in issues))
                 # Participant wording that the build wrote, or that claims a source it does not show, fails in every
                 # program; other unclassified material prose is a note in older programs.
-                on_material = n.get("kind") in ("material", "materials")
+                on_material = n.get("kind") in ("material", "materials", "procedure")
                 report = add if is_wording(f, None) and on_material and not legacy_standin else flag
                 if prose[0] > SHORT:
                     report("%s: participant material with no source (origin %s, %d words no cited quote prints): \"%s...\""
@@ -559,7 +568,7 @@ def check(root):
             if not quotes.strip() and not told:
                 add("%s: schema-enough needs the evidence that describes the structure" % where,
                     "cite the passage that prints the distribution, count, order or mapping the value follows")
-            prose = prose_words(f.get("value"), quotes + " " + (_str(m.get("answer")) if told else ""))
+            prose = prose_words(f.get("value"), quotes)   # the researcher's answer is not a quote: it stays short
             if prose[0] > SHORT:
                 add("%s: a schema-enough value holds prose (%d words in phrases no cited quote prints): \"%s...\""
                     % (where, prose[0], prose[1][:80]),
@@ -676,8 +685,9 @@ def check(root):
                 external.add(rel)
                 text = " ".join(words(text_of(root / rel)))
                 padded = " %s " % text
+                keys = set(_value_keys(f.get("value")))
                 missing_text = [s for s in strings(f.get("value")) if any(re.search(r"[^\W\d_]", x) for x in words(s))
-                                and " %s " % " ".join(words(s)) not in padded]
+                                and not (s in keys and len(words(s)) < 2) and " %s " % " ".join(words(s)) not in padded]
                 if not text or missing_text:
                     add("%s: the transcribed value does not occur in %s%s" % (
                         where, rel, " (no readable text)" if not text else ": \"%s...\"" % missing_text[0][:60]),
@@ -732,6 +742,12 @@ def check(root):
     for rel in sorted(p.relative_to(root).as_posix() for p in researcher_files(root)):
         if _str(_dict(recorded.get(rel)).get("license")) != RESEARCHER_LICENSE:
             add("sources/SOURCE.json does not record %s as %s" % (rel, RESEARCHER_LICENSE), "run the build skill's sources.py")
+    for p in private_files(root):
+        rel = p.relative_to(root).as_posix()
+        if not text_of(p).strip() and not any(q != p and q.stem == p.stem and text_of(q).strip()
+                                              for q in p.parent.glob(p.stem + ".*")):
+            flag("%s has no readable text, so no check can see whether it is copied elsewhere" % rel,
+                 "save a text copy beside it (%s.txt) with its words as supplied" % Path(rel).with_suffix(""))
     for shown, src, text in leaks(root, gate_files(root)):
         add("%s copies the private material %s (\"%s ...\")" % (shown, src, text[:60]),
             "keep researcher-supplied and not-openly-licensed materials only in %s/ or %s/; reference the file "
