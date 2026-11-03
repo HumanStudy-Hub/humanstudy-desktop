@@ -251,8 +251,17 @@ class Sources(unittest.TestCase):
         self.assertIn("sources/SOURCE.json is missing", run.stdout + run.stderr)
         self.assertEqual(self.cli().returncode, 0)
         run = check()
+        self.assertNotEqual(run.returncode, 0, "a new build records what participants were not told")
+        self.assertIn("no `not-told` field", run.stdout)
+        p["nodes"][[n["id"] for n in p["nodes"]].index("task")]["fields"].append(
+            {"id": "not-told", "label": "What participants were not told", "origin": "reported",
+             "state": "confirmed", "evidenceIds": [], "value": []})
+        (self.root / "program.json").write_text(json.dumps(p), encoding="utf-8")
+        self.assertEqual(self.cli().returncode, 0)
+        run = check()
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn("ok   sources/SOURCE.json records every source file", run.stdout)
+        self.assertIn("ok   package validity", run.stdout)
 
 
 if __name__ == "__main__":

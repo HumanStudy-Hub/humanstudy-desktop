@@ -541,6 +541,10 @@
                           "type": "string",
                           "description": "which model or weighting the paper used for this number, e.g. 'OLS without weights (p. 23)'"
                         },
+                        "signBasis": {
+                          "type": "string",
+                          "description": "for a value the paper prints without a sign: the printed words that say which arm is higher, so the value can be signed treatment minus reference (never chosen to fit the prediction)"
+                        },
                         "evidenceIds": {
                           "type": "array",
                           "items": {

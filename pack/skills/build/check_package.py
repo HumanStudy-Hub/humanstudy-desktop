@@ -16,7 +16,9 @@ Two layouts pass:
   two view files exist.
 
 In a project (slim layout) it also requires sources/SOURCE.json to record every source file with its
-current SHA-256 and a license entry (write it with sources.py).
+current SHA-256 and a license entry (write it with sources.py), and runs check_validity.py: no prompt tells
+participants what the paper says they were not told, the memory design is a recorded decision, one
+unparsed reply does not drop a participant, missing instructions are a decision.
 """
 from __future__ import annotations
 
@@ -155,6 +157,14 @@ def main() -> None:
     if result.returncode != 0:
         fail("adapter smoke test failed:\n" + result.stdout + result.stderr)
     print("ok   task/adapter.py --smoke-test")
+    if slim:  # inside a project: the package replays what participants experienced (check_validity.py)
+        from check_validity import check as check_validity
+
+        report = check_validity(Path(source).resolve().parent, root)
+        if report["problems"]:
+            fail("package validity (check_validity.py):\n" + "\n".join(
+                f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in report["problems"]))
+        print("ok   package validity: nothing participants were not told is in a prompt; memory design recorded")
     print("PASS package checks")
 
 
