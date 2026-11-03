@@ -571,6 +571,28 @@ def probe(root, n):
     return out
 
 
+def probe_schema_problem(result):
+    """The first field of a probe result with the wrong type, or None. The result is printed by the confined
+    child, which package code shares, so every field is checked before a check reads it."""
+    if not isinstance(result, dict):
+        return "probe"
+    for key in ("error", "refused"):
+        if key in result and not isinstance(result[key], str):
+            return key
+    if "calls" in result and (isinstance(result["calls"], bool) or not isinstance(result["calls"], int)
+                              or result["calls"] < 0):
+        return "calls"
+    if "excludedRefused" in result and not isinstance(result["excludedRefused"], (bool, str)):
+        return "excludedRefused"
+    if not isinstance(result.get("sessions", []), list) or not all(isinstance(x, dict) for x in result.get("sessions", [])):
+        return "sessions"
+    if not isinstance(result.get("prompts", []), list) or not all(isinstance(x, str) for x in result.get("prompts", [])):
+        return "prompts"
+    if "seconds" in result and (isinstance(result["seconds"], bool) or not isinstance(result["seconds"], (int, float))):
+        return "seconds"
+    return None
+
+
 def run_probe(s, ctx):
     if "probe" in ctx:
         return ctx["probe"]
@@ -590,9 +612,10 @@ def run_probe(s, ctx):
             result = json.loads(lines[-1])["probe"] if lines else None
             if not isinstance(result, dict):
                 raise ValueError("probe result is not an object")
-            if not isinstance(result.get("sessions", []), list) or not isinstance(result.get("prompts", []), list):
-                raise ValueError("probe sessions or prompts are not lists")
-            ctx["probe"] = result
+            bad = probe_schema_problem(result)
+            # Fail closed: a malformed result is a probe error (not a refusal), so run=no and blocked studies
+            # still fail as "not refused" instead of crashing a check into a concern.
+            ctx["probe"] = {"error": "probe result is malformed: %s" % bad} if bad else result
         except (ValueError, TypeError, KeyError):
             ctx["probe"] = {"error": "probe produced no valid result (exit %s): %s" %
                             (run.returncode, (run.stderr or run.stdout)[-400:])}
@@ -811,13 +834,13 @@ def check_P7(s, ctx):
         probs.append(("concern", "package/%s/task/adapter.py: refusal behavior was not tested (--no-run)" % s.package.name))
     else:
         if pr.get("error"):
-            probs.append(("concern", "stub run failed: %s" % pr["error"][:300]))
+            probs.append(("concern", "package/%s/task/adapter.py: stub run failed: %s" % (s.package.name, str(pr["error"])[:300])))
         # A crash is not a refusal, and the package controls whether it crashes: keep the fail.
         if (blocking or ready == "blocked") and not pr.get("refused"):
-            probs.append(("fail", "study is blocked but the stub run was not refused (%d calls)" % pr.get("calls", 0)))
+            probs.append(("fail", "study is blocked but the stub run was not refused (%s calls)" % str(pr.get("calls", 0))[:20]))
         if not (blocking or ready == "blocked") and pr.get("refused"):
-            probs.append(("concern", "study is not blocked but the run was refused: %s" % pr["refused"][:160]))
-        if pr.get("excludedRefused") is False:
+            probs.append(("concern", "study is not blocked but the run was refused: %s" % str(pr["refused"])[:160]))
+        if "excludedRefused" in pr and not isinstance(pr["excludedRefused"], str) and pr["excludedRefused"] is not True:
             probs.append(("fail", "capabilities.json#run.excluded arms ran instead of being refused"))
     if probs:
         worst = "fail" if any(p[0] == "fail" for p in probs) else "concern"
@@ -1024,14 +1047,16 @@ def check_T4(s, ctx):
     # recorded as a concern but never hides a definite failure.
     probs = []
     if pr.get("error"):
-        probs.append(("concern", "package/%s/task/adapter.py: stub run failed: %s" % (s.package.name, pr["error"][:300])))
+        probs.append(("concern", "package/%s/task/adapter.py: stub run failed: %s" % (s.package.name, str(pr["error"])[:300])))
     if run == "no" and not pr.get("refused"):
-        probs.append(("fail", "capabilities.json#run.status=no but the run was not refused (%d model calls%s)"
-                      % (pr.get("calls", 0), ", then it crashed" if pr.get("error") else "")))
-    if pr.get("excludedRefused") is False:
-        probs.append(("fail", "capabilities.json#run.excluded arms produced output"))
-    if isinstance(pr.get("excludedRefused"), str):
-        probs.append(("concern", "capabilities.json#run.excluded: excluded-arm probe failed: %s" % pr["excludedRefused"]))
+        probs.append(("fail", "capabilities.json#run.status=no but the run was not refused (%s model calls%s)"
+                      % (str(pr.get("calls", 0))[:20], ", then it crashed" if pr.get("error") else "")))
+    if "excludedRefused" in pr:
+        ex = pr["excludedRefused"]
+        if isinstance(ex, str):
+            probs.append(("concern", "capabilities.json#run.excluded: excluded-arm probe failed: %s" % ex[:300]))
+        elif ex is not True:
+            probs.append(("fail", "capabilities.json#run.excluded arms produced output"))
     if probs:
         worst = "fail" if any(p[0] == "fail" for p in probs) else "concern"
         return R(worst, short(p[1] for p in probs))
