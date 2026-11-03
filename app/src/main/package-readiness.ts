@@ -6,6 +6,7 @@ import { join, resolve, sep } from 'node:path'
 import { packageReadiness, type PackageReadiness, type PackageFile } from '../shared/package-readiness'
 
 export const COMMUNITY_RUN_NOTICE = "This study's code will run on your computer with access to your model key."
+import { looksLikeRevision } from './run-notice' // run-notice.ts imports nothing from here; kept next to its only use
 
 /** Local community provenance is informational, not a security attestation. Until the catalog
  * provides authenticated review state, conservatively show the notice for every revision fork. */
@@ -14,7 +15,7 @@ export async function communityRunNotice(projectDir: string): Promise<string | u
     await readFile(join(projectDir, '.humanstudy/community.json'), 'utf8')
     return COMMUNITY_RUN_NOTICE
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return (await looksLikeRevision(projectDir)) ? COMMUNITY_RUN_NOTICE : undefined
     return COMMUNITY_RUN_NOTICE
   }
 }
