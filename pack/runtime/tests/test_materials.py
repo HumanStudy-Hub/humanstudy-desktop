@@ -83,6 +83,7 @@ class Materials(unittest.TestCase):
     # the fixture
     def test_fixture_passes_program_and_materials_checks(self):
         self.assertEqual(check_program.check(self.program), [])
+        self.assertEqual(check_program.schema_problems(self.program, BUILD / "check_program.py"), [])
         report = self.check()
         self.assertEqual(report["problems"], [])
         self.assertEqual({(i["kind"], i["status"]) for i in report["items"]},
@@ -125,7 +126,7 @@ class Materials(unittest.TestCase):
         del f["extensions"]
         f.update({"origin": "implementation", "state": "check", "value": INSTRUCTIONS})
         self.program["issues"] = []
-        self.assertTrue(any("participant material written by the build" in p for p in self.problems()))
+        self.assertTrue(any("participant material with no source" in p for p in self.problems()))
 
     def test_odd_input_does_not_crash(self):
         self.field("dividend-sequences")["evidenceIds"] = 7
@@ -135,6 +136,43 @@ class Materials(unittest.TestCase):
         self.write("sources/SOURCE.json", "[1, 2]")
         self.write("capabilities.json", json.dumps({"run": [1]}))
         check_materials.check(self.root)
+
+    def test_invented_word_lists_anchors_and_feedback_are_caught(self):
+        f = self.field("dividend-sequences")
+        f["value"] = {"list": ["bed", "rest", "awake", "tired", "dream", "wake", "snooze", "blanket", "doze", "slumber",
+                               "yawn", "drowsy", "nap"]}
+        self.assertTrue(any("holds prose" in p for p in self.problems()), "single invented words add up")
+        f["label"] = "Target words (12)"
+        self.assertTrue(any("never schema-enough" in p for p in self.problems()))
+        f["label"] = "Response scale (7-point)"
+        f["value"] = {"anchors": ["Strongly disagree", "Disagree", "Neutral", "Agree", "Strongly agree"]}
+        self.assertTrue(any("never schema-enough" in p for p in self.problems()), "anchors are wording")
+        f["label"] = "Outcome after each choice"
+        f["value"] = {"win": "Congratulations, you earned {x} points this round"}
+        self.assertTrue(any("holds prose" in p for p in self.problems()), "one sentence is prose")
+
+    def test_wording_without_a_source_fails_even_in_an_older_program(self):
+        for fid in ("dividend-sequences", "instruction-text"):
+            self.field(fid).pop("extensions")
+        f = self.field("instruction-text")
+        f.update({"label": "Debriefing text", "origin": "researcher", "state": "check", "value": INSTRUCTIONS})
+        self.program["issues"] = []
+        self.assertTrue(any("participant material with no source" in p for p in self.problems()), "origin researcher")
+        f["origin"] = "unknown"
+        self.assertTrue(any("participant material with no source" in p for p in self.problems()), "origin unknown")
+        # disclosed for the researcher's decision: a note in an older program
+        f.update({"origin": "implementation", "state": "decision"})
+        self.program["issues"] = [dict(FIXTURE["issues"][0], title="Debriefing text written for the replay")]
+        report = self.check()
+        self.assertEqual(report["problems"], [])
+        self.assertTrue(any("participant material with no source" in n for n in report["notes"]))
+
+    def test_structure_stated_by_the_researcher(self):
+        f = self.field("dividend-sequences")
+        f.update({"origin": "researcher", "evidenceIds": [], "value": {"order": "random per participant"}})
+        self.assertTrue(any("asked and answer" in p for p in self.problems()))
+        f["extensions"]["material"].update({"asked": "2026-11-03", "answer": "decisions were in random order"})
+        self.assertEqual(self.problems(), [])
 
     def test_numbers_and_printed_phrases_are_structure(self):
         f = self.field("dividend-sequences")
@@ -150,7 +188,7 @@ class Materials(unittest.TestCase):
         self.assertTrue(any("has no value" in p for p in self.problems()))
         f["value"] = {"draws": 30}
         f["origin"] = "verbatim"
-        self.assertTrue(any("origin derived or implementation" in p for p in self.problems()))
+        self.assertTrue(any("not 'verbatim'" in p for p in self.problems()))
         f["origin"] = "derived"
         self.program["issues"].append({"id": "i-seq", "title": "Sequences", "severity": "blocking", "reason": "r",
                                        "impact": "i", "suggestedAction": "a", "nodeId": "m1",
@@ -227,6 +265,31 @@ class Materials(unittest.TestCase):
         self.assertTrue(any("holds the material's text" in p for p in self.problems(
             **self.provenance(priv, license="unknown", evidence="none"))))
 
+    def test_open_source_short_strings_and_keys_must_be_in_the_file(self):
+        rel = self.open_item()
+        self.field("instruction-text")["value"] = ["Please choose", "carefully now", "press space"]
+        self.assertTrue(any("does not occur in" in p for p in self.problems(**self.provenance(rel))))
+        self.field("instruction-text")["value"] = {"Read every word of this before you go on": INSTRUCTIONS}
+        self.assertTrue(any("does not occur in" in p for p in self.problems(**self.provenance(rel))))
+
+    def test_license_evidence_saying_there_is_none_is_refused(self):
+        rel = self.open_item()
+        self.assertTrue(any("without an open license" in p for p in self.problems(
+            **self.provenance(rel, evidence="OSF page: no license stated"))))
+
+    def test_found_private_needs_its_search_entry(self):
+        priv = "sources/private/instructions.txt"
+        self.write(priv, INSTRUCTIONS)
+        f = self.field("instruction-text")
+        f.update({"origin": "verbatim", "state": "confirmed", "value": {"file": priv}})
+        f["extensions"]["material"].update({"status": "found-private", "file": priv})
+        self.program["issues"] = []
+        prov = self.provenance(priv, license="unknown", evidence="none stated")
+        self.assertTrue(any("found-private needs the search entry" in p for p in self.problems(**prov)))
+        f["extensions"]["material"]["search"].append(
+            {"where": "OSF project", "url": "https://osf.io/abcde/files/instructions.txt", "found": True})
+        self.assertEqual(self.problems(**prov), [])
+
     def test_participant_data_is_never_a_source(self):
         # by name
         self.write("sources/open/study01_data.csv", "a,b\n1,2\n")
@@ -236,6 +299,19 @@ class Materials(unittest.TestCase):
         self.write("sources/open/stimuli.csv", "subject,trial_index,rt,choice\n1,1,532,left\n")
         self.assertTrue(any("participant data" in p and "columns" in p for p in self.problems()))
         (self.root / "sources/open/stimuli.csv").unlink()
+        # JSON records of responses, and data dropped anywhere under sources/
+        self.write("sources/open/sequences.json", json.dumps([{"participant": 1, "trial": 1, "choice": "A", "rt": 512}]))
+        self.assertTrue(any("sequences.json looks like participant data" in p for p in self.problems()))
+        (self.root / "sources/open/sequences.json").unlink()
+        self.write("sources/osf/raw_data.csv", "x\n1\n")
+        self.assertTrue(any("raw_data.csv looks like participant data" in p for p in self.problems()))
+        (self.root / "sources/osf/raw_data.csv").unlink()
+        # cited from human-data/
+        self.write("human-data/trials.csv", "participant,trial,choice,rt\n1,1,A,500\n")
+        self.program["evidence"].append({"id": "ev-hd", "path": "human-data/trials.csv", "locator": {"page": 1}})
+        self.field("dividend-sequences")["evidenceIds"].append("ev-hd")
+        self.assertTrue(any("cites human-data/trials.csv" in p for p in self.problems()))
+        self.field("dividend-sequences")["evidenceIds"].remove("ev-hd")
         # cited as the basis of a schema-enough sequence
         self.write("sources/osf/s1.csv", "participant_id,response\n1,2\n")
         self.program["evidence"].append({"id": "ev-data", "path": "sources/osf/s1.csv", "locator": {"page": 1}, "quote": "x"})
@@ -306,6 +382,17 @@ class Materials(unittest.TestCase):
         self.write("sources/s1-instructions.txt", INSTRUCTIONS)
         self.material("instruction-text")["file"] = "sources/s1-instructions.txt"
         self.assertTrue(any("must be a file under sources/researcher/" in p for p in self.problems()))
+
+    def test_numbered_and_tabular_items_are_found_without_their_numbers(self):
+        self.supply()
+        self.write("sources/researcher/s1-instructions.txt", "1. I often feel lonely at night\n2. I sleep well\n")
+        self.write("package/p/materials/materials.json", json.dumps({"q": "I often feel lonely at night"}))
+        self.assertTrue(any("copies the private material" in p for p in self.problems()))
+        (self.root / "sources/researcher/s1-instructions.txt").unlink()
+        self.write("sources/researcher/items.csv", "id,text\n1,I often feel lonely at night\n")
+        self.material("instruction-text")["file"] = "sources/researcher/items.csv"
+        self.field("instruction-text")["value"] = {"file": "sources/researcher/items.csv"}
+        self.assertTrue(any("copies the private material" in p for p in self.problems()))
 
     def test_short_scale_items_are_found(self):
         self.supply()

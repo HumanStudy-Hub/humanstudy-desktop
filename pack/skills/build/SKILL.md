@@ -143,7 +143,10 @@ instruction screens (both framings)", not "m-s4.instruction-wording".
      --license PATH=CC-BY-4.0 --license-evidence PATH="OSF project page: License CC-By Attribution 4.0"`
      (its SHA-256 is recorded too). An item copied from `sources/open/` is `verbatim` (`status:
      "found-open"`, cite the file); one from `sources/private/` is a reference to the file like a supplied
-     one (`status: "found-private"`, value `{"file": ...}`, never the text in the program).
+     one (`status: "found-private"`, value `{"file": ...}`, never the text in the program). Evidence that
+     cites a file under `sources/private/` or `sources/researcher/` gives its `path` and `locator` with no
+     `quote`: a quote would copy the text into program.json. URLs consulted go in `external_sources` as
+     before; `searches` is the log of where you looked and what you found.
    - **Never participant data.** Do not download trial-level responses, response or session files or
      demographics, not even to read the sequences or orders participants saw. When those exist only inside
      participant data files, ask the researcher and say so in the question. A file that mixes materials and
@@ -168,7 +171,8 @@ instruction screens (both framings)", not "m-s4.instruction-wording".
 
      Offer "I will upload or paste them", "Use labelled stand-ins", "Leave them out", and a written answer
      (per item). Set `asked` to the date. A structural item in the list ("how were the decisions ordered?")
-     may be answered in words; record that answer as origin `researcher` and the item as schema-enough.
+     may be answered in words; record that answer as origin `researcher` and the item as schema-enough, with
+     `asked` and `answer`.
    - **Record the answer per item** (`status`; `asked` and `answer` are required for every answer):
      - `supplied`: save pasted text as `sources/researcher/<item>.txt`; move an uploaded file from
        `sources/` into `sources/researcher/`. The field is origin `researcher`, state `confirmed`, value
@@ -198,10 +202,12 @@ Run `python .opencode/skills/build/check_materials.py .` until it prints `PASS`:
 item that is wording, holds prose no cited quote prints, lacks evidence or blocks; a needs-original item
 with invented content, without an issue naming it, answered without `asked`/`answer`, copied from a file
 without an open license, or from participant data; a downloaded file without url, license, link to the
-paper or version; a missing `searches` record; and private text (from `sources/researcher/` or
+paper or version; participant data under `sources/`; a missing `searches` record; and private text (from `sources/researcher/` or
 `sources/private/`) in program.json or package/. Community and agent exports leave both folders out,
 refuse to export while their text is in the program or the package, and leave out any artifact (a
-simulation log) that copies it.
+simulation log) that copies it. What no script can check, check yourself: that a file under `sources/open/`
+really is the file at its `url` (download it; never write it), that stand-in text in materials.json is
+labelled as one, and that a picture or scanned page the researcher supplied is not transcribed elsewhere.
 
 ### Result tables: every printed table, cell by cell
 

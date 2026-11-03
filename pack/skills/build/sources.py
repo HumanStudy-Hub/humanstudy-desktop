@@ -165,10 +165,10 @@ def record(root, rel, old):
     entry = dict(old or {})
     entry.update({"path": rel, "sha256": sha256(path), "bytes": path.stat().st_size})
     entry.setdefault("license", "unknown")
-    if rel.startswith(RESEARCHER_DIR):  # the researcher's own materials: used in this project, never published
+    if rel.lower().startswith(RESEARCHER_DIR):  # the researcher's own materials: used in this project, never published
         entry["license"] = RESEARCHER_LICENSE
         entry.setdefault("licenseEvidence", "supplied by the researcher for this project; kept out of every export")
-    if rel.startswith(PRIVATE_DIR):  # public, but without an open license: used in this project only
+    if rel.lower().startswith(PRIVATE_DIR):  # public, but without an open license: used in this project only
         entry["private"] = True
     return entry
 
@@ -187,7 +187,7 @@ def build(root, licenses=None, evidence=None, extra=None):
             printed = printed_license(root / f["path"])
             if printed:
                 f["license"], f["licenseEvidence"] = printed
-        if f["path"] in (licenses or {}) and not f["path"].startswith(RESEARCHER_DIR):
+        if f["path"] in (licenses or {}) and not f["path"].lower().startswith(RESEARCHER_DIR):
             f["license"] = licenses[f["path"]]
         if f["path"] in (evidence or {}):
             f["licenseEvidence"] = evidence[f["path"]]

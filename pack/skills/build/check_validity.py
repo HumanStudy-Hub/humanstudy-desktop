@@ -594,12 +594,13 @@ def check(root, package=None, capture_prompts=True):
                 "contain; or `notApplicable` with the reason when it is not about what participants knew")
 
     # prompts
-    method, runs, texts = None, [], []
+    method, runs, texts, arm_refused = None, [], [], False
     if pkg is None:
         notes.append("no package/<slug>/task/adapter.py: prompts not checked")
     else:
         cap = prompts_of(pkg) if capture_prompts else {"runs": [], "error": "capture off"}
         runs = [r for r in cap.get("runs") or [] if r.get("calls")]
+        arm_refused = any(r.get("error") and r.get("arms") for r in cap.get("runs") or [])
         if cap.get("unfinished"):
             add("%s: run_sessions must finish with a stand-in model (no network, sleeps skipped)" % cap["error"],
                 "a loop that retries until the reply parses never ends with a model that does not comply: record "
@@ -700,7 +701,9 @@ def check(root, package=None, capture_prompts=True):
                     "`# exclusion: <evidence id>` on the line above (the quote must state the exclusion)")
 
     # missing instructions: one rule (blocking only when the adapter refuses to run without the text)
-    runs_whole = any(r.get("calls") and not r.get("error") for r in runs)
+    # Blocking is right when the adapter refuses to run without the text: the whole study, or the arms that need it
+    # (some arm run stops with an error while others run).
+    runs_whole = any(r.get("calls") and not r.get("error") for r in runs) and not arm_refused
     issues = [i for i in program.get("issues") or [] if isinstance(i, dict)]
     for n, f in _fields(program):
         if f.get("state") != "missing" or not INSTRUCTION.search("%s %s" % (f.get("id"), f.get("label"))):

@@ -77,9 +77,10 @@ SHINGLE = 8         # words in a row that count as a copy of a private text
 # Participant-visible wording and media: never reconstructed from a description.
 WORDING = re.compile(
     r"instruction|wording|briefing|debrief|consent|cover.?story|screen.?text|text of|\btext\b|"
-    r"question(?:naire)?s?\b|vignette|scenario|\bstory|stories|passage|narrative|script|dialog|message|prompt|"
-    r"statement|sentence|word.?list|image|picture|photo|drawing|video|audio|sound|recording|\bfaces?\b|"
-    r"verbatim|transcript", re.I)
+    r"question(?:naire)?s?\b|vignette|scenario|\bstory|stories|passage|narrative|\bscripts?\b|dialog|message|prompt|"
+    r"statement|sentence|word.?list|\bwords\b|image|picture|photo|drawing|video|audio|sound|recording|\bfaces?\b|"
+    r"verbatim|transcript|anchor|response.?option|answer.?option|feedback.?(?:text|message|screen|wording)|"
+    r"\blabels?\b(?!.{0,12}\bkeys?\b)|caption|title.?screen|greeting|thank.?you", re.I)
 MATERIAL = re.compile(r"instruction|debrief|briefing|item|question|prompt|stimul|scenario|vignette|scale|script|screen|"
                       r"message|text|wording|consent|cover|sequence|trial.?list|material|lotter|image|picture|order|"
                       r"block|practice|display|feedback|distribution|range|pairing|break|layout", re.I)
@@ -87,6 +88,8 @@ MATERIAL = re.compile(r"instruction|debrief|briefing|item|question|prompt|stimul
 OPEN_LICENSE = re.compile(r"^(?:CC-BY(?:-(?:NC|ND|SA))*(?:-[1-4]\.0)?|CC0-1\.0|CC0|PDDL-1\.0|ODC-By-1\.0|ODbL-1\.0|MIT|"
                           r"Apache-2\.0|BSD-[23]-Clause|GPL-[23]\.0(?:-only|-or-later)?|LGPL-[23]\.[01](?:-only|-or-later)?|"
                           r"MPL-2\.0|Unlicense|public-domain)$", re.I)
+NO_LICENSE = re.compile(r"\bno\s+(?:open\s+)?licen[cs]|not\s+(?:openly\s+)?licen[cs]|without\s+(?:an?\s+)?(?:open\s+)?licen[cs]|"
+                        r"licen[cs]e\s*[:=-]?\s*(?:none|unknown|not\s+(?:stated|specified|given))|all\s+rights\s+reserved", re.I)
 LICENSE_WORDS = re.compile(r"licen[cs]|creativecommons|\bcc[\s-]?(?:by|0)\b|public domain|\bmit\b|apache|\bgpl\b|"
                            r"\bbsd\b|unlicense", re.I)
 # Participant responses rather than materials: file names, and column headers of tables.
@@ -159,22 +162,50 @@ def material_of(f):
     return m if isinstance(m, dict) else None
 
 
+def _value_keys(value):
+    if isinstance(value, dict):
+        return [k for k in value if isinstance(k, str)] + [k for v in value.values() for k in _value_keys(v)]
+    if isinstance(value, list):
+        return [k for v in value for k in _value_keys(v)]
+    return []
+
+
 def is_wording(f, m):
-    return bool(WORDING.search(" ".join(_str(x) for x in (f.get("id"), f.get("label"), (m or {}).get("what")))))
+    """Whether the field (its id, label, `what`, or the keys of its value) names participant-visible wording."""
+    names = [f.get("id"), f.get("label"), (m or {}).get("what")] + _value_keys(f.get("value"))
+    return bool(WORDING.search(" ".join(_str(x).replace("_", " ") for x in names)))
+
+
+LONG = 6            # letter words one string may hold, unquoted, before it reads as a sentence
 
 
 def prose_words(value, quotes):
-    """(words, first phrase) over the value's phrases of 2+ letter words that no quote prints. Numbers do not count,
-    so a printed or drawn sequence of values is structure; single tokens (key names, condition codes) do not count."""
+    """(words, first phrase) over the value's strings that no quote prints, counted in letter words (numbers do not
+    count, so a printed or drawn sequence of values is structure). Single-word dictionary keys (field names) do not
+    count; single-word values do, so an invented word list adds up. A single string of LONG or more words counts as
+    prose on its own: the total is then raised above SHORT."""
     qwords = " " + " ".join(words(quotes)) + " "
-    total, first = 0, ""
-    for s in strings(value):
-        w = words(s)
-        alpha = [x for x in w if re.search(r"[^\W\d_]", x)]
-        if len(alpha) >= 2 and " %s " % " ".join(w) not in qwords:
+    total, first, sentence = 0, "", False
+
+    def walk(v, is_key=False):
+        nonlocal total, first, sentence
+        if isinstance(v, dict):
+            for k, x in v.items():
+                walk(k, True)
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+        elif isinstance(v, str):
+            w = words(v)
+            alpha = [x for x in w if re.search(r"[^\W\d_]", x)]
+            if not alpha or (is_key and len(alpha) < 2) or " %s " % " ".join(w) in qwords:
+                return
             total += len(alpha)
-            first = first or " ".join(s.split())
-    return total, first
+            first = first or " ".join(v.split())
+            sentence = sentence or len(alpha) >= LONG
+    walk(value)
+    return (max(total, SHORT + 1) if sentence else total), first
 
 
 def norm_rel(rel):
@@ -289,11 +320,25 @@ def private_paths(root):
     return out
 
 
+ENUMERATOR = re.compile(r"^\s*(?:[(\[]?(?:\d+|[a-z]|[ivx]+)[.)\]:]|\d+[,\t;]|[-*•]\s)\s*", re.I)
+
+
+def items_of(text):
+    """Lines of a text, with leading enumerators ("1.", "a)", "-", a CSV id column) removed, plus the cells of
+    tabular lines, so an item copied without its number is still found."""
+    out = []
+    for seg in segments(text):
+        out.append(ENUMERATOR.sub("", seg))
+        if "\t" in seg or seg.count(",") >= 1 and len(seg) < 400:
+            out += [c.strip().strip('"') for c in re.split(r"\t|,(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", seg)]
+    return [x for x in out if x.strip()]
+
+
 def shingles(text, size=SHINGLE):
-    """Runs of `size` words; a line or item shorter than that (4+ words) counts whole, so a short scale item
-    copied on its own is found too."""
+    """Runs of `size` words; a line, item or table cell shorter than that (4+ words) counts whole, so a short scale
+    item copied on its own is found too. (Items of 3 words or fewer are found only as part of a longer copy.)"""
     out = set()
-    for seg in segments(text) + [text or ""]:
+    for seg in items_of(text) + [text or ""]:
         w = words(seg)
         if len(w) >= size:
             out |= {" ".join(w[i:i + size]) for i in range(len(w) - size + 1)}
@@ -372,20 +417,50 @@ def gate_files(root):
 published_files = gate_files
 
 
+def _keys(data, depth=0):
+    out = set()
+    if depth > 3:
+        return out
+    if isinstance(data, dict):
+        out |= {k for k in data if isinstance(k, str)}
+        for v in list(data.values())[:20]:
+            out |= _keys(v, depth + 1)
+    elif isinstance(data, list):
+        for v in data[:20]:
+            out |= _keys(v, depth + 1)
+    return out
+
+
 def looks_like_data(path):
     """Why a file looks like participant data (trial-level responses), or ''."""
     path = Path(path)
     if path.suffix.lower() in DATA_EXT and DATA_NAME.search(path.name):
         return "its name"
-    if path.suffix.lower() in (".csv", ".tsv", ".txt", ".dat") and path.is_file():
-        try:
+    if not path.is_file():
+        return ""
+    suffix = path.suffix.lower()
+    cols = []
+    try:
+        if suffix in (".csv", ".tsv", ".txt", ".dat"):
             head = path.read_text(encoding="utf-8", errors="replace").splitlines()[:1]
-        except OSError:
-            return ""
-        cols = [c.strip().strip('"').strip("'") for c in re.split(r"[,\t;]", head[0])] if head else []
-        hits = [c for c in cols if DATA_COLUMNS.match(c)]
-        if len(hits) >= 2:
-            return "its columns (%s)" % ", ".join(hits[:4])
+            cols = [c.strip().strip('"').strip("'") for c in re.split(r"[,\t;]", head[0])] if head else []
+        elif suffix == ".json":
+            cols = sorted(_keys(_json(path)))
+        elif suffix == ".jsonl":
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for line in [next(fh, "") for _ in range(5)]:
+                    try:
+                        cols += sorted(_keys(json.loads(line)))
+                    except ValueError:
+                        pass
+        elif suffix in (".xlsx", ".ods"):
+            text = text_of(path)
+            cols = [c.strip() for c in re.split(r"[\n\t]", text[:4000])]
+    except (OSError, ValueError):
+        return ""
+    hits = sorted({c for c in cols if DATA_COLUMNS.match(c)})
+    if len(hits) >= 2:
+        return "its columns (%s)" % ", ".join(hits[:4])
     return ""
 
 
@@ -423,9 +498,9 @@ def check(root):
         material_like = n.get("kind") in ("material", "materials") or bool(MATERIAL.search("%s %s" % (f.get("id"), f.get("label"))))
         for e in cited:
             rel = norm_rel(e.get("path"))
-            if rel.startswith("sources/") and (root / rel).is_file():
-                why = looks_like_data(root / rel)
-                if why and material_like:
+            if rel and rel != paper and (root / rel).is_file() and (m is not None or material_like):
+                why = "it is in human-data/" if under(rel, "human-data") else looks_like_data(root / rel)
+                if why:
                     add("%s cites %s, which looks like participant data (%s)" % (where, rel, why),
                         "never take materials or sequences from participant data; use the stimulus or instruction "
                         "files, or ask the researcher")
@@ -435,11 +510,21 @@ def check(root):
                      "schema-enough or needs-original (build skill, 'Materials the paper does not print')" % where,
                      "add extensions.material; a gap that is not a material (an assignment rule) needs none: name "
                      "it so (e.g. id 'assignment-rule')")
-            elif material_like and f.get("origin") in ("derived", "implementation") and (n.get("kind") in ("material", "materials") or is_wording(f, None)):
+            elif f.get("state") != "missing" and f.get("origin") in ("derived", "implementation", "unknown", "researcher") \
+                    and (is_wording(f, None) or (material_like and n.get("kind") in ("material", "materials"))):
                 prose = prose_words(f.get("value"), quotes)
+                # disclosed for the researcher's decision (a stand-in or prompt wording the build wrote, under a decision
+                # issue): an older program's way of labelling it; still a note, not a pass
+                legacy_standin = f.get("state") == "decision" or (
+                    re.search(r"stand.?in", "%s %s" % (f.get("id"), f.get("label")), re.I) and any(
+                        i.get("severity") == "decision" and i.get("nodeId") == n.get("id") for i in issues))
+                # Participant wording that the build wrote, or that claims a source it does not show, fails in every
+                # program; other unclassified material prose is a note in older programs.
+                on_material = n.get("kind") in ("material", "materials")
+                report = add if is_wording(f, None) and on_material and not legacy_standin else flag
                 if prose[0] > SHORT:
-                    flag("%s: participant material written by the build (%d words no cited quote prints): \"%s...\""
-                        % (where, prose[0], prose[1][:80]),
+                    report("%s: participant material with no source (origin %s, %d words no cited quote prints): \"%s...\""
+                        % (where, f.get("origin"), prose[0], prose[1][:80]),
                         "classify it (extensions.material): structure the paper describes is schema-enough; text "
                         "participants read is needs-original and comes from an open source or the researcher")
             continue
@@ -458,19 +543,23 @@ def check(root):
             if is_wording(f, m):
                 add("%s: participant-visible wording or media is never schema-enough (%s)" % (where, what or f.get("label")),
                     "make it needs-original: search open sources, then ask the researcher; never write the words yourself")
-            if f.get("origin") not in ("derived", "implementation"):
-                add("%s: a schema-enough value is filled by the build: origin derived or implementation, not %r"
-                    % (where, f.get("origin")), "verbatim and reported are for printed text and printed facts")
+            told = f.get("origin") == "researcher"   # the researcher answered a structural question in words
+            if told and (not _str(m.get("asked")).strip() or not _str(m.get("answer")).strip()):
+                add("%s: a structure the researcher stated needs extensions.material.asked and answer" % where, "")
+            if f.get("origin") not in ("derived", "implementation", "researcher"):
+                add("%s: a schema-enough value is filled from the paper's description (derived or implementation) or "
+                    "from the researcher's answer (researcher), not %r" % (where, f.get("origin")),
+                    "verbatim and reported are for printed text and printed facts")
             if f.get("origin") == "implementation" and not _str(m.get("basis")).strip():
                 add("%s: schema-enough implementation needs extensions.material.basis" % where,
                     "say which printed description the value follows (with its page)")
             if f.get("state") == "missing" or empty(f.get("value")):
                 add("%s: schema-enough means the build fills it from the paper's description; it has no value" % where,
                     "fill it from the cited description, or classify it needs-original if the description is not enough")
-            if not quotes.strip():
+            if not quotes.strip() and not told:
                 add("%s: schema-enough needs the evidence that describes the structure" % where,
                     "cite the passage that prints the distribution, count, order or mapping the value follows")
-            prose = prose_words(f.get("value"), quotes)
+            prose = prose_words(f.get("value"), quotes + " " + (_str(m.get("answer")) if told else ""))
             if prose[0] > SHORT:
                 add("%s: a schema-enough value holds prose (%d words in phrases no cited quote prints): \"%s...\""
                     % (where, prose[0], prose[1][:80]),
@@ -564,6 +653,10 @@ def check(root):
                     "run the build skill's sources.py (it records files under %s/ that way)" % RESEARCHER_DIR)
             elif status == "found-private":
                 external.add(rel)
+                url = norm_rel(_dict(recorded.get(rel)).get("url"))
+                if not any(s.get("found") and s.get("url") and norm_rel(s.get("url")) == url for s in search):
+                    add("%s: found-private needs the search entry it was found in (where, url of the file, found: true)"
+                        % where, "")
             if prose[0] > SHORT:
                 add("%s: the program holds the material's text (%d words); keep it only in %s"
                     % (where, prose[0], rel or folder + "/"),
@@ -582,8 +675,9 @@ def check(root):
                     continue
                 external.add(rel)
                 text = " ".join(words(text_of(root / rel)))
-                missing_text = [s for s in strings(f.get("value"), keys=False) if len(words(s)) >= 3
-                                and " ".join(words(s)) not in text]
+                padded = " %s " % text
+                missing_text = [s for s in strings(f.get("value")) if any(re.search(r"[^\W\d_]", x) for x in words(s))
+                                and " %s " % " ".join(words(s)) not in padded]
                 if not text or missing_text:
                     add("%s: the transcribed value does not occur in %s%s" % (
                         where, rel, " (no readable text)" if not text else ": \"%s...\"" % missing_text[0][:60]),
@@ -599,6 +693,14 @@ def check(root):
     for p in sorted(Path(root / PRIVATE_DIR).rglob("*")) if (root / PRIVATE_DIR).is_dir() else []:
         if p.is_file() and not p.name.startswith("."):
             external.add(p.relative_to(root).as_posix())
+    # participant data anywhere under sources/ (it belongs in human-data/, and never feeds the materials)
+    for p in sorted((root / "sources").rglob("*")) if (root / "sources").is_dir() else []:
+        rel = p.relative_to(root).as_posix()
+        if p.is_file() and rel not in external and not private_rel(rel) and rel != "sources/SOURCE.json":
+            why = looks_like_data(p)
+            if why:
+                flag("%s looks like participant data (%s): keep human data in human-data/, never under sources/"
+                     % (rel, why), "move it to human-data/ (never published) or delete it")
     for rel in sorted(external):
         entry = _dict(recorded.get(rel))
         missing_keys = [k for k in ("url", "license", "linkedToPaper", "version") if not _str(entry.get(k)).strip()]
@@ -611,7 +713,8 @@ def check(root):
                 "record where it was downloaded (url), its license as stated, how it is tied to this paper "
                 "(linkedToPaper: DOI, title or author match, or the link it was found through) and which version it is")
         lic = _str(entry.get("license"))
-        if under(rel, OPEN_DIR) and (not OPEN_LICENSE.match(lic) or not LICENSE_WORDS.search(_str(entry.get("licenseEvidence")))):
+        lic_ev = _str(entry.get("licenseEvidence"))
+        if under(rel, OPEN_DIR) and (not OPEN_LICENSE.match(lic) or not LICENSE_WORDS.search(lic_ev) or NO_LICENSE.search(lic_ev)):
             add("sources/SOURCE.json: %s is under %s/ without an open license and where it is stated (license %s)"
                 % (rel, OPEN_DIR, lic or "none"),
                 "record the license and the words or page that state it (--license, --license-evidence); a file "
