@@ -7,7 +7,7 @@ Nothing in a project or a study package can change this choice.
 | Platform | Model access | What the study's code can see |
 |---|---|---|
 | macOS | Per-run relay inside `sandbox-exec` | A per-run capability that works only for the approved model, only on the relay port, and only until the run ends. Never the real key. |
-| Linux, Windows (and macOS without `/usr/bin/sandbox-exec`) | The pre-relay path, unchanged | The signed-in key in its environment. No sandbox. |
+| Linux, Windows (and macOS without `/usr/bin/sandbox-exec`) | The pre-relay path | The signed-in key in its environment. No sandbox. |
 
 ## macOS: relay and sandbox
 
@@ -21,14 +21,21 @@ A run reserves at most 200,000 tokens and lasts at most 30 minutes. Each request
 UTF-8 request bytes, 256 framing tokens per message, and an output limit of at most 4,096 tokens.
 Reservations are conservative and never refunded. Usage logs contain model names and token
 counts, never prompts or upstream credentials. The descriptor and usage log live in app-owned
-storage outside the project. A final launcher completion, explicit Stop, or expiry revokes the
-capability; ending a chat turn alone does not interrupt a background simulation.
+storage outside the project. A successful final launcher run, explicit Stop, or expiry revokes the
+capability. A failed run keeps it, within the same token and time limits, so the fixed script can
+be started again. Ending a chat turn alone does not interrupt a background simulation.
+
+`run_confined.py --no-model` runs model-free package code, such as `study_core.py reproduce`, in
+the same sandbox with no network at all, no relay and no credential, writing only to a scratch
+folder that is removed afterwards. The pinned human data are fetched first by
+`study_core.py human-data`, which runs no package code.
 
 `run_confined.py` starts the entire run script before any package imports. It passes capability
 values in the compatibility key variables and relay addresses in `OPENROUTER_BASE_URL` and
-`OPENAI_BASE_URL`. The package sees no real upstream credential. The sandbox allows network
-connections only to the relay's localhost port, restricts file writes to the run folder, and
-reads to package/source/program/skill inputs plus runtime libraries. Process-info access is denied
+`OPENAI_BASE_URL`. The package sees no real upstream credential. The run folder is the working
+directory. The sandbox allows network connections only to the relay's localhost port, restricts
+file writes to the run folder, and reads to the run folder, `package/`, `sources/`,
+`program.json`, `.opencode/skills/` and runtime libraries. Process-info access is denied
 except for self. Sysctl reads are denied except hardware/OS names: process-info denial alone does
 not stop `KERN_PROCARGS2`, and exact-name procargs filtering proved insufficient.
 
@@ -41,9 +48,16 @@ relay (up to 200,000 tokens and 30 minutes)."
 Neither platform has a sandbox here that can limit package code to one localhost port and hide
 other processes' environments. So the relay is not used there, and simulations run as they did
 before the relay existed. The app does not start a relay and does not set
-`HUMANSTUDY_RELAY_REQUIRED`. `run_confined.py` then runs the script directly, like
-`python run.py` in the run folder. The kernel environment keeps the signed-in key (the hosted
-key, or `OPENROUTER_API_KEY` on the developer path), and `humanstudy_llm` reads it from there.
+`HUMANSTUDY_RELAY_REQUIRED`. `run_confined.py` (with or without `--final` or `--no-model`) then
+runs the script directly, like `python run.py` in the run folder. The kernel environment keeps
+the signed-in key (the hosted key, or `OPENROUTER_API_KEY` on the developer path), and
+`humanstudy_llm` reads it from there.
+
+Differences from before this change, none of which affect what package code can reach: runs
+are started through `run_confined.py`; the app now always refreshes `simkit.py` and
+`run_confined.py` in a project (a hand-edited `simkit.py` is replaced); `study_core.http_llm`
+honours `OPENROUTER_BASE_URL`; and on the developer OpenRouter path the agent's own conversation
+goes through the app's request transport instead of reading the key from its config.
 
 What that means:
 

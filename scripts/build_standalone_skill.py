@@ -57,6 +57,12 @@ def build_md():
     text = body((PACK / "skills/build/SKILL.md").read_text(encoding="utf-8"))
     text = drop(text, "## 4. Views", "## 5. Report")
     text = text.replace(" and the paths written (including the two views)", " and the paths written")
+    # Outside the app there is no relay or launcher: reproduce runs study_core.py directly.
+    text = text.replace("`python .opencode/skills/simulate/run_confined.py --no-model .opencode/skills/export/agent/study_core.py --root . reproduce`\n"
+                        "and report its verdict. The launcher runs package code without network or model access on macOS\n"
+                        "and as before on Linux and Windows.",
+                        "`python .opencode/skills/export/agent/study_core.py --root . reproduce`\nand report its verdict.")
+    text = text.replace(" through the launcher, as in section 3's human\ndata step,", "")
     text = text.replace("use the native\n`question` tool with a few clear alternatives",
                         "ask the researcher a short\nquestion with a few clear alternatives")
     return rewrite(text)

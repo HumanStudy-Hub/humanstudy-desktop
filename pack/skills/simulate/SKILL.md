@@ -12,7 +12,8 @@ is no package yet, run the `build` skill first (section 3). If `study.json.readi
 run possible.
 Read `capabilities.json` too: parts listed in `run.excluded` are not run (say so in the report, with
 the reason), and a `partial` run is reported as partial, never as the whole paper.
-When the package has `human/key.json`, run `study_core.py reproduce` before comparing AI with people:
+When the package has `human/key.json`, run `study_core.py reproduce` before comparing AI with people
+(`python .opencode/skills/simulate/run_confined.py --no-model .opencode/skills/export/agent/study_core.py --root . reproduce`, after `study_core.py --root . human-data` has fetched the files):
 it says how far the package's analysis recovers the paper from the human data, and whether those
 data are the paper's own sample.
 
@@ -145,7 +146,9 @@ Create `artifacts/simulations/<YYYY-MM-DD-HHMM>/` (the run folder) and work insi
 
    Then check every 20–60 seconds with a short command (`sleep 30; cat artifacts/simulations/<run>/progress.json`)
    until `progress.json` says `scoring`, `writing`, `failed` or `stopped`. If it failed, read `run.log`,
-   fix the cause and start again (finished participants are kept, so no model call is repeated). If it says `stopped`, the researcher
+   fix the cause and start again (finished participants are kept, so no model call is repeated).
+   On macOS the run's model access ends when a run finishes, on Stop, or after 30 minutes; if the
+   launcher says it has ended, ask the researcher to press Run simulation again. If it says `stopped`, the researcher
    pressed Stop: do not restart; report what was finished.
 
 4. **report.md**: the model, temperature, seed, AI participants per condition and arms run; number

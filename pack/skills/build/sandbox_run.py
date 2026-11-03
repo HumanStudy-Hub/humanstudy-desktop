@@ -195,9 +195,11 @@ def already_confined():
 RELAY_SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
 
-def wrapper(work, read=(), relay_port=None):
-    """(argv prefix, confinement label) for this platform."""
-    if relay_port is not None and sys.platform != "darwin":
+def wrapper(work, read=(), relay_port=None, system_sandbox=False):
+    """(argv prefix, confinement label) for this platform. A relay run (relay_port) or system_sandbox
+    needs the system /usr/bin/sandbox-exec and refuses to run without it."""
+    strict = relay_port is not None or system_sandbox
+    if strict and sys.platform != "darwin":
         raise RuntimeError("Relay simulations require macOS sandbox-exec; Linux/Windows cannot enforce relay-only access.")
     if already_confined():
         if os.environ.get(MARK) == "1":  # our own confinement (the variable alone switches nothing off)
@@ -205,14 +207,14 @@ def wrapper(work, read=(), relay_port=None):
         if sys.platform == "darwin":  # someone else's sandbox: ours cannot be added on top, so do not run
             return None, "foreign sandbox"
     if sys.platform == "darwin":
-        if relay_port is not None:  # the relay trusts only the system binary, never one found on PATH
+        if strict:  # the relay trusts only the system binary, never one found on PATH
             exe = RELAY_SANDBOX_EXEC if os.path.isfile(RELAY_SANDBOX_EXEC) else None
         else:
             exe = shutil.which("sandbox-exec") or ("/usr/bin/sandbox-exec" if os.path.exists("/usr/bin/sandbox-exec") else None)
         if exe:  # the profile goes inline: a file in the work folder could be rewritten by a leftover process
             return [exe, "-p", macos_profile(work, read, relay_port)], \
                 "sandbox-exec (no network, writes only in the work folder, home folder unreadable)"
-        if relay_port is not None:
+        if strict:
             raise RuntimeError("Relay simulations require sandbox-exec.")
         _warn("darwin", "sandbox-exec is unavailable: package code runs with a clean environment but without "
                         "network or file confinement")
@@ -330,7 +332,8 @@ def copy_tree(src, dst, ignore=None):
     return Path(dst)
 
 
-def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=None, relay_port=None):
+def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=None, relay_port=None,
+               system_sandbox=False):
     """Run `python script args...` confined; `work` is the only folder it may write to (made if missing;
     use a fresh one per call).
 
@@ -342,7 +345,7 @@ def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=N
     work.mkdir(parents=True, exist_ok=True)
     script = Path(script).resolve()
     reads = [script.parent] + ([cwd] if cwd else []) + list(read)
-    pre, label = wrapper(work, reads, relay_port)
+    pre, label = wrapper(work, reads, relay_port, system_sandbox)
     if pre is None:
         return Result(126, "", "refused: this process runs inside a sandbox that is not HumanStudy's, so package "
                                "code cannot be confined here; run the check from a normal terminal or the app\n",

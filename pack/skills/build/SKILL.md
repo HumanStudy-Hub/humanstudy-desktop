@@ -415,7 +415,8 @@ count, a printed per-group N times the arms, the sum of the cells, or df + 1 / d
 a signed estimate whose sign disagrees with its own cells, a CI that does not contain its value, and
 an unsigned printed estimate without cells or `signBasis`. Its warnings list program
 nodes no hypothesis or effect reaches; link them where the paper links them. With human data, run
-`study_core.py reproduce` (it uses `effects.json`) and report the verdict per effect.
+`study_core.py reproduce` (it uses `effects.json`) through the launcher, as in section 3's human
+data step, and report the verdict per effect.
 
 ### Capabilities and failure cases
 
@@ -457,8 +458,12 @@ With the original data files in `human-data/` and a loader `package/<slug>/human
             "note": "anything a user needs, e.g. where an unavailable file can be obtained"}]}
 ```
 
-Give a `url` only after downloading it and seeing the same SHA-256. Then run
-`python .opencode/skills/export/agent/study_core.py --root . reproduce` and report its verdict.
+Give a `url` only after downloading it and seeing the same SHA-256. Then fetch the pinned files with
+`python .opencode/skills/export/agent/study_core.py --root . human-data` (no package code runs) and
+run the analysis with
+`python .opencode/skills/simulate/run_confined.py --no-model .opencode/skills/export/agent/study_core.py --root . reproduce`
+and report its verdict. The launcher runs package code without network or model access on macOS
+and as before on Linux and Windows.
 
 ## 4. Views: two artifacts, automatically
 

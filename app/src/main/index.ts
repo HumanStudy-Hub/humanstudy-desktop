@@ -688,6 +688,7 @@ app.whenReady().then(() => {
     let projectDir = sessionProject.get(id)
     try { projectDir ??= k.directory?.(id) } catch { /* unknown to the kernel; it will refuse the send itself */ }
     await assertRunnablePackage(projectDir, text)
+    let startedRelay = false
     if (RELAY && text.startsWith('[Simulation scope approved]')) {
       if (!projectDir || relayProjects.has(projectDir)) throw Error('A simulation is already active in this project.')
       const approved = JSON.parse(text.split('\n')[1])
@@ -701,6 +702,7 @@ app.whenReady().then(() => {
         upstream: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_HOSTED_BASEURL || 'https://humanstudy-hub.com/api/desktop/v1' : 'https://openrouter.ai/api/v1',
         bypass: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_SERVER_BYPASS : undefined })
         runRelays.set(id, { project: projectDir, close: relay.close })
+        startedRelay = true
       } catch (error) { relayProjects.delete(projectDir); throw error }
     }
     telemetry.trackTurnStart(id, text, actionRef(action))
@@ -708,7 +710,7 @@ app.whenReady().then(() => {
     const alreadyActive = activeTurns.has(id)
     activeTurns.add(id)
     try { await k.send(id, prompt) }
-    catch (error) { await closeRunRelay(id); if (!alreadyActive) activeTurns.delete(id); paperBuilds.sendFailed(id, error); throw error }
+    catch (error) { if (startedRelay) await closeRunRelay(id); if (!alreadyActive) activeTurns.delete(id); paperBuilds.sendFailed(id, error); throw error }
   })
   ipcMain.handle('kernel:export', async (_e,sid:string) => {
     const k=kernelFor(sid)

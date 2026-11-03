@@ -142,6 +142,82 @@ class PlatformChoice(unittest.TestCase):
         self.assertIn('(remote ip "localhost:1234")', pre[2])
 
 
+@unittest.skipUnless(sys.platform == 'darwin' and os.path.isfile('/usr/bin/sandbox-exec'), 'macOS relay launcher')
+class MacLauncher(unittest.TestCase):
+    LAUNCHER = BUILD.parents[1] / 'simulate/run_confined.py'
+
+    def setUp(self):
+        self.project = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__('shutil').rmtree, self.project, True)
+        (self.project / '.humanstudy').mkdir()
+        self.run_dir = self.project / 'artifacts/simulations/t'
+        self.run_dir.mkdir(parents=True)
+
+    def launch(self, *argv, **env):
+        base = {k: v for k, v in os.environ.items() if not k.startswith('HUMANSTUDY_RELAY')}
+        base.update(HUMANSTUDY_RELAY_REQUIRED='1', **env)
+        return subprocess.run([sys.executable, str(self.LAUNCHER), *argv], capture_output=True, text=True, env=base, timeout=120)
+
+    def test_no_model_mode_runs_confined_without_network_or_relay(self):
+        direct = http.server.HTTPServer(('127.0.0.1', 0), http.server.BaseHTTPRequestHandler)
+        self.addCleanup(direct.server_close)
+        (self.project / 'package').mkdir()
+        (self.project / 'package/data.txt').write_text('human data')
+        script = self.project / 'reproduce.py'
+        script.write_text("""import os, socket
+from pathlib import Path
+assert Path('package/data.txt').read_text() == 'human data'
+assert not any(k for k in os.environ if 'KEY' in k or 'TOKEN' in k)
+try:
+    socket.create_connection(('127.0.0.1', %d), timeout=1); raise AssertionError('network escaped')
+except OSError:
+    pass
+try:
+    Path('package/tampered').write_text('x'); raise AssertionError('wrote outside the scratch folder')
+except OSError:
+    pass
+print('no-model ok')
+""" % direct.server_port)
+        result = self.launch('--no-model', str(script), OPENROUTER_API_KEY='fake-dev-sentinel')
+        self.assertEqual(result.returncode, 0, result.stderr.replace('fake-dev-sentinel', '[key]'))
+        self.assertIn('no-model ok', result.stdout)
+        self.assertFalse((self.project / 'package/tampered').exists())
+        self.assertEqual(list((self.project / '.humanstudy/tmp').iterdir()), [], 'scratch folder removed')
+
+    def test_failed_final_run_keeps_access_and_success_revokes_it(self):
+        seen = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen.append(self.path)
+                self.send_response(200); self.end_headers(); self.wfile.write(b'{}')
+
+            def log_message(self, *args):
+                pass
+        relay = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=relay.serve_forever, daemon=True).start()
+        self.addCleanup(relay.server_close); self.addCleanup(relay.shutdown)
+        descriptor = self.project.parent / ('%s-relay.json' % self.project.name)
+        self.addCleanup(lambda: descriptor.unlink() if descriptor.exists() else None)
+        descriptor.write_text(json.dumps({'baseURL': 'http://127.0.0.1:%d/v1' % relay.server_port, 'token': 'per-run', 'model': 'm'}))
+        script = self.run_dir / 'run.py'
+        script.write_text('import sys; sys.exit(3)\n')
+        self.assertEqual(self.launch('--final', str(script), HUMANSTUDY_RELAY_DESCRIPTOR=str(descriptor)).returncode, 3)
+        self.assertEqual(seen, [], 'a failed run can be fixed and started again')
+        script.write_text('print("done")\n')
+        result = self.launch('--final', str(script), HUMANSTUDY_RELAY_DESCRIPTOR=str(descriptor))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(seen, ['/v1/run/complete'])
+
+    def test_ended_access_says_so_in_plain_words(self):
+        script = self.run_dir / 'run.py'
+        script.write_text('print("never")\n')
+        result = self.launch(str(script), HUMANSTUDY_RELAY_DESCRIPTOR=str(self.project / 'gone.json'))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Run simulation again', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+
+
 class DesktopGuards(unittest.TestCase):
     def test_canonical_imports_refuse_unconfined_desktop_execution(self):
         skills = BUILD.parents[1]
