@@ -34,8 +34,8 @@ folder that is removed afterwards. The pinned human data are fetched first by
 values in the compatibility key variables and relay addresses in `OPENROUTER_BASE_URL` and
 `OPENAI_BASE_URL`. The package sees no real upstream credential. The run folder is the working
 directory. The sandbox allows network connections only to the relay's localhost port, restricts
-file writes to the run folder, and reads to the run folder, `package/`, `sources/`,
-`program.json`, `.opencode/skills/` and runtime libraries. Process-info access is denied
+file writes to the run folder, and reads to the project folder and runtime libraries (the
+project holds no credential; the relay descriptor and usage log live outside it). Process-info access is denied
 except for self. Sysctl reads are denied except hardware/OS names: process-info denial alone does
 not stop `KERN_PROCARGS2`, and exact-name procargs filtering proved insufficient.
 

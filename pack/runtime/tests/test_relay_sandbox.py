@@ -209,6 +209,29 @@ print('no-model ok')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(seen, ['/v1/run/complete'])
 
+    def test_relay_run_reads_project_inputs_study_core_needs(self):
+        """study_core inside a relay run must see capabilities.json and effects.json (excluded arms)."""
+        descriptor = self.project.parent / ('%s-relay2.json' % self.project.name)
+        self.addCleanup(lambda: descriptor.unlink() if descriptor.exists() else None)
+        descriptor.write_text(json.dumps({'baseURL': 'http://127.0.0.1:9/v1', 'token': 'per-run', 'model': 'm'}))
+        (self.project / 'capabilities.json').write_text(json.dumps({'run': {'excluded': [{'arm': 'B', 'reason': 'not simulable'}]}}))
+        (self.project / 'effects.json').write_text('{"schema": 2, "effects": []}')
+        script = self.run_dir / 'run.py'
+        script.write_text("""import json
+from pathlib import Path
+root = Path(__file__).resolve().parents[3]
+assert json.loads((root / 'capabilities.json').read_text())['run']['excluded'][0]['arm'] == 'B'
+assert (root / 'effects.json').read_text().startswith('{')
+try:
+    (root / 'capabilities.json').write_text('{}'); raise AssertionError('project became writable')
+except OSError:
+    pass
+print('inputs readable')
+""")
+        result = self.launch(str(script), HUMANSTUDY_RELAY_DESCRIPTOR=str(descriptor))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('inputs readable', result.stdout)
+
     def test_ended_access_says_so_in_plain_words(self):
         script = self.run_dir / 'run.py'
         script.write_text('print("never")\n')

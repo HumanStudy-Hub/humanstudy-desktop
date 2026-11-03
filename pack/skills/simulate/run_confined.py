@@ -68,10 +68,10 @@ def main():
            'OPENAI_API_KEY': config['token'], 'OPENAI_BASE_URL': config['baseURL'],
            'HUMANSTUDY_DESKTOP_KEY': config['token'], 'HUMANSTUDY_HOSTED_BASEURL': config['baseURL'],
            'HUMANSTUDY_SIM_MODEL': config['model'], 'HUMANSTUDY_PROJECT_DIR': str(project)}
-    # The run folder is the working directory, as with `python run.py` on the pre-relay path; the
-    # sandbox lets the script read only the run folder and the inputs listed here.
-    result = run_python(script, args[1:], cwd=script.parent, work=script.parent,
-                        read=[project / 'package', project / 'sources', project / 'program.json', project / '.opencode/skills'],
+    # The run folder is the working directory, as with `python run.py` on the pre-relay path. The
+    # project stays readable (study_core needs capabilities.json, effects.json and human data);
+    # writes stay in the run folder. The project holds no credential.
+    result = run_python(script, args[1:], cwd=script.parent, work=script.parent, read=[project],
                         timeout=1800, env=env, relay_port=url.port)
     if final and result.returncode == 0:
         # A finished run gives up its access. After a failure it stays (within its token and time
