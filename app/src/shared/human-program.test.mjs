@@ -11,6 +11,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 const out = mkdtempSync(join(tmpdir(), 'hp-test-'))
 await build({ entryPoints: [join(here, 'human-program.ts')], bundle: true, platform: 'node', format: 'esm', outdir: out, logLevel: 'error', outExtension: { '.js': '.mjs' } })
 const { validateHumanProgram: strict, readHumanProgram: tolerant } = await import(pathToFileURL(join(out, 'human-program.mjs')).href)
+// The app imports its own copy of the contract; it must not drift from the pack schema the CLI validates against.
+assert.equal(readFileSync(join(here, 'human-program.schema.json'), 'utf8'), readFileSync(join(here, '../../../pack/schema/human-program.schema.json'), 'utf8'), 'app/src/shared/human-program.schema.json must be byte-identical to pack/schema/human-program.schema.json')
 const fx = (n) => JSON.parse(readFileSync(join(here, 'fixtures', n), 'utf8'))
 const sample = JSON.parse(readFileSync(join(here, 'sample-program.json'), 'utf8'))
 const ok = (p) => { try { strict(p); return true } catch { return false } }
@@ -26,6 +28,8 @@ const cases = [
   ['fce-repaired', fx('fce-repaired.json'), true],
   ['knobe-e2e', fx('knobe-e2e.json'), false], // evidence without any source reference
   ['sample', sample, true],
+  // desktop #65: `note` on evidence ("rendered page checked") must be accepted by the app copy of the schema
+  ['evidence-note', mut((p) => { p.evidence[0].note = 'rendered page checked' }), true],
   ['complete-large-material', mut(p => { p.nodes[0].fields[0].value = '完整材料 '.repeat(120000) + 'END-OF-SOURCE' }), true],
   ['dup-node', mut((p) => p.nodes.push(structuredClone(p.nodes[0]))), false],
   ['unknown-evidence', mut((p) => p.nodes[0].evidenceIds.push('nope')), false],
