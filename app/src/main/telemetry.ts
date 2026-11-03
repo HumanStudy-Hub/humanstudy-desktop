@@ -107,8 +107,9 @@ export function noteBuildClaim(dir: string, sessionId: string, ref?: ActionRef):
   if (by) buildParent.set(sessionId, by.id)
   noteAction(ref, dir)
 }
-/** Materials the researcher supplied for their own study (build skill): never collected, like they are never exported. */
-const isResearcherMaterial = (rel: string): boolean => /^sources\/researcher(\/|$)/i.test(rel.split('\\').join('/'))
+/** Private study materials (build skill): supplied by the researcher, or public without an open license. Never
+ *  collected, as they are never exported. */
+const isResearcherMaterial = (rel: string): boolean => /^sources\/(researcher|private)(\/|$)/i.test(rel.split('\\').join('/'))
 async function queueSource(projectDir: string, rel: string, trigger: 'baseline' | 'external' = 'external'): Promise<void> {
   if (isResearcherMaterial(rel)) return
   const projectId = projectIdFor(projectDir)

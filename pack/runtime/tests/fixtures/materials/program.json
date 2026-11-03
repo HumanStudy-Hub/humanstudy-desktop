@@ -25,12 +25,14 @@
         "extensions": {"material": {"kind": "needs-original", "what": "Study 1 instruction screens",
                                     "mentioned": "p. 3, Methods (participants were instructed to choose a stock)",
                                     "status": "pending", "asked": "2026-11-03",
-                                    "search": [{"where": "the paper links no supplement or repository", "url": null, "found": false}]}}}
+                                    "provisional": "a one-line stand-in, labelled as such in materials.json, restating the Methods description",
+                                    "search": [{"where": "availability statement (p. 11): no materials link", "url": null, "found": false},
+                                               {"where": "OSF search by DOI and title", "url": "https://osf.io/search?q=materials-fixture", "found": false}]}}}
      ]}
   ],
   "steps": [],
   "issues": [
-    {"id": "i-instr", "title": "Needs the original Study 1 instruction screens", "severity": "decision",
+    {"id": "i-instr", "title": "Needs the original Study 1 instruction screens; a labelled stand-in runs until then", "severity": "decision",
      "reason": "The paper describes the instructions but does not print them.",
      "impact": "The replay uses a labelled stand-in until the researcher answers.",
      "suggestedAction": "Upload or paste the instruction screens, accept the stand-in, or leave them out.",

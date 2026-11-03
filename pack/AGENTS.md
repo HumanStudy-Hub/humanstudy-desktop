@@ -46,10 +46,11 @@ one is wrong even if every file is present and valid.
    questionnaire wording, quotes or page numbers.
 6. **External research is opt-in.** Without an explicitly provided URL or uploaded open
    materials, use no web search, DOI lookup or repository discovery. Record every URL consulted.
-   One exception, for participant materials the paper does not print: the build may open the
-   supplement and the repositories the paper itself links (its printed URLs or DOIs), take only
-   materials stated under an open license, and never participant data (build skill, "Materials
-   the paper does not print"). What is not found there is asked of the researcher.
+   One exception, for participant materials the paper does not print: the build searches public
+   sources of this paper (its availability statement and links, the journal SI, OSF, the authors'
+   repositories, preprints, task-hosting sites, lab pages), checks each file is tied to this paper,
+   records its URL, version, SHA-256 and license, and never downloads participant data (build skill,
+   "Materials the paper does not print"). What is not found is asked of the researcher.
    The researcher's request to search the Hub authorizes the read-only `catalog` skill;
    it does not authorize external code execution, recruiting participants or simulations.
 

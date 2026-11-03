@@ -9,41 +9,54 @@ Every material item the paper does not print in full carries `extensions.materia
      "what": "Study 4 instruction screens (both framings)",      the item, as the researcher would name it
      "mentioned": "SI p. 2, Study 4 procedure",                  where the paper mentions it
      "basis": "...",            schema-enough: the printed description the value follows
-     "status": "pending" | "found-open" | "supplied" | "stand-in" | "left-out",   needs-original only
-     "search": [{"where": "SI appendix (OSF)", "url": "...", "found": false}],   open places looked in
+     "status": "pending" | "found-open" | "found-private" | "supplied" | "stand-in" | "left-out",
+     "search": [{"where": "OSF project linked on p. 9", "url": "...", "found": false}],  places searched
+     "provisional": "...",      pending with a decision issue: the labelled stand-in the adapter runs meanwhile
      "asked": "2026-11-03" | null,                               when the consolidated question was asked
-     "answer": "the researcher's answer, in a few words",         for stand-in and left-out
-     "file": "sources/researcher/s4-instructions.txt"}            for supplied
+     "answer": "the researcher's answer, in a few words",         supplied, stand-in, left-out
+     "file": "sources/researcher/s4-instructions.txt"}            supplied and found-private
 
 Rules (each a problem; PASS only without any):
 
   schema-enough   the study runs faithfully from a structure the paper describes (sequences drawn from a printed
-                  distribution, counts, orders, key mappings, display format). The field is filled by the build:
-                  origin `derived` (with `derivation`) or `implementation` (with `basis`), citing the evidence that
-                  describes it, never `missing`, never on a blocking issue. It is never participant-visible wording
-                  (instructions, items, vignettes, screen or debriefing text, images, audio): those are
-                  needs-original whatever the label says. Its value holds structure, not prose: a string of more
-                  than SHORT words must be copied from a cited quote.
+                  distribution, counts, orders, key mappings, display format). Filled by the build: origin
+                  `derived` (with `derivation`) or `implementation` (with `basis`), citing the evidence that
+                  describes it, never `missing`, never under a blocking issue on the field. Never participant-visible
+                  wording or media (instructions, questions, vignettes, screen or debriefing text, images, audio):
+                  those are needs-original whatever the label says. Its value holds structure, not prose: at most
+                  SHORT words (keys included) in phrases that no cited quote prints.
   needs-original  verbatim instrument text or stimuli that cannot be reconstructed. Never invented:
-                  pending     state `missing`, no value, an issue on the field (blocking or decision) whose title
-                              names `what`, so the status the researcher sees says what is needed
-                  found-open  origin `verbatim`, evidence from a file under sources/ that sources/SOURCE.json
-                              records with an open license and its evidence; never participant data
-                  supplied    origin `researcher`; the text stays in `file` under sources/researcher/ (recorded
-                              with license `researcher-supplied`); the program holds a reference, not the text
-                  stand-in    the researcher accepted a stand-in: origin `implementation`, labelled "stand-in",
-                              `answer` says what they accepted
-                  left-out    the researcher chose to leave it out: state `missing`, no value, `answer`, and a
-                              capabilities.json run.excluded entry naming `what` (or `field: node.field`)
-  researcher      text from files under sources/researcher/ (materials the researcher supplied, which stay in
-                  the researcher's project) appears nowhere in program.json, package/ or artifacts/; the
-                  package reads the file at run time. Community and agent exports leave the folder out
-                  and refuse to export while that text appears in a published file.
+                  pending       state `missing`, no value, an issue on the field (blocking or decision) whose title
+                                names `what`, so the status the researcher sees says what is needed; with a decision
+                                issue the adapter may run a labelled stand-in meanwhile, described in `provisional`
+                  found-open    origin `verbatim`, copied from a file under sources/open/ whose SOURCE.json entry
+                                records url, license (open), licenseEvidence, linkedToPaper and version; the
+                                value occurs in that file
+                  found-private public but not openly licensed: the file stays in sources/private/ (same record,
+                                license as stated), the program holds a reference, never the text
+                  supplied      origin `researcher`, state confirmed; the text stays in `file` under
+                                sources/researcher/ (recorded as `researcher-supplied`); the program holds a reference
+                  stand-in      the researcher accepted a stand-in: origin `implementation`, the label says
+                                "stand-in", `asked` and `answer` say when and what they accepted
+                  left-out      the researcher chose to leave it out: state `missing`, no value, `asked`, `answer`,
+                                a decision issue, and a capabilities.json run.excluded entry naming `what` (or
+                                `field: node.field`)
+  sources         every file under sources/open/ and sources/private/ (and every file a found-* item cites) is
+                  recorded with url, license, linkedToPaper and version; no such file is participant data
+                  (trial-level responses); SOURCE.json `searches` records where the build searched whenever a
+                  needs-original item exists.
+  unlabelled      a participant-material field filled by the build (origin derived or implementation) without
+                  `extensions.material` must not hold prose either.
+  private         text from sources/researcher/ and sources/private/ appears nowhere in program.json or package/;
+                  the package reads the file at run time. Community and agent exports leave both folders out and
+                  refuse to export (or, for artifacts/, omit the file) while that text appears in a published file.
 
-Notes (not problems): a missing participant-material field without `extensions.material` (classify it).
+In a program that uses `extensions.material` at all, an unclassified missing participant-material field and an
+unclassified build-written one holding prose are problems; in an older program they are notes.
 Standard library plus the PDF reader check_quotes.py uses.
 """
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -53,27 +66,39 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 KINDS = ("schema-enough", "needs-original")
-STATUSES = ("pending", "found-open", "supplied", "stand-in", "left-out")
+STATUSES = ("pending", "found-open", "found-private", "supplied", "stand-in", "left-out")
 RESEARCHER_DIR = "sources/researcher"
+PRIVATE_DIR = "sources/private"
+OPEN_DIR = "sources/open"
+PRIVATE_DIRS = (RESEARCHER_DIR, PRIVATE_DIR)
 RESEARCHER_LICENSE = "researcher-supplied"
-SHORT = 12          # letter words a schema-enough value may hold in phrases no cited quote prints
-SHINGLE = 8         # words in a row that count as a copy of a researcher-supplied text
+SHORT = 12          # words a schema-enough value may hold in phrases no cited quote prints
+SHINGLE = 8         # words in a row that count as a copy of a private text
 # Participant-visible wording and media: never reconstructed from a description.
 WORDING = re.compile(
-    r"instruction|wording|briefing|debrief|consent|cover.?story|screen.?text|text of|\btext\b|\bitems?\b|"
+    r"instruction|wording|briefing|debrief|consent|cover.?story|screen.?text|text of|\btext\b|"
     r"question(?:naire)?s?\b|vignette|scenario|\bstory|stories|passage|narrative|script|dialog|message|prompt|"
-    r"statement|sentence|word.?list|image|picture|photo|drawing|figure|video|audio|sound|recording|\bfaces?\b|"
-    r"verbatim|transcript|\blabels?\b", re.I)
+    r"statement|sentence|word.?list|image|picture|photo|drawing|video|audio|sound|recording|\bfaces?\b|"
+    r"verbatim|transcript", re.I)
 MATERIAL = re.compile(r"instruction|debrief|briefing|item|question|prompt|stimul|scenario|vignette|scale|script|screen|"
-                      r"message|text|wording|consent|cover|sequence|trial.?list|material|lotter|image|picture", re.I)
-# A license that lets anyone use the file: Creative Commons (any terms), public domain, common open source licenses.
+                      r"message|text|wording|consent|cover|sequence|trial.?list|material|lotter|image|picture|order|"
+                      r"block|practice|display|feedback|distribution|range|pairing|break|layout", re.I)
+# A license that lets anyone reuse the file: Creative Commons (any terms), public domain, common open licenses.
 OPEN_LICENSE = re.compile(r"^(?:CC-BY(?:-(?:NC|ND|SA))*(?:-[1-4]\.0)?|CC0-1\.0|CC0|PDDL-1\.0|ODC-By-1\.0|ODbL-1\.0|MIT|"
                           r"Apache-2\.0|BSD-[23]-Clause|GPL-[23]\.0(?:-only|-or-later)?|LGPL-[23]\.[01](?:-only|-or-later)?|"
                           r"MPL-2\.0|Unlicense|public-domain)$", re.I)
-# File names that look like participant responses rather than materials.
-DATA_EXT = {".csv", ".tsv", ".xlsx", ".xls", ".sav", ".dta", ".rds", ".rdata", ".feather", ".parquet", ".mat", ".zip"}
-DATA_NAME = re.compile(r"data|subj|sub-|participant|respon|raw|session|ppt|choices|behav|trialdata|results", re.I)
-TEXT_EXT = {".txt", ".md", ".json", ".csv", ".tsv", ".html", ".htm", ".py", ".xml", ".yaml", ".yml", ".js", ".css", ".svg"}
+LICENSE_WORDS = re.compile(r"licen[cs]|creativecommons|\bcc[\s-]?(?:by|0)\b|public domain|\bmit\b|apache|\bgpl\b|"
+                           r"\bbsd\b|unlicense", re.I)
+# Participant responses rather than materials: file names, and column headers of tables.
+DATA_EXT = {".csv", ".tsv", ".xlsx", ".xls", ".sav", ".dta", ".rds", ".rdata", ".feather", ".parquet", ".mat", ".zip",
+            ".json", ".jsonl", ".txt", ".dat"}
+DATA_NAME = re.compile(r"data|subj|sub-|participant|respon|raw|session|ppt|choices|behav|results|demograph", re.I)
+DATA_COLUMNS = re.compile(r"^(?:subj(?:ect)?(?:_?id|_?nr|num)?|sub|participant(?:_?id)?|ppt|pid|worker_?id|prolific_?id|"
+                          r"subject_?number|rt|reaction_?time|response(?:_?time)?|resp|choice|key_?press|age|gender|"
+                          r"sex|session_?id|trial_?index|time_?elapsed)$", re.I)
+TEXT_EXT = {".txt", ".md", ".json", ".jsonl", ".csv", ".tsv", ".html", ".htm", ".py", ".xml", ".yaml", ".yml", ".js",
+            ".css", ".svg", ".log", ".r", ".rmd", ".qmd", ".ipynb", ".tex", ".bib", ".toml", ".ini", ".rtf", ".m"}
+CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
 
 
 def _json(path):
@@ -83,19 +108,38 @@ def _json(path):
         return None
 
 
+def _dict(x):
+    return x if isinstance(x, dict) else {}
+
+
+def _list(x):
+    return x if isinstance(x, list) else []
+
+
+def _str(x):
+    return x if isinstance(x, str) else ""
+
+
 def words(text):
-    return re.findall(r"[^\W_]+", (text or "").lower())
+    """Words of a text; CJK characters count one word each (a clause in Chinese is not one 'word')."""
+    out = []
+    for w in re.findall(r"[^\W_]+", (text or "").lower()):
+        out += list(w) if CJK.search(w) else [w]
+    return out
 
 
-def strings(value):
+def strings(value, keys=True):
+    """Every string in a value, dictionary keys included."""
     if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
-        for v in value.values():
-            yield from strings(v)
+        for k, v in value.items():
+            if keys and isinstance(k, str):
+                yield k
+            yield from strings(v, keys)
     elif isinstance(value, list):
         for v in value:
-            yield from strings(v)
+            yield from strings(v, keys)
 
 
 def empty(value):
@@ -103,60 +147,122 @@ def empty(value):
 
 
 def fields(program):
-    for n in program.get("nodes") or []:
+    for n in _list(program.get("nodes")):
         if isinstance(n, dict):
-            for f in n.get("fields") or []:
+            for f in _list(n.get("fields")):
                 if isinstance(f, dict):
                     yield n, f
 
 
 def material_of(f):
-    ext = f.get("extensions") if isinstance(f.get("extensions"), dict) else {}
-    m = ext.get("material")
+    m = _dict(f.get("extensions")).get("material")
     return m if isinstance(m, dict) else None
 
 
+def is_wording(f, m):
+    return bool(WORDING.search(" ".join(_str(x) for x in (f.get("id"), f.get("label"), (m or {}).get("what")))))
+
+
 def prose_words(value, quotes):
-    """(letter words, first phrase) over the value's phrases of 4+ letter words that no quote prints. Numbers do not
-    count, so a printed or drawn sequence of values is structure, not prose."""
+    """(words, first phrase) over the value's phrases of 2+ letter words that no quote prints. Numbers do not count,
+    so a printed or drawn sequence of values is structure; single tokens (key names, condition codes) do not count."""
     qwords = " " + " ".join(words(quotes)) + " "
     total, first = 0, ""
     for s in strings(value):
-        alpha = [w for w in words(s) if re.search(r"[^\W\d_]", w)]
-        if len(alpha) >= 4 and " %s " % " ".join(words(s)) not in qwords:
+        w = words(s)
+        alpha = [x for x in w if re.search(r"[^\W\d_]", x)]
+        if len(alpha) >= 2 and " %s " % " ".join(w) not in qwords:
             total += len(alpha)
             first = first or " ".join(s.split())
     return total, first
 
 
-def is_wording(n, f, m):
-    return bool(WORDING.search(" ".join(str(x) for x in (f.get("id"), f.get("label"), (m or {}).get("what")) if x)))
+def norm_rel(rel):
+    rel = _str(rel).replace("\\", "/")
+    while rel.startswith("./"):
+        rel = rel[2:]
+    return rel.lstrip("/")
+
+
+def under(rel, folder):
+    rel = norm_rel(rel).lower()
+    return rel == folder or rel.startswith(folder + "/")
 
 
 def researcher_rel(rel):
-    rel = str(rel or "").replace("\\", "/").lstrip("./")
-    return rel == RESEARCHER_DIR or rel.startswith(RESEARCHER_DIR + "/")
+    return under(rel, RESEARCHER_DIR)
+
+
+def private_rel(rel):
+    return any(under(rel, d) for d in PRIVATE_DIRS)
 
 
 def text_of(path):
-    """Readable text of a supplied file (text, PDF, .docx); '' when it has none we can read."""
+    """Readable text of a file (text in UTF-8 or UTF-16, PDF, .docx, .pptx, .xlsx strings); '' when it has none."""
     path = Path(path)
     suffix = path.suffix.lower()
     try:
         if suffix == ".pdf":
             import check_quotes
             return "\n".join(check_quotes.Pdf(path).load() or [])
-        if suffix == ".docx":
+        if suffix in (".docx", ".pptx", ".xlsx", ".odt", ".odp", ".ods"):
+            out = []
             with zipfile.ZipFile(path) as z:
-                return re.sub(r"<[^>]+>", " ", z.read("word/document.xml").decode("utf-8", "replace"))
-        if suffix == ".json":
+                for name in z.namelist():
+                    if name.endswith(".xml") and re.search(r"word/document|ppt/slides/|sharedStrings|content\.xml", name):
+                        xml = z.read(name).decode("utf-8", "replace")
+                        xml = re.sub(r"</(?:w:p|a:p|text:p|si|row)>", "\n", xml)   # paragraphs; runs join
+                        out.append(re.sub(r"<[^>]+>", "", xml))
+            return "\n".join(out)
+        raw = path.read_bytes()
+        if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+            return raw.decode("utf-16", "replace")
+        if b"\x00" in raw[:4096]:
+            return ""
+        text = raw.decode("utf-8", "replace")
+        if suffix in (".json", ".ipynb"):
             data = _json(path)
-            return "\n".join(strings(data)) if data is not None else path.read_text(encoding="utf-8", errors="replace")
-        if suffix in TEXT_EXT or not suffix:
-            return path.read_text(encoding="utf-8", errors="replace")
+            if data is not None:
+                return "\n".join(strings(data, keys=False))
+        if suffix in (".jsonl",):
+            lines = []
+            for line in text.splitlines():
+                try:
+                    lines += list(strings(json.loads(line), keys=False))
+                except ValueError:
+                    lines.append(line)
+            return "\n".join(lines)
+        if suffix in (".py", ".js", ".r", ".m"):
+            return re.sub(r"\\[ntr]", " ", text)
+        if suffix == ".rtf":
+            return re.sub(r"\\[a-z]+-?\d* ?|[{}]", " ", text)
+        if suffix in TEXT_EXT or not suffix or sum(c.isprintable() or c.isspace() for c in text[:2000]) > 0.95 * len(text[:2000]):
+            return text
     except Exception:
         return ""
     return ""
+
+
+def segments(text):
+    return [s for s in re.split(r"\n+", text or "") if s.strip()]
+
+
+def sha(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def private_files(root):
+    root = Path(root)
+    out = []
+    for d in PRIVATE_DIRS:
+        folder = root / d
+        if folder.is_dir() and not folder.is_symlink():
+            out += [p for p in folder.rglob("*") if p.is_file() and not p.name.startswith(".")]
+    return sorted(out)
 
 
 def researcher_files(root):
@@ -166,95 +272,126 @@ def researcher_files(root):
     return sorted(p for p in folder.rglob("*") if p.is_file() and not p.name.startswith("."))
 
 
+def source_record(root):
+    data = _json(Path(root) / "sources/SOURCE.json")
+    return data if isinstance(data, dict) else {}
+
+
 def private_paths(root):
-    """Project-relative paths that are the researcher's own materials: sources/researcher/** and every file
-    sources/SOURCE.json records with license `researcher-supplied`."""
+    """Project-relative paths no export publishes: sources/researcher/**, sources/private/** and every file
+    sources/SOURCE.json records with license `researcher-supplied` or `"private": true`."""
     root = Path(root)
-    out = {p.relative_to(root).as_posix() for p in researcher_files(root)}
-    record = _json(root / "sources/SOURCE.json") or {}
-    for f in record.get("files") or []:
-        if isinstance(f, dict) and str(f.get("license") or "").lower() == RESEARCHER_LICENSE and f.get("path"):
-            out.add(str(f["path"]))
+    out = {p.relative_to(root).as_posix() for p in private_files(root)}
+    for f in _list(source_record(root).get("files")):
+        if isinstance(f, dict) and isinstance(f.get("path"), str) and (
+                _str(f.get("license")).lower() == RESEARCHER_LICENSE or f.get("private") is True):
+            out.add(norm_rel(f["path"]))
     return out
 
 
 def shingles(text, size=SHINGLE):
-    w = words(text)
-    if len(w) < size:
-        return {" ".join(w)} if len(w) >= 4 else set()
-    return {" ".join(w[i:i + size]) for i in range(len(w) - size + 1)}
+    """Runs of `size` words; a line or item shorter than that (4+ words) counts whole, so a short scale item
+    copied on its own is found too."""
+    out = set()
+    for seg in segments(text) + [text or ""]:
+        w = words(seg)
+        if len(w) >= size:
+            out |= {" ".join(w[i:i + size]) for i in range(len(w) - size + 1)}
+        elif len(w) >= 4:
+            out.add(" ".join(w))
+    return out
 
 
-def researcher_shingles(root):
-    """{shingle: source file} over every researcher-supplied text."""
-    out = {}
+def private_index(root):
+    """({shingle: private file}, {sha256: private file}) over every private file."""
+    texts, hashes = {}, {}
     root = Path(root)
     for rel in sorted(private_paths(root)):
         path = root / rel
         if path.is_file() and not path.is_symlink():
+            hashes.setdefault(sha(path), rel)
             for s in shingles(text_of(path)):
-                out.setdefault(s, rel)
-    return out
+                texts.setdefault(s, rel)
+    return texts, hashes
 
 
-def published_text(path):
-    suffix = path.suffix.lower()
-    if suffix == ".json":
-        data = _json(path)
-        if data is not None:
-            return "\n".join(strings(data))
-    if suffix in TEXT_EXT:
-        text = path.read_text(encoding="utf-8", errors="replace")
-        return re.sub(r"\\[ntr]", " ", text) if suffix in (".py", ".js") else text
-    if suffix in (".pdf", ".docx"):
-        return text_of(path)
-    return ""
+def researcher_shingles(root):
+    return private_index(root)[0]
 
 
 def leaks(root, paths, known=None):
-    """[(published path, researcher file, words)] for every file in `paths` (absolute or project-relative) that
-    holds a run of SHINGLE words from a researcher-supplied text."""
+    """[(published path, private file, words)] for every file in `paths` (absolute or project-relative) that is a
+    private file (same bytes) or holds a run of SHINGLE words (or a whole short line) of a private text."""
     root = Path(root)
-    known = researcher_shingles(root) if known is None else known
-    if not known:
+    texts, hashes = known if isinstance(known, tuple) else (known, {}) if known is not None else private_index(root)
+    if not texts and not hashes:
         return []
+    sizes = sorted({len(s.split()) for s in texts}, reverse=True)
     out = []
     for p in paths:
         path = Path(p) if Path(p).is_absolute() else root / p
         if not path.is_file() or path.is_symlink():
             continue
-        text = published_text(path)
-        if not text:
+        try:
+            shown = path.relative_to(root).as_posix()
+        except ValueError:
+            shown = str(p)
+        digest = sha(path)
+        if digest in hashes:
+            out.append((shown, hashes[digest], "(an identical copy of the file)"))
             continue
-        sizes = {len(s.split()) for s in known}
+        text = text_of(path)
         hit = None
-        w = words(text)
-        for size in sorted(sizes, reverse=True):
-            for i in range(max(0, len(w) - size + 1)):
-                s = " ".join(w[i:i + size])
-                if s in known:
-                    hit = (s, known[s])
+        for seg in segments(text) + [text]:
+            w = words(seg)
+            for size in sizes:
+                for i in range(max(0, len(w) - size + 1)):
+                    s = " ".join(w[i:i + size])
+                    if s in texts:
+                        hit = (s, texts[s])
+                        break
+                if hit:
                     break
             if hit:
                 break
         if hit:
-            try:
-                shown = path.relative_to(root).as_posix()
-            except ValueError:
-                shown = str(p)
             out.append((shown, hit[1], hit[0]))
     return out
 
 
-def published_files(root):
-    """What the program's exports carry from the project: program.json, package/, artifacts/."""
+def gate_files(root):
+    """What the readiness gate scans for private text: program.json and package/ (exports scan more)."""
     root = Path(root)
     out = [root / "program.json"]
-    for top in ("package", "artifacts"):
-        folder = root / top
-        if folder.is_dir() and not folder.is_symlink():
-            out += sorted(p for p in folder.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
+    folder = root / "package"
+    if folder.is_dir() and not folder.is_symlink():
+        out += sorted(p for p in folder.rglob("*") if p.is_file() and "__pycache__" not in p.parts)
     return out
+
+
+published_files = gate_files
+
+
+def looks_like_data(path):
+    """Why a file looks like participant data (trial-level responses), or ''."""
+    path = Path(path)
+    if path.suffix.lower() in DATA_EXT and DATA_NAME.search(path.name):
+        return "its name"
+    if path.suffix.lower() in (".csv", ".tsv", ".txt", ".dat") and path.is_file():
+        try:
+            head = path.read_text(encoding="utf-8", errors="replace").splitlines()[:1]
+        except OSError:
+            return ""
+        cols = [c.strip().strip('"').strip("'") for c in re.split(r"[,\t;]", head[0])] if head else []
+        hits = [c for c in cols if DATA_COLUMNS.match(c)]
+        if len(hits) >= 2:
+            return "its columns (%s)" % ", ".join(hits[:4])
+    return ""
+
+
+def what_in(what, title):
+    want = set(words(what))
+    return bool(want) and want <= set(words(title))
 
 
 def check(root):
@@ -264,51 +401,73 @@ def check(root):
         return {"problems": [("program.json is missing or not JSON", "")], "notes": [], "items": []}
     problems, notes, items = [], [], []
     add = lambda msg, fix="": problems.append((msg, fix))
-    evidence = {e.get("id"): e for e in program.get("evidence") or [] if isinstance(e, dict)}
-    issues = [i for i in program.get("issues") or [] if isinstance(i, dict)]
-    record = _json(root / "sources/SOURCE.json") or {}
-    recorded = {f.get("path"): f for f in record.get("files") or [] if isinstance(f, dict)}
+    evidence = {e.get("id"): e for e in _list(program.get("evidence")) if isinstance(e, dict) and isinstance(e.get("id"), str)}
+    issues = [i for i in _list(program.get("issues")) if isinstance(i, dict)]
+    record = source_record(root)
+    recorded = {norm_rel(f.get("path")): f for f in _list(record.get("files")) if isinstance(f, dict) and isinstance(f.get("path"), str)}
     caps = _json(root / "capabilities.json")
-    excluded = ((caps or {}).get("run") or {}).get("excluded") or [] if isinstance(caps, dict) else []
-    paper = "paper.pdf" if (root / "paper.pdf").is_file() else ((program.get("source") or {}).get("filename") or "paper.pdf")
+    excluded = [x for x in _list(_dict(_dict(caps).get("run")).get("excluded")) if isinstance(x, dict)]
+    paper = "paper.pdf" if (root / "paper.pdf").is_file() else (_str(_dict(program.get("source")).get("filename")) or "paper.pdf")
+    external = set()      # files whose provenance must be recorded (url, license, link to the paper, version)
+    any_original = False
+    # A program built under this rule classifies every material; in an older program an unclassified one is a note.
+    adopted = any(material_of(f) is not None for _, f in fields(program))
+    flag = (lambda msg, fix="": problems.append((msg, fix))) if adopted else (lambda msg, fix="": notes.append(msg))
 
     for n, f in fields(program):
         where = "%s.%s" % (n.get("id"), f.get("id"))
         m = material_of(f)
+        ev_ids = [e for e in _list(f.get("evidenceIds")) if isinstance(e, str)]
+        cited = [evidence[e] for e in ev_ids if e in evidence]
+        quotes = " ".join(_str(e.get("quote")) for e in cited)
+        material_like = n.get("kind") in ("material", "materials") or bool(MATERIAL.search("%s %s" % (f.get("id"), f.get("label"))))
+        for e in cited:
+            rel = norm_rel(e.get("path"))
+            if rel.startswith("sources/") and (root / rel).is_file():
+                why = looks_like_data(root / rel)
+                if why and material_like:
+                    add("%s cites %s, which looks like participant data (%s)" % (where, rel, why),
+                        "never take materials or sequences from participant data; use the stimulus or instruction "
+                        "files, or ask the researcher")
         if m is None:
-            if f.get("state") == "missing" and (n.get("kind") in ("material", "materials") or
-                                                MATERIAL.search("%s %s" % (f.get("id"), f.get("label")))):
-                notes.append("%s: missing participant material without extensions.material; classify it as "
-                             "schema-enough or needs-original (build skill, 'Materials the paper does not print')" % where)
+            if material_like and f.get("state") == "missing":
+                flag("%s: missing participant material without extensions.material; classify it as "
+                     "schema-enough or needs-original (build skill, 'Materials the paper does not print')" % where,
+                     "add extensions.material; a gap that is not a material (an assignment rule) needs none: name "
+                     "it so (e.g. id 'assignment-rule')")
+            elif material_like and f.get("origin") in ("derived", "implementation") and (n.get("kind") in ("material", "materials") or is_wording(f, None)):
+                prose = prose_words(f.get("value"), quotes)
+                if prose[0] > SHORT:
+                    flag("%s: participant material written by the build (%d words no cited quote prints): \"%s...\""
+                        % (where, prose[0], prose[1][:80]),
+                        "classify it (extensions.material): structure the paper describes is schema-enough; text "
+                        "participants read is needs-original and comes from an open source or the researcher")
             continue
-        kind, what = m.get("kind"), str(m.get("what") or "").strip()
+        kind, what = m.get("kind"), _str(m.get("what")).strip()
         status = m.get("status") if kind == "needs-original" else "filled"
         items.append({"field": where, "kind": kind, "what": what, "status": status})
-        mine = [i for i in issues if i.get("nodeId") == n.get("id") and i.get("fieldId") in (f.get("id"), None, "")]
+        mine = [i for i in issues if i.get("nodeId") == n.get("id") and i.get("fieldId") == f.get("id")]
         if kind not in KINDS:
             add("%s: extensions.material.kind must be schema-enough or needs-original" % where, "")
             continue
         if not what:
             add("%s: extensions.material.what is empty" % where,
                 "name the item as the researcher would (\"Study 4 instruction screens, both framings\")")
-        cited = [evidence[e] for e in f.get("evidenceIds") or [] if e in evidence]
-        quotes = " ".join(str(e.get("quote") or "") for e in cited)
 
         if kind == "schema-enough":
-            if is_wording(n, f, m):
+            if is_wording(f, m):
                 add("%s: participant-visible wording or media is never schema-enough (%s)" % (where, what or f.get("label")),
-                    "make it needs-original: look in licensed open sources, then ask the researcher; never write the "
-                    "words yourself")
+                    "make it needs-original: search open sources, then ask the researcher; never write the words yourself")
             if f.get("origin") not in ("derived", "implementation"):
                 add("%s: a schema-enough value is filled by the build: origin derived or implementation, not %r"
                     % (where, f.get("origin")), "verbatim and reported are for printed text and printed facts")
-            if f.get("origin") == "implementation" and not str(m.get("basis") or "").strip():
+            if f.get("origin") == "implementation" and not _str(m.get("basis")).strip():
                 add("%s: schema-enough implementation needs extensions.material.basis" % where,
                     "say which printed description the value follows (with its page)")
             if f.get("state") == "missing" or empty(f.get("value")):
                 add("%s: schema-enough means the build fills it from the paper's description; it has no value" % where,
                     "fill it from the cited description, or classify it needs-original if the description is not enough")
-            if not any(str(e.get("quote") or "").strip() for e in cited):
+            if not quotes.strip():
                 add("%s: schema-enough needs the evidence that describes the structure" % where,
                     "cite the passage that prints the distribution, count, order or mapping the value follows")
             prose = prose_words(f.get("value"), quotes)
@@ -325,105 +484,155 @@ def check(root):
             continue
 
         # needs-original
+        any_original = True
         if status not in STATUSES:
             add("%s: extensions.material.status must be one of %s" % (where, ", ".join(STATUSES)), "")
             continue
-        if not str(m.get("mentioned") or "").strip():
+        if not _str(m.get("mentioned")).strip():
             add("%s: extensions.material.mentioned is empty" % where,
                 "say where the paper mentions the item (page and section), so the researcher can find it")
         search = m.get("search")
-        if not isinstance(search, list) or any(not isinstance(s, dict) or not str(s.get("where") or "").strip()
-                                               for s in search):
-            add("%s: extensions.material.search must list the open places looked in ({where, url, found})" % where,
-                "list the supplement and every repository the paper links; [] only when it links none")
-        if m.get("asked") in (None, "", False) and status == "pending":
-            notes.append("%s: %s has not been asked about yet; ask the researcher in the one consolidated materials "
-                         "question" % (where, what))
-        value_words = max([len(words(s)) for s in strings(f.get("value"))] or [0])
+        if not isinstance(search, list) or not search or any(
+                not isinstance(s, dict) or not _str(s.get("where")).strip() for s in search):
+            add("%s: extensions.material.search must list where it was searched ({where, url, found})" % where,
+                "search the availability statement and its links, the SI page, OSF, the authors' repositories, "
+                "preprint and task-hosting pages before asking (build skill)")
+            search = [s for s in _list(search) if isinstance(s, dict)]
+        prose = prose_words(f.get("value"), "")
+        answered = status in ("supplied", "stand-in", "left-out")
+        if answered and (not _str(m.get("asked")).strip() or not _str(m.get("answer")).strip()):
+            add("%s: status %s is the researcher's answer: extensions.material.asked (the date) and answer are required"
+                % (where, status), "until the researcher answers, the item stays pending")
 
         if status in ("pending", "left-out"):
             if f.get("state") != "missing" or not empty(f.get("value")):
                 add("%s: %s needs the original and has none yet: state missing and no value (%s)"
                     % (where, what, "left out by the researcher" if status == "left-out" else "pending"),
-                    "never fill it with your own wording; a stand-in is used only once the researcher accepts it "
-                    "(status stand-in)")
-            if f.get("origin") in ("verbatim", "reported"):
-                add("%s: origin %s claims printed text that the paper does not print" % (where, f.get("origin")),
+                    "never fill it with your own wording")
+            if f.get("origin") in ("verbatim", "reported", "researcher"):
+                add("%s: origin %s claims a source the item does not have" % (where, f.get("origin")),
                     "origin unknown, state missing")
         if status == "pending":
             titled = [i for i in mine if i.get("severity") in ("blocking", "decision")]
+            if not _str(m.get("asked")).strip():
+                notes.append("%s: %s has not been asked about yet; ask in the one consolidated materials question"
+                             % (where, what))
             if not titled:
-                add("%s: pending needs-original item has no blocking or decision issue" % where,
+                add("%s: pending needs-original item has no blocking or decision issue on this field" % where,
                     "add one whose title says what is needed, e.g. \"Needs the original %s\"" % (what or "materials"))
-            elif what and not any(what.lower() in str(i.get("title") or "").lower() for i in titled):
+            elif what and not any(what_in(what, _str(i.get("title"))) for i in titled):
                 add("%s: no issue title on this item names what is needed (%s)" % (where, what),
                     "the researcher sees the issue title as the status: put the item's `what` in it")
+            if any(i.get("severity") == "decision" for i in titled) and not any(i.get("severity") == "blocking" for i in titled) \
+                    and not _str(m.get("provisional")).strip():
+                add("%s: a pending item under a decision issue runs with a stand-in: describe it in "
+                    "extensions.material.provisional" % where,
+                    "say what the adapter shows meanwhile (labelled as a stand-in); or make the issue blocking and let "
+                    "the arms that need it refuse to run")
+            if any(s.get("found") for s in search):
+                add("%s: pending, but a search entry says it was found" % where,
+                    "use the found source (found-open or found-private), or correct the search record")
         if status == "left-out":
-            if not str(m.get("answer") or "").strip():
-                add("%s: left-out needs the researcher's answer in extensions.material.answer" % where, "")
-            if caps is not None and not any(isinstance(x, dict) and (
-                    x.get("field") == where or (what and what.lower() in str(x.get("what") or "").lower()))
-                    for x in excluded):
+            if not any(i.get("severity") == "decision" for i in mine):
+                add("%s: left out by the researcher needs a decision issue (\"Left out by the researcher: %s\")"
+                    % (where, what), "")
+            if not any(x.get("field") == where or (what and what.lower() in _str(x.get("what")).lower()) for x in excluded):
                 add("%s: left out by the researcher, but capabilities.json run.excluded does not name it" % where,
                     'add {"what": "%s", "field": "%s", "reason": "left out by the researcher", "arms": [...]}'
                     % (what, where))
         if status == "stand-in":
             if f.get("origin") != "implementation":
                 add("%s: an accepted stand-in is origin implementation, not %r" % (where, f.get("origin")), "")
-            label = " ".join([str(f.get("label") or "")] + list(strings(f.get("value"))))
-            if "stand-in" not in label.lower() and "stand in" not in label.lower():
-                add("%s: an accepted stand-in must say it is one (label or value contains \"stand-in\")" % where, "")
-            if not str(m.get("answer") or "").strip():
-                add("%s: stand-in without the researcher's acceptance in extensions.material.answer" % where,
-                    "only the researcher accepts a stand-in; until then the item stays pending")
-        if status == "supplied":
-            rel = str(m.get("file") or "")
-            if f.get("origin") != "researcher":
+            if not re.search(r"stand.?in", _str(f.get("label")), re.I):
+                add("%s: an accepted stand-in says so in its label (\"... (stand-in accepted by the researcher)\")"
+                    % where, "")
+        if status in ("supplied", "found-private"):
+            rel = norm_rel(m.get("file"))
+            folder = RESEARCHER_DIR if status == "supplied" else PRIVATE_DIR
+            if status == "supplied" and f.get("origin") != "researcher":
                 add("%s: researcher-supplied material is origin researcher, not %r" % (where, f.get("origin")), "")
-            if not researcher_rel(rel) or not (root / rel).is_file():
-                add("%s: supplied material must be a file under %s/ (got %r)" % (where, RESEARCHER_DIR, rel),
-                    "save the pasted or uploaded text there and name it in extensions.material.file")
-            elif str((recorded.get(rel) or {}).get("license") or "") != RESEARCHER_LICENSE:
+            if status == "found-private" and f.get("origin") not in ("verbatim", "unknown"):
+                add("%s: material from a source without an open license is origin verbatim (a reference to the file)"
+                    % where, "")
+            if f.get("state") != "confirmed":
+                add("%s: %s material is state confirmed" % (where, status), "")
+            if not under(rel, folder) or not (root / rel).is_file():
+                add("%s: %s material must be a file under %s/ (got %r)" % (where, status, folder, rel),
+                    "save it there and name it in extensions.material.file")
+            elif status == "supplied" and _str(_dict(recorded.get(rel)).get("license")) != RESEARCHER_LICENSE:
                 add("%s: sources/SOURCE.json does not record %s as %s" % (where, rel, RESEARCHER_LICENSE),
                     "run the build skill's sources.py (it records files under %s/ that way)" % RESEARCHER_DIR)
-            if value_words > SHORT:
-                add("%s: the program holds the researcher's text (%d words); keep it only in %s"
-                    % (where, value_words, rel or RESEARCHER_DIR + "/"),
+            elif status == "found-private":
+                external.add(rel)
+            if prose[0] > SHORT:
+                add("%s: the program holds the material's text (%d words); keep it only in %s"
+                    % (where, prose[0], rel or folder + "/"),
                     'the value is a reference ({"file": "%s"}); the package reads the file at run time'
-                    % (rel or RESEARCHER_DIR + "/<name>"))
+                    % (rel or folder + "/<name>"))
         if status == "found-open":
             if f.get("origin") != "verbatim":
                 add("%s: material found in an open source is transcribed verbatim (origin verbatim)" % where, "")
-            paths = [str(e.get("path") or paper) for e in cited]
+            paths = [norm_rel(e.get("path")) or paper for e in cited]
             if not paths:
                 add("%s: cite the evidence in the open source it was copied from" % where, "")
             for rel in paths:
-                entry = recorded.get(rel)
-                if rel == paper or not rel.startswith("sources/") or researcher_rel(rel):
-                    add("%s: found-open evidence must come from the open source saved under sources/ (got %s)"
-                        % (where, rel), "save the supplement or repository file under sources/ and cite it")
+                if not under(rel, OPEN_DIR):
+                    add("%s: found-open evidence must come from the file saved under %s/ (got %s)" % (where, OPEN_DIR, rel),
+                        "save the openly licensed file under %s/ and cite it" % OPEN_DIR)
                     continue
-                lic = str((entry or {}).get("license") or "unknown")
-                if not OPEN_LICENSE.match(lic) or not str((entry or {}).get("licenseEvidence") or "").strip():
-                    add("%s: %s is not recorded with an open license and where it is stated (license %s)"
-                        % (where, rel, lic),
-                        "use a file only when its page or repository states an open license; record it with "
-                        "sources.py --license and --license-evidence; otherwise ask the researcher")
-                if Path(rel).suffix.lower() in DATA_EXT and DATA_NAME.search(Path(rel).name):
-                    add("%s: %s looks like participant data, not materials" % (where, rel),
-                        "never use participant data as materials; take the stimulus or instruction file instead, or ask")
-            if not any(isinstance(s, dict) and s.get("found") and s.get("url") for s in search or []):
-                add("%s: found-open needs the search entry it was found in (where, url, found: true)" % where, "")
+                external.add(rel)
+                text = " ".join(words(text_of(root / rel)))
+                missing_text = [s for s in strings(f.get("value"), keys=False) if len(words(s)) >= 3
+                                and " ".join(words(s)) not in text]
+                if not text or missing_text:
+                    add("%s: the transcribed value does not occur in %s%s" % (
+                        where, rel, " (no readable text)" if not text else ": \"%s...\"" % missing_text[0][:60]),
+                        "copy the words exactly from the file (save a text copy when the original is not readable)")
+            urls = {norm_rel(_dict(recorded.get(r)).get("url")) for r in paths}
+            if not any(s.get("found") and s.get("url") and norm_rel(s.get("url")) in urls for s in search):
+                add("%s: found-open needs the search entry it was found in (where, url of the file, found: true)" % where, "")
 
-    # researcher-supplied text stays in sources/researcher/
-    for rel in sorted(private_paths(root)):
-        if researcher_rel(rel) and str((recorded.get(rel) or {}).get("license") or "") != RESEARCHER_LICENSE:
-            add("sources/SOURCE.json does not record %s as %s" % (rel, RESEARCHER_LICENSE),
-                "run the build skill's sources.py")
-    for shown, src, text in leaks(root, published_files(root)):
-        add("%s copies researcher-supplied text from %s (\"%s ...\")" % (shown, src, text[:60]),
-            "keep the researcher's materials only in %s/; reference the file (the package reads it at run time)"
-            % RESEARCHER_DIR)
+    # external sources: provenance and no participant data
+    for p in sorted(Path(root / OPEN_DIR).rglob("*")) if (root / OPEN_DIR).is_dir() else []:
+        if p.is_file() and not p.name.startswith("."):
+            external.add(p.relative_to(root).as_posix())
+    for p in sorted(Path(root / PRIVATE_DIR).rglob("*")) if (root / PRIVATE_DIR).is_dir() else []:
+        if p.is_file() and not p.name.startswith("."):
+            external.add(p.relative_to(root).as_posix())
+    for rel in sorted(external):
+        entry = _dict(recorded.get(rel))
+        missing_keys = [k for k in ("url", "license", "linkedToPaper", "version") if not _str(entry.get(k)).strip()]
+        if not entry:
+            add("sources/SOURCE.json does not record %s" % rel, "run the build skill's sources.py with --url, "
+                "--linked and --source-version for it")
+            continue
+        if missing_keys:
+            add("sources/SOURCE.json: %s lacks %s" % (rel, ", ".join(missing_keys)),
+                "record where it was downloaded (url), its license as stated, how it is tied to this paper "
+                "(linkedToPaper: DOI, title or author match, or the link it was found through) and which version it is")
+        lic = _str(entry.get("license"))
+        if under(rel, OPEN_DIR) and (not OPEN_LICENSE.match(lic) or not LICENSE_WORDS.search(_str(entry.get("licenseEvidence")))):
+            add("sources/SOURCE.json: %s is under %s/ without an open license and where it is stated (license %s)"
+                % (rel, OPEN_DIR, lic or "none"),
+                "record the license and the words or page that state it (--license, --license-evidence); a file "
+                "without an open license goes to %s/ and is used only in this project" % PRIVATE_DIR)
+        why = looks_like_data(root / rel)
+        if why:
+            add("%s looks like participant data (%s): never download trial-level responses" % (rel, why),
+                "delete it; when the sequences participants saw exist only in data files, ask the researcher")
+    if any_original and not [s for s in _list(record.get("searches")) if isinstance(s, dict) and _str(s.get("where")).strip()]:
+        add("sources/SOURCE.json records no `searches`, although materials are missing",
+            'record each place searched: {"where": "OSF search by DOI", "query": "...", "url": "...", "date": "...", '
+            '"result": "found ... / nothing"} (sources.py keeps the key)')
+
+    # researcher and private files stay out of everything that can be published
+    for rel in sorted(p.relative_to(root).as_posix() for p in researcher_files(root)):
+        if _str(_dict(recorded.get(rel)).get("license")) != RESEARCHER_LICENSE:
+            add("sources/SOURCE.json does not record %s as %s" % (rel, RESEARCHER_LICENSE), "run the build skill's sources.py")
+    for shown, src, text in leaks(root, gate_files(root)):
+        add("%s copies the private material %s (\"%s ...\")" % (shown, src, text[:60]),
+            "keep researcher-supplied and not-openly-licensed materials only in %s/ or %s/; reference the file "
+            "(the package reads it at run time)" % PRIVATE_DIRS)
     return {"problems": problems, "notes": notes, "items": items}
 
 

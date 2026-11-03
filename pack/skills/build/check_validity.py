@@ -434,10 +434,11 @@ def participant_text(program, root=None):
     pieces = []
     for n, f in _fields(program):
         m = (f.get("extensions") or {}).get("material") if isinstance(f.get("extensions"), dict) else None
-        if root is not None and isinstance(m, dict) and m.get("kind") == "needs-original" and m.get("status") == "supplied":
+        if root is not None and isinstance(m, dict) and m.get("kind") == "needs-original" and m.get("status") in (
+                "supplied", "found-private"):
             import check_materials
             rel = str(m.get("file") or "")
-            if check_materials.researcher_rel(rel) and (Path(root) / rel).is_file():
+            if check_materials.private_rel(rel) and (Path(root) / rel).is_file():
                 pieces += [p for p in check_verbatim.segments(check_materials.text_of(Path(root) / rel))
                            if len(p.split()) >= 3]
             continue

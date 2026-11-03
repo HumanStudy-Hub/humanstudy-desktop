@@ -9,7 +9,7 @@ folder for clients that cannot run commands. Before the folder appears it is ver
 every study renders, the scripts run, real MCP calls (with --mcp), and the package smoke test; every
 quote is also compared with its cited page (references/accuracy.md).
 The paper PDF and sources/ stay out unless the researcher has the right to share them; materials the
-researcher supplied (sources/researcher/) never go into the folder.
+researcher supplied (sources/researcher/) and public ones without an open license (sources/private/) never go in.
 """
 import argparse
 import hashlib
@@ -249,9 +249,9 @@ def sources_md(study, root, include_paper, include_sources):
     if (root / "sources").is_dir():
         for f in sorted(p for p in (root / "sources").rglob("*") if p.is_file() and p.name not in SKIP):
             rel = f.relative_to(root).as_posix()
-            shared = include_sources and not check_materials.researcher_rel(rel) and rel not in check_materials.private_paths(root)
-            out.append("| `%s` | `%s` | %s |" % (rel, sha(f), "yes" if shared else "no (researcher-supplied)"
-                                                  if include_sources else "no"))
+            if check_materials.private_rel(rel) or rel in check_materials.private_paths(root):
+                continue  # private materials: not even their names leave the project
+            out.append("| `%s` | `%s` | %s |" % (rel, sha(f), "yes" if include_sources else "no"))
     return "\n".join(out) + "\n"
 
 
@@ -345,11 +345,20 @@ def build(root, out, include_paper=False, include_sources=False, with_mcp=False)
             shutil.copy2(paper, skill / paper.name)
     if include_sources and (root / "sources").is_dir():
         copy_tree(root / "sources", skill / "sources")
-        for rel in sorted(check_materials.private_paths(root)):  # the researcher's own materials never leave
+        for rel in sorted(check_materials.private_paths(root)):  # private materials never leave the project
             if (skill / rel).is_file():
                 (skill / rel).unlink()
-        if (skill / check_materials.RESEARCHER_DIR).is_dir():
-            shutil.rmtree(skill / check_materials.RESEARCHER_DIR)
+        for folder in check_materials.PRIVATE_DIRS:
+            for d in (skill / "sources").iterdir() if (skill / "sources").is_dir() else []:
+                if d.is_dir() and ("sources/" + d.name).lower() == folder:
+                    shutil.rmtree(d)
+        record = skill / "sources/SOURCE.json"
+        if record.is_file():  # without the records of files that stay private
+            data = json.loads(record.read_text(encoding="utf-8"))
+            data["files"] = [f for f in data.get("files") or [] if not (isinstance(f, dict) and (
+                check_materials.private_rel(f.get("path", "")) or f.get("private") is True
+                or f.get("license") == check_materials.RESEARCHER_LICENSE))]
+            record.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     (skill / "scripts").mkdir()
     shutil.copy2(HERE / "agent/study_core.py", skill / "scripts/study_core.py")
     shutil.copy2(HERE / "agent/effects_core.py", skill / "scripts/effects_core.py")
@@ -381,8 +390,9 @@ def build(root, out, include_paper=False, include_sources=False, with_mcp=False)
     (out / "README.md").write_text(readme(study, name, with_mcp), encoding="utf-8")
     leaked = check_materials.leaks(root, [p for p in out.rglob("*") if p.is_file()])
     if leaked:
-        raise RuntimeError("researcher-supplied materials appear in %s (from %s); they stay in the project. Keep the "
-                           "text only in sources/researcher/ and reference the file" % leaked[0][:2])
+        raise RuntimeError("private materials appear in %s (from %s); researcher-supplied and not openly licensed "
+                           "materials stay in the project. Keep the text only in sources/researcher/ or "
+                           "sources/private/ and reference the file" % leaked[0][:2])
 
     files = {p.relative_to(out).as_posix(): sha(p) for p in sorted(out.rglob("*")) if p.is_file()}
     paper = paper_path(root, study)
