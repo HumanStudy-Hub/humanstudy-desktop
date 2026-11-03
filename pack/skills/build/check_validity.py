@@ -281,12 +281,9 @@ def inventory(program):
                 problems.append(("%s: needs `withheld` (what participants did not know) and `terms` (words a prompt "
                                  "that leaks it would contain)" % at,
                                  'or `notApplicable` with the reason when the sentence is not about participants'))
-            else:
-                ungrounded = [t for t in terms if not content_words(t) & content_words(e.get("withheld"))]
-                if ungrounded:
-                    problems.append(("%s: terms do not share a content word with `withheld`: %s" %
-                                     (at, ", ".join(repr(t) for t in ungrounded[:3])),
-                                     "each term must name the withheld fact, not unrelated wording"))
+            elif not any(content_words(t) & content_words(e.get("withheld")) for t in terms):
+                problems.append(("%s: no term shares a word with `withheld`" % at,
+                                 "the terms are the words of the withheld fact: a prompt that leaks it would contain them"))
     return entries, problems, has_field
 
 

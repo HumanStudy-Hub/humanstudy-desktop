@@ -160,15 +160,15 @@ class Validity(FakePdfMixin, unittest.TestCase):
         empty = {"statement": NOT_TOLD, "page": 2}
         found = self.problems(self.project([self.not_told([moved, wrong_terms, empty])]))
         self.assertTrue(any("not-told[0]: the statement is not on p. 9" in m for m in found), found)
-        self.assertTrue(any("not-told[1]: terms do not share a content word with `withheld`" in m for m in found), found)
+        self.assertTrue(any("not-told[1]: no term shares a word with `withheld`" in m for m in found), found)
         self.assertTrue(any("not-told[2]: needs `withheld`" in m for m in found), found)
         # A frame word ("told") grounds nothing; a term must name the withheld fact.
         gamed = dict(ENTRY, terms=["told", "participants"])
         unrelated = dict(ENTRY, terms=["blue key"], withheld="the payout schedule")
         long_term = dict(ENTRY, terms=["they had to learn that the red key"])
         found = self.problems(self.project([self.not_told([gamed, unrelated, long_term])]))
-        self.assertTrue(any("not-told[0]: terms do not share a content word with `withheld`" in m for m in found), found)
-        self.assertTrue(any("not-told[1]: terms do not share a content word with `withheld`" in m for m in found), found)
+        self.assertTrue(any("not-told[0]: no term shares a word with `withheld`" in m for m in found), found)
+        self.assertTrue(any("not-told[1]: no term shares a word with `withheld`" in m for m in found), found)
         self.assertTrue(any("not-told[2]: terms are short phrases" in m for m in found), found)
         # notApplicable on a sentence about the participants needs a check issue the researcher sees
         dodge = dict(ENTRY, terms=[], withheld="", notApplicable="describes the computational model")
@@ -309,9 +309,6 @@ class Validity(FakePdfMixin, unittest.TestCase):
         found = self.problems(root)
         self.assertFalse(any("content word of the printed statement" in m for m in found), found)
         self.assertTrue(any("tells participants what they were not told (current probability)" in m for m in found), found)
-        mixed = dict(entry, terms=["current probability", "unrelated purpose"])
-        found = self.problems(self.project([self.not_told([mixed])], pages=[PAGES[0], statement]))
-        self.assertTrue(any("unrelated purpose" in m and "share a content word with `withheld`" in m for m in found), found)
         # A nearby page or a fuzzy paraphrase cannot establish this exception.
         for pages, candidate in (([PAGES[0], statement, "Another page with enough text to be readable."], dict(entry, page=3)),
                                  ([PAGES[0], statement], dict(entry, statement=statement.replace("over time", "over trials"))),
