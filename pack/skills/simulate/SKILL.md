@@ -40,6 +40,14 @@ environment variable; do not call the endpoint any other way.
 
 ## Approval
 
+Before starting any real run or reproduction, check `.humanstudy/community.json` in the project.
+If present (including unreadable or malformed provenance), say exactly:
+"This study's code will run on your computer with access to your model key."
+Include it in the existing run confirmation, before any package code executes; do not add a
+button or dialog. Community revision provenance currently carries no authenticated maintainer
+review attestation, so show the notice for every such fork. A local `reviewed` flag is not proof
+of review. This applies to `study_core.py run/reproduce`, `simkit.py`, and trial runs too.
+
 The Simulation tab shows the researcher what will run (study, conditions, AI participants per
 condition, model, what cannot be simulated) and its **Run simulation** button sends a message
 beginning `[Simulation scope approved]` with JSON: program id, SHA-256 of the complete
