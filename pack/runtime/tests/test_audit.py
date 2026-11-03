@@ -173,6 +173,18 @@ class AuditTest(unittest.TestCase):
         _, items, _ = run_audit(self.study(verbatim_value=table, extra={"sources/materials.txt": page}), "--only", "X1")
         self.assertEqual(items["X1"]["result"], "pass", items["X1"])
         self.assertIn("1 table(s) found cell by cell", items["X1"]["note"])
+        # Stacked headers are joined with " / " (build/SKILL.md) although the page prints them on two lines
+        # with other headers in between; an added "Panel" column is not printed at all.
+        stacked_page = (SOURCE_TEXT + " Table 3 Ratings by study Study 1 Study 2 Panel A Mean Mean SD "
+                        "Heads framing 4.2 3.9 0.8 Tails framing 3.1 2.8 0.7 Note. Ratings on a scale from 1 to 7.")
+        stacked = {"table": "table-3", "title": "Table 3 Ratings by study",
+                   "columns": ["Panel", "Condition", "Study 1 / Mean", "Study 2 / Mean", "Study 2 / SD"],
+                   "rows": [["Panel A", "Heads framing", "4.2", "3.9", "0.8"], ["Panel A", "Tails framing", "3.1", "2.8", "0.7"]],
+                   "notes": ["Note. Ratings on a scale from 1 to 7."]}
+        stacked["columns"][1] = ""  # the stub column has no printed header
+        _, items, _ = run_audit(self.study(verbatim_value=stacked, extra={"sources/materials.txt": stacked_page}),
+                                "--only", "X1")
+        self.assertEqual(items["X1"]["result"], "pass", items["X1"])
         reworded = json.loads(json.dumps(table))
         reworded["rows"][1][0] = "Tails condition"  # a reworded cell
         _, items, _ = run_audit(self.study(verbatim_value=reworded, extra={"sources/materials.txt": page}), "--only", "X1")

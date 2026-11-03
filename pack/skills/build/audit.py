@@ -364,22 +364,35 @@ def cited_windows(s, ids):
     return out
 
 
+ADDED_HEADERS = {"panel"}  # build/SKILL.md: row groups or panels may become an added "Panel" column
+
+
 def table_units(cell):
-    """The parts of one table cell to find on the page: a text cell as its words (searched as a substring,
-    as the text comparison does; one- or two-character text as a whole token), a numeric cell as each of its
-    numbers (whole tokens: an estimate and its interval are often printed on different lines)."""
-    q = check_quotes.normalise(cell)
-    if not q:
-        return []
-    if re.search(r"[a-z]", q):
-        return [(q, len(q) >= 3)]
-    return [(check_quotes.normalise(n), False) for n in re.findall(r"\d*\.?\d+", str(cell))]
+    """The parts of one table cell to find on the page, split as the text comparison splits them (stacked
+    headers on " / ", long cells into sentences): text pieces as (words, True), searched as a substring;
+    one- or two-character text and every number as (token, False), searched as a whole token (an estimate
+    and its interval are often printed on different lines)."""
+    out = []
+    for piece in re.split(r"\s+/\s+", str(cell)):
+        q = check_quotes.normalise(piece)
+        if not q:
+            continue
+        if not re.search(r"[a-z]", q):
+            out += [(check_quotes.normalise(n), False) for n in re.findall(r"\d*\.?\d+", piece)]
+        elif len(q) < 3:
+            out.append((q, False))
+        else:
+            out += [(x, True) for x in check_verbatim.segments(piece)]
+    return out
 
 
 def table_gaps(s, value, ids):
     """What the text comparison of a table leaves open, checked on the cited pages: every number and every
     one- or two-character cell as a whole token, and each row's cells (the header row too) within a short span
-    of each other.
+    of each other. Text pieces the text comparison could not find exactly are left to it (they are already a
+    finding there), so a row is never flagged twice. Not decidable from a text layer, and so not checked:
+    minus signs (normalised away), column order, which of two nearby rows a value or label belongs to,
+    rows left out or repeated, and one-digit numbers (they are everywhere on a page).
     Returns (cells with a part not found, rows whose cells are not together, rows checked)."""
     windows = cited_windows(s, ids)
     if not windows:
@@ -391,7 +404,8 @@ def table_gaps(s, value, ids):
     missing = [c for c in check_verbatim.table_cells(value)
                if any(not sub and not any(where((q, sub), w) for w in windows) for q, sub in table_units(c))]
     apart, checked = [], 0
-    for row in [value.get("columns") or []] + list(value.get("rows") or []):  # the header row counts as a row
+    header = [c for c in (value.get("columns") or []) if check_quotes.normalise(str(c)) not in ADDED_HEADERS]
+    for row in [header] + list(value.get("rows") or []):  # the header row counts as a row
         units = [u for c in check_verbatim.table_cells({"r": row}) for u in table_units(c)]
         if len(units) < 2:
             continue
@@ -399,7 +413,11 @@ def table_gaps(s, value, ids):
         span = 200 + sum(len(q) for q, _ in units)
         ok = False
         for w in windows:
-            hits = [where(u, w) for u in units]
+            hits = [h for h in ((u, where(u, w)) for u in units) if h[1] or not h[0][1]]  # drop text it did not find
+            hits = [h for _, h in hits]
+            if len(hits) < 2:
+                ok = ok or all(hits)
+                continue
             if all(hits) and any(all(any(abs(p - a) <= span for p in h) for h in hits) for a in hits[0]):
                 ok = True
                 break
@@ -456,8 +474,8 @@ def check_X1(s, ctx):
     note = "%d verbatim field(s): %d found word for word, %d problem(s), %d unchecked (cited file not readable here)" % (
         total, found, len(problems), len(unchecked))
     if tables:
-        note += "; %d table(s) found cell by cell with each row's cells together (column order not verifiable " \
-                "from a text layer)" % tables
+        note += "; %d table(s) found cell by cell with each row's cells together (not verifiable from a text " \
+                "layer: minus signs, column order, values swapped between neighbouring rows, left-out rows)" % tables
     if problems:
         worst = "fail" if any(p[0] == "fail" for p in problems) else "concern"
         return R(worst, short(p[1] for p in problems), note, details=[p[1] for p in problems] + ["unchecked: " + u for u in unchecked])
