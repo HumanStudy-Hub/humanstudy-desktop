@@ -168,6 +168,52 @@ class AuditTest(unittest.TestCase):
         _, items, _ = run_audit(self.study(adapter=adapter), "--only", "P1")
         self.assertNotEqual(items["P1"]["result"], "pass", items["P1"])
 
+    def test_no_run_keeps_static_p7_failures(self):
+        # A blocked program shipped as ready and runnable is a definite fail; skipping the stub run must not hide it.
+        prog = program()
+        prog["issues"] = [{"id": "i1", "severity": "blocking", "title": "Missing item wording",
+                           "description": "The paper does not print item 3."}]
+        root = self.study(extra={"program.json": json.dumps(prog),
+                                 "capabilities.json": json.dumps({"run": {"status": "yes"}})})
+        _, items, _ = run_audit(root, "--only", "P7", "--no-run")
+        self.assertEqual(items["P7"]["result"], "fail", items["P7"])
+        self.assertIn("i1", items["P7"]["evidence"] or "", items["P7"])
+
+    def test_probe_crash_does_not_downgrade_t4_run_no(self):
+        # run=no: the package must refuse. Crashing instead is package-controlled and is not a refusal.
+        adapter = INDEPENDENT.replace("    out = []\n", "    raise RuntimeError('adapter crashed')\n    out = []\n", 1)
+        root = self.study(adapter=adapter, extra={"capabilities.json": json.dumps({"run": {"status": "no"}})})
+        _, items, _ = run_audit(root, "--only", "T4")
+        self.assertEqual(items["T4"]["result"], "fail", items["T4"])
+
+    def test_fail_outranks_probe_errors_in_t4_and_p7(self):
+        sys.path.insert(0, str(BUILD))
+        try:
+            import audit
+        finally:
+            sys.path.remove(str(BUILD))
+        prog = program()
+        prog["issues"] = [{"id": "i1", "severity": "blocking", "title": "t", "description": "d"}]
+        root = self.study(extra={"program.json": json.dumps(prog),
+                                 "capabilities.json": json.dumps({"run": {"status": "no", "excluded": [
+                                     {"arms": ["b"], "reason": "non-text stimuli"}]}})})
+        s = audit.Study(root)
+        # T4: run=no and not refused is a fail even when the probe also errored ...
+        r = audit.check_T4(s, {"probe": {"error": "boom", "calls": 0}})
+        self.assertEqual(r["result"], "fail", r)
+        # ... or when the excluded-arm probe raised something other than a Refusal.
+        r = audit.check_T4(s, {"probe": {"calls": 4, "sessions": [{}], "excludedRefused": "error: boom"}})
+        self.assertEqual(r["result"], "fail", r)
+        r = audit.check_T4(s, {"probe": {"refused": "no", "calls": 0, "excludedRefused": False}})
+        self.assertEqual(r["result"], "fail", r)
+        # A probe error alone, with nothing failing, stays a concern.
+        r = audit.check_T4(s, {"probe": {"refused": "no", "calls": 0, "error": "boom"}})
+        self.assertEqual(r["result"], "concern", r)
+        # P7: a blocked study must refuse; a crash is not a refusal.
+        r = audit.check_P7(s, {"probe": {"error": "boom", "calls": 3}})
+        self.assertEqual(r["result"], "fail", r)
+        self.assertIn("not refused", r["evidence"], r)
+
     def test_report_format_and_honest_na(self):
         run, items, report = run_audit(self.study())
         self.assertEqual(report["book"], "audit-book/0.1")

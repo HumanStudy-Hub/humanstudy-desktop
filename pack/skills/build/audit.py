@@ -807,11 +807,13 @@ def check_P7(s, ctx):
                       % ", ".join(sorted({f["pattern"] for f in nonrun}))))
     pr = run_probe(s, ctx)
     if pr is None:
-        return R("concern", "package/%s/task/adapter.py" % s.package.name, "refusal behavior was not tested")
-    if pr is not None:
+        # --no-run: the static failures above stand; only the refusal itself is untested.
+        probs.append(("concern", "package/%s/task/adapter.py: refusal behavior was not tested (--no-run)" % s.package.name))
+    else:
         if pr.get("error"):
             probs.append(("concern", "stub run failed: %s" % pr["error"][:300]))
-        if (blocking or ready == "blocked") and not pr.get("refused") and not pr.get("error"):
+        # A crash is not a refusal, and the package controls whether it crashes: keep the fail.
+        if (blocking or ready == "blocked") and not pr.get("refused"):
             probs.append(("fail", "study is blocked but the stub run was not refused (%d calls)" % pr.get("calls", 0)))
         if not (blocking or ready == "blocked") and pr.get("refused"):
             probs.append(("concern", "study is not blocked but the run was refused: %s" % pr["refused"][:160]))
@@ -1018,17 +1020,21 @@ def check_T4(s, ctx):
         return R("n/a", None, "stub run skipped (--no-run)")
     if not s.package:
         return R("n/a", None, "no replay package: the tools have nothing to run")
-    if pr.get("error"):
-        return R("concern", "package/%s/task/adapter.py" % s.package.name, "stub run failed: %s" % pr["error"][:300])
+    # Fail > concern > pass. A probe error or a non-Refusal exception is package-controlled, so it is
+    # recorded as a concern but never hides a definite failure.
     probs = []
+    if pr.get("error"):
+        probs.append(("concern", "package/%s/task/adapter.py: stub run failed: %s" % (s.package.name, pr["error"][:300])))
     if run == "no" and not pr.get("refused"):
-        probs.append("capabilities.json#run.status=no but run produced %d model calls" % pr.get("calls", 0))
+        probs.append(("fail", "capabilities.json#run.status=no but the run was not refused (%d model calls%s)"
+                      % (pr.get("calls", 0), ", then it crashed" if pr.get("error") else "")))
     if pr.get("excludedRefused") is False:
-        probs.append("capabilities.json#run.excluded arms produced output")
+        probs.append(("fail", "capabilities.json#run.excluded arms produced output"))
     if isinstance(pr.get("excludedRefused"), str):
-        return R("concern", "capabilities.json#run.excluded", "excluded-arm probe failed: %s" % pr["excludedRefused"])
+        probs.append(("concern", "capabilities.json#run.excluded: excluded-arm probe failed: %s" % pr["excludedRefused"]))
     if probs:
-        return R("fail", short(probs))
+        worst = "fail" if any(p[0] == "fail" for p in probs) else "concern"
+        return R(worst, short(p[1] for p in probs))
     tested = ["run refused" if pr.get("refused") else "run allowed (run=%s)" % run]
     if "excludedRefused" in pr:
         tested.append("excluded arms refused")
