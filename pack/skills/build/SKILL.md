@@ -817,11 +817,17 @@ Rules:
 - `reported` holds raw quantities exactly as printed: estimates (with `metric` from the schema's list
   and `variant` naming the model or weighting), the test, cell n / mean / sd / k / proportion or
   percent, as printed (a paper printing 72% gives `"percent": 72`, not 0.72).
+  Keep a Wilcoxon signed-rank statistic printed as `V` as `V`; do not rename it `W`.
   Each number must be written in a quote of one of `reported.evidenceIds`; when the program's quotes
   do not hold a number, add an evidence entry with the verbatim table row or sentence and its page
   (`program_io.py`, then `check_quotes.py`). List what the paper does not report in `missing`; never
   compute it or fill it in. `reported` is `null` when the paper prints no number for the effect.
   Order `estimates` so the first one is the variant the package computes (for example unweighted).
+- A printed p-value of `0.00` or `0.000` is rounded text, not an exact probability of zero.
+  Keep `reported.test.p` null and preserve the original digits in `reported.test.pText`, with
+  `reported.missing` explaining that the exact p-value is unavailable. Numeric p-values and bounds
+  must be positive. Do not infer a precision-based bound unless the source actually prints it;
+  the checker does not assume a rounding rule or turn a printed zero into `< .005` or `< .0005`.
 - `reported.n` (or `cells.<arm>.n`) is the N the effect is computed on, as printed, with the quote that
   prints it among `reported.evidenceIds`. When the effect's N is not printed (a subgroup, trials as
   the unit) say so in `missing` ("N of the LAC-first group is not printed"); never fill in the study N
