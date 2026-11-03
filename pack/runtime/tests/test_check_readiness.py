@@ -178,9 +178,11 @@ class ReadinessTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, build, True)
         shutil.copytree(REPO / "pack/skills", build / "skills")
         shutil.copytree(REPO / "pack/schema", build / "schema")
-        target = build / "skills/build/check_verbatim.py"
-        adapter = ("try:\n    open(%r, 'w').write('def check(p):\\n    return {\"results\": []}\\n')\n"
-                   "except OSError:\n    pass\n" % str(target)) + ADAPTER
+        # Rewrite every checker file: a module imported later would switch the whole report off.
+        patch = "\nimport sys as _s\n_m = _s.modules.get('__main__')\nif _m is not None and hasattr(_m, 'summary'):\n    _m.summary = lambda msgs: None\n"
+        adapter = ("import glob\nfor _f in glob.glob(%r) + glob.glob(%r):\n    try:\n        open(_f, 'a').write(%r)\n"
+                   "    except OSError:\n        pass\n" % (str(build / "skills/build/*.py"), str(build / "skills/export/agent/*.py"),
+                                                       patch)) + ADAPTER
         p = json.loads(json.dumps(PROGRAM))
         for n in p["nodes"]:
             if n["kind"] == "procedure":

@@ -136,16 +136,26 @@ def effects_problems(root):
     return found
 
 
-CHECK_MODULES = ("check_program", "sources", "check_validity", "check_verbatim", "check_results", "effects",
-                 "effects_core", "check_quotes", "sandbox_run")
+CHECK_MODULES = ("check_program", "check_package", "sources", "check_validity", "check_verbatim", "check_results",
+                 "effects", "effects_core", "check_quotes", "sandbox_run")
+OPTIONAL_MODULES = ("jsonschema", "pdfplumber", "pypdf")  # lazily imported by the checks when present
 
 
 def load_checkers():
-    """Import every checker before any package code runs: on platforms where sandbox_run does not confine
-    files, package code could otherwise rewrite a checker file before it is first imported."""
+    """Import every checker before any package code runs, then take the checker folders off sys.path: on
+    platforms where sandbox_run does not confine files, package code could otherwise rewrite a checker file
+    before it is first imported. An import missed here then fails (a failed check), never loads a new file."""
     import importlib
     for name in CHECK_MODULES:
         importlib.import_module(name)
+    for name in OPTIONAL_MODULES:
+        try:
+            importlib.import_module(name)
+        except ImportError:
+            pass
+    for folder in (str(HERE), str(HERE.parent / "export" / "agent")):
+        while folder in sys.path:
+            sys.path.remove(folder)
 
 
 def run_checks(root, slug):
