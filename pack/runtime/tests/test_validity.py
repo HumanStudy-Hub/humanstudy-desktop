@@ -313,6 +313,7 @@ class Validity(FakePdfMixin, unittest.TestCase):
         for pages, candidate in (([PAGES[0], statement, "Another page with enough text to be readable."], dict(entry, page=3)),
                                  ([PAGES[0], statement], dict(entry, statement=statement.replace("over time", "over trials"))),
                                  ([PAGES[0], statement], dict(entry, statement=statement.replace("option as", "option, as"))),
+                                 ([PAGES[0], statement], dict(entry, page=3, terms=["option", "current probability"])),
                                  ([PAGES[0], ""], entry)):
             found = self.problems(self.project([self.not_told([candidate])], pages=pages))
             self.assertTrue(any("semantic terms require the exact statement" in m for m in found), found)

@@ -1046,8 +1046,8 @@ def check(root, package=None, capture_prompts=True):
                 "copy the sentence as printed and cite the page it is on")
         if not str(e.get("notApplicable") or "").strip():
             terms = [t for t in e.get("terms") or [] if isinstance(t, str)]
-            uses_statement = any(has_phrase(norm(e.get("statement") or ""), norm(t)) and content_words(t)
-                                 for t in terms)
+            uses_statement = any(has_phrase(norm(e.get("statement") or ""), norm(t)) and
+                                 content_words(t) & content_words(e.get("withheld")) for t in terms)
             if terms and not uses_statement and not _exact_on_page(e, pages):
                 add("%s: semantic terms require the exact statement on the cited page" % e["_where"],
                     "copy the printed statement and cite its page, or include a content term from the statement")
