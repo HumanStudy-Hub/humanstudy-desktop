@@ -22,6 +22,16 @@ summary) is plain language about participants, conditions and results.
 
 ## Model access
 
+Always launch the complete run script through `.opencode/skills/simulate/run_confined.py`,
+including trials and `study_core.py run/reproduce` wrappers. Never import package code in an
+unconfined process. The app creates an approved-run local relay; its per-run capability is not
+an upstream model key. The relay permits only the approved model and reserves at most 200,000
+input/output tokens per run, with at most 4,096 output tokens per call. Only text messages are
+supported. Do not retry a token-cap refusal. Real upstream credentials stay in the app process.
+Relay simulations currently require macOS sandbox-exec; Linux/Windows refuse them because
+relay-only networking and process-environment isolation are not implemented there. Researchers
+may still invoke standalone study_core.py manually with their own credentials.
+
 Use the runtime's `humanstudy_llm` module. It is importable as is from the bundled `python` (never
 add a `sys.path` entry for it), and needs no key handling and no package install:
 
@@ -111,7 +121,7 @@ Create `artifacts/simulations/<YYYY-MM-DD-HHMM>/` (the run folder) and work insi
    Never cache replies across participants: two participants with the same prompt must get two
    independent model calls (a cache would make them identical copies).
 
-2. **Trial first**: `python run.py --trial` (one participant per condition; a few seconds). Check that
+2. **Trial first**: `python .opencode/skills/simulate/run_confined.py artifacts/simulations/<run>/run.py --trial` (one participant per condition; a few seconds). Check that
    every reply parses into the paper's response format. Fix the adapter's prompt or parser if not, and
    record the fix in `report.md`. Never adjust prompts to steer results.
 

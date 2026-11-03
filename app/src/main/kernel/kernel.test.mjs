@@ -144,7 +144,12 @@ console.log('createKernel ok')
   const home = join(out, 'khome')
   process.env.OPENCODE_CONFIG = '/home/u/personal.json'
   const kk = new k.OpencodeKernel({ binary: '/bin/true', home, provider: 'humanstudy', model: 'anthropic/claude-sonnet-5.5' })
+  const secrets = ['OPENROUTER_API_KEY', 'HUMANSTUDY_DESKTOP_KEY', 'HUMANSTUDY_SERVER_BYPASS', 'DATABASE_PASSWORD']
+  const prior = secrets.map(key => process.env[key])
+  for (const key of secrets) process.env[key] = 'fake-upstream-sentinel'
   const env = kk.kernelEnv('pw')
+  secrets.forEach((key, i) => { assert.equal(env[key], undefined); if (prior[i] === undefined) delete process.env[key]; else process.env[key] = prior[i] })
+  assert.equal(env.HUMANSTUDY_RELAY_REQUIRED, '1')
   for (const [name, dir] of [['XDG_CONFIG_HOME', 'config'], ['XDG_DATA_HOME', 'data'], ['XDG_CACHE_HOME', 'cache'], ['XDG_STATE_HOME', 'state']])
     assert.equal(env[name], join(home, dir))
   assert.equal(env.OPENCODE_CONFIG, undefined)

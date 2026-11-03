@@ -108,7 +108,7 @@ def _python_dirs():
 MAC_PRIVATE = ("/Users", "/Volumes", "/private/tmp", "/private/var/folders", "/private/var/tmp")
 
 
-def macos_profile(work, read=()):
+def macos_profile(work, read=(), relay_port=None):
     private = [_real(Path.home())] + [p for p in MAC_PRIVATE if os.path.isdir(p)]
     allow_read = {_real(work), _real(Path(__file__).resolve().parent.parent)}  # the work folder and the skills
     allow_read.update(_real(p) for p in read if p)
@@ -119,6 +119,10 @@ def macos_profile(work, read=()):
     w = _sb_str(_real(work))
     lines = ["(version 1)", "(allow default)",
              "(deny network*)",
+             "(deny process-info*)",
+             '(deny sysctl-read)',
+             '(allow sysctl-read (sysctl-name-regex #"^hw[.]") (sysctl-name-regex #"^kern[.]os") (sysctl-name "kern.version") (sysctl-name "kern.hostname"))',
+             "(allow process-info* (target self))",
              # No talking to other processes either (browser via Launch Services, keychain, pasteboard):
              # only the user-name lookup that getpass/pwd need. No signals to processes outside the sandbox.
              "(deny mach-lookup)",
@@ -130,6 +134,10 @@ def macos_profile(work, read=()):
              "(allow file-write* (subpath %s) (literal \"/dev/null\") (literal \"/dev/zero\") "
              "(literal \"/dev/tty\") (literal \"/dev/dtracehelper\") (subpath \"/dev/fd\"))" % w,
              "(deny file-read-data %s)" % " ".join("(subpath %s)" % _sb_str(_real(p)) for p in private)]
+    if relay_port is not None:
+        if type(relay_port) is not int or not 1 <= relay_port <= 65535:
+            raise ValueError("invalid relay port")
+        lines.append('(allow network-outbound (remote ip "localhost:%d"))' % relay_port)
     if allow_read:
         lines.append("(allow file-read-data %s)" % " ".join("(subpath %s)" % _sb_str(p) for p in allow_read))
     return "\n".join(lines) + "\n"
@@ -184,8 +192,10 @@ def already_confined():
     return False
 
 
-def wrapper(work, read=()):
+def wrapper(work, read=(), relay_port=None):
     """(argv prefix, confinement label) for this platform."""
+    if relay_port is not None and sys.platform != "darwin":
+        raise RuntimeError("Relay simulations require macOS sandbox-exec; Linux/Windows cannot enforce relay-only access.")
     if already_confined():
         if os.environ.get(MARK) == "1":  # our own confinement (the variable alone switches nothing off)
             return [], "inherited"
@@ -194,8 +204,10 @@ def wrapper(work, read=()):
     if sys.platform == "darwin":
         exe = shutil.which("sandbox-exec") or ("/usr/bin/sandbox-exec" if os.path.exists("/usr/bin/sandbox-exec") else None)
         if exe:  # the profile goes inline: a file in the work folder could be rewritten by a leftover process
-            return [exe, "-p", macos_profile(work, read)], \
+            return [exe, "-p", macos_profile(work, read, relay_port)], \
                 "sandbox-exec (no network, writes only in the work folder, home folder unreadable)"
+        if relay_port is not None:
+            raise RuntimeError("Relay simulations require sandbox-exec.")
         _warn("darwin", "sandbox-exec is unavailable: package code runs with a clean environment but without "
                         "network or file confinement")
         return [], "environment only"
@@ -312,7 +324,7 @@ def copy_tree(src, dst, ignore=None):
     return Path(dst)
 
 
-def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=None):
+def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=None, relay_port=None):
     """Run `python script args...` confined; `work` is the only folder it may write to (made if missing;
     use a fresh one per call).
 
@@ -324,7 +336,7 @@ def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=N
     work.mkdir(parents=True, exist_ok=True)
     script = Path(script).resolve()
     reads = [script.parent] + ([cwd] if cwd else []) + list(read)
-    pre, label = wrapper(work, reads)
+    pre, label = wrapper(work, reads, relay_port)
     if pre is None:
         return Result(126, "", "refused: this process runs inside a sandbox that is not HumanStudy's, so package "
                                "code cannot be confined here; run the check from a normal terminal or the app\n",
