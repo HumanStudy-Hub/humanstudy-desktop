@@ -81,6 +81,42 @@ class Effects(unittest.TestCase):
         self.assertIn("program hypothesis hypothesis", run.stdout)
         self.assertIn("'nope' is not a program node", run.stdout)
 
+    def test_small_numbers_do_not_match_zero_or_other_small_numbers(self):
+        self.assertIsNone(effects_core.quoted(1.9e-11, ["0 and 5.3e-11"]))
+        self.assertEqual(effects_core.quoted(1.9e-11, ["p = 1.9e−11"]), "exact")
+
+    def test_lossy_sign_requires_same_evidence_page_and_visual_note(self):
+        for value, quote in [(5.3e-5, "b = 5.3e 05"), (1.9e-11, "p = 1.9e 11"),
+                             (-0.011, "b = − 0.011")]:
+            with self.subTest(value=value):
+                record = {"quote": quote, "locator": {"page": 2}, "note": "rendered page checked"}
+                self.assertTrue(effects_core.rendered_quote(value, record))
+                for patch in [{"note": ""}, {"note": None}, {"note": "not rendered page checked"},
+                              {"locator": {}}, {"locator": {"page": 0}}, {"locator": {"page": True}}]:
+                    self.assertFalse(effects_core.rendered_quote(value, {**record, **patch}))
+        record = {"locator": {"page": 2}, "note": "rendered page checked"}
+        for text in ["p = 1.9e+11", "p = 1.9e +11", "p = 1.9e11", "p = 2.0e 11"]:
+            self.assertFalse(effects_core.rendered_quote(1.9e-11, {**record, "quote": text}))
+
+    def test_effect_check_exposes_rendered_page_exception_without_editing_quote(self):
+        program = json.loads((self.root / "program.json").read_text())
+        record = {"id": "lossy", "locator": {"page": 2}, "quote": "p = 1.9e 11"}
+        program["evidence"].append(record)
+        doc = effects_doc()
+        doc["effects"][0]["reported"] = {"test": {"statistic": "other", "p": 1.9e-11},
+                                           "evidenceIds": ["lossy"]}
+        problems, _ = effects_core.check(self.root, doc, program)
+        self.assertTrue(any("not written" in p for p in problems))
+        record["note"] = "rendered page checked"
+        problems, warnings = effects_core.check(self.root, doc, program)
+        self.assertFalse(problems, problems)
+        self.assertTrue(any("text-layer sign loss" in w for w in warnings))
+        self.assertEqual(record["quote"], "p = 1.9e 11")
+        record.pop("note")
+        program["evidence"][0]["note"] = "rendered page checked"
+        problems, _ = effects_core.check(self.root, doc, program)
+        self.assertTrue(any("not written" in p for p in problems))
+
     def test_model_results_name_their_population_and_own_phenomena(self):
         doc = effects_doc()
         doc["effects"][0]["population"] = {"kind": "ai-model"}

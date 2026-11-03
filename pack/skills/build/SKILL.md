@@ -412,3 +412,7 @@ When missing information or conflicting sources require a researcher decision, u
 necessary question in the currently selected study; do not force the same wizard on every
 experiment. Retain the source evidence and label actual user choices `researcher`; never
 convert a suggested default or dismissed question into a confirmed study fact.
+
+### Text-layer numeric sign loss
+
+Keep the extracted quote unchanged. If a PDF text layer loses an exponent minus (for example `1.9e 11`) or separates a printed minus (`− 0.011`), inspect the rendered page before recording the number. On that same evidence record, set the physical `locator.page` and `note: "rendered page checked"`. Only use this note after visual verification; otherwise leave the value missing. The effects validator reports this exception explicitly. An explicit positive exponent is never treated as a lost minus.
