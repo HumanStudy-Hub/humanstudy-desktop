@@ -475,7 +475,8 @@ def check_X1(s, ctx):
         total, found, len(problems), len(unchecked))
     if tables:
         note += "; %d table(s) found cell by cell with each row's cells together (not verifiable from a text " \
-                "layer: minus signs, column order, values swapped between neighbouring rows, left-out rows)" % tables
+                "layer: minus signs, column order, values swapped between neighbouring rows, left-out or repeated rows, " \
+                "one-digit numbers)" % tables
     if problems:
         worst = "fail" if any(p[0] == "fail" for p in problems) else "concern"
         return R(worst, short(p[1] for p in problems), note, details=[p[1] for p in problems] + ["unchecked: " + u for u in unchecked])
