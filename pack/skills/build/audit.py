@@ -47,6 +47,7 @@ for p in (HERE, AGENT, EXPORT):
 import capabilities  # noqa: E402
 import check_program  # noqa: E402
 import check_quotes  # noqa: E402
+import check_verbatim  # noqa: E402
 
 try:
     import effects_core  # noqa: E402
@@ -335,69 +336,15 @@ def check_S5(s, ctx):
 
 # ---- X: extraction fidelity -------------------------------------------------------------------------
 
-def segments(value):
-    """A verbatim value split into the pieces that should each appear in the source: list items, lines,
-    '; '-separated parts, and sentences of long parts."""
-    parts = value if isinstance(value, list) else re.split(r"\n+|;\s+|\s\|\s", text_of(value))
-    out = []
-    for part in parts:
-        part = text_of(part)
-        pieces = re.split(r"(?<=[.?!])\s+(?=[A-Z\u201c\"])", part) if len(part) > 300 else [part]
-        out += [x for x in (check_quotes.normalise(p) for p in pieces) if len(x) >= 3]
-    return out
-
-
 def find_text(s, value, evidence_ids):
-    """Compare a verbatim value with the pages its evidence cites.
+    """Compare a verbatim value with the pages its evidence cites: check_verbatim.py's comparison (the build
+    check), so a table field is checked by title, headers, row labels, text cells and notes, not as one string.
 
-    Returns (status, info): found (every piece on the cited pages), close (each piece found or nearly so),
-    elsewhere (found, but on other pages), partial (some pieces not in the source: added or reworded text),
-    not_found, or unchecked (a cited file is not readable here and the readable ones do not hold it)."""
-    segs = [q for q in segments(value) if re.search(r"[a-z]", q)]
-    if not segs:  # numbers only (a matrix, a list of values): text order in a PDF table cannot confirm them
-        return "unchecked", "numbers only"
-    by_file, unreadable = {}, []
-    for eid in evidence_ids:
-        e = s.evidence.get(eid)
-        if not e:
-            continue
-        by_file.setdefault(s.ev_rel(e), set()).add((e.get("locator") or {}).get("page"))
-    windows, wholes = [], []
-    for rel, pages in by_file.items():
-        doc = s.sources.pages(rel)
-        if not doc:
-            unreadable.append(rel)
-            continue
-        nums = sorted(p for p in pages if isinstance(p, int) and 1 <= p <= len(doc))
-        if (nums and all(len(doc[n - 1]) < 40 for n in nums)) or sum(len(d) for d in doc) < 40:
-            unreadable.append("%s (no text layer on the cited page(s))" % rel)  # scanned: read as images, not here
-            continue
-        near = sorted({x for n in nums for x in (n - 1, n, n + 1) if 1 <= x <= len(doc)})
-        windows.append(" ".join(doc[p - 1] for p in near) if len(doc) > 1 and near else " ".join(doc))
-        wholes.append(" ".join(doc))
-    if not windows:
-        return "unchecked", "cited file(s) not readable here: " + ", ".join(unreadable)
-    exact = close = elsewhere = 0
-    for q in segs:
-        if any(q in w for w in windows):
-            exact += 1
-        elif max(check_quotes.match(q, w) if len(q) < 6000 else 0.0 for w in windows) >= check_quotes.CLOSE:
-            close += 1
-        elif any(q in w for w in wholes):
-            elsewhere += 1
-    n = len(segs)
-    if exact == n:
-        return "found", None
-    if exact + close == n:
-        return "close", "%d of %d piece(s) nearly verbatim" % (close, n)
-    if exact + close + elsewhere == n:
-        return "elsewhere", "%d of %d piece(s) only on other pages" % (elsewhere, n)
-    if unreadable:
-        return "unchecked", "%d of %d piece(s) not in the readable files; also cites %s" % (
-            n - exact - close - elsewhere, n, ", ".join(unreadable))
-    if exact + close + elsewhere:
-        return "partial", "%d of %d piece(s) not in the source" % (n - exact - close - elsewhere, n)
-    return "not_found", None
+    Returns (status, info): found, table_text_layer / close_unverified (accepted by the build check on a
+    garbled text layer; a concern here), close, elsewhere, partial (added or reworded text), not_found, or
+    unchecked (a cited file is not readable here)."""
+    evidence = {eid: dict(e, path=s.ev_rel(e)) for eid, e in s.evidence.items() if isinstance(e, dict)}
+    return check_verbatim.field_status(value, evidence, evidence_ids, s.sources, s.pdf or "paper.pdf")
 
 
 def check_X1(s, ctx):
@@ -415,6 +362,10 @@ def check_X1(s, ctx):
             pages = sorted({str((s.evidence.get(i) or {}).get("locator", {}).get("page")) for i in ids if i in s.evidence})
             if status == "found":
                 found += 1
+            elif status in ("table_text_layer", "close_unverified"):
+                # the build check accepts these on a garbled text layer; the audit does not take that on trust
+                problems.append(("concern", "%s: %s (cited page(s) %s); needs human: compare with the page image"
+                                 % (where, info, ",".join(pages))))
             elif status == "unchecked":
                 unchecked.append("%s (%s)" % (where, info) if info else where)
             elif status == "not_found":

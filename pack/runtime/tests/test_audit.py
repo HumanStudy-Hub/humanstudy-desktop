@@ -161,6 +161,27 @@ class AuditTest(unittest.TestCase):
         self.assertIn("program.json#node:m1.text", items["X1"]["evidence"])
         self.assertEqual(run.returncode, 1)
 
+    def test_table_fields_are_checked_cell_by_cell(self):
+        # A text layer prints a table cell by cell, in an order that is not the table's: joined into one
+        # string, a correctly transcribed table was "not found". Each cell must still be on the page.
+        page = (SOURCE_TEXT + " Table 2 Mean confidence by condition Condition Mean rating Heads framing 4.2 "
+                "Tails framing 3.1 Note. Ratings on a scale from 1 to 7.")
+        table = {"table": "table-2", "title": "Table 2 Mean confidence by condition",
+                 "columns": ["Condition", "Mean rating"],
+                 "rows": [["Heads framing", "4.2"], ["Tails framing", "3.1"]],
+                 "notes": ["Note. Ratings on a scale from 1 to 7."]}
+        _, items, _ = run_audit(self.study(verbatim_value=table, extra={"sources/materials.txt": page}), "--only", "X1")
+        self.assertEqual(items["X1"]["result"], "pass", items["X1"])
+        reworded = json.loads(json.dumps(table))
+        reworded["rows"][1][0] = "Tails condition"  # a reworded cell
+        _, items, _ = run_audit(self.study(verbatim_value=reworded, extra={"sources/materials.txt": page}), "--only", "X1")
+        self.assertNotEqual(items["X1"]["result"], "pass", items["X1"])
+        self.assertIn("program.json#node:m1.text", items["X1"]["evidence"])
+        invented = json.loads(json.dumps(table))
+        invented["rows"].append(["Edge framing", "5.0"])  # a row the paper does not have
+        _, items, _ = run_audit(self.study(verbatim_value=invented, extra={"sources/materials.txt": page}), "--only", "X1")
+        self.assertNotEqual(items["X1"]["result"], "pass", items["X1"])
+
     def test_shared_context_between_participants_fails(self):
         run, items, _ = run_audit(self.study(adapter=SHARED), "--only", "P1")
         self.assertEqual(items["P1"]["result"], "fail", items["P1"])
