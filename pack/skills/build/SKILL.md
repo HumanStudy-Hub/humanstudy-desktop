@@ -77,9 +77,11 @@ Validate against `schema/human-program.schema.json`. Work in this order:
    `{"statement": "<the sentence as printed>", "page": 7, "withheld": "which key selects which circle,
    and that only a highlighted circle can be selected", "terms": ["highlighted", "can be selected",
    "yellow"]}`. `terms` are the words a prompt that gave the information away would have to contain,
-   at least one of them a content word of the statement (not "told" or "participants") and one sharing
-   a word with `withheld`. A passage that is not about what participants knew
-   (experimenters blind to condition) gets `"notApplicable": "<why>"` instead. The value is `[]` when
+   short phrases (at most 3 words), at least one of them a content word of the statement (not "told" or
+   "participants") and one sharing a word with `withheld`. A passage that is not about what participants
+   knew (experimenters blind to condition) gets `"notApplicable": "<why>"` instead; when the sentence
+   is about the participants, `notApplicable` also needs a `check` issue on the field so the researcher
+   confirms it. The value is `[]` when
    the paper withholds nothing. The adapter's prompts must not contain this information (see section 3).
    Every number the paper reports for a group, item, condition, session or round is a field value,
    not only text inside an evidence quote: see "Result tables" below.
@@ -274,16 +276,18 @@ Rules the runner depends on:
     `{"design": "none | last-trial | summary | same-screen | full-log | conversation | other", "shows":
     "...", "participantsSaw": "...", "expectedImpact": "..."}`) with a `decision` issue stating the
     expected impact. A full log or chat transcript (or `other` over prompts that carry every trial)
-    needs a cited quote saying participants saw their earlier trials, or a researcher's decision. A
-    questionnaire whose items share one page is `same-screen` (earlier items stay visible), with the
-    quote that says so; do not choose `none` there and break the sequential visibility of the form.
+    needs a cited quote saying participants saw their earlier choices or outcomes ("their previous
+    choices were displayed"), or a researcher's decision. A questionnaire whose items share one page is
+    `same-screen` (earlier items stay visible), with the quote that says they were on one page or
+    shown together; do not choose `none` there and break the sequential visibility of the form.
   - Instructions between blocks, sessions or phases appear in the first prompt of the new block when
     the paper shows them there ("the upcoming block is completely independent", a break of one week),
     never only inside a later trial log.
   - An unparsed reply is recorded on its trial (`"parsed": false`), the participant is kept, and
     trials or participants are excluded only by the paper's own rule. Never `valid = all(...)` over the
     trials' parse status; a line that applies the paper's printed exclusion rule carries
-    `# exclusion: <evidence id>` on the line above, citing the quote that states the rule.
+    `# exclusion: <evidence id>` on the line above, citing the quote that states which participants,
+    trials or responses were excluded.
 - Run `python .opencode/skills/build/check_program.py program.json` (it also runs inside check_package.py), then `python .opencode/skills/build/check_package.py package/<paper-slug>` (required files,
   JSON validity, bindings, `sources/SOURCE.json`, smoke test, and `check_validity.py`) and repair until it
   passes. `check_validity.py .` runs the adapter offline with a stand-in model (all arms, then each arm
@@ -291,7 +295,7 @@ Rules the runner depends on:
   fails on a `not-told` term in text you wrote, a passage of the paper about withheld information
   that no `not-told` entry lists, a trial history with no `replay-memory` decision (or a design that
   does not match the prompts), `all(...)` over the trials' parse status, and missing instructions with
-  severity `check` (or `blocking` while the adapter runs). Fix the prompt, never the inventory: removing a term or an entry to pass is a fabrication. The
+  severity `check` (or `blocking` while the adapter runs) or without a `decision` issue. Fix the prompt, never the inventory: removing a term or an entry to pass is a fabrication. The
   smoke test and every export run the package in the project layout, so `task/adapter.py` may read
   `../../program.json` (and `effects.json`, `capabilities.json`, `sources/` beside it), nothing else outside the package.
 
@@ -399,7 +403,8 @@ A built-in op must read fields that both the human loader's sessions and the ada
 carry (the same path in both; `trials.0.answer` indexes a list); the check runs the adapter with a
 stand-in model to make sure. Run `python .opencode/skills/build/effects.py .` until it prints `PASS`; it
 also fails an effect whose quotes or study print N while `reported.n` is empty and `missing` says
-nothing about it, a `reported.n` none of its quotes prints (unless `missing` says where it comes from),
+nothing about it, a `reported.n` its quotes do not account for (printed, a total minus printed exclusions, a multiple of
+a per-group N, the sum of the cells, or df + 1 / df + 2 of a printed test),
 a signed estimate whose sign disagrees with its own cells, a CI that does not contain its value, and
 an unsigned printed estimate without cells or `signBasis`. Its warnings list program
 nodes no hypothesis or effect reaches; link them where the paper links them. With human data, run

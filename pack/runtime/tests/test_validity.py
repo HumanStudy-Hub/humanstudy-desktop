@@ -90,7 +90,11 @@ class Validity(FakePdfMixin, unittest.TestCase):
                           {"id": "e-form", "path": "paper.pdf", "locator": {"page": 2},
                            "quote": "All twelve items were displayed on one page."},
                           {"id": "e-excl", "path": "paper.pdf", "locator": {"page": 2},
-                           "quote": "Participants with any missing response were excluded from the analysis."}]
+                           "quote": "Participants with any missing response were excluded from the analysis."},
+                          {"id": "e-cross", "path": "paper.pdf", "locator": {"page": 2},
+                           "quote": "A fixation cross was displayed on the screen and removed after 500 ms."},
+                          {"id": "e-rec", "path": "paper.pdf", "locator": {"page": 2},
+                           "quote": "Responses were recorded with a keypress. Past research has shown that learning is slow."}]
         (root / "program.json").write_text(json.dumps(p), encoding="utf-8")
         (root / "paper.pdf").write_bytes(b"%PDF-1.4 stub")
         pkg = root / "package/x"
@@ -153,11 +157,19 @@ class Validity(FakePdfMixin, unittest.TestCase):
         # a frame word of the statement ("told") grounds nothing; a term must be a word of what was withheld
         gamed = dict(ENTRY, terms=["told", "participants"])
         unrelated = dict(ENTRY, terms=["blue key"], withheld="the payout schedule")
-        found = self.problems(self.project([self.not_told([gamed, unrelated])]))
+        long_term = dict(ENTRY, terms=["they had to learn that the red key"])
+        found = self.problems(self.project([self.not_told([gamed, unrelated, long_term])]))
         self.assertTrue(any("not-told[0]: no term is a content word" in m for m in found), found)
         self.assertTrue(any("not-told[1]: no term shares a word with `withheld`" in m for m in found), found)
+        self.assertTrue(any("not-told[2]: terms are short phrases" in m for m in found), found)
+        # notApplicable on a sentence about the participants needs a check issue the researcher sees
+        dodge = dict(ENTRY, terms=[], withheld="", notApplicable="describes the computational model")
+        found = self.problems(self.project([self.not_told([dodge])]))
+        self.assertTrue(any("marked not applicable, but the statement is about the participants" in m for m in found), found)
         na = dict(ENTRY, terms=[], withheld="", notApplicable="about the experimenters")
-        report = check_validity.check(self.project([self.not_told([na])]))
+        confirm = {"id": "i-na", "title": "Not applicable", "severity": "check", "reason": "r", "impact": "i",
+                   "suggestedAction": "s", "evidenceIds": [], "nodeId": "task", "fieldId": "not-told"}
+        report = check_validity.check(self.project([self.not_told([na])], issues=[confirm]))
         self.assertFalse(any("not-told" in m for m, _ in report["problems"]), report["problems"])
         self.assertTrue(any("not applicable: about the experimenters" in n for n in report["notes"]), report["notes"])
 
@@ -180,6 +192,11 @@ class Validity(FakePdfMixin, unittest.TestCase):
                                                     issues=[self.MEMORY_ISSUE])), [])
         found = self.problems(self.project([nt, self.memory("same-screen")], issues=[self.MEMORY_ISSUE]))
         self.assertTrue(any("same-screen" in m and "needs evidence" in m for m in found), found)
+        # a methods sentence that merely mentions a screen, or "recorded"/"past", is not that evidence
+        found = self.problems(self.project([nt, self.memory("same-screen", evidence=["e-cross"])], issues=[self.MEMORY_ISSUE]))
+        self.assertTrue(any("same-screen" in m and "needs evidence" in m for m in found), found)
+        found = self.problems(self.project([nt, self.memory("full-log", evidence=["e-rec"])], issues=[self.MEMORY_ISSUE]))
+        self.assertTrue(any("(design 'full-log') is not what participants saw" in m for m in found), found)
         found = self.problems(self.project([nt, self.memory("last-trial")], issues=[self.MEMORY_ISSUE]))
         self.assertTrue(any("design is 'last-trial' but the prompts carry every earlier trial" in m for m in found), found)
         found = self.problems(self.project([nt, self.memory("full-log")]))
@@ -202,7 +219,7 @@ class Validity(FakePdfMixin, unittest.TestCase):
         self.assertTrue(any("one unparsed reply drops the whole participant" in m for m in found), found)
         cited = adapter(valid='\n            # exclusion: e-excl\n            "valid": all(t["parsed"] for t in trials)')
         self.assertEqual(self.problems(self.project(mem, cited, issues=[self.MEMORY_ISSUE])), [])
-        wrong = adapter(valid='\n            # exclusion: e-hist\n            "valid": all(t["parsed"] for t in trials)')
+        wrong = adapter(valid='\n            # exclusion: e-cross\n            "valid": all(t["parsed"] for t in trials)')
         found = self.problems(self.project(mem, wrong, issues=[self.MEMORY_ISSUE]))
         self.assertTrue(any("one unparsed reply drops the whole participant" in m for m in found), found)
 
@@ -227,6 +244,14 @@ class Validity(FakePdfMixin, unittest.TestCase):
         (root / "package/x/study.json").write_text(json.dumps({"runnableArms": ["c", "hint"]}), encoding="utf-8")
         found = self.problems(root)
         self.assertTrue(any("tells participants what they were not told (red key)" in m for m in found), found)
+        # an arm only the adapter declares, or task.json conditions keyed by name
+        (root / "package/x/study.json").unlink()
+        adapter_file = root / "package/x/task/adapter.py"
+        adapter_file.write_text("ARMS = ['c', 'hint']\n" + text, encoding="utf-8")
+        self.assertTrue(any("(red key)" in m for m in self.problems(root)))
+        adapter_file.write_text(text, encoding="utf-8")
+        (root / "package/x/task/task.json").write_text(json.dumps({"conditions": {"c": {}, "hint": {}}}), encoding="utf-8")
+        self.assertTrue(any("(red key)" in m for m in self.problems(root)))
 
     def test_static_reading_skips_the_papers_quotes_and_wrapped_verbatim_lines_are_exempt(self):
         pkg = self.project([self.not_told([ENTRY])]) / "package/x"
@@ -257,8 +282,13 @@ class Validity(FakePdfMixin, unittest.TestCase):
                  "impact": "i", "suggestedAction": "s", "evidenceIds": [], "nodeId": "task", "fieldId": "briefing"}
         found = self.problems(self.project([self.not_told([ENTRY]), field], issues=[issue]))
         self.assertTrue(any("missing participant instructions has severity 'check'" in m for m in found), found)
+        self.assertTrue(any("missing participant instructions have no `decision` issue" in m for m in found), found)
         found = self.problems(self.project([self.not_told([ENTRY]), field], issues=[dict(issue, severity="decision")]))
         self.assertFalse(any("missing participant instructions" in m for m in found), found)
+        # an issue on the node without a fieldId counts too
+        node_level = dict(issue, fieldId=None)
+        found = self.problems(self.project([self.not_told([ENTRY]), field], issues=[node_level]))
+        self.assertTrue(any("severity 'check'" in m for m in found), found)
         # blocking only when the adapter refuses to run without the text
         blocking = [dict(issue, severity="blocking")]
         found = self.problems(self.project([self.not_told([ENTRY]), field], issues=blocking))
@@ -315,9 +345,17 @@ class EffectRules(unittest.TestCase):
         self.assertEqual(self.rules(doc), [])
         # printed N for the whole sample, a subgroup effect: missing says why, so no N is forced on it
         self.assertEqual(self.rules(self.effect(n=None, missing=["N of the LAC subgroup is not printed"])), [])
-        # an N the quotes do not print is not this effect's N
-        found = self.rules(self.effect(n=80))
-        self.assertTrue(any("reported.n = 80 but its quotes print N = 40" in m for m in found), found)
+        # an N the quotes do not print or account for is not this effect's N; `missing` does not excuse it
+        found = self.rules(self.effect(n=81))
+        self.assertTrue(any("reported.n = 81, but its quotes print N = 40" in m for m in found), found)
+        found = self.rules(self.effect(n=81, missing=["SDs n/a"]))
+        self.assertTrue(any("reported.n = 81" in m for m in found), found)
+        # an N the quotes account for: twice a per-group N, total minus exclusions, df + 1 (t(39))
+        self.assertEqual(self.rules(self.effect(n=80)), [])
+        self.program["evidence"][-1]["quote"] = "Of the 48 participants, 8 were excluded."
+        self.assertEqual(self.rules(self.effect(n=40)), [])
+        self.assertEqual(self.rules(self.effect(n=None, missing=["SDs n/a"]))[:1],
+                         [m for m in self.rules(self.effect(n=None)) if "print N" in m][:1])
 
     def test_a_ci_must_contain_its_value(self):
         found = self.rules(self.effect(estimates=[{"metric": "standardized_mean_difference", "value": -0.322,
@@ -398,6 +436,14 @@ class SkippedTables(FakePdfMixin, unittest.TestCase):
         self.assertFalse(any("marked missing" in m for m in found), found)
         layout = "Table 2\nResults\nTable A1\nParameter correlations\n" + self.GRID
         found = self.problems(layout, caption="Table 2\nResults\nTable A1\nParameter correlations")
+        self.assertTrue(any("Table A1 is marked missing" in m for m in found), found)
+
+    def test_captions_below_their_tables(self):
+        layout = self.GRID + "\nTable 2\nResults\nTable A1\nParameter correlations (image)\n"
+        found = self.problems(layout, caption="Table 2\nResults\nTable A1\nParameter correlations")
+        self.assertFalse(any("marked missing" in m for m in found), found)
+        layout = self.GRID + "\nTable 2\nResults\n" + self.GRID + "\nTable A1\nCorrelations"
+        found = self.problems(layout, caption="Table 2\nResults\nTable A1\nCorrelations")
         self.assertTrue(any("Table A1 is marked missing" in m for m in found), found)
 
     def test_prose_with_statistics_and_cited_supplementary_tables_are_not(self):

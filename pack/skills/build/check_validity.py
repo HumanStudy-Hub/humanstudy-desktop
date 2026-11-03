@@ -79,6 +79,8 @@ PARSE_STATUS = re.compile(r"pars|\bvalid\b|\bok\b|\b(?:choice|response|answer|re
 VALID_FLAG = re.compile(r"valid|\bok\b|complete|includ|keep|usable|exclu", re.I)
 TRIALS = re.compile(r"trial|resp|answer|choice|repl|round|item|rating", re.I)
 EXCLUSION_MARK = re.compile(r"#\s*exclusion:\s*([\w.-]+)", re.I)
+EXCLUDED_WHO = re.compile(r"participant|subject|respondent|respons|answer|trial|incomplete|fail|missing|attention|"
+                          r"data|session|catch", re.I)
 EXCLUSION_WORDS = re.compile(r"exclu|remov|discard|omit|drop|not (?:included|analy[sz]ed)", re.I)
 INSTRUCTION = re.compile(r"instruction|briefing|wording", re.I)
 # words that say "not told" (or name the participants) and so ground nothing about what was withheld
@@ -88,13 +90,27 @@ explicitly directly initially ever specifically cued explained explanation infor
 cover story believe led deceived kept remained participant participants subject subjects respondent respondents
 volunteers player players children student students individuals people patients observers listeners raters
 workers infants adults never were was are task experiment study""".split())
-HISTORY_WORDS = re.compile(r"previous|earlier|past|history|histories|record|log\b|cumulative|so far|running total|"
-                           r"preceding|prior (?:trials?|choices?|outcomes?|rounds?)|all (?:of )?(?:their|the) "
-                           r"(?:choices|trials|outcomes|rounds)|feedback (?:on|about) (?:all|each)", re.I)
+_SEEN = r"(?:choices?|outcomes?|trials?|responses?|rounds?|decisions?|selections?|rewards?|earnings|payoffs?|results?)"
+HISTORY_WORDS = re.compile(
+    r"\b(?:their|his|her|own|participants'?|subjects'?|the) (?:own )?(?:previous|earlier|past|prior|preceding) " + _SEEN +
+    r"|\bhistory of (?:their |the |all )?(?:previous |past )?" + _SEEN +
+    r"|\b(?:choice|outcome|reward|trial|response|payoff) histor(?:y|ies)\b"
+    r"|\ball (?:of )?(?:their|the) (?:previous |earlier |past )?" + _SEEN + r" (?:so far|were (?:shown|displayed|visible))"
+    r"|\b(?:shown|displayed|visible|presented)\b[^.]{0,60}\b(?:previous|earlier|past|prior|preceding) " + _SEEN +
+    r"|\b(?:previous|earlier|past|prior|preceding) " + _SEEN + r"[^.]{0,40}\b(?:were|was|remained) (?:shown|displayed|visible|presented)",
+    re.I)
 MATERIAL_FIELD = re.compile(r"instruction|debrief|briefing|item|question|prompt|stimul|scenario|vignette|scale|"
                             r"script|screen|message|text|wording|consent|cover", re.I)
 DESIGNS = ("none", "last-trial", "summary", "same-screen", "full-log", "conversation", "other")
-SCREEN_WORDS = re.compile(r"\b(?:page|screen|visible|displayed|questionnaire|survey|form|scale|items)\b", re.I)
+SCREEN_WORDS = re.compile(r"\b(?:same|one|single|a) (?:web ?)?(?:page|screen)\b|\ball (?:of )?(?:the )?(?:\w+ )?(?:items|questions)\b"
+                          r"[^.]{0,60}\b(?:together|simultaneously|at once|on (?:one|a single|the same) (?:page|screen))"
+                          r"|\b(?:items|questions) (?:were |was )?(?:presented|shown|displayed) (?:together|simultaneously|at once)",
+                          re.I)
+MAX_TERM_WORDS = 3
+# a not-told sentence about someone other than the participants (blind experimenters, other studies)
+OTHERS = re.compile(r"experimenters?|researchers?|raters?|coders?|assessors?|interviewers?|confederates?|"
+                    r"investigators?|staff|clinicians?|blind to|double.blind|et al|(?:previous|prior|other|earlier) "
+                    r"(?:studies|work|research)|animals?|rats?|mice|monkeys?", re.I)
 FULL = ("full-log", "conversation")
 CALL_CAP = 2500          # stand-in calls over all arms before the capture stops
 ARM_CAP = 600            # per arm (every arm study.json or task.json names is run on its own)
@@ -215,6 +231,11 @@ def inventory(program):
             if str(e.get("notApplicable") or "").strip():
                 continue
             terms = [t for t in e.get("terms") or [] if isinstance(t, str) and len(norm(t)) >= 3]
+            long_terms = [t for t in terms if len(norm(t).split()) > MAX_TERM_WORDS]
+            if long_terms:
+                problems.append(("%s: terms are short phrases a leaking prompt would contain (at most %d words): %s"
+                                 % (at, MAX_TERM_WORDS, ", ".join(repr(t) for t in long_terms[:3])),
+                                 'split them: "red key", "pays more", not "they had to learn that the red key"'))
             if not str(e.get("withheld") or "").strip() or not terms:
                 problems.append(("%s: needs `withheld` (what participants did not know) and `terms` (words a prompt "
                                  "that leaks it would contain)" % at,
@@ -273,7 +294,7 @@ def capture(pkg):
         print("@@CAPTURE@@" + json.dumps(out))
         return
 
-    def run(arms, cap):
+    def run(arms, cap, n=1):
         prompts = []
 
         def llm(prompt, *a, **k):
@@ -283,7 +304,7 @@ def capture(pkg):
             return _standin(prompts[-1])
         rec = {"arms": arms, "calls": 0, "sessions": None, "capped": False, "error": None}
         try:
-            sessions = mod.run_sessions(llm, 20261102, 1, arms=arms) if arms else mod.run_sessions(llm, 20261102, 1)
+            sessions = mod.run_sessions(llm, 20261102, n, arms=arms) if arms else mod.run_sessions(llm, 20261102, n)
             rec["sessions"] = len(sessions) if isinstance(sessions, list) else None
         except _Stop:
             rec["capped"] = True
@@ -300,20 +321,33 @@ def capture(pkg):
         print("@@RUN@@" + json.dumps(rec, ensure_ascii=False), flush=True)   # kept if a later run hangs
         return rec
 
-    first = run(None, CALL_CAP)
-    out["runs"].append(first)
-    # every named arm on its own: an arm the default call never reaches is still read
-    study = _json(pkg / "study.json") or {}
-    task = _json(pkg / "task/task.json") or {}
-    names = list(study.get("runnableArms") or [])
-    arms = task.get("arms")
-    names += [a if isinstance(a, str) else a.get("id") or a.get("name") for a in arms
-              if isinstance(a, (str, dict))] if isinstance(arms, list) else []
-    names += [c.get("arm") or c.get("id") for c in task.get("conditions") or [] if isinstance(c, dict)
-              and c.get("runnable", True)] if isinstance(task.get("conditions"), list) else []
-    for arm in [a for a in dict.fromkeys(names) if isinstance(a, str) and a][:12]:
+    names = arm_names(pkg, mod)
+    # one participant per named arm (at least two) in the default call, then every named arm on its own:
+    # an arm the default call never reaches is still read
+    out["runs"].append(run(None, CALL_CAP, n=min(12, max(2, len(names)))))
+    for arm in names[:12]:
         out["runs"].append(run([arm], ARM_CAP))
     print("@@CAPTURE@@" + json.dumps({"error": out["error"]}, ensure_ascii=False), flush=True)
+
+
+def _names(value):
+    """Arm names from a list of names or {id|arm|name} objects, or a mapping keyed by name."""
+    if isinstance(value, dict):
+        return [k for k, v in value.items() if not (isinstance(v, dict) and v.get("runnable") is False)]
+    if isinstance(value, (list, tuple)):
+        return [a if isinstance(a, str) else a.get("arm") or a.get("id") or a.get("name") for a in value
+                if isinstance(a, str) or (isinstance(a, dict) and a.get("runnable", True))]
+    return []
+
+
+def arm_names(pkg, mod=None):
+    """Every arm the package names: study.json runnableArms, task.json arms/conditions, the adapter's ARMS."""
+    study = _json(pkg / "study.json") or {}
+    task = _json(pkg / "task/task.json") or {}
+    names = _names(study.get("runnableArms")) + _names(task.get("arms")) + _names(task.get("conditions"))
+    for attr in ("RUNNABLE_ARMS", "ARMS", "RUNNABLE", "CONDITIONS"):
+        names += _names(getattr(mod, attr, None))
+    return [a for a in dict.fromkeys(names) if isinstance(a, str) and a]
 
 
 def prompts_of(pkg, timeout=300):
@@ -486,8 +520,9 @@ def excused(path, line_no, evidence):
         return False
     for text in lines[max(0, line_no - 3):line_no]:
         m = EXCLUSION_MARK.search(text)
-        if m and EXCLUSION_WORDS.search((evidence.get(m.group(1)) or {}).get("quote") or ""):
-            return True
+        quote = (evidence.get(m.group(1)) or {}).get("quote") or "" if m else ""
+        if m and EXCLUSION_WORDS.search(quote) and EXCLUDED_WHO.search(quote):
+            return quote
     return False
 
 
@@ -512,9 +547,19 @@ def check(root, package=None, capture_prompts=True):
             'add to the procedure node a field {"id": "not-told", "label": "What participants were not told", '
             '"origin": "reported", "state": "confirmed", "value": [...], "evidenceIds": [...]} ([] when the paper '
             'says nothing was withheld)')
+    issues_on = {(i.get("nodeId"), i.get("fieldId")) for i in program.get("issues") or [] if isinstance(i, dict)
+                 and i.get("severity") in ("check", "decision")}
+    not_applicable = 0
     for e in entries:
         if str(e.get("notApplicable") or "").strip():
+            not_applicable += 1
             notes.append("%s marked not applicable: %s" % (e["_where"], str(e["notApplicable"])[:200]))
+            node_id = e["_where"].split(".not-told", 1)[0]
+            if not OTHERS.search(str(e.get("statement") or "")) and (node_id, "not-told") not in issues_on:
+                add("%s: marked not applicable, but the statement is about the participants" % e["_where"],
+                    "list what was withheld and its terms; if it truly does not limit what participants may be told, "
+                    "add a `check` issue on this field (nodeId %s, fieldId not-told) saying why, so the researcher "
+                    "confirms it" % node_id)
         if not _on_page(e, pages):
             add("%s: the statement is not on p. %s" % (e["_where"], e.get("page")),
                 "copy the sentence as printed and cite the page it is on")
@@ -620,7 +665,9 @@ def check(root, package=None, capture_prompts=True):
         evidence = {ev.get("id"): ev for ev in program.get("evidence") or [] if isinstance(ev, dict)}
         for rel in ("task/adapter.py", "evaluation/evaluation.py"):
             for line_no, code in drops_participant(pkg / rel):
-                if excused(pkg / rel, line_no, evidence):
+                quote = excused(pkg / rel, line_no, evidence)
+                if quote:
+                    notes.append("%s:%d applies the paper's exclusion rule: \"%s\"" % (rel, line_no, quote[:200]))
                     continue
                 add("%s:%d: one unparsed reply drops the whole participant (%s)" % (rel, line_no, code[:120]),
                     "record unparsed replies per trial (e.g. trial['parsed'] = False) and exclude trials or "
@@ -633,16 +680,20 @@ def check(root, package=None, capture_prompts=True):
     for n, f in _fields(program):
         if f.get("state") != "missing" or not INSTRUCTION.search("%s %s" % (f.get("id"), f.get("label"))):
             continue
-        for i in issues:
-            if i.get("nodeId") == n.get("id") and i.get("fieldId") == f.get("id") and (
-                    i.get("severity") == "check" or (i.get("severity") == "blocking" and runs_whole)):
+        mine = [i for i in issues if i.get("nodeId") == n.get("id") and i.get("fieldId") in (f.get("id"), None, "")]
+        if not any(i.get("severity") == "decision" or (i.get("severity") == "blocking" and not runs_whole) for i in mine):
+            add("%s.%s: missing participant instructions have no `decision` issue" % (n.get("id"), f.get("id")),
+                "add a decision issue on this field: the researcher supplies the printed text or accepts the "
+                "stand-in wording the adapter uses (say which in suggestedAction)")
+        for i in mine:
+            if i.get("severity") == "check" or (i.get("severity") == "blocking" and runs_whole):
                 add("%s: issue %s on missing participant instructions has severity %r" % (
                     "%s.%s" % (n.get("id"), f.get("id")), i.get("id"), i.get("severity")),
                     "missing instruction wording is a `decision` (the researcher supplies the printed text or accepts "
                     "the stand-in wording the adapter uses; say which in suggestedAction), or `blocking` only when the "
                     "adapter refuses to run without it (this one runs); never a `check`, and never written into a "
                     "verbatim field")
-    return {"problems": problems, "notes": notes, "method": method}
+    return {"problems": problems, "notes": notes, "method": method, "notApplicable": not_applicable}
 
 
 def main(argv=None):
@@ -667,7 +718,9 @@ def main(argv=None):
     if report["problems"]:
         print("FAIL %d validity problem(s)" % len(report["problems"]))
         return 1
-    print("PASS package validity")
+    na = report.get("notApplicable")
+    print("PASS package validity" + (" (%d not-told entr%s marked not applicable: see the notes)"
+                                     % (na, "y" if na == 1 else "ies") if na else ""))
     return 0
 
 

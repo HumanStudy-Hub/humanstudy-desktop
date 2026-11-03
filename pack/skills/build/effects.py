@@ -10,16 +10,18 @@ sessions do not: human and AI sessions must be computed the same way. (With huma
 or $HUMANSTUDY_HUMAN_DATA the human side is read too; a field neither side has is only reported.)
 
 The rules and the computation live in ../export/agent/effects_core.py (shipped with every agent export).
-Two build rules are checked here only (effects_core.py, which HumanStudy-Bench copies, is unchanged):
+These build rules are checked here only (effects_core.py, which HumanStudy-Bench copies, is unchanged):
 
   sample size   an effect whose quotes print N (N = 40, n = 39, 120 participants), or whose study has a
                 participant count in program.json, records it in reported.n (or cells.<arm>.n), or says in
-                reported.missing why this effect's N is not printed (a subgroup, a different unit).
+                reported.missing why this effect's N is not printed (a subgroup, a different unit). A recorded
+                reported.n must be accounted for by its quotes (printed, a printed total minus a printed
+                exclusion count, a multiple of a per-group N, the sum of the cells, df + 1 or df + 2).
   sign          a difference-type estimate (d, dz, g, mean or risk difference, log odds ratio) is treatment
                 minus reference: when the cells print both arms, its sign must be the sign of their
                 difference; when they do not and the paper prints the value without a sign, the estimate
                 states `signBasis` (the printed words that say which arm was higher). A sign is never
-                chosen to match the prediction.
+                chosen to match the prediction. A printed CI must contain its value (a flipped sign flips it).
 """
 import importlib.util
 import json
@@ -115,8 +117,10 @@ SIGNED = ("mean_difference", "standardized_mean_difference", "hedges_g", "risk_d
 DIRECTIONAL = ("two_groups", "paired")
 PRINTED_N = re.compile(r"(?<![\w.])[Nn]\s*=\s*(\d[\d,]*)(?![\d.])|(?<![\w.])(\d[\d,]*)\s+(?:participants|subjects|"
                        r"respondents|volunteers|adults|children|students|individuals|patients|people|workers|players)\b")
-N_MISSING = re.compile(r"(?<![\w])[Nn](?![\w])|sample size|number of (?:participants|subjects|respondents|"
-                       r"observations|cases|people|individuals)", re.I)
+# a `missing` entry about N ("n of the correlation", "N of the LAC subgroup", "sample size"), not "SDs n/a"
+N_MISSING = re.compile(r"(?<![\w/])N(?![\w/])|sample size|number of (?:participants|subjects|respondents|observations|"
+                       r"cases|people|individuals)", re.I)
+DF = re.compile(r"\b(?:t|r|F\s*\(\s*\d+\s*,)\s*\(?\s*(\d+)(?:\.\d+)?\s*\)")
 N_FIELDS = ("n-analysed", "n-completed", "n-recruited")
 
 
@@ -141,6 +145,20 @@ def _study_n(program, study):
                 if isinstance(f, dict) and f.get("id") == key and f.get("state") != "missing" and _first_number(f.get("value")) is not None:
                     return "%s.%s" % (n.get("id"), key), str(f.get("value"))[:60]
     return None
+
+
+def _n_follows(n, printed, cells, quotes):
+    """True when the quotes account for n: printed, a printed total minus a printed exclusion count, a small
+    multiple of a printed per-group N, the sum of the cells' n, or df + 1 / df + 2 of a printed test."""
+    numbers = {int(x) for q in quotes for x in effects_core.numbers_in(q) if float(x).is_integer() and x > 0}
+    if n in printed or (cells and sum(cells) == n):
+        return True
+    if any(a - b == n for a in printed for b in numbers if b < a):
+        return True
+    if any(n == k * p for p in printed for k in range(2, 7)):
+        return True
+    dfs = {int(m.group(1)) for q in quotes for m in DF.finditer(q)}
+    return any(n in (d + 1, d + 2) for d in dfs)
 
 
 def _share(cell):
@@ -180,10 +198,12 @@ def build_rules(effects, program):
             out.append("%s: its quotes print N (%s) but reported.n and cells.<arm>.n are empty; record the N this "
                        "effect is computed on, as printed, or say in reported.missing why none of these is its N"
                        % (where, ", ".join(dict.fromkeys(printed))))
-        elif has_n and printed_values and not said and _num(rep.get("n")) is not None \
-                and rep["n"] not in printed_values and sum(given[1:]) != rep["n"]:
-            out.append("%s: reported.n = %g but its quotes print N = %s; use the N printed for this effect, or say in "
-                       "reported.missing where its N comes from" % (where, rep["n"], ", ".join(map(str, sorted(printed_values)))))
+        elif has_n and printed_values and _num(rep.get("n")) is not None \
+                and not _n_follows(rep["n"], printed_values, given[1:], quotes):
+            out.append("%s: reported.n = %g, but its quotes print N = %s and nothing they print gives %g (a printed "
+                       "N, a total minus exclusions, a multiple of a per-group N, the sum of the cells, or df + 1 or "
+                       "df + 2 of a printed test); record the N this effect is computed on and cite the quote that "
+                       "prints it" % (where, rep["n"], ", ".join(map(str, sorted(printed_values))), rep["n"]))
         elif not has_n and not said:
             study = _study_n(program, e.get("studyId"))
             if study:

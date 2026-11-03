@@ -142,11 +142,12 @@ def _starts(lines):
 
 
 def table_section(text, key, following=""):
-    """The lines of one table: from its caption to the next table or figure caption.
+    """The lines of one table, never another table's rows.
 
-    A page that prints only this table is read whole (its caption may sit below it); a page with several
-    captions is read from this table's caption on, so another table's rows are never counted for it. A
-    caption at the foot of a page continues on the next page (`following`) up to that page's first caption."""
+    A page that prints only this table is read whole. On a page with several captions: when the first
+    caption has table rows above it, captions sit below their tables and the table is the lines between
+    the previous caption and its own; otherwise it is the lines from its caption to the next one, a
+    caption at the foot of a page continuing on the next page (`following`) up to that page's first caption."""
     lines = (text or "").splitlines()
     starts = _starts(lines)
     own = [i for i in starts if LAYOUT_CAPTION.match(lines[i])
@@ -155,11 +156,15 @@ def table_section(text, key, following=""):
         return "" if starts else text
     if len(starts) == 1:
         return text
-    stop = next((i for i in starts if i > own[0]), None)
+    at = own[0]
+    if len(grid_rows("\n".join(lines[:starts[0]]))) >= GRID_ROWS:   # captions below their tables
+        before = [i for i in starts if i < at]
+        return "\n".join(lines[(before[-1] + 1 if before else 0):at])
+    stop = next((i for i in starts if i > at), None)
     if stop is not None:
-        return "\n".join(lines[own[0]:stop])
+        return "\n".join(lines[at:stop])
     nxt = (following or "").splitlines()
-    return "\n".join(lines[own[0]:] + nxt[:(_starts(nxt) or [len(nxt)])[0]])
+    return "\n".join(lines[at:] + nxt[:(_starts(nxt) or [len(nxt)])[0]])
 
 
 def table_problems(where, f):

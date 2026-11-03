@@ -110,7 +110,7 @@ def printed_license(path):
             if not ABOUT_ITSELF.search(sentence) or NOT_ITSELF.search(before):
                 continue
             named = spdx(flat[m.start():m.end() + 80])
-            linked = url_license(flat[m.start():m.end() + 400])
+            linked = url_license(flat[m.start():stop if 0 <= stop < m.end() + 400 else m.end() + 400])   # same sentence
             if linked and (not re.search(r"\d\.0$", named) or linked.startswith(named.rsplit("-", 1)[0])):
                 named = linked   # the URL carries the version (and the NC/ND/SA terms) the sentence may leave out
             found = (named, "p. %d: %s" % (number, sentence[:300]))
