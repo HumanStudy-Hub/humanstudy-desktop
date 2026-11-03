@@ -31,6 +31,8 @@ export type PackageProblem =
   | { file: PackageFile; kind: 'no-entry'; entry: string }
 
 export interface PackageReadiness {
+  /** Community revisions currently have no authenticated maintainer-review attestation. */
+  runNotice?: string
   /** At least one folder under package/. */
   exists: boolean
   ready: boolean
