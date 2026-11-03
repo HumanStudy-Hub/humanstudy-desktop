@@ -3,7 +3,7 @@
 import { build } from 'esbuild'
 import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
@@ -242,4 +242,24 @@ test('T11: the Simulation tab rechecks when an input of the build checks changes
   for (const rel of ['sources/SOURCE.json', 'effects.json', 'paper.pdf'])
     assert.notEqual(a, S.readinessStamp(base.map((e) => e.rel === rel ? { ...e, mtime: 2 } : e)), rel)
   assert.equal(a, S.readinessStamp(base.map((e) => e.rel === 'build.log' ? { ...e, mtime: 2 } : e)), 'unrelated files do not recheck')
+})
+
+test('T11 review: the paper named by source.filename and files inside a linked sources/ folder are inputs', async () => {
+  const dir = project({ k: COMPLETE })
+  const program = { ...PROGRAM, source: { ...PROGRAM.source, filename: 'papers/main.pdf' } }
+  writeFileSync(join(dir, 'program.json'), JSON.stringify(program))
+  mkdirSync(join(dir, 'papers'))
+  writeFileSync(join(dir, 'papers/main.pdf'), '%PDF-1.4 a')
+  const outside = mkdtempSync(join(tmpdir(), 'linked-sources-'))
+  writeFileSync(join(outside, 'SOURCE.json'), '{}')
+  try { symlinkSync(outside, join(dir, 'sources'), 'junction') } catch { return } // no links allowed here
+  await M.projectPackageReadiness(dir)
+  let n = scienceCalls
+  writeFileSync(join(dir, 'papers/main.pdf'), '%PDF-1.4 bb')
+  await M.projectPackageReadiness(dir)
+  assert.equal(scienceCalls - n, 1, 'source.filename')
+  n = scienceCalls
+  writeFileSync(join(outside, 'SOURCE.json'), '{"changed": true}')
+  await M.projectPackageReadiness(dir)
+  assert.equal(scienceCalls - n, 1, 'a file inside a linked folder')
 })

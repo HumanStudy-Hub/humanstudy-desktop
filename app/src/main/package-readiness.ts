@@ -37,8 +37,8 @@ export function configureScientificChecks(check: ScientificCheck, version: strin
   scientificCheck = check; checkVersion = version; results.clear()
 }
 
-/** What the build checks read, as metadata: package/, sources/, human-data/, the files beside program.json
- *  and every evidence `path`. ctime and inode are included, so restoring a size and mtime cannot bring
+/** What the build checks read, as metadata: package/, sources/, human-data/, the files beside program.json,
+ *  the paper (`source.filename`) and every evidence `path`. ctime and inode are included, so restoring a size and mtime cannot bring
  *  back an earlier pass. Throws when the inputs cannot be listed. */
 export async function scientificStamp(project: string): Promise<string> {
   const rows: unknown[] = []
@@ -51,8 +51,12 @@ export async function scientificStamp(project: string): Promise<string> {
       const link = await lstat(path)
       const info = link.isSymbolicLink() ? await stat(path) : link
       rows.push([path, info.size, info.mtimeMs, info.ctimeMs, info.ino, info.mode, link.isSymbolicLink() ? await realpath(path) : ''])
-      if (info.isDirectory() && !link.isSymbolicLink())
+      // A linked folder is walked too (sources.py lists and hashes through it); `seen` stops link loops.
+      const real = link.isSymbolicLink() ? await realpath(path) : path
+      if (info.isDirectory() && !seen.has('dir:' + real)) {
+        seen.add('dir:' + real)
         for (const name of (await readdir(path)).sort()) if (name !== '__pycache__' && name !== '.git') await walk(join(path, name))
+      }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
       if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error
@@ -65,8 +69,9 @@ export async function scientificStamp(project: string): Promise<string> {
   try {
     const program = JSON.parse(await readFile(join(project, 'program.json'), 'utf8'))
     const root = resolve(project)
-    for (const e of Array.isArray(program?.evidence) ? program.evidence : []) {
-      const p = typeof e?.path === 'string' ? resolve(root, e.path) : null
+    const paths = [program?.source?.filename, ...(Array.isArray(program?.evidence) ? program.evidence.map((e: { path?: unknown }) => e?.path) : [])]
+    for (const rel of paths) {
+      const p = typeof rel === 'string' ? resolve(root, rel) : null
       if (p && p.startsWith(root + sep)) await walk(p)
     }
   } catch { /* no readable program: the checks report it */ }

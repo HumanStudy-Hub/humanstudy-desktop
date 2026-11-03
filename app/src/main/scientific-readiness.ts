@@ -27,15 +27,16 @@ export function parseScientificReport(stdout: string): ScientificProblem[] {
 export async function scientificReadiness(python: string | null, files: [string, string][], project: string, slug: string, bin: string,
   timeout = SCIENTIFIC_TIMEOUT_MS): Promise<ScientificProblem[]> {
   if (!python) return [RUNTIME_MISSING]
+  // Two separate folders: package code (confined by sandbox_run, which only confines files on macOS) works
+  // under `home`, never in the folder that holds the checker.
   const work = await mkdtemp(join(tmpdir(), 'hs-readiness-'))
+  const home = await mkdtemp(join(tmpdir(), 'hs-readiness-home-'))
   try {
     for (const [rel, content] of files) {
       const path = join(work, 'checks', ...rel.split('/'))
       await mkdir(dirname(path), { recursive: true })
       await writeFile(path, content, 'utf8')
     }
-    const home = join(work, 'home')
-    await mkdir(home, { recursive: true })
     const win = process.platform === 'win32'
     const system = win ? `${process.env.SystemRoot || 'C:\\Windows'}\\System32` : '/usr/bin:/bin:/usr/sbin:/sbin'
     const stdout = await new Promise<string>((resolve, reject) => {
@@ -51,5 +52,8 @@ export async function scientificReadiness(python: string | null, files: [string,
     })
     return parseScientificReport(stdout)
   } catch { return [CHECKS_FAILED] }
-  finally { await rm(work, { recursive: true, force: true }).catch(() => undefined) }
+  finally {
+    await rm(work, { recursive: true, force: true }).catch(() => undefined)
+    await rm(home, { recursive: true, force: true }).catch(() => undefined)
+  }
 }

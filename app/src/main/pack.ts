@@ -47,7 +47,7 @@ const HELPERS = ['skills/build/program_io.py', 'skills/build/program_lock.py', '
   'skills/build/check_quotes.py', 'skills/build/check_results.py', 'skills/build/check_verbatim.py', 'skills/build/check_validity.py',
   'skills/build/sources.py', 'skills/export/agent_package.py', 'skills/export/agent/study_core.py', 'skills/export/agent/mcp_server.py',
   'skills/export/agent/effects_core.py', 'skills/build/effects.py', 'schema/effects.schema.json',
-  'schema/graph-types.json', 'skills/build/sandbox_run.py', 'skills/build/check_package.py']
+  'schema/graph-types.json', 'skills/build/sandbox_run.py', 'skills/build/check_package.py', 'skills/build/check_readiness.py']
 
 export const packFileCount = (): number => Object.keys(files).length
 

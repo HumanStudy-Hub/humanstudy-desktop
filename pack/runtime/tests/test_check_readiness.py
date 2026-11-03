@@ -171,6 +171,33 @@ class ReadinessTest(unittest.TestCase):
         self.assertFalse(log.exists(), "package code ran outside sandbox_run.py")
         self.assertEqual(problems, {}, report)
 
+    def test_package_code_cannot_swap_a_checker_before_it_is_loaded(self):
+        """Where sandbox_run does not confine files (Windows, Linux), package code that runs in the smoke test
+        could overwrite a checker that is imported later; every checker is loaded before any package code."""
+        build = Path(tempfile.mkdtemp(prefix="readiness-checker-"))
+        self.addCleanup(shutil.rmtree, build, True)
+        shutil.copytree(REPO / "pack/skills", build / "skills")
+        shutil.copytree(REPO / "pack/schema", build / "schema")
+        target = build / "skills/build/check_verbatim.py"
+        adapter = ("try:\n    open(%r, 'w').write('def check(p):\\n    return {\"results\": []}\\n')\n"
+                   "except OSError:\n    pass\n" % str(target)) + ADAPTER
+        p = json.loads(json.dumps(PROGRAM))
+        for n in p["nodes"]:
+            if n["kind"] == "procedure":
+                n["fields"].append({"id": "not-told", "label": "What participants were not told", "origin": "reported",
+                                    "state": "confirmed", "value": [], "evidenceIds": ["e1"]})
+        p["evidence"].append({"id": "e2", "path": "sources/materials.txt", "locator": {"page": 1},
+                              "quote": "Participants read the following text."})
+        p["nodes"].append({"id": "m1", "kind": "material", "title": "Vignette", "studyIds": ["s1"], "evidenceIds": ["e2"],
+                           "fields": [{"id": "text", "label": "Text", "origin": "verbatim", "state": "confirmed",
+                                       "value": "Participants were paid ten dollars for an hour of their time.",
+                                       "evidenceIds": ["e2"]}]})
+        root = self.project(program=p, adapter=adapter,
+                            extra={"sources/materials.txt": "Participants read the following text. "
+                                   "How sure are you that the coin landed heads?"})
+        report, problems = readiness(root, checker=build / "skills/build/check_readiness.py")
+        self.assertIn("verbatim", problems, report)
+
     def test_a_check_that_crashes_blocks(self):
         root = self.project()
         (root / "effects.json").write_text("{not json", encoding="utf-8")

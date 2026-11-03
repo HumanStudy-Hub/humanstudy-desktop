@@ -136,8 +136,21 @@ def effects_problems(root):
     return found
 
 
+CHECK_MODULES = ("check_program", "sources", "check_validity", "check_verbatim", "check_results", "effects",
+                 "effects_core", "check_quotes", "sandbox_run")
+
+
+def load_checkers():
+    """Import every checker before any package code runs: on platforms where sandbox_run does not confine
+    files, package code could otherwise rewrite a checker file before it is first imported."""
+    import importlib
+    for name in CHECK_MODULES:
+        importlib.import_module(name)
+
+
 def run_checks(root, slug):
     root = Path(root).resolve()
+    load_checkers()
     checks = [
         ("program", lambda: program_problems(root)),
         ("sources", lambda: sources_problems(root)),

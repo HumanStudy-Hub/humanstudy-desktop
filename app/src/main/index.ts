@@ -34,7 +34,7 @@ import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
 import { refreshPack, trustedCheckFiles } from './pack'
 import { scientificReadiness } from './scientific-readiness'
-import { installedPython } from './runtime-install'
+import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks } from './package-readiness'
 import type { Kernel, KernelEvent } from './kernel-types'
 import { actionRef } from '../shared/research-operations'
@@ -373,7 +373,7 @@ app.on('second-instance', () => {
 app.whenReady().then(() => {
   // `ready` needs every build check (pack/skills/build/check_readiness.py), run from the app's own copy.
   const checkFiles = trustedCheckFiles()
-  configureScientificChecks((project, slug) => scientificReadiness(installedPython(), checkFiles, project, slug, process.env.HUMANSTUDY_RUNTIME_BIN || ''),
+  configureScientificChecks(async (project, slug) => scientificReadiness(await readyPython(), checkFiles, project, slug, process.env.HUMANSTUDY_RUNTIME_BIN || ''),
     app.getVersion() + ':' + createHash('sha256').update(JSON.stringify(checkFiles)).digest('hex').slice(0, 16))
   if (!primaryInstance) return
   applyCredentials()
