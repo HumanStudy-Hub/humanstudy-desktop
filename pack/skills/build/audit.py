@@ -28,7 +28,6 @@ import hashlib
 import json
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -48,6 +47,7 @@ import capabilities  # noqa: E402
 import check_program  # noqa: E402
 import check_quotes  # noqa: E402
 import check_verbatim  # noqa: E402
+import sandbox_run  # noqa: E402
 
 try:
     import effects_core  # noqa: E402
@@ -582,15 +582,17 @@ def run_probe(s, ctx):
     if ctx.get("no_run") or not s.package:
         ctx["probe"] = None
         return None
-    copy = ctx["copy"]()
-    try:
-        run = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--probe", str(copy), "--n", "2"],
-                             capture_output=True, text=True, timeout=ctx.get("timeout", 600), cwd=str(copy))
-        lines = [l for l in run.stdout.splitlines() if l.startswith("{\"probe\":")]
+    copy = ctx["copy"](fresh=True)
+    # Package code is untrusted: it runs only in the confined child (no keys, no network, writes only in the
+    # scratch folder; see sandbox_run.py), which prints the probe result as JSON.
+    run = sandbox_run.run_python(Path(__file__).resolve(), ["--probe", str(copy), "--n", "2"], cwd=copy,
+                                 work=copy.parent, timeout=ctx.get("timeout", 600))
+    lines = [l for l in run.stdout.splitlines() if l.startswith("{\"probe\":")]
+    if run.timed_out:
+        ctx["probe"] = {"error": "stub run timed out"}
+    else:
         ctx["probe"] = json.loads(lines[-1])["probe"] if lines else {
             "error": "probe produced no result (exit %s): %s" % (run.returncode, (run.stderr or run.stdout)[-400:])}
-    except subprocess.TimeoutExpired:
-        ctx["probe"] = {"error": "stub run timed out"}
     return ctx["probe"]
 
 
@@ -917,12 +919,12 @@ def run_export(s, ctx):
     if ctx.get("no_export") or ctx.get("no_run"):
         ctx["export"] = None
         return None
-    copy = ctx["copy"]()
+    copy = ctx["copy"](fresh=True)
     out = copy / "exports" / "audit-agent"
-    run = subprocess.run([sys.executable, str(EXPORT / "agent_package.py"), "--root", str(copy), "--output", str(out), "--mcp"],
-                         capture_output=True, text=True, timeout=ctx.get("timeout", 600))
+    run = sandbox_run.run_python(EXPORT / "agent_package.py", ["--root", str(copy), "--output", str(out), "--mcp"],
+                                 cwd=copy, work=copy.parent, timeout=ctx.get("timeout", 600))
     ctx["export"] = {"ok": run.returncode == 0 and out.is_dir(), "out": out,
-                     "log": (run.stdout + run.stderr)[-1500:]}
+                     "log": (run.stdout + run.stderr + ("\nFAIL timed out" if run.timed_out else ""))[-1500:]}
     return ctx["export"]
 
 
@@ -1078,10 +1080,10 @@ def check_C4(s, ctx):
     except SystemExit as exc:
         out.append(("concern", "capabilities could not be recomputed: %s" % exc))
     if s.caps.get("run", {}).get("status") in ("yes", "partial") and s.package and not ctx.get("no_run"):
-        copy = ctx["copy"]()
+        copy = ctx["copy"](fresh=True)
         pkg = copy / "package" / s.package.name
-        run = subprocess.run([sys.executable, str(HERE / "check_package.py"), str(pkg)], capture_output=True, text=True,
-                             timeout=ctx.get("timeout", 600))
+        run = sandbox_run.run_python(HERE / "check_package.py", [str(pkg)], cwd=copy, work=copy.parent,
+                                     timeout=ctx.get("timeout", 600))
         if run.returncode != 0:
             msg = next((l for l in run.stdout.splitlines() if l.startswith("FAIL")), run.stdout[-200:])
             out.append(("fail", "capabilities.json#run.status=%s but check_package.py fails: %s" % (s.caps["run"]["status"], msg[:300])))
@@ -1150,14 +1152,20 @@ def audit_one(root, items, ctx_base):
     s = Study(root)
     work = {}
 
-    def copy():
-        if "dir" not in work:
+    def copy(fresh=False):
+        """The scratch copy of the study; fresh=True gives a new one in its own folder, for each run of
+        package code, so a process left over from one run cannot touch the next (see sandbox_run.py)."""
+        if "tmp" not in work:
             base = Path(ctx_base["workdir"]) if ctx_base.get("workdir") else None
             if base:
                 base.mkdir(parents=True, exist_ok=True)
             work["tmp"] = tempfile.mkdtemp(prefix="audit-", dir=str(base) if base else None)
-            work["dir"] = Path(work["tmp"]) / s.root.name
-            shutil.copytree(s.root, work["dir"], ignore=shutil.ignore_patterns("__pycache__", ".git", "exports"))
+        if fresh or "dir" not in work:
+            dest = Path(tempfile.mkdtemp(prefix="run-" if fresh else "copy-", dir=work["tmp"])) / s.root.name
+            sandbox_run.copy_tree(s.root, dest, ignore=shutil.ignore_patterns("__pycache__", ".git", "exports"))
+            if fresh:
+                return dest
+            work["dir"] = dest
         return work["dir"]
     ctx = dict(ctx_base, copy=copy)
     results = []

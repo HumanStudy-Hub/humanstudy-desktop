@@ -21,6 +21,9 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "export" / "agent"))
 import effects_core  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sandbox_run  # noqa: E402
+
 
 def _module(path, name):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -37,19 +40,29 @@ def field_gaps(root, effects):
     ops = [e for e in effects.get("effects") or [] if (e.get("compute") or {}).get("op") not in (None, "package")]
     if len(packages) != 1 or not ops:
         return [], []
-    pkg = packages[0]
-    try:
-        sessions = _module(pkg / "task/adapter.py", "hs_fields_adapter").run_sessions(
-            lambda prompt, *a, **k: "1", 20261015, 2)
-    except Exception as exc:  # a blocked study or an adapter that needs real answers
-        return [], ["AI-session fields not checked: the adapter did not run with a stand-in model (%s)" % exc]
-    human = []
-    data = Path(os.environ.get("HUMANSTUDY_HUMAN_DATA") or root / "human-data")
-    if (pkg / "human/human_sessions.py").is_file() and data.is_dir():
-        try:
-            human = _module(pkg / "human/human_sessions.py", "hs_fields_human").load(str(data))
-        except Exception as exc:
-            return [], ["human sessions not loaded (%s)" % exc]
+    pkg = packages[0].resolve()
+    # The researcher's own HUMANSTUDY_HUMAN_DATA is trusted; a human-data folder that came with the study is
+    # opened to the package only when it is a real folder inside the study (not a link to ~/.aws, say).
+    data = Path(os.environ["HUMANSTUDY_HUMAN_DATA"]).resolve() if os.environ.get("HUMANSTUDY_HUMAN_DATA") else \
+        (root / "human-data")
+    if not os.environ.get("HUMANSTUDY_HUMAN_DATA"):
+        inside = data.is_dir() and not data.is_symlink() and Path(root).resolve() in data.resolve().parents
+        data = data.resolve() if inside else Path(root).resolve() / "human-data-not-used"
+    # The package's code runs only in a confined child (sandbox_run.py: no keys, no network, writes only in a
+    # scratch folder), which prints the sessions as JSON.
+    with sandbox_run.work_dir(prefix="effects-fields-") as work:
+        run = sandbox_run.run_python(Path(__file__).resolve(), ["--field-sessions", str(pkg), str(data)], cwd=pkg,
+                                     work=work, timeout=300, read=[data])
+    lines = [l for l in run.stdout.splitlines() if l.startswith('{"fieldSessions":')]
+    if not lines:
+        why = "timed out" if run.timed_out else "exit %s: %s" % (run.returncode, (run.stderr or run.stdout).strip()[-300:])
+        return [], ["AI-session fields not checked: the adapter did not run with a stand-in model (%s)" % why]
+    got = json.loads(lines[-1])["fieldSessions"]
+    if "aiError" in got:  # a blocked study or an adapter that needs real answers
+        return [], ["AI-session fields not checked: the adapter did not run with a stand-in model (%s)" % got["aiError"]]
+    if "humanError" in got:
+        return [], ["human sessions not loaded (%s)" % got["humanError"]]
+    sessions, human = got.get("ai") or [], got.get("human") or []
     problems, notes = [], []
     for e in ops:
         c = e["compute"]
@@ -69,6 +82,23 @@ def field_gaps(root, effects):
     return problems, notes
 
 
+def field_sessions(pkg, data):
+    """In the confined child: AI sessions from a stand-in model, and human sessions when there is data."""
+    pkg, data, out = Path(pkg), Path(data), {}
+    try:
+        out["ai"] = list(_module(pkg / "task/adapter.py", "hs_fields_adapter").run_sessions(
+            lambda prompt, *a, **k: "1", 20261015, 2) or [])
+    except Exception as exc:
+        out["aiError"] = str(exc)[:400]
+        return out
+    if (pkg / "human/human_sessions.py").is_file() and data.is_dir():
+        try:
+            out["human"] = list(_module(pkg / "human/human_sessions.py", "hs_fields_human").load(str(data)) or [])
+        except Exception as exc:
+            out["humanError"] = str(exc)[:400]
+    return out
+
+
 def _has(session, path):
     cur = session
     for part in str(path).split("."):
@@ -85,6 +115,9 @@ def main(args):
     if not args:
         print(__doc__)
         return 2
+    if args[0] == "--field-sessions":
+        print(json.dumps({"fieldSessions": field_sessions(args[1], args[2])}, ensure_ascii=False, default=str))
+        return 0
     root = Path(args[0])
     if "--graph" in args:
         return effects_core.main(["graph", str(root)])
