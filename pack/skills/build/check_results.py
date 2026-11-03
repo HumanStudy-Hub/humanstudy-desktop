@@ -14,6 +14,10 @@ Prints every problem with a fix, then PASS or FAIL (exit 1). Four checks:
   table quote    an evidence quote that reads like a numeric table (many numbers, few words) whose
                  numbers no table field or other field holds
   printed table  a page prints a table caption ("Table 2", "TABLE II") but no table field has that label
+  skipped table  a printed table (its caption is on the page) marked missing although the page has a clean
+                 text layer with table rows (three or more lines that are mostly numbers in the
+                 column-aligned text): the stated reason ("scrambled", "unreadable") is not true, so
+                 transcribe it
 
 Numbers are compared as printed values; labels such as "Study 2", "Table 3", page numbers and years
 are ignored. The checks are best effort: they find untranscribed numbers, they cannot prove that
@@ -22,6 +26,8 @@ every number is present. Standard library; the caption check reads the PDF like 
 import argparse
 import json
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -90,6 +96,40 @@ def label_key(label):
             total += -v if i + 1 < len(tag) and ROMAN[tag[i + 1]] > v else v
         tag = str(total)
     return "table " + tag.lower()
+
+
+SUPPLEMENT = re.compile(r"\b(?:supplementary|supplemental|online|appendix|see|in|cf\.?)\s*$", re.I)
+GRID_ROWS = 3           # lines of >= 3 numbers that make a page's column-aligned text a readable table
+
+
+def layout_page(pdf_path, number):
+    """Column-aligned text of one page (pdfplumber layout, else pdftotext -layout); "" when unavailable."""
+    try:
+        import pdfplumber
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            if 1 <= number <= len(pdf.pages):
+                return pdf.pages[number - 1].extract_text(layout=True) or ""
+    except Exception:
+        pass
+    if shutil.which("pdftotext"):
+        try:
+            run = subprocess.run(["pdftotext", "-layout", "-f", str(number), "-l", str(number), str(pdf_path), "-"],
+                                 capture_output=True, timeout=60)
+            if run.returncode == 0:
+                return run.stdout.decode("utf-8", "replace")
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return ""
+
+
+def grid_rows(text):
+    """Lines that read like table rows: three or more printed numbers, and numbers at least half the tokens."""
+    out = []
+    for line in (text or "").splitlines():
+        nums, tokens = NUM.findall(LABEL.sub(" ", line)), line.split()
+        if len(nums) >= 3 and len(nums) >= 0.5 * len(tokens):
+            out.append(line)
+    return out
 
 
 def table_problems(where, f):
@@ -205,8 +245,11 @@ def check(program_path):
             if len((text or "").strip()) < 40:
                 blank.append(number)
                 continue
-            for line in (text or "").splitlines():
+            lines = (text or "").splitlines()
+            for i, line in enumerate(lines):
                 m = CAPTION.match(line)
+                if m and i and SUPPLEMENT.search(lines[i - 1]):
+                    m = None  # "... Supplementary\nTable 6.": a reference to a table outside the paper
                 key = label_key("table " + m.group(2)) if m else None
                 if key and key not in seen:
                     seen[key] = number
@@ -216,6 +259,22 @@ def check(program_path):
                             'transcribe it cell by cell: a field with value {"table": "%s", "page": %d, "columns": [...], '
                             '"rows": [[...]]} and origin verbatim (an empty table marked missing with an issue when it '
                             'cannot be read)' % (key.title(), page)))
+        for where, f in tables:
+            v = f.get("value") or {}
+            page = v.get("page")
+            if f.get("state") != "missing" or not isinstance(page, int) or not 1 <= page <= len(pages) or page in blank:
+                continue
+            printed_on = seen.get(label_key(v.get("table")))
+            if printed_on is None or abs(printed_on - page) > 1:
+                continue  # the paper does not print this table here (a supplementary table it only cites)
+            rows = grid_rows(layout_page(pdf_path, page))
+            if len(rows) >= GRID_ROWS:
+                out.append(("%s: %s is marked missing, but p. %d has a clean text layer with %d table rows in its "
+                            "column-aligned text (e.g. %r)" % (where, v.get("table") or "the table", page, len(rows),
+                                                               re.sub(r"\s+", " ", rows[0]).strip()[:80]),
+                            "read it with `hs-pdf pages paper.pdf --from %d --to %d --layout` and transcribe it cell by "
+                            "cell; a cell you cannot place is null and listed in uncertain. Never state that a text "
+                            "layer is scrambled without reading the column-aligned text" % (page, page)))
         if blank:
             info.append("pages without a text layer (scanned): %s; read their tables from the page images"
                         % ", ".join(map(str, blank[:30])))

@@ -38,7 +38,9 @@ python $HS/scripts/build/check_program.py program.json --complete
 python $HS/scripts/build/check_results.py program.json          # printed tables and numbers are data
 python $HS/scripts/build/check_quotes.py program.json           # every quote on its cited page
 python $HS/scripts/build/check_verbatim.py program.json         # verbatim fields are the printed words
-python $HS/scripts/build/check_package.py package/<paper-slug>  # the runnable package
+python $HS/scripts/build/check_package.py package/<paper-slug>  # the runnable package (runs check_validity.py)
+python $HS/scripts/build/check_validity.py .                     # no prompt tells what participants were not told
+python $HS/scripts/build/effects.py .                            # effects: quoted numbers, N, signs
 ```
 
 Where build.md mentions the app's Study document or Simulation tab, show the researcher the file

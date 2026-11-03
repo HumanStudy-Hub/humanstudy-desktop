@@ -17,13 +17,20 @@ can actually run as the original participants did, so the researcher can check i
   page as an image (some agents can read PDF pages or images directly), read the scanned page,
   and above all its tables, from the image. Pages you cannot see are listed as unreadable, never
   guessed. Keep the physical page number of every passage you may cite.
+- Copy words (quotes, `verbatim` fields) from the plain text, never from `--layout` output: the
+  column-aligned text splits words ("correspon dence", "l ateral") and pads them with spaces.
+  `--layout` is for seeing which cell of a table is in which column. `check_verbatim.py` compares
+  every verbatim field with each raw text reader and fails on such splits.
 - List every table the paper prints (caption and page) while reading: each is transcribed in step 2.
 - Record the source files once you have read them: `python .opencode/skills/build/sources.py .`
   writes `sources/SOURCE.json` (path, SHA-256, size, license of `paper.pdf`, every file in
-  `sources/` and every file evidence cites). The license is `unknown` unless the file itself states
-  one (for example a CC BY line on the first page): then add
-  `--license paper.pdf=CC-BY-4.0 --license-evidence "paper.pdf=p. 1: <the printed line>"`. Never guess
-  a license. Rerun it whenever a source file changes; the package check requires it.
+  `sources/` and every file evidence cites). It reads the license the PDF prints about itself ("This
+  article is licensed under a Creative Commons Attribution 4.0 International License", often on the
+  last page or a first-page footer) and records it with the page and sentence; check what it printed.
+  Otherwise the license is `unknown` unless the file states one in words the script does not
+  recognise: then add `--license paper.pdf=CC-BY-4.0 --license-evidence "paper.pdf=p. 1: <the printed line>"`.
+  Never guess a license. Rerun it whenever a source file changes; the package check requires it, and
+  `--check` fails while a PDF that prints a license is recorded as `unknown`.
 - Read `sources/` only if present. Use the network only for URLs the researcher explicitly gave;
   record each URL consulted in `source/paper_metadata.json` → `external_sources`.
 - List every empirical study in the paper before modelling any of them.
@@ -58,6 +65,20 @@ Validate against `schema/human-program.schema.json`. Work in this order:
 3. Nodes: participants, design, `condition` nodes (one per condition), materials, variables,
    analyses, `result` nodes (`result_kind = reported`). Transcribe printed instruments exactly
    as `verbatim` fields; put long instruments in `sources/` and reference them.
+   Participant instructions the paper does not print are one rule everywhere: a `missing` field
+   (origin `unknown`) with a `decision` issue (never `blocking`, never `check`) whose `suggestedAction`
+   says the researcher supplies the printed text or accepts the stand-in wording the adapter uses.
+   Never write your own wording into a `verbatim` or `reported` instructions field.
+   **What participants were not told.** Collect every passage saying participants were not told,
+   not informed, not shown or unaware of something, had to learn, discover or infer it, or were given a
+   cover story. Record them in a `not-told` field on the study's `procedure` node (origin
+   `reported`, the passages' evidence), one entry per passage:
+   `{"statement": "<the sentence as printed>", "page": 7, "withheld": "which key selects which circle,
+   and that only a highlighted circle can be selected", "terms": ["highlighted", "can be selected",
+   "yellow"]}`. `terms` are the words a prompt that gave the information away would have to contain,
+   at least one of them a word of the statement. A passage that is not about what participants knew
+   (experimenters blind to condition) gets `"notApplicable": "<why>"` instead. The value is `[]` when
+   the paper withholds nothing. The adapter's prompts must not contain this information (see section 3).
    Every number the paper reports for a group, item, condition, session or round is a field value,
    not only text inside an evidence quote: see "Result tables" below.
 4. Steps: per study, with actors, inputs, outputs, `visibleIds` (who sees what earlier
@@ -95,6 +116,10 @@ table, on the result node it reports (sample tables on `participants`, stimulus 
   `uncertain` (0-based `row` and `column`, with what you can see). Never write a plausible value.
   Try the column-aligned text (`--layout`) first, then the page image. A table you cannot read at all is
   a field with `state: "missing"`, value `{"table", "page", "columns": [], "rows": []}` and an issue.
+  The reason must be true: before calling a text layer scrambled or unreadable, read the page with
+  `--layout`. `check_results.py` fails a missing printed table whose page has clean table rows in its
+  column-aligned text. A table the paper only cites (a supplementary table not in the PDF) is not a
+  printed table and needs no field.
 - Its evidence record locates the table: page and the caption as the quote. Do not paste the
   table into the quote instead of transcribing it.
 - Long tables stay complete: save a long table in its own batch; never shorten, sample or summarise it.
@@ -234,8 +259,32 @@ Rules the runner depends on:
   an exact number of AI participants per condition in parallel (`simulate` skill).
 - `evaluate(sessions)` derives every metric from `sessions` alone and returns the paper's own
   comparison (test, statistic, effect size) or a structured `not_ready` with what is missing.
+- **Validity of the replay** (the package exists to replay what participants experienced):
+  - Prompts never tell participants what the paper says they were not told or had to discover (the
+    `not-told` field). No legend, key map, rule or hint written by you; only text the paper prints as
+    participant material, at the point the paper shows it (a debriefing after session 3 appears
+    from session 4 on).
+  - Memory between trials: by default a prompt carries what a participant plausibly saw at that
+    moment (the current screen, the last outcome, a counter shown on screen), not a labelled log of
+    every earlier trial; a full log leaks task structure, inflates carry-over and stability effects
+    and makes cost grow with the square of the trial count. Record the design as a `replay-memory`
+    field on the procedure node (origin `implementation`, state `decision`, value
+    `{"design": "none | last-trial | summary | full-log | conversation | other", "shows": "...",
+    "participantsSaw": "...", "expectedImpact": "..."}`) with a `decision` issue stating the
+    expected impact. A full log or chat transcript needs evidence that participants saw their history,
+    or a researcher's decision.
+  - Instructions between blocks, sessions or phases appear in the first prompt of the new block when
+    the paper shows them there ("the upcoming block is completely independent", a break of one week),
+    never only inside a later trial log.
+  - An unparsed reply is recorded on its trial (`"parsed": false`), the participant is kept, and
+    trials or participants are excluded only by the paper's own rule. Never `valid = all(...)`.
 - Run `python .opencode/skills/build/check_program.py program.json` (it also runs inside check_package.py), then `python .opencode/skills/build/check_package.py package/<paper-slug>` (required files,
-  JSON validity, bindings, `sources/SOURCE.json`, smoke test) and repair until it passes. The
+  JSON validity, bindings, `sources/SOURCE.json`, smoke test, and `check_validity.py`) and repair until it
+  passes. `check_validity.py .` runs the adapter offline with a stand-in model, reads every prompt and
+  fails on a `not-told` term in text you wrote, a passage of the paper about withheld information
+  that no `not-told` entry lists, a trial history with no `replay-memory` decision (or a design that
+  does not match the prompts), `valid = all(...)`, and missing instructions with a severity other than
+  `decision`. Fix the prompt, never the inventory: removing a term or an entry to pass is a fabrication. The
   smoke test and every export run the package in the project layout, so `task/adapter.py` may read
   `../../program.json` (and `effects.json`, `capabilities.json`, `sources/` beside it), nothing else outside the package.
 
@@ -289,6 +338,15 @@ Rules:
   (`program_io.py`, then `check_quotes.py`). List what the paper does not report in `missing`; never
   compute it or fill it in. `reported` is `null` when the paper prints no number for the effect.
   Order `estimates` so the first one is the variant the package computes (for example unweighted).
+- `reported.n` (or `cells.<arm>.n`) is the N the effect is computed on, as printed, with the quote that
+  prints it among `reported.evidenceIds`. When the effect's N is not printed (a subgroup, trials as
+  the unit) say so in `missing` ("N of the LAC-first group is not printed"); never fill in the study N
+  for a subgroup.
+- Signs: a difference (d, dz, g, mean or risk difference, log odds ratio) is treatment minus reference.
+  Papers often print it unsigned; take the sign from the printed cells or the sentence saying which
+  arm was higher, and store it signed (−0.32 when the treatment arm is lower). Without cells, add
+  `signBasis` to the estimate with those printed words. Never choose a sign to agree with the
+  prediction: a result against the prediction is stored against it.
 - `compute`: prefer a built-in op when each session holds the participant's value:
   `mean_difference` (Welch t), `paired_difference` (`field` minus `referenceField` within a session),
   `proportion_difference` (`success` values), `contingency` (chi-square, phi / Cramér's V over
@@ -331,7 +389,10 @@ Schema 2 rules:
 
 A built-in op must read fields that both the human loader's sessions and the adapter's sessions
 carry (the same path in both; `trials.0.answer` indexes a list); the check runs the adapter with a
-stand-in model to make sure. Run `python .opencode/skills/build/effects.py .` until it prints `PASS`. Its warnings list program
+stand-in model to make sure. Run `python .opencode/skills/build/effects.py .` until it prints `PASS`; it
+also fails an effect whose quotes or study print N while `reported.n` is empty and `missing` says
+nothing about it, a signed estimate whose sign disagrees with its own cells, and an unsigned printed
+estimate without cells or `signBasis`. Its warnings list program
 nodes no hypothesis or effect reaches; link them where the paper links them. With human data, run
 `study_core.py reproduce` (it uses `effects.json`) and report the verdict per effect.
 

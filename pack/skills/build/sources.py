@@ -10,11 +10,21 @@ Recorded files: the paper (program.json source.filename, else paper.pdf), every 
 every file an evidence record cites by `path`. A license is the one the file itself (or the page that
 served it) states; otherwise "unknown". Never guess one. A rerun refreshes hashes and sizes and keeps the
 license, evidence and any other keys already written (by you or the researcher).
-Standard library only.
+
+A PDF's printed license statement is read automatically ("This article is licensed under a Creative Commons
+Attribution 4.0 International License", "It is made available under a CC-BY-NC-ND 4.0 International
+license", "distributed under the terms of the Creative Commons Attribution License"): a file recorded as
+`unknown` gets that license with the page and sentence as licenseEvidence, and --check fails while a file
+is `unknown` although it prints a statement. Only statements about the document itself count (Open Access,
+this article / work / preprint, made available, distributed under the terms); a license named for a figure
+or a dataset does not. A Creative Commons license printed without a version is recorded without one
+("CC-BY"). --license overrides it.
+Standard library (the PDF reader of check_quotes.py when available).
 """
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -36,6 +46,56 @@ def load(path):
         return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         return None
+
+
+CC = re.compile(r"creative\s*commons\s*(?:attribution|cc0|zero|public\s*domain)|\bcc[\s-]?(?:by|0)\b", re.I)
+ABOUT_ITSELF = re.compile(r"open\s*access|this\s*(?:article|work|paper|preprint|manuscript|is\s*an\s*open)|"
+                          r"made\s*available\s*under|distributed\s*under|licensed\s*under|published\s*under", re.I)
+NOT_ITSELF = re.compile(r"\b(?:figure|fig\.|image|photo|data(?:set)?s?|code|software|material\s+from|adapted|reproduced|"
+                        r"icons?|map)\b", re.I)
+
+
+def spdx(statement):
+    """The license a Creative Commons statement names, e.g. CC-BY-4.0, CC-BY-NC-ND-4.0, CC0-1.0, or CC-BY."""
+    t = re.sub(r"\s+", " ", statement).lower().replace("‐", "-").replace("–", "-")
+    end = re.search(r"licen[sc]e", t)
+    t = t[:end.end() + 12] if end else t   # the license's name (and a version right after it), not the sentence
+    if re.search(r"\bcc0\b|cc zero|public ?domain ?dedication|creative ?commons ?zero", t):
+        return "CC0-1.0"
+    parts = ["CC-BY"]
+    if re.search(r"non-? ?commercial|\bnc\b", t):
+        parts.append("NC")
+    if re.search(r"no-? ?deriv|\bnd\b", t):
+        parts.append("ND")
+    if re.search(r"share-? ?alike|\bsa\b", t):
+        parts.append("SA")
+    version = re.search(r"\b([1-4]\.0)\b", t)
+    return "-".join(parts) + ("-" + version.group(1) if version else "")
+
+
+def printed_license(path):
+    """(license, "p. N: <sentence>") from the PDF's own license statement, or None."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from check_quotes import Pdf
+        pages = Pdf(path).load()
+    except Exception:
+        return None
+    best = None
+    for number, text in enumerate(pages or [], 1):
+        flat = re.sub(r"\s+", " ", re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", text or ""))
+        for m in CC.finditer(flat):
+            start = max(flat.rfind(". ", 0, m.start()) + 2, m.start() - 250, 0)
+            stop = flat.find(". ", m.end())
+            sentence = flat[start:stop + 1 if 0 <= stop < m.end() + 300 else m.end() + 150].strip()
+            before = flat[start:m.start()]
+            if not ABOUT_ITSELF.search(sentence) or NOT_ITSELF.search(before):
+                continue
+            found = (spdx(flat[m.start():m.end() + 80]), "p. %d: %s" % (number, sentence[:300]))
+            # prefer a statement that names a version; then the first one
+            if best is None or (re.search(r"\d\.0$", found[0]) and not re.search(r"\d\.0$", best[0])):
+                best = found
+    return best
 
 
 def paper_name(root, program):
@@ -87,6 +147,10 @@ def build(root, licenses=None, evidence=None):
         known.setdefault(old["pdf"]["filename"], {k: v for k, v in old["pdf"].items() if k in ("license", "licenseEvidence")})
     files = [record(root, rel, known.get(rel)) for rel in source_files(root, program)]
     for f in files:
+        if f.get("license") in (None, "", "unknown") and f["path"].lower().endswith(".pdf"):
+            printed = printed_license(root / f["path"])
+            if printed:
+                f["license"], f["licenseEvidence"] = printed
         if f["path"] in (licenses or {}):
             f["license"] = licenses[f["path"]]
         if f["path"] in (evidence or {}):
@@ -126,6 +190,11 @@ def problems(root):
             out.append(("%s: the SHA-256 of %s changed since it was recorded" % (NAME, rel), fix))
         elif not f.get("license"):
             out.append(("%s: %s has no license entry" % (NAME, rel), 'record the stated license, or "unknown"'))
+        elif f.get("license") == "unknown" and rel.lower().endswith(".pdf"):
+            printed = printed_license(root / rel)
+            if printed:
+                out.append(("%s: %s is recorded as license unknown, but it prints one (%s): %s"
+                            % (NAME, rel, printed[0], printed[1][:160]), fix + " (it records the printed license)"))
     paper = paper_name(root, program)
     if not paper or not (root / paper).is_file():
         out.append(("the paper (%s) is not in the project folder, so its hash cannot be recorded" % (paper or "paper.pdf"),

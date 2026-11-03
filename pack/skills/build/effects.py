@@ -10,10 +10,21 @@ sessions do not: human and AI sessions must be computed the same way. (With huma
 or $HUMANSTUDY_HUMAN_DATA the human side is read too; a field neither side has is only reported.)
 
 The rules and the computation live in ../export/agent/effects_core.py (shipped with every agent export).
+Two build rules are checked here only (effects_core.py, which HumanStudy-Bench copies, is unchanged):
+
+  sample size   an effect whose quotes print N (N = 40, n = 39, 120 participants), or whose study has a
+                participant count in program.json, records it in reported.n (or cells.<arm>.n), or says in
+                reported.missing why this effect's N is not printed (a subgroup, a different unit).
+  sign          a difference-type estimate (d, dz, g, mean or risk difference, log odds ratio) is treatment
+                minus reference: when the cells print both arms, its sign must be the sign of their
+                difference; when they do not and the paper prints the value without a sign, the estimate
+                states `signBasis` (the printed words that say which arm was higher). A sign is never
+                chosen to match the prediction.
 """
 import importlib.util
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -99,6 +110,103 @@ def field_sessions(pkg, data):
     return out
 
 
+SIGNED = ("mean_difference", "standardized_mean_difference", "hedges_g", "risk_difference", "log_odds_ratio",
+          "percent_change")
+DIRECTIONAL = ("two_groups", "paired")
+PRINTED_N = re.compile(r"(?<![\w.])[Nn]\s*=\s*(\d[\d,]*)(?![\d.])|(?<![\w.])(\d[\d,]*)\s+(?:participants|subjects|"
+                       r"respondents|volunteers|adults|children|students|individuals|patients|people|workers|players)\b")
+N_MISSING = re.compile(r"(?<![\w])[Nn](?![\w])|sample size|number of (?:participants|subjects|respondents|"
+                       r"observations|cases|people|individuals)", re.I)
+N_FIELDS = ("n-analysed", "n-completed", "n-recruited")
+
+
+def _num(x):
+    return x if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+
+
+def _first_number(value):
+    if _num(value) is not None:
+        return value
+    m = re.search(r"(?<![\w.])(\d[\d,]*)(?![\w.])", value) if isinstance(value, str) else None
+    return int(m.group(1).replace(",", "")) if m else None
+
+
+def _study_n(program, study):
+    """(where, value as printed) for the first participant count program.json records for the study."""
+    for key in N_FIELDS:
+        for n in program.get("nodes") or []:
+            if not isinstance(n, dict) or n.get("kind") != "participants" or (study and n.get("studyIds") and study not in n["studyIds"]):
+                continue
+            for f in n.get("fields") or []:
+                if isinstance(f, dict) and f.get("id") == key and f.get("state") != "missing" and _first_number(f.get("value")) is not None:
+                    return "%s.%s" % (n.get("id"), key), str(f.get("value"))[:60]
+    return None
+
+
+def _share(cell):
+    if _num(cell.get("mean")) is not None:
+        return cell["mean"]
+    if _num(cell.get("proportion")) is not None:
+        return cell["proportion"]
+    if _num(cell.get("percent")) is not None:
+        return cell["percent"] / 100.0
+    return None
+
+
+def _printed_signed(value, quotes):
+    """True when the quotes print this negative value with its minus sign (the paper itself signs it)."""
+    return value < 0 and any(abs(x - value) < 1e-9 for q in quotes for x in effects_core.numbers_in(q))
+
+
+def build_rules(effects, program):
+    """Problems for the sample-size and sign rules (see the module docstring)."""
+    evidence = {e.get("id"): e for e in program.get("evidence") or [] if isinstance(e, dict)}
+    out = []
+    for e in effects.get("effects") or []:
+        rep = e.get("reported")
+        if not isinstance(rep, dict) or (e.get("population") or {}).get("kind") not in (None, "human"):
+            continue
+        where = "effect %s" % e.get("id")
+        ids = list(rep.get("evidenceIds") or []) + [i for est in rep.get("estimates") or [] for i in est.get("evidenceIds") or []]
+        quotes = [evidence[i].get("quote") or "" for i in dict.fromkeys(ids) if i in evidence]
+        cells = rep.get("cells") if isinstance(rep.get("cells"), dict) else {}
+        has_n = _num(rep.get("n")) is not None or any(_num((c or {}).get("n")) is not None for c in cells.values())
+        said = any(N_MISSING.search(str(m)) for m in rep.get("missing") or [])
+        printed = [m.group(1) or m.group(2) for q in quotes for m in PRINTED_N.finditer(q)]
+        if not has_n and printed:
+            out.append("%s: its quotes print N (%s) but reported.n and cells.<arm>.n are empty; record the N this "
+                       "effect is computed on, as printed" % (where, ", ".join(dict.fromkeys(printed))))
+        elif not has_n and not said:
+            study = _study_n(program, e.get("studyId"))
+            if study:
+                out.append("%s: reported.n is empty although program.json records the study's sample (%s = %r); add "
+                           "the N as printed (cite the quote that prints it in reported.evidenceIds) or say in "
+                           "reported.missing why this effect's N is not printed (a subgroup, another unit)" % ((where,) + study))
+        con = e.get("contrast") or {}
+        if con.get("kind") not in DIRECTIONAL:
+            continue
+        t, r = cells.get(con.get("treatment")) or {}, cells.get(con.get("reference")) or {}
+        diff = _share(t) - _share(r) if _share(t) is not None and _share(r) is not None else None
+        # cells too close to call (a mean of individual differences can disagree with the difference of means)
+        for j, est in enumerate(rep.get("estimates") or []):
+            value = _num(est.get("value"))
+            if est.get("metric") not in SIGNED or not value:
+                continue
+            at = "%s reported.estimates[%d] (%s = %g)" % (where, j, est.get("metric"), value)
+            scale = max(abs(_share(t) or 0), abs(_share(r) or 0))
+            if diff is not None and abs(diff) > 0.02 * scale:  # a 2% gap or less is too close to call a sign
+                if (value > 0) != (diff > 0):
+                    out.append("%s: the value is treatment minus reference (%s), but the cells give %s - %s = %+.4g; "
+                               "sign it as the cells show, or swap treatment and reference (and the prediction)"
+                               % (at, con.get("valueMeans") or "%s minus %s" % (con.get("treatment"), con.get("reference")),
+                                  con.get("treatment"), con.get("reference"), diff))
+            elif diff is None and not _printed_signed(value, quotes) and not str(est.get("signBasis") or "").strip():
+                out.append("%s: printed without a sign and no cells show which arm is higher; add `signBasis` with the "
+                           "printed words that say it (\"LAC participants chose the risky option less often\") and "
+                           "sign the value treatment minus reference; never pick the sign the prediction expects" % at)
+    return out
+
+
 def _has(session, path):
     cur = session
     for part in str(path).split("."):
@@ -127,6 +235,7 @@ def main(args):
         return 1
     program = json.loads((root / "program.json").read_text(encoding="utf-8"))
     problems, warnings = effects_core.check(root, effects, program)
+    problems += build_rules(effects, program)
     gaps, notes = field_gaps(root, effects) if not problems else ([], [])
     problems += gaps
     for w in warnings + notes:

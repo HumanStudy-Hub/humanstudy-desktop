@@ -17,6 +17,10 @@ normalisation check_quotes.py uses:
   table text layer   a table field whose text cells mostly (>= 50%) match a garbled text layer: a note
   close unverified   close, and every evidence record it cites is marked `verification: "unverified"`
                      because the page's text layer is garbled (OCR): a note, to compare with the image
+  layout split       a word is split where the raw text layer prints it whole ("correspon dence" for
+                     "correspondence", "l ateral"), or words are separated by runs of spaces: text copied
+                     from the column-aligned (--layout) extraction. A problem whatever the match above;
+                     every raw reader available (pypdf, pdfplumber, pdftotext without -layout) is consulted
 
 A piece that runs from one page onto the next is matched past the running head, page number or
 footer between them.
@@ -29,6 +33,8 @@ Standard library plus the PDF reader check_quotes.py uses.
 import argparse
 import json
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -92,9 +98,76 @@ def segments(value):
     return [q for q in out if re.search(r"[a-z]", q)]
 
 
+def raw_layers(path):
+    """Page texts of the raw (reading-order, not --layout) text layer from each other reader available."""
+    out = []
+    try:
+        import pdfplumber
+        with pdfplumber.open(str(path)) as pdf:
+            out.append([p.extract_text() or "" for p in pdf.pages])
+    except Exception:
+        pass
+    if shutil.which("pdftotext"):
+        try:
+            run = subprocess.run(["pdftotext", str(path), "-"], capture_output=True, timeout=120)
+            if run.returncode == 0:
+                out.append(run.stdout.decode("utf-8", "replace").split("\f"))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return out
+
+
+def merges_words(text):
+    """True when a reader drops the spaces between words on these pages (many 16+ letter tokens)."""
+    words = [w for w in text.split() if w.isalpha()]
+    return len(words) >= 20 and sum(len(w) >= 16 for w in words) > 0.01 * len(words)
+
+
+def splits(value, layers, pages):
+    """[(as written, as printed)]: words of a verbatim value split where the raw text layer prints them whole.
+
+    Only readers that keep word spaces on the cited pages count; a split is reported when at least one of
+    them prints the word whole and no more of them print it split ("l ateral" from one reader, "lateral"
+    from the others). Table fields are not checked: their cells are read from the column-aligned text."""
+    if is_table(value):
+        return []
+    raw = check_quotes.normalise(" ".join(p for p in raw_pieces(value) if isinstance(p, str)))
+    plain = text_of(value).lower()
+    toks, found = raw.split(), []
+    texts = [" %s " % " ".join(layer[p - 1] for p in pages if 1 <= p <= len(layer)) for layer in layers]
+    texts = [t for t in texts if t.strip() and not merges_words(t)]
+    for a, b in zip(toks, toks[1:]):
+        if not (a.isalpha() and b.isalpha()) or len(a) + len(b) < 5 or (a + " " + b, a + b) in found:
+            continue
+        if re.search(re.escape(a) + r"\s*[-\u2010\u2011\u2013/]\s*" + re.escape(b), plain):
+            continue  # printed with a hyphen or slash ("re-evaluate"): not a split
+        whole = sum(1 for t in texts if (" %s " % (a + b)) in t and (" %s %s " % (a, b)) not in t)
+        split = sum(1 for t in texts if (" %s %s " % (a, b)) in t)
+        if whole and whole >= split:
+            found.append((a + " " + b, a + b))
+    return found
+
+
+def wide_spaces(value):
+    """Runs of spaces inside a line of a text value (column padding of a --layout extraction)."""
+    if is_table(value):
+        return []
+    return [m.group(0) for p in raw_pieces(value) if isinstance(p, str) for m in re.finditer(r"\S+ {2,}\S+", p)]
+
+
 class Sources:
     def __init__(self, root):
-        self.root, self.cache = root, {}
+        self.root, self.cache, self.layer_cache = root, {}, {}
+
+    def layers(self, rel):
+        """Normalised page lists of every raw reader for one file (the primary reader first)."""
+        if rel not in self.layer_cache:
+            primary = self.pages(rel)
+            path = (self.root / rel).resolve()
+            extra = raw_layers(path) if primary and path.suffix.lower() == ".pdf" else []
+            self.layer_cache[rel] = ([primary] if primary else []) + [[check_quotes.normalise(t) for t in layer]
+                                                                       for layer in extra if layer]
+        return self.layer_cache[rel]
 
     def pages(self, rel):
         if rel not in self.cache:
@@ -204,6 +277,18 @@ def check(program_path):
             continue
         status, info = field_status(f.get("value"), evidence, ids, sources, default)
         pages = sorted({str(((evidence.get(i) or {}).get("locator") or {}).get("page")) for i in ids if i in evidence})
+        cited = {}
+        for i in ids:
+            e = evidence.get(i) or {}
+            page = (e.get("locator") or {}).get("page")
+            if isinstance(page, int):
+                cited.setdefault(e.get("path") or default, set()).update((page - 1, page, page + 1))
+        split = [x for rel, near in cited.items() for x in splits(f.get("value"), sources.layers(rel), sorted(near))]
+        wide = wide_spaces(f.get("value"))
+        if status != "unchecked" and (split or wide):
+            status, info = "layout_split", "; ".join(
+                ["%r is printed %r in the raw text layer" % x for x in split[:6]] +
+                (["runs of spaces from a column-aligned extraction: %s" % ", ".join(repr(w) for w in wide[:3])] if wide else []))
         results.append({"field": where, "status": status, "info": info, "pages": pages})
     counts = {}
     for r in results:
@@ -221,9 +306,13 @@ def main(argv=None):
         Path(a.json).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     bad = [r for r in report["results"] if r["status"] not in ("found", "unchecked", "table_text_layer", "close_unverified")]
     for r in bad:
-        print("PROBLEM %s (p. %s): %s: %s\n        fix: copy the exact printed words and cite their page, or relabel "
-              "the field reported (derived with a derivation) if it is not a transcription; never invent text"
-              % (r["field"], ",".join(r.get("pages") or []) or "?", r["status"], r["info"]))
+        fix = ("copy the words from the raw text layer (`hs-pdf pages` without --layout) or the page image, one "
+               "space between words; --layout output is for reading tables, never for verbatim text"
+               if r["status"] == "layout_split" else
+               "copy the exact printed words and cite their page, or relabel the field reported (derived with a "
+               "derivation) if it is not a transcription; never invent text")
+        print("PROBLEM %s (p. %s): %s: %s\n        fix: %s"
+              % (r["field"], ",".join(r.get("pages") or []) or "?", r["status"].replace("_", " "), r["info"], fix))
     for r in report["results"]:
         if r["status"] in ("unchecked", "table_text_layer", "close_unverified"):
             print("note    %s: %s (%s); compare it with the page image yourself" % (r["field"], r["status"].replace("_", " "), r["info"]))
