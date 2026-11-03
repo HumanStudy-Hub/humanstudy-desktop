@@ -335,6 +335,12 @@ class EffectRules(unittest.TestCase):
     def rules(self, doc):
         return effects.build_rules(doc, self.program)
 
+    def test_a_printed_zero_does_not_sign_a_tiny_negative_value(self):
+        self.assertFalse(effects._printed_signed(-1e-11, ["b = 0"]))
+        self.assertFalse(effects._printed_signed(-1.9e-11, ["p = -5.3e-11"]))
+        self.assertTrue(effects._printed_signed(-1.9e-11, ["b = −1.9e−11"]))
+        self.assertTrue(effects._printed_signed(-0.322, ["d = -0.322"]))
+
     def test_sign_follows_the_cells_not_the_printed_absolute_value(self):
         self.assertEqual(self.rules(self.effect()), [])
         unsigned = self.effect(estimates=[{"metric": "standardized_mean_difference", "value": 0.322}])

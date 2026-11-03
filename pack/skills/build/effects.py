@@ -25,6 +25,7 @@ These build rules are checked here only (effects_core.py, which HumanStudy-Bench
                 states `signBasis` (the printed words that say which arm was higher). A sign is never
                 chosen to match the prediction. A printed CI must contain its value (a flipped sign flips it).
 """
+import math
 import importlib.util
 import json
 import os
@@ -182,7 +183,8 @@ def _share(cell):
 
 def _printed_signed(value, quotes):
     """True when the quotes print this negative value with its minus sign (the paper itself signs it)."""
-    return value < 0 and any(abs(x - value) < 1e-9 for q in quotes for x in effects_core.numbers_in(q))
+    return value < 0 and any(math.isclose(x, value, rel_tol=1e-9, abs_tol=0.0)
+                             for q in quotes for x in effects_core.numbers_in(q))
 
 
 def build_rules(effects, program):

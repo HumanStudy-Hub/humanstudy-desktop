@@ -98,6 +98,36 @@ class Effects(unittest.TestCase):
         for text in ["p = 1.9e+11", "p = 1.9e +11", "p = 1.9e11", "p = 2.0e 11"]:
             self.assertFalse(effects_core.rendered_quote(1.9e-11, {**record, "quote": text}))
 
+    def test_rendered_check_joins_only_a_true_minus_in_a_numeric_context(self):
+        record = {"locator": {"page": 2}, "note": "rendered page checked"}
+        # Ranges, item counts and labels are not lost minus signs, even with the note set.
+        for value, quote in [(-0.40, "95% CI [0.25 – 0.40]"), (-0.40, "95% CI [0.25 − 0.40]"),
+                             (-5, "Study 2 - 5 items"), (-3.0, "Table 1 – 3.0"), (-0.011, "b = - 0.011"),
+                             (-0.011, "b = – 0.011"), (-0.011, "b − 0.011")]:
+            with self.subTest(quote=quote):
+                self.assertFalse(effects_core.rendered_quote(value, {**record, "quote": quote}))
+        # A true minus (U+2212) separated from its digits after =, (, [, , or at the start of the quote.
+        for value, quote in [(-0.011, "b = − 0.011"), (-0.5, "(− 0.5)"), (-0.2, "95% CI [− 0.2, 0.4]"),
+                             (-0.4, "95% CI [0.1, − 0.4]"), (-1.25, "− 1.25 points")]:
+            with self.subTest(quote=quote):
+                self.assertTrue(effects_core.rendered_quote(value, {**record, "quote": quote}))
+
+    def test_rendered_check_keeps_the_check_the_sign_warning(self):
+        program = json.loads((self.root / "program.json").read_text())
+        record = {"id": "lossy", "locator": {"page": 2}, "quote": "b = − 0.011", "note": "rendered page checked"}
+        program["evidence"].append(record)
+        doc = effects_doc()
+        doc["effects"][0]["reported"] = {"estimates": [{"metric": "regression_coefficient", "value": -0.011}],
+                                         "evidenceIds": ["lossy"]}
+        problems, warnings = effects_core.check(self.root, doc, program)
+        self.assertFalse(problems, problems)
+        self.assertTrue(any("rendered-page check" in w for w in warnings), warnings)
+        self.assertTrue(any("check the sign" in w for w in warnings), warnings)
+        record["quote"] = "95% CI [0.25 – 0.011]"
+        problems, warnings = effects_core.check(self.root, doc, program)
+        self.assertFalse(any("rendered-page check" in w for w in warnings), warnings)
+        self.assertTrue(any("check the sign" in w for w in warnings), warnings)
+
     def test_effect_check_exposes_rendered_page_exception_without_editing_quote(self):
         program = json.loads((self.root / "program.json").read_text())
         record = {"id": "lossy", "locator": {"page": 2}, "quote": "p = 1.9e 11"}
