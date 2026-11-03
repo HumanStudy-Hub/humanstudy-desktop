@@ -40,6 +40,8 @@ REQUIRED = [
 # Views of program.json: required only in the standalone layout (study.json.program is a copy).
 STANDALONE_VIEWS = ["source/evidence.json", "audit/missing_information.json"]
 PROGRAM_REF = "../../program.json"
+# Files the project format puts beside program.json that a package may read (plus the paper PDF, sources/).
+BESIDE_PROGRAM = {"program.json", "effects.json", "capabilities.json", "README.md"}
 
 
 def fail(msg: str) -> None:
@@ -142,8 +144,8 @@ def main() -> None:
         sandbox_run.copy_tree(root, copy, ignore=shutil.ignore_patterns("__pycache__", ".git"))
         project = root.parent.parent
         if root.parent.name == "package" and (project / "program.json").is_file():
-            for f in project.iterdir():
-                if f.is_file() and not f.is_symlink():
+            for f in project.iterdir():  # only what the format puts there; never .env or tool configuration
+                if f.is_file() and not f.is_symlink() and (f.name in BESIDE_PROGRAM or f.suffix.lower() == ".pdf"):
                     shutil.copy2(f, work / "project" / f.name)
             if (project / "sources").is_dir() and not (project / "sources").is_symlink():
                 sandbox_run.copy_tree(project / "sources", work / "project" / "sources")

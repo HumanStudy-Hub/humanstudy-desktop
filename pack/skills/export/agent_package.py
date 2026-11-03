@@ -454,7 +454,7 @@ def verify(out, name):
             pkg = Path(tmp) / "package" / s.package.name
             sandbox_run.copy_tree(s.package, pkg)  # symlinks are not followed out of the package
             for f in skill.iterdir():
-                if f.is_file() and not f.is_symlink():
+                if f.is_file() and not f.is_symlink() and not f.name.startswith("."):
                     shutil.copy2(f, Path(tmp) / f.name)
             if (skill / "sources").is_dir() and not (skill / "sources").is_symlink():
                 sandbox_run.copy_tree(skill / "sources", Path(tmp) / "sources")

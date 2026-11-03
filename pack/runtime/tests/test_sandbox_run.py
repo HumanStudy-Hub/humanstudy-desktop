@@ -222,9 +222,26 @@ class SandboxRunTest(unittest.TestCase):
             os.symlink("real.txt", str(pkg / "task/inside"))
         except (OSError, NotImplementedError):
             self.skipTest("cannot make symlinks here")
+        (pkg / ".env").write_text("SERVICE_PASSWORD=hunter2", encoding="utf-8")
         copy = sandbox_run.copy_tree(pkg, self.dir / "copy")
         self.assertFalse(os.path.lexists(copy / "task/leak"))
+        self.assertFalse(os.path.lexists(copy / ".env"))
         self.assertEqual((copy / "task/inside").read_text(encoding="utf-8"), "ok")
+
+    def test_refuses_inside_a_foreign_sandbox(self):
+        if not (sys.platform == "darwin" and shutil.which("sandbox-exec")):
+            self.skipTest("macOS sandbox only")
+        pkg = self.dir / "pkg"
+        pkg.mkdir()
+        (pkg / "x.py").write_text("print('ran')\n", encoding="utf-8")
+        driver = ("import sys; sys.path.insert(0, %r); import sandbox_run as s; "
+                  "r = s.run_python(%r, cwd=%r, work=%r); print(r.returncode, r.confinement, r.stdout.strip())"
+                  % (str(REPO / "pack/skills/build"), str(pkg / "x.py"), str(pkg), str(self.dir / "work")))
+        env = {k: v for k, v in os.environ.items() if k != sandbox_run.MARK}
+        out = __import__("subprocess").run(["sandbox-exec", "-p", "(version 1)(allow default)", sys.executable, "-c", driver],
+                                           capture_output=True, text=True, env=env, timeout=60).stdout
+        self.assertIn("126 foreign sandbox", out)
+        self.assertNotIn("ran", out)
 
 
 if __name__ == "__main__":

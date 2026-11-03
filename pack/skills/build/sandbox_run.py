@@ -24,13 +24,17 @@ macOS: sandbox-exec with an inline profile (never a file the code could rewrite)
 Linux: `unshare -rn` (no network) when unprivileged user namespaces are available; files are not confined.
 Elsewhere (Windows, or Linux without user namespaces): environment and process-group only, with a warning.
 
-Nested calls (a sandboxed checker that itself runs a package) reuse the confinement they are already in;
-that is checked with the kernel (sandbox_check, network namespace), not taken from an environment variable.
+Nested calls (a sandboxed checker that itself runs a package) reuse the confinement they are already in:
+the kernel must report a sandbox (sandbox_check, network namespace) and the marker must be set. Inside
+someone else's macOS sandbox ours cannot be added, so package code is not run at all (returncode 126).
 Use a fresh work folder per call: a process that outlives one run could otherwise tamper with the next.
 Not covered: a same-user process can read the initial environment of other processes of that user (macOS
 KERN_PROCARGS2, Linux /proc/<pid>/environ), so keys that other processes hold in environment variables stay
-readable; without network, IPC or writes outside the work folder the only way out is the output, which is
-redacted. Linux and Windows do not confine files.
+readable; without network, IPC or writes outside the work folder the only way out is the output, whose
+redaction (secret-named values, known key shapes) is a mitigation, not a control: encoded or split text gets
+through. The sweep for leftover processes is best effort: one that re-executes itself with a fresh
+environment is not found (it stays confined, and its work folder is not reused). Linux and Windows do not
+confine files.
 Standard library only.
 """
 import contextlib
@@ -183,7 +187,10 @@ def already_confined():
 def wrapper(work, read=()):
     """(argv prefix, confinement label) for this platform."""
     if already_confined():
-        return [], "inherited"
+        if os.environ.get(MARK) == "1":  # our own confinement (the variable alone switches nothing off)
+            return [], "inherited"
+        if sys.platform == "darwin":  # someone else's sandbox: ours cannot be added on top, so do not run
+            return None, "foreign sandbox"
     if sys.platform == "darwin":
         exe = shutil.which("sandbox-exec") or ("/usr/bin/sandbox-exec" if os.path.exists("/usr/bin/sandbox-exec") else None)
         if exe:  # the profile goes inline: a file in the work folder could be rewritten by a leftover process
@@ -281,14 +288,19 @@ def _tail(f):
     return redact(f.read().decode("utf-8", errors="replace"))
 
 
+PRIVATE_NAMES = {"node_modules", "opencode.json", "__pycache__"}
+
+
 def copy_tree(src, dst, ignore=None):
     """Copy a package or study without following symlinks; links that point outside `src` are left out,
-    so a copy can never pull in a file from elsewhere (a link to ~/.ssh, say)."""
+    so a copy can never pull in a file from elsewhere (a link to ~/.ssh, say). Dotfiles and folders
+    (.env, .git, .opencode, ...) and local tool configuration stay out of the copy too."""
     src = Path(src)
     root = _real(src)
 
     def skip(folder, names):
         out = set(ignore(folder, names)) if ignore else set()
+        out.update(n for n in names if n.startswith(".") or n in PRIVATE_NAMES)
         for n in names:
             p = os.path.join(folder, n)
             if os.path.islink(p):
@@ -313,6 +325,10 @@ def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=N
     script = Path(script).resolve()
     reads = [script.parent] + ([cwd] if cwd else []) + list(read)
     pre, label = wrapper(work, reads)
+    if pre is None:
+        return Result(126, "", "refused: this process runs inside a sandbox that is not HumanStudy's, so package "
+                               "code cannot be confined here; run the check from a normal terminal or the app\n",
+                      False, label)
     argv = pre + [sys.executable, "-I", "-B", "-X", "utf8", "-c", BOOT, str(script)] + [str(a) for a in args]
     kw = {"start_new_session": True} if os.name != "nt" else \
         {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
