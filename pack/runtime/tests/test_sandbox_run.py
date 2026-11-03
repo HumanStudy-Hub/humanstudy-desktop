@@ -156,6 +156,76 @@ class SandboxRunTest(unittest.TestCase):
         time.sleep(4)
         self.assertFalse(marker.exists(), "a child of the timed-out process kept running")
 
+    def test_leftover_process_is_ended_and_profile_is_inline(self):
+        if os.name == "nt":
+            self.skipTest("leftover processes are only ended on POSIX")
+        pkg = self.dir / "pkg"
+        pkg.mkdir()
+        marker = self.dir / "work" / "survivor.txt"
+        # Leaves the process group (setsid) through a double fork, then writes after the run has ended.
+        (pkg / "escape.py").write_text(
+            "import os, sys, time\n"
+            "if os.fork() == 0:\n"
+            "    os.setsid()\n"
+            "    if os.fork() == 0:\n"
+            "        time.sleep(3)\n"
+            "        open(sys.argv[1], 'w').write('alive')\n"
+            "    os._exit(0)\n", encoding="utf-8")
+        res = sandbox_run.run_python(pkg / "escape.py", [marker], cwd=pkg, work=self.dir / "work", timeout=30)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertFalse(list((self.dir / "work").glob("*.sb")), "the profile must not be a file in the work folder")
+        time.sleep(4)
+        self.assertFalse(marker.exists(), "a process that left the group outlived the run")
+
+    def test_marker_variable_does_not_switch_the_sandbox_off(self):
+        if not (sys.platform == "darwin" and shutil.which("sandbox-exec")):
+            self.skipTest("macOS sandbox only")
+        os.environ[sandbox_run.MARK] = "1"
+        try:
+            pkg = self.dir / "pkg"
+            pkg.mkdir()
+            (pkg / "read.py").write_text("import sys\ntry:\n    open(sys.argv[1]).read(); print('READ')\n"
+                                         "except OSError:\n    print('blocked')\n", encoding="utf-8")
+            res = sandbox_run.run_python(pkg / "read.py", [self.secret_file], cwd=pkg, work=self.dir / "work")
+        finally:
+            os.environ.pop(sandbox_run.MARK, None)
+        self.assertIn("blocked", res.stdout)
+        self.assertTrue(res.confinement.startswith("sandbox-exec"), res.confinement)
+
+    def test_no_signals_outside_and_secrets_redacted(self):
+        pkg = self.dir / "pkg"
+        pkg.mkdir()
+        victim = __import__("subprocess").Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            (pkg / "sig.py").write_text(
+                "import os, signal, sys\n"
+                "try:\n    os.kill(int(sys.argv[1]), signal.SIGTERM); print('KILLED')\n"
+                "except OSError:\n    print('blocked')\n"
+                "print('leak sk-or-v1-' + 'a' * 40)\n", encoding="utf-8")
+            res = sandbox_run.run_python(pkg / "sig.py", [victim.pid], cwd=pkg, work=self.dir / "work")
+            if confined_files(res.confinement):
+                self.assertIn("blocked", res.stdout)
+                time.sleep(0.3)
+                self.assertIsNone(victim.poll())
+            self.assertNotIn("sk-or-v1-aaaa", res.stdout)
+            self.assertIn("[redacted]", res.stdout)
+        finally:
+            victim.kill()
+            victim.wait()
+
+    def test_copies_do_not_follow_links_out_of_the_package(self):
+        pkg = self.dir / "pkg"
+        (pkg / "task").mkdir(parents=True)
+        (pkg / "task/real.txt").write_text("ok", encoding="utf-8")
+        try:
+            os.symlink(str(self.secret_file), str(pkg / "task/leak"))
+            os.symlink("real.txt", str(pkg / "task/inside"))
+        except (OSError, NotImplementedError):
+            self.skipTest("cannot make symlinks here")
+        copy = sandbox_run.copy_tree(pkg, self.dir / "copy")
+        self.assertFalse(os.path.lexists(copy / "task/leak"))
+        self.assertEqual((copy / "task/inside").read_text(encoding="utf-8"), "ok")
+
 
 if __name__ == "__main__":
     unittest.main()

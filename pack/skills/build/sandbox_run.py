@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run a study package's own code (adapter.py, evaluation.py, human loaders, smoke tests) in a confined
 child process. Study packages can come from other people (community revisions), so their code is never
-imported into a checker's process and never sees the researcher's keys, home folder or network.
+imported into a checker's process, gets no keys in its environment, and (on macOS) no network, home folder
+or writes outside its work folder.
 
     from sandbox_run import run_python, work_dir
     with work_dir() as work:
@@ -13,26 +14,43 @@ Every platform:
     folder is put back on sys.path so a package can still import its sibling files.
   * a minimal environment: PATH, LANG/LC_*, HOME and TMPDIR pointing into the work folder, and only the
     non-secret names in SAFE_ENV. API keys, tokens and everything else in the parent's environment are dropped.
-  * a new session / process group; on a timeout (and after a normal exit) the whole group is killed.
-macOS: sandbox-exec with a profile that denies all network access and messages to other processes (so no
-  browser, keychain or pasteboard), denies writes outside the work folder, and denies reading file contents
-  under the real home folder except the work folder, the Python installation and the folders named in `read`.
+  * a new session / process group; on a timeout (and after a normal exit) the whole group is killed, and
+    then any process still carrying this run's marker in its environment (one that left the group).
+  * the parent's secret values, and anything shaped like a known key, are blanked out of stdout/stderr.
+macOS: sandbox-exec with an inline profile (never a file the code could rewrite) that denies all network
+  access, messages to other processes (browser, keychain, pasteboard) and signals outside the sandbox,
+  denies writes outside the work folder, and denies reading file contents under /Users, /Volumes and the
+  shared temp folders except the work folder, the Python installation and the folders named in `read`.
 Linux: `unshare -rn` (no network) when unprivileged user namespaces are available; files are not confined.
 Elsewhere (Windows, or Linux without user namespaces): environment and process-group only, with a warning.
 
-Nested calls (a sandboxed checker that itself runs a package) reuse the confinement they are already in.
+Nested calls (a sandboxed checker that itself runs a package) reuse the confinement they are already in;
+that is checked with the kernel (sandbox_check, network namespace), not taken from an environment variable.
+Use a fresh work folder per call: a process that outlives one run could otherwise tamper with the next.
+Not covered: a same-user process can read the initial environment of other processes of that user (macOS
+KERN_PROCARGS2, Linux /proc/<pid>/environ), so keys that other processes hold in environment variables stay
+readable; without network, IPC or writes outside the work folder the only way out is the output, which is
+redacted. Linux and Windows do not confine files.
 Standard library only.
 """
 import contextlib
+import ctypes
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 MARK = "HUMANSTUDY_SANDBOX"
+RUN_MARK = "HUMANSTUDY_SANDBOX_RUN"
+SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSW|CREDENTIAL|AUTH|BYPASS", re.I)
+SECRET_SHAPES = re.compile(r"sk-ant-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9]{20,}|\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}|"
+                           r"\b(?:ghp|gho|ghs|ghu)_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|\bAKIA[0-9A-Z]{16}\b|"
+                           r"\bAIza[0-9A-Za-z_-]{35}\b|-----BEGIN [A-Z ]*PRIVATE KEY-----")
 # Non-secret settings a package may legitimately need. Nothing here may hold a key, token or password.
 SAFE_ENV = ("LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ", "SYSTEMROOT", "SystemRoot", "WINDIR", "COMSPEC",
             "PATHEXT", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OMP_NUM_THREADS",
@@ -82,25 +100,32 @@ def _python_dirs():
     return dirs
 
 
+# Where other people's or other studies' files live; reads are denied there except the allowed folders.
+MAC_PRIVATE = ("/Users", "/Volumes", "/private/tmp", "/private/var/folders", "/private/var/tmp")
+
+
 def macos_profile(work, read=()):
-    home = _real(Path.home())
+    private = [_real(Path.home())] + [p for p in MAC_PRIVATE if os.path.isdir(p)]
     allow_read = {_real(work), _real(Path(__file__).resolve().parent.parent)}  # the work folder and the skills
     allow_read.update(_real(p) for p in read if p)
     allow_read.update(_real(p) for p in _python_dirs())
-    # Never re-open the whole home folder (or a parent of it) because of a broad sys.path entry.
-    allow_read = sorted(p for p in allow_read if not (home + os.sep).startswith(p.rstrip(os.sep) + os.sep))
+    # Never re-open a private root (or a parent of one) because of a broad sys.path entry.
+    allow_read = sorted(p for p in allow_read
+                        if not any((q.rstrip(os.sep) + os.sep).startswith(p.rstrip(os.sep) + os.sep) for q in private))
     w = _sb_str(_real(work))
     lines = ["(version 1)", "(allow default)",
              "(deny network*)",
              # No talking to other processes either (browser via Launch Services, keychain, pasteboard):
-             # only the user-name lookup that getpass/pwd need.
+             # only the user-name lookup that getpass/pwd need. No signals to processes outside the sandbox.
              "(deny mach-lookup)",
              "(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))",
              "(deny appleevent-send)",
+             "(deny signal)",
+             "(allow signal (target same-sandbox))",
              "(deny file-write*)",
              "(allow file-write* (subpath %s) (literal \"/dev/null\") (literal \"/dev/zero\") "
              "(literal \"/dev/tty\") (literal \"/dev/dtracehelper\") (subpath \"/dev/fd\"))" % w,
-             "(deny file-read-data (subpath %s))" % _sb_str(home)]
+             "(deny file-read-data %s)" % " ".join("(subpath %s)" % _sb_str(_real(p)) for p in private)]
     if allow_read:
         lines.append("(allow file-read-data %s)" % " ".join("(subpath %s)" % _sb_str(p) for p in allow_read))
     return "\n".join(lines) + "\n"
@@ -137,16 +162,33 @@ def env_for(work, extra=None):
     return env
 
 
+def already_confined():
+    """True when this process already runs inside the confinement wrapper() would add (checked with the
+    kernel, so setting an environment variable cannot switch the sandbox off)."""
+    if sys.platform == "darwin":
+        try:
+            check = ctypes.CDLL("/usr/lib/libSystem.dylib").sandbox_check
+            check.restype = ctypes.c_int
+            return check(os.getpid(), None, 0) != 0
+        except (OSError, AttributeError):
+            return False
+    if sys.platform.startswith("linux"):
+        try:
+            return os.readlink("/proc/self/ns/net") != os.readlink("/proc/1/ns/net")
+        except OSError:
+            return False
+    return False
+
+
 def wrapper(work, read=()):
     """(argv prefix, confinement label) for this platform."""
-    if os.environ.get(MARK) == "1":
+    if already_confined():
         return [], "inherited"
     if sys.platform == "darwin":
         exe = shutil.which("sandbox-exec") or ("/usr/bin/sandbox-exec" if os.path.exists("/usr/bin/sandbox-exec") else None)
-        if exe:
-            profile = Path(work) / "sandbox.sb"
-            profile.write_text(macos_profile(work, read), encoding="utf-8")
-            return [exe, "-f", str(profile)], "sandbox-exec (no network, writes only in the work folder, home folder unreadable)"
+        if exe:  # the profile goes inline: a file in the work folder could be rewritten by a leftover process
+            return [exe, "-p", macos_profile(work, read)], \
+                "sandbox-exec (no network, writes only in the work folder, home folder unreadable)"
         _warn("darwin", "sandbox-exec is unavailable: package code runs with a clean environment but without "
                         "network or file confinement")
         return [], "environment only"
@@ -179,15 +221,88 @@ def _kill_tree(proc, timed_out):
         pass
 
 
+def _marked(nonce):
+    """Pids of this user's processes whose initial environment carries the run marker."""
+    me, needle, out = os.getpid(), ("%s=%s" % (RUN_MARK, nonce)).encode(), []
+    if sys.platform.startswith("linux"):
+        for d in os.listdir("/proc"):
+            if d.isdigit() and int(d) != me:
+                try:
+                    with open("/proc/%s/environ" % d, "rb") as f:
+                        if needle in f.read():
+                            out.append(int(d))
+                except OSError:
+                    pass
+    elif sys.platform == "darwin":
+        try:
+            pids = [int(x) for x in subprocess.run(["ps", "-U", str(os.getuid()), "-o", "pid="], capture_output=True,
+                                                   text=True, timeout=30).stdout.split()]
+            sysctl = ctypes.CDLL("/usr/lib/libSystem.dylib").sysctl
+        except (OSError, ValueError, subprocess.SubprocessError, AttributeError):
+            return []
+        for pid in pids:
+            if pid == me:
+                continue
+            mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2
+            size = ctypes.c_size_t(1 << 20)
+            buf = ctypes.create_string_buffer(size.value)
+            if sysctl(mib, 3, buf, ctypes.byref(size), None, 0) == 0 and needle in buf.raw[:size.value]:
+                out.append(pid)
+    return out
+
+
+def _kill_leftovers(nonce):
+    """End processes from this run that left its process group (setsid, double fork)."""
+    if os.name == "nt":
+        return
+    for _ in range(5):
+        pids = _marked(nonce)
+        if not pids:
+            return
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+def redact(text):
+    """Blank out the parent's secret values and anything shaped like a known key."""
+    for k, v in os.environ.items():
+        if SECRET_NAME.search(k) and v and len(v) >= 8:
+            text = text.replace(v, "[redacted]")
+    return SECRET_SHAPES.sub("[redacted]", text)
+
+
 def _tail(f):
     f.seek(0, os.SEEK_END)
     size = f.tell()
     f.seek(max(0, size - MAX_OUTPUT))
-    return f.read().decode("utf-8", errors="replace")
+    return redact(f.read().decode("utf-8", errors="replace"))
+
+
+def copy_tree(src, dst, ignore=None):
+    """Copy a package or study without following symlinks; links that point outside `src` are left out,
+    so a copy can never pull in a file from elsewhere (a link to ~/.ssh, say)."""
+    src = Path(src)
+    root = _real(src)
+
+    def skip(folder, names):
+        out = set(ignore(folder, names)) if ignore else set()
+        for n in names:
+            p = os.path.join(folder, n)
+            if os.path.islink(p):
+                t = _real(p)
+                if not (t == root or t.startswith(root.rstrip(os.sep) + os.sep)):
+                    out.add(n)
+        return out
+    shutil.copytree(str(src), str(dst), symlinks=True, ignore=skip)
+    return Path(dst)
 
 
 def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=None):
-    """Run `python script args...` confined; `work` is the only folder it may write to (made if missing).
+    """Run `python script args...` confined; `work` is the only folder it may write to (made if missing;
+    use a fresh one per call).
 
     `read` names extra folders whose files the code may read (on macOS the home folder is otherwise
     unreadable); `cwd` and the script's folder are added. `env` adds non-secret variables."""
@@ -201,9 +316,12 @@ def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=N
     argv = pre + [sys.executable, "-I", "-B", "-X", "utf8", "-c", BOOT, str(script)] + [str(a) for a in args]
     kw = {"start_new_session": True} if os.name != "nt" else \
         {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    nonce = uuid.uuid4().hex
+    child_env = env_for(work, env)
+    child_env[RUN_MARK] = nonce
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(argv, cwd=str(cwd or work), env=env_for(work, env), stdin=subprocess.DEVNULL,
-                                stdout=out, stderr=err, **kw)
+        proc = subprocess.Popen(argv, cwd=str(cwd or work), env=child_env, stdin=subprocess.DEVNULL,
+                                stdout=out, stderr=err, close_fds=True, **kw)
         timed_out = False
         try:
             proc.wait(timeout=timeout)
@@ -211,4 +329,5 @@ def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=N
             timed_out = True
         _kill_tree(proc, timed_out)  # on POSIX also ends anything the code left running in its group
         proc.wait()
+        _kill_leftovers(nonce)
         return Result(proc.returncode, _tail(out), _tail(err), timed_out, label)

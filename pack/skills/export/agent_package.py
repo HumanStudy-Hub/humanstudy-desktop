@@ -452,12 +452,12 @@ def verify(out, name):
             # programRef) and the files next to program.json (effects.json, capabilities.json, the paper
             # when it is shared, sources/).
             pkg = Path(tmp) / "package" / s.package.name
-            shutil.copytree(s.package, pkg)
+            sandbox_run.copy_tree(s.package, pkg)  # symlinks are not followed out of the package
             for f in skill.iterdir():
-                if f.is_file():
+                if f.is_file() and not f.is_symlink():
                     shutil.copy2(f, Path(tmp) / f.name)
-            if (skill / "sources").is_dir():
-                shutil.copytree(skill / "sources", Path(tmp) / "sources")
+            if (skill / "sources").is_dir() and not (skill / "sources").is_symlink():
+                sandbox_run.copy_tree(skill / "sources", Path(tmp) / "sources")
             # Package code runs confined: no keys, no network, writes only in the copy (build/sandbox_run.py).
             run = sandbox_run.run_python(pkg / "task/adapter.py", ["--smoke-test"], cwd=pkg, work=tmp, timeout=300)
         assert not run.timed_out, "replay package smoke test timed out after 300 s"

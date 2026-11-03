@@ -41,7 +41,13 @@ def field_gaps(root, effects):
     if len(packages) != 1 or not ops:
         return [], []
     pkg = packages[0].resolve()
-    data = Path(os.environ.get("HUMANSTUDY_HUMAN_DATA") or root / "human-data").resolve()
+    # The researcher's own HUMANSTUDY_HUMAN_DATA is trusted; a human-data folder that came with the study is
+    # opened to the package only when it is a real folder inside the study (not a link to ~/.aws, say).
+    data = Path(os.environ["HUMANSTUDY_HUMAN_DATA"]).resolve() if os.environ.get("HUMANSTUDY_HUMAN_DATA") else \
+        (root / "human-data")
+    if not os.environ.get("HUMANSTUDY_HUMAN_DATA"):
+        inside = data.is_dir() and not data.is_symlink() and Path(root).resolve() in data.resolve().parents
+        data = data.resolve() if inside else Path(root).resolve() / "human-data-not-used"
     # The package's code runs only in a confined child (sandbox_run.py: no keys, no network, writes only in a
     # scratch folder), which prints the sessions as JSON.
     with sandbox_run.work_dir(prefix="effects-fields-") as work:

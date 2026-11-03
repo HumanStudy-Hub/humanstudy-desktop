@@ -533,7 +533,7 @@ def run_probe(s, ctx):
     if ctx.get("no_run") or not s.package:
         ctx["probe"] = None
         return None
-    copy = ctx["copy"]()
+    copy = ctx["copy"](fresh=True)
     # Package code is untrusted: it runs only in the confined child (no keys, no network, writes only in the
     # scratch folder; see sandbox_run.py), which prints the probe result as JSON.
     run = sandbox_run.run_python(Path(__file__).resolve(), ["--probe", str(copy), "--n", "2"], cwd=copy,
@@ -870,7 +870,7 @@ def run_export(s, ctx):
     if ctx.get("no_export") or ctx.get("no_run"):
         ctx["export"] = None
         return None
-    copy = ctx["copy"]()
+    copy = ctx["copy"](fresh=True)
     out = copy / "exports" / "audit-agent"
     run = sandbox_run.run_python(EXPORT / "agent_package.py", ["--root", str(copy), "--output", str(out), "--mcp"],
                                  cwd=copy, work=copy.parent, timeout=ctx.get("timeout", 600))
@@ -1031,7 +1031,7 @@ def check_C4(s, ctx):
     except SystemExit as exc:
         out.append(("concern", "capabilities could not be recomputed: %s" % exc))
     if s.caps.get("run", {}).get("status") in ("yes", "partial") and s.package and not ctx.get("no_run"):
-        copy = ctx["copy"]()
+        copy = ctx["copy"](fresh=True)
         pkg = copy / "package" / s.package.name
         run = sandbox_run.run_python(HERE / "check_package.py", [str(pkg)], cwd=copy, work=copy.parent,
                                      timeout=ctx.get("timeout", 600))
@@ -1103,14 +1103,20 @@ def audit_one(root, items, ctx_base):
     s = Study(root)
     work = {}
 
-    def copy():
-        if "dir" not in work:
+    def copy(fresh=False):
+        """The scratch copy of the study; fresh=True gives a new one in its own folder, for each run of
+        package code, so a process left over from one run cannot touch the next (see sandbox_run.py)."""
+        if "tmp" not in work:
             base = Path(ctx_base["workdir"]) if ctx_base.get("workdir") else None
             if base:
                 base.mkdir(parents=True, exist_ok=True)
             work["tmp"] = tempfile.mkdtemp(prefix="audit-", dir=str(base) if base else None)
-            work["dir"] = Path(work["tmp"]) / s.root.name
-            shutil.copytree(s.root, work["dir"], ignore=shutil.ignore_patterns("__pycache__", ".git", "exports"))
+        if fresh or "dir" not in work:
+            dest = Path(tempfile.mkdtemp(prefix="run-" if fresh else "copy-", dir=work["tmp"])) / s.root.name
+            sandbox_run.copy_tree(s.root, dest, ignore=shutil.ignore_patterns("__pycache__", ".git", "exports"))
+            if fresh:
+                return dest
+            work["dir"] = dest
         return work["dir"]
     ctx = dict(ctx_base, copy=copy)
     results = []
