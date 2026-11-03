@@ -172,15 +172,26 @@ class AuditTest(unittest.TestCase):
                  "notes": ["Note. Ratings on a scale from 1 to 7."]}
         _, items, _ = run_audit(self.study(verbatim_value=table, extra={"sources/materials.txt": page}), "--only", "X1")
         self.assertEqual(items["X1"]["result"], "pass", items["X1"])
+        self.assertIn("1 table(s) found cell by cell", items["X1"]["note"])
         reworded = json.loads(json.dumps(table))
         reworded["rows"][1][0] = "Tails condition"  # a reworded cell
         _, items, _ = run_audit(self.study(verbatim_value=reworded, extra={"sources/materials.txt": page}), "--only", "X1")
         self.assertNotEqual(items["X1"]["result"], "pass", items["X1"])
         self.assertIn("program.json#node:m1.text", items["X1"]["evidence"])
+        self.assertEqual(items["X1"]["result"], "concern", items["X1"])
         invented = json.loads(json.dumps(table))
         invented["rows"].append(["Edge framing", "5.0"])  # a row the paper does not have
         _, items, _ = run_audit(self.study(verbatim_value=invented, extra={"sources/materials.txt": page}), "--only", "X1")
-        self.assertNotEqual(items["X1"]["result"], "pass", items["X1"])
+        self.assertEqual(items["X1"]["result"], "concern", items["X1"])
+        # Text cells all match, so only the number and row checks can see these.
+        for change in (lambda t: t["rows"][1].__setitem__(1, "3.7"),            # a wrong number
+                       lambda t: t["rows"].append(["Tails framing", "4.9"]),     # an invented row of page words
+                       lambda t: t["columns"].__setitem__(1, "M")):              # a header the page does not print
+            altered = json.loads(json.dumps(table))
+            change(altered)
+            _, items, _ = run_audit(self.study(verbatim_value=altered, extra={"sources/materials.txt": page}), "--only", "X1")
+            self.assertEqual(items["X1"]["result"], "concern", (altered, items["X1"]))
+            self.assertIn("program.json#node:m1.text: table", items["X1"]["evidence"])
 
     def test_shared_context_between_participants_fails(self):
         run, items, _ = run_audit(self.study(adapter=SHARED), "--only", "P1")

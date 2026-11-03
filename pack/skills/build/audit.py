@@ -347,8 +347,69 @@ def find_text(s, value, evidence_ids):
     return check_verbatim.field_status(value, evidence, evidence_ids, s.sources, s.pdf or "paper.pdf")
 
 
+def cited_windows(s, ids):
+    """The text of the cited pages and their neighbours, one window per readable file (as check_verbatim)."""
+    by_file, out = {}, []
+    for eid in ids:
+        e = s.evidence.get(eid)
+        if isinstance(e, dict):
+            by_file.setdefault(s.ev_rel(e), set()).add((e.get("locator") or {}).get("page"))
+    for rel, pages in by_file.items():
+        doc = s.sources.pages(rel)
+        if not doc:
+            continue
+        nums = sorted(p for p in pages if isinstance(p, int) and 1 <= p <= len(doc))
+        near = sorted({x for n in nums for x in (n - 1, n, n + 1) if 1 <= x <= len(doc)})
+        out.append(" " + (" ".join(doc[p - 1] for p in near) if len(doc) > 1 and near else " ".join(doc)) + " ")
+    return out
+
+
+def table_units(cell):
+    """The parts of one table cell to find on the page: a text cell as its words (searched as a substring,
+    as the text comparison does; one- or two-character text as a whole token), a numeric cell as each of its
+    numbers (whole tokens: an estimate and its interval are often printed on different lines)."""
+    q = check_quotes.normalise(cell)
+    if not q:
+        return []
+    if re.search(r"[a-z]", q):
+        return [(q, len(q) >= 3)]
+    return [(check_quotes.normalise(n), False) for n in re.findall(r"\d*\.?\d+", str(cell))]
+
+
+def table_gaps(s, value, ids):
+    """What the text comparison of a table leaves open, checked on the cited pages: every number and every
+    one- or two-character cell as a whole token, and each row's cells (the header row too) within a short span
+    of each other.
+    Returns (cells with a part not found, rows whose cells are not together, rows checked)."""
+    windows = cited_windows(s, ids)
+    if not windows:
+        return [], [], 0
+
+    def where(unit, w):
+        q, sub = unit
+        return [m.start() for m in re.finditer(re.escape(q) if sub else " %s%%? " % re.escape(q), w)]
+    missing = [c for c in check_verbatim.table_cells(value)
+               if any(not sub and not any(where((q, sub), w) for w in windows) for q, sub in table_units(c))]
+    apart, checked = [], 0
+    for row in [value.get("columns") or []] + list(value.get("rows") or []):  # the header row counts as a row
+        units = [u for c in check_verbatim.table_cells({"r": row}) for u in table_units(c)]
+        if len(units) < 2:
+            continue
+        checked += 1
+        span = 200 + sum(len(q) for q, _ in units)
+        ok = False
+        for w in windows:
+            hits = [where(u, w) for u in units]
+            if all(hits) and any(all(any(abs(p - a) <= span for p in h) for h in hits) for a in hits[0]):
+                ok = True
+                break
+        if not ok:
+            apart.append(" | ".join(str(c) for c in (row if isinstance(row, list) else [row]))[:80])
+    return missing, apart, checked
+
+
 def check_X1(s, ctx):
-    found, problems, unchecked = 0, [], []
+    found, problems, unchecked, tables = 0, [], [], 0
     for nid, n in s.nodes.items():
         for f in n.get("fields") or []:
             if f.get("origin") != "verbatim" or not text_of(f.get("value")).strip():
@@ -360,10 +421,25 @@ def check_X1(s, ctx):
                 continue
             status, info = find_text(s, f.get("value"), ids)
             pages = sorted({str((s.evidence.get(i) or {}).get("locator", {}).get("page")) for i in ids if i in s.evidence})
-            if status == "found":
+            if check_verbatim.is_table(f.get("value")) and status in ("found", "table_text_layer", "close"):
+                # Text cells are matched one by one, anywhere on the cited pages; numbers, short cells and
+                # which cells share a row are checked here. Column order is not verifiable from a text layer.
+                missing, apart, rows = table_gaps(s, f.get("value"), ids)
+                gaps = (["%d numeric or short cell(s) not on the page (%s)" % (len(missing), short(missing, 4))]
+                        if missing else []) + \
+                       (["%d of %d row(s) whose cells are not together on the page (%s)" % (len(apart), rows, short(apart, 3))]
+                        if apart else [])
+                if status != "found" or gaps:
+                    problems.append(("concern", "%s: table (cited page(s) %s): %s; needs human: compare the table with "
+                                     "the page image" % (where, ",".join(pages), "; ".join(
+                                         ([info] if status != "found" and info else []) + gaps))))
+                    continue
                 found += 1
-            elif status in ("table_text_layer", "close_unverified"):
-                # the build check accepts these on a garbled text layer; the audit does not take that on trust
+                tables += 1
+            elif status == "found":
+                found += 1
+            elif status == "close_unverified":
+                # the build check accepts this on a garbled text layer; the audit does not take that on trust
                 problems.append(("concern", "%s: %s (cited page(s) %s); needs human: compare with the page image"
                                  % (where, info, ",".join(pages))))
             elif status == "unchecked":
@@ -379,6 +455,9 @@ def check_X1(s, ctx):
         return R("n/a", None, "no verbatim fields")
     note = "%d verbatim field(s): %d found word for word, %d problem(s), %d unchecked (cited file not readable here)" % (
         total, found, len(problems), len(unchecked))
+    if tables:
+        note += "; %d table(s) found cell by cell with each row's cells together (column order not verifiable " \
+                "from a text layer)" % tables
     if problems:
         worst = "fail" if any(p[0] == "fail" for p in problems) else "concern"
         return R(worst, short(p[1] for p in problems), note, details=[p[1] for p in problems] + ["unchecked: " + u for u in unchecked])

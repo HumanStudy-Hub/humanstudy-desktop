@@ -55,12 +55,28 @@ def is_table(value):
     return isinstance(value, dict) and isinstance(value.get("columns"), list) and isinstance(value.get("rows"), list)
 
 
+TABLE_META = ("table", "page", "uncertain")  # table keys that are not printed text
+
+
+def table_cells(value):
+    """Every printed cell of a table value as a string: title, headers (nested ones too), row cells (rows
+    given as dicts too), notes, and any other key except TABLE_META, so nothing in a table goes unchecked."""
+    def flat(v):
+        if isinstance(v, str):
+            return [v]
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return [str(v)]
+        if isinstance(v, list):
+            return [c for x in v for c in flat(x)]
+        if isinstance(v, dict):
+            return [c for x in v.values() for c in flat(x)]
+        return []
+    return [c for k, v in value.items() if k not in TABLE_META for c in flat(v)]
+
+
 def raw_pieces(value):
     if is_table(value):  # cell order in a PDF text layer is not the table's order: compare cell by cell
-        cells = [value.get("title")] + list(value["columns"]) + [c for r in value["rows"] if isinstance(r, list) for c in r]
-        notes = value.get("notes")
-        cells += notes if isinstance(notes, list) else [notes]
-        return [p for c in cells if isinstance(c, str) for p in re.split(r"\s+/\s+", c)]
+        return [p for c in table_cells(value) for p in re.split(r"\s+/\s+", c)]
     if isinstance(value, list):
         return [p for v in value for p in raw_pieces(v)]
     if isinstance(value, dict):
