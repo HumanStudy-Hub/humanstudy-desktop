@@ -12,7 +12,8 @@ is no package yet, run the `build` skill first (section 3). If `study.json.readi
 run possible.
 Read `capabilities.json` too: parts listed in `run.excluded` are not run (say so in the report, with
 the reason), and a `partial` run is reported as partial, never as the whole paper.
-When the package has `human/key.json`, run `study_core.py reproduce` before comparing AI with people:
+When the package has `human/key.json`, run `study_core.py reproduce` before comparing AI with people
+(`python .opencode/skills/simulate/run_confined.py --no-model .opencode/skills/export/agent/study_core.py --root . reproduce`, after `study_core.py --root . human-data` has fetched the files):
 it says how far the package's analysis recovers the paper from the human data, and whether those
 data are the paper's own sample.
 
@@ -21,6 +22,22 @@ you work. They do not read code: every sentence you write for them (progress mes
 summary) is plain language about participants, conditions and results.
 
 ## Model access
+
+Always launch the complete run script through `.opencode/skills/simulate/run_confined.py`,
+including trials and `study_core.py run/reproduce` wrappers. Never import package code in an
+unconfined process.
+
+On macOS the app sets `HUMANSTUDY_RELAY_REQUIRED=1`: it creates an approved-run local relay whose
+per-run capability is not an upstream model key, and `run_confined.py` runs the script inside
+macOS sandbox-exec. The relay permits only the approved model and reserves at most 200,000
+input/output tokens per run, with at most 4,096 output tokens per call. Only text messages are
+supported. Do not retry a token-cap refusal. Real upstream credentials stay in the app process.
+
+On Linux and Windows the variable is not set: there is no relay and no sandbox, and
+`run_confined.py` runs the script exactly as `python run.py` would. The study's code can read the
+signed-in key in its environment there; the run confirmation tells the researcher. Do not try to
+work around either mode. Researchers may still invoke standalone study_core.py manually with their
+own credentials.
 
 Use the runtime's `humanstudy_llm` module. It is importable as is from the bundled `python` (never
 add a `sys.path` entry for it), and needs no key handling and no package install:
@@ -41,8 +58,13 @@ environment variable; do not call the endpoint any other way.
 ## Approval
 
 Before starting any real run or reproduction, check `.humanstudy/community.json` in the project.
-If present (including unreadable or malformed provenance), say exactly:
+If present (including unreadable or malformed provenance), say exactly, when
+`HUMANSTUDY_RELAY_REQUIRED` is `1` (macOS):
+"This study's code will run on your computer through a limited model relay (up to 200,000 tokens and 30 minutes)."
+and otherwise (Linux, Windows):
 "This study's code will run on your computer with access to your model key."
+Without the relay, also say for every run, community or not:
+"On this computer, the study's code can read your API key. Only run studies you trust."
 Include it in the existing run confirmation, before any package code executes; do not add a
 button or dialog. Community revision provenance currently carries no authenticated maintainer
 review attestation, so show the notice for every such fork. A local `reviewed` flag is not proof
@@ -111,7 +133,7 @@ Create `artifacts/simulations/<YYYY-MM-DD-HHMM>/` (the run folder) and work insi
    Never cache replies across participants: two participants with the same prompt must get two
    independent model calls (a cache would make them identical copies).
 
-2. **Trial first**: `python run.py --trial` (one participant per condition; a few seconds). Check that
+2. **Trial first**: `python .opencode/skills/simulate/run_confined.py artifacts/simulations/<run>/run.py --trial` (one participant per condition; a few seconds). Check that
    every reply parses into the paper's response format. Fix the adapter's prompt or parser if not, and
    record the fix in `report.md`. Never adjust prompts to steer results.
 
@@ -124,7 +146,9 @@ Create `artifacts/simulations/<YYYY-MM-DD-HHMM>/` (the run folder) and work insi
 
    Then check every 20–60 seconds with a short command (`sleep 30; cat artifacts/simulations/<run>/progress.json`)
    until `progress.json` says `scoring`, `writing`, `failed` or `stopped`. If it failed, read `run.log`,
-   fix the cause and start again (finished participants are kept, so no model call is repeated). If it says `stopped`, the researcher
+   fix the cause and start again (finished participants are kept, so no model call is repeated).
+   On macOS the run's model access ends when a run finishes, on Stop, or after 30 minutes; if the
+   launcher says it has ended, ask the researcher to press Run simulation again. If it says `stopped`, the researcher
    pressed Stop: do not restart; report what was finished.
 
 4. **report.md**: the model, temperature, seed, AI participants per condition and arms run; number

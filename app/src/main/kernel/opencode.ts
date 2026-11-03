@@ -1,4 +1,5 @@
 import { nativeRoute, hideCredentials } from './native-api'
+import { relayDescriptor, relaySupported } from '../model-relay'
 import { startRequestTransport } from './request-transport'
 import { NATIVE_SESSION_MUTATIONS, NATIVE_TURNS, type NativeRequest, type NativeSelection } from '../../shared/native'
 import { validateAnswers, type KernelQuestion } from '../../shared/question'
@@ -152,6 +153,9 @@ export interface OpencodeOptions {
    *  approved automatically. Default: HUMANSTUDY_PERMISSION env (set from Settings), else 'project'. */
   permission?: 'ask' | 'project'
   readyTimeoutMs?: number
+  /** Simulations through the per-run model relay (default: relaySupported(), i.e. macOS with
+   *  /usr/bin/sandbox-exec). Off: the pre-relay path, where simulation code can read the key. */
+  relay?: boolean
 }
 
 export class OpencodeKernel implements Kernel {
@@ -170,6 +174,8 @@ export class OpencodeKernel implements Kernel {
   private model: string
   private readyTimeoutMs: number
   private permission: 'ask' | 'project' | undefined
+  /** Fixed at construction: whether simulations use the per-run relay (see OpencodeOptions.relay). */
+  readonly relay: boolean
   private clock = (): number => Date.now()
   private livenessQuietMs = 60_000
   private livenessIdleGraceMs = 30_000
@@ -189,6 +195,7 @@ export class OpencodeKernel implements Kernel {
     if (this.provider === 'openrouter' && !(process.env.HUMANSTUDY_DEV_KEYS === '1' && process.env.OPENROUTER_API_KEY)) this.provider = ''
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 30_000
     this.permission = opts.permission
+    this.relay = opts.relay ?? relaySupported()
     this.livenessTimer = setInterval(() => { void this.checkLiveness() }, 30_000)
     this.livenessTimer.unref()
     process.once('exit', this.exitHook)
@@ -580,7 +587,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       } } } }
     }
     // Developer path only (HUMANSTUDY_DEV_KEYS=1): the key stays in the env, opencode substitutes it.
-    if (this.provider === 'openrouter') cfg.provider = { openrouter: { options: { apiKey: '{env:OPENROUTER_API_KEY}' } } }
+    if (this.provider === 'openrouter' && transport) cfg.provider = { openrouter: { options: { apiKey: transport.token, baseURL: transport.baseURL } } }
     return JSON.stringify(cfg)
   }
 
@@ -608,8 +615,17 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     })
     delete env.OPENCODE_CONFIG // a personal config file path
     delete env.OPENCODE_CONFIG_DIR
-    if (this.provider !== HOSTED_PROVIDER) {
-      delete env.HUMANSTUDY_DESKTOP_KEY
+    if (this.relay) {
+      for (const name of Object.keys(env)) {
+        if (/KEY|TOKEN|SECRET|CREDENTIAL|BYPASS|PASSWORD/i.test(name) && name !== 'OPENCODE_SERVER_PASSWORD') delete env[name]
+      }
+      env.HUMANSTUDY_RELAY_REQUIRED = '1'
+    } else {
+      // Pre-relay path (Linux, Windows): humanstudy_llm reads the key from this environment, so
+      // simulation code can read it too; the run confirmation says so (sim.note_key).
+      delete env.HUMANSTUDY_RELAY_REQUIRED
+      delete env.HUMANSTUDY_RELAY_DESCRIPTOR
+      if (this.provider !== HOSTED_PROVIDER) delete env.HUMANSTUDY_DESKTOP_KEY
     }
     return env
   }
@@ -618,11 +634,12 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     if (this.disposed) throw new Error('kernel disposed')
     const port = await freePort()
     const password = randomBytes(24).toString('base64url')
-    const transport = this.provider === HOSTED_PROVIDER && process.env.HUMANSTUDY_DESKTOP_KEY ? await startRequestTransport({
+    const transportKey = this.provider === HOSTED_PROVIDER ? process.env.HUMANSTUDY_DESKTOP_KEY : this.provider === 'openrouter' ? process.env.OPENROUTER_API_KEY : undefined
+    const transport = transportKey ? await startRequestTransport({
       project: dir,
-      upstream: process.env.HUMANSTUDY_HOSTED_BASEURL || 'https://humanstudy-hub.com/api/desktop/v1',
-      key: process.env.HUMANSTUDY_DESKTOP_KEY,
-      bypass: process.env.HUMANSTUDY_SERVER_BYPASS,
+      upstream: this.provider === HOSTED_PROVIDER ? process.env.HUMANSTUDY_HOSTED_BASEURL || 'https://humanstudy-hub.com/api/desktop/v1' : 'https://openrouter.ai/api/v1',
+      key: transportKey,
+      bypass: this.provider === HOSTED_PROVIDER ? process.env.HUMANSTUDY_SERVER_BYPASS : undefined,
       onAdjust: () => {
         for (const [id, state] of this.sessions) if (state.server.dir === dir && state.inFlight)
           this.emitter.emit({ sessionId: id, type: 'status', text: 'Preparing source context', detail: 'Full source files are kept locally and can be reopened for verification.' })
@@ -633,7 +650,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     // requires a single-use ticket issued through the authenticated main process.
     const proc = spawn(this.binary, ['serve', '--port', String(port), '--hostname', '127.0.0.1', '--cors', 'file://'], {
       cwd: dir,
-      env: this.kernelEnv(password, transport),
+      env: { ...this.kernelEnv(password, transport), ...(this.relay && process.env.HUMANSTUDY_RELAY_DIR ? { HUMANSTUDY_RELAY_DESCRIPTOR: relayDescriptor(process.env.HUMANSTUDY_RELAY_DIR, dir) } : {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const server: Server = {

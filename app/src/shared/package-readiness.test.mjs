@@ -263,3 +263,27 @@ test('T11 review: the paper named by source.filename and files inside a linked s
   await M.projectPackageReadiness(dir)
   assert.equal(scienceCalls - n, 1, 'a file inside a linked folder')
 })
+
+test('run confirmation: Linux/Windows say the study code can read the key; macOS relay shows its limits', async () => {
+  const dictOut = mkdtempSync(join(tmpdir(), 'run-confirmation-'))
+  await build({ entryPoints: [join(here, '../renderer/i18n-dict.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(dictOut, 'dict.mjs'), logLevel: 'error' })
+  const { EN, ZH } = await import(pathToFileURL(join(dictOut, 'dict.mjs')).href)
+  const KEY = "On this computer, the study's code can read your API key. Only run studies you trust."
+  for (const readiness of [{ modelAccess: 'key' }, {}, null, undefined, { modelAccess: 'other' }]) {
+    const c = S.runConfirmation(readiness)
+    assert.equal(c.note, 'sim.note_key', JSON.stringify(readiness))
+    assert.ok(EN[c.note].includes(KEY)); assert.ok(ZH[c.note].includes('API 密钥'))
+    assert.equal(c.notice, null)
+  }
+  assert.equal(S.runConfirmation({ modelAccess: 'key', runNotice: 'x' }).notice, 'sim.run_notice')
+  assert.equal(EN['sim.run_notice'], "This study's code will run on your computer with access to your model key.")
+  const relay = S.runConfirmation({ modelAccess: 'relay', runNotice: 'x' })
+  assert.equal(relay.note, 'sim.note'); assert.equal(relay.notice, 'sim.run_notice_relay')
+  assert.ok(!EN[relay.note].includes('API key')); assert.match(EN[relay.note], /200,000 tokens and 30 minutes/)
+  assert.match(EN['sim.run_notice_relay'], /limited model relay/)
+  // The panel renders exactly these keys next to Run simulation (no other confirmation surface).
+  const panel = readFileSync(join(here, '../renderer/components/SimulationPanel.tsx'), 'utf8')
+  assert.match(panel, /runConfirmation\(readiness\)/)
+  assert.match(panel, /t\(confirmation\.note\)/); assert.match(panel, /t\(confirmation\.notice\)/)
+  assert.ok(!panel.includes("t('sim.note')") && !panel.includes("t('sim.run_notice')"), 'no hard-coded wording bypasses the platform choice')
+})

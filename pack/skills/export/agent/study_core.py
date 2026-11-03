@@ -388,6 +388,8 @@ class Study:
     # ---- running -------------------------------------------------------------------------------
 
     def module(self, name):
+        if os.environ.get("HUMANSTUDY_RELAY_REQUIRED") == "1":
+            raise RuntimeError("Launch a run script with run_confined.py before importing package code.")
         if not self.package:
             raise Refusal("this export has no replay package; only reading is available", "run",
                           ["read the study with study/read_study", "build the package in the HumanStudy app"])
@@ -648,6 +650,8 @@ class Study:
         return out
 
     def human_module(self):
+        if os.environ.get("HUMANSTUDY_RELAY_REQUIRED") == "1":
+            raise RuntimeError("Launch reproduction with run_confined.py before importing package code.")
         loader = self.package / "human" / self.human_key().get("loader", "human_sessions.py")
         if not loader.is_file():
             raise Refusal("the human-data loader %s is missing" % loader.name, "humanData",
@@ -784,7 +788,7 @@ def fetch_pinned(url, target, pinned, member=None, archives=None):
 def http_llm(model, temperature=1.0):
     """llm(prompt) -> str over an OpenAI-compatible API. Keys are read from the environment only."""
     key = os.environ.get("OPENROUTER_API_KEY")
-    base = "https://openrouter.ai/api/v1"
+    base = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     if not key:
         key = os.environ.get("OPENAI_API_KEY")
         base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")

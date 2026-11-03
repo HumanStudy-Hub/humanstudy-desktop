@@ -36,9 +36,20 @@ import { refreshPack, trustedCheckFiles } from './pack'
 import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks } from './package-readiness'
+import { startModelRelay, relaySupported } from './model-relay'
 import type { Kernel, KernelEvent } from './kernel-types'
 import { actionRef } from '../shared/research-operations'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
+
+// macOS with /usr/bin/sandbox-exec: simulations go through a per-run relay. Elsewhere they use the
+// pre-relay path and the run confirmation says that the study's code can read the key.
+const RELAY = relaySupported()
+const relayProjects = new Set<string>()
+const runRelays = new Map<string, { project: string; close(): Promise<void> }>()
+async function closeRunRelay(id: string) {
+  const relay = runRelays.get(id)
+  if (relay) { runRelays.delete(id); await relay.close(); relayProjects.delete(relay.project) }
+}
 
 // ---- kernel: accept a factory, a default export, a class, or an instance -------------
 function loadKernel(): Kernel {
@@ -371,6 +382,7 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(() => {
+  process.env.HUMANSTUDY_RELAY_DIR = join(app.getPath('userData'), 'run-relays')
   // `ready` needs every build check (pack/skills/build/check_readiness.py), run from the app's own copy.
   const checkFiles = trustedCheckFiles()
   configureScientificChecks(async (project, slug) => scientificReadiness(await readyPython(), checkFiles, project, slug, process.env.HUMANSTUDY_RUNTIME_BIN || ''),
@@ -450,7 +462,7 @@ app.whenReady().then(() => {
     await copyFile(q, r.filePath)
     return r.filePath
   })
-  ipcMain.handle('project:packageReadiness', async (_e, dir: string, studyId: string) => projectPackageReadiness(ownedPath(dir), studyId))
+  ipcMain.handle('project:packageReadiness', async (_e, dir: string, studyId: string) => ({ ...await projectPackageReadiness(ownedPath(dir), studyId), modelAccess: RELAY ? 'relay' as const : 'key' as const }))
   ipcMain.handle('project:readText', async (_e, p: string) => {
     const q = ownedPath(p)
     if ((await stat(q)).size > TEXT_LIMIT) throw new Error('file is larger than 4 MB')
@@ -676,12 +688,29 @@ app.whenReady().then(() => {
     let projectDir = sessionProject.get(id)
     try { projectDir ??= k.directory?.(id) } catch { /* unknown to the kernel; it will refuse the send itself */ }
     await assertRunnablePackage(projectDir, text)
+    let startedRelay = false
+    if (RELAY && text.startsWith('[Simulation scope approved]')) {
+      if (!projectDir || relayProjects.has(projectDir)) throw Error('A simulation is already active in this project.')
+      const approved = JSON.parse(text.split('\n')[1])
+      const model = approved.plan?.model
+      if (typeof model !== 'string' || !model) throw Error('Select a model before running.')
+      const key = process.env.HUMANSTUDY_DESKTOP_KEY || (process.env.HUMANSTUDY_DEV_KEYS === '1' ? process.env.OPENROUTER_API_KEY : undefined)
+      if (!key) throw Error('Sign in before running a simulation.')
+      relayProjects.add(projectDir)
+      try {
+        const relay = await startModelRelay({ project: projectDir, model, key, storage: process.env.HUMANSTUDY_RELAY_DIR!, onClose: () => { runRelays.delete(id); relayProjects.delete(projectDir!) },
+        upstream: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_HOSTED_BASEURL || 'https://humanstudy-hub.com/api/desktop/v1' : 'https://openrouter.ai/api/v1',
+        bypass: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_SERVER_BYPASS : undefined })
+        runRelays.set(id, { project: projectDir, close: relay.close })
+        startedRelay = true
+      } catch (error) { relayProjects.delete(projectDir); throw error }
+    }
     telemetry.trackTurnStart(id, text, actionRef(action))
     const prompt = threads().beforeSend(id, text, workspace)
     const alreadyActive = activeTurns.has(id)
     activeTurns.add(id)
     try { await k.send(id, prompt) }
-    catch (error) { if (!alreadyActive) activeTurns.delete(id); paperBuilds.sendFailed(id, error); throw error }
+    catch (error) { if (startedRelay) await closeRunRelay(id); if (!alreadyActive) activeTurns.delete(id); paperBuilds.sendFailed(id, error); throw error }
   })
   ipcMain.handle('kernel:export', async (_e,sid:string) => {
     const k=kernelFor(sid)
@@ -744,6 +773,7 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('kernel:abort', (_e, id: string, action?: unknown) => {
     telemetry.trackTurnAbort(id, actionRef(action))
+    void closeRunRelay(id)
     return kernelFor(id).abort(id)
   })
   ipcMain.handle('kernel:reply', (_e, id: string, permissionId: string, response: 'once' | 'always' | 'reject', action?: unknown) => {

@@ -6,7 +6,7 @@
 //        HUMANSTUDY_DESKTOP_KEY (+ HUMANSTUDY_HOSTED_BASEURL, HUMANSTUDY_SERVER_BYPASS) a real reply.
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -143,8 +143,13 @@ console.log('createKernel ok')
 {
   const home = join(out, 'khome')
   process.env.OPENCODE_CONFIG = '/home/u/personal.json'
-  const kk = new k.OpencodeKernel({ binary: '/bin/true', home, provider: 'humanstudy', model: 'anthropic/claude-sonnet-5.5' })
+  const kk = new k.OpencodeKernel({ binary: '/bin/true', home, provider: 'humanstudy', model: 'anthropic/claude-sonnet-5.5', relay: true })
+  const secrets = ['OPENROUTER_API_KEY', 'HUMANSTUDY_DESKTOP_KEY', 'HUMANSTUDY_SERVER_BYPASS', 'DATABASE_PASSWORD']
+  const prior = secrets.map(key => process.env[key])
+  for (const key of secrets) process.env[key] = 'fake-upstream-sentinel'
   const env = kk.kernelEnv('pw')
+  secrets.forEach((key, i) => { assert.equal(env[key], undefined); if (prior[i] === undefined) delete process.env[key]; else process.env[key] = prior[i] })
+  assert.equal(env.HUMANSTUDY_RELAY_REQUIRED, '1')
   for (const [name, dir] of [['XDG_CONFIG_HOME', 'config'], ['XDG_DATA_HOME', 'data'], ['XDG_CACHE_HOME', 'cache'], ['XDG_STATE_HOME', 'state']])
     assert.equal(env[name], join(home, dir))
   assert.equal(env.OPENCODE_CONFIG, undefined)
@@ -153,6 +158,32 @@ console.log('createKernel ok')
   delete process.env.OPENCODE_CONFIG
   await kk.dispose()
   console.log('kernel env ok')
+}
+
+// Linux/Windows (no relay): the pre-relay simulation path. The hosted key stays in the kernel
+// environment for humanstudy_llm, and nothing switches the relay guards on.
+{
+  assert.equal(new k.OpencodeKernel({ binary: '/bin/true', home: join(out, 'kdefault') }).relay,
+    process.platform === 'darwin' && existsSync('/usr/bin/sandbox-exec'), 'default follows relaySupported()')
+  const names = ['HUMANSTUDY_DESKTOP_KEY', 'HUMANSTUDY_SERVER_BYPASS', 'HUMANSTUDY_RELAY_REQUIRED', 'HUMANSTUDY_RELAY_DESCRIPTOR']
+  const prior = names.map(key => process.env[key])
+  for (const key of names) process.env[key] = 'fake-upstream-sentinel'
+  try {
+    const hosted = new k.OpencodeKernel({ binary: '/bin/true', home: join(out, 'khome-key'), provider: 'humanstudy', model: 'anthropic/claude-sonnet-5.5', relay: false })
+    assert.equal(hosted.relay, false)
+    const env = hosted.kernelEnv('pw')
+    assert.equal(env.HUMANSTUDY_DESKTOP_KEY, 'fake-upstream-sentinel', 'humanstudy_llm reads the hosted key, as before the relay')
+    assert.equal(env.HUMANSTUDY_SERVER_BYPASS, 'fake-upstream-sentinel')
+    assert.equal(env.HUMANSTUDY_RELAY_REQUIRED, undefined, 'an inherited marker cannot force relay mode on')
+    assert.equal(env.HUMANSTUDY_RELAY_DESCRIPTOR, undefined)
+    assert.equal(env.HUMANSTUDY_MODEL, 'anthropic/claude-sonnet-5.5')
+    const other = new k.OpencodeKernel({ binary: '/bin/true', home: join(out, 'khome-key2'), provider: '', relay: false })
+    assert.equal(other.kernelEnv('pw').HUMANSTUDY_DESKTOP_KEY, undefined, 'unchanged: no hosted key without the hosted provider')
+    await hosted.dispose(); await other.dispose()
+  } finally {
+    names.forEach((key, i) => { if (prior[i] === undefined) delete process.env[key]; else process.env[key] = prior[i] })
+  }
+  console.log('kernel env without relay ok')
 }
 
 // ---- optional live opencode -----------------------------------------------------------
