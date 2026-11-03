@@ -338,6 +338,25 @@ class KeyNotice(unittest.TestCase):
         run = self.cli("reproduce")
         self.assertEqual(run.stderr.count(self.NOTICE), 1, run.stdout + run.stderr)
 
+    def test_skill_md_lists_prompt_among_commands_that_run_package_code(self):
+        text = (self.skill / "SKILL.md").read_text(encoding="utf-8")
+        line = next(l for l in text.splitlines() if l.startswith(self.NOTICE))
+        for cmd in ["run", "plan", "replay", "score", "prompt", "reproduce"]:
+            self.assertIn("`%s`" % cmd, line)
+
+    def test_mcp_shows_the_notice_in_the_first_result_that_loads_package_code(self):
+        shutil.rmtree(self.root / "exports")
+        self.assertEqual(export(self.root, "--mcp").returncode, 0)
+        out = self.root / "exports/agent"
+        self.assertIn(self.NOTICE, (out / "README.md").read_text(encoding="utf-8").split("## MCP server", 1)[1])
+        res = mcp(out / "study-5/scripts/mcp_server.py",
+                  [("study_overview", {}), ("plan_participants", {"n": 1}), ("plan_participants", {"n": 1})])
+        text = lambda i: "\n".join(c["text"] for c in res[i]["result"]["content"])
+        self.assertNotIn(self.NOTICE, text(2), "reading runs no package code")
+        self.assertIn(self.NOTICE, text(3))
+        self.assertNotIn(self.NOTICE, text(4), "once per session")
+        json.loads(res[3]["result"]["content"][0]["text"])  # the answer block is unchanged JSON
+
     def test_every_command_that_loads_package_code_prints_it(self):
         plan = self.cli("plan", "--n", "1")
         self.assertEqual(plan.returncode, 0, plan.stderr)

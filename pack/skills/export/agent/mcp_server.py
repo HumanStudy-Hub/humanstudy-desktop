@@ -23,6 +23,7 @@ sys.stdout = sys.stderr
 sys.path.insert(0, str(HERE))
 with contextlib.redirect_stdout(sys.stderr):
     from study_core import Refusal, Study, status_of  # noqa: E402
+    import study_core  # noqa: E402
 
 SUPPORTED = ["2025-06-18", "2025-03-26", "2024-11-05"]
 STUDY = Study()  # the skill folder this script sits in
@@ -139,6 +140,14 @@ def tool_result(text, is_error=False):
     return {"content": [{"type": "text", "text": text}], "isError": is_error}
 
 
+def with_notice(result, shown_before):
+    """MCP hosts hide stderr, so the first result of a session that loaded package code carries the notice,
+    as its own text block: the first block stays the tool's answer, which clients parse."""
+    if not shown_before and study_core._notice_shown:
+        result["content"].append({"type": "text", "text": study_core.RUN_NOTICE})
+    return result
+
+
 def handle(msg):
     """One JSON-RPC message -> its response, or None for notifications and client responses."""
     if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
@@ -171,25 +180,31 @@ def handle(msg):
         problem = check_args(tool[2], args)
         if problem:
             return ok(mid, tool_result("error: " + problem, True))
-        try:
-            with contextlib.redirect_stdout(sys.stderr):
-                out = tool[3](args)
-            if not isinstance(out, str):  # text answers (study, paper) are status ok
-                if isinstance(out, dict) and out.get("status") in ("ok", "partial"):
-                    pass
-                elif isinstance(out, dict) and "status" not in out:
-                    out = dict({"status": status_of(out)}, **out)
-                else:  # lists, and dicts with a status of their own (an evaluation's not_ready)
-                    out = {"status": status_of(out), "result": out}
-            return ok(mid, tool_result(out if isinstance(out, str) else
-                                       json.dumps(out, ensure_ascii=False, indent=2, default=str)))
-        except Refusal as exc:  # the study cannot do this: say why and what to do instead
-            return ok(mid, tool_result(json.dumps(exc.to_dict(), ensure_ascii=False, indent=2), True))
-        except Exception as exc:  # report to the agent instead of dropping the connection
-            detail = exc.args[0] if isinstance(exc, (KeyError, RuntimeError)) and exc.args else repr(exc)
-            print(traceback.format_exc(), file=sys.stderr)
-            return ok(mid, tool_result("error: %s" % detail, True))
+        shown = study_core._notice_shown
+        return ok(mid, with_notice(call_tool(tool, args), shown))
     return err(mid, -32601, "method not found: %s" % method)
+
+
+def call_tool(tool, args):
+    """The tool's result as an MCP tool result; refusals and errors are results too."""
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            out = tool[3](args)
+        if not isinstance(out, str):  # text answers (study, paper) are status ok
+            if isinstance(out, dict) and out.get("status") in ("ok", "partial"):
+                pass
+            elif isinstance(out, dict) and "status" not in out:
+                out = dict({"status": status_of(out)}, **out)
+            else:  # lists, and dicts with a status of their own (an evaluation's not_ready)
+                out = {"status": status_of(out), "result": out}
+        return tool_result(out if isinstance(out, str) else
+                           json.dumps(out, ensure_ascii=False, indent=2, default=str))
+    except Refusal as exc:  # the study cannot do this: say why and what to do instead
+        return tool_result(json.dumps(exc.to_dict(), ensure_ascii=False, indent=2), True)
+    except Exception as exc:  # report to the agent instead of dropping the connection
+        detail = exc.args[0] if isinstance(exc, (KeyError, RuntimeError)) and exc.args else repr(exc)
+        print(traceback.format_exc(), file=sys.stderr)
+        return tool_result("error: %s" % detail, True)
 
 
 def send(message):

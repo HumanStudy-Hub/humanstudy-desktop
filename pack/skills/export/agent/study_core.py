@@ -49,7 +49,7 @@ KIND_TITLES = {"hypothesis": "Hypotheses", "participants": "Participants", "desi
                "finding": "Findings", "limitation": "Limitations"}
 MISSING_TEXT = "Not stated in the paper."
 SIMULATION_NOTE = "AI participants: a simulation, not observations of people."
-# Same sentence as the app (app/src/main/run-notice.ts). This copy runs outside the app, where nothing tells
+# Same sentence as the app (COMMUNITY_RUN_NOTICE in app/src/main/package-readiness.ts). This copy runs outside the app, where nothing tells
 # whether the package was reviewed, so it is printed whenever package code is about to run.
 RUN_NOTICE = "This study's code will run on your computer with access to your model key."
 _notice_shown = False

@@ -130,7 +130,7 @@ def skill_md(study, name, quote_line=None):
     ]
     if pkg:
         run += [
-            RUN_NOTICE + " `run`, `plan`, `replay`, `score` and `reproduce` execute the package's own "
+            RUN_NOTICE + " `run`, `plan`, `prompt`, `replay`, `score` and `reproduce` execute the package's own "
             "Python (`task/adapter.py`, `evaluation/evaluation.py`, the human-data loader) in your shell, with "
             "your environment, API key and agent CLI sign-in. Read that code first if you did not write it.", "",
             "The replay package `package/%s/` holds the participant prompts (`task/adapter.py`) and the "
@@ -273,6 +273,8 @@ def readme(study, name, with_mcp):
         lines += [
             "## MCP server (optional)", "",
             "For clients that cannot run commands or read files. It serves the same folder:", "",
+            RUN_NOTICE + " Tools that plan, prompt, parse or score participants, or reproduce the paper, run "
+            "the package's Python inside the server process.", "",
             "```bash",
             "claude mcp add %s -- python3 \"$PWD/%s\"" % (name, server),
             "codex mcp add %s -- python3 \"$PWD/%s\"" % (name, server),
