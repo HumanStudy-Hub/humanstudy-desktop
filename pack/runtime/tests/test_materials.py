@@ -219,6 +219,13 @@ class Materials(unittest.TestCase):
         self.assertFalse([m for m, _ in older["problems"] if "search skipped" in m])
         self.assertTrue([m for m, _ in older["warnings"] if "search skipped" in m])
         self.write("package/study/task/replies.py", "# the shared reply reader\n")   # the current contract
+        # The readiness gate judges the slug's own package: an older package beside a current one still warns.
+        self.write("package/old/task/adapter.py", "# built before the shared reader\n")
+        older = check_materials.check(self.root, package=self.root / "package/old")
+        self.assertFalse([m for m, _ in older["problems"] if "search skipped" in m])
+        self.assertTrue([m for m, _ in older["warnings"] if "search skipped" in m])
+        current = check_materials.check(self.root, package=self.root / "package/study")
+        self.assertTrue([m for m, _ in current["problems"] if "search skipped" in m])
         text = " ".join(self.problems())
         for kind in ("journal's page", "preprint servers", "Unpaywall or Europe PMC", "OSF search by author"):
             self.assertIn(kind, text)

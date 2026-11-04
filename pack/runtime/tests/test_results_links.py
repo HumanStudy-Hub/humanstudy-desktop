@@ -217,6 +217,14 @@ class SupplementAndProject(unittest.TestCase):
         report = cr.check(self.project(program(), current=False) / "program.json")
         self.assertEqual(report["problems"], [])
         self.assertTrue(any("Table S1" in m for m, _ in report["warnings"]), report["warnings"])
+        # with the package given (the readiness gate), that package's own contract decides
+        root = self.project(program())
+        (root / "package/old/task").mkdir(parents=True)
+        report = cr.check(root / "program.json", package=root / "package/old")
+        self.assertEqual(report["problems"], [])
+        self.assertTrue(any("Table S1" in m for m, _ in report["warnings"]), report["warnings"])
+        report = cr.check(root / "program.json", package=root / "package/study")
+        self.assertTrue(any("Table S1" in m for m, _ in report["problems"]), report)
 
     def test_project_without_results_text_or_supplement_passes(self):
         self.assertEqual(self.check(self.project(program(), supplement=False)), [])
