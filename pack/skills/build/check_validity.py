@@ -42,6 +42,10 @@ scratch folder; sleeps are skipped), once over all arms and once per arm study.j
 distinct prompt line is recorded. An adapter that does not finish with the stand-in model fails. When the adapter cannot run (a blocked study), its string literals and
 materials/materials.json are read instead.
 
+Older builds: the memory-claim, carried-memory and identifier rules of `memory` and the `arms` rule block only a
+package built under the current contract (it carries task/replies.py, see contract.py); for an older package
+they are printed as WARN lines and returned under "warnings", and the check still prints PASS.
+
 Limits (heuristics, documented so nobody mistakes a PASS for proof):
   - The paper scan finds the usual phrasings ("were not told", "had to learn", "were unaware", "cover
     story", ...). A withheld fact phrased otherwise is found only if you list it yourself: do so.
@@ -71,6 +75,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_quotes  # noqa: E402
 import check_verbatim  # noqa: E402
+import contract  # noqa: E402  older packages get the newer prompt rules as warnings
 
 PARTICIPANT = re.compile(
     r"\b(?:participants?|subjects?|respondents?|volunteers?|players?|children|students?|individuals|people|"
@@ -737,10 +742,15 @@ def check(root, package=None, capture_prompts=True):
     root = Path(root).resolve()
     program = _json(root / "program.json")
     if not isinstance(program, dict):
-        return {"problems": [("program.json is missing or not JSON", "")], "notes": [], "method": None}
-    problems, notes = [], []
+        return {"problems": [("program.json is missing or not JSON", "")], "notes": [], "method": None,
+                "warnings": []}
+    problems, notes, warnings = [], [], []
     add = lambda msg, fix="": problems.append((msg, fix))
     pkg = _package(root, package)
+    # The rules added with the shared reply reader block only packages built under that contract (contract.py);
+    # a package built before it gets them as warnings, so a project that was ready stays ready.
+    current = contract.current_contract(pkg)
+    newer = add if current else (lambda msg, fix="": warnings.append((msg, fix)))
     paper = _paper(root, program)
     pages = check_quotes.Pdf(paper).load() if paper and paper.suffix.lower() == ".pdf" else []
 
@@ -880,7 +890,7 @@ def check(root, package=None, capture_prompts=True):
                               for p in check_verbatim.segments(t) if len(p.split()) >= 3]
             claims = memory_claims(runs, sorted(set(shown), key=len, reverse=True))
             if claims:
-                add("prompts say earlier screens or answers are shown but carry none of this participant's earlier "
+                newer("prompts say earlier screens or answers are shown but carry none of this participant's earlier "
                     "screens or answers: " + "; ".join("%s (\"%s\")" % c for c in claims),
                     "send what the line promises (this participant's own earlier screens and answers) or remove "
                     "the claim; never refer to screens the prompt does not contain")
@@ -888,7 +898,7 @@ def check(root, package=None, capture_prompts=True):
             if designs & set(CARRYING):
                 empty = carries_nothing(runs)
                 if empty:
-                    add("replay-memory design %s carries memory, but no later prompt of %s carries anything the "
+                    newer("replay-memory design %s carries memory, but no later prompt of %s carries anything the "
                         "participant already saw or answered" % ("/".join(sorted(designs & set(CARRYING))),
                                                                   ", ".join(empty[:4])),
                         "make the adapter put what the design says into each later prompt of the same participant "
@@ -897,7 +907,7 @@ def check(root, package=None, capture_prompts=True):
             leaked = leaked_ids(pkg, program, runs)
             if leaked:
                 listed = sorted(leaked.items())[:8]
-                add("participant prompts contain internal identifiers the participant never saw: "
+                newer("participant prompts contain internal identifiers the participant never saw: "
                     + ", ".join("'%s' (%s)" % kv for kv in listed) + (" and more" if len(leaked) > 8 else ""),
                     "never show condition or arm ids, survey question ids (QID14), screen or material ids or "
                     "variable names; key replies by neutral labels (q1, q2, or the number printed on the screen) "
@@ -910,7 +920,7 @@ def check(root, package=None, capture_prompts=True):
             crash = (r.get("errorType") or r["error"].split(":", 1)[0]) in CRASH
             if blocking and not crash:
                 continue   # a deliberate refusal of an arm that needs what a blocking issue asks for
-            add("run_sessions(arms=%r, n=%s) raised %s" % (r["arms"], r.get("n"), r["error"][:200])
+            newer("run_sessions(arms=%r, n=%s) raised %s" % (r["arms"], r.get("n"), r["error"][:200])
                 + (" (a crash, not a refusal)" if crash else " but program.json has no `blocking` issue"),
                 "every condition must run with arms=[its id] for a small n (1, or 2 for pairs); an arm that cannot run "
                 "yet raises a clear error naming what it needs under a `blocking` issue, or returns a session record "
@@ -951,7 +961,8 @@ def check(root, package=None, capture_prompts=True):
                 "the stand-in wording the adapter uses; say which in suggestedAction), or `blocking` only when the "
                 "adapter refuses to run without it (this one runs); never a `check`, and never written into a "
                 "verbatim field")
-    return {"problems": problems, "notes": notes, "method": method, "notApplicable": not_applicable}
+    return {"problems": problems, "notes": notes, "method": method, "notApplicable": not_applicable,
+            "warnings": warnings, "currentContract": current}
 
 
 def main(argv=None):
@@ -969,6 +980,9 @@ def main(argv=None):
         Path(a.json).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     for msg, fix in report["problems"]:
         print("PROBLEM %s" % msg + ("\n        fix: %s" % fix if fix else ""))
+    for msg, fix in report.get("warnings") or []:
+        print("WARN    %s (older build: blocking once rebuilt with task/replies.py)" % msg
+              + ("\n        fix: %s" % fix if fix else ""))
     for line in report["notes"]:
         print("note    " + line)
     if report["method"]:

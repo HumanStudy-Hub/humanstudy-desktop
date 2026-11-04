@@ -1,6 +1,8 @@
 """Tables without a text layer and lost minus signs (paper_tables.py, check_results.py), and how the build used
 its downloaded files: analysis code, survey versions, questions to the researcher (check_source_use.py).
    python -m unittest discover -s pack/runtime/tests"""
+import contextlib
+import io
 import json
 import shutil
 import subprocess
@@ -168,16 +170,24 @@ TABLE_2 = {"id": "table-2", "label": "Table 2", "origin": "verbatim", "state": "
            "value": {"table": "Table 2", "page": 1, "columns": [], "rows": []}}
 
 
+def make_current(root):
+    """A package built under the current contract: it carries the shared reply reader (task/replies.py)."""
+    (root / "package/x/task").mkdir(parents=True)
+    (root / "package/x/task/replies.py").write_text("# the shared reply reader\n", encoding="utf-8")
+
+
 @unittest.skipUnless(HAVE_PDF, "pdfplumber and pypdf (in the HumanStudy runtime) are needed")
 class ResultsImageTablesAndSigns(unittest.TestCase):
-    def run_check(self, fields, evidence=(EV,), record=None, pages=(PAGE_RESULTS, PAGE_PROSE)):
+    def run_check(self, fields, evidence=(EV,), record=None, pages=(PAGE_RESULTS, PAGE_PROSE), current=True, key="problems"):
         root = tmpdir(self, "check-results-image-")
+        if current:
+            make_current(root)
         (root / "paper.pdf").write_bytes(make_pdf(list(pages)))
         (root / "program.json").write_text(json.dumps(program_with(fields, evidence)), encoding="utf-8")
         if record is not None:
             (root / "sources").mkdir()
             (root / "sources/SOURCE.json").write_text(json.dumps(record), encoding="utf-8")
-        return [m for m, _ in check_results.check(root / "program.json")["problems"]]
+        return [m for m, _ in check_results.check(root / "program.json")[key]]
 
     def test_image_tables_need_a_table_field_or_a_paper_tables_entry(self):
         signed = field("h-ci", [-0.16, 0.54])
@@ -203,15 +213,37 @@ class ResultsImageTablesAndSigns(unittest.TestCase):
         record = {"signChecks": [{"page": 1, "value": 0.54, "note": "rendered page checked"}]}
         self.assertTrue(self.run_check(unsigned, record=record), "a check of another number does not clear it")
 
+    def test_older_build_gets_image_tables_and_lost_signs_as_warnings(self):
+        unsigned = [field("h", 0.19), field("h-ci", [0.16, 0.54])]
+        self.assertEqual(self.run_check(unsigned, current=False), [])
+        warned = self.run_check(unsigned, current=False, key="warnings")
+        self.assertEqual(len([m for m in warned if "has no rows in the PDF's text layer" in m]), 2, warned)
+        self.assertTrue(any("without its sign" in m for m in warned), warned)
+
     def test_project_without_image_tables_or_signs_is_unchanged(self):
         self.assertEqual(self.run_check([field("m", 4.5)], pages=(PAGE_PROSE, PAGE_PROSE)), [])
 
 
 class ResultsImpossibleValues(unittest.TestCase):
-    def found(self, fields):
+    def found(self, fields, current=True, key="problems"):
         root = tmpdir(self, "check-results-impossible-")
+        if current:
+            make_current(root)
         (root / "program.json").write_text(json.dumps(program_with(fields, [EV])), encoding="utf-8")
-        return [m for m, _ in check_results.check(root / "program.json")["problems"]]
+        return [m for m, _ in check_results.check(root / "program.json")[key]]
+
+    def test_older_build_gets_impossible_values_as_warnings_and_passes(self):
+        bad = [field("c", {"t": 2.1, "p": 1.3})]
+        self.assertEqual(self.found(bad, current=False), [])
+        self.assertTrue(any("not a probability" in m for m in self.found(bad, current=False, key="warnings")))
+        root = tmpdir(self, "check-results-cli-")
+        (root / "program.json").write_text(json.dumps(program_with(bad, [EV])), encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = check_results.main([str(root / "program.json")])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn("WARN    result fields hold impossible values", out.getvalue())
+        self.assertIn("PASS ", out.getvalue())
 
     def test_impossible_values_fail(self):
         found = self.found([field("a", {"d": 0.64, "ci95": [0.71, 1.08]}),

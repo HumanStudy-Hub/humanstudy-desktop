@@ -628,6 +628,13 @@ Rules the runner depends on:
   `check_materials.py`.
   Each failing check shows its first problem in the Simulation tab. Editing the checkers inside the
   project changes nothing there: fix the program, the package or effects.json.
+- Older builds: a package built before the shared reply reader (no `task/replies.py`) gets the rules added
+  with it as warnings, not failures, so a project that was ready stays ready after an app update. The checks
+  print them as `WARN ...` (check_validity.py, check_results.py) or `warn  ...` (check_package.py) lines and
+  still print PASS: prompts that mention earlier screens they do not carry, a memory design that carries
+  nothing, internal ids in prompts, a declared condition that crashes or refuses without a blocking issue,
+  image-only tables, lost minus signs, impossible CI or p values, and the downloaded-source, source-use and
+  survey-flow findings. Rebuilding the package with `task/replies.py` makes all of them blocking.
 
 ### Effects: from hypotheses to computable effects
 
@@ -838,6 +845,11 @@ Then:
    and what was left out and why; the readiness verdict ("can be run as published" / "blocked by: " and what
    exactly is needed); what capabilities.json says cannot be run and why; checks run and their result; and
    the paths written (including the two views).
+5. **Older build: worth fixing** (only when a check printed `WARN` or `warn` lines): every warning, one line
+   each, in plain words (for example "a prompt says earlier answers are shown but does not show them", "Table 2
+   is a picture in the PDF and is not transcribed yet", "a confidence interval reads as impossible, probably a
+   lost minus sign"). Say that the package stays ready as it is and that rebuilding it with the current build
+   turns these into problems to fix first.
 
 Avoid internal vocabulary in the reply: no survey question ids, "arm", "Trash block", "stub", "smoke test",
 "not_ready", hashes, issue ids, function names, "JSON", "QSF"; say "condition", "the survey's unused

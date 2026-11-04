@@ -3,8 +3,12 @@
 
 Usage: python check_readiness.py <project> <package-slug>
 
-Prints one JSON document, {"problems": [{"check", "reason"}], "checks": {name: "pass" | "fail"}}, and exits 0
-(1 only on a usage error). A package is ready only when "problems" is empty. Checks, each the same rule as
+Prints one JSON document, {"problems": [{"check", "reason"}], "checks": {name: "pass" | "fail"},
+"warnings": [{"check", "reason"}]}, and exits 0 (1 only on a usage error). A package is ready only when
+"problems" is empty. "warnings" holds the newer rules' findings on a package built before the current contract
+(no task/replies.py, see contract.py): check_package.py `warn` lines and the warnings of check_validity.py and
+check_results.py. They never make a package not ready; a rebuild under the current contract turns them into
+problems. Checks, each the same rule as
 the script the build skill (SKILL.md) tells the agent to run until it prints PASS:
 
   program    check_program.py program.json --complete (schema read from this copy, not the project's)
@@ -86,8 +90,19 @@ def sources_problems(root):
     return [m for m, _ in sources.problems(root)]
 
 
+def package_warnings(stdout):
+    """check_package.py `warn` lines (an older build's findings of the newer rules). Its validity warnings are
+    left out: the validity check reports them itself."""
+    found = []
+    for line in stdout.splitlines():
+        if line.startswith("warn  ") and not line[6:].lstrip().startswith("validity: "):
+            found.append(line[6:].strip().split("  [fix:", 1)[0])
+    return found
+
+
 def package_problems(root, slug):
-    """check_package.py in a child process: it reports the first failure and exits 1."""
+    """check_package.py in a child process: it reports the first failure and exits 1. Returns (problems,
+    warnings)."""
     pkg = root / "package" / slug
     with tempfile.TemporaryDirectory(prefix="readiness-package-") as work:
         try:
@@ -96,6 +111,10 @@ def package_problems(root, slug):
                                  encoding="utf-8", errors="replace", timeout=PACKAGE_TIMEOUT)
         except subprocess.TimeoutExpired:
             return ["check_package.py did not finish within %d s" % PACKAGE_TIMEOUT]
+    return package_failure(run), package_warnings(run.stdout)
+
+
+def package_failure(run):
     if run.returncode == 0:
         return []
     lines = [l.strip() for l in run.stdout.splitlines() if l.strip()]
@@ -113,7 +132,8 @@ def package_problems(root, slug):
 
 def validity_problems(root, slug):
     import check_validity
-    return check_validity.check(root, root / "package" / slug)["problems"]
+    report = check_validity.check(root, root / "package" / slug)
+    return report["problems"], report.get("warnings") or []
 
 
 def verbatim_problems(root):
@@ -125,7 +145,8 @@ def verbatim_problems(root):
 
 def results_problems(root):
     import check_results
-    return check_results.check(root / "program.json")["problems"]
+    report = check_results.check(root / "program.json")
+    return report["problems"], report.get("warnings") or []
 
 
 def materials_problems(root):
@@ -147,7 +168,8 @@ def effects_problems(root):
 
 
 CHECK_MODULES = ("check_program", "check_package", "sources", "check_validity", "check_verbatim", "check_results",
-                 "effects", "effects_core", "check_quotes", "sandbox_run", "check_materials")
+                 "effects", "effects_core", "check_quotes", "sandbox_run", "check_materials", "contract",
+                 "check_replies")
 OPTIONAL_MODULES = ("jsonschema", "pdfplumber", "pypdf")  # lazily imported by the checks when present
 
 
@@ -185,12 +207,15 @@ def run_checks(root, slug):
         ("effects", lambda: effects_problems(root)),
         ("materials", lambda: materials_problems(root)),
     ]
-    problems, status = [], {}
+    problems, status, warnings = [], {}, []
     for name, fn in checks:
+        warned = []
         try:
             # Helpers may print diagnostics; this script's stdout stays one JSON document.
             with contextlib.redirect_stdout(io.StringIO()):
                 found = fn()
+            if isinstance(found, tuple):  # (problems, warnings): an older build's findings of the newer rules
+                found, warned = found
         except Exception as exc:  # a check that cannot run never counts as passed
             found = ["the check could not complete (%s: %s)" % (type(exc).__name__, one_line(exc)[:120])]
         drop_checker_paths()  # a check may put its folder back (sources.py does); keep later imports failing closed
@@ -198,7 +223,9 @@ def run_checks(root, slug):
         status[name] = "fail" if line else "pass"
         if line:
             problems.append({"check": name, "reason": line})
-    return {"problems": problems, "checks": status}
+        for w in warned[:20]:  # each warning on its own line: the agent reports every one
+            warnings.append({"check": name, "reason": one_line(w[0] if isinstance(w, (list, tuple)) else w)})
+    return {"problems": problems, "checks": status, "warnings": warnings}
 
 
 def main(argv):
@@ -207,7 +234,8 @@ def main(argv):
         return 1
     root = Path(argv[0]).resolve()
     if not (root / "package" / argv[1]).is_dir():
-        report = {"problems": [{"check": "package", "reason": "package/%s is not a folder" % argv[1]}], "checks": {}}
+        report = {"problems": [{"check": "package", "reason": "package/%s is not a folder" % argv[1]}], "checks": {},
+                  "warnings": []}
     else:
         report = run_checks(root, argv[1])
     sys.stdout.write(json.dumps(report) + "\n")  # ASCII: safe on any console encoding

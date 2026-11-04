@@ -215,6 +215,125 @@ class ReadinessTest(unittest.TestCase):
             self.assertEqual(run.returncode, 1)
 
 
+# A declared arm that crashes when run on its own (check_validity.py `arms` rule)
+CRASHING_ARM = ADAPTER.replace("    out = []\n", "    out = []\n    if arms == ['b']:\n        {}['missing']\n") + "ARMS = ['a', 'b']\n"
+SEARCHES = [{"where": "OSF", "query": "Analysis folder", "url": "https://osf.io/x/", "date": "2026-11-01",
+             "result": "analysis scripts listed; not downloaded (not needed)"}]
+
+
+def newer_rule_project(make):
+    """Only findings of the rules added with the shared reply reader: a crashing declared arm (validity), an
+    impossible p value (results), analysis code listed but not downloaded (check_source_use.py, package)."""
+    p = json.loads(json.dumps(PROGRAM))
+    for n in p["nodes"]:
+        if n["kind"] == "procedure":
+            n["fields"].append({"id": "not-told", "label": "What participants were not told", "origin": "reported",
+                                "state": "confirmed", "value": [], "evidenceIds": ["e1"]})
+    result = next(n for n in p["nodes"] if n["kind"] == "result")
+    result["fields"].append({"id": "test", "label": "Test", "origin": "reported", "state": "confirmed",
+                             "value": {"t": 2.1, "p": 1.3}, "evidenceIds": ["e1"]})
+    root = make(program=p, adapter=CRASHING_ARM)
+    record = json.loads((root / "sources/SOURCE.json").read_text(encoding="utf-8"))
+    record["searches"] = SEARCHES
+    (root / "sources/SOURCE.json").write_text(json.dumps(record), encoding="utf-8")
+    return root
+
+
+@unittest.skipUnless(has_jsonschema(), "needs jsonschema (the research runtime has it)")
+class OlderBuildWarnings(unittest.TestCase):
+    """A package built before the shared reply reader (no task/replies.py) keeps its ready status: the newer
+    rules are warnings. The same findings on a current-contract package are problems."""
+
+    def setUp(self):
+        self.roots = []
+
+    def tearDown(self):
+        for root in self.roots:
+            shutil.rmtree(root.parent, ignore_errors=True)
+
+    def project(self, **kw):
+        root = make_project(**kw)
+        self.roots.append(root)
+        return root
+
+    def test_an_older_build_with_only_newer_rule_findings_is_ready_with_warnings(self):
+        report, problems = readiness(newer_rule_project(self.project))
+        self.assertEqual(problems, {}, report)
+        self.assertEqual(report["checks"], {name: "pass" for name in CHECKS})
+        warned = {w["check"]: w["reason"] for w in report["warnings"]}
+        self.assertIn("raised KeyError", warned.get("validity", ""), report)
+        self.assertIn("not a probability", warned.get("results", ""), report)
+        self.assertIn("no analysis file is under sources/", warned.get("package", ""), report)
+        self.assertTrue(all("\n" not in w["reason"] and len(w["reason"]) <= 320 for w in report["warnings"]))
+
+    def test_the_same_findings_block_a_current_contract_package(self):
+        root = newer_rule_project(self.project)
+        shutil.copy2(BUILD / "package_files/replies.py", root / "package/fixture/task/replies.py")
+        report, problems = readiness(root)
+        for check in ("validity", "results", "package"):
+            self.assertIn(check, problems, report)
+        self.assertIn("sources used", problems["package"])
+        self.assertEqual(report["warnings"], [])
+
+    def test_a_ready_package_has_an_empty_warnings_list(self):
+        report, problems = readiness(self.project())
+        self.assertEqual((problems, report["warnings"]), ({}, []))
+
+
+class CheckPackageGate(unittest.TestCase):
+    """check_package.py: downloaded-source, source-use and survey findings fail a current-contract package and
+    print `warn` lines (and PASS) for an older one."""
+
+    def setUp(self):
+        sys.path.insert(0, str(BUILD))
+        self.addCleanup(sys.path.remove, str(BUILD))
+        import check_package
+        import contract
+        import fetch_source
+        import qsf_flow
+        self.mods = (check_package, contract, fetch_source, qsf_flow)
+        self.root = make_project()
+        self.addCleanup(shutil.rmtree, self.root.parent, True)
+
+    def run_package(self, current, fetched=(), survey=()):
+        import contextlib
+        import io
+        from unittest import mock
+        check_package, contract, fetch_source, qsf_flow = self.mods
+        out = io.StringIO()
+        with mock.patch.object(contract, "current_contract", lambda p: current), \
+                mock.patch.object(fetch_source, "problems", lambda *a, **k: list(fetched)), \
+                mock.patch.object(qsf_flow, "problems", lambda *a, **k: list(survey)), \
+                mock.patch.object(sys, "argv", ["check_package.py", str(self.root / "package/fixture")]), \
+                contextlib.redirect_stdout(out):
+            try:
+                check_package.main()
+                code = 0
+            except SystemExit as exc:
+                code = exc.code
+        return code, out.getvalue()
+
+    def test_fetched_source_findings(self):
+        bad = [("sources/SOURCE.json: sources/open/x.csv has no licence", "record it")]
+        code, out = self.run_package(False, fetched=bad)
+        self.assertEqual(code, 0, out)
+        self.assertIn("warn  sources/SOURCE.json: sources/open/x.csv has no licence  [fix: record it]", out)
+        self.assertIn("PASS package checks", out)
+        code, out = self.run_package(True, fetched=bad)
+        self.assertEqual(code, 1, out)
+        self.assertIn("FAIL sources used:", out)
+
+    def test_survey_findings(self):
+        bad = [("survey text participants never saw: QID9 of x.qsf", "remove it")]
+        code, out = self.run_package(False, survey=bad)
+        self.assertEqual(code, 0, out)
+        self.assertIn("warn  survey text participants never saw", out)
+        self.assertIn("PASS package checks", out)
+        code, out = self.run_package(True, survey=bad)
+        self.assertEqual(code, 1, out)
+        self.assertIn("FAIL survey files (qsf_flow.py):", out)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -33,7 +33,9 @@ Prints every problem with a fix, then PASS or FAIL (exit 1). Four checks:
 
 Numbers are compared as printed values; labels such as "Study 2", "Table 3", page numbers and years
 are ignored. The checks are best effort: they find untranscribed numbers, they cannot prove that
-every number is present. Standard library; the caption check reads the PDF like check_quotes.py, the image
+every number is present. Older builds: image table, sign loss and impossible are problems only when a package
+of the project is built under the current contract (it carries task/replies.py, see contract.py); otherwise
+they are printed as WARN lines and returned under "warnings", and the check still prints PASS. Standard library; the caption check reads the PDF like check_quotes.py, the image
 table and sign checks with paper_tables.py (skipped, with a note, when it is not installed).
 """
 import argparse
@@ -46,6 +48,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_quotes import Pdf  # noqa: E402  same PDF reader as the quote check
+import contract  # noqa: E402  older packages get the newer rules as warnings
 
 try:
     import paper_tables  # noqa: E402  tables without a text layer, lost minus signs
@@ -433,7 +436,9 @@ def check(program_path):
                              if isinstance(f, dict)], evidenceIds=ids(n.get("evidenceIds")))
              for n in _lst(p.get("nodes")) if isinstance(n, dict)]
     evidence = {e["id"]: e for e in _lst(p.get("evidence")) if isinstance(e, dict) and isinstance(e.get("id"), str)}
-    out, info = [], []
+    out, info, warnings = [], [], []
+    # rules added with the shared reply reader: problems for a current-contract project, warnings otherwise
+    newer = out if contract.project_current(root) else warnings
 
     structured, tables = [], []   # numbers held by fields; (where, field) for table fields
     for n in nodes:
@@ -459,7 +464,7 @@ def check(program_path):
         out += table_problems(where, f)
     result_fields = [("%s.%s" % (n.get("id"), f.get("id")), f) for n in nodes if n.get("kind") == "result"
                      for f in n.get("fields") or [] if isinstance(f, dict)]
-    out += impossible_values(result_fields)
+    newer += impossible_values(result_fields)
 
     # quote only: result nodes whose cited quotes hold numbers no field holds
     for n in nodes:
@@ -533,9 +538,9 @@ def check(program_path):
         if paper_tables is not None:
             record = source_record(root)
             already = {k for k in seen if k not in labels}   # reported above as a printed caption
-            out += image_tables(pdf_path, labels, already, record)
+            newer += image_tables(pdf_path, labels, already, record)
             paper_rel = pdf_path.relative_to(root).as_posix() if root in pdf_path.parents else pdf_path.name
-            out += lost_signs(pdf_path, result_fields, evidence, record, paper_rel)
+            newer += lost_signs(pdf_path, result_fields, evidence, record, paper_rel)
         else:
             info.append("paper_tables.py is not installed: tables without a text layer and lost minus signs not checked")
         if blank:
@@ -543,7 +548,7 @@ def check(program_path):
                         % ", ".join(map(str, blank[:30])))
         if not pages:
             info.append("no PDF reader available: printed table captions not checked")
-    return {"problems": out, "info": info, "tables": len(tables)}
+    return {"problems": out, "info": info, "tables": len(tables), "warnings": warnings}
 
 
 def main(argv=None):
@@ -560,6 +565,8 @@ def main(argv=None):
         Path(a.json).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     for msg, hint in report["problems"]:
         print("PROBLEM %s\n        fix: %s" % (msg, hint))
+    for msg, hint in report.get("warnings") or []:
+        print("WARN    %s (older build: blocking once rebuilt with task/replies.py)\n        fix: %s" % (msg, hint))
     for line in report["info"]:
         print("note    " + line)
     if report["problems"]:

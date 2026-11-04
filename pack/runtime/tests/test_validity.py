@@ -78,6 +78,8 @@ class FakePdfMixin:
 
 
 class Validity(FakePdfMixin, unittest.TestCase):
+    current = False   # True: the package carries the shared reply reader (built under the current contract)
+
     def project(self, fields=(), adapter_text=None, issues=(), pages=PAGES):
         root = Path(tempfile.mkdtemp(prefix="check-validity-"))
         self.addCleanup(shutil.rmtree, root, True)
@@ -104,6 +106,8 @@ class Validity(FakePdfMixin, unittest.TestCase):
         pkg = root / "package/x"
         (pkg / "task").mkdir(parents=True)
         (pkg / "task/adapter.py").write_text(adapter_text or adapter(), encoding="utf-8")
+        if self.current:
+            shutil.copy2(BUILD / "package_files/replies.py", pkg / "task/replies.py")
         self.fake_pdf(check_quotes, pages)
         return root
 
@@ -343,7 +347,9 @@ def trials(prompt=SCREEN, arms=("left_first", "right_first"), pre="pass"):
 
 class PromptMemoryAndIds(Validity):
     """Bench's hard rules on the captured prompts: no claimed screens that are not sent, a design that carries
-    memory carries something, no internal ids, and every condition runs on its own."""
+    memory carries something, no internal ids, and every condition runs on its own. They block a package built
+    under the current contract (task/replies.py); PromptRulesOlderBuild covers the warnings of an older one."""
+    current = True
 
     def found(self, design, text, evidence=(), issues=(), **kw):
         fields = [self.not_told([ENTRY]), self.memory(design, evidence=evidence)]
@@ -399,6 +405,50 @@ class PromptMemoryAndIds(Validity):
         # a pair design that needs an even n is run with n=2
         pairs = trials(pre='if n % 2: raise ValueError("pairs need an even n")')
         self.assertFalse(any("run_sessions(arms=" in m for m in self.found("none", pairs)))
+
+
+class PromptRulesOlderBuild(Validity):
+    """A package built before the shared reply reader: the newer prompt rules are warnings, and it still passes."""
+
+    def report(self, design, text, evidence=(), issues=()):
+        fields = [self.not_told([ENTRY]), self.memory(design, evidence=evidence)]
+        return check_validity.check(self.project(fields, text, issues=[self.MEMORY_ISSUE] + list(issues)))
+
+    def assertWarnsOnly(self, report, phrase):
+        self.assertFalse(report["currentContract"])
+        self.assertEqual(report["problems"], [])
+        self.assertTrue(any(phrase in m for m, _ in report["warnings"]), report["warnings"])
+        self.assertTrue(all(fix for _, fix in report["warnings"]))
+
+    def test_claim_of_earlier_screens_warns(self):
+        claim = '"Your earlier answers are shown above.\\n" + ' + SCREEN
+        self.assertWarnsOnly(self.report("none", trials(claim)), "prompts say earlier screens or answers are shown")
+
+    def test_carrying_design_with_nothing_carried_warns(self):
+        self.assertWarnsOnly(self.report("last-trial", trials()), "design last-trial carries memory, but no later prompt")
+
+    def test_internal_identifiers_warn(self):
+        report = self.report("none", trials('"Condition: " + arm + "\\n" + ' + SCREEN))
+        self.assertWarnsOnly(report, "internal identifiers")
+
+    def test_crashing_arm_warns(self):
+        crash = trials(pre='if arms and arm == "right_first": {}["missing"]')
+        self.assertWarnsOnly(self.report("none", crash), "raised KeyError")
+        refuse = trials(pre='if arms and arm == "right_first": raise RuntimeError("needs sources/researcher/x.txt")')
+        self.assertWarnsOnly(self.report("none", refuse), "raised RuntimeError")
+
+    def test_cli_prints_warn_and_pass(self):
+        fields = [self.not_told([ENTRY]), self.memory("none")]
+        root = self.project(fields, trials('"QID14\\n" + ' + SCREEN), issues=[self.MEMORY_ISSUE])
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = check_validity.main([str(root)])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn("WARN    participant prompts contain internal identifiers", out.getvalue())
+        self.assertIn("PASS package validity", out.getvalue())
+        self.assertNotIn("PROBLEM", out.getvalue())
 
 
 class EffectRules(unittest.TestCase):

@@ -24,7 +24,9 @@ researcher questions are checked against them (check_source_use.py), and no surv
 saw is used (qsf_flow.py). A package with the shared reply reader (task/replies.py) also runs the
 answer-aware smoke test (check_replies.py) and the every-answer-recorded check (recorded_answers.py; when it
 cannot judge, the reason is printed in its ok line). A package without task/replies.py (built before the shared
-reader) gets a note line instead, not a failure.
+reader) gets a note line instead, not a failure. For such an older package the downloaded-source, source-use and
+survey findings, and check_validity.py's newer prompt rules, are printed as `warn  <message>  [fix: ...]` lines
+and the package still passes (contract.py); rebuilding under the current contract makes them failures.
 """
 from __future__ import annotations
 
@@ -57,6 +59,12 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
+def warn(bad: list) -> None:
+    """A newer rule's findings on a package built before the current contract: printed, never a failure."""
+    for m, h in bad:
+        print(f"warn  {m}" + (f"  [fix: {h}]" if h else ""))
+
+
 def reply_checks(root: Path) -> tuple:
     """([(message, fix)], the line to print) for the shared reply reader's checks (check_replies.py,
     recorded_answers.py). A package without task/replies.py (built before the shared reader) gets a note line,
@@ -82,6 +90,9 @@ def main() -> None:
     root: Path = args.package.resolve()
     if not root.is_dir():
         fail(f"{root} is not a folder")
+    from contract import current_contract
+
+    current = current_contract(root)  # built with the shared reply reader: the newer rules fail, not warn
 
     missing = [name for name in REQUIRED if not (root / name).is_file()]
     if missing:
@@ -134,9 +145,12 @@ def main() -> None:
         from check_source_use import problems as source_use_problems
 
         bad = fetch_source.problems(Path(source).resolve().parent) + source_use_problems(Path(source).resolve().parent)
-        if bad:
+        if bad and not current:
+            warn(bad)
+        elif bad:
             fail("sources used:\n" + "\n".join(f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
-        print("ok   downloaded sources licensed; analysis code, survey versions and questions checked against them")
+        print("ok   downloaded sources licensed; analysis code, survey versions and questions checked against them"
+              + (" (older build: findings above are warnings)" if bad else ""))
     if args.program is not None and not slim:
         canonical = json.loads(args.program.read_text(encoding="utf-8"))
         if canonical != program:
@@ -199,14 +213,18 @@ def main() -> None:
         if report["problems"]:
             fail("package validity (check_validity.py):\n" + "\n".join(
                 f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in report["problems"]))
+        warn([("validity: " + m, h) for m, h in report.get("warnings") or []])
         print("ok   package validity: nothing participants were not told is in a prompt; memory design recorded")
         from qsf_flow import problems as survey_problems
 
         bad = survey_problems(Path(source).resolve().parent, root)
-        if bad:
+        if bad and not current:
+            warn(bad)
+        elif bad:
             fail("survey files (qsf_flow.py):\n" + "\n".join(
                 f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
-        print("ok   survey files: no text participants never saw; items marked not shown are unused")
+        print("ok   survey files: no text participants never saw; items marked not shown are unused"
+              + (" (older build: findings above are warnings)" if bad else ""))
     print("PASS package checks")
 
 

@@ -50,7 +50,7 @@ const HELPERS = ['skills/build/program_io.py', 'skills/build/program_lock.py', '
   'skills/simulate/run_confined.py', 'skills/simulate/simkit.py', 'schema/graph-types.json', 'skills/build/sandbox_run.py', 'skills/build/check_package.py', 'skills/build/check_readiness.py',
   'skills/build/check_materials.py', 'skills/export/community.py', 'skills/build/fetch_source.py', 'skills/build/qsf_flow.py',
   'skills/build/check_replies.py', 'skills/build/recorded_answers.py', 'skills/build/package_files/replies.py',
-  'skills/build/estimate_run.py', 'skills/build/paper_tables.py', 'skills/build/check_source_use.py']
+  'skills/build/estimate_run.py', 'skills/build/paper_tables.py', 'skills/build/check_source_use.py', 'skills/build/contract.py']
 
 export const packFileCount = (): number => Object.keys(files).length
 
