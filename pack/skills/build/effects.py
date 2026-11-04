@@ -87,8 +87,8 @@ def _field_gaps(root, effects):
     packages = sorted(d for d in (root / "package").glob("*") if (d / "task/adapter.py").is_file()) \
         if (root / "package").is_dir() else []
     ops = [e for e in effects.get("effects") or [] if (e.get("compute") or {}).get("op") not in (None, "package")]
-    keys = sorted({str(e["compute"]["key"]) for e in effects.get("effects") or []
-                   if (e.get("compute") or {}).get("op") == "package" and (e.get("compute") or {}).get("key")})
+    keys = sorted({k for e in effects.get("effects") or [] if isinstance(e, dict)
+                   for k in [_key(e.get("compute"))] if k and (e.get("compute") or {}).get("op") == "package"})
     if len(packages) != 1 or not (ops or keys):
         return [], [], []
     pkg = packages[0].resolve()
@@ -347,22 +347,33 @@ EXCLUSION_WORDS = re.compile(r"(?i)exclu|drop|remov|omit|left out|leav\w* out|no
                              r"only (?:those|participants|the)")
 
 
+def _key(compute):
+    """compute.key as the text the child and OUTPUT_KINDS use: a string, or an int compared as its text;
+    None for any other value (a list, a bool, a dict), which no block can be looked up by."""
+    key = compute.get("key") if isinstance(compute, dict) else None
+    if isinstance(key, bool) or not isinstance(key, (str, int)):
+        return None
+    return str(key)
+
+
 def output_kinds(pkg):
     """evaluation/evaluation.py's OUTPUT_KINDS, read without running it: {key: "kinds"} or {key: {"kinds",
-    "unit"}} (a module-level literal; anything else is ignored)."""
+    "unit"}} (a module-level literal; anything else is ignored). Keys are compared as text."""
     import ast
     try:
         tree = ast.parse((Path(pkg) / "evaluation/evaluation.py").read_text(encoding="utf-8"))
-    except (OSError, SyntaxError, ValueError):
+    except Exception:      # unreadable, not Python, nested too deep, null bytes ...
         return {}
     for node in tree.body:
         targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
         if any(isinstance(t, ast.Name) and t.id == "OUTPUT_KINDS" for t in targets) and node.value is not None:
             try:
                 value = ast.literal_eval(node.value)
-            except (ValueError, SyntaxError):
+            except Exception:
                 return {}
-            return value if isinstance(value, dict) else {}
+            if not isinstance(value, dict):
+                return {}
+            return {str(k): v for k, v in value.items() if isinstance(k, (str, int)) and not isinstance(k, bool)}
     return {}
 
 
@@ -416,12 +427,12 @@ def block_holds(effect, block, declarations):
     """(metrics, tests, cells, units, how) the computed block holds: a built-in op's fixed output; a package
     block computed on the stand-in run; else its OUTPUT_KINDS declaration or compute.metric (how = "declared");
     None when nothing says."""
-    comp = effect.get("compute") or {}
+    comp = effect.get("compute") if isinstance(effect.get("compute"), dict) else {}
     units = _units(comp.get("field"))
     if comp.get("op") in OP_HOLDS:
         metrics, tests, cells = OP_HOLDS[comp["op"]]
         return set(metrics), set(tests), set(cells), units, "op"
-    key = comp.get("key")
+    key = _key(comp)
     if isinstance(block, dict) and block.get("status") == "computed":
         metrics = {block["metric"]} if isinstance(block.get("metric"), str) else set()
         test = (block.get("test") or {}).get("statistic") if isinstance(block.get("test"), dict) else None
@@ -448,91 +459,111 @@ def link_problems(effects, blocks, declarations, ran):
     package's evaluation ran on it (an undeclared not-ready block is only a problem then)."""
     out = []
     effs = [e for e in effects.get("effects") or [] if isinstance(e, dict) and isinstance(e.get("reported"), dict)
-            and (e.get("population") or {}).get("kind") in (None, "human")]
+            and (e.get("population") if isinstance(e.get("population"), dict) else {}).get("kind") in (None, "human")]
     for e in effs:
-        rep, comp = e["reported"], e.get("compute") or {}
-        where = "effect %s" % e.get("id")
-        estimates = [x for x in rep.get("estimates") or [] if isinstance(x, dict) and isinstance(x.get("metric"), str)]
-        reported_metrics = {x["metric"] for x in estimates}
-        test = (rep.get("test") or {}).get("statistic") if isinstance(rep.get("test"), dict) else None
-        cells = rep.get("cells") if isinstance(rep.get("cells"), dict) else {}
-        cell_kinds = _cell_kinds(cells)
-        # (c) several values of one kind: one block holds one value
-        counts = {}
-        for x in estimates:
-            counts.setdefault(x["metric"], []).append(str(x.get("variant") or "").strip())
-        for metric, variants in counts.items():
-            if len(variants) >= 2 and (not all(variants) or len(set(variants)) < len(variants)):
-                out.append("%s: reported holds %d %s values, but the effect computes one value; give each its own "
-                           "effect (one per comparison, outcome or row), or name in each estimate's `variant` the model "
-                           "or weighting that makes them the same quantity printed differently"
-                           % (where, len(variants), metric))
-        holds = block_holds(e, blocks.get(comp.get("key")), declarations)
-        if holds is None:
-            if ran and comp.get("op") == "package":
-                out.append("%s: compute key %r is not computed on the stand-in run (not ready, or no effect_estimates "
-                           "entry), so the check cannot see what it returns; declare it in evaluation/evaluation.py: "
-                           "OUTPUT_KINDS = {%r: \"<what the block returns, e.g. correlation | mean sd t | "
-                           "risk_difference share chi2>\"} (read as text, never run), or set compute.metric"
-                           % (where, comp.get("key"), comp.get("key")))
+        try:
+            out += _effect_links(e, blocks, declarations, ran)
+        except Exception:   # noqa: BLE001 - a malformed effect: effects_core reports its shape
             continue
-        metrics, tests, block_cells, units, how = holds
-        # (a) the kind: effects_core.compare can put the computed number next to a reported one (the same
-        # metric, compute.compareAs, or the difference of the reported cell means / shares); else, with only a
-        # test reported, the block holds the same test; else the cells' kinds
-        def comparable(metric):
-            return effects_core.compare(e, {"status": "computed", "metric": metric, "value": 0.0}).get("comparable")
-        need = cell_kinds & {"mean", "share"}
-        if any(comparable(m) for m in metrics):
-            ok, claimed = True, ""
-        elif estimates:
-            ok, claimed = False, ", ".join(sorted(reported_metrics))
-        elif test and test != "other":
-            ok, claimed = test in tests or test in metrics, "a %s test" % test
-        else:
-            ok = not need or bool(need & block_cells)
-            claimed = "cell " + " and ".join(sorted(need))
-        if not ok:
-            holds_text = ", ".join(sorted(metrics) + ["%s test" % t for t in sorted(tests)] +
-                                   ["cell %s" % c for c in sorted(block_cells)]) or "no named statistic"
-            out.append("%s: reported holds %s, but the computed block (%s) holds %s: a correlation or an alpha is "
-                       "never checked by a t test, a d never by a raw mean difference. Compute the statistic the paper "
-                       "reports (op package with effect_estimates returning it), or, when they are the same quantity "
-                       "under another name, set compute.compareAs {\"metric\", \"reason\"}"
-                       % (where, claimed, "%s, %s" % (comp.get("op"), how) if comp.get("op") != "package"
-                          else "key %s, %s" % (comp.get("key"), how), holds_text))
-        # mean and SD printed per arm: the computed cells carry the SD too (visible blocks and declarations only)
-        elif {"mean", "sd"} <= cell_kinds and not estimates and how != "op" and block_cells and "sd" not in block_cells:
-            out.append("%s: reported cells hold means and SDs, but the computed block's cells hold no sd; return "
-                       "each arm's n, mean and sd in the block's cells" % where)
-        # (b) the scale: a share or percentage never checked against cents, points or seconds
-        rep_units = _units((e.get("outcome") or {}).get("scale")) | _units((e.get("outcome") or {}).get("higherMeans"))
-        explicit = set(rep_units)
-        if cell_kinds & {"share"}:
-            rep_units |= {"percent" if any(_num((c or {}).get("percent")) is not None for c in cells.values())
-                          else "share"}
-        if "proportion" in reported_metrics or "risk_difference" in reported_metrics:
-            rep_units.add("share")
-        fraction = {"share", "percent"}
-        clash = None
-        if rep_units & fraction and not rep_units - fraction and units - fraction and not units & fraction:
-            clash = ("a %s" % "/".join(sorted(rep_units & fraction)), "/".join(sorted(units - fraction)))
-        elif rep_units - fraction and not rep_units & fraction and units & fraction and not units - fraction:
-            clash = ("an amount in %s" % "/".join(sorted(rep_units - fraction)), "/".join(sorted(units & fraction)))
-        elif explicit in ({"share"}, {"percent"}) and units & fraction and not units & explicit and how != "op":
-            clash = ("a %s" % next(iter(explicit)), "/".join(sorted(units & fraction)))
-        if clash:
-            out.append("%s: reported is %s but the computed value is in %s; compute it on the paper's scale (the mean "
-                       "share of the endowment, not the mean in cents; a percentage as a percentage)" % ((where,) + clash))
-    out += _n_problems(effs)
+    try:
+        out += _n_problems(effs)
+    except Exception:   # noqa: BLE001 - as above
+        pass
+    return out
+
+
+def _effect_links(e, blocks, declarations, ran):
+    """link_problems for one effect."""
+    out = []
+    rep, comp = e["reported"], e.get("compute") if isinstance(e.get("compute"), dict) else {}
+    where = "effect %s" % e.get("id")
+    if comp.get("op") == "package" and _key(comp) is None:
+        return out           # a key that is not text: effects_core reports the effect's compute
+    estimates = [x for x in rep.get("estimates") if isinstance(x, dict) and isinstance(x.get("metric"), str)] \
+        if isinstance(rep.get("estimates"), list) else []
+    reported_metrics = {x["metric"] for x in estimates}
+    test = (rep.get("test") or {}).get("statistic") if isinstance(rep.get("test"), dict) else None
+    cells = rep.get("cells") if isinstance(rep.get("cells"), dict) else {}
+    cell_kinds = _cell_kinds(cells)
+    # (c) several values of one kind: one block holds one value
+    counts = {}
+    for x in estimates:
+        counts.setdefault(x["metric"], []).append(str(x.get("variant") or "").strip())
+    for metric, variants in counts.items():
+        if len(variants) >= 2 and (not all(variants) or len(set(variants)) < len(variants)):
+            out.append("%s: reported holds %d %s values, but the effect computes one value; give each its own "
+                       "effect (one per comparison, outcome or row), or name in each estimate's `variant` the model "
+                       "or weighting that makes them the same quantity printed differently"
+                       % (where, len(variants), metric))
+    holds = block_holds(e, blocks.get(_key(comp)), declarations)
+    if holds is None:
+        if ran and comp.get("op") == "package":
+            out.append("%s: compute key %r is not computed on the stand-in run (not ready, or no effect_estimates "
+                       "entry), so the check cannot see what it returns; declare it in evaluation/evaluation.py: "
+                       "OUTPUT_KINDS = {%r: \"<what the block returns, e.g. correlation | mean sd t | "
+                       "risk_difference share chi2>\"} (read as text, never run), or set compute.metric"
+                       % (where, _key(comp), _key(comp)))
+        return out
+    metrics, tests, block_cells, units, how = holds
+    # (a) the kind: effects_core.compare can put the computed number next to a reported one (the same
+    # metric, compute.compareAs, or the difference of the reported cell means / shares); else, with only a
+    # test reported, the block holds the same test; else the cells' kinds
+    def comparable(metric):
+        return effects_core.compare(e, {"status": "computed", "metric": metric, "value": 0.0}).get("comparable")
+    need = cell_kinds & {"mean", "share"}
+    if any(comparable(m) for m in metrics):
+        ok, claimed = True, ""
+    elif estimates:
+        ok, claimed = False, ", ".join(sorted(reported_metrics))
+    elif test and test != "other":
+        ok, claimed = test in tests or test in metrics, "a %s test" % test
+    else:
+        ok = not need or bool(need & block_cells)
+        claimed = "cell " + " and ".join(sorted(need))
+    if not ok:
+        holds_text = ", ".join(sorted(metrics) + ["%s test" % t for t in sorted(tests)] +
+                               ["cell %s" % c for c in sorted(block_cells)]) or "no named statistic"
+        out.append("%s: reported holds %s, but the computed block (%s) holds %s: a correlation or an alpha is "
+                   "never checked by a t test, a d never by a raw mean difference. Compute the statistic the paper "
+                   "reports (op package with effect_estimates returning it), or, when they are the same quantity "
+                   "under another name, set compute.compareAs {\"metric\", \"reason\"}"
+                   % (where, claimed, "%s, %s" % (comp.get("op"), how) if comp.get("op") != "package"
+                      else "key %s, %s" % (_key(comp), how), holds_text))
+    # mean and SD printed per arm: the computed cells carry the SD too (visible blocks and declarations only)
+    elif {"mean", "sd"} <= cell_kinds and not estimates and how != "op" and block_cells and "sd" not in block_cells:
+        out.append("%s: reported cells hold means and SDs, but the computed block's cells hold no sd; return "
+                   "each arm's n, mean and sd in the block's cells" % where)
+    # (b) the scale: a share or percentage never checked against cents, points or seconds
+    outcome = e.get("outcome") if isinstance(e.get("outcome"), dict) else {}
+    rep_units = _units(outcome.get("scale")) | _units(outcome.get("higherMeans"))
+    explicit = set(rep_units)
+    if cell_kinds & {"share"}:
+        rep_units |= {"percent" if any(_num((c or {}).get("percent")) is not None for c in cells.values())
+                      else "share"}
+    if "proportion" in reported_metrics or "risk_difference" in reported_metrics:
+        rep_units.add("share")
+    fraction = {"share", "percent"}
+    clash = None
+    if rep_units & fraction and not rep_units - fraction and units - fraction and not units & fraction:
+        clash = ("a %s" % "/".join(sorted(rep_units & fraction)), "/".join(sorted(units - fraction)))
+    elif rep_units - fraction and not rep_units & fraction and units & fraction and not units - fraction:
+        clash = ("an amount in %s" % "/".join(sorted(rep_units - fraction)), "/".join(sorted(units & fraction)))
+    elif explicit in ({"share"}, {"percent"}) and units & fraction and not units & explicit and how != "op":
+        clash = ("a %s" % next(iter(explicit)), "/".join(sorted(units & fraction)))
+    if clash:
+        out.append("%s: reported is %s but the computed value is in %s; compute it on the paper's scale (the mean "
+                   "share of the endowment, not the mean in cents; a percentage as a percentage)" % ((where,) + clash))
     return out
 
 
 def _stated_exclusion(e):
-    comp, rep = e.get("compute") or {}, e.get("reported") or {}
+    comp = e.get("compute") if isinstance(e.get("compute"), dict) else {}
+    rep = e.get("reported") if isinstance(e.get("reported"), dict) else {}
     if len(re.findall(r"\w+", str(comp.get("exclusion") or ""))) >= 4 or comp.get("where"):
         return True
-    return any(EXCLUSION_WORDS.search(str(x)) for x in list(rep.get("missing") or []) + [e.get("notes") or ""])
+    missing = rep.get("missing")
+    missing = missing if isinstance(missing, list) else [missing] if missing else []
+    return any(EXCLUSION_WORDS.search(str(x)) for x in missing + [e.get("notes") or ""])
 
 
 def _n_problems(effs):
@@ -540,8 +571,8 @@ def _n_problems(effs):
     part of that group from this comparison, and the effect must say so."""
     by_arm = {}
     for e in effs:
-        rep, con = e["reported"], e.get("contrast") or {}
-        study = e.get("studyId")
+        rep, con = e["reported"], e.get("contrast") if isinstance(e.get("contrast"), dict) else {}
+        study = e.get("studyId") if isinstance(e.get("studyId"), (str, int, float, type(None))) else str(e.get("studyId"))
         for arm, cell in (rep.get("cells") or {}).items() if isinstance(rep.get("cells"), dict) else []:
             if isinstance(cell, dict) and _num(cell.get("n")) is not None:
                 by_arm.setdefault((study, "arm " + str(arm)), []).append((e, cell["n"]))

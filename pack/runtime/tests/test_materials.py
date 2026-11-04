@@ -240,7 +240,17 @@ class Materials(unittest.TestCase):
              "found": False}]
         self.assertFalse([p for p in self.problems() if "search skipped" in p])
         self.program["source"]["venue"] = "Judgment and Decision Making"
+        self.assertTrue(any("journal.sjdm.org" in p for p in self.problems()))   # year unknown: still required
+        # a JDM paper from 2023 on was published only by Cambridge: the original site holds nothing for it
+        self.program["nodes"].append({"id": "overview", "kind": "overview", "fields": [
+            {"id": "year", "label": "Year", "origin": "reported", "state": "confirmed", "value": "2024"}]})
+        self.assertEqual(check_materials.paper_year(self.program, {}), 2024)
+        self.assertFalse([p for p in self.problems() if "search skipped" in p])
+        self.program["nodes"][-1]["fields"][0]["value"] = 2015
         self.assertTrue(any("journal.sjdm.org" in p for p in self.problems()))
+        self.assertEqual(check_materials.missing_searches({}, [], "Judgment and Decision Making", 2023)[-1:] !=
+                         ["journal.sjdm.org (the journal's original site, before Cambridge)"], True)
+        self.program["nodes"].pop()
         self.material("instruction-text")["search"].append(
             {"where": "JDM original site", "url": "https://journal.sjdm.org/15/15415a/", "found": False})
         self.assertFalse([p for p in self.problems() if "search skipped" in p])

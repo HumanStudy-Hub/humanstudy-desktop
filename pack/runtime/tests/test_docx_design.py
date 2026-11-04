@@ -91,6 +91,67 @@ class WordReader(unittest.TestCase):
         self.assertEqual(json.loads((root / "out/s.json").read_text())["pages"], [["One"], ["Two"]])
 
 
+class WordReaderLimits(unittest.TestCase):
+    """A broken or hostile .docx never crashes the check or takes long to read."""
+
+    def broken(self, path, method=None, flags=None):
+        data = bytearray(path.read_bytes())
+        central = data.find(b"PK\x01\x02")
+        if method is not None:      # the compression method of the local and the central header
+            data[8:10] = data[central + 10:central + 12] = method.to_bytes(2, "little")
+        if flags is not None:       # bit 0: the entry is encrypted
+            data[6:8] = data[central + 8:central + 10] = flags.to_bytes(2, "little")
+        path.write_bytes(bytes(data))
+
+    def test_unreadable_word_file_is_one_finding(self):
+        for kind in ("compression", "encrypted", "not a zip"):
+            root, pkg = project(self, docx_body=p(r("x")))
+            path = root / "sources/open/survey.docx"
+            if kind == "compression":
+                self.broken(path, method=99)
+            elif kind == "encrypted":
+                self.broken(path, flags=1)
+            else:
+                path.write_bytes(b"<html>a login page</html>")
+            found = docx_text.problems(root, pkg)
+            self.assertEqual(len(found), 1, (kind, found))
+            self.assertIn("cannot be read", found[0][0])
+            self.assertIn("sources/open/survey.docx", found[0][0])
+
+    def test_malformed_program_and_materials_are_read_as_no_text(self):
+        for program in ({"nodes": 5}, {"nodes": [{"fields": 5}]}, {"nodes": [5, {"id": "a", "fields": [5, {
+                "origin": "verbatim", "value": {"x": ["Page Break"]}}]}]}):
+            root, pkg = project(self, program=program, docx_body=p(r("x")))
+            (pkg / "materials/materials.json").write_text("[1, null, {\"text\": 5}]")
+            found = docx_text.problems(root, pkg)
+            self.assertTrue(all("cannot be read" not in m for m, _ in found), found)
+
+    def test_oversized_document_is_refused(self):
+        root, pkg = project(self, docx_body=p(r("x")))
+        from unittest import mock
+        with mock.patch.object(docx_text, "MAX_DOCUMENT_BYTES", 10):
+            with self.assertRaises(ValueError):
+                docx_text.read(root / "sources/open/survey.docx")
+            found = docx_text.problems(root, pkg)
+        self.assertTrue(any("cannot be read" in m and "MB" in m for m, _ in found), found)
+
+    def test_unclosed_tags_read_in_linear_time(self):
+        import time
+        path = tmp(self) / "x.docx"
+        for xml in ("<w:pPr>x" * 20000, "<w:pPr x" * 20000, "<w:t x" * 20000, "<mc:Fallback>x" * 20000,
+                    "<w:p " * 20000, "<w:br " * 20000):
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("word/document.xml", xml)
+            start = time.monotonic()
+            docx_text.read(path)
+            self.assertLess(time.monotonic() - start, 2.0, xml[:12])
+
+    def test_properties_with_a_revision_inside_still_end_at_their_own_close(self):
+        change = "<w:pPr><w:pageBreakBefore/><w:pPrChange><w:pPr><w:jc/></w:pPr></w:pPrChange></w:pPr>"
+        body = p(r("One")) + p(r("Two"), ppr=change) + p(r("Three"))
+        self.assertEqual(docx_text.read(docx(tmp(self) / "c.docx", body))["pages"], [["One"], ["Two", "Three"]])
+
+
 class WordCheck(unittest.TestCase):
     BODY = p(r("Scenario 1"), BR, BR, r("In this study we are interested"))
 

@@ -131,21 +131,42 @@ SEARCH_KINDS = {
                    "an OSF search by author (https://api.osf.io/v2/users/?filter[full_name]=<surname>, then each "
                    "match's /nodes/), not only by title"),
 }
-# Journals that moved publisher; their original site may still hold supplements the new one lacks.
+# Journals that moved publisher; their original site may still hold supplements the new one lacks. The last
+# value is the first year published only by the new publisher: a paper of that year or later needs no search of
+# the old site (a paper whose year is unknown still does).
 LEGACY_SITES = {
-    "judgment and decision making": ("sjdm.org", "journal.sjdm.org (the journal's original site, before Cambridge)"),
+    "judgment and decision making": ("sjdm.org", "journal.sjdm.org (the journal's original site, before Cambridge)",
+                                     2023),
 }
 
 
-def missing_searches(record, items_search, venue):
-    """What the minimum search list still lacks, given SOURCE.json and the pending items' search entries."""
+def missing_searches(record, items_search, venue, year=None):
+    """What the minimum search list still lacks, given SOURCE.json and the pending items' search entries (and
+    the paper's year, which decides whether a journal's original site is on the list)."""
     blobs = [" ".join(_str(x.get(k)) for k in ("where", "query", "url", "result"))
              for x in _list(record.get("searches")) + list(items_search) if isinstance(x, dict)]
     missing = [what for pattern, what in SEARCH_KINDS.values() if not any(pattern.search(b) for b in blobs)]
-    for name, (host, what) in LEGACY_SITES.items():
+    for name, (host, what, until) in LEGACY_SITES.items():
+        if isinstance(year, int) and year >= until:
+            continue
         if name in venue.casefold() and not any(host in b for b in blobs):
             missing.append(what)
     return missing
+
+
+def paper_year(program, record):
+    """The paper's year as an int (program.json source.year or the overview's year field, SOURCE.json paper.year),
+    or None when none is stated."""
+    candidates = [_dict(_dict(program).get("source")).get("year"), _dict(_dict(record).get("paper")).get("year")]
+    candidates += [f.get("value") for n in _list(_dict(program).get("nodes")) if isinstance(n, dict)
+                   and n.get("kind") == "overview" for f in _list(n.get("fields")) if isinstance(f, dict)
+                   and f.get("id") == "year"]
+    for value in candidates:
+        m = re.search(r"(?<!\d)(1[89]\d\d|20\d\d)(?!\d)", str(value)) if value is not None and \
+            not isinstance(value, bool) else None
+        if m:
+            return int(m.group(1))
+    return None
 
 
 def _json(path):
@@ -809,7 +830,7 @@ def check(root, package=None):
     if pending_search is not None:
         venue = " ".join(_str(_dict(program.get("source")).get(k)) for k in ("venue", "journal"))
         venue += " " + " ".join(_str(record.get(k)) for k in ("journal", "venue"))
-        lacking = missing_searches(record, pending_search, venue)
+        lacking = missing_searches(record, pending_search, venue, paper_year(program, record))
         if lacking:   # added with the shared reply reader: blocks only a current-contract project (contract.py)
             (problems if current else warnings).append(("materials are still pending, but the search skipped %s" % "; ".join(lacking),
                 "search each (title, DOI, authors) and record it in sources/SOURCE.json searches, including those that "

@@ -19,15 +19,18 @@ Question:", "Skip To: ...", "Standard: ... (n Questions)") are kept apart under 
 the flow, not what participants read.
 
 Printed as plain text: one paragraph per line, pages separated by ``--- page break ---``. ``--json`` writes
-``{"pages": [[paragraph, ...], ...], "export_lines": [...]}``. Reading a file runs nothing in it. The same file
-as HumanStudy-Bench's agent_pipeline/docx_text.py reader (``read``); the check is the desktop's.
+``{"pages": [[paragraph, ...], ...], "export_lines": [...]}``. Reading a file runs nothing in it. The reader
+(``read``) follows HumanStudy-Bench's agent_pipeline/docx_text.py, hardened here: a word/document.xml over
+50 MB uncompressed is refused, and an unclosed tag never makes reading slower than one pass over the file.
+The check is the desktop's.
 
 ``--check`` (``problems(root, package)``) applies only when a ``.docx`` is under ``sources/``. Participant text
 (``materials.json`` strings other than notes, reasons and source records, and the values of program.json
 fields of origin ``verbatim``) must not carry export markup ("Page Break", "Start of Block:", "Display This
 Question:", ...) and must not run two lines of a Word source together ("Scenario 1In this study"). Limits: it
 reads materials and the program, not the adapter's own string literals; a run-together join is found only
-when both lines are at least four characters long.
+when both lines are at least four characters long. A .docx it cannot read (not a zip, an unsupported
+compression, an encrypted entry, too large) is one finding naming the file.
 Standard library only (zipfile and regular expressions).
 """
 from __future__ import annotations
@@ -58,21 +61,30 @@ EXPORT_ARTIFACT_RE = re.compile(
     r"This question was not displayed|End of Survey:|QuestionSeparator)(?!\w)")
 
 
+# Attributes are read up to the next "<" as well as ">", so an unclosed tag never makes a match scan the rest
+# of the file (each match stops at the next tag: reading is linear in the file's size).
 TOKEN_RE = re.compile(
-    r"<w:pPr\b[^>]*?(?:/>|>(?P<ppr>.*?)</w:pPr>)"        # paragraph properties: only a page break before counts
-    r"|<w:p(?=[\s>/])[^>]*?(?P<empty>/)?>|(?P<pend></w:p>)"
-    r"|<w:t(?=[\s>])[^>]*>(?P<text>[^<]*)</w:t>"
-    r"|<w:(?P<brk>br|cr)\b(?P<brattrs>[^>]*?)/?>|(?P<tab><w:tab\b[^>]*?/?>)|(?P<hyphen><w:noBreakHyphen\b[^>]*?/?>)",
+    r"<w:pPr\b[^<>]*?(?P<pprself>/)?>"                # paragraph properties: only a page break before counts
+    r"|<w:p(?=[\s>/])[^<>]*?(?P<empty>/)?>|(?P<pend></w:p>)"
+    r"|<w:t(?=[\s>])[^<>]*>(?P<text>[^<]*)</w:t>"
+    r"|<w:(?P<brk>br|cr)\b(?P<brattrs>[^<>]*?)/?>|(?P<tab><w:tab\b[^<>]*?/?>)|(?P<hyphen><w:noBreakHyphen\b[^<>]*?/?>)",
     re.S)
+PPR_END = "</w:pPr>"
+# word/document.xml larger than this (uncompressed) is not read: no survey export comes near it.
+MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
 PAGE_BEFORE_RE = re.compile(r"<w:pageBreakBefore\b(?![^>]*w:val=\"(?:0|false|off)\")")
 
 
 def read(path: Path) -> Dict[str, List]:
     """``{"pages": [[paragraph, ...], ...], "export_lines": [...]}`` of a .docx file."""
     with zipfile.ZipFile(path) as archive:
+        size = archive.getinfo("word/document.xml").file_size
+        if size > MAX_DOCUMENT_BYTES:
+            raise ValueError("word/document.xml is %d MB uncompressed (more than %d MB): not read"
+                             % (size // 2**20, MAX_DOCUMENT_BYTES // 2**20))
         xml = archive.read("word/document.xml").decode("utf-8", "replace")
     # A text box is stored twice (mc:Choice and an mc:Fallback copy for old Word): read it once.
-    xml = re.sub(r"<mc:Fallback\b.*?</mc:Fallback>", "", xml, flags=re.S)
+    xml = _drop_fallbacks(xml)
     pages: List[List[str]] = [[]]
     export_lines: List[str] = []
     current: List[str] = []
@@ -98,11 +110,23 @@ def read(path: Path) -> Dict[str, List]:
                 elif line.strip():
                     pages[-1].append(line)
 
-    for match in TOKEN_RE.finditer(xml):
+    pos, ppr_end = 0, -2          # ppr_end: the next "</w:pPr>" found so far (-1: none after it)
+    while True:
+        match = TOKEN_RE.search(xml, pos)
+        if match is None:
+            break
+        pos = match.end()
         if match.group(0).startswith("<w:pPr"):
-            if PAGE_BEFORE_RE.search(match.group("ppr") or ""):
+            if match.group("pprself"):
+                continue
+            if ppr_end != -1 and ppr_end < pos:
+                ppr_end = xml.find(PPR_END, pos)
+            if ppr_end == -1:
+                continue             # never closed: read on as if it were empty
+            if PAGE_BEFORE_RE.search(xml, pos, ppr_end):
                 end_paragraph()
                 new_page()
+            pos = ppr_end + len(PPR_END)
         elif match.group("pend") is not None or match.group("empty"):
             end_paragraph()
         elif match.group(0).startswith("<w:p"):
@@ -120,6 +144,21 @@ def read(path: Path) -> Dict[str, List]:
     if not pages[-1] and len(pages) > 1:
         pages.pop()
     return {"pages": pages, "export_lines": export_lines}
+
+
+def _drop_fallbacks(xml: str) -> str:
+    """xml without its <mc:Fallback>...</mc:Fallback> copies (a scan, so an unclosed one costs one pass)."""
+    out, pos = [], 0
+    while True:
+        start = xml.find("<mc:Fallback", pos)
+        while start != -1 and re.match(r"\w", xml[start + 12:start + 13]):
+            start = xml.find("<mc:Fallback", start + 12)
+        end = xml.find("</mc:Fallback>", start) if start != -1 else -1
+        if end == -1:
+            out.append(xml[pos:])
+            return "".join(out)
+        out.append(xml[pos:start])
+        pos = end + len("</mc:Fallback>")
 
 
 def plain_text(path: Path) -> str:
@@ -177,8 +216,10 @@ def participant_texts(root: Path, package: Path | None = None) -> List[tuple]:
         rel = (pkg / "materials/materials.json")
         out += [("%s/materials/materials.json" % pkg.name, s) for s in _visible_strings(_load(rel))]
     program = _load(root / "program.json")
-    for node in program.get("nodes") or [] if isinstance(program, dict) else []:
-        for field in node.get("fields") or [] if isinstance(node, dict) else []:
+    nodes = program.get("nodes") if isinstance(program, dict) else None
+    for node in nodes if isinstance(nodes, list) else []:
+        fields = node.get("fields") if isinstance(node, dict) else None
+        for field in fields if isinstance(fields, list) else []:
             if isinstance(field, dict) and field.get("origin") == "verbatim":
                 where = "program.json %s.%s" % (node.get("id"), field.get("id"))
                 value = field.get("value")
@@ -204,16 +245,25 @@ def problems(root: Path, package: Path | None = None) -> List[tuple]:
                     "is never text, and 'Start of Block:' or 'Display This Question:' lines describe the flow"))
     joined = re.sub(r"[ \t]+", " ", "\n".join(text for _, text in texts))
     lost: List[tuple] = []
+    unreadable: List[str] = []
     for path in docs:
+        rel = path.relative_to(root).as_posix()
         try:
             pages = read(path)["pages"]
-        except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+        except KeyError:
+            continue                 # no word/document.xml: not a Word document, nothing to compare
+        except Exception as exc:     # not a zip, an unsupported compression, an encrypted entry, too large ...
+            unreadable.append("%s (%s: %s)" % (rel, type(exc).__name__, str(exc)[:120]))
             continue
-        rel = path.relative_to(root).as_posix()
         for page in pages:
             for join in _lost_breaks(page):
                 if re.sub(r"[ \t]+", " ", join) in joined and not any(join == j for j, _ in lost):
                     lost.append((join, rel))
+    if unreadable:
+        out.append(("a Word source under sources/ cannot be read, so participant text taken from it is not checked: "
+                    + "; ".join(unreadable[:3]),
+                    "replace it with a copy Word or LibreOffice saves normally (File > Save As .docx), or remove it "
+                    "from sources/ when nothing was taken from it"))
     if lost:
         out.append(("participant text runs two lines of a Word source together with nothing between them (%s)"
                     % "; ".join("'%s' from %s" % pair for pair in lost[:3]),
@@ -239,7 +289,7 @@ def main(argv: List[str] | None = None) -> int:
         return 0
     try:
         record = read(args.path)
-    except (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
+    except Exception as exc:
         print("cannot read %s: %s" % (args.path, exc), file=sys.stderr)
         return 1
     if args.json:

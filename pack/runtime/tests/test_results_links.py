@@ -116,6 +116,74 @@ class TextCoverage(unittest.TestCase):
         found = problems([INTRO, payoff], program(), record=bad)
         self.assertTrue(any("is not the passage's exact text" in m for m in found), found)
 
+    def test_results_not_recorded_clears_only_its_own_span_on_its_page(self):
+        pages = [INTRO, RESULTS]
+        def found(item):
+            return problems(pages, program(), record={"resultsNotRecorded": [item]})
+        base = problems(pages, program())
+        self.assertTrue(any("exact p values" in m for m in base), base)
+        # a short quote no statistic lies in clears nothing (not every number within 200 characters)
+        short = found({"page": 2, "quote": "in the first game", "reason": "a design value of the game"})
+        self.assertTrue(any("exact p values" in m for m in short), short)
+        # a page is required: a quote with no page does not clear every page
+        nopage = found({"page": None, "quote": RESULTS.split("\n\n")[1], "reason": "a design value of the game"})
+        self.assertTrue(any("give the page the quote is printed on" in m for m in nopage), nopage)
+        # a quote that prints p values is this paper's result unless the reason says what else it is
+        whole = RESULTS.split("\n\n")[1]
+        own = found({"page": 2, "quote": whole, "reason": "not needed for the replay"})
+        self.assertTrue(any("prints a test result (p = .048)" in m for m in own), own)
+        self.assertEqual(found({"page": 2, "quote": whole, "reason": "Smith et al. (2010), another study's result, "
+                                                                     "cited"}), [])
+        # only the statistic inside the quote is cleared: the p printed after it still counts
+        part = found({"page": 2, "quote": "Men lied more often than women in the first game, b = 0.25",
+                      "reason": "a design value of the first game"})
+        self.assertTrue(any("exact p values" in m for m in part), part)
+
+    def test_design_values_quoted_instruments_and_other_samples_are_not_results(self):
+        lottery = ("Method\n\nDesign. In each round the computer drew a number with probability p = .50 of success. The "
+                   "payoff was 10 points with p = .25, 20 points with p = .25, and 0 with p = .50. Each lottery paid out "
+                   "with p = .80 or p = .20 depending on the arm. Agents cooperated with p = .3 in round 1, p = .5 in "
+                   "round 2, p = .7 in round 3.")
+        self.assertEqual(problems([INTRO, lottery], program()), [])
+        # a test with its p value next to the word "chance" is still a result
+        chance = ("Results\n\nChoices differed from chance, t(39) = 2.50, p = .017; ratings from the midpoint, t(39) = "
+                  "3.10, p = .004; times from zero, t(39) = 2.2, p = .034; errors, t(39) = 2.9, p = .006; recall, "
+                  "t(39) = 2.4, p = .021; and confidence, t(39) = 2.7, p = .010.")
+        self.assertTrue(any("exact p values" in m for m in problems([INTRO, chance], program())))
+        instrument = ("Method\n\nMaterials. Participants read: 'Option A gives a 30% vs 70% chance of winning; Option "
+                      "B gives 50% vs 50%; Option C gives 10% vs 90%; Option D gives 80% versus 20%.'")
+        self.assertEqual(problems([INTRO, instrument], program()), [])
+        unquoted = ("Method\n\nMaterials. Option A gave 30% vs 70% odds of a prize. Option B gave 50% vs 50% and "
+                    "option C gave 10% vs 90%, which participants judged; option D gave 80% versus 20% to everyone "
+                    "who took part.")
+        found = problems([INTRO, unquoted], program())
+        self.assertTrue(any("percentage comparisons" in m for m in found), found)
+        material = cr._flat("Option B gave 50% vs 50% and option C gave 10% vs 90%. Option D gave 80% versus 20%.")
+        spans = cr._skipped({}, [INTRO, unquoted])[0]
+        report = cr.text_coverage([INTRO, unquoted], program(), None, spans, material)
+        self.assertEqual(cr.text_problems(report), [])
+        population = ("Method\n\nThe town's population is 48% male and the national average age is 40.2 years. Our "
+                      "participants were students.")
+        self.assertEqual(problems([INTRO, population], program()), [])
+
+    def test_table_rows_on_a_page_whose_table_is_reported_count_once(self):
+        rows = ("Results\n\nTable 2 Choices by condition. In the control condition 64 (80%) chose the safe option and "
+                "16 (20%) the risky one; in the treatment condition 50 (62%) chose safe and 30 (38%) risky; in the "
+                "neutral condition 44 (55%) and 36 (45%).")
+        self.assertTrue(cr.text_problems(cr.text_coverage([INTRO, rows], program(), None, [])))
+        self.assertEqual(cr.text_problems(cr.text_coverage([INTRO, rows], program(), None, [], "", {2})), [])
+
+    def test_numbered_references_heading_ends_the_text(self):
+        cited = ("Smith, J. (2010). Effects p = .01 in trust, b = 0.3, p = .02. J Psych, 12, 1-20. Lee, K. (2012). "
+                 "Null p = .03 b = 0.2 p = .04. Kim (2015) p = .05, p = .06, b = 0.1 p = .07.")
+        for heading in ("7. References", "References and Notes", "REFERENCES", "Literature Cited"):
+            page = "Results\n\nWe found nothing of note in this part of the study.\n\n%s\n\n%s" % (heading, cited)
+            self.assertEqual(problems([INTRO, "Method\n\nParticipants were 100 adults.", page, "x", "y"],
+                                      program()), [], heading)
+        # a references line before the paper's own part begins cuts nothing
+        early = "References\n\nSee the appendix.\n\n" + RESULTS
+        self.assertTrue(any("exact p values" in m for m in problems([INTRO, early], program())))
+
     def test_passages_split_text_without_blank_lines(self):
         page = ("2.1 Results\nThe first line of a long paragraph that runs on and on across the column.\n"
                 "It ends here.\nA new paragraph starts on the next line and runs across the column too.\n")
@@ -213,6 +281,19 @@ class SupplementAndProject(unittest.TestCase):
                                   "what": "another paper by the same authors"}]}
         self.assertEqual(self.check(self.project(program(), whole)), [])
 
+    def test_a_private_supplement_is_listed_as_a_reference_not_transcribed(self):
+        for folder in ("private", "researcher"):
+            root = self.project(program())
+            (root / "sources" / folder).mkdir()
+            (root / "sources/open/supp.pdf").rename(root / "sources" / folder / "supp.pdf")
+            found = self.check(root)
+            self.assertTrue(any("sources/private/ or sources/researcher/" in m and "Table S1" in m for m in found),
+                            found)
+            ref = {"paperTables": [{"table": "S1", "source": "sources/%s/supp.pdf" % folder, "page": 1,
+                                    "kind": "result"}]}
+            (root / "sources/SOURCE.json").write_text(json.dumps(ref), encoding="utf-8")
+            self.assertEqual(self.check(root), [])
+
     def test_an_older_build_gets_the_coverage_rules_as_warnings(self):
         report = cr.check(self.project(program(), current=False) / "program.json")
         self.assertEqual(report["problems"], [])
@@ -307,6 +388,41 @@ class Links(unittest.TestCase):
         self.assertIn("evaluate()", prop["description"])
         # unequal arms of a between design are not an exclusion
         self.assertEqual(links([effect("e%d" % i, {"cells": cells(n)}) for i, n in enumerate([150, 120, 188])]), [])
+
+    def test_compute_keys_that_are_not_text(self):
+        r = {"estimates": [{"metric": "correlation", "value": 0.4}]}
+        # a list key never crashes; effects_core reports the malformed compute
+        self.assertEqual(links([effect(reported=r, compute={"op": "package", "key": ["k"]})]), [])
+        self.assertEqual(links([effect(reported=r, compute={"op": "package", "key": {"a": 1}})], {"k": {}}), [])
+        # an int key is the child's text key: no false "not computed"
+        e = effect(reported=r, compute={"op": "package", "key": 3})
+        self.assertEqual(links([e], {"3": {"status": "computed", "metric": "correlation"}}), [])
+        self.assertEqual(links([e], {"3": {"status": "not_ready"}}, {"3": "r"}), [])
+        self.assertTrue(any("compute key '3' is not computed" in m for m in links([e], {"3": {"status": "not_ready"}})))
+        # a population or compute that is not an object is read as none
+        self.assertEqual(links([effect(reported=r, compute="x", population="human")]), [])
+        # an effect of the wrong shape is left to effects_core; the others are still checked
+        corr = {"op": "correlation", "field": "x", "withField": "y"}
+        odd = [effect("odd%d" % i, reported=dict(r, **{k: v}), compute=corr, studyId=["s"]) for i, (k, v) in
+               enumerate([("estimates", 5), ("estimates", "s"), ("missing", 5), ("cells", {"a": 5})])]
+        bad = effect("bad", reported=r, compute={"op": "paired_difference", "field": "x", "referenceField": "y"})
+        found = links(odd + [bad, effect("bad2", reported=r, compute=bad["compute"], outcome="share")])
+        self.assertEqual(sorted(m.split(":")[0] for m in found), ["effect bad", "effect bad2"], found)
+
+    def test_output_kinds_never_crashes_on_odd_source(self):
+        pkg = Path(tempfile.mkdtemp(prefix="output-kinds-"))
+        self.addCleanup(shutil.rmtree, pkg, True)
+        (pkg / "evaluation").mkdir()
+        for source in ("x = (" * 300 + ")" * 300, "OUTPUT_KINDS = {'a': 1}\x00", "OUTPUT_KINDS = {1: 'r', (1,): 'd', "
+                       "None: 'x', 'k': 'mean'}\n", "OUTPUT_KINDS = {'a': " + "[" * 400 + "]" * 400 + "}\n"):
+            (pkg / "evaluation/evaluation.py").write_text(source)
+            kinds = effects.output_kinds(pkg)
+            self.assertIsInstance(kinds, dict)
+        self.assertEqual(effects.output_kinds(pkg), {})
+        (pkg / "evaluation/evaluation.py").write_text("OUTPUT_KINDS = {1: 'r', (1,): 'd', None: 'x', 'k': 'mean'}\n")
+        self.assertEqual(effects.output_kinds(pkg), {"1": "r", "k": "mean"})
+        (pkg / "evaluation/evaluation.py").write_bytes(b"\xff\xfe not utf-8")
+        self.assertEqual(effects.output_kinds(pkg), {})
 
     def test_output_kinds_is_read_without_running_the_module(self):
         pkg = Path(tempfile.mkdtemp(prefix="output-kinds-"))

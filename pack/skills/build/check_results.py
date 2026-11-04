@@ -36,16 +36,24 @@ Prints every problem with a fix, then PASS or FAIL (exit 1). Checks:
                 pairs are not recorded in a result field or effects.json `reported` (a statistic counts only with
                 the p value printed after it), when the sample's sex or age is printed but no participants or
                 result field holds it, and when a results paragraph prints four or more numbers none of which is
-                recorded. Not counted: numbers after a citation, in a power analysis or a design probability,
-                rows of a table the text layer runs into the prose, and passages listed in sources/SOURCE.json
-                `resultsNotRecorded` [{"page", "quote" (exact text of the paper), "reason"}]
+                recorded. Not counted: numbers after a citation, in a power analysis or a design probability
+                ("with probability p = .8", "10 points with p = .25", "p = .5 in round 2", "a 30% vs 70% chance"),
+                a pair inside a printed quotation or in the project's participant text, a sex or age figure in a
+                sentence that is not about the sample, rows of a table the text layer runs into the prose (and,
+                on a page whose untranscribed table the printed-table check reports, number-dense passages), and
+                numbers inside a sources/SOURCE.json `resultsNotRecorded` quote [{"page" (required), "quote"
+                (exact text on that page), "reason"}]; a quote printing a test result (p =, t(df) =, F(..) =,
+                chi-square(..) =, r(df) =) is refused unless the reason names a power analysis, a design or payoff
+                value, another study's or paper's result, or a citation
   abstract      every finding the abstract states is recorded: a result field or effect whose words carry it, or
                 an entry of SOURCE.json `abstractResults` [{"claim" (the abstract's words), "recordedIn":
                 ["<node>.<field>" | "effect:<id>"]} | {"claim", "notRecorded": "<why no statistic>"}]
   supplement    a PDF under sources/ other than the paper that prints numbered result tables ("Table S1"): each
                 is a table field (value with "table" and "source": "<path>") holding its cells, or SOURCE.json
                 `paperTables` lists it {"table": "S1", "source", "kind": "result", "recordedIn"} | kind "other"
-                with "what"; {"source", "kind": "other", "what"} without "table" clears a whole file
+                with "what"; {"source", "kind": "other", "what"} without "table" clears a whole file. A PDF under
+                sources/private/ or sources/researcher/ is never exported: its tables are only listed (a
+                reference entry {"table", "source", "page", "kind": "result"}), never required cell by cell
 
 Numbers are compared as printed values; labels such as "Study 2", "Table 3", page numbers and years
 are ignored. The checks are best effort: they find untranscribed numbers, they cannot prove that
@@ -57,6 +65,7 @@ library; the caption check reads the PDF like check_quotes.py, the image table, 
 checks with paper_tables.py (skipped, with a note, when it is not installed).
 """
 import argparse
+import functools
 import json
 import re
 import shutil
@@ -65,7 +74,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from check_quotes import Pdf  # noqa: E402  same PDF reader as the quote check
+from check_quotes import Pdf  # noqa: E402  same PDF reader as the quote check (printed captions)
 import contract  # noqa: E402  older packages get the newer rules as warnings
 
 try:
@@ -479,6 +488,19 @@ NOT_OWN = re.compile(r"(?i)power|sensitivity|pilot|g\*power|meta-analy|previous 
                      r"\b(found|reported|showed) (that )?[^.]{0,40}\(\d{4}|"
                      r"et al\.?\s?\d{1,3}(?![\d.,]\d)")
 DESIGN_P = re.compile(r"(?i)(probabilit(?:y|ies)(?: of)?|binomial,?)\s*$")
+# words before a p (after the last statistic) that make it a design probability: "a lottery paying 10 with p = .3"
+DESIGN_P_WORDS = re.compile(r"(?i)probabilit|chance|lotter|gamble|binomial|\bodds\b|\bpoints?\b|\bpayoffs?\b|"
+                            r"\b(?:wins?|winning|pays?|paid)\b")
+# words after it: "p = .5 in round 2", "p = .3 of winning"
+DESIGN_P_AFTER = re.compile(r"(?i)^\s*,?\s*(?:(?:in|on|for|at)\s+(?:each\s+|every\s+|the\s+)?(?:first\s+|second\s+|"
+                            r"last\s+)?(?:rounds?|trials?|periods?|blocks?|games?|draws?)\b|of\s+(?:winning|losing|success|"
+                            r"failure|a\s+(?:win|loss|gain|prize)|being\s+(?:drawn|chosen|selected|paid))|"
+                            r"(?:or|and)\s+p\s*=)")
+# "a 30% vs 70% chance": a design value, not a result
+PAIR_CHANCE = re.compile(r"(?i)^\W*(?:[a-z]+\W+){0,3}?(?:chances?|probabilit\w*|odds|likelihood)\b")
+# the sample's make-up is the sample's only in a sentence about the people studied
+SAMPLE_WORDS = re.compile(r"(?i)participants?|respondents?|subjects?|\bsamples?\b|students?|workers?|children|"
+                          r"adults?|volunteers?|took part|participated|recruited|enrolled|(?<![\w.])[Nn]\s*=")
 CITED = re.compile(r"\(\s*[A-Z][A-Za-z'’\-]+(?: et al\.?| (?:and|&) [A-Z][A-Za-z'’\-]+)?,? \d{4}[a-z]?\s*\)|"
                    r"[A-Z][A-Za-z'’\-]+(?: et al\.?| (?:and|&) [A-Z][A-Za-z'’\-]+)? \(\d{4}[a-z]?\)")
 # where the paper's own empirical part begins
@@ -486,7 +508,8 @@ METHOD_HEADING = re.compile(
     r"(?im)^[ \t]*(?:\d+(?:\.\d+)*\.?[ \t]+)?(?:[A-Z][a-z]+[ \t]+){0,3}(?:methods?|design|procedures?|participants|"
     r"materials|(?:experiment|study)[ \t]+(?:\d|one|I\b)|results)\b[^\n]{0,50}$")
 SECTION_HEADING = re.compile(r"^\s*\d+(?:\.\d+)*\.?\s+[A-Z][^.]{0,60}$")
-REFERENCES = re.compile(r"(?im)^\s*(references|bibliography|literature cited)\s*$")
+REFERENCES = re.compile(r"(?im)^[ \t]*(?:(?:\d{1,2}|[IVX]{1,4})\.?[ \t]+)?(references?(?:[ \t]+and[ \t]+notes)?|"
+                        r"bibliography|literature[ \t]+cited|works[ \t]+cited)[ \t]*$")
 ABSTRACT = re.compile(r"(?im)^\s*(abstract|summary)\b[.:]?\s*")
 ABSTRACT_END = re.compile(r"(?im)^\s*(keywords?|key words|(?:1\.?\s+)?introduction|significance|public significance|"
                           r"jel)\b")
@@ -518,6 +541,15 @@ may might will would shall should do does did done have has had having into onto
 across after before during while if whether because since though although via per vs versus i ii iii iv v vi""".split())
 PASSAGE_MIN = 4   # numbers in a results passage before "none recorded" fails
 P_SHARE = 0.5     # share of the text's exact p values (and of its pairs) that must be recorded
+# a test result printed in a quote: an exact p value, t(df) =, F(df1, df2) =, chi-square(df) =, r(df) =
+QUOTE_TEST = re.compile(r"(?<![\w.])[pP]\s*=\s*(?:0?\.\d+|1\.0+)|(?<![\w.])t\s*\(\s*\d[^)]{0,12}\)\s*=|"
+                        r"(?<![\w.])F\s*\(\s*\d[^)]{0,20}\)\s*=|(?:χ|χ2|χ²|chi-square|chi2|X2)\s*(?:2|²)?\s*\([^)]{0,30}\)\s*=|"
+                        r"(?<![\w.])r\s*\(\s*\d[^)]{0,12}\)\s*=")
+# a reason that says the quoted test is not this paper's result
+NOT_OWN_REASON = re.compile(r"(?i)power|sensitivity|design|payoff|pay-off|lotter|gamble|probabilit|"
+                            r"(?:another|other|earlier|previous|prior|original|cited)\s+(?:\w+\s+)?(?:stud|paper|article|"
+                            r"experiment|work|research|replication|author)|(?:study|paper|article)'s result|"
+                            r"\bcit(?:es?|ed|ing|ation)\b|reference|et al|meta-analy")
 P_KEY = re.compile(r"(?i)^p$|^p[_\-. ]|[_\- ]p$|[_\- ]p[_\- ]|p_?val|pvalue|^p\d$|p_printed|^ptext$|^sig(nif\w*)?\.?$|"
                    r"^pr$|^pr\s*\(|^pr_|_sig$")
 P_TEXT = re.compile(r"(?i)(?<![\w.])p(?:'s)?(?:\s*(?:=|<|>|≤|≥|<=|>=)|[\- ]values?\s*(?:=|<|>|:)?)\s*(0?\.\d+|1(?:\.0+)?)")
@@ -588,14 +620,19 @@ def passages(pages):
     out, started = [], False
     for index, raw in enumerate(pages):
         text = _norm(_dehyphen(raw or ""))
-        refs = REFERENCES.search(text) if index >= len(pages) * 0.4 else None
-        if refs:
-            text = text[:refs.start()]
         if not started:
             # the whole page of the first methods heading: the text layer may put it after its paragraphs
-            if index == 0 or METHOD_HEADING.search(text) is None:
+            heading = METHOD_HEADING.search(text) if index else None
+            if heading is None:
                 continue
             started = True
+            # a references heading ends the empirical part only after it has begun (on this page, after the
+            # heading), so a "References" line in the front matter cuts nothing
+            refs = REFERENCES.search(text, heading.end())
+        else:
+            refs = REFERENCES.search(text)
+        if refs:
+            text = text[:refs.start()]
         out += [{"page": index + 1, "text": b} for b in _blocks(text)]
         if refs:
             break
@@ -619,6 +656,44 @@ PEOPLE = re.compile(r"(?i)participants?|subjects?|respondents?|people|persons?|c
                     r"players?|chose|chosen|selected|answered|reported|preferred|agreed|judged|rated|guessed|correct")
 
 
+def _design_p(text, m):
+    """A p = ... that is a design probability: after "probability (of)", after "with" (no statistic before it),
+    after design words (a lottery, a chance, points) with no statistic between them and the p, or before
+    "in round 2" / "of winning" / "or p = ..."."""
+    before = text[max(0, m.start() - 60):m.start()]
+    stop = max(before.rfind(". "), before.rfind("; "))
+    before = before[stop + 1:] if stop >= 0 else before
+    if DESIGN_P.search(before[-30:]):
+        return True
+    if "=" not in before and (re.search(r"(?i)\bwith\s*$", before) or DESIGN_P_WORDS.search(before)):
+        return True
+    after_stat = before[before.rfind("=") + 1:] if "=" in before else before
+    if "=" in before and DESIGN_P_WORDS.search(re.sub(r"^[\s\d.,\-]+", "", after_stat)):
+        return True
+    return bool(DESIGN_P_AFTER.match(text[m.end():m.end() + 40]))
+
+
+def _quoted(text, at):
+    """`at` is inside a quotation printed in the passage: double quotes, or single quotes opened after a colon."""
+    for opener, closer in (('"', '"'), ("'", "'")):
+        start = text.rfind(opener, max(0, at - 400), at)
+        if start < 0 or (opener == "'" and not re.search(r":\s*$", text[max(0, start - 3):start])):
+            continue
+        if opener == '"' and text.count('"', max(0, at - 400), start) % 2:
+            continue                  # that mark closes an earlier quotation
+        if text.find(closer, at) >= 0:
+            return True
+    return False
+
+
+def _around(text, start, end):
+    """The sentence holding text[start:end] and the one before it."""
+    left = text.rfind(". ", 0, start)
+    left = text.rfind(". ", 0, left) if left > 0 else -1
+    right = text.find(". ", end)
+    return text[left + 1:right if right >= 0 else len(text)]
+
+
 def _sentence(text, start, end):
     left = max(text.rfind(". ", 0, start), text.rfind("; ", 0, start))
     right = min([i for i in (text.find(". ", end), text.find("; ", end)) if i >= 0] or [len(text)])
@@ -630,7 +705,7 @@ def statistics_in(text):
     together ("26% vs 18%")."""
     found, seen = [], set()
     for m in P_EXACT.finditer(text):
-        if DESIGN_P.search(text[max(0, m.start() - 30):m.start()]) or "x" in m.group(1) or "×" in m.group(1):
+        if _design_p(text, m) or "x" in m.group(1) or "×" in m.group(1):
             continue
         if _own(text, m.start()):
             found.append({"kind": "p", "value": m.group(1), "at": m.start(1), "group": None})
@@ -648,6 +723,15 @@ def statistics_in(text):
                 continue
             # "in 2019 (45%)": a year, not a count
             if kind == "pair" and YEAR.fullmatch(m.group(1) or ""):
+                continue
+            # "a 30% vs 70% chance of winning": a design value
+            if kind == "pair" and "%" in m.group(0) and PAIR_CHANCE.match(text[m.end():m.end() + 40]):
+                continue
+            # "Participants read: 'Option A gives 30% vs 70% ...'": the instrument, quoted
+            if kind == "pair" and _quoted(text, m.start()):
+                continue
+            # "the town's population is 48% male": the make-up of a sample only in a sentence about the sample
+            if kind in ("sex", "age") and not SAMPLE_WORDS.search(_around(text, m.start(), m.end())):
                 continue
             # a row of a table the text layer runs into the prose ("Choose A 64 (80%) Choose B 16 (20%)")
             window = text[max(0, m.start() - 50):m.end() + 50]
@@ -824,29 +908,53 @@ def _skipped(record, pages):
                              'write {"page": 4, "quote": "<the passage as printed>", "reason": "..."}'))
             continue
         quote = _flat(str(item.get("quote", "")))
+        page = item.get("page")
+        reason = str(item.get("reason", ""))
         if len(quote) < 12 or quote not in whole:
             problems.append(("sources/SOURCE.json resultsNotRecorded[%d]: the quote is not the passage's exact text in "
                              "the paper" % i, "copy the passage as printed (at least a few words)"))
-        elif len(re.findall(r"\w+", str(item.get("reason", "")))) < 3:
+        elif isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= len(pages) or \
+                quote not in _flat((pages[page - 1] or "") + " " + (pages[page] or "" if page < len(pages) else "")):
+            problems.append(("sources/SOURCE.json resultsNotRecorded[%d]: give the page the quote is printed on "
+                             "(\"page\": <number>)" % i, "each entry names the one page whose passage it clears"))
+        elif len(re.findall(r"\w+", reason)) < 3:
             problems.append(("sources/SOURCE.json resultsNotRecorded[%d]: no reason" % i,
                              "say why the passage holds no result of this paper (a payoff or design value, a power "
                              "analysis, another study's result)"))
+        elif QUOTE_TEST.search(_plain_text(item.get("quote", ""))) and not NOT_OWN_REASON.search(reason):
+            problems.append(("sources/SOURCE.json resultsNotRecorded[%d]: the quote prints a test result (%s), which is "
+                             "this paper's result unless the reason says otherwise"
+                             % (i, QUOTE_TEST.search(_plain_text(item.get("quote", ""))).group(0)),
+                             "record the result; list the passage only when it is a power analysis, a design or payoff "
+                             "value, another study's or paper's result, or a citation, and say which in the reason"))
         else:
-            page = item.get("page")
-            spans.append((page if isinstance(page, int) else 0, quote))
+            spans.append((page, quote))
     return spans, problems
 
 
+def _plain_text(text):
+    return re.sub(r"\s+", " ", _norm(_dehyphen(str(text))))
+
+
+@functools.lru_cache(maxsize=256)
+def _quote_pattern(quote):
+    return re.compile(r"\s+".join(re.escape(w) for w in quote.split(" ")), re.I)
+
+
 def _in_skipped(passage, stat, spans):
+    """The statistic lies inside the printed span of a resultsNotRecorded quote on the passage's page (or the
+    quote holds the whole passage)."""
     if not spans:
         return False
-    flat = _flat(passage["text"])
-    at, length = stat["at"], len(stat["value"])
-    window = _flat(passage["text"][max(0, at - 200):at + length + 200])
+    text = passage["text"]
+    at, end = stat["at"], stat["at"] + len(stat["value"])
     for page, quote in spans:
-        if page and page != passage["page"]:
+        if page != passage["page"]:
             continue
-        if quote in flat and (quote in window or _flat(passage["text"][at:at + length]) in quote):
+        if _flat(text) in quote:
+            return True
+        pattern = _quote_pattern(quote)
+        if any(m.start() <= at and end <= m.end() for m in pattern.finditer(text)):
             return True
     return False
 
@@ -858,17 +966,25 @@ def _nonzero(value):
         return False
 
 
-def text_coverage(pages, program, effects, spans):
-    """The paper's text statistics, each marked recorded or not."""
+def text_coverage(pages, program, effects, spans, material="", table_pages=()):
+    """The paper's text statistics, each marked recorded or not. material: participant text (flattened) the
+    project holds; a pair printed in it is the instrument, not a result. table_pages: pages whose untranscribed
+    table another check already reports; a table-like passage there is that table's rows, not counted twice."""
     values = recorded_values(program, effects)
     keys, p_keys, groups = recorded_keys(values), recorded_p_keys(values), recorded_groups(values)
     sample_keys = recorded_sample_keys(program, effects)
     report = {"p": [], "pairs": [], "sample": [], "passages": []}
     for passage in passages(pages):
         # a line of a table in the text layer ("53 (66%) 27 (34%)") is the table checks' business
-        if len(re.findall(r"[A-Za-z]{3,}", passage["text"])) < 5:
+        word_count = len(re.findall(r"[A-Za-z]{3,}", passage["text"]))
+        if word_count < 5:
+            continue
+        if passage["page"] in table_pages and (len(TOKEN.findall(passage["text"])) * 3 >= word_count or
+                                               CAPTION.search(passage["text"])):
             continue
         stats = [s for s in statistics_in(passage["text"]) if _nonzero(s["value"]) and not _in_skipped(passage, s, spans)]
+        if material:
+            stats = [s for s in stats if not (s["kind"] == "pair" and _in_material(passage["text"], s, stats, material))]
         if not stats:
             continue
         for s in stats:
@@ -892,6 +1008,23 @@ def text_coverage(pages, program, effects, spans):
         report["sample"] += _one_per_group([s for s in stats if s["kind"] in ("sex", "age")])
         report["passages"].append({"page": passage["page"], "text": passage["text"], "stats": stats})
     return report
+
+
+def _in_material(text, stat, stats, material):
+    """The pair (both its numbers, as printed together) is in the participant text the project holds."""
+    members = [s for s in stats if s["group"] and s["group"] == stat["group"]] or [stat]
+    start, last = members[0]["at"], members[-1]
+    printed = _flat(text[start:last["at"] + len(last["value"]) + 1])
+    return len(printed) >= 4 and printed in material
+
+
+def material_text(root):
+    """Participant text the project holds (materials.json, verbatim program fields), flattened."""
+    try:
+        from docx_text import participant_texts
+        return _flat(" \n ".join(t for _, t in participant_texts(root)))
+    except Exception:   # noqa: BLE001 - an unreadable record holds no material
+        return ""
 
 
 def _one_per_group(stats):
@@ -1109,11 +1242,14 @@ def supplement_problems(root, pdf_path, program, record):
         if is_table(f.get("value")) and f["value"].get("table"):
             table_fields.setdefault(_table_key(f["value"]["table"]), []).append((name, f))
     source_of = lambda x: str(x.get("source", "")).strip().lstrip("./") if isinstance(x, dict) else ""
-    out, unlisted = [], {}
+    out, unlisted, unlisted_private = [], {}, {}
     for pdf in pdfs:
         relative = pdf.relative_to(root).as_posix()
         if relative in whole_file:
             continue
+        # a supplement without an open licence (sources/private/) or from the researcher (sources/researcher/) is
+        # never exported, and neither may its text be through program.json: its tables are listed as references
+        private = relative.startswith(("sources/private/", "sources/researcher/"))
         for table in paper_tables.supplement_inventory(pdf):
             if not table["result"]:
                 continue
@@ -1127,8 +1263,11 @@ def supplement_problems(root, pdf_path, program, record):
                 held = [(n, f) for n, f in table_fields.get(number, []) if not source_of(f["value"])]
             label = "Table %s of %s (p. %d)" % (number, relative, table["page"])
             if item is None and not held:
-                unlisted.setdefault(relative, []).append("Table %s (p. %d)" % (number, table["page"]))
+                (unlisted_private if private else unlisted).setdefault(relative, []).append(
+                    "Table %s (p. %d)" % (number, table["page"]))
                 continue
+            if private and (item is None or item.get("kind") != "other"):
+                continue   # a reference: its cells stay in the file
             if item is not None and item.get("kind") == "other":
                 if len(re.findall(r"\w+", str(item.get("what", "")))) < 3:
                     out.append(("sources/SOURCE.json paperTables %s: say in 'what' what the table holds" % label,
@@ -1160,6 +1299,14 @@ def supplement_problems(root, pdf_path, program, record):
                 out.append(("%s: the table field holds only %d of the table's %d numbers (missing e.g. %s)"
                             % (label, len(table["values"]) - len(absent), len(table["values"]), ", ".join(absent[:6])),
                             "transcribe every cell as printed"))
+    if unlisted_private:
+        out.insert(0, ("a supplement under sources/private/ or sources/researcher/ prints result tables sources/SOURCE.json "
+                       "paperTables does not list: " + "; ".join(
+                           "%s: %s" % (path, ", ".join(tables)) for path, tables in unlisted_private.items()),
+                       "its text is never exported, so do not copy its cells into program.json: list each table as a "
+                       "reference {\"table\": \"S1\", \"source\": \"<path>\", \"page\": <page>, \"kind\": \"result\"} "
+                       "(kind \"other\" with \"what\" when it holds no results), and record in an issue that its "
+                       "numbers stay in the researcher's copy"))
     if unlisted:
         out.insert(0, ("a supplement under sources/ prints result tables the project does not record: " + "; ".join(
             "%s: %s" % (path, ", ".join(tables)) for path, tables in unlisted.items()),
@@ -1172,16 +1319,16 @@ def supplement_problems(root, pdf_path, program, record):
     return out
 
 
-def coverage_problems(root, pdf_path, program, effects, record):
-    """Results printed only in the text, the sample's make-up, the abstract's findings, supplement tables."""
-    pages = paper_tables.page_texts(pdf_path, layout=False) if paper_tables is not None else Pdf(pdf_path).load()
+def coverage_problems(root, pdf_path, program, effects, record, table_pages=()):
+    """Results printed only in the text, the sample's make-up, the abstract's findings, supplement tables.
+    table_pages: pages whose untranscribed table the printed-table check reports (not counted again here)."""
+    pages = paper_tables.page_texts(pdf_path, layout=False)
     out = []
     if pages:
         spans, out = _skipped(record, pages)
-        out += text_problems(text_coverage(pages, program, effects, spans))
+        out += text_problems(text_coverage(pages, program, effects, spans, material_text(root), set(table_pages)))
         out += abstract_problems(pages, program, effects, record)
-    if paper_tables is not None:
-        out += supplement_problems(root, pdf_path, program, record)
+    out += supplement_problems(root, pdf_path, program, record)
     return out
 
 
@@ -1310,7 +1457,8 @@ def check(program_path, package=None):
             paper_rel = pdf_path.relative_to(root).as_posix() if root in pdf_path.parents else pdf_path.name
             newer += lost_signs(pdf_path, result_fields, evidence, record, paper_rel)
             try:
-                newer += coverage_problems(root, pdf_path, p, effects, record)
+                newer += coverage_problems(root, pdf_path, p, effects, record,
+                                           {page for key, page in seen.items() if key not in labels})
             except Exception as exc:  # noqa: BLE001 - a malformed record is reported, not a crash
                 newer.append(("results coverage could not run (%s: %s)" % (type(exc).__name__, str(exc)[:160]),
                               "fix the record it names (program.json, effects.json or sources/SOURCE.json)"))

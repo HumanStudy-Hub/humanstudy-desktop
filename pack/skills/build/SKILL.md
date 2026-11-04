@@ -147,7 +147,7 @@ instruction screens (both framings)", not "m-s4.instruction-wording".
    - **Minimum search list.** Before anything stays `pending`, the searches record at least: the journal's own
      page for the paper and its supplementary material, and the journal's *original* site when it changed
      publisher (Judgment and Decision Making before 2023: `journal.sjdm.org/<vol>/<id>/`, which can hold a
-     supplement Cambridge lacks); the preprint servers by title (PsyArXiv / OSF Preprints, arXiv, SSRN); an
+     supplement Cambridge lacks; required when the paper's year is unknown); the preprint servers by title (PsyArXiv / OSF Preprints, arXiv, SSRN); an
      open-copy index for the DOI (Unpaywall, `https://api.unpaywall.org/v2/<doi>?email=<contact>`, or Europe
      PMC, `https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=DOI:<doi>&format=json`); and an OSF
      search by author, not only by title (`https://api.osf.io/v2/users/?filter[full_name]=<surname>`, then each
@@ -406,6 +406,10 @@ table, on the result node it reports (sample tables on `participants`, stimulus 
   `{"table": "S1", "source": "sources/open/<file>", "page": 3, "kind": "result", "recordedIn":
   "<node id>.<field id>"}`; a table without results is `"kind": "other"` with `what`, and a PDF that is
   not this paper's supplement is `{"source": "<path>", "kind": "other", "what": "..."}` without `table`.
+  A supplement under `sources/private/` or `sources/researcher/` is never exported, so its cells never go
+  into program.json: list each of its result tables as a reference, `{"table": "S1", "source":
+  "sources/private/<file>", "page": 3, "kind": "result"}`, and say in an issue that its numbers stay in the
+  researcher's copy.
 - `check_results.py` reads the paper's text and fails when more than half of its exact p values (six
   or more) or of its "x% vs y%" / "n (x%)" pairs are not recorded, when the sample's sex or age is
   printed but recorded nowhere, when a results paragraph prints four or more numbers none of which is
@@ -413,7 +417,10 @@ table, on the result node it reports (sample tables on `participants`, stimulus 
   supplement's result table is not recorded. Numbers after a citation, in a power analysis or a design
   probability are not counted. A passage it reads as a result that is not one (a payoff or design value,
   another study's result) goes in `sources/SOURCE.json` → `resultsNotRecorded`: `[{"page": 4, "quote":
-  "<the passage's exact text>", "reason": "..."}]`; the quote must be in the paper, and a result of this
+  "<the passage's exact text>", "reason": "..."}]`. The quote must be printed on that page (the page is
+  required) and clears only the numbers inside it. A quote that prints a test result (an exact p value,
+  `t(df) =`, `F(df1, df2) =`, `χ²(df) =`, `r(df) =`) is refused unless its reason says it is a power
+  analysis, a design or payoff value, another study's or paper's result, or a citation. A result of this
   paper never goes there.
 - Effects keep pointing to the cells they use: the effect's `resultIds` name the result node,
   its `reported` numbers are the cells, its `reported.evidenceIds` cite an evidence record whose

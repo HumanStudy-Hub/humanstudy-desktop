@@ -236,7 +236,13 @@ def main() -> None:
         from docx_text import problems as word_problems
         from design_checks import problems as design_problems
 
-        bad = word_problems(Path(source).resolve().parent, root) + design_problems(Path(source).resolve().parent, root)
+        bad = []
+        for name, check in (("docx_text.py", word_problems), ("design_checks.py", design_problems)):
+            try:
+                bad += check(Path(source).resolve().parent, root)
+            except Exception as exc:     # one finding line, never a traceback that hides every other check
+                bad.append(("%s could not finish (%s: %s)" % (name, type(exc).__name__, str(exc)[:200]),
+                            "fix the file it names, or report this to the HumanStudy Hub developers"))
         if bad and not current:
             warn(bad)
         elif bad:
