@@ -18,7 +18,11 @@ Two layouts pass:
 In a project (slim layout) it also requires sources/SOURCE.json to record every source file with its
 current SHA-256 and a license entry (write it with sources.py), and runs check_validity.py: no prompt tells
 participants what the paper says they were not told, the memory design is a recorded decision, one
-unparsed reply does not drop a participant, missing instructions are a decision.
+unparsed reply does not drop a participant, missing instructions are a decision. Also in a project:
+downloaded sources carry a stated licence (fetch_source.py), the authors' analysis code, survey versions and
+researcher questions are checked against them (check_source_use.py), and no survey text participants never
+saw is used (qsf_flow.py). A package with the shared reply reader (task/replies.py) also runs the
+answer-aware smoke test (check_replies.py) and the every-answer-recorded check (recorded_answers.py).
 """
 from __future__ import annotations
 
@@ -107,6 +111,13 @@ def main() -> None:
         if bad:
             fail("sources/SOURCE.json:\n" + "\n".join(f"  {m}  [fix: {h}]" for m, h in bad))
         print("ok   sources/SOURCE.json records every source file (hash, license)")
+        import fetch_source
+        from check_source_use import problems as source_use_problems
+
+        bad = fetch_source.problems(Path(source).resolve().parent) + source_use_problems(Path(source).resolve().parent)
+        if bad:
+            fail("sources used:\n" + "\n".join(f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
+        print("ok   downloaded sources licensed; analysis code, survey versions and questions checked against them")
     if args.program is not None and not slim:
         canonical = json.loads(args.program.read_text(encoding="utf-8"))
         if canonical != program:
@@ -157,6 +168,15 @@ def main() -> None:
     if result.returncode != 0:
         fail("adapter smoke test failed:\n" + result.stdout + result.stderr)
     print("ok   task/adapter.py --smoke-test")
+    from check_replies import problems as reply_problems, uses_replies
+    from recorded_answers import problems as answer_problems
+
+    if uses_replies(root):  # packages with the shared reply reader (task/replies.py); older ones are not checked
+        bad = reply_problems(root.parent.parent, root) + answer_problems(root)
+        if bad:
+            fail("reading replies (check_replies.py, recorded_answers.py):\n" + "\n".join(
+                f"  {m}  [fix: {h}]" for m, h in bad))
+        print("ok   replies: shared reader unchanged, answer-aware smoke test passes, every answer recorded")
     if slim:  # inside a project: the package replays what participants experienced (check_validity.py)
         from check_validity import check as check_validity
 
@@ -165,6 +185,13 @@ def main() -> None:
             fail("package validity (check_validity.py):\n" + "\n".join(
                 f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in report["problems"]))
         print("ok   package validity: nothing participants were not told is in a prompt; memory design recorded")
+        from qsf_flow import problems as survey_problems
+
+        bad = survey_problems(Path(source).resolve().parent, root)
+        if bad:
+            fail("survey files (qsf_flow.py):\n" + "\n".join(
+                f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
+        print("ok   survey files: no text participants never saw; items marked not shown are unused")
     print("PASS package checks")
 
 
