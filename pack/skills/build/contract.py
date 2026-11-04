@@ -4,12 +4,11 @@
     python .opencode/skills/build/contract.py .        prints "current" or "older build" per package
 
 A package is built under the current contract when it carries the shared reply reader (task/replies.py, or
-an adapter that imports it; the same test check_replies.py uses), or when its project shows the current build
-skill's work in any other way, so leaving task/replies.py out does not turn the newer rules into warnings:
-study.json `"buildContract": 2` (or higher); sources/SOURCE.json with any of licenceLookups, paperTables,
-signChecks, analysisCode, surveyVersions, questionsChecked, decisionsFromSources, or a file entry with
-`retrieved` or `finalUrl` (written by fetch_source.py); program.json or the package's materials.json carrying
-a `qsfReachability` mark (qsf_flow.py). Rules added together with that reader
+an adapter that imports it; the same test check_replies.py uses), or when study.json says
+`"buildContract": 2` (or higher), which the build skill writes, so leaving task/replies.py out of a new build
+does not turn the newer rules into warnings (check_package.py then fails the missing reader). Records the
+newer rules ask for (SOURCE.json analysisCode, questionsChecked, paperTables, ...) are not markers: adding
+one to clear an older build's warning must not make the other warnings blocking. Rules added together with that reader
 (prompt memory claims, internal identifiers in prompts, arms that crash, image-only tables, lost minus
 signs, impossible values, downloaded-source and survey-flow checks) are problems for a current package and
 warnings for an older one, so a project that was ready before an app update stays ready. Rebuilding the
@@ -28,11 +27,6 @@ from check_replies import uses_replies  # noqa: E402
 
 
 BUILD_CONTRACT = 2
-# SOURCE.json records only the current build skill writes
-NEW_SOURCE_KEYS = ("licenceLookups", "paperTables", "signChecks", "analysisCode", "surveyVersions",
-                   "questionsChecked", "decisionsFromSources")
-NEW_FILE_KEYS = ("retrieved", "finalUrl")
-QSF_MARK = '"qsfReachability"'
 
 
 def _json(path):
@@ -50,26 +44,15 @@ def _text(path):
 
 
 def new_build_signs(package_dir) -> list:
-    """What shows the current build skill made this package or its project (empty: none)."""
-    pkg = Path(package_dir)
-    signs = []
-    study = _json(pkg / "study.json")
+    """What marks this package as built by the current build skill (empty: none): study.json
+    `"buildContract": 2`. Records in SOURCE.json, program.json or materials.json do not count: they are also
+    what the warnings for an older build ask for, and adding one to clear a warning must not turn every other
+    warning into a blocking problem."""
+    study = _json(Path(package_dir) / "study.json")
     marked = study.get("buildContract") if isinstance(study, dict) else None
     if isinstance(marked, (int, float)) and not isinstance(marked, bool) and marked >= BUILD_CONTRACT:
-        signs.append("study.json buildContract %s" % marked)
-    project = pkg.parent.parent if pkg.parent.name == "package" else None
-    if project is not None:
-        record = _json(project / "sources" / "SOURCE.json")
-        if isinstance(record, dict):
-            signs += ["SOURCE.json %s" % k for k in NEW_SOURCE_KEYS if record.get(k) not in (None, [], {}, "")]
-            files = record.get("files") if isinstance(record.get("files"), list) else []
-            if any(isinstance(f, dict) and any(f.get(k) for k in NEW_FILE_KEYS) for f in files):
-                signs.append("SOURCE.json a downloaded file (retrieved / finalUrl)")
-        if QSF_MARK in _text(project / "program.json"):
-            signs.append("program.json qsfReachability")
-    if QSF_MARK in _text(pkg / "materials" / "materials.json"):
-        signs.append("materials.json qsfReachability")
-    return signs
+        return ["study.json buildContract %s" % marked]
+    return []
 
 
 def current_contract(package_dir) -> bool:

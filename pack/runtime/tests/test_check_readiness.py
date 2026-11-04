@@ -321,22 +321,19 @@ class ContractSigns(unittest.TestCase):
             (self.pkg / "study.json").write_text(marked, encoding="utf-8")
             self.assertFalse(self.contract.current_contract(self.pkg), marked)
 
-    def test_each_sign_makes_it_current(self):
+    def test_only_the_build_stamp_makes_it_current(self):
         (self.pkg / "study.json").write_text('{"buildContract": 2}', encoding="utf-8")
         self.assertTrue(self.contract.current_contract(self.pkg))
         (self.pkg / "study.json").write_text("{}", encoding="utf-8")
-        for key in self.contract.NEW_SOURCE_KEYS:
+        # records an older build's warnings ask for never flip it: clearing one warning keeps the others warnings
+        for key in ("licenceLookups", "paperTables", "signChecks", "analysisCode", "surveyVersions",
+                    "questionsChecked", "decisionsFromSources", "abstractResults", "resultsNotRecorded"):
             self.source({"files": [], key: [{"x": 1}]})
-            self.assertTrue(self.contract.current_contract(self.pkg), key)
-        for key in ("retrieved", "finalUrl"):
-            self.source({"files": [{"path": "sources/open/a.qsf", key: "2026-11-04"}]})
-            self.assertTrue(self.contract.current_contract(self.pkg), key)
-        self.source({"files": "bad", "licenceLookups": []})   # empty and malformed records are no sign
+            self.assertFalse(self.contract.current_contract(self.pkg), key)
+        self.source({"files": [{"path": "sources/open/a.qsf", "retrieved": "2026-11-04", "finalUrl": "https://x"}]})
         self.assertFalse(self.contract.current_contract(self.pkg))
-        for path in (self.root / "program.json", self.pkg / "materials/materials.json"):
-            path.write_text('{"items": [{"qsfReachability": "not-shown"}]}', encoding="utf-8")
-            self.assertTrue(self.contract.current_contract(self.pkg), path.name)
-            path.write_text("{}", encoding="utf-8")
+        (self.root / "program.json").write_text('{"items": [{"qsfReachability": "not-shown"}]}', encoding="utf-8")
+        self.assertFalse(self.contract.current_contract(self.pkg))
 
 
 class ResultsByPackage(unittest.TestCase):

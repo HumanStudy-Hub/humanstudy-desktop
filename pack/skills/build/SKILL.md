@@ -635,8 +635,8 @@ Rules the runner depends on:
   `check_materials.py`.
   Each failing check shows its first problem in the Simulation tab. Editing the checkers inside the
   project changes nothing there: fix the program, the package or effects.json.
-- Older builds: a legacy package built before the shared reply reader (no `task/replies.py`, no study.json
-  `buildContract` 2, and no other record of the current build in the project; see contract.py) gets the rules
+- Older builds: a legacy package built before the shared reply reader (no `task/replies.py` and no study.json
+  `buildContract` 2; see contract.py) gets the rules
   added with it as warnings, not failures, so a project that was ready stays ready after an app update. The
   readiness gate then always adds one `contract` warning, "older build: newer build rules are warnings;
   rebuild with the current build skill to make them blocking". The checks
