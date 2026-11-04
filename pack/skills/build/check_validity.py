@@ -76,6 +76,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_quotes  # noqa: E402
 import check_verbatim  # noqa: E402
 import contract  # noqa: E402  older packages get the newer prompt rules as warnings
+from check_replies import NONCE_ENV, child_nonce, marked, new_nonce  # noqa: E402  report lines carry a nonce
 
 PARTICIPANT = re.compile(
     r"\b(?:participants?|subjects?|respondents?|volunteers?|players?|children|students?|individuals|people|"
@@ -310,8 +311,14 @@ def _standin(prompt):
     return random.Random(len(tail)).choice(options) if options else "1"
 
 
-def capture(pkg):
-    """Run in a child process: record every prompt run_sessions sends. Prints one JSON line."""
+RUN_MARK = "@@RUN@@"
+CAPTURE_MARK = "@@CAPTURE@@"
+
+
+def capture(pkg, nonce=""):
+    """Run in a child process: record every prompt run_sessions sends. Prints one `@@RUN@@<nonce>@@<json>` line
+    per run and a closing `@@CAPTURE@@<nonce>@@<json>` line; the nonce is read (and removed from the
+    environment) before the adapter is imported, so package code cannot print a line the parent trusts."""
     import importlib.util
     import time
     time.sleep = lambda *a, **k: None   # a pause between trials (rate limits, pacing) is not waited out
@@ -323,7 +330,7 @@ def capture(pkg):
         spec.loader.exec_module(mod)
     except BaseException as exc:  # noqa: BLE001
         out["error"] = "adapter import failed: %s" % exc
-        print("@@CAPTURE@@" + json.dumps(out))
+        print(marked(CAPTURE_MARK, nonce, json.dumps(out)))
         return
 
     def run(arms, cap, n=1, emit=True):
@@ -335,7 +342,7 @@ def capture(pkg):
             prompts.append(prompt if isinstance(prompt, str) else json.dumps(prompt, ensure_ascii=False))
             replies.append(_standin(prompts[-1]))
             return replies[-1]
-        rec = {"arms": arms, "calls": 0, "sessions": None, "capped": False, "error": None, "errorType": None, "n": n}
+        rec = {"arms": list(arms or []), "calls": 0, "sessions": None, "capped": False, "error": None, "errorType": None, "n": n}
         try:
             sessions = mod.run_sessions(llm, 20261102, n, arms=arms) if arms else mod.run_sessions(llm, 20261102, n)
             rec["sessions"] = len(sessions) if isinstance(sessions, list) else None
@@ -364,7 +371,7 @@ def capture(pkg):
         rec["seq"] = seq
         if emit:
             # ASCII: a raw U+2028 or \x85 in a prompt would split the marker line
-            print("@@RUN@@" + json.dumps(rec), flush=True)   # kept if a later run hangs
+            print(marked(RUN_MARK, nonce, json.dumps(rec)), flush=True)   # kept if a later run hangs
         return rec
 
     names = arm_names(pkg, mod)
@@ -372,7 +379,7 @@ def capture(pkg):
     # an arm the default call never reaches is still read
     out["runs"].append(run(None, CALL_CAP, n=min(12, max(2, len(names)))))
     # arm ids the package itself declares (task.json `arms`/`conditions` may name experiments or cells instead)
-    declared = set(_names((_json(pkg / "study.json") or {}).get("runnableArms")))
+    declared = set(_names(_obj(_json(pkg / "study.json")).get("runnableArms")))
     for attr in ("RUNNABLE_ARMS", "ARMS", "RUNNABLE", "CONDITIONS"):
         declared |= {a for a in _names(getattr(mod, attr, None)) if isinstance(a, str)}
     for arm in names[:12]:
@@ -380,25 +387,31 @@ def capture(pkg):
         if rec["error"] and not rec["calls"]:   # a pair or group design needs an even n
             rec = run([arm], ARM_CAP, n=2, emit=False)
         rec["declared"] = arm in declared
-        print("@@RUN@@" + json.dumps(rec), flush=True)
+        print(marked(RUN_MARK, nonce, json.dumps(rec)), flush=True)
         out["runs"].append(rec)
-    print("@@CAPTURE@@" + json.dumps({"error": out["error"]}, ensure_ascii=False), flush=True)
+    print(marked(CAPTURE_MARK, nonce, json.dumps({"error": out["error"]}, ensure_ascii=False)), flush=True)
 
 
 def _names(value):
-    """Arm names from a list of names or {id|arm|name} objects, or a mapping keyed by name."""
+    """Arm names (strings only) from a list of names or {id|arm|name} objects, or a mapping keyed by name."""
     if isinstance(value, dict):
-        return [k for k, v in value.items() if not (isinstance(v, dict) and v.get("runnable") is False)]
-    if isinstance(value, (list, tuple)):
-        return [a if isinstance(a, str) else a.get("arm") or a.get("id") or a.get("name") for a in value
-                if isinstance(a, str) or (isinstance(a, dict) and a.get("runnable", True))]
-    return []
+        names = [k for k, v in value.items() if not (isinstance(v, dict) and v.get("runnable") is False)]
+    elif isinstance(value, (list, tuple)):
+        names = [a if isinstance(a, str) else a.get("arm") or a.get("id") or a.get("name") for a in value
+                 if isinstance(a, str) or (isinstance(a, dict) and a.get("runnable", True))]
+    else:
+        return []
+    return [n for n in names if isinstance(n, str) and n]
+
+
+def _obj(value):
+    return value if isinstance(value, dict) else {}
 
 
 def arm_names(pkg, mod=None):
     """Every arm the package names: study.json runnableArms, task.json arms/conditions, the adapter's ARMS."""
-    study = _json(pkg / "study.json") or {}
-    task = _json(pkg / "task/task.json") or {}
+    study = _obj(_json(pkg / "study.json"))
+    task = _obj(_json(pkg / "task/task.json"))
     names = _names(study.get("runnableArms")) + _names(task.get("arms")) + _names(task.get("conditions"))
     for attr in ("RUNNABLE_ARMS", "ARMS", "RUNNABLE", "CONDITIONS"):
         names += _names(getattr(mod, attr, None))
@@ -419,25 +432,59 @@ def prompts_of(pkg, timeout=300):
                     shutil.copy2(f, work / "project" / f.name)
             if (project / "sources").is_dir() and not (project / "sources").is_symlink():
                 sandbox_run.copy_tree(project / "sources", work / "project" / "sources")
+        nonce = new_nonce()
         run = sandbox_run.run_python(Path(__file__).resolve(), ["--capture", str(copy)], cwd=copy, work=work,
-                                     timeout=timeout)
+                                     timeout=timeout, env={NONCE_ENV: nonce})
+    return read_capture(run.stdout, nonce, run.timed_out, run.stderr, timeout)
+
+
+def _run_record(rec):
+    """A run record as capture() writes it, or None: a dict with list `arms` (strings) and list `lines`
+    (strings); the other fields are kept only with their own types."""
+    if not isinstance(rec, dict) or not isinstance(rec.get("arms"), list) or not isinstance(rec.get("lines"), list):
+        return None
+    if not all(isinstance(a, str) for a in rec["arms"]) or not all(isinstance(l, str) for l in rec["lines"]):
+        return None
+    out = dict(rec)
+    for key, kind in (("calls", int), ("n", int), ("capped", bool), ("declared", bool)):
+        if key in out and (not isinstance(out[key], kind) or (kind is int and isinstance(out[key], bool))):
+            out[key] = kind()
+    for key in ("error", "errorType"):
+        if out.get(key) is not None and not isinstance(out[key], str):
+            out[key] = str(out[key])
+    for key in ("lengths",):
+        out[key] = [x for x in out.get(key) or [] if isinstance(x, int)] if isinstance(out.get(key), list) else []
+    out["seq"] = [p for p in out.get("seq") or [] if isinstance(p, list) and len(p) == 2
+                  and all(isinstance(x, str) for x in p)] if isinstance(out.get("seq"), list) else []
+    return out
+
+
+def read_capture(stdout, nonce, timed_out=False, stderr="", timeout=300):
+    """The capture report from the child's stdout: only lines carrying this run's nonce, and only run records of
+    the shape capture() writes. A marker line without the nonce (package code printing its own) is ignored."""
+    run_head, capture_head = marked(RUN_MARK, nonce, ""), marked(CAPTURE_MARK, nonce, "")
+    lines = (stdout or "").splitlines()
     runs = []
-    for l in run.stdout.splitlines():
-        if l.startswith("@@RUN@@"):
+    for l in lines:
+        if nonce and l.startswith(run_head):
             try:
-                runs.append(json.loads(l[len("@@RUN@@"):]))
+                rec = _run_record(json.loads(l[len(run_head):]))
             except ValueError:
-                pass
-    if run.timed_out:
+                rec = None
+            if rec is not None:
+                runs.append(rec)
+    if timed_out:
         return {"runs": runs, "error": "the adapter did not finish within %ds with a stand-in model" % timeout,
                 "unfinished": True}
-    line = next((l for l in run.stdout.splitlines()[::-1] if l.startswith("@@CAPTURE@@")), None)
+    line = next((l for l in lines[::-1] if nonce and l.startswith(capture_head)), None)
     if line is None:
-        return {"runs": runs, "error": "the adapter could not be run: " + (run.stderr or run.stdout)[-400:]}
+        return {"runs": runs, "error": "the adapter could not be run: " + (stderr or stdout or "")[-400:]}
     try:
-        return dict(json.loads(line[len("@@CAPTURE@@"):]), runs=runs)
+        closing = json.loads(line[len(capture_head):])
     except ValueError:
         return {"runs": runs, "error": "the prompt capture was cut off"}
+    error = closing.get("error") if isinstance(closing, dict) else "the prompt capture was not a record"
+    return {"error": error if error is None or isinstance(error, str) else str(error), "runs": runs}
 
 
 def _docstrings(tree):
@@ -968,7 +1015,8 @@ def check(root, package=None, capture_prompts=True):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["--capture"]:
-        capture(Path(argv[1]).resolve())
+        nonce = child_nonce()   # before the adapter is imported
+        capture(Path(argv[1]).resolve(), nonce)
         return 0
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", nargs="?", default=".")

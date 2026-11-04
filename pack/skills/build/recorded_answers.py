@@ -300,13 +300,13 @@ def judge(package_root, timeout: int = CHECK_TIMEOUT) -> dict:
 
 def _judge(package_root, timeout: int = CHECK_TIMEOUT) -> tuple:
     """(applies, report or None, [(message, fix)], note or None)."""
-    from check_replies import IMPORTS
+    from check_replies import imports_replies
     root = Path(package_root).resolve()
     try:
         adapter = (root / "task/adapter.py").read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False, None, [], None
-    if not IMPORTS.search(adapter):
+    if not imports_replies(adapter):
         return False, None, [], None
     report, why, forged = confined_run(root, timeout)
     if forged:

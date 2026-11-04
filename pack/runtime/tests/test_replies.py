@@ -307,6 +307,17 @@ class Stub(unittest.TestCase):
 
 # --------------------------------------------------------------------------- check_replies.py
 
+class ImportsReplies(unittest.TestCase):
+    def test_only_a_real_import_counts(self):
+        for text in ("import replies\n", "import replies as r\n", "from replies import ask\n",
+                     "def f():\n    from replies import ask\n", "import os, replies\n"):
+            self.assertTrue(check_replies.imports_replies(text), text)
+        for text in ('"""Usage:\nimport replies\n"""\n', "X = '''\nfrom replies import ask\n'''\n",
+                     "# import replies\n", "import replies_old\n", "from repliesx import a\n", ""):
+            self.assertFalse(check_replies.imports_replies(text), text)
+        self.assertTrue(check_replies.imports_replies("import replies\ndef broken(:\n"))   # unparsable: the pattern
+
+
 class CheckReplies(Project):
     def test_passing_package_and_its_own_smoke_flag_confined(self):
         root, pkg = self.project()

@@ -7,8 +7,9 @@ Prints one JSON document, {"problems": [{"check", "reason"}], "checks": {name: "
 "warnings": [{"check", "reason"}]}, and exits 0 (1 only on a usage error). A package is ready only when
 "problems" is empty. "warnings" holds the newer rules' findings on a package built before the current contract
 (no task/replies.py, see contract.py): check_package.py `warn` lines and the warnings of check_validity.py and
-check_results.py. They never make a package not ready; a rebuild under the current contract turns them into
-problems. Checks, each the same rule as
+check_results.py, at most WARNINGS_MAX per check and then "and N more". Such a package also always carries one
+"contract" warning, OLDER_BUILD. They never make a package not ready; a rebuild under the current contract
+turns them into problems. Checks, each the same rule as
 the script the build skill (SKILL.md) tells the agent to run until it prints PASS:
 
   program    check_program.py program.json --complete (schema read from this copy, not the project's)
@@ -46,6 +47,11 @@ REASON_MAX = 300
 # (check_replies.py, 300 s), the every-answer-recorded check (recorded_answers.py, 150 s) and check_validity's
 # prompt capture (300 s), plus a margin for copying and the offline checks.
 PACKAGE_TIMEOUT = 1300
+
+
+WARNINGS_MAX = 20   # warnings listed per check; the rest are counted
+OLDER_BUILD = ("older build: newer build rules are warnings; rebuild with the current build skill to make them "
+               "blocking")
 
 
 def one_line(text):
@@ -143,9 +149,9 @@ def verbatim_problems(root):
             if r["status"] not in ("found", "unchecked", "table_text_layer", "close_unverified")]
 
 
-def results_problems(root):
+def results_problems(root, slug):
     import check_results
-    report = check_results.check(root / "program.json")
+    report = check_results.check(root / "program.json", package=root / "package" / slug)
     return report["problems"], report.get("warnings") or []
 
 
@@ -188,6 +194,16 @@ def load_checkers():
     drop_checker_paths()
 
 
+def listed_warnings(name, warned):
+    """Each warning on its own line (the agent reports every one), at most WARNINGS_MAX, then "and N more"."""
+    warned = list(warned or [])
+    out = [{"check": name, "reason": one_line(w[0] if isinstance(w, (list, tuple)) else w)}
+           for w in warned[:WARNINGS_MAX]]
+    if len(warned) > WARNINGS_MAX:
+        out.append({"check": name, "reason": "and %d more" % (len(warned) - WARNINGS_MAX)})
+    return out
+
+
 def drop_checker_paths():
     for folder in (str(HERE), str(HERE.parent / "export" / "agent")):
         while folder in sys.path:
@@ -203,7 +219,7 @@ def run_checks(root, slug):
         ("package", lambda: package_problems(root, slug)),
         ("validity", lambda: validity_problems(root, slug)),
         ("verbatim", lambda: verbatim_problems(root)),
-        ("results", lambda: results_problems(root)),
+        ("results", lambda: results_problems(root, slug)),
         ("effects", lambda: effects_problems(root)),
         ("materials", lambda: materials_problems(root)),
     ]
@@ -223,8 +239,14 @@ def run_checks(root, slug):
         status[name] = "fail" if line else "pass"
         if line:
             problems.append({"check": name, "reason": line})
-        for w in warned[:20]:  # each warning on its own line: the agent reports every one
-            warnings.append({"check": name, "reason": one_line(w[0] if isinstance(w, (list, tuple)) else w)})
+        warnings += listed_warnings(name, warned)
+    try:
+        import contract
+        current = contract.current_contract(root / "package" / slug)
+    except Exception:  # noqa: BLE001  undecided: say nothing rather than mislabel the build
+        current = True
+    if not current:
+        warnings.append({"check": "contract", "reason": OLDER_BUILD})
     return {"problems": problems, "checks": status, "warnings": warnings}
 
 

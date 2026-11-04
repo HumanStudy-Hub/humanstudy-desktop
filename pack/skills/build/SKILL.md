@@ -468,8 +468,8 @@ sidecars). `program.json` stays the single source: the package refers to it and 
 
 ```text
 study.json                     overview; programRef: {"path": "../../program.json", "id": <program id>};
-                               readiness: {status: ready|blocked, blocking: [...issue ids]}
-                               (no copy of the program)
+                               readiness: {status: ready|blocked, blocking: [...issue ids]};
+                               "buildContract": 2 (no copy of the program)
 source/paper_metadata.json     bibliography + external_sources (empty if none authorized)
 materials/materials.json       participant-visible material by study and condition, verbatim
 task/task.json                 agents, roles, order, visibility, scripted roles + justification,
@@ -478,6 +478,11 @@ task/adapter.py                offline; --smoke-test; run_sessions(llm, seed, n,
 task/replies.py                unchanged copy of .opencode/skills/build/package_files/replies.py
 evaluation/evaluation.py       evaluate(sessions) -> dict; not_ready when a test cannot run
 ```
+
+Every package built or rebuilt now carries `task/replies.py` and `"buildContract": 2` in study.json; they
+mark it as built under the current rules, which are then blocking. Removing either (or leaving it out) to
+pass a check is forbidden, and it does not work: the checks also read the current build's other records
+(sources/SOURCE.json lookups and downloads, survey reachability marks).
 
 Do not write `source/evidence.json` or `audit/missing_information.json`: the evidence and the
 missing information are `program.json`'s `evidence` and `issues`, and every tool reads them there.
@@ -611,8 +616,10 @@ Rules the runner depends on:
   asked without its key. Fix the adapter until it passes. In the report, say it in plain words with its counts
   ("an offline practice run with made-up answers took both conditions through to the analysis, 2 sessions
   each; no model was used"): it checks the wiring, not a result, and an excluded or unparsed session is never
-  described as completed. Packages built before the shared reader (no `task/replies.py`) are not checked:
-  check_package.py prints `note replies checks skipped: no task/replies.py` instead. When the every-answer
+  described as completed. Only legacy packages, built before the shared reader by an
+  earlier app version (no `task/replies.py`), skip this check: check_package.py prints `note replies checks
+  skipped: no task/replies.py`. A package you build or rebuild always has the reader; that note on it is a
+  missing file to add, never a pass. When the every-answer
   check cannot judge (a timeout, sessions that differ with the same seed, the time budget), its ok line says
   `every answer recorded: not judged (<reason>)`; say so in the report instead of claiming the check passed.
 - Run size: once check_package.py passes, run `python .opencode/skills/build/estimate_run.py
@@ -628,13 +635,17 @@ Rules the runner depends on:
   `check_materials.py`.
   Each failing check shows its first problem in the Simulation tab. Editing the checkers inside the
   project changes nothing there: fix the program, the package or effects.json.
-- Older builds: a package built before the shared reply reader (no `task/replies.py`) gets the rules added
-  with it as warnings, not failures, so a project that was ready stays ready after an app update. The checks
+- Older builds: a legacy package built before the shared reply reader (no `task/replies.py`, no study.json
+  `buildContract` 2, and no other record of the current build in the project; see contract.py) gets the rules
+  added with it as warnings, not failures, so a project that was ready stays ready after an app update. The
+  readiness gate then always adds one `contract` warning, "older build: newer build rules are warnings;
+  rebuild with the current build skill to make them blocking". The checks
   print them as `WARN ...` (check_validity.py, check_results.py) or `warn  ...` (check_package.py) lines and
   still print PASS: prompts that mention earlier screens they do not carry, a memory design that carries
   nothing, internal ids in prompts, a declared condition that crashes or refuses without a blocking issue,
   image-only tables, lost minus signs, impossible CI or p values, and the downloaded-source, source-use and
-  survey-flow findings. Rebuilding the package with `task/replies.py` makes all of them blocking.
+  survey-flow findings. Rebuilding the package with `task/replies.py` and `"buildContract": 2` makes all of
+  them blocking.
 
 ### Effects: from hypotheses to computable effects
 

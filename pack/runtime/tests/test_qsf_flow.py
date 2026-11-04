@@ -325,6 +325,16 @@ class PackageCheck(unittest.TestCase):
         field["evidenceIds"] = ["ev-paper"]
         self.assertEqual(self.check(fields=[field]), [])
 
+    def test_malformed_evidence_ids_and_unexpected_failures_are_one_problem_line(self):
+        for ids in (5, "ev-qsf", {"a": 1}, None, [3, None]):
+            field = {"id": "instructions", "value": {"text": OLD}, "origin": "verbatim", "evidenceIds": ids}
+            self.assertEqual(self.check(fields=[field]), [], ids)
+        from unittest import mock
+        with mock.patch.object(qsf_flow, "_program_fields", side_effect=RuntimeError("boom")):
+            found = self.check(fields=[])
+        self.assertEqual(len(found), 1)
+        self.assertIn("could not complete (RuntimeError: boom)", found[0][0])
+
     def test_unreachable_text_in_materials_fails(self):
         found = self.check({"screens": [
             {"id": "s1", "sourceFile": "../../" + self.QSF, "text": LIVE},

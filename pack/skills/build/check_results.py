@@ -33,8 +33,9 @@ Prints every problem with a fix, then PASS or FAIL (exit 1). Four checks:
 
 Numbers are compared as printed values; labels such as "Study 2", "Table 3", page numbers and years
 are ignored. The checks are best effort: they find untranscribed numbers, they cannot prove that
-every number is present. Older builds: image table, sign loss and impossible are problems only when a package
-of the project is built under the current contract (it carries task/replies.py, see contract.py); otherwise
+every number is present. Older builds: image table, sign loss and impossible are problems only when the package
+checked (check(..., package=package/<slug>), as the readiness gate passes it; from the command line, any package
+of the project) is built under the current contract (see contract.py); otherwise
 they are printed as WARN lines and returned under "warnings", and the check still prints PASS. Standard library; the caption check reads the PDF like check_quotes.py, the image
 table and sign checks with paper_tables.py (skipped, with a note, when it is not installed).
 """
@@ -424,7 +425,9 @@ def impossible_values(result_fields):
              % RENDER_HINT)] if found else []
 
 
-def check(program_path):
+def check(program_path, package=None):
+    """The report for program.json. `package` (package/<slug>) decides whether the newer rules block (contract.py);
+    without it (the command line) any current-contract package of the project makes them block."""
     program_path = Path(program_path).resolve()
     root = program_path.parent
     p = json.loads(program_path.read_text(encoding="utf-8"))
@@ -438,7 +441,8 @@ def check(program_path):
     evidence = {e["id"]: e for e in _lst(p.get("evidence")) if isinstance(e, dict) and isinstance(e.get("id"), str)}
     out, info, warnings = [], [], []
     # rules added with the shared reply reader: problems for a current-contract project, warnings otherwise
-    newer = out if contract.project_current(root) else warnings
+    current = contract.current_contract(package) if package is not None else contract.project_current(root)
+    newer = out if current else warnings
 
     structured, tables = [], []   # numbers held by fields; (where, field) for table fields
     for n in nodes:

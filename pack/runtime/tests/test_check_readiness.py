@@ -275,9 +275,101 @@ class OlderBuildWarnings(unittest.TestCase):
         self.assertIn("sources used", problems["package"])
         self.assertEqual(report["warnings"], [])
 
-    def test_a_ready_package_has_an_empty_warnings_list(self):
+    def test_a_ready_older_package_carries_only_the_contract_warning(self):
         report, problems = readiness(self.project())
-        self.assertEqual((problems, report["warnings"]), ({}, []))
+        self.assertEqual(problems, {})
+        self.assertEqual(report["warnings"], [{"check": "contract", "reason": "older build: newer build rules are "
+                                               "warnings; rebuild with the current build skill to make them blocking"}])
+
+    def test_leaving_replies_out_does_not_dodge_the_newer_rules(self):
+        root = newer_rule_project(self.project)
+        study = root / "package/fixture/study.json"
+        study.write_text(json.dumps(dict(json.loads(study.read_text(encoding="utf-8")), buildContract=2)),
+                         encoding="utf-8")
+        report, problems = readiness(root)
+        for check in ("validity", "results", "package"):
+            self.assertIn(check, problems, report)
+        self.assertNotIn("contract", [w["check"] for w in report["warnings"]])
+
+
+class ContractSigns(unittest.TestCase):
+    """contract.py: a package counts as current when its project shows the current build skill's work, even
+    without task/replies.py."""
+
+    def setUp(self):
+        sys.path.insert(0, str(BUILD))
+        self.addCleanup(sys.path.remove, str(BUILD))
+        import contract
+        self.contract = contract
+        self.root = Path(tempfile.mkdtemp(prefix="contract-test-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.pkg = self.root / "package/slug"
+        (self.pkg / "materials").mkdir(parents=True)
+        (self.root / "sources").mkdir()
+        (self.pkg / "study.json").write_text('{"title": "x"}', encoding="utf-8")
+        (self.root / "program.json").write_text('{"schemaVersion": 2}', encoding="utf-8")
+        (self.pkg / "materials/materials.json").write_text("{}", encoding="utf-8")
+        self.source({"files": [{"path": "paper.pdf", "sha256": "ab"}], "searches": []})
+
+    def source(self, record):
+        (self.root / "sources/SOURCE.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def test_an_older_project_is_not_current(self):
+        self.assertFalse(self.contract.current_contract(self.pkg))
+        self.assertEqual(self.contract.new_build_signs(self.pkg), [])
+        for marked in ('{"buildContract": 1}', '{"buildContract": true}', '{"buildContract": "2"}', "[]", "{bad"):
+            (self.pkg / "study.json").write_text(marked, encoding="utf-8")
+            self.assertFalse(self.contract.current_contract(self.pkg), marked)
+
+    def test_each_sign_makes_it_current(self):
+        (self.pkg / "study.json").write_text('{"buildContract": 2}', encoding="utf-8")
+        self.assertTrue(self.contract.current_contract(self.pkg))
+        (self.pkg / "study.json").write_text("{}", encoding="utf-8")
+        for key in self.contract.NEW_SOURCE_KEYS:
+            self.source({"files": [], key: [{"x": 1}]})
+            self.assertTrue(self.contract.current_contract(self.pkg), key)
+        for key in ("retrieved", "finalUrl"):
+            self.source({"files": [{"path": "sources/open/a.qsf", key: "2026-11-04"}]})
+            self.assertTrue(self.contract.current_contract(self.pkg), key)
+        self.source({"files": "bad", "licenceLookups": []})   # empty and malformed records are no sign
+        self.assertFalse(self.contract.current_contract(self.pkg))
+        for path in (self.root / "program.json", self.pkg / "materials/materials.json"):
+            path.write_text('{"items": [{"qsfReachability": "not-shown"}]}', encoding="utf-8")
+            self.assertTrue(self.contract.current_contract(self.pkg), path.name)
+            path.write_text("{}", encoding="utf-8")
+
+
+class ResultsByPackage(unittest.TestCase):
+    """check_results.check(..., package=): the slug's own package decides, not any package of the project."""
+
+    def test_the_checked_package_decides(self):
+        sys.path.insert(0, str(BUILD))
+        self.addCleanup(sys.path.remove, str(BUILD))
+        import check_results
+        p = json.loads(json.dumps(PROGRAM))
+        result = next(n for n in p["nodes"] if n["kind"] == "result")
+        result["fields"].append({"id": "test", "label": "Test", "origin": "reported", "state": "confirmed",
+                                 "value": {"t": 2.1, "p": 1.3}, "evidenceIds": ["e1"]})
+        root = make_project(program=p, extra={"package/newer/study.json": '{"buildContract": 2}'})
+        self.addCleanup(shutil.rmtree, root.parent, True)
+        older = check_results.check(root / "program.json", package=root / "package/fixture")
+        newer = check_results.check(root / "program.json", package=root / "package/newer")
+        cli = check_results.check(root / "program.json")
+        self.assertTrue(any("not a probability" in m for m, _ in older["warnings"]), older)
+        self.assertFalse(any("not a probability" in m for m, _ in older["problems"]), older)
+        self.assertTrue(any("not a probability" in m for m, _ in newer["problems"]), newer)
+        self.assertTrue(any("not a probability" in m for m, _ in cli["problems"]), cli)
+
+
+class WarningList(unittest.TestCase):
+    def test_truncated_warnings_say_how_many_more(self):
+        sys.path.insert(0, str(BUILD))
+        self.addCleanup(sys.path.remove, str(BUILD))
+        import check_readiness
+        listed = check_readiness.listed_warnings("results", [("w%d" % i, "fix") for i in range(25)])
+        self.assertEqual(len(listed), check_readiness.WARNINGS_MAX + 1)
+        self.assertEqual(listed[-1], {"check": "results", "reason": "and 5 more"})
+        self.assertEqual(len(check_readiness.listed_warnings("results", ["a", "b"])), 2)
 
 
 class CheckPackageGate(unittest.TestCase):

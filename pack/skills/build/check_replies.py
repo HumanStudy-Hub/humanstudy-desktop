@@ -42,6 +42,7 @@ Standard library only.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -56,7 +57,24 @@ sys.path.insert(0, str(HERE))
 import sandbox_run  # noqa: E402
 
 SHIPPED = HERE / "package_files" / "replies.py"
-IMPORTS = re.compile(r"(?m)^\s*(from\s+replies\s+import\b|import\s+replies\b)")
+IMPORTS = re.compile(r"(?m)^\s*(from\s+replies\s+import\b|import\s+replies\b)")   # fallback: unparsable code
+
+
+def imports_replies(source: str) -> bool:
+    """The adapter source imports replies (`import replies`, `import replies as r`, `from replies import ...`),
+    read from its syntax tree, so the words inside a docstring or a string do not count. Source that does not
+    parse falls back to the line pattern IMPORTS."""
+    try:
+        tree = ast.parse(source or "")
+    except (SyntaxError, ValueError):
+        return bool(IMPORTS.search(source or ""))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(a.name == "replies" or a.name.startswith("replies.")
+                                                for a in node.names):
+            return True
+        if isinstance(node, ast.ImportFrom) and node.module == "replies":
+            return True
+    return False
 SMOKE_MAIN = re.compile(r"\bsmoke_main\s*\(")
 SMOKE_TIMEOUT = 300
 MARK = "@@SMOKE@@"
@@ -76,7 +94,7 @@ def _read(path: Path) -> str:
 def uses_replies(pkg: Path) -> bool:
     """The package carries task/replies.py or its adapter imports it."""
     pkg = Path(pkg)
-    return (pkg / "task/replies.py").is_file() or bool(IMPORTS.search(_read(pkg / "task/adapter.py")))
+    return (pkg / "task/replies.py").is_file() or imports_replies(_read(pkg / "task/adapter.py"))
 
 
 def copy_problems(pkg: Path) -> list:
@@ -93,7 +111,7 @@ def copy_problems(pkg: Path) -> list:
                     "(it is shared with HumanStudy-Bench, so every package reads replies the same way)",
                     "copy .opencode/skills/build/package_files/replies.py to task/replies.py again, unchanged; "
                     "work around a reader limit in the adapter (codes=, kind=, required=), never in the copy"))
-    if not IMPORTS.search(adapter):
+    if not imports_replies(adapter):
         out.append(("task/replies.py is there but task/adapter.py does not import it",
                     "ask every question with replies.ask() (%s); never call llm directly or write "
                     "an own reply parser" % READING_REPLIES))
@@ -286,7 +304,7 @@ def check(project: Path, pkg: Path) -> dict:
     if not uses_replies(pkg):
         return {"applies": False, "problems": [], "report": None}
     problems = copy_problems(pkg)
-    if not IMPORTS.search(_read(pkg / "task/adapter.py")) or not (pkg / "task/replies.py").is_file():
+    if not imports_replies(_read(pkg / "task/adapter.py")) or not (pkg / "task/replies.py").is_file():
         return {"applies": True, "problems": problems, "report": None}
     report = smoke(pkg)
     fix = ("fix the adapter (not the copy of replies.py) until `python task/adapter.py --smoke-test` passes "

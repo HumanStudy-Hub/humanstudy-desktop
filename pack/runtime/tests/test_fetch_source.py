@@ -404,6 +404,71 @@ class ByContent(Base):
                          "sources/open/_CON.txt")
 
 
+class SniffedType(Base):
+    """A long name keeps its extension, and content of another type than the name says is judged as that type."""
+    URL = "https://example.org/f"
+    ROWS = b"subject_id,rt,choice,age,gender\n" + b"".join(b"%d,512,left,22,f\n" % i for i in range(100))
+
+    def attempt(self, filename, body):
+        self.serve({self.URL: [(body, {"Content-Disposition": 'attachment; filename="%s"' % filename})]})
+        return fetch_source.fetch(self.root, self.URL)
+
+    def test_a_long_name_is_shortened_in_its_stem(self):
+        for inner in (".qsf", ".pdf"):
+            name = "stimuli_" + "x" * 108 + inner + ".csv"
+            with self.assertRaisesRegex(ValueError, "participant data"):
+                self.attempt(name, self.ROWS)
+            self.assertEqual(self.kept(), [])
+        short = fetch_source._safe_name("stimuli_" + "y" * 200 + ".qsf.csv")
+        self.assertEqual((len(short), Path(short).suffix), (120, ".csv"))
+        self.assertTrue(fetch_source._safe_name("m" * 200 + ".tar.gz").endswith(".tar.gz"))
+        self.assertEqual(fetch_source._safe_name("items.txt"), "items.txt")
+        entry = self.attempt("stimuli_" + "z" * 130 + ".qsf", QSF)
+        self.assertTrue(entry["path"].endswith(".qsf") and len(Path(entry["path"]).name) == 120)
+
+    def test_text_holding_a_table_goes_through_the_table_rules(self):
+        plain = b"q1,q2,q3\n" + b"3,4,5\n" * 20   # no telling columns: the table name rule decides
+        for name in ("notes.txt", "readme.md", "page.html", "appendix.pdf", "thing.bin"):
+            with self.assertRaisesRegex(ValueError, "delimited table.*not named as materials"):
+                self.attempt(name, plain)
+            with self.assertRaisesRegex(ValueError, "participant data"):
+                self.attempt(name, self.ROWS)
+        tsv = self.ROWS.replace(b",", b"\t")
+        with self.assertRaisesRegex(ValueError, "columns"):
+            self.attempt("stimuli.txt", tsv)   # a material's name, but the columns are responses
+        export = b"ResponseId,StartDate,EndDate,Status,Q1\n" + b"R_%d,2020,2020,0,5\n" * 8
+        with self.assertRaisesRegex(ValueError, "Qualtrics"):
+            self.attempt("items.txt", export)
+        self.assertEqual(self.kept(), [])
+        # prose and a word list are not tables; a material table under a material name is kept
+        prose = b"Please read each statement, then answer.\nTake your time, there is no rush.\n" * 4
+        self.attempt("instructions.txt", prose)
+        self.attempt("notes.txt", b"apple\nbanana\ncherry\ndate\nelder\nfig\n")
+        words = b"word,frequency\n" + b"".join(b"w%d,%d\n" % (i, i) for i in range(10))
+        self.attempt("wordlist.txt", words)
+        self.assertEqual(self.kept(), ["SOURCE.json", "instructions.txt", "notes.txt", "wordlist.txt"])
+
+    def test_a_workbook_under_another_name_is_judged_as_a_workbook(self):
+        book = zip_bytes({"[Content_Types].xml": "<Types/>",
+                          "xl/sharedStrings.xml": "<sst><si><t>subject_id</t></si><si><t>rt</t></si>"
+                                                  "<si><t>choice</t></si></sst>"})
+        with self.assertRaisesRegex(ValueError, "workbook"):
+            self.attempt("thing.bin", book)
+        with self.assertRaisesRegex(ValueError, "workbook"):
+            self.attempt("stimuli.zip", book)   # a material's name, but the columns are responses
+        self.assertEqual(self.kept(), [])
+
+    def test_licence_lookup_records_the_url_without_its_view_only_key(self):
+        self.serve({"https://api.osf.io/v2/files/ccccc/": [404],
+                    "https://api.osf.io/v2/nodes/ccccc/?embed=license":
+                        [osf_node("nodes", "ccccc", licence="CC0 1.0 Universal")]})
+        record = fetch_source.osf_licence("https://osf.io/ccccc/?view_only=0123456789abcdef")
+        self.assertEqual(record["url"], "https://osf.io/ccccc/")
+        fetch_source.record_lookup(self.root, record)
+        self.assertNotIn("view_only", (self.root / "sources/SOURCE.json").read_text(encoding="utf-8"))
+        self.assertEqual(fetch_source.problems(self.root), [])
+
+
 class Credentials(Base):
     def test_urls_are_recorded_without_credentials(self):
         cases = {

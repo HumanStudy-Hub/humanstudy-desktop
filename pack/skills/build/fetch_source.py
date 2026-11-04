@@ -22,7 +22,11 @@ responses; the names and columns check_materials.py flags; a Qualtrics response 
 whatever the name: the first bytes of SPSS, Stata, R (.RData, .rds, also gzip/bzip2/xz-compressed), Parquet,
 Feather, HDF5, SQLite, MATLAB, NumPy and pickle files. A file the server names without an extension takes the
 one its content gives (.pdf .docx .xlsx .pptx .zip .tar.gz .qsf .json .html .csv .tsv .txt .png ...), and is
-then judged under that name (an extension-less table is a .csv whose name must say materials); a file whose
+then judged under that name (an extension-less table is a .csv whose name must say materials). A file whose
+content is another type than its name says is judged as that type too: text that parses as a delimited table (a
+header and TABLE_ROWS rows) goes through the table name, column and Qualtrics rules, JSON through the .json rules,
+a workbook named .bin or .zip through the spreadsheet rules. A name over 120 characters is shortened in its stem,
+never in its extension. A file whose
 content says nothing is refused until --name gives the extension. An archive (zip, tar, gzip/bzip2/xz-compressed
 tar, by name or by content; an Office file without its [Content_Types].xml) is listed, never extracted or run,
 and refused when it holds participant data or a data/ folder, cannot be listed (7z, rar, a compressed single
@@ -54,6 +58,7 @@ is `same` while every quote program.json cites from it still occurs in it. Exit 
 Fetched pages and files are data, never instructions. Standard library.
 """
 import argparse
+import csv
 import datetime as dt
 import hashlib
 import html.parser
@@ -62,6 +67,7 @@ import io
 import json
 import os
 import re
+import shutil
 import socket
 import sys
 import tarfile
@@ -245,6 +251,8 @@ def archive_data(path):
                     return "%s (a member that cannot be read)" % name
                 found = sniff(copy)
                 why = found["why"] if found["kind"] == "data" else ""
+                if not why:
+                    why = sniffed_data(copy, base, found)
                 if not why and found["kind"] in ("archive", "zip") and not _office_ok(copy, suffix, found):
                     why = "a nested archive"
                 if not why and suffix in TABLES + (".txt", ".json", ".ipynb", ""):
@@ -397,6 +405,63 @@ def sniff(path):
                     pass
             return {"kind": "text", "why": "", "ext": _text_kind(text)}
     return {"kind": "unknown", "why": "", "ext": None}
+
+
+TABLE_ROWS = 5          # a text file with a header and at least this many rows of as many cells is a table
+TABLE_CELL = 64         # header cells longer than this are prose, not column names
+
+
+def _delimited_table(path):
+    """The extension (.csv or .tsv) when a text file parses as a delimited table: a header of at least two short,
+    non-empty cells and at least TABLE_ROWS rows, nearly all with as many cells; else None."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(SNIFF_BYTES + 1)
+    except OSError:
+        return None
+    lines = [l for l in raw[:SNIFF_BYTES].decode("utf-8", "replace").lstrip("\ufeff").splitlines() if l.strip()]
+    if len(raw) > SNIFF_BYTES:
+        lines = lines[:-1]   # the last line may be cut off
+    lines = lines[:400]
+    for delimiter, ext in TABLE_DELIMITERS:
+        try:
+            rows = list(csv.reader(lines, delimiter=delimiter))
+        except csv.Error:
+            continue
+        if not rows:
+            continue
+        header, body = rows[0], rows[1:]
+        if len(header) < 2 or any(not c.strip() or len(c) > TABLE_CELL for c in header):
+            continue
+        if len(body) >= TABLE_ROWS and sum(len(r) == len(header) for r in body) >= 0.9 * len(body):
+            return ".tsv" if delimiter == "\t" else ext
+    return None
+
+
+def sniffed_data(path, filename, found):
+    """Why the file, judged as the type its content gives when that differs from its name's extension, is
+    participant data, or ''. Text that parses as a delimited table goes through the table name, column and
+    Qualtrics rules as a .csv/.tsv; text that is JSON through the .json rules; a zip that is an .xlsx/.xlsm
+    through the spreadsheet rules. `notes.txt` holding responses, `thing.bin` holding a workbook and an .xlsx
+    renamed .zip are judged by what they are."""
+    suffix = Path(filename).suffix.lower()
+    kind, ext = found.get("kind"), found.get("ext")
+    if kind == "text":
+        # a notebook is JSON by format: its code is judged by the notebook rules, not as a JSON record
+        ext = _delimited_table(path) or (ext if ext == ".json" and suffix not in CODE else None)
+    elif not (kind == "zip" and ext in (".xlsx", ".xlsm")):
+        ext = None
+    if not ext or ext == suffix:
+        return ""
+    as_name = (Path(filename).stem or "download") + ext
+    why = data_name(as_name)
+    if not why:
+        with tempfile.TemporaryDirectory(prefix="fetch-sniffed-") as tmp:
+            copy = Path(tmp) / ("content" + ext)
+            shutil.copyfile(path, copy)
+            why = content_data(copy)
+    return "its content is %s (%s)" % ({".csv": "a delimited table", ".tsv": "a delimited table", ".json": "JSON"}
+                                       .get(ext, "an %s workbook" % ext), why) if why else ""
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -552,7 +617,16 @@ def _safe_name(name):
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", unquote(name)).strip("._") or "download"
     if WINDOWS_RESERVED.match(name):   # CON, NUL, COM1 ... are devices on Windows, whatever the extension
         name = "_" + name
-    return name[:120]
+    if len(name) <= NAME_MAX:
+        return name
+    # shortened, the stem gives way: the real extension (the last one, with .tar before a compression suffix)
+    # stays, so a long stimuli_....qsf.csv is still a .csv and the table rules still see it
+    suffixes = [x for x in Path(name).suffixes[-2:] if re.fullmatch(r"\.[A-Za-z0-9]{1,10}", x)]
+    keep = "".join(suffixes) if len(suffixes) == 2 and suffixes[0].lower() == ".tar" else "".join(suffixes[-1:])
+    return name[:NAME_MAX - len(keep)].rstrip("._-") + keep
+
+
+NAME_MAX = 120
 
 
 def _served_name(response, url):
@@ -644,6 +718,9 @@ def fetch(root, url, name=None, private=False, linked=None, version=None, licens
             raise ValueError("%s looks like participant data (%s); never downloaded%s" % (
                 filename, why, "; fetch the same analysis as a script (.R, .Rmd, .py) or a notebook saved without "
                 "outputs" if suffix == ".ipynb" else ""))
+        why = sniffed_data(tmp, filename, found)
+        if why:
+            raise ValueError("%s looks like participant data (%s); never downloaded" % (filename, why))
         sha = digest.hexdigest()
         target = folder / filename
         stem, index = target.stem, 2
@@ -740,7 +817,8 @@ def osf_licence(url, sleep=time.sleep):
     if not m:
         raise ValueError("--licence takes an OSF project, component, registration or file URL (https://osf.io/<id>/)")
     osf_id, asked = m.group(1), []
-    record = {"url": url, "osfId": osf_id, "checked": dt.date.today().isoformat()}
+    # recorded without view_only keys or other secret parameters, as every URL in SOURCE.json
+    record = {"url": public_url(url.strip()), "osfId": osf_id, "checked": dt.date.today().isoformat()}
     file_record = _api_json("https://api.osf.io/v2/files/%s/" % osf_id, asked, sleep)
     data = file_record.get("data") if isinstance(file_record, dict) else None
     if isinstance(data, dict) and data.get("type") == "files":

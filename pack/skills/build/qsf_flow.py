@@ -997,9 +997,8 @@ def _declared(node: dict, evidence: dict[str, str]) -> set[str]:
                 if rel and (k in SOURCE_ID_KEYS or k == "id" or rel.startswith(SOURCES_DIR + "/")
                             or rel.lower().endswith((".pdf", ".qsf"))):
                     refs.add(rel)
-    ids = node.get("evidenceIds")
-    for eid in ids if isinstance(ids, list) else []:
-        if isinstance(eid, str) and evidence.get(eid):
+    for eid in _id_list(node.get("evidenceIds")):
+        if evidence.get(eid):
             refs.add(evidence[eid])
     return refs
 
@@ -1070,12 +1069,27 @@ FIX_UNREACHABLE = ("take it out of the participant material; to keep it on recor
                    "about the difference (Survey files)")
 
 
+def _id_list(value: Any) -> list[str]:
+    """The string ids of an evidenceIds list; anything else (a string, a number, a mapping) holds none."""
+    return [i for i in value if isinstance(i, str)] if isinstance(value, list) else []
+
+
 def problems(root: Path, package: Path | None = None) -> list[tuple[str, str]]:
     """Survey text only unreachable questions carry, and items marked never shown, kept out of the run.
 
     root is the project folder; package is package/<slug> (default: every folder under package/). Returns
-    [(message, fix)]; empty when the project has no .qsf with a survey flow.
+    [(message, fix)]; empty when the project has no .qsf with a survey flow. A record of a shape the check
+    does not expect never crashes it: the failure is one problem line, not a traceback.
     """
+    try:
+        return _problems(root, package)
+    except Exception as exc:  # noqa: BLE001  a malformed project must not stop the package check
+        return [("the survey-flow check could not complete (%s: %s)" % (type(exc).__name__, str(exc)[:160]),
+                 "check program.json and materials/materials.json for records of the wrong shape (check_program.py "
+                 "names them); if they are fine, report this with the .qsf")]
+
+
+def _problems(root: Path, package: Path | None) -> list[tuple[str, str]]:
     root = Path(root).resolve()
     reach = survey_reaches(root)
     if not reach:
@@ -1100,7 +1114,7 @@ def problems(root: Path, package: Path | None = None) -> list[tuple[str, str]]:
     for node, field in _program_fields(program):
         if _marked_not_shown(field) or _marked_mixed(field):
             continue
-        cited = {name(evidence.get(e)) for e in field.get("evidenceIds") or [] if isinstance(e, str)}
+        cited = {name(evidence.get(e)) for e in _id_list(field.get("evidenceIds"))}
         material = (field.get("extensions") or {}).get("material") if isinstance(field.get("extensions"), dict) else None
         if isinstance(material, dict):
             cited.add(name(material.get("file")))

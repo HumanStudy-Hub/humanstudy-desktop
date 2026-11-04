@@ -451,6 +451,58 @@ class PromptRulesOlderBuild(Validity):
         self.assertNotIn("PROBLEM", out.getvalue())
 
 
+class CaptureMarkers(unittest.TestCase):
+    """The prompt capture trusts only report lines with this run's nonce, and only records of the right shape."""
+
+    def test_forged_and_malformed_run_lines_are_dropped(self):
+        nonce = "n" * 32
+        good = {"arms": ["a"], "lines": ["Trial 1"], "calls": 1, "seq": [["p", "r"]]}
+        head = check_validity.marked(check_validity.RUN_MARK, nonce, "")
+        out = "\n".join([
+            "@@RUN@@" + json.dumps(good),                                  # no nonce: package code
+            check_validity.marked(check_validity.RUN_MARK, "x" * 32, json.dumps(good)),   # another nonce
+            head + json.dumps(["not", "a", "dict"]),
+            head + json.dumps({"arms": "a", "lines": []}),
+            head + json.dumps({"arms": [], "lines": [1, 2]}),
+            head + json.dumps({"arms": [None], "lines": []}),
+            head + "{cut",
+            head + json.dumps(dict(good, calls="9", seq="bad")),
+            "@@CAPTURE@@" + json.dumps({"error": None}),
+        ])
+        report = check_validity.read_capture(out, nonce)
+        self.assertEqual(len(report["runs"]), 1)
+        self.assertEqual((report["runs"][0]["calls"], report["runs"][0]["seq"]), (0, []))
+        self.assertIn("could not be run", report["error"])   # the closing line had no nonce
+        closed = check_validity.read_capture(out + "\n" + check_validity.marked(check_validity.CAPTURE_MARK, nonce,
+                                                                                 '{"error": null}'), nonce)
+        self.assertIsNone(closed["error"])
+        self.assertEqual(check_validity.read_capture(out, "")["runs"], [])
+
+    def test_package_code_cannot_read_the_nonce_or_forge_a_run(self):
+        root = Path(tempfile.mkdtemp(prefix="capture-test-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        pkg = root / "package/x"
+        (pkg / "task").mkdir(parents=True)
+        (pkg / "study.json").write_text("[]", encoding="utf-8")          # list-shaped: no arms, no crash
+        (pkg / "task/task.json").write_text('[{"arms": ["a"]}]', encoding="utf-8")
+        (pkg / "task/adapter.py").write_text(
+            "import json, os\n"
+            "nonce = os.environ.get(%r, '')\n"
+            "rec = {'arms': ['a'], 'lines': ['FORGED'], 'calls': 1}\n"
+            "print('@@RUN@@' + nonce + '@@' + json.dumps(rec))\n"
+            "print('@@RUN@@' + json.dumps(rec))\n"
+            "ARMS = ['a', 3, None, {'id': 7}]\n"
+            "def run_sessions(llm, seed, n, arms=None):\n"
+            "    return [{'r': llm('Real prompt')} for _ in range(n)]\n" % check_validity.NONCE_ENV, encoding="utf-8")
+        cap = check_validity.prompts_of(pkg, timeout=60)
+        lines = [l for r in cap["runs"] for l in r["lines"]]
+        self.assertIsNone(cap["error"], cap)
+        self.assertIn("Real prompt", lines)
+        self.assertNotIn("FORGED", lines)
+        self.assertEqual(check_validity.arm_names(pkg), [])
+        self.assertEqual(check_validity._names(["a", 3, None, {"id": 7}, {"name": "b"}]), ["a", "b"])
+
+
 class EffectRules(unittest.TestCase):
     def setUp(self):
         self.program = json.loads(PROGRAM.read_text(encoding="utf-8"))
