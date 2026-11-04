@@ -50,7 +50,12 @@ class Materials(unittest.TestCase):
         return path
 
     SEARCHES = [{"where": "OSF search by DOI and title", "query": "materials fixture", "url": "https://osf.io/search",
-                 "date": "2026-11-03", "result": "nothing"}]
+                 "date": "2026-11-03", "result": "nothing"},
+                {"where": "journal supplementary material page", "url": "https://journal.example/si", "result": "nothing"},
+                {"where": "PsyArXiv and SSRN by title", "result": "nothing"},
+                {"where": "Unpaywall for the DOI", "url": "https://api.unpaywall.org/v2/10.0/x", "result": "nothing"},
+                {"where": "OSF users by author", "url": "https://api.osf.io/v2/users/?filter[full_name]=Doe",
+                 "result": "nothing"}]
 
     def record(self, licenses=None, evidence=None, extra=None, searches=True):
         self.write("program.json", json.dumps(self.program))
@@ -205,6 +210,49 @@ class Materials(unittest.TestCase):
         self.assertTrue(any("no issue title" in p for p in self.problems()), "the status must say what is needed")
         self.program["issues"][0]["severity"] = "check"
         self.assertTrue(any("no blocking or decision issue" in p for p in self.problems()))
+
+    def test_pending_item_needs_the_minimum_search_list(self):
+        narrow = self.SEARCHES[:1]
+        self.SEARCHES = narrow     # the OSF title search only
+        # A project built before the shared reply reader (no package with task/replies.py) gets a warning only.
+        older = self.check()
+        self.assertFalse([m for m, _ in older["problems"] if "search skipped" in m])
+        self.assertTrue([m for m, _ in older["warnings"] if "search skipped" in m])
+        self.write("package/study/task/replies.py", "# the shared reply reader\n")   # the current contract
+        text = " ".join(self.problems())
+        for kind in ("journal's page", "preprint servers", "Unpaywall or Europe PMC", "OSF search by author"):
+            self.assertIn(kind, text)
+        self.assertNotIn("journal.sjdm.org", text)
+        # The items' own search entries count; a journal that changed publisher needs its original site.
+        self.material("instruction-text")["search"] = [
+            {"where": "journal supplement", "url": "https://www.cambridge.org/core/x", "found": False},
+            {"where": "OSF Preprints", "url": "https://api.osf.io/v2/preprints/?filter[title]=x", "found": False},
+            {"where": "Europe PMC", "url": "https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=DOI",
+             "found": False},
+            {"where": "OSF users (author search)", "url": "https://api.osf.io/v2/users/?filter[full_name]=Doe",
+             "found": False}]
+        self.assertFalse([p for p in self.problems() if "search skipped" in p])
+        self.program["source"]["venue"] = "Judgment and Decision Making"
+        self.assertTrue(any("journal.sjdm.org" in p for p in self.problems()))
+        self.material("instruction-text")["search"].append(
+            {"where": "JDM original site", "url": "https://journal.sjdm.org/15/15415a/", "found": False})
+        self.assertFalse([p for p in self.problems() if "search skipped" in p])
+        # Nothing pending: no search list is required.
+        self.supply()
+        self.assertFalse([p for p in self.problems() if "search skipped" in p])
+
+    def test_word_copy_keeps_line_breaks_and_drops_page_break_markers(self):
+        w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+        body = ('<w:p><w:r><w:t>Scenario 1</w:t></w:r><w:r><w:br/></w:r><w:r><w:t>In this study</w:t></w:r></w:p>'
+                '<w:p><w:r><w:t>Page Break</w:t></w:r></w:p><w:p><w:r><w:t>Q &amp; A</w:t></w:r></w:p>')
+        path = self.root / "sources/open/survey.docx"
+        path.parent.mkdir(parents=True)
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("word/document.xml", "<w:document %s><w:body>%s</w:body></w:document>" % (w, body))
+        text = check_materials.text_of(path)
+        self.assertIn("Scenario 1\nIn this study", text)
+        self.assertIn("Q & A", text)
+        self.assertNotIn("Page Break", text)
 
     def test_verbatim_claim_without_a_source_fails(self):
         f = self.field("instruction-text")

@@ -144,6 +144,15 @@ instruction screens (both framings)", not "m-s4.instruction-wording".
      ("The authors' analysis code" below). Record every search in `sources/SOURCE.json` → `searches` (`{"where", "query", "url",
      "date", "result"}`) and every place looked for an item in its `search` (`{"where", "url", "found"}`),
      so the question lists only what is still missing.
+   - **Minimum search list.** Before anything stays `pending`, the searches record at least: the journal's own
+     page for the paper and its supplementary material, and the journal's *original* site when it changed
+     publisher (Judgment and Decision Making before 2023: `journal.sjdm.org/<vol>/<id>/`, which can hold a
+     supplement Cambridge lacks); the preprint servers by title (PsyArXiv / OSF Preprints, arXiv, SSRN); an
+     open-copy index for the DOI (Unpaywall, `https://api.unpaywall.org/v2/<doi>?email=<contact>`, or Europe
+     PMC, `https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=DOI:<doi>&format=json`); and an OSF
+     search by author, not only by title (`https://api.osf.io/v2/users/?filter[full_name]=<surname>`, then each
+     match's `/nodes/`). Record each, including those that find nothing. `check_materials.py` fails a pending
+     item while one of these is missing.
    - **Check before using anything.** It must be tied to this paper (DOI, title or author match, or linked
      from the paper or its OSF project), with the version noted (published SI, preprint v2, repository
      snapshot of a date). Save it with `python .opencode/skills/build/fetch_source.py . <url> --linked "linked from p. 9"
@@ -172,7 +181,8 @@ instruction screens (both framings)", not "m-s4.instruction-wording".
      it, and tell the researcher.
    - **Never participant data.** Do not download trial-level responses, response or session files or
      demographics, not even to read the sequences or orders participants saw. When those exist only inside
-     participant data files, ask the researcher and say so in the question. A file that mixes materials and
+     participant data files, ask the researcher and say so in the question, item by item ("the demographic
+     coding is only in the data file, which we do not open"). A file that mixes materials and
      responses is not used. (Human data for comparing results are a separate step the researcher asks for; see
      "Human data" below.)
    - **Ask once, early.** Put every item still missing, from all studies, into ONE question with the
@@ -225,7 +235,8 @@ Run `python .opencode/skills/build/check_materials.py .` until it prints `PASS`:
 item that is wording, holds prose no cited quote prints, lacks evidence or blocks; a needs-original item
 with invented content, without an issue naming it, answered without `asked`/`answer`, copied from a file
 without an open license, or from participant data; a downloaded file without url, license, link to the
-paper or version; participant data under `sources/`; a missing `searches` record; and private text (from `sources/researcher/` or
+paper or version; participant data under `sources/`; a missing `searches` record, or one that skips the minimum search list while
+an item is pending; and private text (from `sources/researcher/` or
 `sources/private/`) in program.json or package/. Community and agent exports leave both folders out,
 refuse to export while their text is in the program or the package, and leave out any artifact (a
 simulation log) that copies it. What no script can check, check yourself: that a file under `sources/open/`
@@ -276,6 +287,14 @@ alone): it fails survey text that only an unreachable question carries in a prog
 cites the `.qsf`, in a `materials.json` entry whose source is the `.qsf`, or in a string literal of
 `task/adapter.py`; a marked item the run still uses; and a "mixed" item without state `check`.
 
+- **Word copies.** Read a `.docx` (a Qualtrics "Export to Word" copy, a materials document) with `python
+  .opencode/skills/build/docx_text.py sources/open/<file>.docx [--json .humanstudy/tmp/<file>.json]`, never by
+  joining its text runs yourself. It keeps paragraph and line breaks ("Scenario 1" and "In this study ..." stay
+  apart), and a page break, including the grey "Page Break" line a Qualtrics export prints between pages, ends a
+  page and is never text. Export lines ("Start of Block:", "Display This Question:", "Standard: ... (7
+  Questions)") are listed apart under `export_lines`: they describe the flow, not what participants read. The
+  package check (`docx_text.py --check .`) fails participant text in `materials.json` or a `verbatim` program
+  field that carries such markup or runs two lines of a Word file under `sources/` together.
 - **Survey versions.** A project often holds several versions of a survey: a Qualtrics export and its Word
   copy, one per phase, a pilot, an edited copy saved under the same name. Before transcribing, compare each
   survey file under `sources/` with the paper: the number and order of scenarios or blocks, the wording of every
@@ -495,8 +514,11 @@ Rules the runner depends on:
   `analysis` node id.
 - `run_sessions(llm, seed, n, arms=None)`: `llm(prompt) -> str` is injected; call it for every
   original human participant (never a script, distribution or fixed answer for a role the paper
-  did not script). `n` is the sampling unit stated in `task.json`. `arms=None` runs every arm the
-  paper's comparisons need; each session dict carries `condition` and `arm`. The adapter builds
+  did not script). `n` is the sampling unit stated in `task.json`, either one number for every condition
+  or a dict from condition id to its number (`{"awl_dg": 357, "awl_pd": 257}`), so a run can use the paper's
+  unequal cells: read it with `replies.sessions_for(n, arm)`. Give each condition the paper's analysed n as
+  `"paper_n"` when the paper reports it; the smoke test then runs one condition with a dict. `arms=None` runs
+  every arm the paper's comparisons need; each session dict carries `condition` and `arm`. The adapter builds
   its own prompts from `materials/materials.json`, parses replies into the response format the
   paper used, and needs nothing from the researcher at run time.
   Keep the prompt for one participant and the reply parser as module-level functions
@@ -546,6 +568,23 @@ Rules the runner depends on:
       pairs). An arm that cannot run yet raises a clear error naming what it needs, under a `blocking` issue,
       or returns a session record marked blocked (`{"arm": ..., "condition": ..., "blocked": "<what is
       needed>"}`); it never crashes.
+    - **A blocked condition says exactly what is missing.** In `task/task.json` a condition with `"status":
+      "blocked"` carries `blocked_reason` (one sentence), `blocked_missing` (each missing item by its `what`)
+      and `blocked_results` (the result fields or headline findings that cannot be computed without it). List
+      only what no source prints: when the paper prints the scale's anchors ("1 (not at all profound)") and a
+      supplement its range, the instruction wording is missing, not the scale. The report's "Needs you" line
+      names the headline result that stays blocked.
+  - **Layout and order are departures too.** Record how items are paged in `task/task.json` `"presentation":
+    {"layout": "one statement per screen", "origin": "reported" | "verbatim" | "derived", "evidence": "<the
+    passage or survey page, when reported>"}`. When no source says whether items came one per screen or as one
+    list page ("Below are a series of statements" suggests a list), `origin` is `derived` and the choice is a
+    departure: a `decision` issue (id or title naming the layout, e.g. `presentation-layout`) giving the choice,
+    why, and its likely effect. When the replay drops or moves tasks that came before the replayed block
+    (ratings that came 7th, after six cognitive measures, now come first), record the order change and its
+    possible context effect as a `decision` issue too, besides the omission itself, and say so when the paper
+    itself changed the order between studies on purpose. `design_checks.py` (run by check_package.py) fails a
+    blocked condition without the three keys, a package with the shared reply reader and no `presentation`,
+    and a `derived` layout without its issue.
   - Instructions between blocks, sessions or phases appear in the first prompt of the new block when
     the paper shows them there ("the upcoming block is completely independent", a break of one week),
     never only inside a later trial log. No script checks this (the captured prompts carry no block
@@ -602,8 +641,14 @@ Rules the runner depends on:
   - Each session's `status` is one of `completed`, `excluded` (with `exclusion_reason`: a failed check, as the
     paper excludes), `unparsed` (`page.unparsed` lists which answer and the replies tried) or `blocked`.
     `evaluate` reports how many sessions of each status every arm had.
-  - `ask` retries an unreadable reply once and never guesses: "1", "1.", "1. Be nice", "Be nice" and "be nice"
-    are read; "1 or 2" and "1. Be fair" are not. A bipolar scale that prints the same label twice (`3 2 1 0 1
+  - `ask` retries an unreadable or ambiguous reply once and never guesses: "1", "1.", "1. Be nice", "Be nice",
+    "be nice" and a number word ("Three") are read; "1 or 2" and "1. Be fair" are not. When every label of a list
+    is an amount ("0c" ... "20c", "$0.10", "30 hours"), a reply naming the amount ("10c", "$0.10", "I give 10
+    cents") is read, and a bare number that is both an option number and another option's amount ("10" on "6.
+    10c ... 10. 18c") is asked again, never guessed; such a list asks for the number followed by the option as
+    printed. Transcribe printed typos as printed ("Tranfer the 10c"): a reply that spells exactly one label
+    correctly is read, and `aliases={"Tranfer the 10c": ["Transfer"]}` adds other spellings the reader accepts
+    (never shown, never another option's label). A bipolar scale that prints the same label twice (`3 2 1 0 1
     2 3`) needs `codes` that tell the two sides apart. Work around a reader limit in the adapter, never by
     editing the copy.
 - **Smoke test.** `python .opencode/skills/build/check_replies.py .` (check_package.py runs it) runs every
@@ -623,7 +668,8 @@ Rules the runner depends on:
   check cannot judge (a timeout, sessions that differ with the same seed, the time budget), its ok line says
   `every answer recorded: not judged (<reason>)`; say so in the report instead of claiming the check passed.
 - Run size: once check_package.py passes, run `python .opencode/skills/build/estimate_run.py
-  package/<paper-slug> --n <sessions at the paper's analysed N, summed over conditions>` (add
+  package/<paper-slug> --n <sessions at the paper's analysed N, summed over conditions>` (or `--n paper` for
+  each condition's `paper_n`, or `--n id=n,id=n` for the paper's cell sizes; add
   `--price-in`/`--price-out` for the model's price per million tokens and `--max-tokens` when the run script
   passes an output limit). It captures the prompts offline like check_validity.py, scales calls and prompt
   lengths to N (tokens ≈ characters / 4), and says whether one run fits the hosted model relay (200,000
@@ -838,8 +884,11 @@ Licence: <what paper.pdf itself prints, e.g. "CC BY 4.0 (printed on page 1)", or
 
 The licence line reports what the PDF prints first (`sources/SOURCE.json` → `pdf.license` and its
 evidence); licences of other sources (OSF, the journal's metadata) may follow on the same line. A licence
-doubt about a third-party file is never one of the researcher's questions (they do not hold its rights):
-state it on the Licence line and keep the file under `sources/private/`.
+doubt about a third-party file (a supplement with no licence of its own) is never one of the researcher's
+questions (they do not hold its rights): record it for the Hub in `sources/SOURCE.json` → `licencePolicy`
+(`[{"path": "sources/private/<file>", "licence": "<as stated, or none stated>", "evidence": "<where it is or is
+not stated>", "use": "researcher-own-use-only"}]`), keep the file under `sources/private/`, and state the doubt
+on the Licence line. `design_checks.py` fails a question issue about licensing a file.
 
 Then:
 
@@ -880,15 +929,16 @@ question for every missing material of the paper, asked once. Retain the source 
 convert a suggested default or dismissed question into a confirmed study fact.
 
 Settle it from the sources first, then ask. The paper itself answers many questions: its own text elsewhere
-(an exclusion explained on p. 7 explains the n of a later table), arithmetic on its own numbers (units), and
-which model a number comes from. Then check every downloaded file (`sources/open/`, `sources/private/`): a
+(an exclusion explained on p. 7 explains the n of a later table), arithmetic on its own numbers (units: a pooled mean of
+4.4 cents is the printed "22% of the 20c endowment", so the coefficients are in cents), and which model a number
+comes from (a text coefficient that matches no table column may come from a pooled model). Then check every downloaded file (`sources/open/`, `sources/private/`): a
 paper-only wording may be an unused item of the survey file; a version question is settled by the file that
 matches the paper; a coding question by the analysis code. The same holds for a `check` that asks the
 researcher to "confirm" something a source settles: it is a decision taken, not a question. For each issue
 that asks the researcher something (severity `decision` or `blocking`, title ending in "?"), record
 `sources/SOURCE.json` → `questionsChecked`: `{"issue": "<issue id>", "sourcesChecked": [{"paths":
-["sources/open/<file>", ...], "answers": false, "found": "<what the file says on this point>"}]}`, covering
-every downloaded file. When a file answers it, do not ask: apply the answer, record it in
+["paper.pdf", "sources/open/<file>", ...], "answers": false, "found": "<what the file says on this point>"}]}`,
+covering the paper itself and every downloaded file. When a file answers it, do not ask: apply the answer, record it in
 `decisionsFromSources` (`{"what", "path", "locator", "quote"}`; a private file gives the locator without a
 quote), drop the question issue, and say in the report that it was decided from the sources, and where.
 `check_source_use.py` fails a question without this record and a record saying a file answers it.

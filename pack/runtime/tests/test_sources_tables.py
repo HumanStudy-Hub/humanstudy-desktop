@@ -484,6 +484,23 @@ class SourceUse(unittest.TestCase):
         self.write_record(root, {"questionsChecked": [checked]})
         self.assertEqual([m for m in self.msgs(root) if m.startswith("questions")], [])
 
+    def test_question_is_checked_against_the_paper_too(self):
+        issues = [{"id": "dv-units", "title": "Are the coefficients in cents?", "severity": "decision"}]
+        si = {"paths": ["sources/open/si.txt"], "answers": False, "found": "the SI does not say"}
+        root = self.project({"sources/open/si.txt": "Supplement.", "paper.pdf": "%PDF-1.4"}, issues=issues,
+                            record={"questionsChecked": [{"issue": "dv-units", "sourcesChecked": [si]}]})
+        found = [m for m in self.msgs(root) if m.startswith("questions")]
+        self.assertTrue(found and "'dv-units' (not checked: paper.pdf)" in found[0], found)
+        paper = {"paths": ["paper.pdf"], "answers": False, "found": "the paper does not state the unit"}
+        self.write_record(root, {"questionsChecked": [{"issue": "dv-units", "sourcesChecked": [si, paper]}]})
+        self.assertEqual([m for m in self.msgs(root) if m.startswith("questions")], [])
+        # Without downloads: no record passes as before; a record that exists must list the paper.
+        root = self.project({"paper.pdf": "%PDF-1.4"}, issues=issues)
+        self.assertEqual(self.msgs(root), [])
+        self.write_record(root, {"questionsChecked": [{"issue": "dv-units", "sourcesChecked": [
+            {"paths": ["sources/researcher/x.txt"], "answers": False, "found": "nothing on units there"}]}]})
+        self.assertTrue(any("not checked: paper.pdf" in m for m in self.msgs(root)))
+
     def test_decision_from_sources_must_quote_an_open_file(self):
         root = self.project({"sources/open/Survey.txt": "Participants saw two different scenarios."})
         decision = {"what": "phase 1 shows two scenarios", "path": "sources/open/Survey.txt",

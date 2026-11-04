@@ -157,7 +157,8 @@ def results_problems(root, slug):
 
 def materials_problems(root):
     import check_materials
-    return check_materials.check(root)["problems"]
+    report = check_materials.check(root)
+    return report["problems"], report.get("warnings") or []
 
 
 def effects_problems(root):
