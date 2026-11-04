@@ -464,6 +464,172 @@ class RecordedAnswers(Project):
         self.assertEqual(recorded_answers.problems(pkg), [])
 
 
+# --------------------------------------------------------------------------- round 3: amounts, number words, typos
+# Option sets from round-3 packages (a white-lies dictator game, a profundity scale, a status-quo quiz).
+
+AMOUNTS = ["%dc" % n for n in range(0, 21, 2)]          # "1. 0c ... 6. 10c ... 10. 18c 11. 20c"
+TYPOS = ["Tranfer the 10c", "Do not trasfer the 10c"]   # printed typos, kept verbatim
+PROFOUND = ["Not at all profound", "somewhat profound", "fairly profound", "definitely profound", "very profound"]
+QUIZ = ["70% for auto safety and 30% for highway safety", "60% for auto safety and 40% for highway safety",
+        "30% for auto safety and 70% for highway safety", "50% for auto safety and 50% for highway safety"]
+
+
+def read(reply, question):
+    answer = parse(reply, question)
+    return answer.get("label") if answer["status"] == "ok" else answer["status"]
+
+
+class Round3(unittest.TestCase):
+    def table(self, rows, options):
+        for reply, expected in rows:
+            with self.subTest(reply=reply, options=options[:3]):
+                self.assertEqual(read(reply, Question("q", options=options)), expected)
+
+    def test_amount_list_reads_amounts_and_never_guesses(self):
+        self.table([
+            ("10", "ambiguous"), ("4", "ambiguous"), ("10 because it is fair", "ambiguous"), ("I give 10", "ambiguous"),
+            ("ten", "unparsed"), ("0", "0c"), ("20", "20c"), ("1", "0c"), ("2", "2c"),
+            ("10c", "10c"), ("10 cents", "10c"), ("$0.10", "10c"), ("I will transfer 10c", "10c"),
+            ("6. 10c", "10c"), ("10. 18c", "18c"), ("4. 4c", "ambiguous"),
+            ("I give 10c of my 20c", "unparsed"), ("15c", "unparsed"), ("Not 10c", "unparsed"),
+            ("I keep 20c", "unparsed"), ("more than 10c", "unparsed"), ("20c for me", "ambiguous"),
+            ("I give 20", "20c"), ("I'd transfer $0.10 to the other participant", "10c"), ("1,000", "unparsed"),
+            ("I give 3", "unparsed"), ("I give 12", "12c"), ("Option 12", "unparsed"), ("Option 6", "10c"),
+        ], AMOUNTS)
+        self.table([("I give 2", "unparsed"), ("I'd transfer 2", "unparsed")], ["0c", "10c", "20c"])
+
+    def test_amount_list_asks_for_the_number_and_the_option(self):
+        q = Question("dg", options=AMOUNTS)
+        self.assertTrue(q.codes == [str(n) for n in range(1, 12)] and q.amount_clash())
+        rendered = replies.render_questions([q])
+        self.assertIn("6. 10c", rendered)
+        self.assertIn("followed by the option as printed", rendered)
+        plain = Question("p", options=["8%", "65%", "70%"])
+        self.assertFalse(plain.amount_clash())
+        self.assertTrue(replies.render_questions([plain]).endswith("Reply with the number of the option you choose."))
+        self.assertEqual((read("65", plain), read("2", plain)), ("65%", "65%"))
+
+    def test_ambiguous_reply_is_asked_again_with_the_reason(self):
+        prompts = []
+
+        def llm(prompt):
+            prompts.append(prompt)
+            return "10" if len(prompts) == 1 else "6. 10c"
+
+        q = Question("dg", options=AMOUNTS)
+        page = ask(llm, replies.render_questions([q]), [q])
+        self.assertTrue(page.ok and page.value("dg") == "10c" and len(prompts) == 2)
+        self.assertIn("could be read as more than one option", prompts[1])
+
+    def test_percent_and_amount_leading_labels_are_still_not_codes(self):
+        q = Question("quiz", options=QUIZ)
+        self.assertTrue(q.codes == ["1", "2", "3", "4"] and not q.amount_clash())
+        self.assertEqual((read("4", q), read("70", q)), (QUIZ[3], "unparsed"))
+        scale = Question("s", options=["1 - Not at all", "2", "3", "4", "5 - Very much"])
+        self.assertEqual((scale.codes, read("3", scale)), (["1", "2", "3", "4", "5"], "3"))
+        hours = Question("h", options=["30 hours", "90 hours"])
+        self.assertEqual((hours.codes, read("90", hours), read("1", hours)), (["1", "2"], "90 hours", "30 hours"))
+        mixed = Question("spend", options=["Nothing", "US$90", "30 hours", "US$30", "90 hours"])
+        self.assertEqual((read("90", mixed), read("$90", mixed), read("90 hours", mixed)),
+                         ("ambiguous", "US$90", "90 hours"))
+
+    def test_number_words(self):
+        self.table([("Three", "fairly profound"), ("three.", "fairly profound"), ("Answer: Five", "very profound"),
+                    ("Three (fairly profound)", "fairly profound"), ("3", "fairly profound"),
+                    ("One of those", "unparsed"), ("Three (or maybe four)", "ambiguous"),
+                    ("Three, maybe four", "unparsed")], PROFOUND)
+        q = Question("f", options=["None", "One", "Two or more"])
+        self.assertEqual((read("One", q), read("Two", q)), ("One", "unparsed"))   # never "Two" -> option 2
+        number = Question("n", kind="number", minimum=0, maximum=10)
+        self.assertEqual(parse("Five", number)["value"], 5)
+        self.assertEqual(parse("five or six", number)["status"], "unparsed")
+        # Counts are not option numbers; a scale's labels and number words must agree.
+        self.table([("Two", "unparsed"), ("One", "unparsed")], ["Never", "Once", "Twice", "Three times or more"])
+        self.table([("Three", "unparsed")], ["One", "Two or more", "None"])
+        self.table([("Two", "unparsed"), ("3 children", "ambiguous")],
+                   ["No children", "1 child", "2 children", "3 or more children"])
+        self.table([("One", "unparsed")], ["0 hours", "1-5 hours", "6-10 hours"])
+        self.table([("Two", "unparsed")], ["Rarely", "Sometimes", "Often"])
+        seven = ["1 (strongly disagree)", "2", "3", "4", "5", "6", "7 (strongly agree)"]
+        self.table([("1 (strongly agree)", "ambiguous"), ("Two (strongly disagree)", "ambiguous"),
+                    ("Seven", "7 (strongly agree)")], seven)
+        self.table([("Two", "No")], ["Yes", "No"])
+
+    def test_amount_formats(self):
+        self.table([("$1", "unparsed"), ("$1,000", "$1,000")], ["$500", "$1,000", "$2,000", "$5,000"])
+        self.table([("$1", "$1"), ("$1,000", "$1,000")], ["$1", "$1,000"])
+        self.table([(".5%", "0.5%")], ["0.5%", "1%", "5%"])
+        self.table([("−10c", "-10c")], ["-10c", "0c", "10c"])
+        self.table([("1 day", "unparsed")], ["10 hours", "20 hours", "30 hours"])
+        self.table([("€10", "unparsed")], ["$10", "$20"])            # another currency
+        self.table([("$0.10", "10c")], ["10c", "20c"])
+
+    def test_correct_spelling_of_a_printed_typo(self):
+        self.table([("Transfer the 10c", TYPOS[0]), ("Do not transfer the 10c", TYPOS[1]),
+                    ("1. Transfer the 10c", TYPOS[0]), ("2. Transfer the 10c", "ambiguous"),
+                    ("Do transfer the 10c", "unparsed"), ("Transfer the 20c", "unparsed"),
+                    ("Transfer", "unparsed")], TYPOS)
+
+    def test_near_matches_never_change_meaning_or_guess(self):
+        q = Question("sq", options=["Increase auto program by 20% and lower highway program by like amount",
+                                    "Retain the auto program at 50%"])
+        self.assertEqual(read("Decrease auto program by 20% and lower highway program by like amount", q), "unparsed")
+        for reply, options in (("atypical outcome", ["typical outcome", "rare outcome"]),
+                               ("likely", ["unlikely", "certain"]),
+                               ("Transfer it", ["Tranfer it", "Transfr it"]),      # one letter from two labels
+                               ("causal factor", ["casual factor", "no factor"]),  # swapped letters: another word
+                               ("Males", ["Male", "Female"]), ("lost", ["lose", "win"])):
+            with self.subTest(reply=reply):
+                self.assertEqual(read(reply, Question("q", options=options)), "unparsed")
+
+    def test_aliases_are_read_never_shown_and_never_shared(self):
+        q = Question("pd", options=TYPOS, aliases={"Tranfer the 10c": ["Transfer"], 1: ["Do not transfer"]})
+        self.assertEqual((read("Transfer", q), read("Do not transfer", q), read("I choose Transfer", q),
+                          read("2. Transfer", q)), (TYPOS[0], TYPOS[1], TYPOS[0], "ambiguous"))
+        rendered = replies.render_questions([q])
+        self.assertNotIn("Transfer\n", rendered + "\n")
+        self.assertNotIn("Do not transfer", rendered)
+        for aliases in ({0: ["Do not trasfer the 10c"]}, {"Cooperate": ["x"]}):
+            with self.assertRaises(ValueError):
+                Question("pd", options=TYPOS, aliases=aliases)
+
+    def test_stub_tries_amounts_number_words_and_aliases(self):
+        stub = replies.StubParticipant(3, noise=0, use_keys=False)
+        qs = [Question("dg", options=AMOUNTS), Question("rate", options=PROFOUND),
+              Question("pd", options=TYPOS, aliases={0: ["Transfer"], 1: ["Do not transfer"]})]
+        for q in qs:
+            for _ in range(6):
+                self.assertEqual(parse(stub.answer_for(replies.render_questions([q]), [q]), q)["status"], "ok")
+        self.assertEqual((stub.probed, stub.misreads), ({"dg", "rate", "pd"}, []))
+        self.assertIn("dg", stub.ambiguous)   # a bare option number on this list is asked again, and reported
+
+    def test_multi_select_and_old_copies(self):
+        self.assertEqual(parse("1, 2", Question("m", options=["Red", "Green", "Blue"], multiple=True))["codes"],
+                         ["1", "2"])
+        old = type("OldQuestion", (), {"id": "x", "text": "", "options": ["A", "B"], "kind": "choice",
+                                       "codes": ["1", "2"], "key": None, "required": True, "multiple": False})()
+        converted = replies.StubParticipant._current(old)
+        self.assertTrue(converted.legacy and converted.integer and converted.codes == ["1", "2"])
+
+    def test_sessions_for(self):
+        self.assertEqual(replies.sessions_for(4, "a"), 4)
+        self.assertEqual(replies.sessions_for({"a": 357, "b": 257}, "b"), 257)
+        self.assertEqual(replies.sessions_for({"a": 1}, "b"), 0)
+
+
+class PaperCellSizes(Project):
+    def test_paper_n_needs_run_sessions_to_take_a_dict(self):
+        root, pkg = self.project()
+        (pkg / "task/task.json").write_text(json.dumps({"conditions": [{"id": "control", "paper_n": 357},
+                                                                       {"id": "treatment", "paper_n": 257}]}))
+        text = "\n".join(m for m, _ in check_replies.problems(root, pkg))   # the fixture does range(n)
+        self.assertIn("n may be a dict of cell sizes", text)
+        (pkg / "task/adapter.py").write_text(ADAPTER.replace(
+            "smoke_main, split_reply", "sessions_for, smoke_main, split_reply").replace(
+            "for index in range(n):", "for index in range(sessions_for(n, arm)):"))
+        self.assertEqual(check_replies.problems(root, pkg), [])
+
+
 class Markers(Project):
     """A package cannot hand the checker a report of its own: one marker line, carrying this run's nonce."""
 

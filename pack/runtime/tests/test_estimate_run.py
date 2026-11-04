@@ -75,6 +75,26 @@ class EstimateRun(unittest.TestCase):
         self.assertIn("20 participants in 10 sessions", estimate_run.run_size_line(e))
         self.assertIsNone(estimate_run.estimate({"runs": [{"arms": ["a"], "calls": 0}]}, 10))
 
+    def test_cell_sizes_per_condition_and_paper_n(self):
+        pkg = self.package(task={"conditions": [{"id": "a", "paper_n": 30}, {"id": "b", "paper_n": 10}]})
+        self.assertEqual(estimate_run.total_sessions(pkg, "paper"), {"a": 30, "b": 10})
+        self.assertEqual(estimate_run.total_sessions(pkg, "a=30, b=10"), {"a": 30, "b": 10})
+        self.assertEqual(estimate_run.total_sessions(pkg, "40"), 40)
+        for bad in ("a=x", "=3", "many"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                estimate_run.total_sessions(pkg, bad)
+        with self.assertRaises(ValueError):   # paper_n missing on a condition
+            estimate_run.total_sessions(self.package(task={"conditions": [{"id": "a", "paper_n": 3}, {"id": "b"}]}),
+                                        "paper")
+        code, text = self.run_main(str(pkg), "--n", "paper")
+        self.assertEqual(code, 0, text)
+        e = json.loads(text[text.index("{"):text.rindex("}") + 1])
+        self.assertEqual((e["sessions"], e["modelCalls"]), (40, 30 * 4 + 10 * 2))   # each arm by its own n
+        self.assertEqual(e["cellSizes"], {"a": 30, "b": 10})
+        code, text = self.run_main(str(pkg), "--n", "a=3,zz")
+        self.assertEqual(code, 1)
+        self.assertIn("PROBLEM --n is a number", text)
+
     def test_no_calls_is_reported(self):
         code, text = self.run_main(str(self.package("def run_sessions(llm, seed, n, arms=None):\n    return []\n")),
                                    "--n", "10")

@@ -5,7 +5,9 @@
                                                  [--max-tokens 300] [--json out.json]
 
 `--n` is the number of sessions at the paper's analysed N (participants for individual designs, groups or
-pairs for group designs), summed over conditions. Prices are US dollars per million tokens; the defaults are
+pairs for group designs): one number summed over conditions, the paper's cell sizes per condition
+(`--n awl_dg=357,awl_pd=257`), or `--n paper` for each task.json condition's `paper_n`. With cell sizes,
+each arm's measured calls and prompt lengths are scaled by its own n. Prices are US dollars per million tokens; the defaults are
 an example, so name the model and the price you assumed when you quote the result. `--max-tokens` is the
 output limit the run script passes per call (none: the relay reserves its default, see below).
 
@@ -27,6 +29,7 @@ package; it exits 1 only when the stand-in run produced no model calls.
 import argparse
 import json
 import math
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -55,27 +58,52 @@ def _agents(pkg):
     return 1
 
 
+def total_sessions(pkg, value):
+    """`--n`: a number, `id=n,id=n` per condition, or `paper` (each condition's `paper_n`). An int or a dict."""
+    value = str(value).strip()
+    if re.fullmatch(r"\d+", value):
+        return int(value)
+    if value == "paper":
+        task = check_validity._json(Path(pkg) / "task/task.json") or {}
+        conditions = [c for c in task.get("conditions") or [] if isinstance(c, dict)]
+        sizes = {c.get("id"): c.get("paper_n") for c in conditions}
+        if not sizes or not all(isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool)
+                                for k, v in sizes.items()):
+            raise ValueError("--n paper needs an id and an integer paper_n on every condition in task/task.json")
+        return sizes
+    pairs = [part.split("=", 1) for part in value.split(",") if part.strip()]
+    if not pairs or not all(len(p) == 2 and p[0].strip() and re.fullmatch(r"\s*\d+\s*", p[1]) for p in pairs):
+        raise ValueError("--n is a number, 'id=n,id=n,...' or 'paper'")
+    return {p[0].strip(): int(p[1]) for p in pairs}
+
+
 def estimate(capture, n, price_in=1.0, price_out=5.0, max_tokens=None, agents=1):
-    """The run size at n sessions from a prompts_of capture."""
+    """The run size at n sessions from a prompts_of capture; n is a number or {condition id: sessions}."""
     runs = [r for r in capture.get("runs") or [] if r.get("calls")]
     arm_runs = [r for r in runs if r.get("arms")]
     use = arm_runs or runs
     use = [r for r in use if not r.get("error")] or use   # an arm that stopped early undercounts
     if not use:
         return None
-    calls, chars, body = [], [], []
-    for r in use:
-        sessions = max(1, int(r.get("sessions") or r.get("n") or 1))
-        calls.append(r["calls"] / sessions)
-        chars.append(sum(r.get("lengths") or []) / sessions)
-        body.append((r.get("bodyChars") or sum(r.get("lengths") or [])) / sessions)
-    per_session = statistics.mean(calls)
-    total_calls = per_session * n
-    input_tokens = statistics.mean(chars) * n / CHARS_PER_TOKEN
-    output_tokens = total_calls * OUTPUT_TOKENS_PER_CALL
     out_limit = max_tokens or RELAY_DEFAULT_MAX_TOKENS
-    reserve_session = statistics.mean(body) + per_session * (BODY_FRAME + RELAY_PER_MESSAGE + out_limit)
-    reserve = reserve_session * n
+    per_arm = {}   # arm (None: a whole run) -> (calls, prompt characters, reserved tokens) per session
+    for index, r in enumerate(use):
+        sessions = max(1, int(r.get("sessions") or r.get("n") or 1))
+        calls = r["calls"] / sessions
+        body = (r.get("bodyChars") or sum(r.get("lengths") or [])) / sessions
+        per_arm[r["arms"][0] if r.get("arms") else ("run", index)] = (
+            calls, sum(r.get("lengths") or []) / sessions, body + calls * (BODY_FRAME + RELAY_PER_MESSAGE + out_limit))
+    mean = tuple(statistics.mean(v[i] for v in per_arm.values()) for i in range(3))
+    # Cell sizes: each arm by its own n; an arm the stand-in run did not measure takes the mean over arms.
+    cells = {k: v for k, v in n.items() if v} if isinstance(n, dict) else {None: n}
+    n = sum(cells.values())
+    if not n:
+        return None
+    totals = [sum(size * (per_arm.get(arm) or mean)[i] for arm, size in cells.items()) for i in range(3)]
+    total_calls, input_tokens, reserve = totals[0], totals[1] / CHARS_PER_TOKEN, totals[2]
+    per_session = total_calls / n
+    output_tokens = total_calls * OUTPUT_TOKENS_PER_CALL
+    reserve_session = reserve / n
     minutes = total_calls * SECONDS_PER_CALL / RELAY_CONCURRENCY / 60
     return {
         "sessions": n,
@@ -98,6 +126,7 @@ def estimate(capture, n, price_in=1.0, price_out=5.0, max_tokens=None, agents=1)
                                                     / max(SECONDS_PER_CALL * per_session, 1e-9)))),
         },
         "armsMeasured": [r["arms"][0] for r in arm_runs] or None,
+        "cellSizes": {k: v for k, v in cells.items() if k is not None} or None,
         "cutShort": [r["arms"][0] if r.get("arms") else "default run" for r in use if r.get("capped")],
     }
 
@@ -135,7 +164,9 @@ def _package(path):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("package", help="package/<slug> (the folder that holds task/adapter.py)")
-    ap.add_argument("--n", type=int, required=True, help="sessions at the paper's analysed N, over all conditions")
+    ap.add_argument("--n", required=True,
+                    help="sessions at the paper's analysed N: one number over all conditions, the paper's cell sizes "
+                         "per condition ('awl_dg=357,awl_pd=257'), or 'paper' for task.json conditions' paper_n")
     ap.add_argument("--price-in", type=float, default=1.0, help="USD per million input tokens (example default)")
     ap.add_argument("--price-out", type=float, default=5.0, help="USD per million output tokens (example default)")
     ap.add_argument("--max-tokens", type=int, help="output limit per call the run script passes (default: none)")
@@ -145,8 +176,13 @@ def main(argv=None):
     if pkg is None:
         print("PROBLEM give the package folder that holds task/adapter.py")
         return 1
+    try:
+        n = total_sessions(pkg, a.n)
+    except ValueError as exc:
+        print("PROBLEM %s" % exc)
+        return 1
     capture = check_validity.prompts_of(pkg)
-    e = estimate(capture, a.n, a.price_in, a.price_out, a.max_tokens, _agents(pkg))
+    e = estimate(capture, n, a.price_in, a.price_out, a.max_tokens, _agents(pkg))
     if e is None:
         print("PROBLEM the stand-in run produced no model calls (%s); fix the adapter first"
               % (capture.get("error") or "no prompts"))
