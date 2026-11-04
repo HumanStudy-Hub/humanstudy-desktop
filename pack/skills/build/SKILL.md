@@ -481,8 +481,8 @@ evaluation/evaluation.py       evaluate(sessions) -> dict; not_ready when a test
 
 Every package built or rebuilt now carries `task/replies.py` and `"buildContract": 2` in study.json; they
 mark it as built under the current rules, which are then blocking. Removing either (or leaving it out) to
-pass a check is forbidden, and it does not work: the checks also read the current build's other records
-(sources/SOURCE.json lookups and downloads, survey reachability marks).
+pass a check is forbidden: a stamped package without the reader fails, and the readiness gate shows every
+package without both as an "older build" to the researcher.
 
 Do not write `source/evidence.json` or `audit/missing_information.json`: the evidence and the
 missing information are `program.json`'s `evidence` and `issues`, and every tool reads them there.
