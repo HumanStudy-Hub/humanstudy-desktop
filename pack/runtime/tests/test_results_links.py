@@ -131,7 +131,7 @@ class TextCoverage(unittest.TestCase):
         # a quote that prints p values is this paper's result unless the reason says what else it is
         whole = RESULTS.split("\n\n")[1]
         own = found({"page": 2, "quote": whole, "reason": "not needed for the replay"})
-        self.assertTrue(any("prints a test result (p = .048)" in m for m in own), own)
+        self.assertTrue(any("prints a test result (b = 0.25)" in m for m in own), own)
         self.assertEqual(found({"page": 2, "quote": whole, "reason": "Smith et al. (2010), another study's result, "
                                                                      "cited"}), [])
         # only the statistic inside the quote is cleared: the p printed after it still counts
@@ -165,6 +165,63 @@ class TextCoverage(unittest.TestCase):
         population = ("Method\n\nThe town's population is 48% male and the national average age is 40.2 years. Our "
                       "participants were students.")
         self.assertEqual(problems([INTRO, population], program()), [])
+
+    def test_a_p_is_a_design_probability_only_when_directly_governed(self):
+        def flagged(sentences):
+            return any("exact p values" in m or "results passages" in m
+                       for m in problems([INTRO, "Results\n\n" + " ".join(sentences)], program()))
+        letters = "ABCDEFG"
+        # a bare "with", or a design word elsewhere in the sentence, does not make a p a design value
+        self.assertTrue(flagged(["Condition %s raised giving relative to control, with p = .0%d." % (c, k)
+                                 for k, c in enumerate(letters, 1)]))
+        self.assertTrue(flagged(["Participants chose the risky gamble more often in frame %s, p = .0%d." % (c, k)
+                                 for k, c in enumerate(letters, 1)]))
+        # "in the first round" after a test's p, and "p = .x and p = .y, respectively", are results
+        self.assertTrue(flagged(["Giving fell, t(80) = 2.%d, p = .0%d in the first round." % (k, k)
+                                 for k in range(1, 8)]))
+        self.assertTrue(flagged(["Effects A and B held, t(80) = 2.%d and t(80) = 3.%d, p = .0%d and p = .00%d, "
+                                 "respectively." % (k, k, k, k) for k in range(1, 5)]))
+        # governed: "with probability", "10 points with", "paid out with ... or", "of winning", "in round 2"
+        design = ("Method\n\nEach option paid 10 points with p = .25, 20 tokens at p = .25, or $5 with p = .50. "
+                  "The urn was drawn with a probability of .40, and the bonus came at probability p = .60. "
+                  "The lottery paid out with p = .80 or p = .20. A ball had p = .30 of winning. Partners "
+                  "cooperated with p = .3 in round 1 and p = .5 in round 2.")
+        self.assertEqual(problems([INTRO, design], program()), [])
+
+    def test_chance_pairs_are_design_values_only_beside_the_chance_word(self):
+        observed = ("Results\n\nIn the loss frame 72% vs 45% chose the gamble. In the gain frame 62% vs 38% chance "
+                    "of choosing it was observed. Overall 70% vs 30% probability of picking the safe option, and "
+                    "55% vs 20% likelihood of switching.")
+        self.assertTrue(any("percentage comparisons" in m for m in problems([INTRO, observed], program())))
+        design = ("Method\n\nOption A gives a 30% vs 70% chance of a prize. Option B gives 50% vs 50% chances of "
+                  "winning. Option C gives 10% vs 90% odds. Option D gives 80% versus 20% probability.")
+        self.assertEqual(problems([INTRO, design], program()), [])
+
+    def test_a_singular_reference_line_does_not_end_the_text(self):
+        page = ("Method\n\nParticipants were 100 adults.\nReference\n\nResults\n\n"
+                + " ".join("Condition %s raised giving, t(80) = 2.%d, p = .0%d." % (c, k, k)
+                           for k, c in enumerate("ABCDEFG", 1)))
+        self.assertTrue(any("exact p values" in m for m in problems([INTRO, page], program())))
+
+    def test_results_not_recorded_reasons_must_name_what_the_quote_is(self):
+        quote = "Men lied more often than women in the first game, b = 0.25, p = .048"
+        def found(reason, text=RESULTS, q=quote):
+            return problems([INTRO, text], program(),
+                            record={"resultsNotRecorded": [{"page": 2, "quote": q, "reason": reason}]})
+        for vague in ("the design of the study is irrelevant here", "prior research suggests otherwise, so not "
+                      "ours", "a reference point for the reader", "not relevant to our hypothesis at all"):
+            self.assertTrue(any("prints a test result" in m for m in found(vague)), vague)
+        for specific in ("a design value of the game", "a power analysis for the sample", "the payoff of each "
+                         "round", "another study's result", "cited from Smith (2010)", "Smith et al. report it"):
+            self.assertFalse(any("prints a test result" in m for m in found(specific)), specific)
+        self.assertTrue(any("reason must be text" in m for m in found({"a": "a power analysis value"})))
+        # a quote printing p < .05, b = 0.25 with no df, or a 95% CI is a test result too
+        for printed in ("Men lied more often than women in the first game, b = 0.25, p < .05",
+                        "Men lied more often than women in the first game, b = 0.25",
+                        "Men lied more often than women, 95% CI [0.1, 0.4]"):
+            text = "Results\n\n" + printed + ". " + RESULTS.split("\n\n")[1]
+            self.assertTrue(any("prints a test result" in m for m in found("not needed for the replay", text,
+                                                                            printed)), printed)
 
     def test_table_rows_on_a_page_whose_table_is_reported_count_once(self):
         rows = ("Results\n\nTable 2 Choices by condition. In the control condition 64 (80%) chose the safe option and "
@@ -294,6 +351,19 @@ class SupplementAndProject(unittest.TestCase):
             (root / "sources/SOURCE.json").write_text(json.dumps(ref), encoding="utf-8")
             self.assertEqual(self.check(root), [])
 
+    @unittest.skipUnless(HAVE_PDF, "needs pypdf")
+    def test_private_supplement_cells_copied_into_the_program_are_flagged(self):
+        import check_materials
+        rows = [["Item 1", "3.41", "1.02"], ["Item 2", "2.87", "0.95"], ["Item 3", "4.12", "0.77"],
+                ["Item 4", "3.05", "1.21"]]
+        field = table_field(rows, ("Item", "M", "SD"), label="Table S1", source="sources/private/supp.pdf")
+        root = self.project(program([field]))
+        (root / "sources/private").mkdir()
+        (root / "sources/open/supp.pdf").rename(root / "sources/private/supp.pdf")
+        found = [m for m, _ in check_materials.check(root)["problems"]]
+        self.assertTrue(any("program.json copies the private material sources/private/supp.pdf" in m
+                            for m in found), found)
+
     def test_an_older_build_gets_the_coverage_rules_as_warnings(self):
         report = cr.check(self.project(program(), current=False) / "program.json")
         self.assertEqual(report["problems"], [])
@@ -388,6 +458,20 @@ class Links(unittest.TestCase):
         self.assertIn("evaluate()", prop["description"])
         # unequal arms of a between design are not an exclusion
         self.assertEqual(links([effect("e%d" % i, {"cells": cells(n)}) for i, n in enumerate([150, 120, 188])]), [])
+
+    def test_one_malformed_effect_does_not_stop_the_n_check_of_the_others(self):
+        from unittest import mock
+        def cells(n):
+            return {"a": {"n": 188, "mean": 1.0, "sd": 1.0}, "b": {"n": n, "mean": 0.5, "sd": 1.0}}
+        effs = [effect("e%d" % i, {"cells": cells(n)}) for i, n in enumerate([188, 188, 188, 188, 125])]
+        real = effects._n_by_arm
+        def odd(e, by_arm):
+            if e["id"] == "e0":
+                raise TypeError("a malformed effect")
+            return real(e, by_arm)
+        with mock.patch.object(effects, "_n_by_arm", odd):
+            found = links(effs)
+        self.assertTrue(any("effect e4: arm b has n = 125" in m for m in found), found)
 
     def test_compute_keys_that_are_not_text(self):
         r = {"estimates": [{"metric": "correlation", "value": 0.4}]}

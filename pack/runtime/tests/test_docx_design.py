@@ -135,6 +135,48 @@ class WordReaderLimits(unittest.TestCase):
             found = docx_text.problems(root, pkg)
         self.assertTrue(any("cannot be read" in m and "MB" in m for m, _ in found), found)
 
+    def test_sizes_the_zip_records_are_not_trusted(self):
+        import struct
+        import time
+        import tracemalloc
+        from unittest import mock
+        path = tmp(self) / "bomb.docx"
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("word/document.xml", "<w:p><w:t>" + "a" * (20 * 2**20) + "</w:t></w:p>")
+        honest = path.read_bytes()
+        # the headers claim 1000 bytes: reading stops there (a CRC error), never inflating the whole member
+        data = bytearray(honest)
+        central = data.find(b"PK\x01\x02")
+        data[central + 24:central + 28] = data[22:26] = struct.pack("<I", 1000)
+        path.write_bytes(bytes(data))
+        start = time.monotonic()
+        tracemalloc.start()
+        try:
+            with self.assertRaises((zipfile.BadZipFile, ValueError)):
+                docx_text.read(path)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 16 * 2**20)
+        self.assertLess(time.monotonic() - start, 5.0)
+        # true sizes over the limit: refused after reading only up to the limit
+        path.write_bytes(honest)
+        tracemalloc.start()
+        try:
+            with mock.patch.object(docx_text, "MAX_DOCUMENT_BYTES", 2**20):
+                with self.assertRaisesRegex(ValueError, "too large"):
+                    docx_text.read(path)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 16 * 2**20)
+
+    def test_a_field_with_no_id_is_named_by_its_index(self):
+        program = {"nodes": [{"fields": [{"origin": "verbatim", "value": "Start of Block: Intro"}]}]}
+        root, pkg = project(self, program=program, docx_body=p(r("x")))
+        found = docx_text.problems(root, pkg)
+        self.assertTrue(any("program.json nodes[0].fields[0]" in m for m, _ in found), found)
+
     def test_unclosed_tags_read_in_linear_time(self):
         import time
         path = tmp(self) / "x.docx"

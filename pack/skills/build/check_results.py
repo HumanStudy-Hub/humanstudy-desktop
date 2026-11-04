@@ -31,20 +31,23 @@ Prints every problem with a fix, then PASS or FAIL (exit 1). Checks:
   impossible     values in result fields that cannot be printed: a CI whose lower limit is above its upper
                  one, an estimate outside its own CI, a p value outside 0-1 (usually a lost minus)
 
-  text results  the paper's text (from its first methods or results heading to the references): fails when
+  text results  the paper's text (from its first methods or results heading to a "References" heading): fails when
                 more than half of its exact p values (six or more) or of its "x% vs y%", "n (x%)" and "k out of n"
                 pairs are not recorded in a result field or effects.json `reported` (a statistic counts only with
                 the p value printed after it), when the sample's sex or age is printed but no participants or
                 result field holds it, and when a results paragraph prints four or more numbers none of which is
                 recorded. Not counted: numbers after a citation, in a power analysis or a design probability
-                ("with probability p = .8", "10 points with p = .25", "p = .5 in round 2", "a 30% vs 70% chance"),
-                a pair inside a printed quotation or in the project's participant text, a sex or age figure in a
-                sentence that is not about the sample, rows of a table the text layer runs into the prose (and,
+                governed by the words beside it ("with probability p = .8", "10 points with p = .25", "paid out
+                with p = .8 or p = .2", "p = .3 of winning", "p = .5 in round 2" with no statistic before it in
+                the sentence; never a bare "with"), a pair beside a chance word ("a 30% vs 70% chance") in a
+                sentence not about what people chose or reported, a pair inside a printed quotation or in the
+                project's participant text, a sex or age figure in a sentence that is not about the sample, rows of a table the text layer runs into the prose (and,
                 on a page whose untranscribed table the printed-table check reports, number-dense passages), and
                 numbers inside a sources/SOURCE.json `resultsNotRecorded` quote [{"page" (required), "quote"
-                (exact text on that page), "reason"}]; a quote printing a test result (p =, t(df) =, F(..) =,
-                chi-square(..) =, r(df) =) is refused unless the reason names a power analysis, a design or payoff
-                value, another study's or paper's result, or a citation
+                (exact text on that page), "reason"}]; a quote printing a test result (p =, <, >; t(df) =, F(..) =,
+                chi-square(..) =, r(df) =; b, beta, d, z, OR or t = a number; a 95% CI) is refused unless the
+                reason (text) names a power analysis, a design value or probability, a payoff, another study, a
+                previous study's result, or a citation ("cited", "from Smith (2010)", "Smith et al.")
   abstract      every finding the abstract states is recorded: a result field or effect whose words carry it, or
                 an entry of SOURCE.json `abstractResults` [{"claim" (the abstract's words), "recordedIn":
                 ["<node>.<field>" | "effect:<id>"]} | {"claim", "notRecorded": "<why no statistic>"}]
@@ -487,17 +490,27 @@ NOT_OWN = re.compile(r"(?i)power|sensitivity|pilot|g\*power|meta-analy|previous 
                      r"prior (stud|research|work)|et al\.?,? \(?\d{4}|\(\d{4}[a-z]?\)[^.]{0,60}(found|report|show)|"
                      r"\b(found|reported|showed) (that )?[^.]{0,40}\(\d{4}|"
                      r"et al\.?\s?\d{1,3}(?![\d.,]\d)")
-DESIGN_P = re.compile(r"(?i)(probabilit(?:y|ies)(?: of)?|binomial,?)\s*$")
-# words before a p (after the last statistic) that make it a design probability: "a lottery paying 10 with p = .3"
-DESIGN_P_WORDS = re.compile(r"(?i)probabilit|chance|lotter|gamble|binomial|\bodds\b|\bpoints?\b|\bpayoffs?\b|"
-                            r"\b(?:wins?|winning|pays?|paid)\b")
-# words after it: "p = .5 in round 2", "p = .3 of winning"
-DESIGN_P_AFTER = re.compile(r"(?i)^\s*,?\s*(?:(?:in|on|for|at)\s+(?:each\s+|every\s+|the\s+)?(?:first\s+|second\s+|"
-                            r"last\s+)?(?:rounds?|trials?|periods?|blocks?|games?|draws?)\b|of\s+(?:winning|losing|success|"
-                            r"failure|a\s+(?:win|loss|gain|prize)|being\s+(?:drawn|chosen|selected|paid))|"
-                            r"(?:or|and)\s+p\s*=)")
-# "a 30% vs 70% chance": a design value, not a result
-PAIR_CHANCE = re.compile(r"(?i)^\W*(?:[a-z]+\W+){0,3}?(?:chances?|probabilit\w*|odds|likelihood)\b")
+# a design probability is governed directly by the words just before it: "(with) probability p = .3",
+# "10 points with p = .25", "0 with p = .5", "paid out with p = .8"; never a bare "with" or a design word
+# elsewhere in the sentence
+DESIGN_P = re.compile(r"(?i)(?:(?:with|at)\s+(?:a\s+)?)?(?:probabilit(?:y|ies)(?: of)?|binomial,?)\s*$")
+DESIGN_P_UNIT = re.compile(r"(?i)\d+(?:\.\d+)?\s*(?:points?|tokens?|ECU|cents?|dollars?|\$)\s+(?:with|at)\s*$")
+DESIGN_P_NUMBER = re.compile(r"(?i)(?<![\w.=])\d+(?:\.\d+)?\s+(?:with|at)\s*$")
+DESIGN_P_VERB = re.compile(r"(?i)\b(?:pays?|paid|pays? out|paid out|wins?|won|occurs?|occurred|drawn)\s+(?:with|at)\s*$")
+# a statistic printed before the p in its sentence: the p is that test's
+STAT_BEFORE = re.compile(r"(?<![\w.])(?:t|F|r|z|b|B|d|β|OR|χ2?|χ²|chi-square|chi2|X2)\s*(?:\([^)]{0,30}\))?\s*=|"
+                         r"(?<![\w.])(?:t|F|r|χ2?|χ²|chi-square)\s*\(\s*\d")
+# words after it: "p = .3 of winning"; and, with no statistic before it, "p = .5 in round 2"
+DESIGN_P_OF = re.compile(r"(?i)^\s*of\s+(?:winning|losing|success|failure|a\s+(?:win|loss|gain|prize)|"
+                         r"being\s+(?:drawn|chosen|selected|paid))")
+DESIGN_P_AFTER = re.compile(r"(?i)^\s*,?\s*(?:in|on|for|at)\s+(?:each\s+|every\s+|the\s+)?(?:first\s+|second\s+|"
+                            r"last\s+)?(?:rounds?|trials?|periods?|blocks?|games?|draws?)\b")
+# "a 30% vs 70% chance", "50% vs 50% chances of winning": a design value, not a result ...
+PAIR_CHANCE = re.compile(r"(?i)^\s*(?:chances?|probabilit\w*|odds|likelihood)\b|"
+                         r"^\W*(?:[a-z]+\W+){0,3}?chances?\s+of\s+(?:winning|losing)\b")
+# ... unless the sentence is about what people did ("62% vs 38% chance of choosing it was observed")
+PAIR_OUTCOME = re.compile(r"(?i)\b(?:cho(?:se|sen|osing)|pick(?:ed|ing)|switch(?:ed|ing)|observed|reported|"
+                          r"participants?|respondents?|subjects?|judged|rated|estimated)\b")
 # the sample's make-up is the sample's only in a sentence about the people studied
 SAMPLE_WORDS = re.compile(r"(?i)participants?|respondents?|subjects?|\bsamples?\b|students?|workers?|children|"
                           r"adults?|volunteers?|took part|participated|recruited|enrolled|(?<![\w.])[Nn]\s*=")
@@ -508,7 +521,7 @@ METHOD_HEADING = re.compile(
     r"(?im)^[ \t]*(?:\d+(?:\.\d+)*\.?[ \t]+)?(?:[A-Z][a-z]+[ \t]+){0,3}(?:methods?|design|procedures?|participants|"
     r"materials|(?:experiment|study)[ \t]+(?:\d|one|I\b)|results)\b[^\n]{0,50}$")
 SECTION_HEADING = re.compile(r"^\s*\d+(?:\.\d+)*\.?\s+[A-Z][^.]{0,60}$")
-REFERENCES = re.compile(r"(?im)^[ \t]*(?:(?:\d{1,2}|[IVX]{1,4})\.?[ \t]+)?(references?(?:[ \t]+and[ \t]+notes)?|"
+REFERENCES = re.compile(r"(?im)^[ \t]*(?:(?:\d{1,2}|[IVX]{1,4})\.?[ \t]+)?(references(?:[ \t]+and[ \t]+notes)?|"
                         r"bibliography|literature[ \t]+cited|works[ \t]+cited)[ \t]*$")
 ABSTRACT = re.compile(r"(?im)^\s*(abstract|summary)\b[.:]?\s*")
 ABSTRACT_END = re.compile(r"(?im)^\s*(keywords?|key words|(?:1\.?\s+)?introduction|significance|public significance|"
@@ -541,15 +554,18 @@ may might will would shall should do does did done have has had having into onto
 across after before during while if whether because since though although via per vs versus i ii iii iv v vi""".split())
 PASSAGE_MIN = 4   # numbers in a results passage before "none recorded" fails
 P_SHARE = 0.5     # share of the text's exact p values (and of its pairs) that must be recorded
-# a test result printed in a quote: an exact p value, t(df) =, F(df1, df2) =, chi-square(df) =, r(df) =
-QUOTE_TEST = re.compile(r"(?<![\w.])[pP]\s*=\s*(?:0?\.\d+|1\.0+)|(?<![\w.])t\s*\(\s*\d[^)]{0,12}\)\s*=|"
+# a test result printed in a quote: a p value (=, <, >), t(df) =, F(df1, df2) =, chi-square(df) =, r(df) =,
+# b / beta / d / z / OR / t = a number, a 95% CI
+QUOTE_TEST = re.compile(r"(?<![\w.])[pP]\s*(?:=|<|>|≤|≥|<=|>=)\s*(?:0?\.\d+|1\.0+)|"
+                        r"(?<![\w.])(?:b|β|d|z|OR|t)\s*=\s*-?(?:\d+(?:\.\d+)?|\.\d+)|95\s?%\s*CI|(?<![\w.])t\s*\(\s*\d[^)]{0,12}\)\s*=|"
                         r"(?<![\w.])F\s*\(\s*\d[^)]{0,20}\)\s*=|(?:χ|χ2|χ²|chi-square|chi2|X2)\s*(?:2|²)?\s*\([^)]{0,30}\)\s*=|"
                         r"(?<![\w.])r\s*\(\s*\d[^)]{0,12}\)\s*=")
 # a reason that says the quoted test is not this paper's result
-NOT_OWN_REASON = re.compile(r"(?i)power|sensitivity|design|payoff|pay-off|lotter|gamble|probabilit|"
-                            r"(?:another|other|earlier|previous|prior|original|cited)\s+(?:\w+\s+)?(?:stud|paper|article|"
-                            r"experiment|work|research|replication|author)|(?:study|paper|article)'s result|"
-                            r"\bcit(?:es?|ed|ing|ation)\b|reference|et al|meta-analy")
+NOT_OWN_REASON = re.compile(r"(?i)design (?:value|probabilit)|pay-?offs?\b|power analys|sensitivity analys|"
+                            r"meta-analy|another (?:study|paper|article|experiment)|"
+                            r"(?:previous|earlier|prior|original|other) (?:study|paper|article)'s result|"
+                            r"\bcit(?:ed|ation)\b|\bfrom [A-Z][A-Za-z'\-]+(?: et al\.?)? \(\d{4}[a-z]?\)|"
+                            r"\b[A-Z][A-Za-z'\-]+ et al\b")
 P_KEY = re.compile(r"(?i)^p$|^p[_\-. ]|[_\- ]p$|[_\- ]p[_\- ]|p_?val|pvalue|^p\d$|p_printed|^ptext$|^sig(nif\w*)?\.?$|"
                    r"^pr$|^pr\s*\(|^pr_|_sig$")
 P_TEXT = re.compile(r"(?i)(?<![\w.])p(?:'s)?(?:\s*(?:=|<|>|≤|≥|<=|>=)|[\- ]values?\s*(?:=|<|>|:)?)\s*(0?\.\d+|1(?:\.0+)?)")
@@ -656,21 +672,24 @@ PEOPLE = re.compile(r"(?i)participants?|subjects?|respondents?|people|persons?|c
                     r"players?|chose|chosen|selected|answered|reported|preferred|agreed|judged|rated|guessed|correct")
 
 
-def _design_p(text, m):
-    """A p = ... that is a design probability: after "probability (of)", after "with" (no statistic before it),
-    after design words (a lottery, a chance, points) with no statistic between them and the p, or before
-    "in round 2" / "of winning" / "or p = ..."."""
-    before = text[max(0, m.start() - 60):m.start()]
+def _design_p(text, m, previous_design=None):
+    """A p = ... that is a design probability, governed directly by the words just before it ("with probability
+    p = .3", "10 points with p = .25", "paid out with p = .8", "or p = .2" after one of those) or after it
+    ("p = .3 of winning"; "p = .5 in round 2" when no statistic comes before it in the sentence)."""
+    before = text[max(0, m.start() - 200):m.start()]
     stop = max(before.rfind(". "), before.rfind("; "))
     before = before[stop + 1:] if stop >= 0 else before
-    if DESIGN_P.search(before[-30:]):
+    stat = STAT_BEFORE.search(before)
+    if DESIGN_P.search(before[-40:]) or DESIGN_P_UNIT.search(before[-40:]) or DESIGN_P_VERB.search(before[-40:]):
         return True
-    if "=" not in before and (re.search(r"(?i)\bwith\s*$", before) or DESIGN_P_WORDS.search(before)):
+    if not stat and DESIGN_P_NUMBER.search(before[-40:]):
         return True
-    after_stat = before[before.rfind("=") + 1:] if "=" in before else before
-    if "=" in before and DESIGN_P_WORDS.search(re.sub(r"^[\s\d.,\-]+", "", after_stat)):
+    # "with p = .80 or p = .20": the second is governed like the first
+    if previous_design is not None and re.fullmatch(r"\s*,?\s*(?:or|and)?\s*", text[previous_design:m.start()]):
         return True
-    return bool(DESIGN_P_AFTER.match(text[m.end():m.end() + 40]))
+    if DESIGN_P_OF.match(text[m.end():m.end() + 40]):
+        return True
+    return not stat and bool(DESIGN_P_AFTER.match(text[m.end():m.end() + 40]))
 
 
 def _quoted(text, at):
@@ -704,8 +723,12 @@ def statistics_in(text):
     """Every result number in a passage: kind, value as printed, offset, and a group id for numbers printed
     together ("26% vs 18%")."""
     found, seen = [], set()
+    design_end = None
     for m in P_EXACT.finditer(text):
-        if _design_p(text, m) or "x" in m.group(1) or "×" in m.group(1):
+        if _design_p(text, m, design_end):
+            design_end = m.end()
+            continue
+        if "x" in m.group(1) or "×" in m.group(1):
             continue
         if _own(text, m.start()):
             found.append({"kind": "p", "value": m.group(1), "at": m.start(1), "group": None})
@@ -725,7 +748,8 @@ def statistics_in(text):
             if kind == "pair" and YEAR.fullmatch(m.group(1) or ""):
                 continue
             # "a 30% vs 70% chance of winning": a design value
-            if kind == "pair" and "%" in m.group(0) and PAIR_CHANCE.match(text[m.end():m.end() + 40]):
+            if kind == "pair" and "%" in m.group(0) and PAIR_CHANCE.match(text[m.end():m.end() + 40]) and \
+                    not PAIR_OUTCOME.search(_sentence(text, m.start(), m.end())):
                 continue
             # "Participants read: 'Option A gives 30% vs 70% ...'": the instrument, quoted
             if kind == "pair" and _quoted(text, m.start()):
@@ -909,7 +933,7 @@ def _skipped(record, pages):
             continue
         quote = _flat(str(item.get("quote", "")))
         page = item.get("page")
-        reason = str(item.get("reason", ""))
+        reason = item.get("reason", "")
         if len(quote) < 12 or quote not in whole:
             problems.append(("sources/SOURCE.json resultsNotRecorded[%d]: the quote is not the passage's exact text in "
                              "the paper" % i, "copy the passage as printed (at least a few words)"))
@@ -917,6 +941,9 @@ def _skipped(record, pages):
                 quote not in _flat((pages[page - 1] or "") + " " + (pages[page] or "" if page < len(pages) else "")):
             problems.append(("sources/SOURCE.json resultsNotRecorded[%d]: give the page the quote is printed on "
                              "(\"page\": <number>)" % i, "each entry names the one page whose passage it clears"))
+        elif not isinstance(reason, str):
+            problems.append(("sources/SOURCE.json resultsNotRecorded[%d]: the reason must be text" % i,
+                             'write "reason": "<why the passage holds no result of this paper>"'))
         elif len(re.findall(r"\w+", reason)) < 3:
             problems.append(("sources/SOURCE.json resultsNotRecorded[%d]: no reason" % i,
                              "say why the passage holds no result of this paper (a payoff or design value, a power "

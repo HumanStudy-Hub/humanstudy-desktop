@@ -415,12 +415,14 @@ table, on the result node it reports (sample tables on `participants`, stimulus 
   printed but recorded nowhere, when a results paragraph prints four or more numbers none of which is
   recorded, when an abstract finding is neither recorded nor in `abstractResults`, and when a
   supplement's result table is not recorded. Numbers after a citation, in a power analysis or a design
-  probability are not counted. A passage it reads as a result that is not one (a payoff or design value,
-  another study's result) goes in `sources/SOURCE.json` → `resultsNotRecorded`: `[{"page": 4, "quote":
+  probability the words beside it govern ("with probability p = .3", "10 points with p = .25") are not
+  counted; a bare "with" never makes a p a design value. A passage it reads as a result that is not
+  one (a payoff or design value, another study's result) goes in `sources/SOURCE.json` → `resultsNotRecorded`: `[{"page": 4, "quote":
   "<the passage's exact text>", "reason": "..."}]`. The quote must be printed on that page (the page is
-  required) and clears only the numbers inside it. A quote that prints a test result (an exact p value,
-  `t(df) =`, `F(df1, df2) =`, `χ²(df) =`, `r(df) =`) is refused unless its reason says it is a power
-  analysis, a design or payoff value, another study's or paper's result, or a citation. A result of this
+  required) and clears only the numbers inside it. A quote that prints a test result (a p value, `t(df) =`,
+  `F(df1, df2) =`, `χ²(df) =`, `r(df) =`, `b`/`d`/`z`/`OR` = a number, a 95% CI) is refused unless its
+  reason names a power analysis, a design value or probability, a payoff, another study, a previous
+  study's result, or a citation ("cited", "from Smith (2010)", "Smith et al."). A result of this
   paper never goes there.
 - Effects keep pointing to the cells they use: the effect's `resultIds` name the result node,
   its `reported` numbers are the cells, its `reported.evidenceIds` cite an evidence record whose

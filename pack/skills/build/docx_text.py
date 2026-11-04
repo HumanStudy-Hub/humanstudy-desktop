@@ -21,7 +21,8 @@ the flow, not what participants read.
 Printed as plain text: one paragraph per line, pages separated by ``--- page break ---``. ``--json`` writes
 ``{"pages": [[paragraph, ...], ...], "export_lines": [...]}``. Reading a file runs nothing in it. The reader
 (``read``) follows HumanStudy-Bench's agent_pipeline/docx_text.py, hardened here: a word/document.xml over
-50 MB uncompressed is refused, and an unclosed tag never makes reading slower than one pass over the file.
+50 MB uncompressed is refused (read in chunks: the sizes a zip records are not trusted), and an unclosed tag
+never makes reading slower than one pass over the file.
 The check is the desktop's.
 
 ``--check`` (``problems(root, package)``) applies only when a ``.docx`` is under ``sources/``. Participant text
@@ -72,17 +73,27 @@ TOKEN_RE = re.compile(
 PPR_END = "</w:pPr>"
 # word/document.xml larger than this (uncompressed) is not read: no survey export comes near it.
 MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
+READ_CHUNK = 64 * 1024
 PAGE_BEFORE_RE = re.compile(r"<w:pageBreakBefore\b(?![^>]*w:val=\"(?:0|false|off)\")")
 
 
 def read(path: Path) -> Dict[str, List]:
     """``{"pages": [[paragraph, ...], ...], "export_lines": [...]}`` of a .docx file."""
     with zipfile.ZipFile(path) as archive:
-        size = archive.getinfo("word/document.xml").file_size
-        if size > MAX_DOCUMENT_BYTES:
-            raise ValueError("word/document.xml is %d MB uncompressed (more than %d MB): not read"
-                             % (size // 2**20, MAX_DOCUMENT_BYTES // 2**20))
-        xml = archive.read("word/document.xml").decode("utf-8", "replace")
+        # The sizes a zip records are not trusted: read in chunks and stop once past the limit.
+        chunks, total = [], 0
+        with archive.open("word/document.xml") as member:
+            while True:
+                chunk = member.read(READ_CHUNK)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_DOCUMENT_BYTES:
+                    raise ValueError("word/document.xml is more than %d MB uncompressed: too large, not read"
+                                     % (MAX_DOCUMENT_BYTES // 2**20))
+                chunks.append(chunk)
+        xml = b"".join(chunks).decode("utf-8", "replace")
+        del chunks
     # A text box is stored twice (mc:Choice and an mc:Fallback copy for old Word): read it once.
     xml = _drop_fallbacks(xml)
     pages: List[List[str]] = [[]]
@@ -207,6 +218,10 @@ def word_sources(root: Path) -> List[Path]:
                   and not p.name.startswith((".", "~$"))) if base.is_dir() else []
 
 
+def _name(value, fallback: str) -> str:
+    return value if isinstance(value, str) and value.strip() else fallback
+
+
 def participant_texts(root: Path, package: Path | None = None) -> List[tuple]:
     """(where, text) of participant text: materials.json of each package, program.json verbatim field values."""
     root = Path(root)
@@ -217,11 +232,13 @@ def participant_texts(root: Path, package: Path | None = None) -> List[tuple]:
         out += [("%s/materials/materials.json" % pkg.name, s) for s in _visible_strings(_load(rel))]
     program = _load(root / "program.json")
     nodes = program.get("nodes") if isinstance(program, dict) else None
-    for node in nodes if isinstance(nodes, list) else []:
+    for node_index, node in enumerate(nodes if isinstance(nodes, list) else []):
         fields = node.get("fields") if isinstance(node, dict) else None
-        for field in fields if isinstance(fields, list) else []:
+        for field_index, field in enumerate(fields if isinstance(fields, list) else []):
             if isinstance(field, dict) and field.get("origin") == "verbatim":
-                where = "program.json %s.%s" % (node.get("id"), field.get("id"))
+                # a node or field with no id is named by its index
+                where = "program.json %s.%s" % (_name(node.get("id"), "nodes[%d]" % node_index),
+                                                _name(field.get("id"), "fields[%d]" % field_index))
                 value = field.get("value")
                 out += [(where, s) for s in ([value] if isinstance(value, str) else _visible_strings(value))]
     return out

@@ -566,18 +566,29 @@ def _stated_exclusion(e):
     return any(EXCLUSION_WORDS.search(str(x)) for x in missing + [e.get("notes") or ""])
 
 
+def _n_by_arm(e, by_arm):
+    """Add one effect's arm and contrast n values to by_arm {(study, what): [(effect, n)]}."""
+    rep, con = e["reported"], e.get("contrast") if isinstance(e.get("contrast"), dict) else {}
+    study = e.get("studyId") if isinstance(e.get("studyId"), (str, int, float, type(None))) else str(e.get("studyId"))
+    added = []
+    for arm, cell in (rep.get("cells") or {}).items() if isinstance(rep.get("cells"), dict) else []:
+        if isinstance(cell, dict) and _num(cell.get("n")) is not None:
+            added.append(((study, "arm " + str(arm)), cell["n"]))
+    if _num(rep.get("n")) is not None and con.get("treatment") and con.get("reference"):
+        added.append(((study, "%s vs %s" % (con["treatment"], con["reference"])), rep["n"]))
+    for key, n in added:     # all or nothing: a malformed effect adds none
+        by_arm.setdefault(key, []).append((e, n))
+
+
 def _n_problems(effs):
     """An arm whose n is the same in most of a study's effects but clearly smaller in one: the paper dropped
     part of that group from this comparison, and the effect must say so."""
     by_arm = {}
     for e in effs:
-        rep, con = e["reported"], e.get("contrast") if isinstance(e.get("contrast"), dict) else {}
-        study = e.get("studyId") if isinstance(e.get("studyId"), (str, int, float, type(None))) else str(e.get("studyId"))
-        for arm, cell in (rep.get("cells") or {}).items() if isinstance(rep.get("cells"), dict) else []:
-            if isinstance(cell, dict) and _num(cell.get("n")) is not None:
-                by_arm.setdefault((study, "arm " + str(arm)), []).append((e, cell["n"]))
-        if _num(rep.get("n")) is not None and con.get("treatment") and con.get("reference"):
-            by_arm.setdefault((study, "%s vs %s" % (con["treatment"], con["reference"])), []).append((e, rep["n"]))
+        try:
+            _n_by_arm(e, by_arm)
+        except Exception:   # noqa: BLE001 - a malformed effect: effects_core reports its shape
+            continue
     out = []
     for (study, what), values in by_arm.items():
         if len(values) < 4:
@@ -587,7 +598,11 @@ def _n_problems(effs):
         if ns.count(mode) < 3 or ns.count(mode) < len(ns) / 2:
             continue
         for e, n in values:
-            if n < 0.9 * mode and mode - n >= 5 and not _stated_exclusion(e):
+            try:
+                stated = _stated_exclusion(e)
+            except Exception:   # noqa: BLE001 - as above
+                stated = True
+            if n < 0.9 * mode and mode - n >= 5 and not stated:
                 out.append("effect %s: %s has n = %g where the study's other effects have %g; the paper drops part of "
                            "that group from this comparison (often said only in the text). Find why, drop the same "
                            "participants when computing it, and say so in compute.exclusion (\"<what the paper drops, "
