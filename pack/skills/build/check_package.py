@@ -73,6 +73,11 @@ def reply_checks(root: Path) -> tuple:
     import recorded_answers
 
     if not uses_replies(root):
+        from contract import current_contract
+        if current_contract(root):  # built with the current skill (buildContract 2 or its records): the reader is required
+            return [("task/replies.py is missing although the package is built under the current build contract",
+                     "copy .opencode/skills/build/package_files/replies.py to task/replies.py unchanged and ask every "
+                     "question through replies.ask")], ""
         return [], "note replies checks skipped: no task/replies.py (packages built before the shared reader)"
     answers = recorded_answers.judge(root)
     bad = reply_problems(root.parent.parent, root) + answers["problems"]

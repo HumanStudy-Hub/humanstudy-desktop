@@ -396,6 +396,7 @@ class CheckPackageGate(unittest.TestCase):
         with mock.patch.object(contract, "current_contract", lambda p: current), \
                 mock.patch.object(fetch_source, "problems", lambda *a, **k: list(fetched)), \
                 mock.patch.object(qsf_flow, "problems", lambda *a, **k: list(survey)), \
+                mock.patch.object(check_package, "reply_checks", lambda p: ([], "ok   replies (not under test)")), \
                 mock.patch.object(sys, "argv", ["check_package.py", str(self.root / "package/fixture")]), \
                 contextlib.redirect_stdout(out):
             try:

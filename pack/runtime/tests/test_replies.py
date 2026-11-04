@@ -513,6 +513,16 @@ class PackageNotes(Project):
         self.assertEqual(check_package.reply_checks(pkg), (
             [], "ok   replies: shared reader unchanged, answer-aware smoke test passes, every answer recorded"))
 
+    def test_current_contract_package_without_the_reader_fails(self):
+        import check_package
+        _, pkg = self.project(adapter=LEGACY, replies_copy=False)
+        study = json.loads((pkg / "study.json").read_text(encoding="utf-8"))
+        study["buildContract"] = 2
+        (pkg / "study.json").write_text(json.dumps(study), encoding="utf-8")
+        bad, _ = check_package.reply_checks(pkg)
+        self.assertEqual(len(bad), 1)
+        self.assertIn("task/replies.py is missing", bad[0][0])
+
     def test_recorded_answers_that_cannot_judge_say_why(self):
         self.assertEqual(recorded_answers._note({"dropped": [], "checked": 2, "skipped": None}, None), None)
         self.assertEqual(recorded_answers._note(None, "the check did not finish within 150 s"),
