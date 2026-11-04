@@ -25,6 +25,14 @@ The package's code runs only in a confined child (sandbox_run.py) on a copy laid
 no keys, no network, writes only in a scratch folder; pauses (time.sleep) are skipped. Never in this
 process. The .qsf files are read here as data (JSON), never run.
 
+The child reports on one marker line, `@@SMOKE@@<nonce>@@<json>`. The nonce is drawn fresh by this process for
+every run and handed to the child in an environment variable that the child deletes before it loads any package
+code; the first marker line is taken, and a run with more than one marker line, or with a marker that does not
+carry this run's nonce, fails. Residual risk (as with check_validity.py's capture): package code runs in the
+same child process, so code written to defeat the check could still find the nonce in that process's memory (or,
+on Linux, its /proc environ) or replace the reporting functions; the marker stops a package that merely prints a
+report line of its own, not a deliberate attack on the checker. Review stays the defence against that.
+
 Limits: the stand-in is not a participant; a pass says the wiring works (every arm reaches evaluate, the
 numbers on screen are read back), not that the prompts are faithful. A survey check is matched to an asked
 question by identical options plus the survey's question id, export tag or wording; a package that
@@ -38,6 +46,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import sys
 from pathlib import Path
@@ -51,6 +60,7 @@ IMPORTS = re.compile(r"(?m)^\s*(from\s+replies\s+import\b|import\s+replies\b)")
 SMOKE_MAIN = re.compile(r"\bsmoke_main\s*\(")
 SMOKE_TIMEOUT = 300
 MARK = "@@SMOKE@@"
+NONCE_ENV = "HUMANSTUDY_MARKER_NONCE"   # the child reads it and deletes it before any package code loads
 # Files the project format puts beside program.json that a package may read (as check_package.py).
 BESIDE_PROGRAM = {"program.json", "effects.json", "capabilities.json", "README.md"}
 READING_REPLIES = "build SKILL.md section 3, 'Reading replies'"
@@ -110,19 +120,50 @@ def copy_like_project(pkg: Path, work: Path) -> Path:
     return copy
 
 
+def new_nonce() -> str:
+    return secrets.token_hex(16)
+
+
+def child_nonce() -> str:
+    """In a child: this run's nonce, deleted from the environment before any package code loads."""
+    return os.environ.pop(NONCE_ENV, "")
+
+
+def marked(mark: str, nonce: str, payload: str) -> str:
+    return "%s%s@@%s" % (mark, nonce, payload)
+
+
+def read_marked(stdout: str, mark: str, nonce: str) -> tuple:
+    """(the JSON report on the first marker line or None, a problem or None). More than one marker line, or a
+    marker without this run's nonce, is a problem: package code printed a report line of its own."""
+    lines = [l for l in (stdout or "").splitlines() if l.startswith(mark)]
+    if not lines:
+        return None, None
+    if len(lines) > 1:
+        return None, ("the check's child printed %d report lines (%s...); package code printed one of its own"
+                      % (len(lines), mark))
+    head = marked(mark, nonce, "")
+    if not nonce or not lines[0].startswith(head):
+        return None, "the report line does not carry this run's marker; package code printed a report line of its own"
+    try:
+        report = json.loads(lines[0][len(head):])
+    except ValueError:
+        return None, "the report line is not JSON"
+    return (report if isinstance(report, dict) else None), None
+
+
 def smoke(pkg: Path, timeout: int = SMOKE_TIMEOUT) -> dict:
     """replies.smoke_package on the package, in a confined child. The report as replies.py writes it."""
+    nonce = new_nonce()
     with sandbox_run.work_dir(prefix="check-replies-") as work:
         copy = copy_like_project(pkg, work)
         run = sandbox_run.run_python(Path(__file__).resolve(), ["--smoke-child", str(copy)], cwd=copy, work=work,
-                                     timeout=timeout)
+                                     timeout=timeout, env={NONCE_ENV: nonce})
     if run.timed_out:
         return {"ok": False, "arms": {}, "problems": ["the smoke test did not finish within %d s" % timeout]}
-    line = next((l for l in run.stdout.splitlines()[::-1] if l.startswith(MARK)), None)
-    try:
-        report = json.loads(line[len(MARK):]) if line else None
-    except ValueError:
-        report = None
+    report, forged = read_marked(run.stdout, MARK, nonce)
+    if forged:
+        return {"ok": False, "arms": {}, "problems": ["the smoke test's report cannot be trusted: " + forged]}
     if not isinstance(report, dict):
         tail = (run.stderr or run.stdout).strip()[-400:]
         return {"ok": False, "arms": {}, "problems": ["the smoke test could not be run: " + (tail or "no output")]}
@@ -131,6 +172,7 @@ def smoke(pkg: Path, timeout: int = SMOKE_TIMEOUT) -> dict:
 
 def _smoke_child(pkg: Path) -> None:
     """In the confined child: run the shipped replies.smoke_package on the package copy; print one line."""
+    nonce = child_nonce()   # before any package code
     import contextlib
     import importlib.util
     import io
@@ -150,7 +192,7 @@ def _smoke_child(pkg: Path) -> None:
     except BaseException as exc:  # noqa: BLE001  an import error in the package is a finding, not a crash
         report = {"ok": False, "arms": {}, "problems": ["the package could not be loaded: %s: %s"
                                                          % (type(exc).__name__, str(exc)[:300])]}
-    print(MARK + json.dumps(report, default=str, ensure_ascii=False), flush=True)
+    print(marked(MARK, nonce, json.dumps(report, default=str, ensure_ascii=False)), flush=True)
 
 
 # --------------------------------------------------------------------------- survey checks with a correct answer

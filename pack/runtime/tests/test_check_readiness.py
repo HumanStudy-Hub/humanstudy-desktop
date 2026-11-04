@@ -217,3 +217,24 @@ class ReadinessTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Timeouts(unittest.TestCase):
+    """check_package.py runs its confined steps one after another; the readiness and app limits outlast them."""
+
+    def test_package_timeout_covers_every_confined_step_and_the_app_waits_longer(self):
+        import re
+        sys.path.insert(0, str(BUILD))
+        try:
+            import check_readiness
+            import check_replies
+            import recorded_answers
+        finally:
+            sys.path.remove(str(BUILD))
+        steps = 120 + check_replies.SMOKE_TIMEOUT + recorded_answers.CHECK_TIMEOUT + 300   # smoke, replies, answers, capture
+        self.assertGreater(check_readiness.PACKAGE_TIMEOUT, steps)
+        self.assertGreaterEqual(check_readiness.PACKAGE_TIMEOUT, 1300)
+        source = (REPO / "app/src/main/scientific-readiness.ts").read_text(encoding="utf-8")
+        minutes = int(re.search(r"SCIENTIFIC_TIMEOUT_MS = (\d+) \* 60_000", source).group(1))
+        # check_package, then check_validity's own capture (300 s) and the effects field check (300 s)
+        self.assertGreater(minutes * 60, check_readiness.PACKAGE_TIMEOUT + 300 + 300)

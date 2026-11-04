@@ -38,7 +38,10 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "export" / "agent"))
 
 REASON_MAX = 300
-PACKAGE_TIMEOUT = 900  # the smoke test (120 s) plus check_validity's capture (300 s) with margin
+# check_package.py runs, one after another: the adapter smoke test (120 s), the answer-aware replies smoke test
+# (check_replies.py, 300 s), the every-answer-recorded check (recorded_answers.py, 150 s) and check_validity's
+# prompt capture (300 s), plus a margin for copying and the offline checks.
+PACKAGE_TIMEOUT = 1300
 
 
 def one_line(text):
@@ -88,7 +91,7 @@ def package_problems(root, slug):
     pkg = root / "package" / slug
     with tempfile.TemporaryDirectory(prefix="readiness-package-") as work:
         try:
-            run = subprocess.run([sys.executable, "-I", "-B", str(HERE / "check_package.py"), str(pkg)],
+            run = subprocess.run([sys.executable, "-I", "-B", "-X", "utf8", str(HERE / "check_package.py"), str(pkg)],
                                  cwd=work, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                  encoding="utf-8", errors="replace", timeout=PACKAGE_TIMEOUT)
         except subprocess.TimeoutExpired:

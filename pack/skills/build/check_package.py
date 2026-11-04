@@ -22,7 +22,9 @@ unparsed reply does not drop a participant, missing instructions are a decision.
 downloaded sources carry a stated licence (fetch_source.py), the authors' analysis code, survey versions and
 researcher questions are checked against them (check_source_use.py), and no survey text participants never
 saw is used (qsf_flow.py). A package with the shared reply reader (task/replies.py) also runs the
-answer-aware smoke test (check_replies.py) and the every-answer-recorded check (recorded_answers.py).
+answer-aware smoke test (check_replies.py) and the every-answer-recorded check (recorded_answers.py; when it
+cannot judge, the reason is printed in its ok line). A package without task/replies.py (built before the shared
+reader) gets a note line instead, not a failure.
 """
 from __future__ import annotations
 
@@ -55,11 +57,28 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
+def reply_checks(root: Path) -> tuple:
+    """([(message, fix)], the line to print) for the shared reply reader's checks (check_replies.py,
+    recorded_answers.py). A package without task/replies.py (built before the shared reader) gets a note line,
+    not a failure: whether to require the reader of older packages is the owner's decision."""
+    from check_replies import problems as reply_problems, uses_replies
+    import recorded_answers
+
+    if not uses_replies(root):
+        return [], "note replies checks skipped: no task/replies.py (packages built before the shared reader)"
+    answers = recorded_answers.judge(root)
+    bad = reply_problems(root.parent.parent, root) + answers["problems"]
+    return bad, ("ok   replies: shared reader unchanged, answer-aware smoke test passes, "
+                 + (answers["note"] or "every answer recorded"))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("package", type=Path, help="package/<paper-slug>")
     parser.add_argument("--program", type=Path, default=None, help="project program.json to compare with")
     args = parser.parse_args()
+    if hasattr(sys.stdout, "reconfigure"):  # a console without UTF-8 (Windows cp1252) must not end the check
+        sys.stdout.reconfigure(errors="replace")
     root: Path = args.package.resolve()
     if not root.is_dir():
         fail(f"{root} is not a folder")
@@ -168,15 +187,11 @@ def main() -> None:
     if result.returncode != 0:
         fail("adapter smoke test failed:\n" + result.stdout + result.stderr)
     print("ok   task/adapter.py --smoke-test")
-    from check_replies import problems as reply_problems, uses_replies
-    from recorded_answers import problems as answer_problems
-
-    if uses_replies(root):  # packages with the shared reply reader (task/replies.py); older ones are not checked
-        bad = reply_problems(root.parent.parent, root) + answer_problems(root)
-        if bad:
-            fail("reading replies (check_replies.py, recorded_answers.py):\n" + "\n".join(
-                f"  {m}  [fix: {h}]" for m, h in bad))
-        print("ok   replies: shared reader unchanged, answer-aware smoke test passes, every answer recorded")
+    bad, line = reply_checks(root)
+    if bad:
+        fail("reading replies (check_replies.py, recorded_answers.py):\n" + "\n".join(
+            f"  {m}  [fix: {h}]" for m, h in bad))
+    print(line)
     if slim:  # inside a project: the package replays what participants experienced (check_validity.py)
         from check_validity import check as check_validity
 

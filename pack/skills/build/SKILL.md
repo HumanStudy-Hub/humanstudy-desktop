@@ -547,7 +547,8 @@ Rules the runner depends on:
     boundary to compare with the paper), so check it yourself on the first prompt of every block and
     say in the report where each between-block instruction is delivered.
   - An unparsed reply is recorded on its trial (`"parsed": false`), the participant is kept, and
-    trials or participants are excluded only by the paper's own rule. Never `valid = all(...)` over the
+    trials or participants are excluded only by the paper's own rule (with the shared reader: per-trial answers
+    are asked with `required=False`, see "Reading replies"). Never `valid = all(...)` over the
     trials' parse status; a line that applies the paper's printed exclusion rule carries
     `# exclusion: <evidence id>` on the line above, citing the quote that states which participants,
     trials or responses were excluded.
@@ -582,9 +583,12 @@ Rules the runner depends on:
     not the response is forced. A question a recorded `.qsf` under `sources/` accepts only with a correct
     answer is keyed with that answer; the check fails an unkeyed one it can match (same options, and the
     survey's question id, export tag or wording). The adapter still decides what a wrong answer does.
-  - Give `required=False` to answers the analysis does not use (wrap-up comments, "anything else?"): one that
-    cannot be read is recorded and the participant stays in. Only an unreadable *required* answer ends a
-    session, with status `unparsed`.
+  - Give `required=False` to every answer whose loss the paper's own exclusion rule does not make decisive:
+    per-trial answers in a repeated task (the trial is recorded unparsed, `"parsed": false`, and the participant
+    is kept, as the rule on unparsed replies above says) and answers the analysis does not use (wrap-up
+    comments, "anything else?"). Leave an answer required only when the paper's own rule makes it decisive for
+    the participant (a consent answer, the only answer of a single-question study): an unreadable required
+    answer ends the session with status `unparsed`, and only such an answer does.
   - **Record every answer.** Every question a participant answers is stored in the session record
     `run_sessions` returns (under a neutral key), whether or not the analysis uses it: wrap-up questions,
     hypothesis guesses, "have you seen these materials", comments. A researcher may later code them, and the
@@ -607,7 +611,10 @@ Rules the runner depends on:
   asked without its key. Fix the adapter until it passes. In the report, say it in plain words with its counts
   ("an offline practice run with made-up answers took both conditions through to the analysis, 2 sessions
   each; no model was used"): it checks the wiring, not a result, and an excluded or unparsed session is never
-  described as completed. Packages built before the shared reader (no `task/replies.py`) are not checked.
+  described as completed. Packages built before the shared reader (no `task/replies.py`) are not checked:
+  check_package.py prints `note replies checks skipped: no task/replies.py` instead. When the every-answer
+  check cannot judge (a timeout, sessions that differ with the same seed, the time budget), its ok line says
+  `every answer recorded: not judged (<reason>)`; say so in the report instead of claiming the check passed.
 - Run size: once check_package.py passes, run `python .opencode/skills/build/estimate_run.py
   package/<paper-slug> --n <sessions at the paper's analysed N, summed over conditions>` (add
   `--price-in`/`--price-out` for the model's price per million tokens and `--max-tokens` when the run script

@@ -7,13 +7,18 @@ questions to the researcher that a downloaded file already answers.
 Prints every problem with a fix, then PASS or FAIL (exit 1). Records live in sources/SOURCE.json
 (top-level keys; sources.py keeps them across reruns). Paths are project-relative ("sources/open/a.Rmd").
 
-  analysis code  every analysis file under sources/ (.R .Rmd .qmd .ipynb .do .sps .sas, and .py that runs
-                 statistics; never data, never run) is read for its recodes, exclusions and test options and
-                 recorded in `analysisCode`: {"source": <path>, "lines": "79-90", "quote": <the code as written>,
-                 "what": ..., "use": "carried over" | "not applicable", "where": ... | "reason": ...}. Every
-                 comment or prose line that reports a coding error, a recode, an exclusion or a removal, and every
-                 recode call, must lie within (or 3 lines of) an entry. A file under sources/private/ or
-                 sources/researcher/ gives `lines` without `quote` (SOURCE.json is exported; private text is not).
+  analysis code  every analysis file downloaded with fetch_source.py (a SOURCE.json file entry with `url` or
+                 `retrieved`, under sources/open/ or sources/private/; sources/researcher/ is the researcher's and
+                 is not checked) is read for its recodes, exclusions and test options and recorded in
+                 `analysisCode`: {"source": <path>, "lines": "79-90", "quote": <the code as written>, "what": ...,
+                 "use": "carried over" | "not applicable", "where": ... | "reason": ...}. Analysis files are .R
+                 .Rmd .qmd .ipynb .do .sps .sas, and a .py that runs statistics and is not an experiment script
+                 (one that imports psychopy, expyriment, pygame, jspsych, otree ... or defines run_sessions is
+                 material, not analysis); never data, never run. Every comment or prose line that reports a coding
+                 error, a recode, an exclusion or a removal, and every recode call, must lie within (or 3 lines
+                 of) the quoted code of an entry, and an entry spans at most MAX_SPAN lines (one wide entry never
+                 covers a script); an entry for a sources/private/ file gives `lines` without `quote` (SOURCE.json
+                 is exported; private text is not) and covers by its lines alone.
                  A `searches` record that names analysis code while none is under sources/ fails unless
                  `analysisCode` has {"source": "not fetched", "reason": ...} (refused, only inside a data archive,
                  not public, not this paper); "not needed" is not a reason.
@@ -22,15 +27,17 @@ Prints every problem with a fix, then PASS or FAIL (exit 1). Records live in sou
                  "partly", "compared": ..., "usedFor": ...}. A file marked "no" supplies no participant text (a
                  material or verbatim field citing it fails); one study's text from two files says in each
                  file's usedFor which screens it supplies.
-  questions      when files were downloaded (sources/open/, sources/private/), every issue that asks the
+  questions      when files were downloaded with fetch_source.py (as above), every issue that asks the
                  researcher something (severity decision or blocking, title ending in "?") has a
                  `questionsChecked` entry {"issue": <id>, "sourcesChecked": [{"paths": [...], "answers": false,
                  "found": "what the file says on this point"}]} covering every downloaded file. An entry that says a
                  file answers it fails: take the decision, record it in `decisionsFromSources` ({"what", "path",
                  "locator", "quote"}; a private file gives the locator without quote), and drop the question.
 
-A project without downloaded files and without analysis code passes unchanged. Standard library plus the
-readers of check_materials.py and check_quotes.py.
+A project without downloaded files and without analysis code passes unchanged; a file placed under sources/open/
+by hand (no url, no retrieved date) is not held to the analysis-code and question rules. A malformed SOURCE.json
+or program.json never crashes it: records of the wrong shape are skipped. Standard library plus the readers of
+check_materials.py and check_quotes.py.
 """
 import argparse
 import json
@@ -43,6 +50,11 @@ import check_materials as cm  # noqa: E402  file readers, data detection, folder
 from check_quotes import normalise  # noqa: E402
 
 ANALYSIS_SUFFIXES = (".r", ".rmd", ".qmd", ".py", ".ipynb", ".do", ".sps", ".sas")
+MAX_SPAN = 15   # lines one analysisCode entry may cover: one recode or exclusion, never a whole script
+# A Python experiment script (stimulus presentation, a replay harness) is material, not analysis code.
+EXPERIMENT_PY = re.compile(
+    r"(?m)^\s*(?:from|import)\s+(?:psychopy|expyriment|pygame|pyglet|jspsych|otree|psychtoolbox|libopensesame|"
+    r"opensesame|neuropsydia|psychopy_\w+)\b|^\s*def\s+run_sessions\s*\(")
 # A .py file is analysis code only when it runs statistics (a PsychoPy script is material).
 STATS_CALL = re.compile(
     r"(?i)\b(t\.test|aov|anova|lm|glm|lmer|glmer|prop\.test|chisq\.test|wilcox\.test|cor\.test|TOSTER|tsum_TOST|"
@@ -98,8 +110,21 @@ def _files(root, folders=None):
 
 
 def downloads(root):
-    """Files the build downloaded: sources/open/ and sources/private/."""
+    """Files under sources/open/ and sources/private/ (downloaded, or placed there by hand)."""
     return _files(root, DOWNLOAD_DIRS)
+
+
+def fetched(root, record):
+    """Files fetch_source.py downloaded: a SOURCE.json file entry with `url` or `retrieved`, under sources/open/
+    or sources/private/, on disk, not participant data."""
+    on_disk = set(downloads(root))
+    out = set()
+    for f in _list(record.get("files")):
+        rel = _norm(f.get("path")) if isinstance(f.get("path"), str) else ""
+        if rel in on_disk and (isinstance(f.get("url"), str) and f["url"].strip()
+                               or isinstance(f.get("retrieved"), str) and f["retrieved"].strip()):
+            out.add(rel)
+    return sorted(out)
 
 
 def _private(rel):
@@ -151,7 +176,8 @@ def is_analysis_code(path):
     if suffix not in ANALYSIS_SUFFIXES:
         return False
     if suffix == ".py":
-        return bool(STATS_CALL.search("\n".join(code_lines(path))))
+        text = "\n".join(code_lines(path))
+        return bool(STATS_CALL.search(text)) and not EXPERIMENT_PY.search(text)
     return True
 
 
@@ -193,15 +219,22 @@ def _line_range(value):
     return None
 
 
+def _overlaps(quote, line):
+    """The quote is, holds or lies within the line (code compared as written)."""
+    q, l = _code_squash(quote), _code_squash(line)
+    return bool(q and l) and (len(l) >= 4 and l in q or q in l)
+
+
 def check_analysis_code(root, record):
     out = []
     add = lambda msg, fix: out.append((msg, fix))
     entries = _list(record.get("analysisCode"))
-    code = [rel for rel in _files(root) if is_analysis_code(root / rel)]
-    if not code:
+    anywhere = [rel for rel in _files(root) if is_analysis_code(root / rel)]
+    code = [rel for rel in fetched(root, record) if rel in anywhere]
+    if not anywhere:
         searches = " ".join("%s %s" % (s.get("query", ""), s.get("result", "")) for s in _list(record.get("searches")))
         listed = CODE_LISTED.search(searches)
-        excused = [e for e in entries if str(e.get("source", "")).strip().lower() in ("none", "not fetched")
+        excused = [e for e in entries if str(e.get("source") or "").strip().lower() in ("none", "not fetched")
                    and NOT_FETCHED_OK.search(str(e.get("reason", "")))]
         if listed and not excused:
             add("analysis code: a search found the authors' analysis code (\"%s\" in sources/SOURCE.json searches) but "
@@ -221,15 +254,26 @@ def check_analysis_code(root, record):
                 "specification it holds" % (rel, "" if private else "\"quote\": \"<the code line, exactly>\", "))
             continue
         lines = code_lines(root / rel)
-        covered = []
+        signals = signal_lines(root / rel)
+        covered = set()
         for i, e in enumerate(mine, 1):
             label = "analysisCode entry %d for %s" % (i, rel)
             span = _line_range(e.get("lines"))
             if span is None or span[0] < 1 or span[1] > len(lines):
                 add("%s: lines must be a line number or range in the file (1-%d)" % (label, len(lines)), "")
                 continue
-            covered.append(span)
             quote = e.get("quote")
+            if span[1] - span[0] + 1 > MAX_SPAN:
+                add("%s: lines %d-%d span more than %d lines; an entry records one recode, exclusion or test"
+                    % (label, span[0], span[1], MAX_SPAN),
+                    "give each recode and exclusion its own entry with the lines and quote of that code")
+            else:
+                if private or not isinstance(quote, str) or not quote.strip():
+                    at = range(span[0], span[1] + 1)      # a private file is located by its lines alone
+                else:                                     # the lines (in the span) that the quote is or holds
+                    at = [k for k in range(max(1, span[0] - 5), min(len(lines), span[1] + 5) + 1)
+                          if _overlaps(quote, lines[k - 1])]
+                covered.update(n for n, _ in signals if any(abs(n - k) <= 3 for k in at))
             if private:
                 if isinstance(quote, str) and quote.strip():
                     add("%s: %s is not openly licensed; SOURCE.json is exported, so give lines without a quote" % (label, rel),
@@ -248,7 +292,7 @@ def check_analysis_code(root, record):
                 add("%s: say in 'where' where the package applies it (evaluation, adapter, materials)" % label, "")
             elif use == "not applicable" and _words(e.get("reason")) < 4:
                 add("%s: say in 'reason' why it does not apply to the replay" % label, "")
-        missed = [(n, t) for n, t in signal_lines(root / rel) if not any(lo - 3 <= n <= hi + 3 for lo, hi in covered)]
+        missed = [(n, t) for n, t in signals if n not in covered]
         if missed:
             add("analysis code: %s reports recodes, coding errors or exclusions that no analysisCode entry covers: %s%s"
                 % (rel, "; ".join("line %d: \"%s\"" % (n, t[:90]) for n, t in missed[:6]),
@@ -277,7 +321,8 @@ def survey_files(paths):
 
 def _cited_files(field, evidence):
     m = field.get("extensions", {}).get("material") if isinstance(field.get("extensions"), dict) else None
-    paths = [_norm(evidence[i].get("path")) for i in field.get("evidenceIds") or [] if i in evidence]
+    ids = field.get("evidenceIds") if isinstance(field.get("evidenceIds"), list) else []
+    paths = [_norm(evidence[i].get("path")) for i in ids if isinstance(i, str) and i in evidence]
     if isinstance(m, dict):
         paths.append(_norm(m.get("file")))
     if isinstance(field.get("value"), dict):
@@ -315,13 +360,14 @@ def check_survey_versions(root, record):
                 out.append(("surveyVersions %s: say in 'compared' what was compared with the paper" % rel,
                             "number and order of scenarios or blocks, item wording, response codes"))
     program = _program(root)
-    evidence = {e.get("id"): e for e in _list(program.get("evidence"))}
+    evidence = {e["id"]: e for e in _list(program.get("evidence")) if isinstance(e.get("id"), str)}
     per_study = {}
     for n in _list(program.get("nodes")):
         for f in _list(n.get("fields")):
             if not _participant_text(f):
                 continue
-            studies = [str(s) for s in (f.get("studyIds") or n.get("studyIds") or [])]
+            studies = f.get("studyIds") or n.get("studyIds")
+            studies = [str(s) for s in studies] if isinstance(studies, list) else []
             for rel in _cited_files(f, evidence):
                 if rel not in entries:
                     continue
@@ -351,7 +397,9 @@ def question_issues(program):
     The per-item "Needs the original ..." and "Left out by the researcher" issues are not questions."""
     out = []
     for i in _list(program.get("issues")):
-        title = str(i.get("title", "")).strip()
+        if not isinstance(i.get("id"), str):
+            continue
+        title = str(i.get("title") or "").strip()
         if i.get("severity") in ("decision", "blocking") and title.endswith("?") \
                 and not re.match(r"(?i)(needs the original|left out by the researcher)", title):
             out.append(i)
@@ -364,11 +412,13 @@ def _quote_in(quote, rel, root):
 
 
 def check_questions(root, record):
-    files = downloads(root)
+    files = fetched(root, record)
     if not files:
         return []
     program = _program(root)
-    paper = (program.get("source") or {}).get("filename") or "paper.pdf"
+    source = program.get("source") if isinstance(program.get("source"), dict) else {}
+    paper = source.get("filename") if isinstance(source.get("filename"), str) else "paper.pdf"
+    on_disk = downloads(root)
     out = []
     records = {r.get("issue"): r for r in _list(record.get("questionsChecked")) if isinstance(r.get("issue"), str)}
     unchecked, answered = [], []
@@ -377,7 +427,7 @@ def check_questions(root, record):
         covered = set()
         for item in _list(r.get("sourcesChecked")) if r else []:
             paths = ([item.get("path")] if isinstance(item.get("path"), str) else []) + \
-                [p for p in item.get("paths") or [] if isinstance(p, str)]
+                [p for p in (item.get("paths") if isinstance(item.get("paths"), list) else []) if isinstance(p, str)]
             covered.update(_norm(p) for p in paths)
             if _words(item.get("found")) < 3:
                 unchecked.append("'%s' (say in 'found' what each file says on this point)" % issue.get("id"))
@@ -403,7 +453,7 @@ def check_questions(root, record):
     for i, d in enumerate(_list(record.get("decisionsFromSources"))):
         label = "decisionsFromSources[%d]" % i
         rel, quote = _norm(d.get("path")), d.get("quote")
-        if rel not in files and rel != _norm(paper):
+        if rel not in on_disk and rel != _norm(paper):
             out.append(("%s: path must be a downloaded file (sources/open/... or sources/private/...) or the paper" % label, ""))
             continue
         if _words(d.get("what")) < 3:

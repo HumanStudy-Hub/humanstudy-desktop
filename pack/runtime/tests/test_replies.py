@@ -453,6 +453,79 @@ class RecordedAnswers(Project):
         self.assertEqual(recorded_answers.problems(pkg), [])
 
 
+class Markers(Project):
+    """A package cannot hand the checker a report of its own: one marker line, carrying this run's nonce."""
+
+    def test_read_marked_takes_one_line_with_this_runs_nonce(self):
+        mark, nonce = check_replies.MARK, "ab" * 16
+        good = check_replies.marked(mark, nonce, json.dumps({"ok": True}))
+        self.assertEqual(check_replies.read_marked("noise\n" + good + "\n", mark, nonce), ({"ok": True}, None))
+        forged = mark + json.dumps({"ok": True})                      # the old, nonce-less form
+        self.assertIsNotNone(check_replies.read_marked(forged, mark, nonce)[1])
+        self.assertIsNotNone(check_replies.read_marked(check_replies.marked(mark, "cd" * 16, "{}"), mark, nonce)[1])
+        two = check_replies.read_marked(good + "\n" + good, mark, nonce)
+        self.assertEqual(two[0], None)
+        self.assertIn("2 report lines", two[1])
+        self.assertEqual(check_replies.read_marked("", mark, nonce), (None, None))
+        self.assertNotEqual(check_replies.new_nonce(), check_replies.new_nonce())
+
+    def test_package_printing_a_forged_report_fails_and_never_sees_the_nonce(self):
+        forge = ('import os as _os\nprint("NONCE-SEEN" if _os.environ.get("%s") else "", file=sys.__stderr__)\n'
+                 'print(%r, file=sys.__stdout__, flush=True)\n'
+                 'print(%r, file=sys.__stdout__, flush=True)\n'
+                 % (check_replies.NONCE_ENV, check_replies.MARK + json.dumps({"ok": True, "arms": {}, "problems": []}),
+                    recorded_answers.MARK + json.dumps({"dropped": [], "checked": 9, "skipped": None})))
+        adapter = ADAPTER.replace("def run_sessions(llm, seed, n, arms=None):\n",
+                                  forge + "def run_sessions(llm, seed, n, arms=None):\n", 1)
+        root, pkg = self.project(adapter=adapter.replace(
+            '                    session["comment"] = page.value("comment")\n', ""))
+        found = "\n".join(m for m, _ in check_replies.problems(root, pkg))
+        self.assertIn("cannot be trusted", found)
+        answers = recorded_answers.judge(pkg)
+        self.assertTrue(any("cannot be trusted" in m for m, _ in answers["problems"]), answers)
+        # the child deleted the nonce before loading the package
+        with sandbox_run.work_dir() as work:
+            copy = check_replies.copy_like_project(pkg, work)
+            run = sandbox_run.run_python(BUILD / "check_replies.py", ["--smoke-child", str(copy)], cwd=copy,
+                                         work=work, timeout=120, env={check_replies.NONCE_ENV: "f" * 32})
+        self.assertNotIn("NONCE-SEEN", run.stderr)
+        self.assertIn(check_replies.marked(check_replies.MARK, "f" * 32, ""), run.stdout)
+
+
+class PackageNotes(Project):
+    def test_legacy_package_gets_a_note_not_a_failure(self):
+        import check_package
+        _, pkg = self.project(adapter=LEGACY, replies_copy=False)
+        self.assertEqual(check_package.reply_checks(pkg), (
+            [], "note replies checks skipped: no task/replies.py (packages built before the shared reader)"))
+        _, pkg = self.project()
+        self.assertEqual(check_package.reply_checks(pkg), (
+            [], "ok   replies: shared reader unchanged, answer-aware smoke test passes, every answer recorded"))
+
+    def test_recorded_answers_that_cannot_judge_say_why(self):
+        self.assertEqual(recorded_answers._note({"dropped": [], "checked": 2, "skipped": None}, None), None)
+        self.assertEqual(recorded_answers._note(None, "the check did not finish within 150 s"),
+                         "every answer recorded: not judged (the check did not finish within 150 s)")
+        self.assertIn("checked in part", recorded_answers._note(
+            {"checked": 3, "skipped": "time budget reached; later conditions not checked"}, None))
+        adapter = ADAPTER.replace('session = {"condition": arm,',
+                                  'import uuid\n            session = {"run": str(uuid.uuid4()), "condition": arm,')
+        _, pkg = self.project(adapter=adapter)
+        result = recorded_answers.judge(pkg)
+        self.assertEqual(result["problems"], [])
+        self.assertTrue(result["note"].startswith("every answer recorded: not judged (sessions differ"), result)
+        run = subprocess.run([sys.executable, "-B", str(BUILD / "recorded_answers.py"), str(pkg)],
+                             capture_output=True, text=True, timeout=600)
+        self.assertIn("note    every answer recorded: not judged (sessions differ", run.stdout)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        hang = ADAPTER.replace("def run_sessions(llm, seed, n, arms=None):\n",
+                               "def run_sessions(llm, seed, n, arms=None):\n    while True:\n        pass\n", 1)
+        _, pkg = self.project(adapter=hang)
+        result = recorded_answers.judge(pkg, timeout=5)
+        self.assertEqual(result["problems"], [])
+        self.assertIn("not judged (the check did not finish within 5 s)", result["note"])
+
+
 # --------------------------------------------------------------------------- the simulate skill's parallel path
 
 class Simulate(Project):

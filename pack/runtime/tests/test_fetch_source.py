@@ -299,9 +299,163 @@ class Licence(Base):
         (self.root / "sources/open/items.txt").write_text("Item 1. I like puzzles.", encoding="utf-8")
         quiet(sources.main, [str(self.root), "--url", "sources/open/items.txt=https://s3.example/items.txt?X-Amz-Signature=a"])
         found = [m for m, _ in fetch_source.problems(self.root)]
-        self.assertTrue(any("without an open licence" in m for m in found))
+        # the package check takes the open-without-licence finding from check_materials.py, not twice
+        self.assertFalse(any("without an open licence" in m for m in found))
         self.assertTrue(any("signed storage link" in m for m in found))
+        found = [m for m, _ in fetch_source.problems(self.root, standalone=True)]
+        self.assertTrue(any("without an open licence" in m for m in found))
         self.assertEqual(quiet(fetch_source.main, ["--check", str(self.root)]), 1)
+
+
+def tar_bytes(members, mode="w:gz"):
+    import tarfile
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode=mode) as t:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            t.addfile(info, io.BytesIO(data))
+    return out.getvalue()
+
+
+class ByContent(Base):
+    """What the bytes are decides, whatever the name (or no name) says."""
+    URL = "https://osf.io/download/abc12/"   # no Content-Disposition: the saved name has no extension
+
+    def refused(self, body, words, name=None, headers=None):
+        self.serve({self.URL: [(body, dict(headers or {}))]})
+        before = self.kept()
+        with self.assertRaisesRegex(ValueError, words):
+            fetch_source.fetch(self.root, self.URL, name)
+        self.assertEqual(self.kept(), before)
+
+    def saved(self, body, name=None, headers=None):
+        self.serve({self.URL: [(body, dict(headers or {}))]})
+        return fetch_source.fetch(self.root, self.URL, name)["path"]
+
+    def test_data_formats_without_an_extension_are_refused(self):
+        import gzip
+        import pickle
+        export = b"ResponseID,StartDate,EndDate,Status,Q1\nR_1,2020,2020,0,5\n"
+        for body, words in (
+                (b"$FL2@(#) IBM SPSS STATISTICS" + b"\0" * 100, "SPSS"),
+                (gzip.compress(b"X\n\0\0\0\3" + b"\0" * 50), "R serialised object.*gzip"),
+                (gzip.compress(b"RDX3\nX\n" + b"\0" * 50), "R data file"),
+                (b"RDX2\nX\n" + b"\0" * 20, "R data file"),
+                (bytes([0x72, 2, 1, 0]) + b"\0" * 100, "Stata"),
+                (b"<stata_dta><header>", "Stata"),
+                (b"PAR1" + b"\0" * 40, "Parquet"),
+                (b"\x89HDF\r\n\x1a\n" + b"\0" * 40, "HDF5"),
+                (b"SQLite format 3\0" + b"\0" * 40, "SQLite"),
+                (pickle.dumps({"rt": [1, 2]}, protocol=4), "pickle")):
+            self.refused(body, words)
+            self.refused(body, words, name="materials")
+            self.refused(body, words, name="stimuli.txt")   # a material's name does not make data material
+        # an archive of data, extension-less, even when called materials
+        self.refused(tar_bytes({"raw_data.csv": export}), "raw_data.csv")
+        self.refused(tar_bytes({"raw_data.csv": export}), "raw_data.csv", name="materials")
+        self.refused(tar_bytes({"items.txt": b"$FL2" + b"\0" * 40}, "w:bz2"), "SPSS")
+        # an extension-less table is a .csv: its name must say materials, and its columns must not be data
+        self.refused(export, "not named as materials")
+        self.refused(export, "Qualtrics", name="materials")
+
+    def test_an_extension_less_file_takes_the_extension_its_content_gives(self):
+        self.assertEqual(self.saved(QSF), "sources/open/abc12.qsf")
+        self.assertEqual(self.saved(b"%PDF-1.4 stand-in", name="appendix"), "sources/open/appendix.pdf")
+        self.assertEqual(self.saved(b"Please read each statement carefully.\n"), "sources/open/abc12.txt")
+        good = tar_bytes({"Materials/instructions.txt": b"Please read carefully."})
+        self.assertEqual(self.saved(good, name="materials"), "sources/open/materials.tar.gz")
+        self.refused(b"\x01\x02\x03\x04\xfe\xff" * 50, "--name <file.ext>")
+        # --name with an extension still has its content checked
+        self.refused(b"$FL3" + b"\0" * 40, "SPSS", name="items.py")
+
+    def test_office_names_must_hold_office_files(self):
+        self.refused(b"a,b\n1,2\n", "not a .xlsx file", name="stimuli.xlsx",
+                     headers={"Content-Disposition": 'filename="stimuli.xlsx"'})
+        disguised = zip_bytes({"word/document.xml": "<w/>", "data/Study1.csv": "id,choice\n1,2\n"})
+        self.refused(disguised, "Study1.csv", headers={"Content-Disposition": 'filename="survey.docx"'})
+        real = zip_bytes({"[Content_Types].xml": "<Types/>", "word/document.xml": "<w/>"})
+        self.assertEqual(self.saved(real, headers={"Content-Disposition": 'filename="survey.docx"'}),
+                         "sources/open/survey.docx")
+        self.assertEqual(self.saved(real), "sources/open/abc12.docx")
+
+    def test_tar_listing_is_capped(self):
+        many = tar_bytes({"materials/item%d.txt" % i: b"x" for i in range(30)})
+        old = fetch_source.MAX_MEMBERS
+        fetch_source.MAX_MEMBERS = 10
+        self.addCleanup(setattr, fetch_source, "MAX_MEMBERS", old)
+        self.refused(many, "too large to list", headers={"Content-Disposition": 'filename="materials.tar.gz"'})
+        fetch_source.MAX_MEMBERS = old
+        big = tar_bytes({"materials/a.txt": b"x" * 5000})
+        old_bytes = fetch_source.MAX_UNPACKED
+        fetch_source.MAX_UNPACKED = 1000
+        self.addCleanup(setattr, fetch_source, "MAX_UNPACKED", old_bytes)
+        self.refused(big, "too large to list", headers={"Content-Disposition": 'filename="materials.tar.gz"'})
+
+    def test_slow_download_reserved_names_and_sniff(self):
+        self.serve({self.URL: [(b"text", {"Content-Disposition": 'filename="items.txt"'})]})
+        with self.assertRaisesRegex(ValueError, "did not finish"):
+            fetch_source.fetch(self.root, self.URL, deadline=-1)
+        self.assertEqual(self.kept(), [])
+        for name in ("CON.txt", "nul", "com1.pdf", "LPT9"):
+            self.assertTrue(fetch_source._safe_name(name).startswith("_"), name)
+        self.assertEqual(fetch_source._safe_name("console.txt"), "console.txt")
+        self.assertEqual(self.saved(b"hello", headers={"Content-Disposition": 'filename="CON.txt"'}),
+                         "sources/open/_CON.txt")
+
+
+class Credentials(Base):
+    def test_urls_are_recorded_without_credentials(self):
+        cases = {
+            "https://user:secret@x.org/items.txt": "https://x.org/items.txt",
+            "https://raw.githubusercontent.com/o/r/main/items.txt?token=GHSAT0": "https://raw.githubusercontent.com/o/r/main/items.txt",
+            "https://www.dropbox.com/scl/fi/abc/items.txt?rlkey=SECRET&dl=1": "https://www.dropbox.com/scl/fi/abc/items.txt?dl=1",
+            "https://x.org/a.pdf?api_key=1&page=2&Auth=3": "https://x.org/a.pdf?page=2",
+            "https://x.org/a.pdf?X-Amz-Date=1&v=2": "https://x.org/a.pdf?v=2",
+            "https://cdn.x.org/a.pdf?Expires=1&Policy=p&Key-Pair-Id=k&Signature=s": "https://cdn.x.org/a.pdf",
+            "https://osf.io/abcde/?view_only=0123": "https://osf.io/abcde/",
+            "https://osf.io/download/abcde/": "https://osf.io/download/abcde/",
+            "https://example.org/survey.qsf?version=2": "https://example.org/survey.qsf?version=2",
+        }
+        for url, public in cases.items():
+            self.assertEqual(fetch_source.public_url(url), public, url)
+        url = "https://user:pw@example.org/items.txt?token=abc&dl=1"
+        self.serve({url: [(b"Item 1.", {"final": "https://example.org/items.txt?access_token=z"})]})
+        entry = fetch_source.fetch(self.root, url)
+        self.assertEqual((entry["url"], entry["finalUrl"]), ("https://example.org/items.txt?dl=1",
+                                                             "https://example.org/items.txt"))
+        self.assertEqual([m for m, _ in fetch_source.problems(self.root) if "credential" in m], [])
+
+    def test_check_flags_any_url_still_holding_a_credential(self):
+        quiet(sources.main, [str(self.root)])
+        data = self.source()
+        for value in ("https://u:p@x.org/a.txt", "see https://x.org/a.txt?rlkey=abc&dl=1", "https://x.org/a?apikey=1"):
+            data["searches"] = [{"where": "OSF", "url": value}]
+            (self.root / "sources/SOURCE.json").write_text(json.dumps(data), encoding="utf-8")
+            self.assertTrue(any("credential" in m for m, _ in fetch_source.problems(self.root)), value)
+        data["searches"] = [{"where": "OSF", "url": "https://osf.io/abcde/?dl=1"}]
+        (self.root / "sources/SOURCE.json").write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(fetch_source.problems(self.root), [])
+
+    def test_malformed_licence_lookups_are_skipped(self):
+        rel = "sources/open/survey.qsf"
+        (self.root / "sources/open").mkdir(parents=True)
+        (self.root / rel).write_bytes(QSF)
+        data = sources.build(self.root)
+        sha = hashlib.sha256(QSF).hexdigest()
+        for lookups in ([{"file": {"sha256": sha}, "license": "CC-BY-4.0"}],      # no licenseFrom, no url
+                        ["CC-BY-4.0", 3, None, [], {"license": ["CC-BY-4.0"], "file": {"sha256": sha}}],
+                        {"file": {"sha256": sha}}, "x", [{"file": "x", "license": "CC0-1.0"}],
+                        [{"file": {"sha256": 5}, "license": None}]):
+            data["licenceLookups"] = lookups
+            (self.root / "sources/SOURCE.json").write_text(json.dumps(data), encoding="utf-8")
+            fetch_source.problems(self.root)
+            fetch_source.problems(self.root, standalone=True)
+        data["licenceLookups"] = [{"file": {"sha256": sha}, "license": "CC-BY-4.0"}]
+        (self.root / "sources/SOURCE.json").write_text(json.dumps(data), encoding="utf-8")
+        found = fetch_source.problems(self.root)
+        self.assertEqual(len(found), 1)
+        self.assertIn("--license %s=CC-BY-4.0" % rel, found[0][1])
 
 
 class Verify(Base):

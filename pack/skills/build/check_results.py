@@ -254,7 +254,7 @@ def image_tables(pdf_path, labels, already, record):
     """Tables of results with no text layer for their rows that no table field (or paperTables entry) covers."""
     out = []
     declared = {}
-    for item in record.get("paperTables") or []:
+    for item in _lst(record.get("paperTables")):
         if isinstance(item, dict) and str(item.get("table", "")).strip():
             declared[label_key("table " + re.sub(r"(?i)^\s*table\s*", "", str(item["table"]).strip()))] = item
     for t in paper_tables.table_inventory(pdf_path):
@@ -305,12 +305,21 @@ def _same(x, printed):
     return round(x, places) == round(float(printed), places)
 
 
+def _dct(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _lst(value):
+    return value if isinstance(value, list) else []
+
+
 def lost_signs(pdf_path, result_fields, evidence, record, paper_rel):
     recorded = [x for _, f in result_fields for x in signed_numbers(f.get("value"))]
-    checked = {(e.get("locator") or {}).get("page") for e in evidence.values()
+    checked = {_dct(e.get("locator")).get("page") for e in evidence.values()
                if str(e.get("note", "")).strip().casefold() == CHECKED
-               and (not e.get("path") or str(e.get("path")).lstrip("./") == paper_rel)}
-    signed_checks = [c for c in record.get("signChecks") or [] if isinstance(c, dict)
+               and (not e.get("path") or str(e.get("path")).removeprefix("./") == paper_rel)}
+    checked = {c for c in checked if isinstance(c, int) and not isinstance(c, bool)}
+    signed_checks = [c for c in _lst(record.get("signChecks")) if isinstance(c, dict)
                      and str(c.get("note", "")).strip().casefold() == CHECKED]
     lost = []
     for spot in paper_tables.sign_loss(pdf_path):
@@ -416,8 +425,14 @@ def check(program_path):
     program_path = Path(program_path).resolve()
     root = program_path.parent
     p = json.loads(program_path.read_text(encoding="utf-8"))
-    nodes = [n for n in p.get("nodes") or [] if isinstance(n, dict)]
-    evidence = {e.get("id"): e for e in p.get("evidence") or [] if isinstance(e, dict)}
+    # A malformed program never crashes the check: records of the wrong shape are left out (check_program.py
+    # reports them), ids and evidence lists keep only strings.
+    p = _dct(p)
+    ids = lambda value: [i for i in _lst(value) if isinstance(i, str)]
+    nodes = [dict(n, fields=[dict(f, evidenceIds=ids(f.get("evidenceIds"))) for f in _lst(n.get("fields"))
+                             if isinstance(f, dict)], evidenceIds=ids(n.get("evidenceIds")))
+             for n in _lst(p.get("nodes")) if isinstance(n, dict)]
+    evidence = {e["id"]: e for e in _lst(p.get("evidence")) if isinstance(e, dict) and isinstance(e.get("id"), str)}
     out, info = [], []
 
     structured, tables = [], []   # numbers held by fields; (where, field) for table fields
@@ -428,14 +443,14 @@ def check(program_path):
             walk(f.get("value"), structured)
             if is_table(f.get("value")):
                 tables.append(("%s.%s" % (n.get("id"), f.get("id")), f))
-    for s in p.get("steps") or []:
+    for s in _lst(p.get("steps")):
         if isinstance(s, dict) and isinstance(s.get("rule"), dict):
             walk(s["rule"].get("value"), structured)
     try:
         effects = json.loads((root / "effects.json").read_text(encoding="utf-8"))
-        for e in effects.get("effects") or []:
-            walk(e.get("reported"), structured)
-    except (OSError, ValueError, AttributeError):
+        for e in _lst(_dct(effects).get("effects")):
+            walk(_dct(e).get("reported"), structured)
+    except (OSError, ValueError, AttributeError, TypeError):
         pass
     held = {round(x, 6) for x in structured}
     unheld = lambda xs: [x for x in xs if round(x, 6) not in held]
@@ -469,12 +484,13 @@ def check(program_path):
             missing = unheld(nums)
             if eid not in cited_by_table and len(missing) >= MIN_QUOTE_ONLY:
                 out.append(("%s (p. %s): quote reads like a printed table (%d numbers, %d not in any field)"
-                            % (eid, (e.get("locator") or {}).get("page"), len(nums), len(missing)),
+                            % (eid, _dct(e.get("locator")).get("page"), len(nums), len(missing)),
                             "transcribe the table cell by cell into a table field that cites this evidence"))
 
     # printed table: captions on the paper's pages with no table field of that label
     labels = {label_key((f.get("value") or {}).get("table")) for _, f in tables}
-    paper = (p.get("source") or {}).get("filename")
+    paper = _dct(p.get("source")).get("filename")
+    paper = paper if isinstance(paper, str) and paper.strip() else None
     pdf_path = root / "paper.pdf" if (root / "paper.pdf").is_file() else (root / paper if paper else None)
     if pdf_path and pdf_path.is_file() and pdf_path.suffix.lower() == ".pdf":
         pages = Pdf(pdf_path).load()

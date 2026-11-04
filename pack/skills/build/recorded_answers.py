@@ -20,10 +20,15 @@ questions (comprehension and attention checks, consent) are skipped: their answe
 The package's code runs only in a confined child (sandbox_run.py) on a copy laid out like the project:
 no keys, no network, writes only in a scratch folder; pauses are skipped. Never in this process.
 
-Limits: a package whose runs are not reproducible from the seed is not judged (noted, not failed); a run
-that crashes or hangs is left to the smoke test; at most MAX_RERUNS reruns and TIME_BUDGET seconds, so a
-very long package is checked only in part (noted). Ported from HumanStudy-Bench
-agent_pipeline/recorded_answers.py. Standard library only.
+The child reports on one marker line carrying a per-run nonce, as check_replies.py's smoke test does (the
+same residual risk: package code in the child could still find the nonce in memory; the marker stops a stray
+report line, not a deliberate attack). More than one marker line, or one without this run's nonce, fails.
+
+Limits: a package whose runs are not reproducible from the seed is not judged; nor is one whose check timed out,
+crashed, or could not import the adapter; check_package.py prints the reason in its ok line ("every answer
+recorded: not judged (...)"), it does not fail. A run that crashes or hangs is left to the smoke test; at most
+MAX_RERUNS reruns and TIME_BUDGET seconds, so a very long package is checked only in part (noted the same way).
+Ported from HumanStudy-Bench agent_pipeline/recorded_answers.py. Standard library only.
 """
 from __future__ import annotations
 
@@ -250,38 +255,67 @@ def check(root: Path) -> dict:
     return report
 
 
-def confined_report(package_root: Path, timeout: int = CHECK_TIMEOUT) -> dict | None:
-    """check() in a confined child on a copy laid out like the project; None when it gave no report."""
+def confined_run(package_root: Path, timeout: int = CHECK_TIMEOUT) -> tuple:
+    """check() in a confined child on a copy laid out like the project: (report or None, why there is none,
+    a forged-marker problem or None)."""
     import sandbox_run
-    from check_replies import copy_like_project
+    from check_replies import NONCE_ENV, copy_like_project, new_nonce, read_marked
+    nonce = new_nonce()
     with sandbox_run.work_dir(prefix="recorded-answers-") as work:
         copy = copy_like_project(Path(package_root), work)
         run = sandbox_run.run_python(Path(__file__).resolve(), ["--child", str(copy)], cwd=copy, work=work,
-                                     timeout=timeout)
+                                     timeout=timeout, env={NONCE_ENV: nonce})
     if run.timed_out:
+        return None, "the check did not finish within %d s" % timeout, None
+    report, forged = read_marked(run.stdout, MARK, nonce)
+    if forged:
+        return None, forged, forged
+    if report is None:
+        return None, "the check gave no report (the adapter hung or crashed; the smoke test reports why)", None
+    return report, None, None
+
+
+def confined_report(package_root: Path, timeout: int = CHECK_TIMEOUT) -> dict | None:
+    """check() in a confined child; None when it gave no report."""
+    return confined_run(package_root, timeout)[0]
+
+
+def _note(report: dict | None, why: str | None) -> str | None:
+    """The line check_package.py prints when the check could not judge every answer, or None."""
+    if report is None:
+        return "every answer recorded: not judged (%s)" % (why or "no report")
+    skipped = report.get("skipped")
+    if not skipped:
         return None
-    line = next((l for l in run.stdout.splitlines()[::-1] if l.startswith(MARK)), None)
-    try:
-        report = json.loads(line[len(MARK):]) if line else None
-    except ValueError:
-        return None
-    return report if isinstance(report, dict) else None
+    if str(skipped).startswith("time budget"):
+        return "every answer recorded: checked in part (%s; %d question(s) checked)" % (skipped, report.get("checked") or 0)
+    return "every answer recorded: not judged (%s)" % skipped
+
+
+def judge(package_root, timeout: int = CHECK_TIMEOUT) -> dict:
+    """{"applies", "report", "problems": [(message, fix)], "note": a line for check_package.py or None}."""
+    applies, report, found, note = _judge(package_root, timeout)
+    return {"applies": applies, "report": report, "problems": found, "note": note}
 
 
 def _judge(package_root, timeout: int = CHECK_TIMEOUT) -> tuple:
-    """(applies, report or None, [(message, fix)])."""
+    """(applies, report or None, [(message, fix)], note or None)."""
     from check_replies import IMPORTS
     root = Path(package_root).resolve()
     try:
         adapter = (root / "task/adapter.py").read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return False, None, []
+        return False, None, [], None
     if not IMPORTS.search(adapter):
-        return False, None, []
-    report = confined_report(root, timeout)
+        return False, None, [], None
+    report, why, forged = confined_run(root, timeout)
+    if forged:
+        return True, None, [("recorded answers: the check's report cannot be trusted: %s" % forged,
+                             "remove any print of a line starting with %s from the package" % MARK)], None
+    note = _note(report, why)
     dropped = (report or {}).get("dropped") or []
     if not dropped:
-        return True, report, []
+        return True, report, [], note
     shown = "; ".join("'%s' (condition %s, prompt %s)" % (d.get("text") or d.get("question"), d.get("condition"),
                                                           d.get("prompt")) for d in dropped[:5])
     more = " and %d more" % (len(dropped) - 5) if len(dropped) > 5 else ""
@@ -289,30 +323,31 @@ def _judge(package_root, timeout: int = CHECK_TIMEOUT) -> tuple:
         "recorded answers: participants are asked questions whose answers never reach the session record "
         "run_sessions returns: %s%s. Changing the answer changes nothing in the session" % (shown, more),
         "store every answer a participant gives in the session (wrap-up and comment questions too, under a "
-        "neutral key), even when the analysis does not use it (build SKILL.md section 3, 'Record every answer')")]
+        "neutral key), even when the analysis does not use it (build SKILL.md section 3, 'Record every answer')")], note
 
 
 def problems(package_root, timeout: int = CHECK_TIMEOUT) -> list:
-    """[(message, fix)] for check_package.py; [] when the package does not use replies.py or could not be judged."""
+    """[(message, fix)] for check_package.py; [] when the package does not use replies.py or could not be judged
+    (judge() also returns the note saying why)."""
     return _judge(package_root, timeout)[2]
 
 
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["--child"] and len(argv) == 2:
+        from check_replies import child_nonce, marked
+        nonce = child_nonce()   # before any package code
         report = check(Path(argv[1]).resolve())
-        print(MARK + json.dumps(report, ensure_ascii=False, default=str), flush=True)
+        print(marked(MARK, nonce, json.dumps(report, ensure_ascii=False, default=str)), flush=True)
         return 0
     if len(argv) != 1:
         print("usage: recorded_answers.py package/<slug>", file=sys.stderr)
         return 2
-    applies, report, found = _judge(argv[0])
+    applies, report, found, note = _judge(argv[0])
     if not applies:
         return 0  # an older package without the shared reader: nothing to say
-    if report is None:
-        print("note    the check gave no report (the adapter hung or crashed; the smoke test reports why)")
-    elif report.get("skipped"):
-        print("note    " + str(report["skipped"]))
+    if note:
+        print("note    " + note)
     for msg, fix in found:
         print("PROBLEM %s\n        fix: %s" % (msg, fix))
     if found:

@@ -253,19 +253,27 @@ prop.test(x = c(10, 20), n = c(50, 50), correct = FALSE)
 
 
 class SourceUse(unittest.TestCase):
-    def project(self, files=None, record=None, issues=None, nodes=None, evidence=None):
+    def project(self, files=None, record=None, issues=None, nodes=None, evidence=None, fetched=True):
         root = tmpdir(self, "source-use-")
         for rel, text in (files or {}).items():
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_text(text, encoding="utf-8")
         (root / "sources").mkdir(exist_ok=True)
-        (root / "sources/SOURCE.json").write_text(json.dumps(record or {}), encoding="utf-8")
+        self.fetched = fetched
+        self.write_record(root, record or {})
         program = {"source": {"filename": "paper.pdf"}, "nodes": nodes or [], "evidence": evidence or [],
                    "issues": issues or []}
         (root / "program.json").write_text(json.dumps(program), encoding="utf-8")
         return root
 
     def write_record(self, root, record):
+        """SOURCE.json as fetch_source.py leaves it: every file under sources/open|private with its url."""
+        record = dict(record)
+        if self.fetched and "files" not in record:
+            record["files"] = [{"path": p.relative_to(root).as_posix(), "url": "https://osf.io/download/%s/" % p.stem,
+                                "retrieved": "2026-11-04"}
+                               for d in ("sources/open", "sources/private") for p in sorted((root / d).rglob("*"))
+                               if p.is_file()]
         (root / "sources/SOURCE.json").write_text(json.dumps(record), encoding="utf-8")
 
     def msgs(self, root):
@@ -328,6 +336,74 @@ class SourceUse(unittest.TestCase):
         self.assertEqual([n for n, _ in su.signal_lines(root / "sources/open/a.do")], [1])
         self.assertIsNone(su.CODE_LISTED.search("ran paper_tables.py and sources.py; cran.r-project.org"))
         self.assertTrue(su.CODE_LISTED.search("listing shows analysis.R and data.csv"))
+
+    def test_one_wide_entry_does_not_cover_a_whole_script(self):
+        code = ("library(dplyr)\n" + "".join("x%d <- %d\n" % (i, i) for i in range(100))
+                + "# exclude participants who failed the attention check\nd <- d[d$ac == 1, ]\n"
+                + "".join("y%d <- %d\n" % (i, i) for i in range(100)) + "# recode item 3 (coding error)\n")
+        root = self.project({"sources/open/analysis.R": code})
+        n = len(code.splitlines())
+        wide = {"source": "sources/open/analysis.R", "lines": "1-%d" % n, "quote": "library(dplyr)",
+                "what": "the whole analysis script", "use": "not applicable", "reason": "the replay does not need it"}
+        self.write_record(root, {"analysisCode": [wide]})
+        found = self.msgs(root)
+        self.assertTrue(any("span more than 15 lines" in m for m in found), found)
+        self.assertTrue(any("line 102" in m and "line %d" % n in m for m in found), found)
+        # within 15 lines, but its quote is code ten lines away: still not covered
+        near = dict(wide, lines="90-104", quote="x90 <- 90")
+        self.write_record(root, {"analysisCode": [near]})
+        self.assertTrue(any("line 102" in m for m in self.msgs(root)))
+        exclude = dict(wide, lines="102-103", quote="d <- d[d$ac == 1, ]", what="excludes failed attention checks",
+                       use="carried over", where="evaluation/evaluation.py exclusion")
+        recode = dict(wide, lines=n, quote="# recode item 3 (coding error)", what="recodes item 3 after a coding error")
+        self.write_record(root, {"analysisCode": [exclude, recode]})
+        self.assertEqual(self.msgs(root), [])
+
+    def test_only_fetched_files_are_held_to_the_code_and_question_rules(self):
+        issues = [{"id": "order", "title": "Which order did participants see?", "severity": "decision"}]
+        files = {"sources/open/a.R": "# exclude outliers\nd <- d[d$rt < 3000, ]\n",
+                 "sources/researcher/b.R": "# exclude outliers\nd <- d[d$rt < 3000, ]\n"}
+        root = self.project(files, issues=issues, fetched=False)       # placed by hand: no url, no retrieved
+        self.assertEqual(self.msgs(root), [])
+        self.fetched = True
+        self.write_record(root, {})
+        found = self.msgs(root)
+        self.assertTrue(any("nothing is recorded from sources/open/a.R" in m for m in found), found)
+        self.assertFalse(any("sources/researcher" in m for m in found), found)
+        self.assertTrue(any(m.startswith("questions") and "sources/open/a.R" not in m for m in found), found)
+        # a Python experiment script that happens to call statistics is material
+        exp = root / "sources/open/task.py"
+        exp.write_text("from psychopy import visual\nfrom scipy import stats\n# remove the fixation cross\n")
+        self.assertFalse(su.is_analysis_code(exp))
+        exp.write_text("import scipy.stats\ndef run_sessions(llm, seed, n):\n    pass\n")
+        self.assertFalse(su.is_analysis_code(exp))
+
+    def test_malformed_records_never_crash(self):
+        bad = [None, 1, "x", [], ["a"], [1, None], {"a": 1}, True]
+        root = self.project({"sources/open/a.R": "# exclude outliers\nx <- recode(y)\n",
+                             "sources/open/Survey.qsf": "{}", "sources/open/Survey.docx": "x"})
+        program = json.loads((root / "program.json").read_text())
+        for value in bad:
+            for key in ("files", "analysisCode", "searches", "surveyVersions", "questionsChecked",
+                        "decisionsFromSources"):
+                self.write_record(root, {key: value})
+                self.write_record(root, {key: [value]})
+                self.assertFalse(any("could not run" in m for m in self.msgs(root)), (key, value))
+            for key in ("source", "lines", "quote", "what", "use", "where", "reason"):
+                self.write_record(root, {"analysisCode": [{"source": "sources/open/a.R", "lines": "1-2", key: value}]})
+                self.assertFalse(any("could not run" in m for m in self.msgs(root)), (key, value))
+            for item in ({"paths": value}, {"path": value}, {"found": value}, {"answers": value}):
+                self.write_record(root, {"questionsChecked": [{"issue": "q", "sourcesChecked": [item]}]})
+                self.assertFalse(any("could not run" in m for m in self.msgs(root)), (item, value))
+            for key, prog in (("source", dict(program, source=value)), ("issues", dict(program, issues=value)),
+                              ("issue id", dict(program, issues=[{"id": value, "title": "Which?", "severity": "decision"}])),
+                              ("nodes", dict(program, nodes=[{"id": "n", "fields": value}])),
+                              ("evidence", dict(program, evidence=[{"id": value}])),
+                              ("program", value)):
+                (root / "program.json").write_text(json.dumps(prog))
+                self.write_record(root, {})
+                self.assertFalse(any("could not run" in m for m in self.msgs(root)), (key, value))
+            (root / "program.json").write_text(json.dumps(program))
 
     # 2. survey versions
     def test_two_survey_files_need_a_comparison_and_a_no_version_supplies_no_text(self):

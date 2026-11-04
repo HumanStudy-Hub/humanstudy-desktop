@@ -9,8 +9,10 @@ import { dirname, join } from 'node:path'
 
 export interface ScientificProblem { check: string; reason: string }
 
-/** Longer than check_readiness.py's own limits (the smoke test plus the prompt capture). */
-export const SCIENTIFIC_TIMEOUT_MS = 20 * 60_000
+/** Longer than check_readiness.py's own limits run one after another: check_package.py (PACKAGE_TIMEOUT 1300 s:
+ *  the smoke tests, the recorded-answers check and the prompt capture), check_validity's own capture (300 s) and
+ *  the effects field check (300 s), with margin. */
+export const SCIENTIFIC_TIMEOUT_MS = 40 * 60_000
 
 export const RUNTIME_MISSING: ScientificProblem = { check: 'runtime', reason: 'The research runtime is not installed, so the build checks cannot run yet.' }
 export const CHECKS_FAILED: ScientificProblem = { check: 'runtime', reason: 'The build checks could not complete. Retry; if it persists, reinstall the research runtime.' }

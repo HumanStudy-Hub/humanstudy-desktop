@@ -11,17 +11,26 @@ Download: saves the file under sources/open/ (sources/private/ with --private: p
 licence), atomically, and records it in sources/SOURCE.json through sources.py: `url` (as asked), `finalUrl`
 (after redirects), `sha256`, `bytes`, `retrieved` (date), plus the optional linkedToPaper / version values.
 The licence the file states is recorded with sources.py --license / --license-evidence (a PDF's printed
-licence is read automatically). A signed storage link (X-Amz-Signature, X-Goog-Signature, an Expires +
-Signature pair, an Azure SAS, an OSF view_only key) is recorded without its query: it is a credential while
-it lasts.
+licence is read automatically). URLs are recorded without credentials: never a user:password@; a signed storage
+link (X-Amz-Signature, X-Goog-Signature, an Expires + Signature pair, an Azure SAS, an OSF view_only key) without
+its query; any other URL without its token, access_token, api_key, apikey, key, rlkey, auth, sas, sig, signature,
+X-Amz-*, X-Goog-*, Expires, Policy and Key-Pair-Id parameters.
 Refused, and nothing is kept: participant data by name or format (statistics-package and serialised formats
 such as .sav .dta .rds .RData .feather .parquet .mat .pkl .psydat; a table (.csv .tsv .xlsx .jsonl .dat)
 whose name does not say it is materials, or says raw / responses / export; .txt and .json named as data or
-responses; the names and columns check_materials.py flags; a Qualtrics response export), an archive that
-holds such a file or a data/ folder, or that cannot be listed (zip and tar are listed, never extracted or
-run), a notebook whose saved outputs print tables, a file over MAX_MB, a scheme other than http(s) and a
-redirect from https to http. No host list: any public host may be asked. The file is never opened as code,
-imported or run.
+responses; the names and columns check_materials.py flags; a Qualtrics response export), and by content,
+whatever the name: the first bytes of SPSS, Stata, R (.RData, .rds, also gzip/bzip2/xz-compressed), Parquet,
+Feather, HDF5, SQLite, MATLAB, NumPy and pickle files. A file the server names without an extension takes the
+one its content gives (.pdf .docx .xlsx .pptx .zip .tar.gz .qsf .json .html .csv .tsv .txt .png ...), and is
+then judged under that name (an extension-less table is a .csv whose name must say materials); a file whose
+content says nothing is refused until --name gives the extension. An archive (zip, tar, gzip/bzip2/xz-compressed
+tar, by name or by content; an Office file without its [Content_Types].xml) is listed, never extracted or run,
+and refused when it holds participant data or a data/ folder, cannot be listed (7z, rar, a compressed single
+file), or lists more than MAX_MEMBERS entries or MAX_UNPACKED bytes. An .xlsx/.docx/... that is not a zip is
+refused. Also refused: a notebook whose saved outputs print tables, a file over MAX_MB, a download that takes
+longer than DOWNLOAD_DEADLINE, a scheme other than http(s) and a redirect from https to http. No host list: any
+public host may be asked. The file is never opened as code, imported or run. A name Windows reserves (CON, NUL,
+COM1 ...) is saved with a leading underscore.
 
 --licence: downloads nothing. Asks the OSF API (v2 files / nodes / registrations, ?embed=license) for the file's
 name and the SHA-256 OSF lists, the licence of its project and of each parent up to the first one that states
@@ -29,10 +38,12 @@ one, and, for a registration, the licence of the project it was registered from 
 registration does not take it automatically). Appends the record to SOURCE.json `licenceLookups` with every
 API URL asked. A file whose SHA-256 equals a looked-up file in an openly licensed project carries that licence.
 
---check (offline): problems() below. A file under sources/open/ without an open licence fails; when a
-licenceLookups record with the same SHA-256 shows an open licence, the fix says to record that licence and
-cite the lookup in licenseEvidence. licenseEvidence that cites a lookup no record confirms fails, and so does
-a signed storage link written anywhere in SOURCE.json.
+--check (offline): problems() below. A file under sources/open/ without an open licence fails (in the package
+check that is check_materials.py's finding; problems() adds only the lookup fix); when a licenceLookups record
+with the same SHA-256 shows an open licence, the fix says to record that licence and cite the lookup in
+licenseEvidence. licenseEvidence that cites a lookup no record confirms fails, and so does a URL with a credential
+(see above) written anywhere in SOURCE.json. A malformed SOURCE.json never crashes it: records of the wrong
+shape are skipped.
 
 --verify (opt-in network use, not part of the offline readiness gate): downloads again every SOURCE.json file
 that has a `url` and compares SHA-256. 403, 429, 5xx, timeouts and network errors are retried with a growing
@@ -169,23 +180,55 @@ def notebook_shows_data(raw):
     return False
 
 
+MAX_MEMBERS = 10000                  # an archive listing more entries is refused
+MAX_UNPACKED = 1024 * 1024 * 1024    # and so is one whose members add up to more (a compression bomb)
+
+
+class _TooBig(ValueError):
+    pass
+
+
 def _members(path):
-    """(name, size, read()) of every file in a zip or tar archive; None when it cannot be listed."""
+    """(name, size, read()) of every file in a zip or tar archive; None when it cannot be listed. Raises
+    _TooBig past MAX_MEMBERS entries or MAX_UNPACKED bytes (a tar is read lazily, so a bomb stops early)."""
     if zipfile.is_zipfile(path):
-        z = zipfile.ZipFile(path)
-        return [(i.filename, i.file_size, (lambda i=i: z.open(i).read(MAX_FILE))) for i in z.infolist() if not i.is_dir()]
+        try:
+            z = zipfile.ZipFile(path)
+            infos = z.infolist()
+        except (zipfile.BadZipFile, OSError, ValueError):
+            return None
+        if len(infos) > MAX_MEMBERS or sum(i.file_size for i in infos) > MAX_UNPACKED:
+            raise _TooBig("more than %d entries or %d GiB unpacked" % (MAX_MEMBERS, MAX_UNPACKED >> 30))
+        return [(i.filename, i.file_size, (lambda i=i: z.open(i).read(MAX_FILE))) for i in infos if not i.is_dir()]
     try:
         t = tarfile.open(path, "r:*")
-    except (tarfile.TarError, OSError):
+    except (tarfile.TarError, OSError, EOFError, ValueError):
         return None
-    return [(m.name, m.size, (lambda m=m: t.extractfile(m).read(MAX_FILE))) for m in t.getmembers() if m.isfile()]
+    out, count, total = [], 0, 0
+    try:
+        for m in t:
+            count += 1
+            total += max(0, m.size)
+            if count > MAX_MEMBERS or total > MAX_UNPACKED:
+                raise _TooBig("more than %d entries or %d GiB unpacked" % (MAX_MEMBERS, MAX_UNPACKED >> 30))
+            if m.isfile():
+                out.append((m.name, m.size, (lambda m=m: t.extractfile(m).read(MAX_FILE))))
+    except (tarfile.TarError, OSError, EOFError, ValueError) as exc:
+        if isinstance(exc, _TooBig):
+            raise
+        return None
+    return out
 
 
 def archive_data(path):
     """The member of an archive that is participant data (with why), or ''; refuses an unlistable archive."""
-    members = _members(path)
+    try:
+        members = _members(path)
+    except _TooBig as exc:
+        return "an archive too large to list safely (%s)" % exc
     if members is None:
-        return "an archive that cannot be listed (only zip and tar archives are opened, never run)"
+        return "an archive that cannot be listed (only zip and tar archives, plain or gzip/bzip2/xz compressed, " \
+               "are opened, never run)"
     with tempfile.TemporaryDirectory(prefix="fetch-member-") as tmp:
         for name, size, read in members:
             why = data_name(name)
@@ -193,10 +236,21 @@ def archive_data(path):
                 why = "it is in a data folder"
             base = Path(name).name
             suffix = Path(base).suffix.lower()
-            if not why and size <= 8 * 1024 * 1024 and suffix in TABLES + (".txt", ".json", ".ipynb"):
+            if not why and size <= 8 * 1024 * 1024:
                 copy = Path(tmp) / ("member" + suffix)
-                copy.write_bytes(read())
-                why = content_data(copy)
+                try:
+                    copy.write_bytes(read())
+                except (OSError, zipfile.BadZipFile, tarfile.TarError, EOFError, ValueError,
+                        NotImplementedError, RuntimeError):
+                    return "%s (a member that cannot be read)" % name
+                found = sniff(copy)
+                why = found["why"] if found["kind"] == "data" else ""
+                if not why and found["kind"] in ("archive", "zip") and not _office_ok(copy, suffix, found):
+                    why = "a nested archive"
+                if not why and suffix in TABLES + (".txt", ".json", ".ipynb", ""):
+                    if not suffix and found.get("ext"):
+                        copy = copy.rename(copy.with_name("member" + found["ext"]))
+                    why = content_data(copy)
             if not why and suffix in ARCHIVES:
                 why = "a nested archive"
             if why:
@@ -205,13 +259,167 @@ def archive_data(path):
 
 
 # ---------------------------------------------------------------------------------------------------------------
+# what a file is, by its first bytes (whatever its name says)
+
+SNIFF_BYTES = 64 * 1024
+# Statistics-package and serialised data formats, by signature.
+DATA_MAGIC = (
+    (b"$FL2", "an SPSS data file"), (b"$FL3", "an SPSS data file"), (b"<stata_dta>", "a Stata data file"),
+    (b"RDX2", "an R data file"), (b"RDX3", "an R data file"), (b"RDA2", "an R data file"),
+    (b"RDA3", "an R data file"), (b"X\n\x00\x00\x00", "an R serialised object (.rds)"),
+    (b"PAR1", "a Parquet table"), (b"\x89HDF\r\n\x1a\n", "an HDF5 file"), (b"SQLite format 3\x00", "an SQLite database"),
+    (b"ARROW1", "an Arrow/Feather table"), (b"FEA1", "a Feather table"), (b"MATLAB 5.0 MAT-file", "a MATLAB data file"),
+    (b"\x93NUMPY", "a NumPy array"),
+)
+COMPRESSED = ((b"\x1f\x8b", "gzip"), (b"BZh", "bzip2"), (b"\xfd7zXZ\x00", "xz"))
+UNLISTABLE = ((b"7z\xbc\xaf\x27\x1c", "a 7-Zip archive"), (b"Rar!\x1a\x07", "a RAR archive"),
+              (b"MSCF", "a cabinet archive"))
+OOXML = {".docx": "word/", ".xlsx": "xl/", ".xlsm": "xl/", ".pptx": "ppt/"}
+ODF = (".odt", ".ods", ".odp")
+
+
+def _data_magic(head):
+    """Why these first bytes are a data format, or ''."""
+    for magic, what in DATA_MAGIC:
+        if head.startswith(magic):
+            return what
+    if re.match(rb"A\n[23]\n\d{5,7}\n", head):
+        return "an R serialised object (.rds, ASCII)"
+    # Stata 8-13 (.dta 113-119): release byte, byte order 1|2, file type 1, a zero byte
+    if len(head) >= 4 and 0x69 <= head[0] <= 0x77 and head[1] in (1, 2) and head[2] == 1 and head[3] == 0:
+        return "a Stata data file"
+    if len(head) >= 2 and head[0] == 0x80 and 2 <= head[1] <= 5:
+        return "a Python pickle"
+    return ""
+
+
+def _decompressed_head(path, kind, n=4096):
+    import bz2
+    import lzma
+    import zlib
+    raw = Path(path).read_bytes()[:SNIFF_BYTES]
+    try:
+        if kind == "gzip":
+            return zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(raw, n)
+        if kind == "bzip2":
+            return bz2.BZ2Decompressor().decompress(raw, n)
+        return lzma.LZMADecompressor().decompress(raw, n)
+    except (zlib.error, OSError, EOFError, ValueError, lzma.LZMAError):
+        return b""
+
+
+def _zip_names(path):
+    try:
+        with zipfile.ZipFile(path) as z:
+            return z.namelist()[:MAX_MEMBERS + 1]
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return []
+
+
+def _office_ok(path, suffix, found):
+    """An Office/OpenDocument file that really is one ([Content_Types].xml, or an ODF mimetype entry)."""
+    if found.get("kind") != "zip" or suffix not in OOXML and suffix not in ODF:
+        return False
+    names = _zip_names(path)
+    return "[Content_Types].xml" in names if suffix in OOXML else "mimetype" in names
+
+
+TABLE_DELIMITERS = ((",", ".csv"), ("\t", ".tsv"), (";", ".csv"))
+
+
+def _text_kind(text):
+    """The extension a text file's content says (.qsf .json .html .csv .tsv .txt)."""
+    body = text.lstrip("\ufeff \r\n\t")
+    if body[:1] in "{[":
+        try:
+            data = json.loads(body)
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and "SurveyEntry" in data:
+            return ".qsf"
+        if data is not None:
+            return ".json"
+    if body[:15].lower().startswith(("<!doctype html", "<html")):
+        return ".html"
+    if body.startswith("{\\rtf"):
+        return ".rtf"
+    lines = [l for l in body.splitlines() if l.strip()][:30]
+    for delimiter, ext in TABLE_DELIMITERS:
+        counts = [l.count(delimiter) for l in lines]
+        if len(lines) >= 2 and counts[0] >= 1 and sum(c == counts[0] for c in counts) >= 0.8 * len(counts):
+            return ext
+    return ".txt"
+
+
+def sniff(path):
+    """What the file's first bytes say it is, whatever its name: {"kind": "data" | "archive" | "zip" | "pdf" |
+    "text" | "image" | "unknown", "why": ..., "ext": the extension its content gives, or None}."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(SNIFF_BYTES)
+    except OSError:
+        return {"kind": "unknown", "why": "", "ext": None}
+    why = _data_magic(head)
+    if why:
+        return {"kind": "data", "why": why, "ext": None}
+    for magic, kind in COMPRESSED:
+        if head.startswith(magic):
+            inner = _decompressed_head(path, kind)
+            why = _data_magic(inner)
+            if why:
+                return {"kind": "data", "why": "%s (%s-compressed)" % (why, kind), "ext": None}
+            tar = len(inner) > 262 and inner[257:262] == b"ustar"
+            return {"kind": "archive", "why": "a %s-compressed %s" % (kind, "tar archive" if tar else "file"),
+                    "ext": ".tar." + {"gzip": "gz", "bzip2": "bz2", "xz": "xz"}[kind] if tar else None}
+    for magic, what in UNLISTABLE:
+        if head.startswith(magic):
+            return {"kind": "archive", "why": what, "ext": None}
+    if len(head) > 262 and head[257:262] == b"ustar":
+        return {"kind": "archive", "why": "a tar archive", "ext": ".tar"}
+    if head.startswith((b"PK\x03\x04", b"PK\x05\x06")) and zipfile.is_zipfile(path):
+        names = _zip_names(path)
+        ext = ".zip"
+        if "[Content_Types].xml" in names:
+            ext = next((e for e, folder in OOXML.items() if any(n.startswith(folder) for n in names)), ".zip")
+        return {"kind": "zip", "why": "a zip archive", "ext": ext}
+    if b"%PDF-" in head[:1024]:
+        return {"kind": "pdf", "why": "", "ext": ".pdf"}
+    for magic, ext in ((b"\x89PNG\r\n\x1a\n", ".png"), (b"\xff\xd8\xff", ".jpg"), (b"GIF8", ".gif")):
+        if head.startswith(magic):
+            return {"kind": "image", "why": "", "ext": ext}
+    if b"\x00" not in head:
+        text = head.decode("utf-8", "replace")
+        if text.count("\ufffd") <= max(2, len(text) // 200):
+            if len(head) == SNIFF_BYTES:   # the whole file decides whether JSON parses
+                try:
+                    text = Path(path).read_bytes()[:MAX_FILE].decode("utf-8", "replace")
+                except OSError:
+                    pass
+            return {"kind": "text", "why": "", "ext": _text_kind(text)}
+    return {"kind": "unknown", "why": "", "ext": None}
+
+
+# ---------------------------------------------------------------------------------------------------------------
 # signed links: never written
 
-SIGNED_URL = re.compile(r"(?i)https?://[^\s\"'<>?)\]\\]+\?[^\s\"'<>)\]\\]*")
+ANY_URL = re.compile(r"(?i)https?://[^\s\"'<>)\]\\]+")
+# Query parameters that are credentials (an access token, an API key, a link key, a signature and its parts).
+SECRET_PARAMS = {"token", "access_token", "api_key", "apikey", "key", "rlkey", "auth", "sas", "sig", "signature",
+                 "expires", "policy", "key-pair-id", "googleaccessid", "awsaccesskeyid", "view_only"}
+SECRET_PREFIXES = ("x-amz-", "x-goog-")
+
+
+def _params(query):
+    return [part for part in re.split(r"&(?:amp;)?|;", query) if part]
+
+
+def _is_secret(name):
+    name = unquote(name).strip().lower()
+    return name in SECRET_PARAMS or name.startswith(SECRET_PREFIXES)
 
 
 def _is_signed(query):
-    names = {part.split("=", 1)[0].lower() for part in re.split(r"&(?:amp;)?|;", query)}
+    names = {unquote(part.split("=", 1)[0]).lower() for part in _params(query)}
     return bool(names & {"x-amz-signature", "x-amz-credential", "x-amz-security-token", "x-goog-signature",
                          "x-goog-credential", "view_only"}
                 or ("signature" in names and names & {"expires", "key-pair-id", "googleaccessid", "awsaccesskeyid",
@@ -220,11 +428,24 @@ def _is_signed(query):
 
 
 def public_url(url):
-    """`url` without the query (and fragment) of a signed storage link; any other URL unchanged."""
-    parts = urlsplit(url)
+    """`url` as it may be recorded: never a user:password@, without the query (and fragment) of a signed storage
+    link, and without any credential parameter (token, key, rlkey, signature, X-Amz-* ...); else unchanged."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    changed = False
+    if "@" in parts.netloc:
+        parts = parts._replace(netloc=parts.netloc.rsplit("@", 1)[1])
+        changed = True
     if parts.query and _is_signed(parts.query):
         return parts._replace(query="", fragment="").geturl()
-    return url
+    if parts.query:
+        kept = [p for p in _params(parts.query) if not _is_secret(p.split("=", 1)[0])]
+        if len(kept) != len(_params(parts.query)):
+            parts = parts._replace(query="&".join(kept))
+            changed = True
+    return parts.geturl() if changed else url
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -287,7 +508,7 @@ def _get(url, attempts=4, accept=None, limit=MAX_FILE, sleep=time.sleep, timeout
         tried += 1
         wait = 2.0 * 2 ** attempt
         try:
-            chunks, size = [], 0
+            chunks, size, stop = [], 0, time.monotonic() + DOWNLOAD_DEADLINE
             with _open(_request(url, accept), timeout) as response:
                 while True:
                     chunk = response.read(CHUNK)
@@ -295,13 +516,15 @@ def _get(url, attempts=4, accept=None, limit=MAX_FILE, sleep=time.sleep, timeout
                         break
                     size += len(chunk)
                     if size > limit:
-                        raise ValueError("%s serves more than the %d MiB limit" % (url, limit // (1024 * 1024)))
+                        raise ValueError("%s serves more than the %d MiB limit" % (public_url(url), limit // (1024 * 1024)))
+                    if time.monotonic() > stop:
+                        raise ConnectionError("%s did not finish within %d s" % (public_url(url), DOWNLOAD_DEADLINE))
                     chunks.append(chunk)
             return b"".join(chunks)
         except urllib.error.HTTPError as exc:
             exc.close()
             if exc.code in GONE_CODES:
-                raise SourceGone("%s answered HTTP %d" % (url, exc.code)) from exc
+                raise SourceGone("%s answered HTTP %d" % (public_url(url), exc.code)) from exc
             last = "HTTP %d" % exc.code
             refused = refused and exc.code in REFUSED_CODES
             wait = max(wait, _retry_after(exc) or 0.0, REFUSED_PAUSE if exc.code in REFUSED_CODES else 0.0)
@@ -316,14 +539,19 @@ def _get(url, attempts=4, accept=None, limit=MAX_FILE, sleep=time.sleep, timeout
             break
         sleep(wait)
     error = Refused if refused and tried >= 2 else ConnectionError
-    raise error("could not download %s after %d attempt%s (last answer: %s)" % (url, tried, "s" * (tried != 1), last))
+    raise error("could not download %s after %d attempt%s (last answer: %s)" % (public_url(url), tried, "s" * (tried != 1), last))
 
 
 # ---------------------------------------------------------------------------------------------------------------
 # download
 
+WINDOWS_RESERVED = re.compile(r"(?i)^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)")
+
+
 def _safe_name(name):
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", unquote(name)).strip("._") or "download"
+    if WINDOWS_RESERVED.match(name):   # CON, NUL, COM1 ... are devices on Windows, whatever the extension
+        name = "_" + name
     return name[:120]
 
 
@@ -340,8 +568,11 @@ def _write_json(path, data):
     os.replace(tmp, path)
 
 
+DOWNLOAD_DEADLINE = 600.0   # seconds for one download, however slowly the server trickles bytes
+
+
 def fetch(root, url, name=None, private=False, linked=None, version=None, license=None, license_evidence=None,
-          timeout=120):
+          timeout=120, deadline=DOWNLOAD_DEADLINE):
     """Download `url` into sources/open/ (or sources/private/), record it in SOURCE.json; the file's entry."""
     root = Path(root).resolve()
     why = data_name(url) or data_name(name or "")
@@ -367,6 +598,7 @@ def fetch(root, url, name=None, private=False, linked=None, version=None, licens
             fd, tmp = tempfile.mkstemp(prefix=".fetching-", suffix=Path(filename).suffix, dir=folder)
             tmp = Path(tmp)
             digest, size = hashlib.sha256(), 0
+            stop = time.monotonic() + deadline
             with os.fdopen(fd, "wb") as sink:
                 while True:
                     chunk = response.read(CHUNK)
@@ -375,11 +607,35 @@ def fetch(root, url, name=None, private=False, linked=None, version=None, licens
                     size += len(chunk)
                     if size > MAX_FILE:
                         raise ValueError("the file is over the %d MiB limit" % MAX_MB)
+                    if time.monotonic() > stop:
+                        raise ValueError("the download did not finish within %d s" % deadline)
                     digest.update(chunk)
                     sink.write(chunk)
+        # What the bytes are decides, whatever the name says: data formats are refused, archives are listed.
+        found = sniff(tmp)
+        if found["kind"] == "data":
+            raise ValueError("%s is %s by its content, participant data; never downloaded" % (filename, found["why"]))
         suffix = Path(filename).suffix.lower()
-        if suffix in ARCHIVES or (zipfile.is_zipfile(tmp) and suffix not in OFFICE):
+        if not suffix:
+            if not found["ext"]:
+                raise ValueError("the server gives no file extension for %s and its content does not say what it is "
+                                 "(%s); download it again with --name <file.ext>" % (filename, found["why"] or "unknown"))
+            filename = _safe_name(filename + found["ext"])
+            why = data_name(filename)
+            if why:
+                raise ValueError("%s (its content is a %s file) looks like participant data (%s); never downloaded"
+                                 % (filename, found["ext"], why))
+            suffix = Path(filename).suffix.lower()
+            moved = tmp.with_name(tmp.name + found["ext"])
+            os.replace(tmp, moved)
+            tmp = moved
+        if suffix in OFFICE and suffix != ".psyexp" and found["kind"] != "zip":
+            raise ValueError("%s is not a %s file (its content is %s); download it under the name its content gives"
+                             % (filename, suffix, found["kind"] if found["kind"] != "text" else "text, " + found["ext"]))
+        if suffix in ARCHIVES or found["kind"] == "archive" or (found["kind"] == "zip" and not _office_ok(tmp, suffix, found)):
             member = archive_data(tmp)
+            if member.startswith("an archive"):
+                raise ValueError("%s is %s; download the material files one by one instead" % (filename, member))
             if member:
                 raise ValueError("the archive holds %s, which looks like participant data; download the material "
                                  "files one by one instead" % member)
@@ -540,14 +796,20 @@ def is_open(license):
     return bool(OPEN_LICENSE.match(str(license or "").strip()))
 
 
+def _lookups(data):
+    """The well-formed licenceLookups records (a dict with a string licence); malformed ones are skipped."""
+    items = data.get("licenceLookups") if isinstance(data, dict) else None
+    return [x for x in items if isinstance(x, dict) and isinstance(x.get("license"), str)] if isinstance(items, list) else []
+
+
 def licence_from_lookup(root, entry):
     """The licenceLookups record that shows the same file (same SHA-256) under an open licence, or None."""
     data = sources.load(Path(root) / NAME) or {}
-    sha = str((entry or {}).get("sha256") or "").lower()
+    sha = str((entry or {}).get("sha256") or "").lower() if isinstance(entry, dict) else ""
     if not sha:
         return None
-    for item in data.get("licenceLookups") or []:
-        f = item.get("file") if isinstance(item, dict) else None
+    for item in _lookups(data):
+        f = item.get("file")
         if isinstance(f, dict) and str(f.get("sha256") or "").lower() == sha and is_open(item.get("license")):
             return item
     return None
@@ -556,27 +818,33 @@ def licence_from_lookup(root, entry):
 CITES_LOOKUP = re.compile(r"(?i)licen[cs]e\s*lookups?|\bOSF\s+(?:API\s+)?(?:licen[cs]e\s+)?lookup")
 
 
-def problems(root):
-    """Licence and link problems of the downloaded sources, as (message, fix) pairs; [] without SOURCE.json."""
+def problems(root, standalone=False):
+    """Licence and link problems of the downloaded sources, as (message, fix) pairs; [] without SOURCE.json.
+    Never raises on a malformed SOURCE.json: records of the wrong shape are skipped. A file under sources/open/
+    without an open licence is check_materials.py's finding; this adds the fix when a licence lookup of the
+    same file shows an open licence (and, `standalone` for --check, reports the file itself too)."""
     root = Path(root).resolve()
     data = sources.load(root / NAME)
-    if data is None:
+    if not isinstance(data, dict):
         return []
     out = []
-    for f in data.get("files") or []:
-        if not isinstance(f, dict) or not str(f.get("path") or "").startswith(OPEN_DIR + "/"):
+    files = data.get("files") if isinstance(data.get("files"), list) else []
+    for f in files:
+        if not isinstance(f, dict) or not isinstance(f.get("path"), str) or not f["path"].startswith(OPEN_DIR + "/"):
             continue
         rel, lic, ev = f["path"], str(f.get("license") or ""), str(f.get("licenseEvidence") or "")
         lookup = licence_from_lookup(root, f)
         if not is_open(lic):
             if lookup:
+                lookup_file = lookup.get("file") if isinstance(lookup.get("file"), dict) else {}
+                origin = str(lookup.get("licenseFrom") or "the OSF licence lookup")
                 out.append(("%s: %s is recorded with license %r, but the same file (same SHA-256) is in an OSF project "
-                            "published under %s (%s)" % (NAME, rel, lic or "none", lookup["license"], lookup["licenseFrom"]),
+                            "published under %s (%s)" % (NAME, rel, lic or "none", lookup["license"], origin),
                             "an identical file carries that licence: sources.py . --license %s=%s --license-evidence "
                             "\"%s=OSF licence lookup (licenceLookups, %s): same SHA-256 as %s; %s\""
-                            % (rel, lookup["license"], rel, lookup["url"], (lookup.get("file") or {}).get("name"),
-                               lookup["licenseFrom"])))
-            else:
+                            % (rel, lookup["license"], rel, lookup.get("url") or "the OSF URL",
+                               lookup_file.get("name") or Path(rel).name, origin)))
+            elif standalone:
                 out.append(("%s: %s is under %s/ without an open licence (license %r)" % (NAME, rel, OPEN_DIR, lic or "none"),
                             "record the licence the file or its page states (an OSF project: fetch_source.py . --licence "
                             "<OSF URL>), or move the file to %s/ (this project only) and rerun sources.py" % PRIVATE_DIR))
@@ -586,9 +854,11 @@ def problems(root):
                         "run fetch_source.py . --licence <the OSF file URL> and cite what it records, or record the "
                         "licence where the file itself states it"))
     for where, value in _strings(data):
-        if isinstance(value, str) and any(public_url(m.group(0)) != m.group(0) for m in SIGNED_URL.finditer(value)):
-            out.append(("%s: %s holds a signed storage link (a credential while it lasts)" % (NAME, where),
-                        "record the URL without its query (fetch_source.py records finalUrl that way)"))
+        if isinstance(value, str) and any(public_url(m.group(0)) != m.group(0) for m in ANY_URL.finditer(value)):
+            out.append(("%s: %s holds a URL with a credential (a signed storage link, a token or key parameter, or "
+                        "a user:password@)" % (NAME, where),
+                        "record the URL without its credential parts (fetch_source.py records url and finalUrl that "
+                        "way)"))
     return out
 
 
@@ -734,7 +1004,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     root = Path(a.root)
     if a.check:
-        found = problems(root)
+        found = problems(root, standalone=True)
         for msg, fix in found:
             print("PROBLEM %s\n        fix: %s" % (msg, fix))
         print("FAIL %d problem(s) in downloaded sources" % len(found) if found else "PASS downloaded sources")
