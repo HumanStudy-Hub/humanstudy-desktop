@@ -69,6 +69,13 @@ class Effects(unittest.TestCase):
         self.assertEqual(schema["properties"]["effects"]["items"]["properties"]["compute"]["properties"]["op"]["enum"],
                          list(effects_core.OPS))
 
+    def test_compute_exclusion_is_accepted(self):
+        doc = effects_doc()   # effects_core.py has no key whitelist: the documented compute.exclusion passes
+        doc["effects"][0]["compute"]["exclusion"] = "the paper drops no one here; evaluate() keeps every session"
+        self.write(doc)
+        run = self.check()
+        self.assertEqual(run.returncode, 0, run.stdout)
+
     def test_unquoted_numbers_and_unlisted_hypotheses_are_problems(self):
         doc = effects_doc()
         doc["effects"][0]["reported"]["cells"]["condition-harm"]["n"] = 40  # not what the paper prints

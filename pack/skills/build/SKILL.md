@@ -386,6 +386,35 @@ table, on the result node it reports (sample tables on `participants`, stimulus 
   quantities, `table` omitted and `title` saying it was assembled from the text) when there are
   several groups or items, otherwise one field per quantity (`n-condition-a`, `m-condition-a`, ...).
   The descriptive sentence may stay; the numbers must also be in fields.
+- Results printed only in the text count as much as the tables: every test statistic, effect size, CI
+  and SE with **the p value printed next to it** ("b = 0.25, p = .048" is recorded only when both are),
+  "men 26% vs women 18%", "85 (45.5%) knew the source", "12 out of the 16 options", a pooled model the
+  tables do not show, and a pattern or verdict rule the paper states in words (record its counts and its
+  rule). A number in effects.json `reported` counts as recorded.
+- **The sample's make-up** for each study: sex or gender counts or shares and age (mean, SD), as
+  printed, in the participants node's `characteristics` (or a result field).
+- **Every result the abstract names** is recorded (a result field or an effect; `state: "missing"` with
+  an issue when the replay cannot compute it). A finding whose words no result field or effect carries
+  is mapped in `sources/SOURCE.json` → `abstractResults`: `[{"claim": "men are more likely than women to
+  tell an altruistic white lie", "recordedIn": ["result-gender.awl-logit"]}, {"claim": "<an
+  interpretation>", "notRecorded": "a reading of results (i) and (ii), no statistic of its own"}]`.
+  `claim` is the abstract's own words; `recordedIn` names `<node id>.<field id>` or `effect:<id>`.
+- **The supplement's tables.** A supplement PDF under `sources/` (fetched or uploaded) is part of the
+  paper's results: its numbered descriptive and result tables (item means and SDs, item-total
+  correlations, regressions) are transcribed cell by cell like a paper table, as a table field whose
+  value also has `"source": "sources/open/<file>"` (label `"Table S1"`), and listed in `paperTables` as
+  `{"table": "S1", "source": "sources/open/<file>", "page": 3, "kind": "result", "recordedIn":
+  "<node id>.<field id>"}`; a table without results is `"kind": "other"` with `what`, and a PDF that is
+  not this paper's supplement is `{"source": "<path>", "kind": "other", "what": "..."}` without `table`.
+- `check_results.py` reads the paper's text and fails when more than half of its exact p values (six
+  or more) or of its "x% vs y%" / "n (x%)" pairs are not recorded, when the sample's sex or age is
+  printed but recorded nowhere, when a results paragraph prints four or more numbers none of which is
+  recorded, when an abstract finding is neither recorded nor in `abstractResults`, and when a
+  supplement's result table is not recorded. Numbers after a citation, in a power analysis or a design
+  probability are not counted. A passage it reads as a result that is not one (a payoff or design value,
+  another study's result) goes in `sources/SOURCE.json` → `resultsNotRecorded`: `[{"page": 4, "quote":
+  "<the passage's exact text>", "reason": "..."}]`; the quote must be in the paper, and a result of this
+  paper never goes there.
 - Effects keep pointing to the cells they use: the effect's `resultIds` name the result node,
   its `reported` numbers are the cells, its `reported.evidenceIds` cite an evidence record whose
   quote is the printed row(s) (also listed in the table field's `evidenceIds`), and its `notes`
@@ -685,13 +714,16 @@ Rules the runner depends on:
   `buildContract` 2; see contract.py) gets the rules
   added with it as warnings, not failures, so a project that was ready stays ready after an app update. The
   readiness gate then always adds one `contract` warning, "older build: newer build rules are warnings;
-  rebuild with the current build skill to make them blocking". The checks
-  print them as `WARN ...` (check_validity.py, check_results.py) or `warn  ...` (check_package.py) lines and
-  still print PASS: prompts that mention earlier screens they do not carry, a memory design that carries
+  rebuild with the current build skill to make them blocking". The checks print them as `WARN ...`
+  (check_validity.py, check_results.py, check_materials.py, effects.py) or `warn  ...` (check_package.py) lines
+  and still print PASS: prompts that mention earlier screens they do not carry, a memory design that carries
   nothing, internal ids in prompts, a declared condition that crashes or refuses without a blocking issue,
-  image-only tables, lost minus signs, impossible CI or p values, and the downloaded-source, source-use and
-  survey-flow findings. Rebuilding the package with `task/replies.py` and `"buildContract": 2` makes all of
-  them blocking.
+  image-only tables, lost minus signs, impossible CI or p values, results printed only in the text, unrecorded
+  abstract findings and supplement tables, a pending material whose searches skip the minimum search list, a
+  computed effect block that does not hold what `reported` claims (statistic, scale, one value, n), and the
+  downloaded-source, source-use (including a question check that leaves out the paper), survey-flow,
+  Word-source and design-disclosure findings. Rebuilding the package with `task/replies.py` and
+  `"buildContract": 2` makes all of them blocking.
 
 ### Effects: from hypotheses to computable effects
 
@@ -764,6 +796,25 @@ Rules:
   `{"status": "not_ready", "reason"}`). Keep cells raw (n, mean, sd, or counts).
 - `compute.compareAs` only when the computed and reported numbers are the same quantity under
   another name, with the reason (an OLS coefficient on one condition dummy is the mean difference).
+- `compute` claims to compute *what `reported` holds*, so:
+  - **The same statistic.** The computed metric is a reported estimate's metric, or the mean or risk
+    difference of the reported cells, or `compareAs` says why they are the same: a correlation or an α
+    is never checked by a t test, a d never by a raw mean difference without the cell means, a
+    regression coefficient never by a mean difference unless `compareAs` gives the reason. With only a
+    test reported, compute the same test. Per-arm means and SDs need cells with `sd`. A package block
+    that is not ready on the check's stand-in run (its keys cannot be seen) is declared in
+    `evaluation/evaluation.py`, read as text and never run: `OUTPUT_KINDS = {"elig_mb_correlation":
+    "correlation", "dg_mean_share": {"kinds": "mean sd", "unit": "share"}}` (or set `compute.metric`).
+  - **The same scale.** A share or percentage of the endowment is never checked against a mean in
+    cents, points or seconds: compute it on the paper's scale (`outcome.scale` says which; a block may
+    say its `unit`).
+  - **One value per effect.** Several estimates of one metric are several effects (one per comparison,
+    outcome or row), unless each names a distinct `variant` of the same quantity.
+  - **The paper's n.** When an arm's n is the same in most of a study's effects but clearly smaller in
+    one (125 where the others have 188), the paper dropped part of that group from that comparison,
+    often in a sentence of the text. Find why, drop the same participants in the computation, and say
+    so: `"compute": {..., "exclusion": "framing A had no 50/50 option in phase 2 (p. 7); left out of this
+    comparison"}` (or a `where` flag, or a `reported.missing` entry).
 - `population` says whose responses the reported numbers describe: omit it for human participants;
   a paper that itself tests AI models records each model's result as an effect with
   `{"kind": "ai-model", "models": ["gpt-4o"]}` (or `human-vs-ai-model`, `ai-model-vs-ai-model`), so a
@@ -800,7 +851,8 @@ also fails an effect whose quotes or study print N while `reported.n` is empty a
 nothing about it, a `reported.n` its quotes do not account for (printed, a printed total minus a printed exclusion
 count, a printed per-group N times the arms, the sum of the cells, or df + 1 / df + 2 of a printed test),
 a signed estimate whose sign disagrees with its own cells, a CI that does not contain its value, and
-an unsigned printed estimate without cells or `signBasis`. Its warnings list program
+an unsigned printed estimate without cells or `signBasis`, and a computed block that does not hold the
+reported statistic, scale, single value or n (the rules above). Its warnings list program
 nodes no hypothesis or effect reaches; link them where the paper links them. With human data, run
 `study_core.py reproduce` (it uses `effects.json`) through the launcher, as in section 3's human
 data step, and report the verdict per effect.

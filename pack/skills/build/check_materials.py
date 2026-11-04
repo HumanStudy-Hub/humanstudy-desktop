@@ -48,8 +48,9 @@ Rules (each a problem; PASS only without any):
                   cover at least the journal's page and supplement (and its original site when the journal
                   changed publisher: journal.sjdm.org for Judgment and Decision Making), a preprint server, an
                   open-copy index (Unpaywall or Europe PMC) and an OSF search by author (SEARCH_KINDS). This
-                  search-list rule is a problem only when a package of the project is built under the current
-                  contract (task/replies.py, see contract.py); otherwise it is a WARN line and goes under "warnings".
+                  search-list rule is a problem only when the package checked (check(root, package=...), as the
+                  readiness gate passes it; from the command line, any package of the project) is built under the
+                  current contract (see contract.py); otherwise it is a WARN line and goes under "warnings".
   unlabelled      a participant-material field filled by the build (origin derived or implementation) without
                   `extensions.material` must not hold prose either.
   private         text from sources/researcher/ and sources/private/ appears nowhere in program.json or package/;
@@ -536,8 +537,11 @@ def what_in(what, title):
     return bool(want) and want <= set(words(title))
 
 
-def check(root):
+def check(root, package=None):
+    """The materials report for a project folder. `package` (package/<slug>) decides whether the newer rules block
+    (contract.py); without it (the command line) any current-contract package of the project makes them block."""
     root = Path(root).resolve()
+    current = contract.current_contract(package) if package is not None else contract.project_current(root)
     program = _json(root / "program.json")
     if not isinstance(program, dict):
         return {"problems": [("program.json is missing or not JSON", "")], "notes": [], "items": [], "warnings": []}
@@ -807,7 +811,7 @@ def check(root):
         venue += " " + " ".join(_str(record.get(k)) for k in ("journal", "venue"))
         lacking = missing_searches(record, pending_search, venue)
         if lacking:   # added with the shared reply reader: blocks only a current-contract project (contract.py)
-            (problems if contract.project_current(root) else warnings).append(("materials are still pending, but the search skipped %s" % "; ".join(lacking),
+            (problems if current else warnings).append(("materials are still pending, but the search skipped %s" % "; ".join(lacking),
                 "search each (title, DOI, authors) and record it in sources/SOURCE.json searches, including those that "
                 "find nothing, before asking the researcher for the materials"))
 

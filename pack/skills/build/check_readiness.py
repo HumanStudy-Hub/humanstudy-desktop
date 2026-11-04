@@ -6,10 +6,11 @@ Usage: python check_readiness.py <project> <package-slug>
 Prints one JSON document, {"problems": [{"check", "reason"}], "checks": {name: "pass" | "fail"},
 "warnings": [{"check", "reason"}]}, and exits 0 (1 only on a usage error). A package is ready only when
 "problems" is empty. "warnings" holds the newer rules' findings on a package built before the current contract
-(no task/replies.py, see contract.py): check_package.py `warn` lines and the warnings of check_validity.py and
-check_results.py, at most WARNINGS_MAX per check and then "and N more". Such a package also always carries one
-"contract" warning, OLDER_BUILD. They never make a package not ready; a rebuild under the current contract
-turns them into problems. Checks, each the same rule as
+(no task/replies.py, see contract.py): check_package.py `warn` lines and the warnings of check_validity.py,
+check_results.py, effects.py (the effect-link rules) and check_materials.py (the minimum search list), at most
+WARNINGS_MAX per check and then "and N more". Such a package also always carries one "contract" warning,
+OLDER_BUILD. They never make a package not ready; a rebuild under the current contract turns them into problems.
+Checks, each the same rule as
 the script the build skill (SKILL.md) tells the agent to run until it prints PASS:
 
   program    check_program.py program.json --complete (schema read from this copy, not the project's)
@@ -155,13 +156,13 @@ def results_problems(root, slug):
     return report["problems"], report.get("warnings") or []
 
 
-def materials_problems(root):
+def materials_problems(root, slug):
     import check_materials
-    report = check_materials.check(root)
+    report = check_materials.check(root, package=root / "package" / slug)
     return report["problems"], report.get("warnings") or []
 
 
-def effects_problems(root):
+def effects_problems(root, slug):
     import effects
     doc = effects.effects_core.load(root)
     if doc is None:
@@ -169,9 +170,11 @@ def effects_problems(root):
     program = json.loads((root / "program.json").read_text(encoding="utf-8"))
     found, _ = effects.effects_core.check(root, doc, program)
     found += effects.build_rules(doc, program)
+    warned = []
     if not found:  # as effects.py: the field check runs the adapter (confined) only on an otherwise clean file
-        found += effects.field_gaps(root, doc)[0]
-    return found
+        gaps, _, warned = effects.field_report(root, doc, package=root / "package" / slug)
+        found += gaps
+    return found, warned
 
 
 CHECK_MODULES = ("check_program", "check_package", "sources", "check_validity", "check_verbatim", "check_results",
@@ -221,8 +224,8 @@ def run_checks(root, slug):
         ("validity", lambda: validity_problems(root, slug)),
         ("verbatim", lambda: verbatim_problems(root)),
         ("results", lambda: results_problems(root, slug)),
-        ("effects", lambda: effects_problems(root)),
-        ("materials", lambda: materials_problems(root)),
+        ("effects", lambda: effects_problems(root, slug)),
+        ("materials", lambda: materials_problems(root, slug)),
     ]
     problems, status, warnings = [], {}, []
     for name, fn in checks:

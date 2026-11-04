@@ -24,6 +24,19 @@ These build rules are checked here only (effects_core.py, which HumanStudy-Bench
                 difference; when they do not and the paper prints the value without a sign, the estimate
                 states `signBasis` (the printed words that say which arm was higher). A sign is never
                 chosen to match the prediction. A printed CI must contain its value (a flipped sign flips it).
+  links         what an effect computes holds what its `reported` claims (from the same stand-in run; a package
+                block is read from evaluate() + effect_estimates() on the stand-in sessions, its shape only):
+                - kind: the computed metric is a reported estimate's metric (a correlation or alpha is never
+                  checked by a t, a d never by a raw mean difference), or compute.compareAs says why they are the
+                  same quantity, or it is the mean / risk difference of the reported cells; with only a test, the
+                  same test; reported per-arm means and SDs need cells with sd. A package block not computed on
+                  the stand-in run is read from evaluation/evaluation.py OUTPUT_KINDS = {"<key>": "correlation" |
+                  {"kinds": "mean sd t", "unit": "share"}} (parsed as a literal, never imported) or compute.metric.
+                - scale: a share or percentage is never checked against an amount in cents, points or seconds
+                  (outcome.scale, the cells, compute.field and the block's or declaration's unit).
+                - one value: several estimates of one metric without distinct `variant`s are several effects.
+                - n: an arm whose n is the same in most of a study's effects but clearly smaller in one needs the
+                  exclusion stated (compute.exclusion, a compute.where flag, or reported.missing / notes).
 """
 import importlib.util
 import json
@@ -39,6 +52,7 @@ import effects_core  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sandbox_run  # noqa: E402
+import contract  # noqa: E402  older projects get the newer link rules as warnings
 
 
 def _module(path, name):
@@ -50,13 +64,35 @@ def _module(path, name):
 
 
 def field_gaps(root, effects):
-    """(problems, notes): built-in-op fields AI sessions lack although human sessions have them."""
+    """(problems, notes): built-in-op fields AI sessions lack although human sessions have them, and, under the
+    current contract, effects whose computed block does not hold what `reported` claims (see field_report)."""
+    problems, notes, _ = field_report(root, effects)
+    return problems, notes
+
+
+def field_report(root, effects, package=None):
+    """(problems, notes, warnings). The link findings (link_problems, from the same stand-in run) were added with
+    the shared reply reader: problems when `package` (package/<slug>; without it, any package of the project) is
+    built under the current contract (contract.py), warnings for an older build, so a project that was ready
+    stays ready."""
+    problems, notes, links = _field_gaps(root, effects)
+    if contract.current_contract(package) if package is not None else contract.project_current(root):
+        return links + problems, notes, []
+    return problems, notes, links
+
+
+def _field_gaps(root, effects):
+    """(field problems, notes, link problems)."""
+    root = Path(root)
     packages = sorted(d for d in (root / "package").glob("*") if (d / "task/adapter.py").is_file()) \
         if (root / "package").is_dir() else []
     ops = [e for e in effects.get("effects") or [] if (e.get("compute") or {}).get("op") not in (None, "package")]
-    if len(packages) != 1 or not ops:
-        return [], []
+    keys = sorted({str(e["compute"]["key"]) for e in effects.get("effects") or []
+                   if (e.get("compute") or {}).get("op") == "package" and (e.get("compute") or {}).get("key")})
+    if len(packages) != 1 or not (ops or keys):
+        return [], [], []
     pkg = packages[0].resolve()
+    declarations = output_kinds(pkg)
     # The researcher's own HUMANSTUDY_HUMAN_DATA is trusted; a human-data folder that came with the study is
     # opened to the package only when it is a real folder inside the study (not a link to ~/.aws, say).
     data = Path(os.environ["HUMANSTUDY_HUMAN_DATA"]).resolve() if os.environ.get("HUMANSTUDY_HUMAN_DATA") else \
@@ -67,19 +103,25 @@ def field_gaps(root, effects):
     # The package's code runs only in a confined child (sandbox_run.py: no keys, no network, writes only in a
     # scratch folder), which prints the sessions as JSON.
     with sandbox_run.work_dir(prefix="effects-fields-") as work:
-        run = sandbox_run.run_python(Path(__file__).resolve(), ["--field-sessions", str(pkg), str(data)], cwd=pkg,
-                                     work=work, timeout=300, read=[data])
+        run = sandbox_run.run_python(Path(__file__).resolve(), ["--field-sessions", str(pkg), str(data)] + keys,
+                                     cwd=pkg, work=work, timeout=300, read=[data])
     lines = [l for l in run.stdout.splitlines() if l.startswith('{"fieldSessions":')]
     if not lines:
         why = "timed out" if run.timed_out else "exit %s: %s" % (run.returncode, (run.stderr or run.stdout).strip()[-300:])
-        return [], ["AI-session fields not checked: the adapter did not run with a stand-in model (%s)" % why]
+        return [], ["AI-session fields not checked: the adapter did not run with a stand-in model (%s)" % why], \
+            link_problems(effects, {}, declarations, False)
     got = json.loads(lines[-1])["fieldSessions"]
     if "aiError" in got:  # a blocked study or an adapter that needs real answers
-        return [], ["AI-session fields not checked: the adapter did not run with a stand-in model (%s)" % got["aiError"]]
+        return [], ["AI-session fields not checked: the adapter did not run with a stand-in model (%s)"
+                    % got["aiError"]], link_problems(effects, {}, declarations, False)
+    blocks = got.get("blocks") if isinstance(got.get("blocks"), dict) else {}
+    links = link_problems(effects, blocks, declarations, "blocks" in got)
+    notes = ["package effect blocks not computed on the stand-in run (%s)" % got["blocksError"]] \
+        if got.get("blocksError") else []
     if "humanError" in got:
-        return [], ["human sessions not loaded (%s)" % got["humanError"]]
+        return [], notes + ["human sessions not loaded (%s)" % got["humanError"]], links
     sessions, human = got.get("ai") or [], got.get("human") or []
-    problems, notes = [], []
+    problems = []
     for e in ops:
         c = e["compute"]
         study = c.get("study", e.get("studyId"))
@@ -95,11 +137,13 @@ def field_gaps(root, effects):
             else:
                 notes.append("effect %s reads %r, which neither human nor AI sessions carry (not computable)"
                              % (e["id"], path))
-    return problems, notes
+    return problems, notes, links
 
 
-def field_sessions(pkg, data):
-    """In the confined child: AI sessions from a stand-in model, and human sessions when there is data."""
+def field_sessions(pkg, data, keys=()):
+    """In the confined child: AI sessions from a stand-in model, the package's effect blocks for `keys`
+    (evaluate() then effect_estimates() on those sessions: what each block holds, not its values), and human
+    sessions when there is data."""
     pkg, data, out = Path(pkg), Path(data), {}
     try:
         out["ai"] = list(_module(pkg / "task/adapter.py", "hs_fields_adapter").run_sessions(
@@ -107,12 +151,34 @@ def field_sessions(pkg, data):
     except Exception as exc:
         out["aiError"] = str(exc)[:400]
         return out
+    if keys and (pkg / "evaluation/evaluation.py").is_file():
+        try:
+            mod = _module(pkg / "evaluation/evaluation.py", "hs_fields_evaluation")
+            blocks = mod.effect_estimates(mod.evaluate(out["ai"])) if hasattr(mod, "effect_estimates") else {}
+            out["blocks"] = {k: _shape(blocks[k]) for k in keys if isinstance(blocks, dict) and k in blocks}
+        except Exception as exc:
+            out["blocksError"] = "%s: %s" % (type(exc).__name__, str(exc)[:300])
     if (pkg / "human/human_sessions.py").is_file() and data.is_dir():
         try:
             out["human"] = list(_module(pkg / "human/human_sessions.py", "hs_fields_human").load(str(data)) or [])
         except Exception as exc:
             out["humanError"] = str(exc)[:400]
     return out
+
+
+def _shape(block):
+    """What a result block holds (status, metric, unit, test statistic, cell keys), never its values."""
+    if not isinstance(block, dict):
+        return {"status": "not_ready"}
+    test = block.get("test") if isinstance(block.get("test"), dict) else {}
+    cells = block.get("cells") if isinstance(block.get("cells"), dict) else {}
+    return {"status": block.get("status"), "metric": block.get("metric") if isinstance(block.get("metric"), str) else None,
+            "unit": str(block.get("unit"))[:60] if block.get("unit") else None,
+            "scale": str(block.get("scale"))[:60] if block.get("scale") else None,
+            "test": {"statistic": test.get("statistic")},
+            "cells": {str(a): {k: 1 for k, v in c.items() if _num(v) is not None} for a, c in list(cells.items())[:40]
+                      if isinstance(c, dict)},
+            "table": {"counts": 1} if isinstance(block.get("table"), dict) and block["table"].get("counts") else None}
 
 
 SIGNED = ("mean_difference", "standardized_mean_difference", "hedges_g", "risk_difference", "log_odds_ratio",
@@ -253,6 +319,252 @@ def build_rules(effects, program):
     return out
 
 
+# ---- links: the computed block holds what `reported` claims ------------------------------------------
+
+TESTS = ("t", "F", "z", "chi_square", "W", "U")
+# what each built-in op returns (effects_core.OP_FUNCS): metrics, test statistic, cell kinds
+OP_HOLDS = {"mean_difference": ({"mean_difference"}, {"t"}, {"mean", "sd"}),
+            "paired_difference": ({"mean_difference"}, {"t"}, {"mean", "sd"}),
+            "proportion_difference": ({"risk_difference"}, {"chi_square"}, {"share"}),
+            "contingency": ({"phi", "cramers_v"}, {"chi_square"}, {"share"}),
+            "correlation": ({"correlation"}, {"t"}, set())}
+# words an OUTPUT_KINDS declaration may use, besides the schema's metric names and x: extensions
+KIND_WORDS = {"r": "correlation", "corr": "correlation", "pearson": "correlation", "spearman": "correlation",
+              "rho": "correlation", "d": "standardized_mean_difference", "smd": "standardized_mean_difference",
+              "g": "hedges_g", "md": "mean_difference", "diff": "mean_difference", "rd": "risk_difference",
+              "or": "odds_ratio", "lor": "log_odds_ratio", "rr": "risk_ratio", "b": "regression_coefficient",
+              "coef": "regression_coefficient", "beta": "standardized_coefficient", "eta2": "eta_squared",
+              "pes": "partial_eta_squared", "v": "cramers_v", "bf": "bayes_factor", "m": "mean",
+              "chi2": "test:chi_square", "chisq": "test:chi_square", "f": "test:F", "u": "test:U", "w": "test:W",
+              "sd": "cell:sd", "share": "cell:share", "proportion": "cell:share", "percent": "cell:share",
+              "rate": "cell:share", "counts": "cell:share"}
+UNIT_WORDS = {"share": "share", "proportion": "share", "fraction": "share", "percent": "percent", "percentage": "percent",
+              "pct": "percent", "%": "percent", "cents": "money", "cent": "money", "dollars": "money", "usd": "money",
+              "euros": "money", "eur": "money", "pounds": "money", "pence": "money", "points": "money",
+              "tokens": "money", "ecu": "money", "coins": "money", "money": "money", "ms": "time",
+              "milliseconds": "time", "seconds": "time", "secs": "time", "minutes": "time", "hours": "time"}
+EXCLUSION_WORDS = re.compile(r"(?i)exclu|drop|remov|omit|left out|leav\w* out|not (?:included|analy[sz]ed)|subset|"
+                             r"only (?:those|participants|the)")
+
+
+def output_kinds(pkg):
+    """evaluation/evaluation.py's OUTPUT_KINDS, read without running it: {key: "kinds"} or {key: {"kinds",
+    "unit"}} (a module-level literal; anything else is ignored)."""
+    import ast
+    try:
+        tree = ast.parse((Path(pkg) / "evaluation/evaluation.py").read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError):
+        return {}
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        if any(isinstance(t, ast.Name) and t.id == "OUTPUT_KINDS" for t in targets) and node.value is not None:
+            try:
+                value = ast.literal_eval(node.value)
+            except (ValueError, SyntaxError):
+                return {}
+            return value if isinstance(value, dict) else {}
+    return {}
+
+
+def _declared(entry):
+    """(metrics, tests, cells, units) an OUTPUT_KINDS entry names."""
+    if isinstance(entry, dict):
+        words, unit = entry.get("kinds", ""), entry.get("unit")
+    else:
+        words, unit = entry, None
+    words = " ".join(map(str, words)) if isinstance(words, (list, tuple, set)) else str(words or "")
+    metrics, tests, cells = set(), set(), set()
+    for word in re.split(r"[\s,;|]+", words):
+        if not word:
+            continue
+        kind = KIND_WORDS.get(word.lower(), word if (word in TESTS or effects_core.resolve("metric", word) or
+                                                     word.startswith("x:")) else None)
+        kind = "test:" + kind if kind in TESTS else kind
+        if kind and kind.startswith("test:"):
+            tests.add(kind[5:])
+        elif kind and kind.startswith("cell:"):
+            cells.add(kind[5:])
+        elif kind == "mean":
+            metrics.add("mean")
+            cells.add("mean")
+        elif kind:
+            metrics.add(kind)
+    if metrics & {"t", "F", "z"}:
+        tests |= metrics & {"t", "F", "z"}
+    return metrics, tests, cells, _units(unit) if isinstance(unit, str) else set()
+
+
+def _units(text):
+    return {UNIT_WORDS[w] for w in re.findall(r"[a-z]+|%", str(text or "").lower()) if w in UNIT_WORDS}
+
+
+def _cell_kinds(cells):
+    kinds = set()
+    for c in (cells or {}).values() if isinstance(cells, dict) else []:
+        if not isinstance(c, dict):
+            continue
+        if _num(c.get("mean")) is not None:
+            kinds.add("mean")
+        if _num(c.get("sd")) is not None:
+            kinds.add("sd")
+        if any(_num(c.get(k)) is not None for k in ("proportion", "percent", "k")):
+            kinds.add("share")
+    return kinds
+
+
+def block_holds(effect, block, declarations):
+    """(metrics, tests, cells, units, how) the computed block holds: a built-in op's fixed output; a package
+    block computed on the stand-in run; else its OUTPUT_KINDS declaration or compute.metric (how = "declared");
+    None when nothing says."""
+    comp = effect.get("compute") or {}
+    units = _units(comp.get("field"))
+    if comp.get("op") in OP_HOLDS:
+        metrics, tests, cells = OP_HOLDS[comp["op"]]
+        return set(metrics), set(tests), set(cells), units, "op"
+    key = comp.get("key")
+    if isinstance(block, dict) and block.get("status") == "computed":
+        metrics = {block["metric"]} if isinstance(block.get("metric"), str) else set()
+        test = (block.get("test") or {}).get("statistic") if isinstance(block.get("test"), dict) else None
+        cells = _cell_kinds(block.get("cells"))
+        if isinstance(block.get("table"), dict) and block["table"].get("counts"):
+            cells.add("share")
+        units |= _units(block.get("unit")) | _units(block.get("scale"))
+        if key in declarations:
+            units |= _declared(declarations[key])[3]
+        return metrics, {test} if test in TESTS else set(), cells, units, "computed"
+    if key in declarations:
+        metrics, tests, cells, declared_units = _declared(declarations[key])
+        return metrics, tests, cells, units | declared_units, "declared"
+    metric = (block or {}).get("metric") if isinstance(block, dict) else None
+    metric = metric or comp.get("metric")
+    if isinstance(metric, str):
+        return {metric}, set(), set(), units, "declared"
+    return None
+
+
+def link_problems(effects, blocks, declarations, ran):
+    """The computed block holds what `reported` claims: the statistic kind, the scale, one value per effect,
+    and the paper's n (see the module docstring). blocks: {key: block} from the stand-in run; ran: whether the
+    package's evaluation ran on it (an undeclared not-ready block is only a problem then)."""
+    out = []
+    effs = [e for e in effects.get("effects") or [] if isinstance(e, dict) and isinstance(e.get("reported"), dict)
+            and (e.get("population") or {}).get("kind") in (None, "human")]
+    for e in effs:
+        rep, comp = e["reported"], e.get("compute") or {}
+        where = "effect %s" % e.get("id")
+        estimates = [x for x in rep.get("estimates") or [] if isinstance(x, dict) and isinstance(x.get("metric"), str)]
+        reported_metrics = {x["metric"] for x in estimates}
+        test = (rep.get("test") or {}).get("statistic") if isinstance(rep.get("test"), dict) else None
+        cells = rep.get("cells") if isinstance(rep.get("cells"), dict) else {}
+        cell_kinds = _cell_kinds(cells)
+        # (c) several values of one kind: one block holds one value
+        counts = {}
+        for x in estimates:
+            counts.setdefault(x["metric"], []).append(str(x.get("variant") or "").strip())
+        for metric, variants in counts.items():
+            if len(variants) >= 2 and (not all(variants) or len(set(variants)) < len(variants)):
+                out.append("%s: reported holds %d %s values, but the effect computes one value; give each its own "
+                           "effect (one per comparison, outcome or row), or name in each estimate's `variant` the model "
+                           "or weighting that makes them the same quantity printed differently"
+                           % (where, len(variants), metric))
+        holds = block_holds(e, blocks.get(comp.get("key")), declarations)
+        if holds is None:
+            if ran and comp.get("op") == "package":
+                out.append("%s: compute key %r is not computed on the stand-in run (not ready, or no effect_estimates "
+                           "entry), so the check cannot see what it returns; declare it in evaluation/evaluation.py: "
+                           "OUTPUT_KINDS = {%r: \"<what the block returns, e.g. correlation | mean sd t | "
+                           "risk_difference share chi2>\"} (read as text, never run), or set compute.metric"
+                           % (where, comp.get("key"), comp.get("key")))
+            continue
+        metrics, tests, block_cells, units, how = holds
+        # (a) the kind: effects_core.compare can put the computed number next to a reported one (the same
+        # metric, compute.compareAs, or the difference of the reported cell means / shares); else, with only a
+        # test reported, the block holds the same test; else the cells' kinds
+        def comparable(metric):
+            return effects_core.compare(e, {"status": "computed", "metric": metric, "value": 0.0}).get("comparable")
+        need = cell_kinds & {"mean", "share"}
+        if any(comparable(m) for m in metrics):
+            ok, claimed = True, ""
+        elif estimates:
+            ok, claimed = False, ", ".join(sorted(reported_metrics))
+        elif test and test != "other":
+            ok, claimed = test in tests or test in metrics, "a %s test" % test
+        else:
+            ok = not need or bool(need & block_cells)
+            claimed = "cell " + " and ".join(sorted(need))
+        if not ok:
+            holds_text = ", ".join(sorted(metrics) + ["%s test" % t for t in sorted(tests)] +
+                                   ["cell %s" % c for c in sorted(block_cells)]) or "no named statistic"
+            out.append("%s: reported holds %s, but the computed block (%s) holds %s: a correlation or an alpha is "
+                       "never checked by a t test, a d never by a raw mean difference. Compute the statistic the paper "
+                       "reports (op package with effect_estimates returning it), or, when they are the same quantity "
+                       "under another name, set compute.compareAs {\"metric\", \"reason\"}"
+                       % (where, claimed, "%s, %s" % (comp.get("op"), how) if comp.get("op") != "package"
+                          else "key %s, %s" % (comp.get("key"), how), holds_text))
+        # mean and SD printed per arm: the computed cells carry the SD too (visible blocks and declarations only)
+        elif {"mean", "sd"} <= cell_kinds and not estimates and how != "op" and block_cells and "sd" not in block_cells:
+            out.append("%s: reported cells hold means and SDs, but the computed block's cells hold no sd; return "
+                       "each arm's n, mean and sd in the block's cells" % where)
+        # (b) the scale: a share or percentage never checked against cents, points or seconds
+        rep_units = _units((e.get("outcome") or {}).get("scale")) | _units((e.get("outcome") or {}).get("higherMeans"))
+        explicit = set(rep_units)
+        if cell_kinds & {"share"}:
+            rep_units |= {"percent" if any(_num((c or {}).get("percent")) is not None for c in cells.values())
+                          else "share"}
+        if "proportion" in reported_metrics or "risk_difference" in reported_metrics:
+            rep_units.add("share")
+        fraction = {"share", "percent"}
+        clash = None
+        if rep_units & fraction and not rep_units - fraction and units - fraction and not units & fraction:
+            clash = ("a %s" % "/".join(sorted(rep_units & fraction)), "/".join(sorted(units - fraction)))
+        elif rep_units - fraction and not rep_units & fraction and units & fraction and not units - fraction:
+            clash = ("an amount in %s" % "/".join(sorted(rep_units - fraction)), "/".join(sorted(units & fraction)))
+        elif explicit in ({"share"}, {"percent"}) and units & fraction and not units & explicit and how != "op":
+            clash = ("a %s" % next(iter(explicit)), "/".join(sorted(units & fraction)))
+        if clash:
+            out.append("%s: reported is %s but the computed value is in %s; compute it on the paper's scale (the mean "
+                       "share of the endowment, not the mean in cents; a percentage as a percentage)" % ((where,) + clash))
+    out += _n_problems(effs)
+    return out
+
+
+def _stated_exclusion(e):
+    comp, rep = e.get("compute") or {}, e.get("reported") or {}
+    if len(re.findall(r"\w+", str(comp.get("exclusion") or ""))) >= 4 or comp.get("where"):
+        return True
+    return any(EXCLUSION_WORDS.search(str(x)) for x in list(rep.get("missing") or []) + [e.get("notes") or ""])
+
+
+def _n_problems(effs):
+    """An arm whose n is the same in most of a study's effects but clearly smaller in one: the paper dropped
+    part of that group from this comparison, and the effect must say so."""
+    by_arm = {}
+    for e in effs:
+        rep, con = e["reported"], e.get("contrast") or {}
+        study = e.get("studyId")
+        for arm, cell in (rep.get("cells") or {}).items() if isinstance(rep.get("cells"), dict) else []:
+            if isinstance(cell, dict) and _num(cell.get("n")) is not None:
+                by_arm.setdefault((study, "arm " + str(arm)), []).append((e, cell["n"]))
+        if _num(rep.get("n")) is not None and con.get("treatment") and con.get("reference"):
+            by_arm.setdefault((study, "%s vs %s" % (con["treatment"], con["reference"])), []).append((e, rep["n"]))
+    out = []
+    for (study, what), values in by_arm.items():
+        if len(values) < 4:
+            continue
+        ns = [n for _, n in values]
+        mode = max(set(ns), key=ns.count)
+        if ns.count(mode) < 3 or ns.count(mode) < len(ns) / 2:
+            continue
+        for e, n in values:
+            if n < 0.9 * mode and mode - n >= 5 and not _stated_exclusion(e):
+                out.append("effect %s: %s has n = %g where the study's other effects have %g; the paper drops part of "
+                           "that group from this comparison (often said only in the text). Find why, drop the same "
+                           "participants when computing it, and say so in compute.exclusion (\"<what the paper drops, "
+                           "where it says so, where the computation drops it>\"), a compute.where flag, or "
+                           "reported.missing" % (e.get("id"), what, n, mode))
+    return list(dict.fromkeys(out))
+
+
 def _has(session, path):
     cur = session
     for part in str(path).split("."):
@@ -270,7 +582,8 @@ def main(args):
         print(__doc__)
         return 2
     if args[0] == "--field-sessions":
-        print(json.dumps({"fieldSessions": field_sessions(args[1], args[2])}, ensure_ascii=False, default=str))
+        print(json.dumps({"fieldSessions": field_sessions(args[1], args[2], args[3:])}, ensure_ascii=False,
+                         default=str))
         return 0
     root = Path(args[0])
     if "--graph" in args:
@@ -282,10 +595,12 @@ def main(args):
     program = json.loads((root / "program.json").read_text(encoding="utf-8"))
     problems, warnings = effects_core.check(root, effects, program)
     problems += build_rules(effects, program)
-    gaps, notes = field_gaps(root, effects) if not problems else ([], [])
+    gaps, notes, older = field_report(root, effects) if not problems else ([], [], [])
     problems += gaps
     for w in warnings + notes:
         print("warning: " + w)
+    for w in older:
+        print("WARN    %s (older build: blocking once rebuilt with task/replies.py)" % w)
     for p in problems:
         print("problem: " + p)
     print("FAIL" if problems else "PASS (%d hypotheses, %d effects)"
