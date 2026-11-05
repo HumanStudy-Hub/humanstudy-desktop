@@ -39,7 +39,10 @@ Each call reserves, before it runs: its request size in bytes + 256 per message 
 limit. `humanstudy_llm` (and `study_core.http_llm`) send an output limit of 512 tokens per call
 by default, enough for a participant's answer with a short reason. Pass a larger `max_tokens`
 only to a call whose reply genuinely needs it (a long essay, a multi-question block), never as a
-blanket setting. Before a real run, estimate one participant: the sum over its calls of (prompt
+blanket setting. Package adapters call `llm(prompt)` with no arguments; when a package's
+participants must write long replies (`task/task.json` has `"maxOutputTokens"`, or a trial run
+logs truncated replies), set `HUMANSTUDY_LLM_MAX_OUTPUT` to that number for the whole run instead,
+and count it in the estimate below. Before a real run, estimate one participant: the sum over its calls of (prompt
 bytes + 256 x messages + output limit), about 4,000 for a 3 KB prompt, more when a conversation
 resends its history. If that exceeds 40,000 (or the run would pass 16,000,000), say so in the run
 confirmation, with how many participants fit, instead of letting the cap stop the run halfway.
