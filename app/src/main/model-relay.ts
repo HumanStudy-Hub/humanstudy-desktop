@@ -114,7 +114,8 @@ export async function startModelRelay(options: RelayOptions) {
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
   const address = server.address()
   if (!address || typeof address === 'string') throw Error('Run relay unavailable.')
-  const config = { baseURL: `http://127.0.0.1:${address.port}/v1`, token, model: options.model, tokenCap: cap }
+  // expiresAt (ms since epoch) lets the launcher give the run script exactly the capability's remaining lifetime.
+  const config = { baseURL: `http://127.0.0.1:${address.port}/v1`, token, model: options.model, tokenCap: cap, expiresAt: Date.now() + minutes * 60_000 }
   try { await unlink(path).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error }); await writeFile(path, JSON.stringify(config), { mode: 0o600, flag: 'wx' }) }
   catch (error) { server.close(); throw error }
   const expiry = setTimeout(() => void finish(), minutes * 60_000)

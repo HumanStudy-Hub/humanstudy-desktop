@@ -9,7 +9,7 @@ import { simulationScope, simulationLimits } from '../../shared/simulation-scope
 import { estimateRun, hasParticipantData, isResult, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
 import { packageStamp, readinessStamp, runConfirmation, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
 import { shortModelName } from './ModelPicker'
-import { formatTokens, runLimits } from '../../shared/run-limits'
+import { formatTokens, MAX_PER_CONDITION, runLimits } from '../../shared/run-limits'
 import { listenToArtifact } from '../bridge'
 import { getLang, t } from '../i18n'
 import { holdAction, track } from '../telemetry'
@@ -279,7 +279,7 @@ export function SimulationPanel(props: Props) {
                 <dt>{t('sim.participants')}</dt>
                 <dd>
                   <select aria-label={t('sim.participants')} value={perCondition} onChange={(e) => setPerCondition(Number(e.target.value))}>
-                    {[...new Set([5, 10, 20, plan.defaultPerCondition, 40, 60].filter((n) => n <= 60))].sort((a, b) => a - b).map((n) => <option key={n} value={n}>{n}</option>)}
+                    {[...new Set([5, 10, 20, plan.defaultPerCondition, 40, 60].filter((n) => n <= MAX_PER_CONDITION))].sort((a, b) => a - b).map((n) => <option key={n} value={n}>{n}</option>)}
                   </select>{' '}
                   {t(plan.conditions.length > 1 ? 'sim.per_condition' : 'sim.in_total_one', { total: estimate.participants })}
                   {plan.paperPerCondition && <span className="muted small"> · {plan.paperPerCondition === perCondition ? t('sim.same_as_paper') : t('sim.paper_had', { n: plan.paperPerCondition })}</span>}

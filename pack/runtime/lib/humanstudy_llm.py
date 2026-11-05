@@ -90,13 +90,16 @@ def model_name() -> str:
 
 
 def usage_log_path() -> Path:
-    """HUMANSTUDY_LLM_USAGE_LOG when it is an absolute path ending in .jsonl (a confined macOS run writes
-    only in its run folder), else <project>/.humanstudy/tmp/llm-usage.jsonl; the project is
+    """HUMANSTUDY_LLM_USAGE_LOG when it is an absolute path ending in .jsonl inside HUMANSTUDY_PROJECT_DIR or
+    the working directory (a confined macOS run writes only in its run folder), else <project>/.humanstudy/tmp/llm-usage.jsonl; the project is
     HUMANSTUDY_PROJECT_DIR, else the nearest parent of the working directory that has a .humanstudy
     folder, else the working directory."""
     explicit = os.environ.get("HUMANSTUDY_LLM_USAGE_LOG", "")
     if explicit and "\0" not in explicit and explicit.endswith(".jsonl") and os.path.isabs(explicit):
-        return Path(explicit)
+        target = Path(explicit).resolve()
+        roots = [Path.cwd()] + ([Path(os.environ["HUMANSTUDY_PROJECT_DIR"])] if os.environ.get("HUMANSTUDY_PROJECT_DIR") else [])
+        if any(target.is_relative_to(r.resolve()) for r in roots):  # only inside the project or run folder
+            return target
     root = os.environ.get("HUMANSTUDY_PROJECT_DIR")
     if root:
         base = Path(root)

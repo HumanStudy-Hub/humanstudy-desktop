@@ -28,8 +28,8 @@ test('an unreadable plan gets the floor, never more', () => {
   assert.equal(L.formatTokens(7_500_000), '7,500,000')
 })
 
-test('the main process starts the relay with the plan limits', () => {
+test('the main process starts the relay with the verified plan limits', () => {
   const main = readFileSync(join(here, '../main/index.ts'), 'utf8')
-  assert.match(main, /const limits = runLimits\(approved\.plan\)/)
+  assert.match(main, /const limits = await approvedRunLimits\(projectDir, text\)/)
   assert.match(main, /tokenCap: limits\.tokens, expiryMinutes: limits\.minutes/)
 })

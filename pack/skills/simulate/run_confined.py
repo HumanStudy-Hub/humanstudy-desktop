@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import urllib.request
 import sys
 from pathlib import Path
@@ -78,7 +79,7 @@ def main():
     # project stays readable (study_core needs capabilities.json, effects.json and human data);
     # writes stay in the run folder. The project holds no credential.
     result = run_python(script, args[1:], cwd=script.parent, work=script.parent, read=[project],
-                        timeout=1800, env=env, relay_port=url.port)
+                        timeout=_remaining(config), env=env, relay_port=url.port)
     if final and result.returncode == 0:
         # A finished run gives up its access. After a failure it stays (within its token and time
         # limits) so the fixed script can be started again; Stop and expiry still end it.
@@ -89,6 +90,15 @@ def main():
         except OSError:
             pass
     _finish(result)
+
+
+def _remaining(config):
+    """Seconds until the relay capability expires (the script cannot reach the model after that);
+    1800 for a descriptor without expiresAt."""
+    expires = config.get('expiresAt')
+    if isinstance(expires, bool) or not isinstance(expires, (int, float)):
+        return 1800
+    return max(1, int(expires / 1000 - time.time()))
 
 
 def _scratch(project):

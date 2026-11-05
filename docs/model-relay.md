@@ -29,8 +29,12 @@ The run's total follows the plan the researcher approved (`app/src/shared/run-li
 at most 16,000,000. The run lasts 0.2 minutes per participant, at least 30 and at most 120
 minutes. For 300 participants that is 12,000,000 tokens and 60 minutes; five 4,000-token calls
 per participant (about 1,500 calls, roughly 10 minutes at 8 in flight) fit with room for a trial
-run. The main process computes the limits from the approval message when it starts the relay;
-the Simulation tab computes the same figures for the run confirmation.
+run. When it starts the relay, the main process takes the participants per condition from the
+approval (a whole number from 1 to 60, as the Simulation tab offers; anything else is refused)
+and the conditions from the hashed `program.json`, never the condition list in the approval text.
+The Simulation tab computes the same figures for the run confirmation. The descriptor carries
+`expiresAt`, and `run_confined.py` gives the run script the capability's remaining lifetime as
+its timeout (`--no-model` runs keep 30 minutes).
 
 A reply cut off at its limit returns `finish_reason: "length"`. The relay's usage log and the
 runtime's usage log (`humanstudy_llm`) record it as `"truncated": true`;

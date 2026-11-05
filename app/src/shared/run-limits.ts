@@ -15,6 +15,9 @@ export const MINUTES_PER_PARTICIPANT = 0.2
 export const MIN_RUN_MINUTES = 30
 export const MAX_RUN_MINUTES = 120
 
+/** The most participants per condition the Simulation tab offers; the main process rejects more. */
+export const MAX_PER_CONDITION = 60
+
 export interface RunLimits { participants: number; tokens: number; minutes: number }
 
 /** Limits for an approved plan. Anything unreadable counts as one participant (the floor limits). */

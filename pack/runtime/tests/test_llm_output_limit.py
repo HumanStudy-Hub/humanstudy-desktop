@@ -117,7 +117,9 @@ class OutputLimitTests(unittest.TestCase):
         self.assertTrue(line["truncated"])
         self.assertNotIn("secret prompt text", json.dumps(line))
         self.assertFalse((Path(self.tmp) / ".humanstudy/tmp/llm-usage.jsonl").exists())
-        for bad in ("relative/llm-usage.jsonl", str(run / "usage.txt"), ""):
+        outside = tempfile.mkdtemp()
+        for bad in ("relative/llm-usage.jsonl", str(run / "usage.txt"), "", str(Path(outside) / "llm-usage.jsonl"),
+                    str(run / "../../../../escape.jsonl")):
             os.environ["HUMANSTUDY_LLM_USAGE_LOG"] = bad
             self.assertEqual(H.usage_log_path(), Path(self.tmp) / ".humanstudy/tmp/llm-usage.jsonl", bad)
 
@@ -135,6 +137,20 @@ class OutputLimitTests(unittest.TestCase):
     def test_study_core_keeps_an_explicit_zero(self):
         study_core.http_llm("some/model")("p", max_tokens=0)
         self.assertEqual(Stub.bodies[0]["max_tokens"], 0)
+
+
+
+class LauncherTimeoutTests(unittest.TestCase):
+    def test_script_gets_the_relay_capability_remaining_lifetime(self):
+        sys.path.insert(0, str(REPO / "pack/skills/simulate"))
+        import run_confined
+        import time
+        self.assertEqual(run_confined._remaining({}), 1800, "older descriptor: as before")
+        self.assertEqual(run_confined._remaining({"expiresAt": True}), 1800)
+        self.assertEqual(run_confined._remaining({"expiresAt": "soon"}), 1800)
+        left = run_confined._remaining({"expiresAt": (time.time() + 7200) * 1000})
+        self.assertTrue(7190 <= left <= 7200, left)
+        self.assertEqual(run_confined._remaining({"expiresAt": (time.time() - 60) * 1000}), 1)
 
 
 if __name__ == "__main__":

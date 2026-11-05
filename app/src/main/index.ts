@@ -37,7 +37,7 @@ import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks } from './package-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
-import { runLimits } from '../shared/run-limits'
+import { approvedRunLimits } from './run-approval'
 import type { Kernel, KernelEvent } from './kernel-types'
 import { actionRef } from '../shared/research-operations'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
@@ -699,8 +699,9 @@ app.whenReady().then(() => {
       if (!key) throw Error('Sign in before running a simulation.')
       relayProjects.add(projectDir)
       try {
-        // The cap and lifetime follow the approved plan (the same figures the run confirmation showed).
-        const limits = runLimits(approved.plan)
+        // The cap and lifetime follow the approved plan (the same figures the run confirmation showed),
+        // rebuilt from the hashed program.json; a forged participant count is refused.
+        const limits = await approvedRunLimits(projectDir, text)
         const relay = await startModelRelay({ project: projectDir, model, key, storage: process.env.HUMANSTUDY_RELAY_DIR!, tokenCap: limits.tokens, expiryMinutes: limits.minutes, onClose: () => { runRelays.delete(id); relayProjects.delete(projectDir!) },
         upstream: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_HOSTED_BASEURL || 'https://humanstudy-hub.com/api/desktop/v1' : 'https://openrouter.ai/api/v1',
         bypass: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_SERVER_BYPASS : undefined })

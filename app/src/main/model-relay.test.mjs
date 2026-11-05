@@ -82,6 +82,8 @@ test('run lifetime is configurable and validated', async () => {
     await assert.rejects(startModelRelay({ project, storage: join(temp, 'expiry-app'), model: 'm', upstream: 'http://127.0.0.1:9', key: 'k', expiryMinutes }), /Invalid run limits/)
   const relay = await startModelRelay({ project, storage: join(temp, 'expiry-app'), model: 'm', upstream: 'http://127.0.0.1:9', key: 'k', tokenCap: 7_500_000, expiryMinutes: 60 })
   assert.equal(relay.tokenCap, 7_500_000)
+  const descriptor = JSON.parse(await readFile(relayDescriptor(join(temp, 'expiry-app'), project), 'utf8'))
+  assert.ok(Math.abs(descriptor.expiresAt - (Date.now() + 60 * 60_000)) < 10_000, 'the launcher reads the remaining lifetime here')
   await relay.close()
 })
 test.after(() => rm(temp, { recursive: true, force: true }))
