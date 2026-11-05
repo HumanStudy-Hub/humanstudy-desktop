@@ -37,8 +37,8 @@ are supported. Do not retry a token-cap refusal.
 
 Each call reserves, before it runs: its request size in bytes + 256 per message + its output
 limit. `humanstudy_llm` (and `study_core.http_llm`) send an output limit of 512 tokens per call
-by default, enough for a participant's answer with a short reason. Pass a larger `max_tokens`
-only to a call whose reply genuinely needs it (a long essay, a multi-question block), never as a
+by default, enough for a participant's answer with a short reason. In a run script you write, pass
+a larger `max_tokens` only to a call whose reply genuinely needs it (a long essay, a multi-question block), never as a
 blanket setting. Package adapters call `llm(prompt)` with no arguments; when a package's
 participants must write long replies (`task/task.json` has `"maxOutputTokens"`, or a trial run
 logs truncated replies), set `HUMANSTUDY_LLM_MAX_OUTPUT` to that number for the whole run instead,
@@ -71,7 +71,7 @@ to the usage log: `artifacts/simulations/<run>/llm-usage.jsonl` for a run starte
 Each call sends `max_tokens` 512 unless you pass one (or set
 `HUMANSTUDY_LLM_MAX_OUTPUT` for the run, 1 to 4,096). A usage line with `"truncated": true` is a
 reply cut off at that limit: count them and report them; if a measure depends on the cut-off
-part, rerun those calls with a larger `max_tokens`. `study_core.http_llm` instead warns on stderr
+part, rerun those calls with a larger limit (`HUMANSTUDY_LLM_MAX_OUTPUT` for package calls). `study_core.http_llm` instead warns on stderr
 and counts them (`llm.truncated`, `llm.calls`). It raises `LLMError` when a call fails for good; count such
 failures in the report instead of retrying forever. Never print, write or pass on any key or
 environment variable; do not call the endpoint any other way.

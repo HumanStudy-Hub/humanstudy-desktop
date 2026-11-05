@@ -555,7 +555,8 @@ Rules the runner depends on:
   did not script). Call it as `llm(prompt)` only, never with extra arguments (the smoke test's
   stand-in participant takes the prompt alone). A simulation limits each reply to 512 output tokens
   by default; when a participant must write a long reply (many items at once, free text), set
-  `"maxOutputTokens": N` (at most 4096) in `task.json`, which the run uses for every call.
+  `"maxOutputTokens": N` (at most 4096) in `task.json`; the simulate step applies it as
+  `HUMANSTUDY_LLM_MAX_OUTPUT` for every call.
   `n` is the sampling unit stated in `task.json`, either one number for every condition
   or a dict from condition id to its number (`{"awl_dg": 357, "awl_pd": 257}`), so a run can use the paper's
   unequal cells: read it with `replies.sessions_for(n, arm)`. Give each condition the paper's analysed n as
