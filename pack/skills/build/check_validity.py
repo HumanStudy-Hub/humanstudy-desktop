@@ -1048,8 +1048,10 @@ def check(root, package=None, capture_prompts=True):
             terms = [t for t in e.get("terms") or [] if isinstance(t, str)]
             uses_statement = any(has_phrase(norm(e.get("statement") or ""), norm(t)) and
                                  content_words(t) & content_words(e.get("withheld")) for t in terms)
-            if terms and not uses_statement and not _exact_on_page(e, pages):
-                add("%s: semantic terms require the exact statement on the cited page" % e["_where"],
+            # Without a text layer nothing can be compared (as in _on_page). The rule came after the shared reply
+            # reader contract, so an older package gets it as a warning and a ready project stays ready.
+            if terms and not uses_statement and pages and not _exact_on_page(e, pages):
+                newer("%s: semantic terms require the exact statement on the cited page" % e["_where"],
                     "copy the printed statement and cite its page, or include a content term from the statement")
     for hit in statements(pages):
         if not _covered(hit, entries):

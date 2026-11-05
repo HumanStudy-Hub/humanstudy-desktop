@@ -315,8 +315,19 @@ class Validity(FakePdfMixin, unittest.TestCase):
                                  ([PAGES[0], statement], dict(entry, statement=statement.replace("option as", "option, as"))),
                                  ([PAGES[0], statement], dict(entry, page=3, terms=["option", "current probability"])),
                                  ([PAGES[0], ""], entry)):
-            found = self.problems(self.project([self.not_told([candidate])], pages=pages))
+            report = check_validity.check(self.project([self.not_told([candidate])], pages=pages))
+            # A rule added after the shared reply reader: a failure for a current build, a warning for an older one.
+            found = [m for m, _ in report["problems" if self.current else "warnings"]]
             self.assertTrue(any("semantic terms require the exact statement" in m for m in found), found)
+            if not self.current:
+                self.assertFalse(any("semantic terms require" in m for m, _ in report["problems"]), report)
+
+    def test_semantic_terms_rule_needs_a_text_layer(self):
+        statement = "Participants had to learn the reward associated with each option as it changed over time."
+        entry = {"statement": statement, "page": 2, "withheld": "the current reward probability",
+                 "terms": ["current probability"]}
+        report = check_validity.check(self.project([self.not_told([entry])], pages=[]))
+        self.assertFalse(any("semantic terms require" in m for m, _ in report["problems"] + report["warnings"]), report)
 
     def test_blocked_adapters_are_read_statically_and_valid_all_is_a_problem(self):
         text = adapter(legend="Hint: the red key pays more often.", blocked='raise RuntimeError("blocked")',
