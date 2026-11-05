@@ -76,6 +76,56 @@ class Effects(unittest.TestCase):
         run = self.check()
         self.assertEqual(run.returncode, 0, run.stdout)
 
+    def test_printed_zero_p_is_not_an_exact_probability(self):
+        program = json.loads((self.root / "program.json").read_text())
+        program["evidence"][-1]["quote"] = "The signed-rank test gives V = 18, p = 0.000."
+        for target in ("test", "estimate"):
+            with self.subTest(target=target):
+                doc = effects_doc()
+                rep = doc["effects"][0]["reported"]
+                rep["cells"] = {}
+                rep["test"] = {"statistic": "W", "value": 18}
+                rep["estimates"] = []
+                if target == "test":
+                    rep["test"].update(p=0.0, pRelation="=")
+                else:
+                    rep["estimates"] = [{"metric": "mean", "value": 18, "p": 0.0, "pRelation": "="}]
+                problems, _ = effects_core.check(self.root, doc, program)
+                self.assertTrue(any("rounded" in problem and "p" in problem for problem in problems), problems)
+
+    def test_printed_zero_text_can_be_preserved_without_inventing_a_bound(self):
+        doc = effects_doc()
+        rep = doc["effects"][0]["reported"]
+        program = json.loads((self.root / "program.json").read_text())
+        program["evidence"][-1]["quote"] += " The source prints p = 0.000."
+        (self.root / "program.json").write_text(json.dumps(program))
+        rep["test"].update(p=None, pText="0.000 (printed; exact p-value unavailable)")
+        self.write(doc)
+        self.assertEqual(self.check().returncode, 0)
+        rep["test"].update(p=0.0005, pRelation="<")
+        self.write(doc)
+        self.assertIn("not written in its cited quotes", self.check().stdout)
+
+    def test_wilcoxon_v_is_preserved_by_core_and_schema(self):
+        import jsonschema
+        doc = effects_doc()
+        doc["effects"][0]["reported"]["test"].update(statistic="V")
+        problems, _ = effects_core.check(self.root, doc)
+        self.assertEqual(problems, [])
+        schema = json.loads((REPO / "pack/schema/effects.schema.json").read_text())
+        jsonschema.validate(doc, schema)
+        stat_enum = schema["properties"]["effects"]["items"]["properties"]["reported"]["oneOf"][1]["properties"]["test"]["properties"]["statistic"]["enum"]
+        self.assertEqual(stat_enum, list(effects_core.TEST_STATISTICS))
+        for target in ("test", "estimate"):
+            bad = json.loads(json.dumps(doc))
+            rep = bad["effects"][0]["reported"]
+            if target == "test":
+                rep["test"].update(p=0, pRelation="=")
+            else:
+                rep["estimates"] = [{"metric": "mean", "value": 0, "p": 0}]
+            with self.subTest(target=target), self.assertRaises(jsonschema.ValidationError):
+                jsonschema.validate(bad, schema)
+
     def test_unquoted_numbers_and_unlisted_hypotheses_are_problems(self):
         doc = effects_doc()
         doc["effects"][0]["reported"]["cells"]["condition-harm"]["n"] = 40  # not what the paper prints

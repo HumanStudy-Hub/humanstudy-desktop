@@ -321,7 +321,7 @@ def build_rules(effects, program):
 
 # ---- links: the computed block holds what `reported` claims ------------------------------------------
 
-TESTS = ("t", "F", "z", "chi_square", "W", "U")
+TESTS = tuple(s for s in effects_core.TEST_STATISTICS if s != "other")  # includes Wilcoxon V
 # what each built-in op returns (effects_core.OP_FUNCS): metrics, test statistic, cell kinds
 OP_HOLDS = {"mean_difference": ({"mean_difference"}, {"t"}, {"mean", "sd"}),
             "paired_difference": ({"mean_difference"}, {"t"}, {"mean", "sd"}),
@@ -388,8 +388,9 @@ def _declared(entry):
     for word in re.split(r"[\s,;|]+", words):
         if not word:
             continue
-        kind = KIND_WORDS.get(word.lower(), word if (word in TESTS or effects_core.resolve("metric", word) or
-                                                     word.startswith("x:")) else None)
+        # An exact test name wins over the lower-case shorthands ("V" is the Wilcoxon statistic, "v" Cramer's V).
+        kind = word if word in TESTS else KIND_WORDS.get(
+            word.lower(), word if (effects_core.resolve("metric", word) or word.startswith("x:")) else None)
         kind = "test:" + kind if kind in TESTS else kind
         if kind and kind.startswith("test:"):
             tests.add(kind[5:])

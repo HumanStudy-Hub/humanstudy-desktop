@@ -530,7 +530,9 @@
                           "type": [
                             "number",
                             "null"
-                          ]
+                          ],
+                          "exclusiveMinimum": 0,
+                          "description": "Positive printed p-value or bound; use null when the paper only prints a rounded zero."
                         },
                         "pRelation": {
                           "enum": [
@@ -569,6 +571,7 @@
                           "z",
                           "chi_square",
                           "W",
+                          "V",
                           "U",
                           "other"
                         ]
@@ -590,7 +593,9 @@
                         "type": [
                           "number",
                           "null"
-                        ]
+                        ],
+                        "exclusiveMinimum": 0,
+                        "description": "Positive printed p-value or bound; use null when the paper only prints a rounded zero."
                       },
                       "pRelation": {
                         "enum": [

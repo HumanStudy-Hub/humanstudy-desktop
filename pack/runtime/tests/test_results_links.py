@@ -518,6 +518,12 @@ class Links(unittest.TestCase):
         metrics, tests, cells, units = effects._declared({"kinds": "mean sd t", "unit": "share"})
         self.assertEqual((metrics, tests, cells, units), ({"mean"}, {"t"}, {"mean", "sd"}, {"share"}))
 
+    def test_wilcoxon_v_is_a_test_and_lower_case_v_is_cramers_v(self):
+        self.assertIn("V", effects.TESTS)
+        self.assertEqual(effects._declared("V")[1], {"V"})
+        self.assertEqual(effects._declared("v")[:2], ({"cramers_v"}, set()))
+        self.assertEqual(effects._declared("W U F")[1], {"W", "U", "F"})
+
 
 class LinksEndToEnd(unittest.TestCase):
     def test_effects_py_reads_the_package_block_from_the_stand_in_run(self):
