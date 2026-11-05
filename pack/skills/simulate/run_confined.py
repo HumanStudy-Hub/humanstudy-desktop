@@ -68,6 +68,9 @@ def main():
            'OPENAI_API_KEY': config['token'], 'OPENAI_BASE_URL': config['baseURL'],
            'HUMANSTUDY_DESKTOP_KEY': config['token'], 'HUMANSTUDY_HOSTED_BASEURL': config['baseURL'],
            'HUMANSTUDY_SIM_MODEL': config['model'], 'HUMANSTUDY_PROJECT_DIR': str(project)}
+    output = os.environ.get('HUMANSTUDY_LLM_MAX_OUTPUT', '')
+    if output.isdigit():  # per-call output limit for humanstudy_llm / http_llm; a number, nothing else
+        env['HUMANSTUDY_LLM_MAX_OUTPUT'] = output
     # The run folder is the working directory, as with `python run.py` on the pre-relay path. The
     # project stays readable (study_core needs capabilities.json, effects.json and human data);
     # writes stay in the run folder. The project holds no credential.

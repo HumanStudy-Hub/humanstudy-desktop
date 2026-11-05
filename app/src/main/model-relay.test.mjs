@@ -41,6 +41,41 @@ test('run capability, model allow-list, reservation cap, safe forwarding, and re
   await assert.rejects(readFile(relayDescriptor(storage, project)))
   await assert.rejects(call(body))
 })
+test('output limit: absent reserves and forwards 512, alias becomes max_tokens, truncation is logged', async () => {
+  const { DEFAULT_OUTPUT_TOKENS } = await import(pathToFileURL(join(temp, 'relay.mjs')))
+  assert.equal(DEFAULT_OUTPUT_TOKENS, 512)
+  const seen = []
+  const stub = createServer(async (req, res) => {
+    const chunks = []; for await (const p of req) chunks.push(p)
+    seen.push(JSON.parse(Buffer.concat(chunks)))
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ choices: [{ message: { content: 'cut' }, finish_reason: seen.length === 3 ? 'length' : 'stop' }], usage: { total_tokens: 3 } }))
+  })
+  await new Promise(resolve => stub.listen(0, '127.0.0.1', resolve))
+  const project = join(temp, 'output-project'); await mkdir(project)
+  const storage = join(temp, 'output-app')
+  const relay = await startModelRelay({ project, storage, model: 'allowed', upstream: `http://127.0.0.1:${stub.address().port}`, key: 'fake-upstream-only', tokenCap: 3000 })
+  const call = (body) => fetch(relay.baseURL + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${relay.token}` }, body: JSON.stringify(body) })
+  const base = { model: 'allowed', messages: [{ role: 'user', content: 'hello' }] }
+  try {
+    assert.equal((await call(base)).status, 200)
+    assert.equal((await call({ ...base, max_completion_tokens: 300 })).status, 200)
+    const truncated = await call({ ...base, max_tokens: 100 })
+    assert.equal((await truncated.json()).choices[0].finish_reason, 'length')
+    assert.deepEqual(seen.map(b => b.max_tokens), [512, 300, 100], 'reservation equals the forwarded limit')
+    assert.ok(seen.every(b => !('max_completion_tokens' in b)))
+    const log = (await readFile(relayDescriptor(storage, project) + '.usage.jsonl', 'utf8')).trim().split('\n').map(l => JSON.parse(l))
+    const reserved = log.filter(e => e.event === 'reserved').map(e => e.reserved)
+    const bytes = Buffer.byteLength(JSON.stringify(base))
+    assert.equal(reserved[0], bytes + 256 + 512)
+    const completed = log.filter(e => e.event === 'completed')
+    assert.deepEqual(completed.map(e => e.truncated), [false, false, true])
+    assert.equal(completed[2].finish_reason, 'length')
+    // With a 3,000-token cap the old 4,096 default could not run a single call; 512 leaves room,
+    // and the cap still binds: reservations so far plus another full-size request exceed it.
+    assert.equal((await call({ ...base, max_tokens: 4096 })).status, 402)
+  } finally { await relay.close(); await new Promise(resolve => stub.close(resolve)) }
+})
 test.after(() => rm(temp, { recursive: true, force: true }))
 
 test('trusted launcher completes a real confined script through the relay and revokes it', { skip: process.platform !== 'darwin' }, async () => {
@@ -50,8 +85,10 @@ test('trusted launcher completes a real confined script through the relay and re
   const storage = join(temp, 'integration-app')
   const run = join(project, 'artifacts/simulations/test')
   await mkdir(run, { recursive: true }); await mkdir(join(project, '.humanstudy'))
+  const limits = []
   const stub = createServer(async (req, res) => {
-    for await (const _ of req) { /* consume */ }
+    const chunks = []; for await (const p of req) chunks.push(p)
+    limits.push(JSON.parse(Buffer.concat(chunks)).max_tokens)
     res.end(JSON.stringify({ choices: [{ message: { content: 'normal completion' } }] }))
   })
   await new Promise(resolve => stub.listen(0, '127.0.0.1', resolve))
@@ -81,10 +118,11 @@ print('normal confined run succeeded')
 `)
 
   try {
-    const child = spawn(process.env.HUMANSTUDY_TEST_PYTHON || 'python3', [join(dirname(fileURLToPath(import.meta.url)), '../../../pack/skills/simulate/run_confined.py'), '--final', script], { env: { ...process.env, HUMANSTUDY_RELAY_REQUIRED: '1', HUMANSTUDY_RELAY_DESCRIPTOR: relayDescriptor(storage, project) } })
+    const child = spawn(process.env.HUMANSTUDY_TEST_PYTHON || 'python3', [join(dirname(fileURLToPath(import.meta.url)), '../../../pack/skills/simulate/run_confined.py'), '--final', script], { env: { ...process.env, HUMANSTUDY_RELAY_REQUIRED: '1', HUMANSTUDY_RELAY_DESCRIPTOR: relayDescriptor(storage, project), HUMANSTUDY_LLM_MAX_OUTPUT: '700' } })
     let out = '', err = ''; child.stdout.on('data', p => { out += p }); child.stderr.on('data', p => { err += p })
     const code = await new Promise(resolve => child.once('exit', resolve))
     assert.equal(code, 0, err); assert.match(out, /normal confined run succeeded/)
+    assert.deepEqual(limits, [700, 700], 'the per-call output limit reaches the confined script')
     assert.ok(closed)
     await assert.rejects(readFile(relayDescriptor(storage, project)))
   } finally { await relay.close(); await new Promise(resolve => stub.close(resolve)) }

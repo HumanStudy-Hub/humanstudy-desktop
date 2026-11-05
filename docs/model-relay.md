@@ -18,8 +18,14 @@ or OpenRouter key stays in the app process; the kernel environment removes upstr
 The kernel's own conversation transport remains a separate capability.
 
 A run reserves at most 200,000 tokens and lasts at most 30 minutes. Each request reserves its
-UTF-8 request bytes, 256 framing tokens per message, and an output limit of at most 4,096 tokens.
-Reservations are conservative and never refunded. Usage logs contain model names and token
+UTF-8 request bytes, 256 framing tokens per message, and its output limit (1 to 4,096 tokens).
+The relay forwards exactly that output limit upstream, so a reply can never use more than was
+reserved. A request that names no limit gets 512. `humanstudy_llm` and `study_core.http_llm`
+always send one: 512 by default (`HUMANSTUDY_LLM_MAX_OUTPUT`, 1 to 4,096, changes it; a
+`max_tokens` argument on a call wins). With 4,096 reserved per call only a few dozen calls fit in
+a run; at 512 a short participant prompt costs roughly 1,000 to 2,500 tokens, so about 80 to 200
+calls fit. A reply cut off at its limit returns `finish_reason: "length"`, and both usage logs
+record it as `"truncated": true`. Reservations are conservative and never refunded. Usage logs contain model names and token
 counts, never prompts or upstream credentials. The descriptor and usage log live in app-owned
 storage outside the project. A successful final launcher run, explicit Stop, or expiry revokes the
 capability. A failed run keeps it, within the same token and time limits, so the fixed script can

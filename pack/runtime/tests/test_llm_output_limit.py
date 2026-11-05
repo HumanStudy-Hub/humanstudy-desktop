@@ -1,0 +1,108 @@
+"""Per-call output limit: every simulation call names a small max_tokens, so the macOS run relay
+reserves (and forwards) that much instead of 4,096 per call. Localhost stub only; no model calls."""
+import json
+import os
+import sys
+import tempfile
+import threading
+import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO / "pack/runtime/lib"))
+sys.path.insert(0, str(REPO / "pack/skills/export/agent"))
+import humanstudy_llm as H  # noqa: E402
+import study_core  # noqa: E402
+
+
+class Stub(BaseHTTPRequestHandler):
+    bodies = []
+    finish = "stop"
+
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+        type(self).bodies.append(body)
+        out = json.dumps({"choices": [{"message": {"content": "ok"}, "finish_reason": type(self).finish}],
+                          "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}}).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.end_headers()
+        self.wfile.write(out)
+
+
+class OutputLimitTests(unittest.TestCase):
+    def setUp(self):
+        Stub.bodies, Stub.finish = [], "stop"
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.tmp = tempfile.mkdtemp()
+        self.old = dict(os.environ)
+        base = f"http://127.0.0.1:{self.srv.server_address[1]}/v1"
+        os.environ.update({"HUMANSTUDY_HOSTED_BASEURL": base, "HUMANSTUDY_DESKTOP_KEY": "fake-key",
+                           "OPENROUTER_BASE_URL": base, "OPENROUTER_API_KEY": "fake-key",
+                           "HUMANSTUDY_PROJECT_DIR": self.tmp})
+        os.environ.pop("HUMANSTUDY_LLM_MAX_OUTPUT", None)
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+        os.environ.clear()
+        os.environ.update(self.old)
+
+    def log(self):
+        p = Path(self.tmp) / ".humanstudy/tmp/llm-usage.jsonl"
+        return [json.loads(x) for x in p.read_text().splitlines()]
+
+    def test_default_is_512(self):
+        H.llm("hi")
+        H.llm_many(["a", "b"])
+        self.assertEqual([b["max_tokens"] for b in Stub.bodies], [512, 512, 512])
+        self.assertTrue(all("max_completion_tokens" not in b for b in Stub.bodies))
+
+    def test_env_override_and_invalid_values_fall_back(self):
+        os.environ["HUMANSTUDY_LLM_MAX_OUTPUT"] = "1024"
+        H.llm("x")
+        for bad in ("lots", "0", "-5", "4097", "", "12.5"):
+            os.environ["HUMANSTUDY_LLM_MAX_OUTPUT"] = bad
+            H.llm("x")
+        self.assertEqual([b["max_tokens"] for b in Stub.bodies], [1024] + [512] * 6)
+
+    def test_explicit_argument_wins(self):
+        os.environ["HUMANSTUDY_LLM_MAX_OUTPUT"] = "300"
+        H.chat([{"role": "user", "content": "x"}], max_tokens=2000)
+        H.llm("x", max_tokens=64)
+        self.assertEqual([b["max_tokens"] for b in Stub.bodies], [2000, 64])
+
+    def test_max_completion_tokens_becomes_one_field(self):
+        H.llm("x", max_completion_tokens=800)
+        H.llm("x", max_tokens=100, max_completion_tokens=900)
+        self.assertEqual([b["max_tokens"] for b in Stub.bodies], [800, 100])
+        self.assertTrue(all("max_completion_tokens" not in b for b in Stub.bodies))
+
+    def test_truncation_is_logged(self):
+        H.llm("x")
+        Stub.finish = "length"
+        H.llm("y")
+        first, second = self.log()
+        self.assertEqual((first["max_tokens"], first["finish_reason"], first["truncated"]), (512, "stop", False))
+        self.assertEqual((second["finish_reason"], second["truncated"]), ("length", True))
+
+    def test_study_core_http_llm_sends_the_same_limit(self):
+        call = study_core.http_llm("some/model")
+        self.assertEqual(call("p"), "ok")
+        os.environ["HUMANSTUDY_LLM_MAX_OUTPUT"] = "256"
+        call("p")
+        call("p", max_tokens=1500)
+        call("p", max_completion_tokens=700)
+        os.environ["HUMANSTUDY_LLM_MAX_OUTPUT"] = "nope"
+        call("p")
+        self.assertEqual([b["max_tokens"] for b in Stub.bodies], [512, 256, 1500, 700, 512])
+        self.assertTrue(all("max_completion_tokens" not in b for b in Stub.bodies))
+
+
+if __name__ == "__main__":
+    unittest.main()

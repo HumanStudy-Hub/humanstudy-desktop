@@ -31,7 +31,17 @@ On macOS the app sets `HUMANSTUDY_RELAY_REQUIRED=1`: it creates an approved-run 
 per-run capability is not an upstream model key, and `run_confined.py` runs the script inside
 macOS sandbox-exec. The relay permits only the approved model and reserves at most 200,000
 input/output tokens per run, with at most 4,096 output tokens per call. Only text messages are
-supported. Do not retry a token-cap refusal. Real upstream credentials stay in the app process.
+supported. Do not retry a token-cap refusal.
+
+Each call reserves, before it runs: its request size in bytes + 256 per message + its output
+limit. `humanstudy_llm` (and `study_core.http_llm`) send an output limit of 512 tokens per call
+by default, enough for a participant's answer with a short reason. Pass a larger `max_tokens`
+only to a call whose reply genuinely needs it (a long essay, a multi-question block), never as a
+blanket setting: at 4,096 per call only a few dozen calls fit in a run. Before a real run,
+estimate its size: calls per participant x participants x (prompt bytes + 256 x messages + 512)
+must stay under 200,000; a short prompt costs about 1,000 to 2,500 tokens a call. If the plan
+does not fit, say so in the run confirmation, with how many participants fit, instead of letting
+the cap stop the run halfway. Real upstream credentials stay in the app process.
 
 On Linux and Windows the variable is not set: there is no relay and no sandbox, and
 `run_confined.py` runs the script exactly as `python run.py` would. The study's code can read the
@@ -51,7 +61,10 @@ reply = chat([{"role": "system", "content": s}, {"role": "user", "content": u}],
 It calls the HumanStudy Hub hosted models of the signed-in account (model from
 `HUMANSTUDY_SIM_MODEL`, default the model selected in the app), retries 429/5xx with backoff, caps
 concurrent calls (`HUMANSTUDY_LLM_CONCURRENCY`, default 8) and appends token usage (no prompt text)
-to `.humanstudy/tmp/llm-usage.jsonl`. It raises `LLMError` when a call fails for good; count such
+to `.humanstudy/tmp/llm-usage.jsonl`. Each call sends `max_tokens` 512 unless you pass one (or set
+`HUMANSTUDY_LLM_MAX_OUTPUT` for the run, 1 to 4,096). A usage line with `"truncated": true` is a
+reply cut off at that limit: count them and report them; if a measure depends on the cut-off
+part, rerun those calls with a larger `max_tokens`. It raises `LLMError` when a call fails for good; count such
 failures in the report instead of retrying forever. Never print, write or pass on any key or
 environment variable; do not call the endpoint any other way.
 
