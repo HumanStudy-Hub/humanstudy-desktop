@@ -369,6 +369,10 @@ class SeveralNumbersAndLabels(unittest.TestCase):
                          {"contribute": "10", "influenced": "1, 3", "comments": "It was fine, though long"})
         two = [Question("a", text="first", kind="number"), Question("b", text="second", kind="number")]
         self.assertEqual(replies.split_reply("1,000", two), {})
+        # a word another question shares in another form ("contribution", "contribute") is no label
+        guess = [Question("c", text="Amount to contribute", kind="number"),
+                 Question("g", text="Your guess of the others' average contribution", kind="number")]
+        self.assertEqual(replies.split_reply("My contribution: 10\nExpected: 8", guess), {})
 
     def test_answers_keyed_by_the_questions_own_labels(self):
         split = replies.split_reply
