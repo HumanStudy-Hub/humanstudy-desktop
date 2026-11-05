@@ -14,8 +14,11 @@ Environment, all set by the desktop app (nothing is read from or written to disk
   HUMANSTUDY_LLM_MAX_OUTPUT   output-token limit sent with every call that does not pass max_tokens
                               (default 512, 1-4096). The macOS run relay reserves this much per call
                               against the run's token cap, so a small default fits many more participants.
-Every call appends a line (no prompt text) to <project>/.humanstudy/tmp/llm-usage.jsonl, including the
-reply's finish_reason; "truncated": true marks a reply cut off at the output limit.
+  HUMANSTUDY_LLM_USAGE_LOG    usage log file (absolute path ending in .jsonl); set by run_confined.py on
+                              macOS to <run folder>/llm-usage.jsonl, the only place a confined run can write
+Every call appends a line (no prompt text) to the usage log (default
+<project>/.humanstudy/tmp/llm-usage.jsonl), including the reply's finish_reason; "truncated": true
+marks a reply cut off at the output limit.
 Standard library only.
 """
 from __future__ import annotations
@@ -87,8 +90,13 @@ def model_name() -> str:
 
 
 def usage_log_path() -> Path:
-    """<project>/.humanstudy/tmp/llm-usage.jsonl; the project is HUMANSTUDY_PROJECT_DIR, else the nearest
-    parent of the working directory that has a .humanstudy folder, else the working directory."""
+    """HUMANSTUDY_LLM_USAGE_LOG when it is an absolute path ending in .jsonl (a confined macOS run writes
+    only in its run folder), else <project>/.humanstudy/tmp/llm-usage.jsonl; the project is
+    HUMANSTUDY_PROJECT_DIR, else the nearest parent of the working directory that has a .humanstudy
+    folder, else the working directory."""
+    explicit = os.environ.get("HUMANSTUDY_LLM_USAGE_LOG", "")
+    if explicit and "\0" not in explicit and explicit.endswith(".jsonl") and os.path.isabs(explicit):
+        return Path(explicit)
     root = os.environ.get("HUMANSTUDY_PROJECT_DIR")
     if root:
         base = Path(root)

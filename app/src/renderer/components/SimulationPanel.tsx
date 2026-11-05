@@ -9,6 +9,7 @@ import { simulationScope, simulationLimits } from '../../shared/simulation-scope
 import { estimateRun, hasParticipantData, isResult, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
 import { packageStamp, readinessStamp, runConfirmation, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
 import { shortModelName } from './ModelPicker'
+import { formatTokens, runLimits } from '../../shared/run-limits'
 import { listenToArtifact } from '../bridge'
 import { getLang, t } from '../i18n'
 import { holdAction, track } from '../telemetry'
@@ -99,6 +100,9 @@ export function SimulationPanel(props: Props) {
   const [perCondition, setPerCondition] = useState(plan.defaultPerCondition)
   useEffect(() => setPerCondition(plan.defaultPerCondition), [plan.defaultPerCondition])
   const estimate = estimateRun({ conditions: plan.conditions.length, perCondition, model, needsBuild: !built })
+  // The relay's cap and lifetime for this plan, computed exactly as the main process will (macOS wording).
+  const access = runLimits({ conditions: plan.conditions, perCondition })
+  const accessVars = { tokens: formatTokens(access.tokens), minutes: access.minutes }
 
   // Run folders and the two small files each one writes while and after it runs.
   const runs = useMemo(() => runFolders(project.tree), [project.tree])
@@ -295,12 +299,12 @@ export function SimulationPanel(props: Props) {
                 </div>
               )}
               {!scope.ready && <p className="sim-blocked">{t('sim.blocked', { what: [...scope.missing.map((m) => t(`sim.need.${m}`)), ...scope.blocking.map((b) => b.title)].join(t('sim.list_sep')) })}</p>}
-              {confirmation.notice && <p className="sim-note">{t(confirmation.notice)}</p>}
+              {confirmation.notice && <p className="sim-note">{t(confirmation.notice, accessVars)}</p>}
               <div className="sim-actions">
                 <button className="primary" disabled={!scope.ready || agentBusy} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
                 <button className="ghost" onClick={() => props.onAsk(scope.ready ? t('sim.ask_prompt', { study: studyTitle }) : t('sim.resolve_prompt', { study: studyTitle }))}>{t('sim.ask')}</button>
               </div>
-              <p className="muted small sim-note">{t(confirmation.note)}</p>
+              <p className="muted small sim-note">{t(confirmation.note, accessVars)}</p>
             </section>
           )}
         </>

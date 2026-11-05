@@ -29,19 +29,21 @@ unconfined process.
 
 On macOS the app sets `HUMANSTUDY_RELAY_REQUIRED=1`: it creates an approved-run local relay whose
 per-run capability is not an upstream model key, and `run_confined.py` runs the script inside
-macOS sandbox-exec. The relay permits only the approved model and reserves at most 200,000
-input/output tokens per run, with at most 4,096 output tokens per call. Only text messages are
-supported. Do not retry a token-cap refusal.
+macOS sandbox-exec. The relay permits only the approved model, with at most 4,096 output tokens
+per call. Its token cap and lifetime follow the approved plan: 40,000 tokens per AI participant
+(conditions x `plan.perCondition` in the approval message), at least 200,000 and at most
+16,000,000; 0.2 minutes per participant, at least 30 and at most 120 minutes. Only text messages
+are supported. Do not retry a token-cap refusal.
 
 Each call reserves, before it runs: its request size in bytes + 256 per message + its output
 limit. `humanstudy_llm` (and `study_core.http_llm`) send an output limit of 512 tokens per call
 by default, enough for a participant's answer with a short reason. Pass a larger `max_tokens`
 only to a call whose reply genuinely needs it (a long essay, a multi-question block), never as a
-blanket setting: at 4,096 per call only a few dozen calls fit in a run. Before a real run,
-estimate its size: calls per participant x participants x (prompt bytes + 256 x messages + 512)
-must stay under 200,000; a short prompt costs about 1,000 to 2,500 tokens a call. If the plan
-does not fit, say so in the run confirmation, with how many participants fit, instead of letting
-the cap stop the run halfway. Real upstream credentials stay in the app process.
+blanket setting. Before a real run, estimate one participant: the sum over its calls of (prompt
+bytes + 256 x messages + output limit), about 4,000 for a 3 KB prompt, more when a conversation
+resends its history. If that exceeds 40,000 (or the run would pass 16,000,000), say so in the run
+confirmation, with how many participants fit, instead of letting the cap stop the run halfway.
+Real upstream credentials stay in the app process.
 
 On Linux and Windows the variable is not set: there is no relay and no sandbox, and
 `run_confined.py` runs the script exactly as `python run.py` would. The study's code can read the
@@ -61,10 +63,13 @@ reply = chat([{"role": "system", "content": s}, {"role": "user", "content": u}],
 It calls the HumanStudy Hub hosted models of the signed-in account (model from
 `HUMANSTUDY_SIM_MODEL`, default the model selected in the app), retries 429/5xx with backoff, caps
 concurrent calls (`HUMANSTUDY_LLM_CONCURRENCY`, default 8) and appends token usage (no prompt text)
-to `.humanstudy/tmp/llm-usage.jsonl`. Each call sends `max_tokens` 512 unless you pass one (or set
+to the usage log: `artifacts/simulations/<run>/llm-usage.jsonl` for a run started through
+`run_confined.py` on macOS (the sandbox writes only there), else `.humanstudy/tmp/llm-usage.jsonl`.
+Each call sends `max_tokens` 512 unless you pass one (or set
 `HUMANSTUDY_LLM_MAX_OUTPUT` for the run, 1 to 4,096). A usage line with `"truncated": true` is a
 reply cut off at that limit: count them and report them; if a measure depends on the cut-off
-part, rerun those calls with a larger `max_tokens`. It raises `LLMError` when a call fails for good; count such
+part, rerun those calls with a larger `max_tokens`. `study_core.http_llm` instead warns on stderr
+and counts them (`llm.truncated`, `llm.calls`). It raises `LLMError` when a call fails for good; count such
 failures in the report instead of retrying forever. Never print, write or pass on any key or
 environment variable; do not call the endpoint any other way.
 
@@ -73,8 +78,8 @@ environment variable; do not call the endpoint any other way.
 Before starting any real run or reproduction, check `.humanstudy/community.json` in the project.
 If present (including unreadable or malformed provenance), say exactly, when
 `HUMANSTUDY_RELAY_REQUIRED` is `1` (macOS):
-"This study's code will run on your computer through a limited model relay (up to 200,000 tokens and 30 minutes)."
-and otherwise (Linux, Windows):
+"This study's code will run on your computer through a limited model relay (up to {tokens} tokens and {minutes} minutes)."
+with the plan's limits above filled in (tokens written like 4,800,000), and otherwise (Linux, Windows):
 "This study's code will run on your computer with access to your model key."
 Without the relay, also say for every run, community or not:
 "On this computer, the study's code can read your API key. Only run studies you trust."
@@ -165,7 +170,7 @@ Create `artifacts/simulations/<YYYY-MM-DD-HHMM>/` (the run folder) and work insi
    Then check every 20–60 seconds with a short command (`sleep 30; cat artifacts/simulations/<run>/progress.json`)
    until `progress.json` says `scoring`, `writing`, `failed` or `stopped`. If it failed, read `run.log`,
    fix the cause and start again (finished participants are kept, so no model call is repeated).
-   On macOS the run's model access ends when a run finishes, on Stop, or after 30 minutes; if the
+   On macOS the run's model access ends when a run finishes, on Stop, or at its time limit; if the
    launcher says it has ended, ask the researcher to press Run simulation again. If it says `stopped`, the researcher
    pressed Stop: do not restart; report what was finished.
 
@@ -198,5 +203,5 @@ Create `artifacts/simulations/<YYYY-MM-DD-HHMM>/` (the run folder) and work insi
    On any failure you cannot fix: `... stage <run> failed "<one plain sentence: what went wrong>"`.
 
 Reply with the one-sentence outcome (replicated / not replicated / not ready, with the key numbers),
-the number of model calls (from `.humanstudy/tmp/llm-usage.jsonl`), and that the result is in the
+the number of model calls (from the usage log above; on macOS the run folder's `llm-usage.jsonl`), and that the result is in the
 Simulation tab. Reply in the researcher's language.

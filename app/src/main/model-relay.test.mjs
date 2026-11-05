@@ -76,6 +76,14 @@ test('output limit: absent reserves and forwards 512, alias becomes max_tokens, 
     assert.equal((await call({ ...base, max_tokens: 4096 })).status, 402)
   } finally { await relay.close(); await new Promise(resolve => stub.close(resolve)) }
 })
+test('run lifetime is configurable and validated', async () => {
+  const project = join(temp, 'expiry-project'); await mkdir(project)
+  for (const expiryMinutes of [0, -1, 1.5, 24 * 60 + 1])
+    await assert.rejects(startModelRelay({ project, storage: join(temp, 'expiry-app'), model: 'm', upstream: 'http://127.0.0.1:9', key: 'k', expiryMinutes }), /Invalid run limits/)
+  const relay = await startModelRelay({ project, storage: join(temp, 'expiry-app'), model: 'm', upstream: 'http://127.0.0.1:9', key: 'k', tokenCap: 7_500_000, expiryMinutes: 60 })
+  assert.equal(relay.tokenCap, 7_500_000)
+  await relay.close()
+})
 test.after(() => rm(temp, { recursive: true, force: true }))
 
 test('trusted launcher completes a real confined script through the relay and revokes it', { skip: process.platform !== 'darwin' }, async () => {
@@ -123,6 +131,9 @@ print('normal confined run succeeded')
     const code = await new Promise(resolve => child.once('exit', resolve))
     assert.equal(code, 0, err); assert.match(out, /normal confined run succeeded/)
     assert.deepEqual(limits, [700, 700], 'the per-call output limit reaches the confined script')
+    const usage = (await readFile(join(run, 'llm-usage.jsonl'), 'utf8')).trim().split('\n').map(l => JSON.parse(l))
+    assert.equal(usage.length, 1, 'humanstudy_llm logs inside the run folder, the only place the sandbox lets it write')
+    assert.equal(usage[0].max_tokens, 700); assert.equal(usage[0].truncated, false)
     assert.ok(closed)
     await assert.rejects(readFile(relayDescriptor(storage, project)))
   } finally { await relay.close(); await new Promise(resolve => stub.close(resolve)) }

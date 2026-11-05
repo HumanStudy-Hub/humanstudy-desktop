@@ -23,7 +23,7 @@ def run_unconfined(script, args):
 
 USAGE = 'usage: run_confined.py [--final | --no-model] SCRIPT [args...]'
 ENDED = ('The approved model access for this run has ended (it ends when a run finishes, on Stop, '
-         'or after 30 minutes). Ask the researcher to press Run simulation again.')
+         'or when its time limit is reached). Ask the researcher to press Run simulation again.')
 
 
 def main():
@@ -68,6 +68,9 @@ def main():
            'OPENAI_API_KEY': config['token'], 'OPENAI_BASE_URL': config['baseURL'],
            'HUMANSTUDY_DESKTOP_KEY': config['token'], 'HUMANSTUDY_HOSTED_BASEURL': config['baseURL'],
            'HUMANSTUDY_SIM_MODEL': config['model'], 'HUMANSTUDY_PROJECT_DIR': str(project)}
+    # The sandbox lets the script write only in its run folder, so the usage log (token counts,
+    # finish_reason, truncated; never prompt text) goes there instead of .humanstudy/tmp.
+    env['HUMANSTUDY_LLM_USAGE_LOG'] = str(script.parent / 'llm-usage.jsonl')
     output = os.environ.get('HUMANSTUDY_LLM_MAX_OUTPUT', '')
     if output.isdigit():  # per-call output limit for humanstudy_llm / http_llm; a number, nothing else
         env['HUMANSTUDY_LLM_MAX_OUTPUT'] = output

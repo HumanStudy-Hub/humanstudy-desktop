@@ -1,5 +1,7 @@
 """Per-call output limit: every simulation call names a small max_tokens, so the macOS run relay
 reserves (and forwards) that much instead of 4,096 per call. Localhost stub only; no model calls."""
+import contextlib
+import io
 import json
 import os
 import sys
@@ -46,6 +48,7 @@ class OutputLimitTests(unittest.TestCase):
                            "OPENROUTER_BASE_URL": base, "OPENROUTER_API_KEY": "fake-key",
                            "HUMANSTUDY_PROJECT_DIR": self.tmp})
         os.environ.pop("HUMANSTUDY_LLM_MAX_OUTPUT", None)
+        os.environ.pop("HUMANSTUDY_LLM_USAGE_LOG", None)
 
     def tearDown(self):
         self.srv.shutdown()
@@ -102,6 +105,36 @@ class OutputLimitTests(unittest.TestCase):
         call("p")
         self.assertEqual([b["max_tokens"] for b in Stub.bodies], [512, 256, 1500, 700, 512])
         self.assertTrue(all("max_completion_tokens" not in b for b in Stub.bodies))
+
+
+    def test_usage_log_goes_where_the_confined_run_can_write(self):
+        run = Path(self.tmp) / "artifacts/simulations/r1"
+        run.mkdir(parents=True)
+        os.environ["HUMANSTUDY_LLM_USAGE_LOG"] = str(run / "llm-usage.jsonl")
+        Stub.finish = "length"
+        H.llm("secret prompt text")
+        line = json.loads((run / "llm-usage.jsonl").read_text())
+        self.assertTrue(line["truncated"])
+        self.assertNotIn("secret prompt text", json.dumps(line))
+        self.assertFalse((Path(self.tmp) / ".humanstudy/tmp/llm-usage.jsonl").exists())
+        for bad in ("relative/llm-usage.jsonl", str(run / "usage.txt"), ""):
+            os.environ["HUMANSTUDY_LLM_USAGE_LOG"] = bad
+            self.assertEqual(H.usage_log_path(), Path(self.tmp) / ".humanstudy/tmp/llm-usage.jsonl", bad)
+
+    def test_study_core_counts_and_warns_on_truncation(self):
+        call = study_core.http_llm("some/model")
+        call("p")
+        Stub.finish = "length"
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            call("private words")
+        self.assertEqual((call.calls, call.truncated), (2, 1))
+        self.assertIn("cut off at max_tokens=512", err.getvalue())
+        self.assertNotIn("private words", err.getvalue())
+
+    def test_study_core_keeps_an_explicit_zero(self):
+        study_core.http_llm("some/model")("p", max_tokens=0)
+        self.assertEqual(Stub.bodies[0]["max_tokens"], 0)
 
 
 if __name__ == "__main__":

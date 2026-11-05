@@ -552,7 +552,9 @@ Rules the runner depends on:
   `analysis` node id.
 - `run_sessions(llm, seed, n, arms=None)`: `llm(prompt) -> str` is injected; call it for every
   original human participant (never a script, distribution or fixed answer for a role the paper
-  did not script). `n` is the sampling unit stated in `task.json`, either one number for every condition
+  did not script). Each call's reply is limited to 512 output tokens by default; pass
+  `llm(prompt, max_tokens=N)` (at most 4096) only where a reply is long (many items as JSON, free
+  text). `n` is the sampling unit stated in `task.json`, either one number for every condition
   or a dict from condition id to its number (`{"awl_dg": 357, "awl_pd": 257}`), so a run can use the paper's
   unequal cells: read it with `replies.sessions_for(n, arm)`. Give each condition the paper's analysed n as
   `"paper_n"` when the paper reports it; the smoke test then runs one condition with a dict. `arms=None` runs

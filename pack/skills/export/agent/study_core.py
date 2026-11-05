@@ -820,13 +820,23 @@ def http_llm(model, temperature=1.0):
         messages = prompt if isinstance(prompt, list) else [{"role": "user", "content": prompt}]
         if kw.get("system") and not isinstance(prompt, list):
             messages = [{"role": "system", "content": kw["system"]}] + messages
-        out = kw.get("max_tokens") or kw.get("max_completion_tokens") or _default_max_tokens()
+        out = kw.get("max_tokens")
+        if out is None:
+            out = kw.get("max_completion_tokens")
+        if out is None:
+            out = _default_max_tokens()
         body = json.dumps({"model": model, "messages": messages, "max_tokens": out,
                            "temperature": kw.get("temperature", temperature)}).encode()
         req = urllib.request.Request(base.rstrip("/") + "/chat/completions", data=body,
                                      headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=180) as r:
-            return json.loads(r.read())["choices"][0]["message"]["content"] or ""
+            choice = json.loads(r.read())["choices"][0]
+        llm.calls += 1
+        if choice.get("finish_reason") == "length":  # cut off at the output limit: visible, never silent
+            llm.truncated += 1
+            print(f"warning: a reply was cut off at max_tokens={out} ({llm.truncated} so far)", file=sys.stderr)
+        return choice["message"]["content"] or ""
+    llm.calls, llm.truncated = 0, 0
     return llm
 
 

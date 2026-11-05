@@ -32,14 +32,18 @@ export interface RelayOptions {
   upstream: string
   key: string
   bypass?: string
+  /** Total reservation for the run; default 200,000 (see shared/run-limits.ts for the approved plan's). */
   tokenCap?: number
+  /** Lifetime of the run capability in minutes; default 30. */
+  expiryMinutes?: number
 }
 export const relayDescriptor = (storage: string, project: string) => join(storage, createHash('sha256').update(project).digest('hex') + '.json')
 
 export async function startModelRelay(options: RelayOptions) {
   const token = randomBytes(32).toString('hex')
   const cap = options.tokenCap ?? 200_000
-  if (!options.model || !Number.isSafeInteger(cap) || cap <= 0) throw Error('Invalid run limits.')
+  const minutes = options.expiryMinutes ?? 30
+  if (!options.model || !Number.isSafeInteger(cap) || cap <= 0 || !Number.isSafeInteger(minutes) || minutes <= 0 || minutes > 24 * 60) throw Error('Invalid run limits.')
   let reserved = 0
   const folder = options.storage
   const path = relayDescriptor(folder, options.project)
@@ -113,7 +117,7 @@ export async function startModelRelay(options: RelayOptions) {
   const config = { baseURL: `http://127.0.0.1:${address.port}/v1`, token, model: options.model, tokenCap: cap }
   try { await unlink(path).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error }); await writeFile(path, JSON.stringify(config), { mode: 0o600, flag: 'wx' }) }
   catch (error) { server.close(); throw error }
-  const expiry = setTimeout(() => void finish(), 30 * 60_000)
+  const expiry = setTimeout(() => void finish(), minutes * 60_000)
   expiry.unref()
   finish = async () => {
     if (closed) return
