@@ -326,8 +326,10 @@ class Validity(FakePdfMixin, unittest.TestCase):
         statement = "Participants had to learn the reward associated with each option as it changed over time."
         entry = {"statement": statement, "page": 2, "withheld": "the current reward probability",
                  "terms": ["current probability"]}
-        report = check_validity.check(self.project([self.not_told([entry])], pages=[]))
-        self.assertFalse(any("semantic terms require" in m for m, _ in report["problems"] + report["warnings"]), report)
+        for pages in ([], ["", ""]):   # no PDF reader, a scanned PDF
+            report = check_validity.check(self.project([self.not_told([entry])], pages=pages))
+            self.assertFalse(any("semantic terms require" in m for m, _ in report["problems"] + report["warnings"]),
+                             report)
 
     def test_blocked_adapters_are_read_statically_and_valid_all_is_a_problem(self):
         text = adapter(legend="Hint: the red key pays more often.", blocked='raise RuntimeError("blocked")',

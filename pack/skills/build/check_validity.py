@@ -1013,6 +1013,8 @@ def check(root, package=None, capture_prompts=True):
     newer = add if current else (lambda msg, fix="": warnings.append((msg, fix)))
     paper = _paper(root, program)
     pages = check_quotes.Pdf(paper).load() if paper and paper.suffix.lower() == ".pdf" else []
+    # a scanned PDF loads as empty pages: judge the whole document, so citing a blank page cannot skip a rule
+    has_text = sum(len(norm(p or "")) for p in pages) >= 40
 
     # not-told field and inventory
     entries, bad, has_field = inventory(program)
@@ -1050,7 +1052,7 @@ def check(root, package=None, capture_prompts=True):
                                  content_words(t) & content_words(e.get("withheld")) for t in terms)
             # Without a text layer nothing can be compared (as in _on_page). The rule came after the shared reply
             # reader contract, so an older package gets it as a warning and a ready project stays ready.
-            if terms and not uses_statement and pages and not _exact_on_page(e, pages):
+            if terms and not uses_statement and has_text and not _exact_on_page(e, pages):
                 newer("%s: semantic terms require the exact statement on the cited page" % e["_where"],
                     "copy the printed statement and cite its page, or include a content term from the statement")
     for hit in statements(pages):
