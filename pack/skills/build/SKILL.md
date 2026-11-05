@@ -623,6 +623,28 @@ Rules the runner depends on:
     itself changed the order between studies on purpose. `design_checks.py` (run by check_package.py) fails a
     blocked condition without the three keys, a package with the shared reply reader and no `presentation`,
     and a `derived` layout without its issue.
+  - **Every scored prompt is self-contained.** A model call has no memory: the participant model knows only
+    what this prompt holds. A question with an answer key (a comprehension quiz, an attention check) is asked
+    with the instruction screens that came before it in the program's flow, as printed (the quiz after the
+    instructions carries the instructions; a second quiz carries the first part's instructions too when its
+    answers depend on them). A question asked round after round keeps the rules it was asked with: part 2's
+    rounds carry part 1's instruction screen when part 2's screen only says "as in the first part". Carry the
+    participant's own earlier instruction screens (the memory design above), or repeat the rule text the paper
+    itself shows on that screen and declare it in `materials/materials.json` `"screenMemory": {"repeats":
+    [{"screen": "<material node id>", "text": "<the repeated text>", "evidenceIds": [...]}]}`. Only when the paper
+    says a screen could not be seen again, declare `"notCarried": [{"screen": ..., "reason": ..., "evidenceIds":
+    [...]}]`. check_validity.py answers the keys correctly with its stand-in model, reads every prompt that
+    asks a keyed or repeated question, and fails a prompt without those screens.
+  - **Arms that differ only by who took part are one simulation.** Online versus lab, two countries, two sites
+    or two subject pools send identical prompts unless the adapter writes the difference into them. Effects that
+    contrast such arms cannot be tested by the replay: list them in a `capabilities.json` `run.excluded` entry
+    `{"what": "Online versus laboratory contrasts", "reason": "population difference, not a manipulation",
+    "effects": ["<effect id>", ...]}` (no `arms`: every arm still runs, and its own within-arm effects, such as
+    gain versus loss inside each country of a multi-site study, are computed as usual). The exported study
+    reports those effects as `not_ready`. Give such arms a persona or population difference only when the paper
+    reports one, written into the prompt (then the prompts differ). check_validity.py runs each arm on its own
+    and fails an effect whose treatment and reference arms (arm ids, task.json labels or program condition
+    nodes) send identical prompts and are not so listed.
   - Instructions between blocks, sessions or phases appear in the first prompt of the new block when
     the paper shows them there ("the upcoming block is completely independent", a break of one week),
     never only inside a later trial log. No script checks this (the captured prompts carry no block
@@ -642,7 +664,9 @@ Rules the runner depends on:
   that no `not-told` entry lists, a trial history with no `replay-memory` decision (or a design that
   does not match the prompts), a prompt that claims earlier screens or answers it does not carry, a carrying
   design whose later prompts carry nothing the participant saw, an internal identifier in a prompt, a declared
-  arm that crashes or refuses without a `blocking` issue, `all(...)` over the trials' parse status, and missing instructions with
+  arm that crashes or refuses without a `blocking` issue, a keyed question or a later round asked without the
+  instruction screens before it, an effect contrasting arms with identical prompts, an unread answer turned
+  into a number (`v if v is not None else 0`), `all(...)` over the trials' parse status, and missing instructions with
   severity `check` (or `blocking` while the adapter runs) or without a `decision` issue. Fix the prompt, never the inventory: removing a term or an entry to pass is a fabrication. The
   smoke test and every export run the package in the project layout, so `task/adapter.py` may read
   `../../program.json` (and `effects.json`, `capabilities.json`, `sources/` beside it), nothing else outside the package.
@@ -670,7 +694,13 @@ Rules the runner depends on:
     is kept, as the rule on unparsed replies above says) and answers the analysis does not use (wrap-up
     comments, "anything else?"). Leave an answer required only when the paper's own rule makes it decisive for
     the participant (a consent answer, the only answer of a single-question study): an unreadable required
-    answer ends the session with status `unparsed`, and only such an answer does.
+    answer ends the session with status `unparsed`, and only such an answer does. An optional answer the
+    analysis uses (a contribution, a rating, a deduction per round) also passes `retry=True`, so an unreadable
+    reply is asked again once before it is recorded unparsed.
+  - **An unread answer stays unread.** Never turn it into 0 or any other value (`v if v is not None else 0`,
+    `page.value("c") or 0`): it would enter the data, and the other group members' payoffs, as a decision the
+    participant never made. Keep `None`, record the trial as unparsed, and show partners what the original
+    screen showed for a missing decision; when the paper says nothing about it, that is a `decision` issue.
   - **Record every answer.** Every question a participant answers is stored in the session record
     `run_sessions` returns (under a neutral key), whether or not the analysis uses it: wrap-up questions,
     hypothesis guesses, "have you seen these materials", comments. A researcher may later code them, and the
@@ -687,8 +717,13 @@ Rules the runner depends on:
     printed. Transcribe printed typos as printed ("Tranfer the 10c"): a reply that spells exactly one label
     correctly is read, and `aliases={"Tranfer the 10c": ["Transfer"]}` adds other spellings the reader accepts
     (never shown, never another option's label). A bipolar scale that prints the same label twice (`3 2 1 0 1
-    2 3`) needs `codes` that tell the two sides apart. Work around a reader limit in the adapter, never by
-    editing the copy.
+    2 3`) needs `codes` that tell the two sides apart. A number question read from a sentence with several
+    numbers takes the one after the question's own verb ("I keep 5 and contribute 15" to "How many points do
+    you contribute?" is 15; "I keep 5" alone is asked again). Several questions on one screen are read from
+    `Q1:` lines, a JSON object, answers keyed by the word that tells the questions apart ("A: 2, B: 0, C: 3"
+    for "Points for participant A/B/C"), or, when all ask for numbers, the numbers in order ("2, 0, 3"). Write
+    question texts so each one names what it asks (the participant label, the verb). Work around a reader
+    limit in the adapter, never by editing the copy.
 - **Smoke test.** `python .opencode/skills/build/check_replies.py .` (check_package.py runs it) runs every
   runnable arm of `task/task.json` `conditions` through `run_sessions` twice, confined, with an offline
   stand-in that replies from the prompt text as a model would (the number printed before the option it picks,

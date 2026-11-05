@@ -305,6 +305,77 @@ class Stub(unittest.TestCase):
         self.assertEqual(parse(replies.StubParticipant(0).answer_for("x", [q]), q)["value"], 5)
 
 
+class SeveralNumbersAndLabels(unittest.TestCase):
+    """Round 4: the number tied to the asked verb, label-keyed multi-answers, a retry for optional answers that
+    the analysis uses, and never a default."""
+    C = Question("c", text="How many points do you contribute to the project?", kind="number", minimum=0, maximum=20,
+                 required=False, retry=True)
+    PEERS = [Question("d%d" % k, text="Points for Participant %s:" % p, kind="number", minimum=0, maximum=10,
+                      required=False, retry=True) for k, p in enumerate("ABC")]
+
+    def test_the_number_after_the_asked_verb(self):
+        for reply, value in (("I keep 5 points and contribute 15.", 15), ("I keep 20 and contribute 0", 0),
+                             ("Round 3: I contribute 8", 8), ("contribute: 7", 7), ("I contribute 10 points", 10),
+                             ("10", 10), ("ten", 10), ("10 MU", 10)):
+            self.assertEqual(parse(reply, self.C).get("value"), value, reply)
+        for reply in ("I contribute 5 or 6, and contribute 7", "I don't contribute 5", "I keep 5", "between 3 and 8"):
+            self.assertNotEqual(parse(reply, self.C)["status"], "ok", reply)
+        self.assertEqual(parse("12.5", self.C)["status"], "unparsed")
+        keep = Question("k", text="How many points do you keep?", kind="number", minimum=0, maximum=20)
+        self.assertEqual(parse("I give 5 and keep 15", keep)["value"], 15)
+        self.assertEqual(parse("I give 5", keep)["status"], "ambiguous")
+        # a question without a verb keeps the old rule: two numbers are ambiguous
+        self.assertEqual(parse("3 then 4", Question("n", text="Your number", kind="number"))["status"], "ambiguous")
+
+    def test_answers_keyed_by_the_questions_own_labels(self):
+        split = replies.split_reply
+        for reply in ("A: 2, B: 0, C: 3", "Participant A: 2\nParticipant B: 0\nParticipant C: 3",
+                      "Points for Participant A: 2\nPoints for Participant B: 0\nPoints for Participant C: 3",
+                      "2, 0, 3", '{"A": 2, "B": 0, "C": 3}', "Q1: 2\nQ2: 0\nQ3: 3"):
+            self.assertEqual(split(reply, self.PEERS), {"d0": "2", "d1": "0", "d2": "3"}, reply)
+        self.assertEqual(split("A: 2, A: 3, B: 1", self.PEERS), {"d1": "1"})   # A twice: not read
+        self.assertEqual(split("I assign 0 points to everyone", self.PEERS), {})
+        self.assertEqual(split("2, 0", self.PEERS), {})                          # not one number per question
+        mixed = [Question("x", text="Pick one", options=["Yes", "No"]), Question("y", text="Your number", kind="number")]
+        self.assertEqual(split("1, 5", mixed), {})                               # in order only for number questions
+        verbs = [Question("give", text="How much do you give?", kind="number"),
+                 Question("keep", text="How much do you keep?", kind="number")]
+        self.assertEqual(split("give: 4; keep: 6", verbs), {"give": "4", "keep": "6"})
+
+    def test_optional_answers_with_retry_are_asked_again_and_never_defaulted(self):
+        answers = iter(["I am not sure", "I keep 5 and contribute 15"])
+        page = ask(lambda prompt: next(answers), "screen", [self.C])
+        self.assertEqual((page.value("c"), len(page.replies)), (15, 2))
+        answers = iter(["hmm", "still unsure"])
+        page = ask(lambda prompt: next(answers), "screen", [self.C])
+        self.assertIsNone(page.value("c"))
+        self.assertEqual(page.answers["c"]["status"], "unparsed")
+        self.assertTrue(page.ok)                          # optional: the participant stays in
+        replies_seen = iter(["A: 2, B: x", "B: 1, C: 0"])
+        page = ask(lambda prompt: next(replies_seen), "screen", self.PEERS)
+        self.assertEqual([page.value(q.id) for q in self.PEERS], [2, 1, 0])
+        plain = Question("w", text="Comments?", options=["A", "B"], codes=["x", "y"], required=False)
+        calls = []
+        ask(lambda prompt: calls.append(prompt) or "no idea", "screen", [plain])
+        self.assertEqual(len(calls), 1)                   # without retry=True an optional answer is asked once
+
+    def test_the_stub_writes_verb_sentences_and_labelled_answers_that_are_read(self):
+        prompt = replies.render_questions(self.PEERS)
+        labelled, sentences = set(), set()
+        for seed in range(30):
+            stub = replies.StubParticipant(seed=seed, noise=0.0, use_keys=False)
+            page = ask(stub, prompt, self.PEERS)
+            self.assertTrue(all(page.answers[q.id]["status"] == "ok" for q in self.PEERS), page.replies)
+            labelled.add("Q1:" not in page.replies[0])
+            self.assertFalse(stub.misreads)
+            stub = replies.StubParticipant(seed=seed, noise=0.0, use_keys=False)
+            page = ask(stub, replies.render_questions([self.C]), [self.C])
+            self.assertEqual(page.answers["c"]["status"], "ok", page.replies)
+            sentences.add("contribute" in page.replies[0])
+            self.assertFalse(stub.misreads)
+        self.assertEqual((labelled, sentences), ({True, False}, {True, False}))   # both forms, and the plain ones
+
+
 # --------------------------------------------------------------------------- check_replies.py
 
 class ImportsReplies(unittest.TestCase):
