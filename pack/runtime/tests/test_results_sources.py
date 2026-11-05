@@ -67,6 +67,23 @@ class CheckResults(unittest.TestCase):
         self.assertTrue(any(m.startswith("ev-t2 (p. 7): quote reads like a printed table") for m in found), found)
         self.assertEqual(self.run_check(program_with([prose, TABLE], EVIDENCE)), [])
 
+    def test_prose_citations_do_not_hide_bracketed_results(self):
+        citation = [{"id": "ev-method", "path": "paper.pdf", "locator": {"page": 1},
+                     "quote": "A Bayesian model selection approach with random effects [52, 53] was used."}]
+        self.assertEqual(self.run_check(program_with([], citation)), [])
+        for refs in ("[52–55]", "[3, 7–9]", "[52-55]"):
+            self.assertEqual(self.run_check(program_with([], [dict(citation[0], quote=
+                "A Bayesian model selection approach with random effects " + refs + " was used.")])), [])
+        for quote in ("The observed values were [52, 53].", "The confidence interval was [52, 53].",
+                      "Scores: [52, 53].", "[52, 53, 54, 55]", "The range was [52–55].",
+                      "Group A [52, 53]", "The distribution contained [52, 53].",
+                      "Participants chose different numbers [52, 53].",
+                      "The observed model [52, 53] has two values.",
+                      "Table 1\ncontrol 9 10 group [52, 53]"):
+            result = [dict(citation[0], quote=quote)]
+            found = self.run_check(program_with([], result))
+            self.assertTrue(any("only in evidence quotes" in m for m in found), (quote, found))
+
     def test_table_shape(self):
         bad = copy.deepcopy(TABLE)
         bad["origin"] = "reported"

@@ -87,8 +87,9 @@ Validate against `schema/human-program.schema.json`. Work in this order:
    `{"statement": "<the sentence as printed>", "page": 7, "withheld": "which key selects which circle,
    and that only a highlighted circle can be selected", "terms": ["highlighted", "can be selected",
    "yellow"]}`. `terms` are the words a prompt that gave the information away would have to contain,
-   short phrases (at most 3 words), at least one of them a content word of the statement (not "told" or
-   "participants") and one sharing a word with `withheld`. A passage that is not about what participants
+   short phrases (at most 3 words), at least one sharing a content word with `withheld`. When no term
+   appears in the printed statement, copy that statement exactly and cite its physical page so the check
+   can verify it against that page. A passage that is not about what participants
    knew (experimenters blind to condition) gets `"notApplicable": "<why>"` instead; when the sentence
    is about the participants, `notApplicable` also needs a `check` issue on the field so the researcher
    confirms it. The value is `[]` when

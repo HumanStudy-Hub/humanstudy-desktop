@@ -92,6 +92,15 @@ LABEL = re.compile(r"\b(?:tables?|figs?\.?|figures?|stud(?:y|ies)|experiments?|e
                    r"\s*(?:\d+[a-z]?|[ivx]+\b)(?:\s*(?:,|and|&|-|–)\s*\d+[a-z]?)*", re.I)
 THOUSANDS = re.compile(r"(?<![\d.(])\d{1,3}(?:,\d{3})+(?![\d,])")
 YEAR = re.compile(r"(?<![\d.])(?:19|20)\d\d(?![\d.])")
+# Only treat bracketed integers following prose as citations. Brackets after
+# statistical/result labels or punctuation may instead contain actual data.
+BRACKET_CITATION = re.compile(r"\b([A-Za-z]{3,})(\s+)(\[\d+(?:\s*[,–-]\s*\d+)*\])")
+CITATION_CONTEXT = re.compile(r"\b(?:approach(?:es)?|methods?|models?|literature|research|studies|investigations|"
+                              r"authors|random effects)\s*$", re.I)
+RESULT_CONTEXT = set("value values score scores result results range ranges interval intervals ci mean means median medians "
+                     "sd se estimate estimates were was are is of from between n p t f r odds ratio ratios rates "
+                     "chose chosen outcomes proportions counts frequencies contained contains included includes yielded "
+                     "returned measured generated produced obtained observed estimated recorded respectively distribution".split())
 CAPTION = re.compile(r"^\s*(TABLE|Table)\s+([0-9]+[A-Za-z]?|[IVXL]+|[A-Z][0-9]*|S[0-9]+)\s*(?:[.:|—–-]|$)")
 ROMAN = {"I": 1, "V": 5, "X": 10, "L": 50}
 MIN_QUOTE_ONLY = 2       # unstructured numbers that make a result node a problem
@@ -99,10 +108,22 @@ TABLE_NUMBERS = 10       # numbers in a quote that, with TABLE_SHARE, make it re
 TABLE_SHARE = 0.3
 
 
-def numbers(text):
+def numbers(text, citations=False):
     """Printed values in text, as floats, without labels, page numbers and years."""
     if not isinstance(text, str):
         return []
+    if citations:
+        def remove_citation(m):
+            # Short fragments and numeric-dense lines can be table cells or lists.
+            start = max(text.rfind("\n", 0, m.start()), text.rfind(". ", 0, m.start())) + 1
+            prefix = text[start:m.start()]
+            if (m.group(1).lower() in RESULT_CONTEXT or not CITATION_CONTEXT.search(prefix + m.group(1))
+                    or len(re.findall(r"[A-Za-z]{2,}", prefix)) < 2
+                    or any(word.lower() in RESULT_CONTEXT for word in re.findall(r"[A-Za-z]+", prefix))
+                    or len(NUM.findall(prefix)) >= 2):
+                return m.group(0)
+            return m.group(1) + m.group(2)
+        text = BRACKET_CITATION.sub(remove_citation, text)
     text = THOUSANDS.sub(lambda m: m.group(0).replace(",", ""), text)  # 1,234 is one number
     text = YEAR.sub(" ", LABEL.sub(" ", text))
     out = []
@@ -1414,7 +1435,7 @@ def check(program_path, package=None):
             continue
         ids = list(n.get("evidenceIds") or []) + [i for f in n.get("fields") or [] if isinstance(f, dict) for i in f.get("evidenceIds") or []]
         ids = [i for i in dict.fromkeys(ids) if i in evidence]
-        missing = sorted(set(unheld([x for i in ids for x in numbers(evidence[i].get("quote"))])))
+        missing = sorted(set(unheld([x for i in ids for x in numbers(evidence[i].get("quote"), citations=True)])))
         if len(missing) >= MIN_QUOTE_ONLY:
             shown = ", ".join(("%g" % x) for x in missing[:12]) + (" ..." if len(missing) > 12 else "")
             out.append(("%s: %d numbers appear only in evidence quotes (%s): %s" % (n.get("id"), len(missing), ", ".join(ids[:4]), shown),
@@ -1425,7 +1446,7 @@ def check(program_path, package=None):
     cited_by_table = {i for _, f in tables for i in f.get("evidenceIds") or []}
     for eid, e in evidence.items():
         quote = e.get("quote") if isinstance(e.get("quote"), str) else ""
-        nums = numbers(quote)
+        nums = numbers(quote, citations=True)
         words = len(re.findall(r"[A-Za-z]{2,}", YEAR.sub(" ", LABEL.sub(" ", quote))))
         if len(nums) >= TABLE_NUMBERS and len(nums) / max(1, len(nums) + words) >= TABLE_SHARE:
             missing = unheld(nums)
