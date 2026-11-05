@@ -327,6 +327,34 @@ class SeveralNumbersAndLabels(unittest.TestCase):
         # a question without a verb keeps the old rule: two numbers are ambiguous
         self.assertEqual(parse("3 then 4", Question("n", text="Your number", kind="number"))["status"], "ambiguous")
 
+    def test_a_number_left_over_or_a_lookalike_word_is_never_read(self):
+        between = Question("g", text="Choose a number between 0 and 100", kind="number", minimum=0, maximum=100)
+        for reply in ("My answer is 33, between 0 and 100", "33 (between 0 and 100)",
+                      "I choose 33, which is between 0 and 100."):
+            self.assertEqual(parse(reply, between)["status"], "ambiguous", reply)
+        for text, reply in (("How many points do you assign to member 3?", "assign 2 to member 1 and 5 to member 3"),
+                            ("How much do you allocate to the other participant?",
+                             "I allocate 60 to myself and 40 to the other"),
+                            ("How much do you split for the other?", "I split it 6 for me and 4 for them"),
+                            ("How many points do you contribute?", "I'd contribute 10 in round 1 and 5 now")):
+            self.assertEqual(parse(reply, Question("q", text=text, kind="number"))["status"], "ambiguous", reply)
+        both = Question("b", text="How many of your 20 points do you contribute? The points you do not contribute "
+                                  "you keep.", kind="number", minimum=0, maximum=20)
+        self.assertEqual(parse("I keep 5", both)["status"], "ambiguous")
+        self.assertEqual(parse("I keep 11 and contribute 9.", both)["value"], 9)
+        for seed in range(20):   # the stub never blames the adapter for the reader's caution
+            stub = replies.StubParticipant(seed=seed, noise=0.0, use_keys=False)
+            self.assertTrue(ask(stub, replies.render_questions([both]), [both]).ok and not stub.misreads)
+
+    def test_a_labelled_answer_keeps_its_commas(self):
+        qs = [Question("contribute", text="How much do you contribute?", kind="number"),
+              Question("influenced", text="What influenced you?", options=["Fairness", "Money", "Others"], multiple=True),
+              Question("comments", text="Any comments?", kind="text", required=False)]
+        self.assertEqual(replies.split_reply("contribute: 10\ninfluenced: 1, 3\ncomments: It was fine, though long", qs),
+                         {"contribute": "10", "influenced": "1, 3", "comments": "It was fine, though long"})
+        two = [Question("a", text="first", kind="number"), Question("b", text="second", kind="number")]
+        self.assertEqual(replies.split_reply("1,000", two), {})
+
     def test_answers_keyed_by_the_questions_own_labels(self):
         split = replies.split_reply
         for reply in ("A: 2, B: 0, C: 3", "Participant A: 2\nParticipant B: 0\nParticipant C: 3",

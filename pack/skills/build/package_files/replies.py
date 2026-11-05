@@ -656,29 +656,56 @@ def parse_choice(reply: str, question: Question) -> Dict[str, Any]:
 # the one after the question's own verb is its answer ("I keep 5 and contribute 15" -> 15).
 ACTION_VERBS = ("contribut", "keep", "kept", "give", "gave", "send", "sent", "transfer", "invest", "offer", "allocat",
                 "assign", "deduct", "donat", "pay", "paid", "return", "bid", "spend", "spent", "put", "take", "took",
-                "guess", "estimat", "demand", "request", "withdr", "claim", "accept", "reject", "share", "split",
-                "rate", "rating", "choose", "chose", "pick", "select", "enter", "report", "save", "wager", "bet")
-VERB_RE = re.compile(r"(?i)\b(" + "|".join(ACTION_VERBS) + r")[a-z]*")
+                "guess", "estimat", "demand", "request", "withdraw", "withdrew", "claim", "accept", "reject", "share",
+                "split", "rate", "rating", "choose", "chose", "pick", "select", "enter", "report", "save", "wager", "bet")
+# A verb is the stem with a verb ending only: "contribute", "contributed", "contribution", never "between" or "payoff".
+VERB_RE = re.compile(r"(?i)\b(" + "|".join(ACTION_VERBS) + r")(?:e|es|ed|ing|s|d|ion|ions|ted|ting|ped|ping|ten|"
+                     r"n|al)?\b")
+# Numbers that name a round or an item, not an amount ("Round 3: I contribute 8").
+COUNTER_RE = re.compile(r"(?i)\b(?:round|period|trial|stage|part|step|block|question|item|q|no\.?|number|#)\s*#?\s*$")
 NUMBER_IN_TEXT = r"(?<![\w.])[-+]?\d+(?:[.,]\d+)?(?![\w.]\d)"
 FILLER = r"(?:(?:about|around|exactly|only|just|all|the|my|of|a|an|total|sum|amount|points?|tokens?|coins?|units?|" \
          r"dollars?|cents?|euros?|money|mus?|ecus?|credits?|is|be|will|would|to|it|into|in)\s+){0,4}"
 
 
-def _verb_number(text: str, question: Question) -> Optional[str]:
-    """The one number written right after the question's own verb ("contribute 15", "contribute: 15"); None when
-    the question has no such verb or the reply ties it to no number, or to two different numbers."""
-    verbs = {m.group(1).lower() for m in VERB_RE.finditer(question.text or "")}
-    if not verbs:
-        return None
-    tied = set()
+def _asked_verbs(question: Question) -> set:
+    """The verbs of the question text. When it names both sides of a split ("How much do you contribute? What you do
+    not contribute you keep"), the side named first is the one asked."""
+    found = [m.group(1).lower() for m in VERB_RE.finditer(question.text or "")]
+    sides = [v for v in found if v in KEEP_VERBS or v in PASS_VERBS]
+    if sides:
+        first = KEEP_VERBS if sides[0] in KEEP_VERBS else PASS_VERBS
+        found = [v for v in found if v in first or (v not in KEEP_VERBS and v not in PASS_VERBS)]
+    return set(found)
+
+
+def _tied(text: str) -> List[tuple]:
+    """(verb, number, position of the number) for every number written right after an action verb."""
+    out = []
     for m in VERB_RE.finditer(text):
-        if m.group(1).lower() not in verbs:
-            continue
         after = re.match(r"[\s:=]*" + FILLER + r"(" + NUMBER_IN_TEXT[len(r"(?<![\w.])"):] + r")",
                          text[m.end():], re.I)
         if after:
-            tied.add(after.group(1))
-    return tied.pop() if len(tied) == 1 else None
+            out.append((m.group(1).lower(), after.group(1), m.end() + after.start(1)))
+    return out
+
+
+def _verb_number(text: str, question: Question) -> Optional[str]:
+    """The one number written right after the question's own verb ("I keep 5 and contribute 15" -> "15"), when
+    every other number of the reply is accounted for: tied to another verb, or a round or item counter ("Round 3").
+    A number left over ("assign 2 to member 1 and 5 to member 3", "6 for me and 4 for them") leaves it unread."""
+    verbs = _asked_verbs(question)
+    if not verbs:
+        return None
+    tied = _tied(text)
+    mine = {number for verb, number, _ in tied if verb in verbs}
+    if len(mine) != 1:
+        return None
+    accounted = {position for _, _, position in tied}
+    for m in re.finditer(NUMBER_IN_TEXT, text):
+        if m.start() not in accounted and not COUNTER_RE.search(text[:m.start()]):
+            return None
+    return mine.pop()
 
 
 KEEP_VERBS = ("keep", "kept", "save")
@@ -689,9 +716,8 @@ PASS_VERBS = ("contribut", "give", "gave", "send", "sent", "transfer", "invest",
 def _other_side(text: str, question: Question) -> bool:
     """The reply ties its number to the opposite of what is asked: "I keep 5" to "How much do you contribute?"
     (5 kept is 15 contributed), or "I give 5" to "How much do you keep?". Asked again, never read."""
-    asked = {m.group(1).lower() for m in VERB_RE.finditer(question.text or "")}
-    said = {m.group(1).lower() for m in VERB_RE.finditer(text) if re.match(
-        r"[\s:=]*" + FILLER + r"[-+]?\d", text[m.end():], re.I)}
+    asked = _asked_verbs(question)
+    said = {verb for verb, _, _ in _tied(text)}
     if not asked or said & asked:
         return False
     return bool((asked & set(PASS_VERBS) and said & set(KEEP_VERBS)) or
@@ -793,7 +819,7 @@ def question_labels(questions: Sequence[Question]) -> Dict[str, tuple]:
 
 def _labelled(text: str, questions: Sequence[Question]) -> Dict[str, str]:
     """Answers keyed by each question's own label ("A: 2, B: 0, C: 3", "Participant B: 5"): a label followed by
-    ":" or "=", its answer up to the next label, comma, semicolon or line. A question whose label is written
+    ":" or "=", its answer up to the next label or the end of the line (a comma inside an answer stays in it). A question whose label is written
     twice with different answers is left out (unparsed, asked again)."""
     labels = question_labels(questions)
     marks = []
@@ -805,7 +831,7 @@ def _labelled(text: str, questions: Sequence[Question]) -> Dict[str, str]:
     found: Dict[str, set] = {}
     for position, (_, end, qid) in enumerate(marks):
         stop = marks[position + 1][0] if position + 1 < len(marks) else len(text)
-        value = re.split(r"[,;\n]", text[end:stop], maxsplit=1)[0].strip()
+        value = text[end:stop].split("\n", 1)[0].strip().rstrip(",;").strip()
         if value:
             found.setdefault(qid, set()).add(value)
     return {qid: values.pop() for qid, values in found.items() if len(values) == 1}
@@ -813,8 +839,8 @@ def _labelled(text: str, questions: Sequence[Question]) -> Dict[str, str]:
 
 def _in_order(text: str, questions: Sequence[Question]) -> Dict[str, str]:
     """"2, 0, 3" for three number questions: one bare number per question, in the order asked."""
-    if not questions or any(q.kind != "number" for q in questions):
-        return {}
+    if not questions or any(q.kind != "number" for q in questions) or re.search(r"\d,\d{3}(?!\d)", text):
+        return {}                      # "1,000" is a thousand, not two answers
     pieces = [p.strip() for p in re.split(r"[,;\n]", text.strip().rstrip(".")) if p.strip()]
     if len(pieces) != len(questions) or not all(re.fullmatch(r"[-+]?\d+(?:\.\d+)?", p) for p in pieces):
         return {}
@@ -1063,7 +1089,7 @@ class StubParticipant:
 
     def _number_reply(self, question: Question, value: Any) -> str:
         """The number alone, or in a sentence with the question's verb next to another number ("I keep 5 and
-        contribute 15"); the sentence must be read as the number meant, else it is a misread."""
+        contribute 15") when the reader takes that sentence back as the number meant."""
         verb = VERB_RE.search(question.text or "")
         if verb is None or getattr(question, "legacy", False) or self.rng.random() < 0.5:
             return str(value)
@@ -1071,12 +1097,9 @@ class StubParticipant:
         other = "keep" if not word.startswith("keep") else "give"
         reply = f"I {other} {self.rng.randint(1, 99) + 0.0:g} and {word} {value}."
         answer = parse_number(reply, question)
-        if answer.get("status") != "ok" or answer.get("value") != value:
-            if question.id not in [m["question"] for m in self.misreads]:
-                self.misreads.append({"question": question.id, "option": str(value), "reply": reply,
-                                      "read_as": str(answer.get("value", answer.get("status"))), "codes": []})
-            return str(value)
-        return reply
+        # Only a sentence the reader takes back as this number: a question text naming both sides ("what you do
+        # not contribute you keep") may leave it ambiguous, which is the reader's caution, not the adapter's fault.
+        return reply if answer.get("status") == "ok" and answer.get("value") == value else str(value)
 
     def _labelled(self, questions: Sequence[Question], answers: List[str]) -> Optional[str]:
         """The answers keyed by each question's label ("A: 2, B: 0"), when every question has one and the reader

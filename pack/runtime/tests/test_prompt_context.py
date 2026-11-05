@@ -223,11 +223,12 @@ class SelfContained(tv.FakePdfMixin, unittest.TestCase):
 
 class Rules(unittest.TestCase):
     """The pure rules on recorded calls."""
-    TABLE = {"m-i": {"segments": ["a"], "position": 1, "actors": ["pt"]},
+    TABLE = {"m-i": {"segments": ["a"], "position": 1, "actors": ["pt"], "instruction": True},
              "m-q": {"segments": ["b"], "position": 2, "actors": ["pt"]},
              "m-v1": {"segments": ["c"], "position": 3, "actors": ["pt"]},
              "m-v2": {"segments": ["d"], "position": 4, "actors": ["pt"]},
-             "m-other": {"segments": ["e"], "position": 0, "actors": ["pt-b"]}}
+             "m-other": {"segments": ["e"], "position": 0, "actors": ["pt-b"], "instruction": True},
+             "m-consent": {"segments": ["f"], "position": 0, "actors": ["pt"]}}
 
     def test_rotating_stimuli_are_not_dropped_rules(self):
         calls = [{"q": ["r#1"], "k": False, "s": ["m-i", "m-v1"]}, {"q": ["r#1"], "k": False, "s": ["m-i", "m-v2"]},
@@ -240,6 +241,24 @@ class Rules(unittest.TestCase):
         calls = [{"q": ["q#1"], "k": True, "s": ["m-q"]}, {"q": ["c#1"], "k": False, "s": ["m-i", "m-other"]}]
         gaps = prompt_context.keyed_gaps({"calls_meta": calls}, self.TABLE)
         self.assertEqual([g[2] for g in gaps], [["m-i"]])
+
+    def test_an_attention_check_needs_instructions_not_consent_or_vignettes(self):
+        calls = [{"q": ["consent#1"], "k": False, "s": ["m-consent"]}, {"q": ["r#1"], "k": False, "s": ["m-v1"]},
+                 {"q": ["att#1"], "k": True, "s": ["m-v2"]}]
+        self.assertEqual(prompt_context.keyed_gaps({"calls_meta": calls}, self.TABLE), [])
+
+    def test_a_quiz_prompt_without_a_screen_of_its_own_is_still_read(self):
+        calls = [{"q": ["quiz1#1"], "k": True, "s": []}, {"q": ["c#1"], "k": False, "s": ["m-i"]}]
+        self.assertEqual([g[2] for g in prompt_context.keyed_gaps({"calls_meta": calls}, self.TABLE)], [["m-i"]])
+        calls[0]["s"] = ["m-i"]
+        self.assertEqual(prompt_context.keyed_gaps({"calls_meta": calls}, self.TABLE), [])
+
+    def test_instruction_screens_are_named_so(self):
+        program = {"steps": [{"id": "s1", "title": "Read the instructions", "visibleIds": ["m-a"]},
+                             {"id": "s2", "title": "Consent", "visibleIds": ["m-b"]}],
+                   "nodes": [material("m-a", INSTR1), material("m-b", INSTR2), material("m-instr3", INSTR1)]}
+        table = prompt_context.screens(program)
+        self.assertEqual({k: v["instruction"] for k, v in table.items()}, {"m-a": True, "m-b": False, "m-instr3": True})
 
     def test_flow_order_follows_children_and_next(self):
         program = {"steps": [{"id": "b", "next": [{"to": "c"}]}, {"id": "root", "children": ["a", "b"]},
@@ -267,8 +286,10 @@ class Rules(unittest.TestCase):
         path = Path(tempfile.mkdtemp()) / "adapter.py"
         self.addCleanup(shutil.rmtree, path.parent, True)
         path.write_text("v = page.value('c')\nx = v if v is not None else 0\ny = page.value('d') or 0\n"
-                        "z = a.get('value', 0)\nok = v if v is not None else None\n", encoding="utf-8")
-        self.assertEqual([n for n, _ in check_validity.unread_defaults(path)], [2, 3, 4])
+                        "z = 0 if v is None else v\nw = v or 0\nif v is None:\n    v = 0\n"
+                        "ok = v if v is not None else None\nseed = None\ns = seed if seed is not None else 0\n"
+                        "c = cfg.get('value', 0)\n", encoding="utf-8")
+        self.assertEqual([n for n, _ in check_validity.unread_defaults(path)], [2, 3, 4, 5, 6])
 
 
 class ExportHonoursExclusion(unittest.TestCase):
@@ -285,6 +306,9 @@ class ExportHonoursExclusion(unittest.TestCase):
         self.assertIn("not testable by the replay: population difference", blocks["e_online_lab"]["reason"])
         self.assertEqual(blocks["e_online_lab"]["source"], "agent")
         self.assertNotEqual(blocks["e_kept"].get("reason", ""), blocks["e_online_lab"]["reason"])
+        # human data carry the population difference: their blocks are computed
+        human = {b["effectId"]: b for b in study_core.Study.effect_results(study, sessions, source="human")}
+        self.assertNotIn("not testable", human["e_online_lab"].get("reason", ""))
 
 
 if __name__ == "__main__":

@@ -36,7 +36,8 @@ check_package.py runs it; it must print PASS before the package can be marked re
                  own stand-in runs is listed in a capabilities.json run.excluded entry's `effects` (with a
                  reason): a population difference is not a manipulation the replay can test.
   defaults       an answer that could not be read is never turned into a number in task/adapter.py
-                 (`v if v is not None else 0`, `page.value(..) or 0`, `.get("value", 0)`).
+                 (`v if v is not None else 0`, `page.value(..) or 0`, `if v is None: v = 0`, where v holds
+                 page.value(...)), in any task/*.py but the reader.
   unparsed       one unparsed reply must not drop a whole participant (all(...)/any(...) over the trials'
                  parse status): record unparsed replies per trial and apply the paper's own exclusion rule
                  (a line that applies it carries `# exclusion: <evidence id>` whose quote states the rule).
@@ -356,14 +357,17 @@ class StandIn:
 
     def __init__(self, cap, prompts, replies, meta, table):
         self.cap, self.prompts, self.replies, self.meta, self.table = cap, prompts, replies, meta, table
+        self.seen = {}   # prompt -> screens shown: a repeated screen is read once
 
     def _record(self, prompt, qids=(), keyed=False):
         if len(self.prompts) >= self.cap:
             raise _Stop()
         text = prompt if isinstance(prompt, str) else json.dumps(prompt, ensure_ascii=False)
         self.prompts.append(text)
-        self.meta.append({"q": [str(q) for q in qids][:12], "k": keyed,
-                          "s": prompt_context.present(text, self.table) if self.table else []})
+        if self.table and text not in self.seen and len(self.seen) < 5000:
+            self.seen[text] = prompt_context.present(text, self.table)
+        shown = (self.seen[text] if text in self.seen else prompt_context.present(text, self.table)) if self.table else []
+        self.meta.append({"q": [str(q)[:120] for q in qids][:12], "k": keyed, "s": shown})
         return text
 
     def __call__(self, prompt, *a, **k):
@@ -455,9 +459,11 @@ def capture(pkg, nonce=""):
 
     names = arm_names(pkg, mod)
     # arms an effect contrasts first: only the first 12 named arms get a run of their own
-    contrasted = {str(_obj(e.get("contrast")).get(k) or "").casefold() for e in _obj(_json(project / "effects.json")).get("effects") or []
-                  if isinstance(e, dict) for k in ("treatment", "reference")}
-    names = sorted(names, key=lambda a: a.casefold() not in contrasted)
+    lookup = prompt_context.arm_lookup(_json(pkg / "task/task.json"), names)
+    contrasted = {a for e in _obj(_json(project / "effects.json")).get("effects") or [] if isinstance(e, dict)
+                  for k in ("treatment", "reference") if isinstance(_obj(e.get("contrast")).get(k), str)
+                  for a in lookup.get(_obj(e.get("contrast"))[k].strip().casefold(), ())}
+    names = sorted(names, key=lambda a: a not in contrasted)
     # one participant per named arm (at least two) in the default call, then every named arm on its own:
     # an arm the default call never reaches is still read
     out["runs"].append(run(None, CALL_CAP, n=min(12, max(2, len(names)))))
@@ -539,10 +545,13 @@ def _run_record(rec):
         out[key] = [x for x in out.get(key) or [] if isinstance(x, int)] if isinstance(out.get(key), list) else []
     out["digest"] = out["digest"] if isinstance(out.get("digest"), str) else None
     meta = out.get("calls_meta") if isinstance(out.get("calls_meta"), list) else []
-    out["calls_meta"] = [{"q": [q for q in m.get("q") or [] if isinstance(q, str)] if isinstance(m.get("q"), list) else [],
+    clean = lambda x: re.sub(r"[\x00-\x1f\x7f]", " ", x)[:160]   # ids are package text: printed in the report
+    out["calls_meta"] = [{"q": [clean(q) for q in m.get("q") or [] if isinstance(q, str)][:12]
+                          if isinstance(m.get("q"), list) else [],
                           "k": m.get("k") is True,
-                          "s": [x for x in m.get("s") or [] if isinstance(x, str)] if isinstance(m.get("s"), list) else []}
-                         for m in meta if isinstance(m, dict)]
+                          "s": [clean(x) for x in m.get("s") or [] if isinstance(x, str)][:200]
+                          if isinstance(m.get("s"), list) else []}
+                         for m in meta[:CALL_CAP + ARM_CAP] if isinstance(m, dict)]
     out["seq"] = [p for p in out.get("seq") or [] if isinstance(p, list) and len(p) == 2
                   and all(isinstance(x, str) for x in p)] if isinstance(out.get("seq"), list) else []
     return out
@@ -829,7 +838,8 @@ def leaked_ids(pkg, program, runs):
 
 def unread_defaults(path):
     """[(line, code)]: an answer that could not be read replaced by a number (`v if v is not None else 0`,
-    `page.value("c") or 0`, `answer.get("value", 0)`): the participant's missing reply would enter the data as a
+    `page.value("c") or 0`, `0 if v is None else v`, `if v is None: v = 0`, for a name assigned from page.value(...)):
+    the participant's missing reply would enter the data as a
     decision they never made."""
     try:
         source = path.read_text(encoding="utf-8")
@@ -839,22 +849,26 @@ def unread_defaults(path):
     lines = source.splitlines()
     number = lambda n: isinstance(n, ast.Constant) and isinstance(n.value, (int, float)) and not isinstance(n.value, bool)
     value_call = lambda n: isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "value"
+    # names that hold an answer: assigned from page.value(...)
+    answers = {t.id for a in ast.walk(tree) if isinstance(a, ast.Assign) and value_call(a.value)
+               for t in a.targets if isinstance(t, ast.Name)}
+    is_none = lambda n, op: isinstance(n, ast.Compare) and len(n.ops) == 1 and isinstance(n.ops[0], op) \
+        and isinstance(n.left, ast.Name) and n.left.id in answers \
+        and isinstance(n.comparators[0], ast.Constant) and n.comparators[0].value is None
     out = []
     for node in ast.walk(tree):
         hit = False
-        if isinstance(node, ast.IfExp) and number(node.orelse) and isinstance(node.test, ast.Compare) \
-                and len(node.test.ops) == 1 and isinstance(node.test.ops[0], ast.IsNot) \
-                and isinstance(node.test.comparators[0], ast.Constant) and node.test.comparators[0].value is None \
-                and isinstance(node.test.left, ast.Name) and isinstance(node.body, ast.Name) \
-                and node.body.id == node.test.left.id:
-            hit = True
+        if isinstance(node, ast.IfExp) and number(node.orelse) and is_none(node.test, ast.IsNot):
+            hit = True                                    # v if v is not None else 0
+        elif isinstance(node, ast.IfExp) and number(node.body) and is_none(node.test, ast.Is):
+            hit = True                                    # 0 if v is None else v
+        elif isinstance(node, ast.If) and is_none(node.test, ast.Is) and any(
+                isinstance(b, ast.Assign) and number(b.value) and any(
+                    isinstance(t, ast.Name) and t.id == node.test.left.id for t in b.targets) for b in node.body):
+            hit = True                                    # if v is None: v = 0
         elif isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or) and number(node.values[-1]) \
-                and any(value_call(v) for v in node.values[:-1]):
-            hit = True
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
-                and len(node.args) == 2 and isinstance(node.args[0], ast.Constant) and node.args[0].value == "value" \
-                and number(node.args[1]):
-            hit = True
+                and any(value_call(v) or (isinstance(v, ast.Name) and v.id in answers) for v in node.values[:-1]):
+            hit = True                                    # page.value("c") or 0, v or 0
         if hit:
             out.append((node.lineno, lines[node.lineno - 1].strip()))
     return sorted(set(out))
@@ -1129,8 +1143,10 @@ def check(root, package=None, capture_prompts=True):
                     "variable names; key replies by neutral labels (q1, q2, or the number printed on the screen) "
                     "so a participant cannot read their condition from the prompt")
             screen_rules(root, pkg, program, runs, newer)
-        for line_no, code in unread_defaults(pkg / "task/adapter.py"):
-            newer("task/adapter.py:%d: an answer that could not be read becomes a number (%s)" % (line_no, code[:120]),
+        defaults = [(path.name, line_no, code) for path in sorted((pkg / "task").glob("*.py")) if path.name != "replies.py"
+                    for line_no, code in unread_defaults(path)]
+        for name, line_no, code in defaults:
+            newer("task/%s:%d: an answer that could not be read becomes a number (%s)" % (name, line_no, code[:120]),
                   "keep it unread (None) and record the reply as unparsed: never 0 or any default. Ask per-round "
                   "answers with replies.Question(..., retry=True) so one unreadable reply is asked again first; what "
                   "other participants see in its place must be what the original screen showed")

@@ -10,14 +10,16 @@ call, so whatever an original participant had read before a question must be in 
                 with the steps' actorIds. A text shown only inside `branch` steps is a variant (one version per
                 participant) and is never required. A screen is "in" a prompt when most of its sentences are.
   keyed         a question with an answer key (a comprehension quiz, an attention check: replies.Question
-                key=...) is asked with the instruction screens that come before it in the program's flow and
-                that this run shows the same participants anywhere (an instruction screen shown only after the
+                key=...) is asked with the instruction screens (named so: "instructions", "rules", "briefing"
+                in the node, its fields or the steps that show it; not a consent form or a vignette) that come
+                before it in the program's flow and that this run shows the same participants anywhere (an instruction screen shown only after the
                 quiz still counts: the participant read it before). The stand-in answers keys correctly, so the
                 run gets past the quiz.
-  rounds        a question asked again and again (the same question id: a contribution, a rating) keeps every
-                instruction screen it was asked with in all its earlier asks (at least two): the rules of round 1 are still
+  rounds        a question asked again and again (the same question id and text: a contribution, a rating)
+                keeps every instruction screen it was asked with in all its earlier asks (at least two): the rules of round 1 are still
                 the rules of round 11 (a later part's screen that says "as in the first part" does not
-                restate them).
+                restate them). Two blocks with their own instructions that ask the same question are a
+                case for screenMemory.notCarried (block A's instructions are not shown in block B).
   arms          two arms whose stand-in runs send identical prompts are the same simulation. An effect of
                 effects.json that contrasts them (its treatment and reference name those arms, by arm id,
                 task.json label or program condition node) cannot be tested by the replay.
@@ -52,6 +54,10 @@ import check_quotes  # noqa: E402
 import check_verbatim  # noqa: E402
 
 SCREEN_WORDS = 25        # a material text at least this long is an instruction-sized screen
+# what an instruction screen is called (node id or title, field labels, titles of the steps that show it); a
+# consent form, a vignette or a scenario is not one, and a keyed question never needs it
+INSTRUCTION_NAME = re.compile(r"(?i)instruct|(?<![a-z])instr(?![a-z])|\brules?\b|briefing|tutorial|explanation|"
+                              r"how to (?:play|answer|respond)|game description|task description")
 SHOWN = 0.6              # share of a screen's sentences a prompt must contain to show it
 MAX_FINDINGS = 4
 
@@ -116,12 +122,13 @@ def screens(program):
     order = flow_order(program)
     branches = branch_steps(program) | {s.get("id") for s in program.get("steps") or []
                                         if isinstance(s, dict) and s.get("kind") == "branch"}
-    where, actors, fixed = {}, {}, set()
+    where, actors, fixed, titles = {}, {}, set(), {}
     for s in program.get("steps") or []:
         if not isinstance(s, dict) or s.get("id") not in order:
             continue
         for mid in list(s.get("visibleIds") or []) + list(s.get("inputIds") or []):
             if isinstance(mid, str):
+                titles.setdefault(mid, []).append("%s %s" % (s.get("id"), s.get("title") or ""))
                 where[mid] = min(where.get(mid, 10 ** 9), order[s["id"]])
                 actors.setdefault(mid, set()).update(a for a in s.get("actorIds") or [] if isinstance(a, str))
                 if s["id"] not in branches:
@@ -135,9 +142,12 @@ def screens(program):
         segs = [p for p in check_verbatim.segments(text) if len(p.split()) >= 3]
         if len(" ".join(segs).split()) < SCREEN_WORDS:
             continue
+        names = " ".join([n["id"], str(n.get("title") or "")] + titles.get(n["id"], []) +
+                         ["%s %s" % (f.get("id"), f.get("label")) for f in n.get("fields") or [] if isinstance(f, dict)])
         out[n["id"]] = {"segments": sorted(set(segs)), "position": where.get(n["id"]),
                         "actors": sorted(actors.get(n["id"], ())),
-                        "variant": n["id"] in where and n["id"] not in fixed}
+                        "variant": n["id"] in where and n["id"] not in fixed,
+                        "instruction": bool(INSTRUCTION_NAME.search(names))}
     return out
 
 
@@ -198,9 +208,14 @@ def quiz_screens(run, table):
 
 
 def keyed_gaps(run, table, skip=()):
-    """[(where, question ids, missing screens)]: a keyed question asked without the screens before it."""
+    """[(where, question ids, missing screens)]: a keyed question asked without the instruction screens before it.
+
+    With a screen of its own in the prompt (the quiz text), "before" is the program's flow. Without one (quiz
+    items asked one per prompt, a quiz text not transcribed), it is the run itself: the instruction screens shown
+    in earlier calls and in the next call that is not a keyed question (the task the quiz is about)."""
     calls = run.get("calls_meta") or []
     skip = set(skip) | quiz_screens(run, table)
+    usable = lambda s: s in table and s not in skip and table[s].get("instruction") and not table[s].get("variant")
     shown_any = {s for c in calls for s in c.get("s") or [] if not s.startswith("repeat:")}
     out, seen = [], set()
     for i, c in enumerate(calls):
@@ -208,12 +223,15 @@ def keyed_gaps(run, table, skip=()):
             continue
         here = set(c.get("s") or [])
         mine = _own_screen(c, table)
-        if mine is None:
-            continue
-        need = sorted(s for s in shown_any if s in table and s not in skip and not table[s].get("variant")
-                      and table[s].get("position") is not None
-                      and table[s]["position"] < table[mine]["position"] and not _carried(here, s)
-                      and _same_people(s, mine, table))
+        if mine is not None:
+            need = sorted(s for s in shown_any if usable(s) and table[s].get("position") is not None
+                          and table[s]["position"] < table[mine]["position"] and not _carried(here, s)
+                          and _same_people(s, mine, table))
+        else:
+            following = next((d for d in calls[i + 1:] if not d.get("k")), {})
+            earlier = {s for d in calls[:i] for s in d.get("s") or []}
+            need = sorted(s for s in earlier | set(following.get("s") or [])
+                          if usable(s) and not s.startswith("repeat:") and not _carried(here, s))
         key = (tuple(c.get("q") or ()), tuple(need))
         if need and key not in seen:
             seen.add(key)
@@ -233,6 +251,7 @@ def round_gaps(run, table, skip=()):
             if asks.get(q, 0) >= 2 and q not in done:
                 mine = [s for s in here if s in table]
                 dropped = sorted(s for s in context.get(q, ()) if s in table and s not in skip
+                                 and table[s].get("instruction")
                                  and not _carried(set(c.get("s") or []), s)
                                  and (not mine or any(_same_people(s, m, table) for m in mine)))
                 if dropped:
