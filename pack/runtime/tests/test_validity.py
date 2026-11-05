@@ -78,6 +78,8 @@ class FakePdfMixin:
 
 
 class Validity(FakePdfMixin, unittest.TestCase):
+    current = False   # True: the package carries the shared reply reader (built under the current contract)
+
     def project(self, fields=(), adapter_text=None, issues=(), pages=PAGES):
         root = Path(tempfile.mkdtemp(prefix="check-validity-"))
         self.addCleanup(shutil.rmtree, root, True)
@@ -104,6 +106,8 @@ class Validity(FakePdfMixin, unittest.TestCase):
         pkg = root / "package/x"
         (pkg / "task").mkdir(parents=True)
         (pkg / "task/adapter.py").write_text(adapter_text or adapter(), encoding="utf-8")
+        if self.current:
+            shutil.copy2(BUILD / "package_files/replies.py", pkg / "task/replies.py")
         self.fake_pdf(check_quotes, pages)
         return root
 
@@ -315,6 +319,188 @@ class Validity(FakePdfMixin, unittest.TestCase):
         refuses = adapter(blocked='raise RuntimeError("the briefing is not printed")')
         found = self.problems(self.project([self.not_told([ENTRY]), field], refuses, issues=blocking))
         self.assertFalse(any("missing participant instructions" in m for m in found), found)
+
+
+TRIALS_ADAPTER = '''
+ARMS = %(arms)r
+
+
+def run_sessions(llm, seed, n, arms=None):
+    out = []
+    for arm in (arms or ARMS):
+        %(pre)s
+        for i in range(n):
+            history = []
+            for t in range(1, 13):
+                prompt = %(prompt)s
+                key = llm(prompt).strip().upper()
+                history.append("Trial %%d: you pressed %%s" %% (t, key))
+            out.append({"arm": arm, "condition": arm})
+    return out
+'''
+SCREEN = '"Choose a key on each trial; each choice may win points.\\nTrial %d. Press RED or BLUE." % t'
+
+
+def trials(prompt=SCREEN, arms=("left_first", "right_first"), pre="pass"):
+    return TRIALS_ADAPTER % {"arms": list(arms), "prompt": prompt, "pre": pre}
+
+
+class PromptMemoryAndIds(Validity):
+    """Bench's hard rules on the captured prompts: no claimed screens that are not sent, a design that carries
+    memory carries something, no internal ids, and every condition runs on its own. They block a package built
+    under the current contract (task/replies.py); PromptRulesOlderBuild covers the warnings of an older one."""
+    current = True
+
+    def found(self, design, text, evidence=(), issues=(), **kw):
+        fields = [self.not_told([ENTRY]), self.memory(design, evidence=evidence)]
+        return self.problems(self.project(fields, text, issues=[self.MEMORY_ISSUE] + list(issues), **kw))
+
+    def test_a_claim_of_earlier_screens_needs_them_in_the_prompt(self):
+        claim = '"Your earlier answers are shown above.\\n" + ' + SCREEN
+        found = self.found("none", trials(claim))
+        self.assertTrue(any("prompts say earlier screens or answers are shown" in m for m in found), found)
+        with_log = '("Your earlier answers are shown above.\\n" + "\\n".join(history) + "\\n" if history else "") + ' + SCREEN
+        found = self.found("full-log", trials(with_log), evidence=["e-hist"])
+        self.assertFalse(any("earlier screens or answers are shown" in m for m in found), found)
+        # the current screen's own wording is not a claim
+        self.assertEqual(self.found("none", trials('"Answer the question above.\\n" + ' + SCREEN)), [])
+
+    def test_a_design_that_carries_memory_must_carry_something(self):
+        found = self.found("last-trial", trials())
+        self.assertTrue(any("design last-trial carries memory, but no later prompt" in m for m in found), found)
+        # design none (with its decision issue) stays allowed
+        self.assertEqual(self.found("none", trials()), [])
+        last = '("Last trial: you pressed " + history[-1].split()[-1] + "\\n" if history else "") + ' + SCREEN
+        self.assertEqual(self.found("last-trial", trials(last)), [])
+        total = '("Points so far: %d\\n" % (5 * len(history)) if history else "") + ' + SCREEN
+        self.assertEqual(self.found("summary", trials(total)), [])
+
+    def test_internal_identifiers_are_not_shown(self):
+        found = self.found("none", trials('"Condition: " + arm + "\\n" + ' + SCREEN))
+        self.assertTrue(any("internal identifiers" in m and "'left_first'" in m for m in found), found)
+        found = self.found("none", trials('"QID14\\n" + ' + SCREEN))
+        self.assertTrue(any("'QID14'" in m for m in found), found)
+        # a screen id from materials.json, unless the materials print it as text the participant reads
+        root = self.project([self.not_told([ENTRY]), self.memory("none")], trials('"[intro-screen-2]\\n" + ' + SCREEN),
+                            issues=[self.MEMORY_ISSUE])
+        (root / "package/x/materials").mkdir()
+        mats = root / "package/x/materials/materials.json"
+        mats.write_text(json.dumps({"screens": [{"id": "intro-screen-2", "text": "Press RED or BLUE."}]}), encoding="utf-8")
+        self.assertTrue(any("'intro-screen-2'" in m for m in self.problems(root)))
+        mats.write_text(json.dumps({"screens": [{"id": "intro-screen-2", "text": "See [intro-screen-2] below."}]}),
+                        encoding="utf-8")
+        self.assertFalse(any("internal identifiers" in m for m in self.problems(root)))
+
+    def test_every_condition_runs_alone_or_refuses_under_a_blocking_issue(self):
+        crash = trials(pre='if arms and arm == "right_first": {}["missing"]')
+        found = self.found("none", crash)
+        self.assertTrue(any("run_sessions(arms=['right_first'], n=2) raised KeyError" in m and "a crash" in m
+                            for m in found), found)
+        refuse = trials(pre='if arms and arm == "right_first": raise RuntimeError("needs sources/researcher/x.txt")')
+        found = self.found("none", refuse)
+        self.assertTrue(any("raised RuntimeError" in m for m in found), found)
+        blocking = {"id": "i-x", "title": "Needs the original x", "severity": "blocking", "reason": "r", "impact": "i",
+                    "suggestedAction": "s", "evidenceIds": [], "nodeId": "task", "fieldId": "replay-memory"}
+        self.assertFalse(any("run_sessions(" in m for m in self.found("none", refuse, issues=[blocking])))
+        # a pair design that needs an even n is run with n=2
+        pairs = trials(pre='if n % 2: raise ValueError("pairs need an even n")')
+        self.assertFalse(any("run_sessions(arms=" in m for m in self.found("none", pairs)))
+
+
+class PromptRulesOlderBuild(Validity):
+    """A package built before the shared reply reader: the newer prompt rules are warnings, and it still passes."""
+
+    def report(self, design, text, evidence=(), issues=()):
+        fields = [self.not_told([ENTRY]), self.memory(design, evidence=evidence)]
+        return check_validity.check(self.project(fields, text, issues=[self.MEMORY_ISSUE] + list(issues)))
+
+    def assertWarnsOnly(self, report, phrase):
+        self.assertFalse(report["currentContract"])
+        self.assertEqual(report["problems"], [])
+        self.assertTrue(any(phrase in m for m, _ in report["warnings"]), report["warnings"])
+        self.assertTrue(all(fix for _, fix in report["warnings"]))
+
+    def test_claim_of_earlier_screens_warns(self):
+        claim = '"Your earlier answers are shown above.\\n" + ' + SCREEN
+        self.assertWarnsOnly(self.report("none", trials(claim)), "prompts say earlier screens or answers are shown")
+
+    def test_carrying_design_with_nothing_carried_warns(self):
+        self.assertWarnsOnly(self.report("last-trial", trials()), "design last-trial carries memory, but no later prompt")
+
+    def test_internal_identifiers_warn(self):
+        report = self.report("none", trials('"Condition: " + arm + "\\n" + ' + SCREEN))
+        self.assertWarnsOnly(report, "internal identifiers")
+
+    def test_crashing_arm_warns(self):
+        crash = trials(pre='if arms and arm == "right_first": {}["missing"]')
+        self.assertWarnsOnly(self.report("none", crash), "raised KeyError")
+        refuse = trials(pre='if arms and arm == "right_first": raise RuntimeError("needs sources/researcher/x.txt")')
+        self.assertWarnsOnly(self.report("none", refuse), "raised RuntimeError")
+
+    def test_cli_prints_warn_and_pass(self):
+        fields = [self.not_told([ENTRY]), self.memory("none")]
+        root = self.project(fields, trials('"QID14\\n" + ' + SCREEN), issues=[self.MEMORY_ISSUE])
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = check_validity.main([str(root)])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertIn("WARN    participant prompts contain internal identifiers", out.getvalue())
+        self.assertIn("PASS package validity", out.getvalue())
+        self.assertNotIn("PROBLEM", out.getvalue())
+
+
+class CaptureMarkers(unittest.TestCase):
+    """The prompt capture trusts only report lines with this run's nonce, and only records of the right shape."""
+
+    def test_forged_and_malformed_run_lines_are_dropped(self):
+        nonce = "n" * 32
+        good = {"arms": ["a"], "lines": ["Trial 1"], "calls": 1, "seq": [["p", "r"]]}
+        head = check_validity.marked(check_validity.RUN_MARK, nonce, "")
+        out = "\n".join([
+            "@@RUN@@" + json.dumps(good),                                  # no nonce: package code
+            check_validity.marked(check_validity.RUN_MARK, "x" * 32, json.dumps(good)),   # another nonce
+            head + json.dumps(["not", "a", "dict"]),
+            head + json.dumps({"arms": "a", "lines": []}),
+            head + json.dumps({"arms": [], "lines": [1, 2]}),
+            head + json.dumps({"arms": [None], "lines": []}),
+            head + "{cut",
+            head + json.dumps(dict(good, calls="9", seq="bad")),
+            "@@CAPTURE@@" + json.dumps({"error": None}),
+        ])
+        report = check_validity.read_capture(out, nonce)
+        self.assertEqual(len(report["runs"]), 1)
+        self.assertEqual((report["runs"][0]["calls"], report["runs"][0]["seq"]), (0, []))
+        self.assertIn("could not be run", report["error"])   # the closing line had no nonce
+        closed = check_validity.read_capture(out + "\n" + check_validity.marked(check_validity.CAPTURE_MARK, nonce,
+                                                                                 '{"error": null}'), nonce)
+        self.assertIsNone(closed["error"])
+        self.assertEqual(check_validity.read_capture(out, "")["runs"], [])
+
+    def test_package_code_cannot_read_the_nonce_or_forge_a_run(self):
+        root = Path(tempfile.mkdtemp(prefix="capture-test-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        pkg = root / "package/x"
+        (pkg / "task").mkdir(parents=True)
+        (pkg / "study.json").write_text("[]", encoding="utf-8")          # list-shaped: no arms, no crash
+        (pkg / "task/task.json").write_text('[{"arms": ["a"]}]', encoding="utf-8")
+        (pkg / "task/adapter.py").write_text(
+            "import json, os\n"
+            "nonce = os.environ.get(%r, '')\n"
+            "rec = {'arms': ['a'], 'lines': ['FORGED'], 'calls': 1}\n"
+            "print('@@RUN@@' + nonce + '@@' + json.dumps(rec))\n"
+            "print('@@RUN@@' + json.dumps(rec))\n"
+            "ARMS = ['a', 3, None, {'id': 7}]\n"
+            "def run_sessions(llm, seed, n, arms=None):\n"
+            "    return [{'r': llm('Real prompt')} for _ in range(n)]\n" % check_validity.NONCE_ENV, encoding="utf-8")
+        cap = check_validity.prompts_of(pkg, timeout=60)
+        lines = [l for r in cap["runs"] for l in r["lines"]]
+        self.assertIsNone(cap["error"], cap)
+        self.assertIn("Real prompt", lines)
+        self.assertNotIn("FORGED", lines)
+        self.assertEqual(check_validity.arm_names(pkg), [])
+        self.assertEqual(check_validity._names(["a", 3, None, {"id": 7}, {"name": "b"}]), ["a", "b"])
 
 
 class EffectRules(unittest.TestCase):

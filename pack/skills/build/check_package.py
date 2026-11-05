@@ -18,7 +18,15 @@ Two layouts pass:
 In a project (slim layout) it also requires sources/SOURCE.json to record every source file with its
 current SHA-256 and a license entry (write it with sources.py), and runs check_validity.py: no prompt tells
 participants what the paper says they were not told, the memory design is a recorded decision, one
-unparsed reply does not drop a participant, missing instructions are a decision.
+unparsed reply does not drop a participant, missing instructions are a decision. Also in a project:
+downloaded sources carry a stated licence (fetch_source.py), the authors' analysis code, survey versions and
+researcher questions are checked against them (check_source_use.py), and no survey text participants never
+saw is used (qsf_flow.py). A package with the shared reply reader (task/replies.py) also runs the
+answer-aware smoke test (check_replies.py) and the every-answer-recorded check (recorded_answers.py; when it
+cannot judge, the reason is printed in its ok line). A package without task/replies.py (built before the shared
+reader) gets a note line instead, not a failure. For such an older package the downloaded-source, source-use and
+survey findings, and check_validity.py's newer prompt rules, are printed as `warn  <message>  [fix: ...]` lines
+and the package still passes (contract.py); rebuilding under the current contract makes them failures.
 """
 from __future__ import annotations
 
@@ -51,14 +59,45 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
+def warn(bad: list) -> None:
+    """A newer rule's findings on a package built before the current contract: printed, never a failure."""
+    for m, h in bad:
+        print(f"warn  {m}" + (f"  [fix: {h}]" if h else ""))
+
+
+def reply_checks(root: Path) -> tuple:
+    """([(message, fix)], the line to print) for the shared reply reader's checks (check_replies.py,
+    recorded_answers.py). A package without task/replies.py (built before the shared reader) gets a note line,
+    not a failure: whether to require the reader of older packages is the owner's decision."""
+    from check_replies import problems as reply_problems, uses_replies
+    import recorded_answers
+
+    if not uses_replies(root):
+        from contract import current_contract
+        if current_contract(root):  # built with the current skill (buildContract 2 or its records): the reader is required
+            return [("task/replies.py is missing although the package is built under the current build contract",
+                     "copy .opencode/skills/build/package_files/replies.py to task/replies.py unchanged and ask every "
+                     "question through replies.ask")], ""
+        return [], "note replies checks skipped: no task/replies.py (packages built before the shared reader)"
+    answers = recorded_answers.judge(root)
+    bad = reply_problems(root.parent.parent, root) + answers["problems"]
+    return bad, ("ok   replies: shared reader unchanged, answer-aware smoke test passes, "
+                 + (answers["note"] or "every answer recorded"))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("package", type=Path, help="package/<paper-slug>")
     parser.add_argument("--program", type=Path, default=None, help="project program.json to compare with")
     args = parser.parse_args()
+    if hasattr(sys.stdout, "reconfigure"):  # a console without UTF-8 (Windows cp1252) must not end the check
+        sys.stdout.reconfigure(errors="replace")
     root: Path = args.package.resolve()
     if not root.is_dir():
         fail(f"{root} is not a folder")
+    from contract import current_contract
+
+    current = current_contract(root)  # built with the shared reply reader: the newer rules fail, not warn
 
     missing = [name for name in REQUIRED if not (root / name).is_file()]
     if missing:
@@ -107,6 +146,16 @@ def main() -> None:
         if bad:
             fail("sources/SOURCE.json:\n" + "\n".join(f"  {m}  [fix: {h}]" for m, h in bad))
         print("ok   sources/SOURCE.json records every source file (hash, license)")
+        import fetch_source
+        from check_source_use import problems as source_use_problems
+
+        bad = fetch_source.problems(Path(source).resolve().parent) + source_use_problems(Path(source).resolve().parent)
+        if bad and not current:
+            warn(bad)
+        elif bad:
+            fail("sources used:\n" + "\n".join(f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
+        print("ok   downloaded sources licensed; analysis code, survey versions and questions checked against them"
+              + (" (older build: findings above are warnings)" if bad else ""))
     if args.program is not None and not slim:
         canonical = json.loads(args.program.read_text(encoding="utf-8"))
         if canonical != program:
@@ -157,6 +206,11 @@ def main() -> None:
     if result.returncode != 0:
         fail("adapter smoke test failed:\n" + result.stdout + result.stderr)
     print("ok   task/adapter.py --smoke-test")
+    bad, line = reply_checks(root)
+    if bad:
+        fail("reading replies (check_replies.py, recorded_answers.py):\n" + "\n".join(
+            f"  {m}  [fix: {h}]" for m, h in bad))
+    print(line)
     if slim:  # inside a project: the package replays what participants experienced (check_validity.py)
         from check_validity import check as check_validity
 
@@ -164,7 +218,18 @@ def main() -> None:
         if report["problems"]:
             fail("package validity (check_validity.py):\n" + "\n".join(
                 f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in report["problems"]))
+        warn([("validity: " + m, h) for m, h in report.get("warnings") or []])
         print("ok   package validity: nothing participants were not told is in a prompt; memory design recorded")
+        from qsf_flow import problems as survey_problems
+
+        bad = survey_problems(Path(source).resolve().parent, root)
+        if bad and not current:
+            warn(bad)
+        elif bad:
+            fail("survey files (qsf_flow.py):\n" + "\n".join(
+                f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
+        print("ok   survey files: no text participants never saw; items marked not shown are unused"
+              + (" (older build: findings above are warnings)" if bad else ""))
     print("PASS package checks")
 
 

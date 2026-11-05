@@ -3,7 +3,7 @@
 
     python .opencode/skills/build/check_validity.py .   [--package package/<slug>] [--json report.json]
 
-check_package.py runs it; it must print PASS before the package can be marked ready. Five checks:
+check_package.py runs it; it must print PASS before the package can be marked ready. Six checks:
 
   not told       every sentence of the paper saying participants were not told something, had to learn
                  or discover it, or were kept unaware of it is listed in a `not-told` field of
@@ -14,7 +14,20 @@ check_package.py runs it; it must print PASS before the package can be marked re
   memory         a task that asks one participant many times and carries their earlier trials into
                  later prompts records that design as a `replay-memory` decision field; the default is
                  what participants plausibly saw, so a full trial log needs evidence that participants
-                 saw one, or a researcher's decision.
+                 saw one, or a researcher's decision. Read from the prompts in order: a prompt that says
+                 earlier screens or answers are shown ("your earlier answers", "the previous screen", "the
+                 screens above") must carry some of this participant's; a design that carries memory
+                 (last-trial, summary, same-screen, full-log, conversation) must put something the
+                 participant already saw or answered into a later prompt (`none` with its decision issue is
+                 allowed); and no prompt shows an internal identifier: a condition or arm id (or an
+                 id-like part of one), a survey question id (QID14), a screen or material id from
+                 materials.json, a condition/variable/record/material node id of program.json. An id that
+                 the participants' own materials print is text, not a leak.
+  arms           every arm the package declares (study.json runnableArms, the adapter's ARMS ...) runs on its
+                 own with arms=[id] for n = 1 (or 2 for pairs); an arm that cannot run yet refuses with a
+                 clear error under a `blocking` issue or returns a session record marked blocked. A crash
+                 (KeyError, TypeError, ...) is a problem. Names that only task.json gives are run, and their
+                 errors are notes (task.json may name experiments or cells, not arm ids).
   unparsed       one unparsed reply must not drop a whole participant (all(...)/any(...) over the trials'
                  parse status): record unparsed replies per trial and apply the paper's own exclusion rule
                  (a line that applies it carries `# exclusion: <evidence id>` whose quote states the rule).
@@ -29,6 +42,10 @@ scratch folder; sleeps are skipped), once over all arms and once per arm study.j
 distinct prompt line is recorded. An adapter that does not finish with the stand-in model fails. When the adapter cannot run (a blocked study), its string literals and
 materials/materials.json are read instead.
 
+Older builds: the memory-claim, carried-memory and identifier rules of `memory` and the `arms` rule block only a
+package built under the current contract (it carries task/replies.py, see contract.py); for an older package
+they are printed as WARN lines and returned under "warnings", and the check still prints PASS.
+
 Limits (heuristics, documented so nobody mistakes a PASS for proof):
   - The paper scan finds the usual phrasings ("were not told", "had to learn", "were unaware", "cover
     story", ...). A withheld fact phrased otherwise is found only if you list it yourself: do so.
@@ -40,6 +57,10 @@ Limits (heuristics, documented so nobody mistakes a PASS for proof):
   - Timing is not checked: verbatim text that reveals a rule later (a debriefing) is accepted anywhere.
   - The memory check reads prompt growth and the prompt function's parameters; a log passed in another
     way (a chat transcript) is found only by its growth.
+  - "Carries" is read line by line on the first prompts of each run (numbers masked): a line kept from the
+    previous prompt that is not in every prompt, or a new line holding a recent reply of the stand-in. A
+    stimulus that happens to repeat looks like memory, so the rule catches adapters that never carry
+    anything, not every gap. Identifiers are found only among the ids the package names.
 Standard library plus the PDF reader check_quotes.py uses.
 """
 import argparse
@@ -54,6 +75,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_quotes  # noqa: E402
 import check_verbatim  # noqa: E402
+import contract  # noqa: E402  older packages get the newer prompt rules as warnings
+from check_replies import NONCE_ENV, child_nonce, marked, new_nonce  # noqa: E402  report lines carry a nonce
 
 PARTICIPANT = re.compile(
     r"\b(?:participants?|subjects?|respondents?|volunteers?|players?|children|students?|individuals|people|"
@@ -116,6 +139,8 @@ FULL = ("full-log", "conversation")
 CALL_CAP = 2500          # stand-in calls over all arms before the capture stops
 ARM_CAP = 600            # per arm (every arm study.json or task.json names is run on its own)
 MIN_TRIALS = 10          # calls per participant that make a task a repeated-trial task
+SEQ_CAP = 60             # prompts per run kept in order for the memory rules
+SEQ_CHARS = 400000       # and at most this many characters of them
 
 
 class _Stop(BaseException):
@@ -286,8 +311,14 @@ def _standin(prompt):
     return random.Random(len(tail)).choice(options) if options else "1"
 
 
-def capture(pkg):
-    """Run in a child process: record every prompt run_sessions sends. Prints one JSON line."""
+RUN_MARK = "@@RUN@@"
+CAPTURE_MARK = "@@CAPTURE@@"
+
+
+def capture(pkg, nonce=""):
+    """Run in a child process: record every prompt run_sessions sends. Prints one `@@RUN@@<nonce>@@<json>` line
+    per run and a closing `@@CAPTURE@@<nonce>@@<json>` line; the nonce is read (and removed from the
+    environment) before the adapter is imported, so package code cannot print a line the parent trusts."""
     import importlib.util
     import time
     time.sleep = lambda *a, **k: None   # a pause between trials (rate limits, pacing) is not waited out
@@ -299,18 +330,19 @@ def capture(pkg):
         spec.loader.exec_module(mod)
     except BaseException as exc:  # noqa: BLE001
         out["error"] = "adapter import failed: %s" % exc
-        print("@@CAPTURE@@" + json.dumps(out))
+        print(marked(CAPTURE_MARK, nonce, json.dumps(out)))
         return
 
-    def run(arms, cap, n=1):
-        prompts = []
+    def run(arms, cap, n=1, emit=True):
+        prompts, replies = [], []
 
         def llm(prompt, *a, **k):
             if len(prompts) >= cap:
                 raise _Stop()
             prompts.append(prompt if isinstance(prompt, str) else json.dumps(prompt, ensure_ascii=False))
-            return _standin(prompts[-1])
-        rec = {"arms": arms, "calls": 0, "sessions": None, "capped": False, "error": None, "n": n}
+            replies.append(_standin(prompts[-1]))
+            return replies[-1]
+        rec = {"arms": list(arms or []), "calls": 0, "sessions": None, "capped": False, "error": None, "errorType": None, "n": n}
         try:
             sessions = mod.run_sessions(llm, 20261102, n, arms=arms) if arms else mod.run_sessions(llm, 20261102, n)
             rec["sessions"] = len(sessions) if isinstance(sessions, list) else None
@@ -318,40 +350,68 @@ def capture(pkg):
             rec["capped"] = True
         except BaseException as exc:  # noqa: BLE001  a blocked study raises; keep what was sent
             rec["error"] = "%s: %s" % (type(exc).__name__, str(exc)[:300])
+            rec["errorType"] = type(exc).__name__
         rec["calls"] = len(prompts)
         rec["lengths"] = [len(p) for p in prompts]
+        # what the model relay is charged: the request body as humanstudy_llm encodes it (json.dumps, ASCII)
+        rec["bodyChars"] = sum(len(json.dumps(p)) for p in prompts)
         lines = {}
         for p in prompts:   # distinct lines: a growing trial log adds one line per trial, not one copy per prompt
             for line in p.splitlines():
                 if line.strip() and len(lines) < 50000:
                     lines.setdefault(line[:4000], None)
         rec["lines"] = list(lines)
-        print("@@RUN@@" + json.dumps(rec, ensure_ascii=False), flush=True)   # kept if a later run hangs
+        # the first prompts in order, with the stand-in's replies: what one participant carries from screen to screen
+        seq, size = [], 0
+        for p, r in zip(prompts[:SEQ_CAP], replies):
+            size += len(p)
+            if seq and size > SEQ_CHARS:
+                break
+            seq.append([p, r])
+        rec["seq"] = seq
+        if emit:
+            # ASCII: a raw U+2028 or \x85 in a prompt would split the marker line
+            print(marked(RUN_MARK, nonce, json.dumps(rec)), flush=True)   # kept if a later run hangs
         return rec
 
     names = arm_names(pkg, mod)
     # one participant per named arm (at least two) in the default call, then every named arm on its own:
     # an arm the default call never reaches is still read
     out["runs"].append(run(None, CALL_CAP, n=min(12, max(2, len(names)))))
+    # arm ids the package itself declares (task.json `arms`/`conditions` may name experiments or cells instead)
+    declared = set(_names(_obj(_json(pkg / "study.json")).get("runnableArms")))
+    for attr in ("RUNNABLE_ARMS", "ARMS", "RUNNABLE", "CONDITIONS"):
+        declared |= {a for a in _names(getattr(mod, attr, None)) if isinstance(a, str)}
     for arm in names[:12]:
-        out["runs"].append(run([arm], ARM_CAP))
-    print("@@CAPTURE@@" + json.dumps({"error": out["error"]}, ensure_ascii=False), flush=True)
+        rec = run([arm], ARM_CAP, emit=False)
+        if rec["error"] and not rec["calls"]:   # a pair or group design needs an even n
+            rec = run([arm], ARM_CAP, n=2, emit=False)
+        rec["declared"] = arm in declared
+        print(marked(RUN_MARK, nonce, json.dumps(rec)), flush=True)
+        out["runs"].append(rec)
+    print(marked(CAPTURE_MARK, nonce, json.dumps({"error": out["error"]}, ensure_ascii=False)), flush=True)
 
 
 def _names(value):
-    """Arm names from a list of names or {id|arm|name} objects, or a mapping keyed by name."""
+    """Arm names (strings only) from a list of names or {id|arm|name} objects, or a mapping keyed by name."""
     if isinstance(value, dict):
-        return [k for k, v in value.items() if not (isinstance(v, dict) and v.get("runnable") is False)]
-    if isinstance(value, (list, tuple)):
-        return [a if isinstance(a, str) else a.get("arm") or a.get("id") or a.get("name") for a in value
-                if isinstance(a, str) or (isinstance(a, dict) and a.get("runnable", True))]
-    return []
+        names = [k for k, v in value.items() if not (isinstance(v, dict) and v.get("runnable") is False)]
+    elif isinstance(value, (list, tuple)):
+        names = [a if isinstance(a, str) else a.get("arm") or a.get("id") or a.get("name") for a in value
+                 if isinstance(a, str) or (isinstance(a, dict) and a.get("runnable", True))]
+    else:
+        return []
+    return [n for n in names if isinstance(n, str) and n]
+
+
+def _obj(value):
+    return value if isinstance(value, dict) else {}
 
 
 def arm_names(pkg, mod=None):
     """Every arm the package names: study.json runnableArms, task.json arms/conditions, the adapter's ARMS."""
-    study = _json(pkg / "study.json") or {}
-    task = _json(pkg / "task/task.json") or {}
+    study = _obj(_json(pkg / "study.json"))
+    task = _obj(_json(pkg / "task/task.json"))
     names = _names(study.get("runnableArms")) + _names(task.get("arms")) + _names(task.get("conditions"))
     for attr in ("RUNNABLE_ARMS", "ARMS", "RUNNABLE", "CONDITIONS"):
         names += _names(getattr(mod, attr, None))
@@ -372,25 +432,59 @@ def prompts_of(pkg, timeout=300):
                     shutil.copy2(f, work / "project" / f.name)
             if (project / "sources").is_dir() and not (project / "sources").is_symlink():
                 sandbox_run.copy_tree(project / "sources", work / "project" / "sources")
+        nonce = new_nonce()
         run = sandbox_run.run_python(Path(__file__).resolve(), ["--capture", str(copy)], cwd=copy, work=work,
-                                     timeout=timeout)
+                                     timeout=timeout, env={NONCE_ENV: nonce})
+    return read_capture(run.stdout, nonce, run.timed_out, run.stderr, timeout)
+
+
+def _run_record(rec):
+    """A run record as capture() writes it, or None: a dict with list `arms` (strings) and list `lines`
+    (strings); the other fields are kept only with their own types."""
+    if not isinstance(rec, dict) or not isinstance(rec.get("arms"), list) or not isinstance(rec.get("lines"), list):
+        return None
+    if not all(isinstance(a, str) for a in rec["arms"]) or not all(isinstance(l, str) for l in rec["lines"]):
+        return None
+    out = dict(rec)
+    for key, kind in (("calls", int), ("n", int), ("capped", bool), ("declared", bool)):
+        if key in out and (not isinstance(out[key], kind) or (kind is int and isinstance(out[key], bool))):
+            out[key] = kind()
+    for key in ("error", "errorType"):
+        if out.get(key) is not None and not isinstance(out[key], str):
+            out[key] = str(out[key])
+    for key in ("lengths",):
+        out[key] = [x for x in out.get(key) or [] if isinstance(x, int)] if isinstance(out.get(key), list) else []
+    out["seq"] = [p for p in out.get("seq") or [] if isinstance(p, list) and len(p) == 2
+                  and all(isinstance(x, str) for x in p)] if isinstance(out.get("seq"), list) else []
+    return out
+
+
+def read_capture(stdout, nonce, timed_out=False, stderr="", timeout=300):
+    """The capture report from the child's stdout: only lines carrying this run's nonce, and only run records of
+    the shape capture() writes. A marker line without the nonce (package code printing its own) is ignored."""
+    run_head, capture_head = marked(RUN_MARK, nonce, ""), marked(CAPTURE_MARK, nonce, "")
+    lines = (stdout or "").splitlines()
     runs = []
-    for l in run.stdout.splitlines():
-        if l.startswith("@@RUN@@"):
+    for l in lines:
+        if nonce and l.startswith(run_head):
             try:
-                runs.append(json.loads(l[len("@@RUN@@"):]))
+                rec = _run_record(json.loads(l[len(run_head):]))
             except ValueError:
-                pass
-    if run.timed_out:
+                rec = None
+            if rec is not None:
+                runs.append(rec)
+    if timed_out:
         return {"runs": runs, "error": "the adapter did not finish within %ds with a stand-in model" % timeout,
                 "unfinished": True}
-    line = next((l for l in run.stdout.splitlines()[::-1] if l.startswith("@@CAPTURE@@")), None)
+    line = next((l for l in lines[::-1] if nonce and l.startswith(capture_head)), None)
     if line is None:
-        return {"runs": runs, "error": "the adapter could not be run: " + (run.stderr or run.stdout)[-400:]}
+        return {"runs": runs, "error": "the adapter could not be run: " + (stderr or stdout or "")[-400:]}
     try:
-        return dict(json.loads(line[len("@@CAPTURE@@"):]), runs=runs)
+        closing = json.loads(line[len(capture_head):])
     except ValueError:
         return {"runs": runs, "error": "the prompt capture was cut off"}
+    error = closing.get("error") if isinstance(closing, dict) else "the prompt capture was not a record"
+    return {"error": error if error is None or isinstance(error, str) else str(error), "runs": runs}
 
 
 def _docstrings(tree):
@@ -499,6 +593,151 @@ def grows(lengths):
     return bool(changes) and sum(1 for c in changes if c > 0) >= 0.6 * len(changes) and lengths[-1] >= 2 * min(lengths[:3])
 
 
+# ---- the prompts in order: memory claims, carried screens, internal identifiers --------------------------
+
+# The adapter says earlier screens or answers are in the prompt. "The question above" is the current screen.
+CLAIM = re.compile(
+    r"\b(?:your|the|my) (?:own )?(?:earlier|previous|preceding|past|prior) (?:screens?|pages?|answers?|responses?|"
+    r"choices?|ratings?|decisions?|parts?|trials?|rounds?)\b"
+    r"|\b(?:screens?|pages?|answers?|responses?|choices?|ratings?|decisions?) (?:that )?(?:you (?:have )?"
+    r"(?:saw|seen|gave|given|answered|made|chose) |shown |given )?(?:above|earlier|before|so far)\b"
+    r"|\b(?:what you (?:saw|answered|chose|said) (?:above|earlier|before))", re.I)
+CARRYING = ("last-trial", "summary", "same-screen", "full-log", "conversation")
+MIN_SEQ = 3              # prompts per participant before "carries nothing" is judged
+ID_KEY = re.compile(r"(?i)(^id$|_id$|Id$|^qid$|^qsfid$|screenid|^qsftag$|^tag$)")
+ID_SKIP = re.compile(r"(?i)(^id$|_id$|Id$|^qid$|^qsfid$|^key$|^ref$|^tag$|^qsftag$|pointer|^arm$|^arms$|^condition$|"
+                     r"^conditions$|^cell$|^study$|^studies$|^source|path$|^evidence)")
+QID = re.compile(r"(?<![A-Za-z0-9_])QID\d+(?![A-Za-z0-9_])")
+# exceptions that are a bug in the adapter; any other (RuntimeError, FileNotFoundError, a NotReady class) is a refusal
+CRASH = ("KeyError", "IndexError", "TypeError", "AttributeError", "NameError", "UnboundLocalError", "ZeroDivisionError",
+         "StopIteration", "AssertionError", "ValueError", "JSONDecodeError", "RecursionError")
+
+
+def _line_key(line):
+    """A prompt line with numbers masked: trial 3 of the same screen is the same line as trial 2."""
+    return re.sub(r"\d+", "#", re.sub(r"\s+", " ", line).strip())
+
+
+def carried(seq):
+    """For each prompt of one run in order: does it carry something this participant already saw or answered?
+    A line carries when it was in the previous prompt too and is not in every prompt of the run (the fixed
+    instructions); or when a line new since a recent prompt holds the reply given to it."""
+    keys = [{_line_key(l) for l in p.splitlines() if l.strip()} for p, _ in seq]
+    fixed = set.intersection(*keys) if keys else set()
+    out = [False]
+    for j in range(1, len(seq)):
+        prompt = seq[j][0]
+        hit = any(len(k) >= 8 and k not in fixed for k in keys[j] & keys[j - 1])
+        for i in range(max(0, j - 3), j):
+            reply = (seq[i][1] or "").strip()
+            if hit or not reply or len(reply) > 40:
+                continue
+            token = re.compile(r"(?<![\w])" + re.escape(reply) + r"(?![\w])", re.I)
+            hit = any(token.search(l) and _line_key(l) not in keys[i] and _line_key(l) not in fixed
+                      for l in prompt.splitlines())
+        out.append(hit)
+    return out
+
+
+def _per_participant(r):
+    return r["calls"] / max(1, r.get("sessions") or r.get("n") or 1)
+
+
+def _label(r):
+    return "arm %s" % r["arms"][0] if r.get("arms") else "the default run"
+
+
+def memory_claims(runs, pieces):
+    """[(where, line)]: a prompt says earlier screens or answers are shown but carries none of them."""
+    out = []
+    for r in runs:
+        seq = r.get("seq") or []
+        flags = carried(seq)
+        for j, (prompt, _) in enumerate(seq):
+            if j == 0 or flags[j]:
+                continue
+            for line in prompt.splitlines():
+                if CLAIM.search(authored(line, pieces)) and CLAIM.search(line):
+                    out.append(("%s prompt %d" % (_label(r), j + 1), line.strip()[:160]))
+                    break
+            if len(out) >= 3:
+                return out
+    return out
+
+
+def carries_nothing(runs):
+    """Runs of one participant asked several times whose later prompts carry nothing they already saw."""
+    return [_label(r) for r in runs if len(r.get("seq") or []) >= MIN_SEQ and _per_participant(r) >= MIN_SEQ
+            and not any(carried(r["seq"])[1:])]
+
+
+def _strings(value, skip=ID_SKIP):
+    """Participant-facing strings of materials.json: identifier and provenance fields left out."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            if not skip.search(str(k)) and not PROVENANCE.search(str(k)):
+                yield from _strings(v, skip)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _strings(v, skip)
+
+
+def identifier_like(token):
+    """An internal id, not a word: snake_case, dotted, camelCase, letters with digits, or a-hyphenated-tag."""
+    if len(token) < 4 or not re.fullmatch(r"[A-Za-z0-9_.\-]+", token) or not re.search(r"[A-Za-z]", token):
+        return False
+    return bool(re.search(r"[_.]", token) or re.search(r"[a-z][A-Z]", token)
+                or (re.search(r"\d", token) and re.search(r"[A-Za-z]{2,}", token))
+                or re.fullmatch(r"[a-z]+(-[a-z0-9]+)+", token))
+
+
+def material_ids(value):
+    """Screen, question and tag ids of materials.json (values of id-like keys)."""
+    found = set()
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if isinstance(v, str) and ID_KEY.search(str(k)):
+                found.add(v)
+            found |= material_ids(v)
+    elif isinstance(value, list):
+        for v in value:
+            found |= material_ids(v)
+    return found
+
+
+def leaked_ids(pkg, program, runs):
+    """{identifier: where}: condition, screen, question or variable ids in prompt text the participant reads.
+    An id that is also text of the participants' materials (a word the screen prints) is not one."""
+    materials = _json(pkg / "materials/materials.json")
+    arms = list(dict.fromkeys(arm_names(pkg) + [a for r in runs for a in r.get("arms") or []]))
+    candidates = set()
+    for arm in arms:
+        candidates.add(arm)
+        candidates |= {part for part in re.split(r"[-_.:/\s]+", arm) if part}
+    candidates |= material_ids(materials)
+    candidates |= {n.get("id") for n in program.get("nodes") or [] if isinstance(n, dict) and isinstance(n.get("id"), str)
+                   and n.get("kind") in ("condition", "variable", "record", "material", "materials")}
+    visible = "\n".join(list(_strings(materials)) + [f.get("value") if isinstance(f.get("value"), str)
+                                                     else json.dumps(f.get("value"), ensure_ascii=False)
+                                                     for _, f in _fields(program) if f.get("origin") == "verbatim"])
+    visible = visible.casefold()
+    candidates = {c for c in candidates if isinstance(c, str) and identifier_like(c) and c.casefold() not in visible}
+    pattern = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(re.escape(c) for c in sorted(candidates, key=len, reverse=True))
+                         + r")(?![A-Za-z0-9_])", re.I) if candidates else None
+    lookup = {c.casefold(): c for c in candidates}
+    found = {}
+    for r in runs:
+        for line in r.get("lines") or []:
+            for m in (pattern.finditer(line) if pattern else ()):
+                found.setdefault(lookup.get(m.group(1).casefold(), m.group(1)), _label(r))
+            for m in QID.finditer(line):
+                if m.group(0).casefold() not in visible:
+                    found.setdefault(m.group(0), _label(r))
+    return found
+
+
 def drops_participant(path):
     """[(line, code)] for all(...)/any(...) over the trials' parse status: one reply decides for the participant.
 
@@ -550,10 +789,15 @@ def check(root, package=None, capture_prompts=True):
     root = Path(root).resolve()
     program = _json(root / "program.json")
     if not isinstance(program, dict):
-        return {"problems": [("program.json is missing or not JSON", "")], "notes": [], "method": None}
-    problems, notes = [], []
+        return {"problems": [("program.json is missing or not JSON", "")], "notes": [], "method": None,
+                "warnings": []}
+    problems, notes, warnings = [], [], []
     add = lambda msg, fix="": problems.append((msg, fix))
     pkg = _package(root, package)
+    # The rules added with the shared reply reader block only packages built under that contract (contract.py);
+    # a package built before it gets them as warnings, so a project that was ready stays ready.
+    current = contract.current_contract(pkg)
+    newer = add if current else (lambda msg, fix="": warnings.append((msg, fix)))
     paper = _paper(root, program)
     pages = check_quotes.Pdf(paper).load() if paper and paper.suffix.lower() == ".pdf" else []
 
@@ -687,6 +931,48 @@ def check(root, package=None, capture_prompts=True):
                 add("%s: a decision needs its decision issue (nodeId %s, fieldId replay-memory)" % (where, n.get("id")),
                     "state the expected impact in the issue so the researcher can choose")
 
+        # what the prompts claim and carry, and what they must not show (read only from prompts actually sent)
+        if runs:
+            shown = pieces + [p for t in _strings(_json(pkg / "materials/materials.json"))
+                              for p in check_verbatim.segments(t) if len(p.split()) >= 3]
+            claims = memory_claims(runs, sorted(set(shown), key=len, reverse=True))
+            if claims:
+                newer("prompts say earlier screens or answers are shown but carry none of this participant's earlier "
+                    "screens or answers: " + "; ".join("%s (\"%s\")" % c for c in claims),
+                    "send what the line promises (this participant's own earlier screens and answers) or remove "
+                    "the claim; never refer to screens the prompt does not contain")
+            designs = {(f.get("value") or {}).get("design") for _, f in memory if isinstance(f.get("value"), dict)}
+            if designs & set(CARRYING):
+                empty = carries_nothing(runs)
+                if empty:
+                    newer("replay-memory design %s carries memory, but no later prompt of %s carries anything the "
+                        "participant already saw or answered" % ("/".join(sorted(designs & set(CARRYING))),
+                                                                  ", ".join(empty[:4])),
+                        "make the adapter put what the design says into each later prompt of the same participant "
+                        "(the last outcome, the summary, the items already on the page, the earlier screens and "
+                        "answers), or record design `none` with its decision issue")
+            leaked = leaked_ids(pkg, program, runs)
+            if leaked:
+                listed = sorted(leaked.items())[:8]
+                newer("participant prompts contain internal identifiers the participant never saw: "
+                    + ", ".join("'%s' (%s)" % kv for kv in listed) + (" and more" if len(leaked) > 8 else ""),
+                    "never show condition or arm ids, survey question ids (QID14), screen or material ids or "
+                    "variable names; key replies by neutral labels (q1, q2, or the number printed on the screen) "
+                    "so a participant cannot read their condition from the prompt")
+        blocking = any(isinstance(i, dict) and i.get("severity") == "blocking" for i in program.get("issues") or [])
+        for r in cap.get("runs") or []:
+            # the default run's errors, and names task.json gives that are not arm ids, stay notes
+            if not r.get("arms") or not r.get("declared") or not r.get("error") or r.get("capped"):
+                continue
+            crash = (r.get("errorType") or r["error"].split(":", 1)[0]) in CRASH
+            if blocking and not crash:
+                continue   # a deliberate refusal of an arm that needs what a blocking issue asks for
+            newer("run_sessions(arms=%r, n=%s) raised %s" % (r["arms"], r.get("n"), r["error"][:200])
+                + (" (a crash, not a refusal)" if crash else " but program.json has no `blocking` issue"),
+                "every condition must run with arms=[its id] for a small n (1, or 2 for pairs); an arm that cannot run "
+                "yet raises a clear error naming what it needs under a `blocking` issue, or returns a session record "
+                'marked blocked ({"arm": ..., "condition": ..., "blocked": "<what is needed>"})')
+
         # unparsed replies
         evidence = {ev.get("id"): ev for ev in program.get("evidence") or [] if isinstance(ev, dict)}
         for rel in ("task/adapter.py", "evaluation/evaluation.py"):
@@ -722,13 +1008,15 @@ def check(root, package=None, capture_prompts=True):
                 "the stand-in wording the adapter uses; say which in suggestedAction), or `blocking` only when the "
                 "adapter refuses to run without it (this one runs); never a `check`, and never written into a "
                 "verbatim field")
-    return {"problems": problems, "notes": notes, "method": method, "notApplicable": not_applicable}
+    return {"problems": problems, "notes": notes, "method": method, "notApplicable": not_applicable,
+            "warnings": warnings, "currentContract": current}
 
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["--capture"]:
-        capture(Path(argv[1]).resolve())
+        nonce = child_nonce()   # before the adapter is imported
+        capture(Path(argv[1]).resolve(), nonce)
         return 0
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", nargs="?", default=".")
@@ -740,6 +1028,9 @@ def main(argv=None):
         Path(a.json).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     for msg, fix in report["problems"]:
         print("PROBLEM %s" % msg + ("\n        fix: %s" % fix if fix else ""))
+    for msg, fix in report.get("warnings") or []:
+        print("WARN    %s (older build: blocking once rebuilt with task/replies.py)" % msg
+              + ("\n        fix: %s" % fix if fix else ""))
     for line in report["notes"]:
         print("note    " + line)
     if report["method"]:

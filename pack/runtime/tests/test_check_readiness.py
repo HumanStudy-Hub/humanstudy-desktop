@@ -215,5 +215,235 @@ class ReadinessTest(unittest.TestCase):
             self.assertEqual(run.returncode, 1)
 
 
+# A declared arm that crashes when run on its own (check_validity.py `arms` rule)
+CRASHING_ARM = ADAPTER.replace("    out = []\n", "    out = []\n    if arms == ['b']:\n        {}['missing']\n") + "ARMS = ['a', 'b']\n"
+SEARCHES = [{"where": "OSF", "query": "Analysis folder", "url": "https://osf.io/x/", "date": "2026-11-01",
+             "result": "analysis scripts listed; not downloaded (not needed)"}]
+
+
+def newer_rule_project(make):
+    """Only findings of the rules added with the shared reply reader: a crashing declared arm (validity), an
+    impossible p value (results), analysis code listed but not downloaded (check_source_use.py, package)."""
+    p = json.loads(json.dumps(PROGRAM))
+    for n in p["nodes"]:
+        if n["kind"] == "procedure":
+            n["fields"].append({"id": "not-told", "label": "What participants were not told", "origin": "reported",
+                                "state": "confirmed", "value": [], "evidenceIds": ["e1"]})
+    result = next(n for n in p["nodes"] if n["kind"] == "result")
+    result["fields"].append({"id": "test", "label": "Test", "origin": "reported", "state": "confirmed",
+                             "value": {"t": 2.1, "p": 1.3}, "evidenceIds": ["e1"]})
+    root = make(program=p, adapter=CRASHING_ARM)
+    record = json.loads((root / "sources/SOURCE.json").read_text(encoding="utf-8"))
+    record["searches"] = SEARCHES
+    (root / "sources/SOURCE.json").write_text(json.dumps(record), encoding="utf-8")
+    return root
+
+
+@unittest.skipUnless(has_jsonschema(), "needs jsonschema (the research runtime has it)")
+class OlderBuildWarnings(unittest.TestCase):
+    """A package built before the shared reply reader (no task/replies.py) keeps its ready status: the newer
+    rules are warnings. The same findings on a current-contract package are problems."""
+
+    def setUp(self):
+        self.roots = []
+
+    def tearDown(self):
+        for root in self.roots:
+            shutil.rmtree(root.parent, ignore_errors=True)
+
+    def project(self, **kw):
+        root = make_project(**kw)
+        self.roots.append(root)
+        return root
+
+    def test_an_older_build_with_only_newer_rule_findings_is_ready_with_warnings(self):
+        report, problems = readiness(newer_rule_project(self.project))
+        self.assertEqual(problems, {}, report)
+        self.assertEqual(report["checks"], {name: "pass" for name in CHECKS})
+        warned = {w["check"]: w["reason"] for w in report["warnings"]}
+        self.assertIn("raised KeyError", warned.get("validity", ""), report)
+        self.assertIn("not a probability", warned.get("results", ""), report)
+        self.assertIn("no analysis file is under sources/", warned.get("package", ""), report)
+        self.assertTrue(all("\n" not in w["reason"] and len(w["reason"]) <= 320 for w in report["warnings"]))
+
+    def test_the_same_findings_block_a_current_contract_package(self):
+        root = newer_rule_project(self.project)
+        shutil.copy2(BUILD / "package_files/replies.py", root / "package/fixture/task/replies.py")
+        report, problems = readiness(root)
+        for check in ("validity", "results", "package"):
+            self.assertIn(check, problems, report)
+        self.assertIn("sources used", problems["package"])
+        self.assertEqual(report["warnings"], [])
+
+    def test_a_ready_older_package_carries_only_the_contract_warning(self):
+        report, problems = readiness(self.project())
+        self.assertEqual(problems, {})
+        self.assertEqual(report["warnings"], [{"check": "contract", "reason": "older build: newer build rules are "
+                                               "warnings; rebuild with the current build skill to make them blocking"}])
+
+    def test_leaving_replies_out_does_not_dodge_the_newer_rules(self):
+        root = newer_rule_project(self.project)
+        study = root / "package/fixture/study.json"
+        study.write_text(json.dumps(dict(json.loads(study.read_text(encoding="utf-8")), buildContract=2)),
+                         encoding="utf-8")
+        report, problems = readiness(root)
+        for check in ("validity", "results", "package"):
+            self.assertIn(check, problems, report)
+        self.assertNotIn("contract", [w["check"] for w in report["warnings"]])
+
+
+class ContractSigns(unittest.TestCase):
+    """contract.py: a package counts as current when its project shows the current build skill's work, even
+    without task/replies.py."""
+
+    def setUp(self):
+        sys.path.insert(0, str(BUILD))
+        self.addCleanup(sys.path.remove, str(BUILD))
+        import contract
+        self.contract = contract
+        self.root = Path(tempfile.mkdtemp(prefix="contract-test-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.pkg = self.root / "package/slug"
+        (self.pkg / "materials").mkdir(parents=True)
+        (self.root / "sources").mkdir()
+        (self.pkg / "study.json").write_text('{"title": "x"}', encoding="utf-8")
+        (self.root / "program.json").write_text('{"schemaVersion": 2}', encoding="utf-8")
+        (self.pkg / "materials/materials.json").write_text("{}", encoding="utf-8")
+        self.source({"files": [{"path": "paper.pdf", "sha256": "ab"}], "searches": []})
+
+    def source(self, record):
+        (self.root / "sources/SOURCE.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def test_an_older_project_is_not_current(self):
+        self.assertFalse(self.contract.current_contract(self.pkg))
+        self.assertEqual(self.contract.new_build_signs(self.pkg), [])
+        for marked in ('{"buildContract": 1}', '{"buildContract": true}', '{"buildContract": "2"}', "[]", "{bad"):
+            (self.pkg / "study.json").write_text(marked, encoding="utf-8")
+            self.assertFalse(self.contract.current_contract(self.pkg), marked)
+
+    def test_only_the_build_stamp_makes_it_current(self):
+        (self.pkg / "study.json").write_text('{"buildContract": 2}', encoding="utf-8")
+        self.assertTrue(self.contract.current_contract(self.pkg))
+        (self.pkg / "study.json").write_text("{}", encoding="utf-8")
+        # records an older build's warnings ask for never flip it: clearing one warning keeps the others warnings
+        for key in ("licenceLookups", "paperTables", "signChecks", "analysisCode", "surveyVersions",
+                    "questionsChecked", "decisionsFromSources", "abstractResults", "resultsNotRecorded"):
+            self.source({"files": [], key: [{"x": 1}]})
+            self.assertFalse(self.contract.current_contract(self.pkg), key)
+        self.source({"files": [{"path": "sources/open/a.qsf", "retrieved": "2026-11-04", "finalUrl": "https://x"}]})
+        self.assertFalse(self.contract.current_contract(self.pkg))
+        (self.root / "program.json").write_text('{"items": [{"qsfReachability": "not-shown"}]}', encoding="utf-8")
+        self.assertFalse(self.contract.current_contract(self.pkg))
+
+
+class ResultsByPackage(unittest.TestCase):
+    """check_results.check(..., package=): the slug's own package decides, not any package of the project."""
+
+    def test_the_checked_package_decides(self):
+        sys.path.insert(0, str(BUILD))
+        self.addCleanup(sys.path.remove, str(BUILD))
+        import check_results
+        p = json.loads(json.dumps(PROGRAM))
+        result = next(n for n in p["nodes"] if n["kind"] == "result")
+        result["fields"].append({"id": "test", "label": "Test", "origin": "reported", "state": "confirmed",
+                                 "value": {"t": 2.1, "p": 1.3}, "evidenceIds": ["e1"]})
+        root = make_project(program=p, extra={"package/newer/study.json": '{"buildContract": 2}'})
+        self.addCleanup(shutil.rmtree, root.parent, True)
+        older = check_results.check(root / "program.json", package=root / "package/fixture")
+        newer = check_results.check(root / "program.json", package=root / "package/newer")
+        cli = check_results.check(root / "program.json")
+        self.assertTrue(any("not a probability" in m for m, _ in older["warnings"]), older)
+        self.assertFalse(any("not a probability" in m for m, _ in older["problems"]), older)
+        self.assertTrue(any("not a probability" in m for m, _ in newer["problems"]), newer)
+        self.assertTrue(any("not a probability" in m for m, _ in cli["problems"]), cli)
+
+
+class WarningList(unittest.TestCase):
+    def test_truncated_warnings_say_how_many_more(self):
+        sys.path.insert(0, str(BUILD))
+        self.addCleanup(sys.path.remove, str(BUILD))
+        import check_readiness
+        listed = check_readiness.listed_warnings("results", [("w%d" % i, "fix") for i in range(25)])
+        self.assertEqual(len(listed), check_readiness.WARNINGS_MAX + 1)
+        self.assertEqual(listed[-1], {"check": "results", "reason": "and 5 more"})
+        self.assertEqual(len(check_readiness.listed_warnings("results", ["a", "b"])), 2)
+
+
+class CheckPackageGate(unittest.TestCase):
+    """check_package.py: downloaded-source, source-use and survey findings fail a current-contract package and
+    print `warn` lines (and PASS) for an older one."""
+
+    def setUp(self):
+        sys.path.insert(0, str(BUILD))
+        self.addCleanup(sys.path.remove, str(BUILD))
+        import check_package
+        import contract
+        import fetch_source
+        import qsf_flow
+        self.mods = (check_package, contract, fetch_source, qsf_flow)
+        self.root = make_project()
+        self.addCleanup(shutil.rmtree, self.root.parent, True)
+
+    def run_package(self, current, fetched=(), survey=()):
+        import contextlib
+        import io
+        from unittest import mock
+        check_package, contract, fetch_source, qsf_flow = self.mods
+        out = io.StringIO()
+        with mock.patch.object(contract, "current_contract", lambda p: current), \
+                mock.patch.object(fetch_source, "problems", lambda *a, **k: list(fetched)), \
+                mock.patch.object(qsf_flow, "problems", lambda *a, **k: list(survey)), \
+                mock.patch.object(check_package, "reply_checks", lambda p: ([], "ok   replies (not under test)")), \
+                mock.patch.object(sys, "argv", ["check_package.py", str(self.root / "package/fixture")]), \
+                contextlib.redirect_stdout(out):
+            try:
+                check_package.main()
+                code = 0
+            except SystemExit as exc:
+                code = exc.code
+        return code, out.getvalue()
+
+    def test_fetched_source_findings(self):
+        bad = [("sources/SOURCE.json: sources/open/x.csv has no licence", "record it")]
+        code, out = self.run_package(False, fetched=bad)
+        self.assertEqual(code, 0, out)
+        self.assertIn("warn  sources/SOURCE.json: sources/open/x.csv has no licence  [fix: record it]", out)
+        self.assertIn("PASS package checks", out)
+        code, out = self.run_package(True, fetched=bad)
+        self.assertEqual(code, 1, out)
+        self.assertIn("FAIL sources used:", out)
+
+    def test_survey_findings(self):
+        bad = [("survey text participants never saw: QID9 of x.qsf", "remove it")]
+        code, out = self.run_package(False, survey=bad)
+        self.assertEqual(code, 0, out)
+        self.assertIn("warn  survey text participants never saw", out)
+        self.assertIn("PASS package checks", out)
+        code, out = self.run_package(True, survey=bad)
+        self.assertEqual(code, 1, out)
+        self.assertIn("FAIL survey files (qsf_flow.py):", out)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class Timeouts(unittest.TestCase):
+    """check_package.py runs its confined steps one after another; the readiness and app limits outlast them."""
+
+    def test_package_timeout_covers_every_confined_step_and_the_app_waits_longer(self):
+        import re
+        sys.path.insert(0, str(BUILD))
+        try:
+            import check_readiness
+            import check_replies
+            import recorded_answers
+        finally:
+            sys.path.remove(str(BUILD))
+        steps = 120 + check_replies.SMOKE_TIMEOUT + recorded_answers.CHECK_TIMEOUT + 300   # smoke, replies, answers, capture
+        self.assertGreater(check_readiness.PACKAGE_TIMEOUT, steps)
+        self.assertGreaterEqual(check_readiness.PACKAGE_TIMEOUT, 1300)
+        source = (REPO / "app/src/main/scientific-readiness.ts").read_text(encoding="utf-8")
+        minutes = int(re.search(r"SCIENTIFIC_TIMEOUT_MS = (\d+) \* 60_000", source).group(1))
+        # check_package, then check_validity's own capture (300 s) and the effects field check (300 s)
+        self.assertGreater(minutes * 60, check_readiness.PACKAGE_TIMEOUT + 300 + 300)

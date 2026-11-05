@@ -130,6 +130,11 @@ Create `artifacts/simulations/<YYYY-MM-DD-HHMM>/` (the run folder) and work insi
    Assignment is balanced: exactly `N` per condition (the plan), in the adapter's own prompt and
    reply format. If the adapter has no separate prompt/parse functions, call
    `adapter.run_sessions(llm, seed, n, arms=[...])` inside `one` for a single participant and arm.
+   A package that asks through `task/replies.py` (the adapter has `from replies import ...`): inside `one`,
+   call `adapter.run_sessions(lambda p: llm(p, temperature=TEMPERATURE), rng.randrange(2**31), 1,
+   arms=[condition])[0]`, so every screen, keyed check, retry and session `status` is the adapter's own; use
+   `build_prompt`/`parse_reply` only for a single-screen study, and read replies only with `parse_reply` (which
+   uses `replies.parse`), never with a parser of your own.
    Never cache replies across participants: two participants with the same prompt must get two
    independent model calls (a cache would make them identical copies).
 
