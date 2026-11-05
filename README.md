@@ -55,3 +55,31 @@ the dev promo code to unlock hosted models there.
 ## License
 
 MIT. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+### Local batch builds through OpenRouter
+
+Set `OPENROUTER_API_KEY` in the invoking shell (never in a committed file), then run:
+
+```sh
+python scripts/batch_build.py --agent opencode --provider openrouter \
+  --model anthropic/claude-haiku-4.5 --max-cost-usd 3 --jobs 1 \
+  --pdfs papers/example.pdf --work private-runs/openrouter
+```
+
+This uses the installed HumanStudy OpenCode binary and the same standalone build skill.
+Hosted desktop configuration is unchanged. Each paper gets an isolated local relay and
+budget. Before forwarding a text/function-tool request, the relay reserves the model's
+full context input cost (including the highest declared cache-write rate) plus at most 8,192 output tokens. It rejects requests that would
+exceed the budget, rejects native paid search/media and tiered pricing, and caps provider
+prices to the inspected catalog prices. Missing response usage keeps the full reservation;
+there is no automatic upstream retry. This conservative check can stop a build before the
+nominal budget is fully consumed. Inspect the saved partial project rather than assuming
+it completed.
+
+`openrouter-usage.json` records generation IDs and provider-reported `usage.cost` without
+credentials or prompts. `results.json` distinguishes exact `costUsd` from the conservative
+`costUpperBoundUsd`; an unknown cost is never recorded as zero. The relay is a local batch
+budget mechanism, not an operating-system sandbox for arbitrary study code.
+
+References: [OpenCode provider configuration](https://opencode.ai/docs/providers/) and
+[OpenRouter usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting).

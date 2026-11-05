@@ -31,6 +31,9 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.request
+
+from openrouter_budget import BudgetRelay
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -85,12 +88,12 @@ def opencode_binary():
     return str(found[-1]) if found else None
 
 
-def opencode_env(env, model, work):
+def opencode_env(env, model, work, base_url=None):
     """Hosted provider, auto-approved tools inside the project, and XDG dirs of our own."""
     cfg = {"$schema": "https://opencode.ai/config.json", "model": "humanstudy/" + model,
            "small_model": "humanstudy/" + model,
            "permission": {"edit": "allow", "bash": "allow", "external_directory": "deny"},
-           "provider": {"humanstudy": {"options": {"baseURL": os.environ.get("HUMANSTUDY_HOSTED_BASEURL", HOSTED),
+           "provider": {"humanstudy": {"models": {model: {"name": model, "tool_call": True}}, "options": {"baseURL": base_url or env.get("HUMANSTUDY_HOSTED_BASEURL", HOSTED),
                                                    "apiKey": "{env:HUMANSTUDY_DESKTOP_KEY}"}}}}
     env = dict(env, OPENCODE_CONFIG_CONTENT=json.dumps(cfg), OPENCODE_DISABLE_AUTOUPDATE="1",
                OPENCODE_DISABLE_CLAUDE_CODE_PROMPT="1", OPENCODE_DISABLE_CLAUDE_CODE_SKILLS="1",
@@ -192,6 +195,8 @@ def main(argv=None):
     ap.add_argument("--work", required=True)
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--agent", choices=["claude", "codex", "opencode"], default="claude")
+    ap.add_argument("--provider", choices=["hosted", "openrouter"], default="hosted")
+    ap.add_argument("--max-cost-usd", type=float, default=3.0, help="OpenRouter per-paper reserved budget")
     ap.add_argument("--model", default=None, help="default: sonnet for claude, anthropic/claude-sonnet-5.5 for "
                                                   "opencode, the CLI default for codex")
     ap.add_argument("--limit", type=int)
@@ -199,6 +204,8 @@ def main(argv=None):
     ap.add_argument("--rebuild", action="store_true", help="rebuild papers that already passed")
     ap.add_argument("--python", default=sys.executable, help="Python with pypdf, for the checks")
     a = ap.parse_args(argv)
+    if a.provider == "openrouter" and (a.agent != "opencode" or not a.model):
+        ap.error("OpenRouter requires --agent opencode and an explicit --model")
     model = a.model or {"claude": "sonnet", "opencode": "anthropic/claude-sonnet-5.5"}.get(a.agent)
     src = Path(a.pdfs)
     pdfs = find_papers(src)
@@ -210,8 +217,9 @@ def main(argv=None):
         if not opencode_binary():
             print("no HumanStudy OpenCode found: install the desktop app or set HUMANSTUDY_OPENCODE_BIN", file=sys.stderr)
             return 1
-        if not os.environ.get("HUMANSTUDY_DESKTOP_KEY"):
-            print("set HUMANSTUDY_DESKTOP_KEY to use the app's hosted models", file=sys.stderr)
+        key_name = "OPENROUTER_API_KEY" if a.provider == "openrouter" else "HUMANSTUDY_DESKTOP_KEY"
+        if not os.environ.get(key_name):
+            print("set " + key_name + " for the selected provider", file=sys.stderr)
             return 1
     elif not shutil.which(a.agent):
         print("the %s CLI is not on PATH" % a.agent, file=sys.stderr)
@@ -223,7 +231,14 @@ def main(argv=None):
     subprocess.run([sys.executable, str(REPO / "scripts/build_standalone_skill.py"), "--out", str(skill)],
                    check=True, capture_output=True)
     env = dict(os.environ, PATH=str(Path(a.python).parent) + os.pathsep + os.environ.get("PATH", ""))
-    if a.agent == "opencode":
+    metadata = None
+    if a.provider == "openrouter":
+        with urllib.request.urlopen("https://openrouter.ai/api/v1/models", timeout=30) as response:
+            models = json.load(response)["data"]
+        metadata = next((m for m in models if m["id"] == model), None)
+        if metadata is None:
+            ap.error("model is absent from OpenRouter catalog")
+    elif a.agent == "opencode":
         env = opencode_env(env, model, work)
     names, rows = {}, []
     for pdf in pdfs:  # unique project names even when two PDFs share a file name
@@ -241,8 +256,21 @@ def main(argv=None):
             row["skipped"] = "already built"
         else:
             setup(pdf, project, skill)
-            row.update(build(project, a.agent, model, env, a.timeout))
-        row.update(usage(project))
+            if a.provider == "openrouter":
+                with BudgetRelay(os.environ["OPENROUTER_API_KEY"], model, a.max_cost_usd, metadata) as relay:
+                    child = {k: v for k, v in env.items() if not any(x in k.upper() for x in ("KEY", "TOKEN", "SECRET", "PASSWORD"))}
+                    child["HUMANSTUDY_DESKTOP_KEY"] = relay.token
+                    child = opencode_env(child, model, project, relay.base_url)
+                    row.update(build(project, a.agent, model, child, a.timeout))
+                (project / "openrouter-usage.json").write_text(json.dumps(relay.records, indent=2) + "\n")
+                known = all(r["costUsd"] is not None for r in relay.records)
+                row.update(costUsd=sum(r["costUsd"] for r in relay.records) if known else None,
+                           costUpperBoundUsd=relay.charged, costSource="OpenRouter response usage",
+                           requests=len(relay.records), budgetUsd=a.max_cost_usd)
+            else:
+                row.update(build(project, a.agent, model, env, a.timeout))
+        if a.provider != "openrouter":
+            row.update(usage(project))
         row.update(checks(project, a.python))
         return row
 
@@ -255,7 +283,7 @@ def main(argv=None):
                 i, len(pdfs), row["project"], row.get("skipped") or "%s min" % row.get("minutes"),
                 "PASS" if row.get("programComplete") else "FAIL", row.get("package"), row.get("readiness")), flush=True)
     rows.sort(key=lambda r: r["project"])
-    (work / "results.json").write_text(json.dumps({"agent": a.agent, "model": model, "rows": rows}, indent=2) + "\n",
+    (work / "results.json").write_text(json.dumps({"agent": a.agent, "provider": a.provider, "model": model, "rows": rows}, indent=2) + "\n",
                                        encoding="utf-8")
     keys = []
     for r in rows:
@@ -265,8 +293,9 @@ def main(argv=None):
         w.writeheader()
         w.writerows(rows)
     ok = sum(1 for r in rows if r.get("programComplete"))
-    cost = sum(r.get("costUsd") or 0 for r in rows)
-    print("%d/%d papers built with a passing program; cost $%.2f; results in %s" % (ok, len(rows), cost,
+    known = all(r.get("costUsd") is not None for r in rows if not r.get("skipped"))
+    cost = "$%.2f" % sum(r.get("costUsd") or 0 for r in rows) if known else "unknown (see per-paper reservations)"
+    print("%d/%d papers built with a passing program; cost %s; results in %s" % (ok, len(rows), cost,
                                                                                    work / "results.csv"))
     return 0
 
