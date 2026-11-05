@@ -3,7 +3,7 @@
 
     python .opencode/skills/build/check_validity.py .   [--package package/<slug>] [--json report.json]
 
-check_package.py runs it; it must print PASS before the package can be marked ready. Six checks:
+check_package.py runs it; it must print PASS before the package can be marked ready. The checks:
 
   not told       every sentence of the paper saying participants were not told something, had to learn
                  or discover it, or were kept unaware of it is listed in a `not-told` field of
@@ -28,6 +28,16 @@ check_package.py runs it; it must print PASS before the package can be marked re
                  clear error under a `blocking` issue or returns a session record marked blocked. A crash
                  (KeyError, TypeError, ...) is a problem. Names that only task.json gives are run, and their
                  errors are notes (task.json may name experiments or cells, not arm ids).
+  screens        (prompt_context.py) a question with an answer key is asked with the instruction screens
+                 before it in the program's flow, and a question asked round after round keeps the screens it
+                 was asked with; the stand-in answers keys correctly so the run gets past a quiz. Declared
+                 exceptions: materials.json screenMemory (repeats, notCarried) with evidence.
+  identical arms an effect of effects.json whose treatment and reference arms send identical prompts in their
+                 own stand-in runs is listed in a capabilities.json run.excluded entry's `effects` (with a
+                 reason): a population difference is not a manipulation the replay can test.
+  defaults       an answer that could not be read is never turned into a number in task/adapter.py
+                 (`v if v is not None else 0`, `page.value(..) or 0`, `if v is None: v = 0`, where v holds
+                 page.value(...)), in any task/*.py but the reader.
   unparsed       one unparsed reply must not drop a whole participant (all(...)/any(...) over the trials'
                  parse status): record unparsed replies per trial and apply the paper's own exclusion rule
                  (a line that applies it carries `# exclusion: <evidence id>` whose quote states the rule).
@@ -42,7 +52,8 @@ scratch folder; sleeps are skipped), once over all arms and once per arm study.j
 distinct prompt line is recorded. An adapter that does not finish with the stand-in model fails. When the adapter cannot run (a blocked study), its string literals and
 materials/materials.json are read instead.
 
-Older builds: the memory-claim, carried-memory and identifier rules of `memory` and the `arms` rule block only a
+Older builds: the memory-claim, carried-memory and identifier rules of `memory`, the `arms` rule, and the screens,
+identical-arms and defaults rules block only a
 package built under the current contract (it carries task/replies.py, see contract.py); for an older package
 they are printed as WARN lines and returned under "warnings", and the check still prints PASS.
 
@@ -65,6 +76,7 @@ Standard library plus the PDF reader check_quotes.py uses.
 """
 import argparse
 import ast
+import hashlib
 import json
 import random
 import re
@@ -76,6 +88,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_quotes  # noqa: E402
 import check_verbatim  # noqa: E402
 import contract  # noqa: E402  older packages get the newer prompt rules as warnings
+import prompt_context  # noqa: E402  instruction screens before keyed questions, rules in later rounds, identical arms
 from check_replies import NONCE_ENV, child_nonce, marked, new_nonce  # noqa: E402  report lines carry a nonce
 
 PARTICIPANT = re.compile(
@@ -311,6 +324,73 @@ def _standin(prompt):
     return random.Random(len(tail)).choice(options) if options else "1"
 
 
+def _keyed(question):
+    return getattr(question, "key", None) is not None
+
+
+def _keyed_answer(question):
+    """What a participant who understood the instructions types for one question (replies.Question)."""
+    kind = getattr(question, "kind", "choice")
+    key = getattr(question, "key", None)
+    codes = [str(c) for c in getattr(question, "codes", None) or []]
+    if kind == "number":
+        if key is not None:
+            return str(key[0] if isinstance(key, (list, tuple)) and key else key)
+        low = getattr(question, "minimum", None)
+        return str(int(low) if isinstance(low, (int, float)) and float(low).is_integer() else (low if low is not None else 0))
+    if kind == "text":
+        return "No comment."
+    if key is not None:
+        try:
+            picked = [codes[i] for i in question.key_indices()]
+        except Exception:  # noqa: BLE001  an older Question: the key as written
+            picked = [str(k) for k in (key if isinstance(key, (list, tuple)) else [key])]
+        if picked:
+            return ", ".join(picked)
+    return codes[0] if codes else "1"
+
+
+class StandIn:
+    """The stand-in model of the prompt capture. As a plain callable it replies as _standin always did; replies.ask
+    calls answer_for (with the questions), and a page with an answer key (a comprehension quiz) is answered
+    correctly, so the run reaches what comes after the quiz. Pages without a key get the old reply."""
+
+    def __init__(self, cap, prompts, replies, meta, table):
+        self.cap, self.prompts, self.replies, self.meta, self.table = cap, prompts, replies, meta, table
+        self.seen = {}   # prompt -> screens shown: a repeated screen is read once
+
+    def _record(self, prompt, qids=(), keyed=False):
+        if len(self.prompts) >= self.cap:
+            raise _Stop()
+        text = prompt if isinstance(prompt, str) else json.dumps(prompt, ensure_ascii=False)
+        self.prompts.append(text)
+        if self.table and text not in self.seen and len(self.seen) < 5000:
+            self.seen[text] = prompt_context.present(text, self.table)
+        shown = (self.seen[text] if text in self.seen else prompt_context.present(text, self.table)) if self.table else []
+        self.meta.append({"q": [str(q)[:120] for q in qids][:12], "k": keyed, "s": shown})
+        return text
+
+    def __call__(self, prompt, *a, **k):
+        text = self._record(prompt)
+        self.replies.append(_standin(text))
+        return self.replies[-1]
+
+    def answer_for(self, prompt, questions, attempt=0, final=True):
+        questions = list(questions or [])
+        keyed = any(_keyed(q) for q in questions)
+        # a question is the same question again only with the same id and the same text (a round, not a block)
+        text = self._record(prompt, ["%s#%s" % (getattr(q, "id", "?"), hashlib.sha1(
+            str(getattr(q, "text", "")).encode("utf-8", "replace")).hexdigest()[:8]) for q in questions], keyed)
+        if not keyed:
+            reply = _standin(text)
+        elif len(questions) == 1:
+            reply = _keyed_answer(questions[0])
+        else:
+            reply = "\n".join("Q%d: %s" % (n, _keyed_answer(q)) for n, q in enumerate(questions, 1))
+        self.replies.append(reply)
+        return reply
+
+
 RUN_MARK = "@@RUN@@"
 CAPTURE_MARK = "@@CAPTURE@@"
 
@@ -333,15 +413,16 @@ def capture(pkg, nonce=""):
         print(marked(CAPTURE_MARK, nonce, json.dumps(out)))
         return
 
-    def run(arms, cap, n=1, emit=True):
-        prompts, replies = [], []
+    project = pkg.parent.parent
+    table = {}
+    try:
+        table = prompt_context.probes(_json(project / "program.json") or {}, _json(pkg / "materials/materials.json") or {})
+    except Exception:  # noqa: BLE001  no screens known: the screen rules have nothing to read
+        table = {}
 
-        def llm(prompt, *a, **k):
-            if len(prompts) >= cap:
-                raise _Stop()
-            prompts.append(prompt if isinstance(prompt, str) else json.dumps(prompt, ensure_ascii=False))
-            replies.append(_standin(prompts[-1]))
-            return replies[-1]
+    def run(arms, cap, n=1, emit=True):
+        prompts, replies, meta = [], [], []
+        llm = StandIn(cap, prompts, replies, meta, table)
         rec = {"arms": list(arms or []), "calls": 0, "sessions": None, "capped": False, "error": None, "errorType": None, "n": n}
         try:
             sessions = mod.run_sessions(llm, 20261102, n, arms=arms) if arms else mod.run_sessions(llm, 20261102, n)
@@ -352,6 +433,8 @@ def capture(pkg, nonce=""):
             rec["error"] = "%s: %s" % (type(exc).__name__, str(exc)[:300])
             rec["errorType"] = type(exc).__name__
         rec["calls"] = len(prompts)
+        rec["calls_meta"] = meta
+        rec["digest"] = prompt_context.digest(prompts)
         rec["lengths"] = [len(p) for p in prompts]
         # what the model relay is charged: the request body as humanstudy_llm encodes it (json.dumps, ASCII)
         rec["bodyChars"] = sum(len(json.dumps(p)) for p in prompts)
@@ -375,6 +458,12 @@ def capture(pkg, nonce=""):
         return rec
 
     names = arm_names(pkg, mod)
+    # arms an effect contrasts first: only the first 12 named arms get a run of their own
+    lookup = prompt_context.arm_lookup(_json(pkg / "task/task.json"), names)
+    contrasted = {a for e in _obj(_json(project / "effects.json")).get("effects") or [] if isinstance(e, dict)
+                  for k in ("treatment", "reference") if isinstance(_obj(e.get("contrast")).get(k), str)
+                  for a in lookup.get(_obj(e.get("contrast"))[k].strip().casefold(), ())}
+    names = sorted(names, key=lambda a: a not in contrasted)
     # one participant per named arm (at least two) in the default call, then every named arm on its own:
     # an arm the default call never reaches is still read
     out["runs"].append(run(None, CALL_CAP, n=min(12, max(2, len(names)))))
@@ -454,6 +543,15 @@ def _run_record(rec):
             out[key] = str(out[key])
     for key in ("lengths",):
         out[key] = [x for x in out.get(key) or [] if isinstance(x, int)] if isinstance(out.get(key), list) else []
+    out["digest"] = out["digest"] if isinstance(out.get("digest"), str) else None
+    meta = out.get("calls_meta") if isinstance(out.get("calls_meta"), list) else []
+    clean = lambda x: re.sub(r"[\x00-\x1f\x7f]", " ", x)[:160]   # ids are package text: printed in the report
+    out["calls_meta"] = [{"q": [clean(q) for q in m.get("q") or [] if isinstance(q, str)][:12]
+                          if isinstance(m.get("q"), list) else [],
+                          "k": m.get("k") is True,
+                          "s": [clean(x) for x in m.get("s") or [] if isinstance(x, str)][:200]
+                          if isinstance(m.get("s"), list) else []}
+                         for m in meta[:CALL_CAP + ARM_CAP] if isinstance(m, dict)]
     out["seq"] = [p for p in out.get("seq") or [] if isinstance(p, list) and len(p) == 2
                   and all(isinstance(x, str) for x in p)] if isinstance(out.get("seq"), list) else []
     return out
@@ -738,6 +836,66 @@ def leaked_ids(pkg, program, runs):
     return found
 
 
+def unread_defaults(path):
+    """[(line, code)]: an answer that could not be read replaced by a number (`v if v is not None else 0`,
+    `page.value("c") or 0`, `0 if v is None else v`, `if v is None: v = 0`, `answer.get("value", 0)`,
+    `answer.get("value") or 0`), for an answer: page.value(...), page.answers[...], a parse(...)/ask(...) result,
+    or a name assigned from one. The participant's missing reply would enter the data as a decision they never
+    made."""
+    try:
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+    except (OSError, SyntaxError, ValueError):
+        return []
+    lines = source.splitlines()
+    number = lambda n: isinstance(n, ast.Constant) and isinstance(n.value, (int, float)) and not isinstance(n.value, bool)
+    answers = set()
+
+    def called(n):
+        f = n.func if isinstance(n, ast.Call) else None
+        name = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else ""
+        return name
+
+    def answer(n):
+        """An expression that holds a participant's answer (or its value)."""
+        for x in ast.walk(n):
+            if isinstance(x, ast.Call) and called(x) in ("value", "ask", "parse", "parse_number", "parse_choice",
+                                                          "parse_text"):
+                return True
+            if isinstance(x, ast.Attribute) and x.attr == "answers":
+                return True
+            if isinstance(x, ast.Name) and (x.id in answers or x.id == "answers"):
+                return True
+        return False
+
+    for _ in range(3):                                   # names assigned from an answer, and from those
+        answers |= {t.id for a in ast.walk(tree) if isinstance(a, ast.Assign) and answer(a.value)
+                    for t in a.targets if isinstance(t, ast.Name)}
+    is_none = lambda n, op: isinstance(n, ast.Compare) and len(n.ops) == 1 and isinstance(n.ops[0], op) \
+        and answer(n.left) and isinstance(n.comparators[0], ast.Constant) and n.comparators[0].value is None
+    value_get = lambda n: isinstance(n, ast.Call) and called(n) == "get" and n.args \
+        and isinstance(n.args[0], ast.Constant) and n.args[0].value == "value" and answer(n.func.value)
+    out = []
+    for node in ast.walk(tree):
+        hit = False
+        if isinstance(node, ast.IfExp) and number(node.orelse) and is_none(node.test, ast.IsNot):
+            hit = True                                    # v if v is not None else 0
+        elif isinstance(node, ast.IfExp) and number(node.body) and is_none(node.test, ast.Is):
+            hit = True                                    # 0 if v is None else v
+        elif isinstance(node, ast.If) and is_none(node.test, ast.Is) and isinstance(node.test.left, ast.Name) and any(
+                isinstance(b, ast.Assign) and number(b.value) and any(
+                    isinstance(t, ast.Name) and t.id == node.test.left.id for t in b.targets) for b in node.body):
+            hit = True                                    # if v is None: v = 0
+        elif isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or) and number(node.values[-1]) \
+                and any(answer(v) for v in node.values[:-1]):
+            hit = True                                    # page.value("c") or 0, v or 0
+        elif value_get(node) and len(node.args) > 1 and number(node.args[1]):
+            hit = True                                    # page.answers["c"].get("value", 0)
+        if hit:
+            out.append((node.lineno, lines[node.lineno - 1].strip()))
+    return sorted(set(out))
+
+
 def drops_participant(path):
     """[(line, code)] for all(...)/any(...) over the trials' parse status: one reply decides for the participant.
 
@@ -784,6 +942,53 @@ def excused(path, line_no, evidence):
 
 
 # ---- the check -------------------------------------------------------------------------------------
+
+def screen_rules(root, pkg, program, runs, newer):
+    """Keyed questions and later rounds carry the instruction screens; effects never contrast identical arms."""
+    materials = _json(pkg / "materials/materials.json") or {}
+    table = prompt_context.screens(program)
+    skip = {d["screen"] for d in prompt_context.declarations(materials)["notCarried"]}
+    for msg, fix in prompt_context.declaration_problems(materials, program):
+        newer(msg, fix)
+    own = [r for r in runs if r.get("arms")]
+    read = own or runs   # each arm from its own run: a screen of another arm never counts
+    # notCarried waives later rounds only: a quiz comes right after its instructions, which the human had just read
+    keyed = [g for r in read for g in prompt_context.keyed_gaps(r, table)]
+    if keyed:
+        newer("questions with an answer key are asked without the instructions they test (each model call has no "
+              "memory, so the participant model has not read them): "
+              + "; ".join("%s (%s) lacks %s" % (", ".join(q[:4]) + (" ..." if len(q) > 4 else ""), where, ", ".join(need))
+                          for where, q, need in keyed[:prompt_context.MAX_FINDINGS]),
+              "put this participant's own earlier instruction screens (the material text as printed) into the prompt "
+              "of every keyed question (a quiz, a check), as the memory design carries them; or, when the paper "
+              "shows the rule text again on that screen, repeat it and declare it in materials/materials.json "
+              "screenMemory.repeats with its evidence")
+    rounds = [g for r in read for g in prompt_context.round_gaps(r, table, skip)]
+    if rounds:
+        newer("a repeated question loses the instruction screens it was asked with before (a later round or part "
+              "does not restate the rules): "
+              + "; ".join("'%s' (%s) is asked without %s" % (q, where, ", ".join(dropped))
+                          for where, q, dropped in rounds[:prompt_context.MAX_FINDINGS]),
+              "carry the earlier instruction screens into every later round of the same participant (part 1's rules "
+              "stay in part 2's prompts); only when the paper says the rules were no longer visible, declare "
+              "materials/materials.json screenMemory.notCarried with its evidence")
+    # only runs that finished: two runs stopped at the call cap may share a prefix and differ later (a debriefing
+    # that comes in session 4)
+    digests = {r["arms"][0]: r["digest"] for r in own if len(r["arms"]) == 1 and r.get("digest")
+               and r.get("calls") and not r.get("error") and not r.get("capped")}
+    effects = _json(root / "effects.json")
+    if isinstance(effects, dict) and len(digests) >= 2:
+        excluded = prompt_context.excluded_effects(_json(root / "capabilities.json"))
+        same = prompt_context.identical_contrasts(effects, _json(pkg / "task/task.json"), digests, excluded)
+        if same:
+            newer("effects contrast arms whose prompts are identical, so the replay cannot produce a difference "
+                  "between them: " + "; ".join("%s (%s vs %s)" % (eid, "/".join(t), "/".join(r)) for eid, t, r in same[:8])
+                  + (" and %d more" % (len(same) - 8) if len(same) > 8 else ""),
+                  "when the arms differ only by sample, site, country or population, list these effects in a "
+                  "capabilities.json run.excluded entry {\"what\": ..., \"reason\": \"population difference, not a "
+                  "manipulation\", \"effects\": [...]} (without `arms`, so each arm's own effects still run); or give "
+                  "the arms the persona or population difference the paper reports, written into the prompt")
+
 
 def check(root, package=None, capture_prompts=True):
     root = Path(root).resolve()
@@ -959,6 +1164,14 @@ def check(root, package=None, capture_prompts=True):
                     "never show condition or arm ids, survey question ids (QID14), screen or material ids or "
                     "variable names; key replies by neutral labels (q1, q2, or the number printed on the screen) "
                     "so a participant cannot read their condition from the prompt")
+            screen_rules(root, pkg, program, runs, newer)
+        defaults = [(path.name, line_no, code) for path in sorted((pkg / "task").glob("*.py")) if path.name != "replies.py"
+                    for line_no, code in unread_defaults(path)]
+        for name, line_no, code in defaults:
+            newer("task/%s:%d: an answer that could not be read becomes a number (%s)" % (name, line_no, code[:120]),
+                  "keep it unread (None) and record the reply as unparsed: never 0 or any default. Ask per-round "
+                  "answers with replies.Question(..., retry=True) so one unreadable reply is asked again first; what "
+                  "other participants see in its place must be what the original screen showed")
         blocking = any(isinstance(i, dict) and i.get("severity") == "blocking" for i in program.get("issues") or [])
         for r in cap.get("runs") or []:
             # the default run's errors, and names task.json gives that are not arm ids, stay notes

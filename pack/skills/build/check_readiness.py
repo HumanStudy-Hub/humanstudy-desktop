@@ -179,7 +179,7 @@ def effects_problems(root, slug):
 
 CHECK_MODULES = ("check_program", "check_package", "sources", "check_validity", "check_verbatim", "check_results",
                  "effects", "effects_core", "check_quotes", "sandbox_run", "check_materials", "contract",
-                 "check_replies")
+                 "check_replies", "prompt_context")
 OPTIONAL_MODULES = ("jsonschema", "pdfplumber", "pypdf")  # lazily imported by the checks when present
 
 

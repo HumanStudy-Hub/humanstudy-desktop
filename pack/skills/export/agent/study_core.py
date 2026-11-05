@@ -558,6 +558,17 @@ class Study:
         eff = self.require_effects()
         module = self._modules.get("evaluation")
         blocks = effects_core.compute(eff, sessions, evaluation, module, key_effects, source)
+        # capabilities.json run.excluded[].effects: the replay cannot test these (arms that differ only by
+        # population send identical prompts), so no number is reported for AI participants. Human data carry the
+        # population difference, so their blocks are computed as usual.
+        why = {}
+        for item in (((self.caps or {}).get("run") or {}).get("excluded") or []) if source != "human" else []:
+            if isinstance(item, dict) and item.get("reason"):
+                for eid in item.get("effects") or []:
+                    why.setdefault(eid, item["reason"])
+        blocks = [dict({k: b[k] for k in ("effectId", "source") if k in b}, status="not_ready",
+                       reason="not testable by the replay: %s" % why[b.get("effectId")])
+                  if b.get("effectId") in why else b for b in blocks]
         return [effects_core._rounded(b) for b in blocks]
 
     def result(self, sessions, arms):
