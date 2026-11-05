@@ -30,7 +30,9 @@ Prints every problem with a fix, then PASS or FAIL (exit 1). Records live in sou
   questions      when files were downloaded with fetch_source.py (as above), every issue that asks the
                  researcher something (severity decision or blocking, title ending in "?") has a
                  `questionsChecked` entry {"issue": <id>, "sourcesChecked": [{"paths": [...], "answers": false,
-                 "found": "what the file says on this point"}]} covering every downloaded file. An entry that says a
+                 "found": "what the file says on this point"}]} covering the paper (paper.pdf: its text elsewhere,
+                 arithmetic on its numbers, which model a number comes from) and every downloaded file. Without
+                 downloads, an entry that exists must still list the paper. An entry that says a
                  file answers it fails: take the decision, record it in `decisionsFromSources` ({"what", "path",
                  "locator", "quote"}; a private file gives the locator without quote), and drop the question.
 
@@ -413,17 +415,22 @@ def _quote_in(quote, rel, root):
 
 def check_questions(root, record):
     files = fetched(root, record)
-    if not files:
-        return []
     program = _program(root)
     source = program.get("source") if isinstance(program.get("source"), dict) else {}
     paper = source.get("filename") if isinstance(source.get("filename"), str) else "paper.pdf"
     on_disk = downloads(root)
-    out = []
     records = {r.get("issue"): r for r in _list(record.get("questionsChecked")) if isinstance(r.get("issue"), str)}
+    if not files and not records:
+        return []
+    # The paper settles many questions itself (its text elsewhere, arithmetic on its numbers, which model a number
+    # comes from), so a check lists it too. Without downloads only the questions that have a record are held to it.
+    must = files + ([_norm(paper)] if (root / _norm(paper)).is_file() else [])
+    out = []
     unchecked, answered = [], []
     for issue in question_issues(program):
         r = records.get(issue.get("id"))
+        if not files and not r:
+            continue
         covered = set()
         for item in _list(r.get("sourcesChecked")) if r else []:
             paths = ([item.get("path")] if isinstance(item.get("path"), str) else []) + \
@@ -433,7 +440,7 @@ def check_questions(root, record):
                 unchecked.append("'%s' (say in 'found' what each file says on this point)" % issue.get("id"))
             if item.get("answers") is True:
                 answered.append("'%s' (%s)" % (issue.get("id"), ", ".join(paths)))
-        missing = [p for p in files if p not in covered]
+        missing = [p for p in must if p not in covered]
         if not r:
             unchecked.append("'%s' (no record)" % issue.get("id"))
         elif missing:
@@ -443,8 +450,9 @@ def check_questions(root, record):
         out.append(("questions: before asking the researcher, check every downloaded file for the answer; missing for "
                     + ", ".join(unchecked[:6]),
                     "record it in sources/SOURCE.json questionsChecked: {\"issue\": \"<issue id>\", \"sourcesChecked\": "
-                    "[{\"paths\": [\"sources/open/<file>\", ...], \"answers\": false, \"found\": \"<what the file says on "
-                    "this point>\"}]}, covering every file under sources/open/ and sources/private/"))
+                    "[{\"paths\": [\"%s\", \"sources/open/<file>\", ...], \"answers\": false, \"found\": \"<what "
+                    "the file says on this point>\"}]}, covering the paper (its text, its arithmetic, which model a "
+                    "number comes from) and every file under sources/open/ and sources/private/" % _norm(paper)))
     if answered:
         out.append(("questions: a downloaded file answers %s" % ", ".join(answered[:4]),
                     "do not ask: apply the answer, record it in sources/SOURCE.json decisionsFromSources ({\"what\", "

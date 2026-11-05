@@ -262,6 +262,16 @@ class Sources(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertIn("ok   sources/SOURCE.json records every source file", run.stdout)
         self.assertIn("ok   package validity", run.stdout)
+        self.assertIn("ok   Word sources", run.stdout)
+        # The design disclosures are part of the package check: a vague blocked condition is reported (a warning
+        # for this package, built without task/replies.py; a failure under the current contract, contract.py).
+        task = json.loads((pkg / "task/task.json").read_text())
+        (pkg / "task/task.json").write_text(json.dumps(dict(task, conditions=[{"id": "s3", "status": "blocked"}])))
+        run = check()
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("warn  ", run.stdout)
+        self.assertIn("blocked condition(s) s3", run.stdout)
+        self.assertIn("older build: findings above are warnings", run.stdout)
 
 
 if __name__ == "__main__":

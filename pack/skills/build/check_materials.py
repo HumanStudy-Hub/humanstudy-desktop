@@ -44,7 +44,13 @@ Rules (each a problem; PASS only without any):
   sources         every file under sources/open/ and sources/private/ (and every file a found-* item cites) is
                   recorded with url, license, linkedToPaper and version; no such file is participant data
                   (trial-level responses); SOURCE.json `searches` records where the build searched whenever a
-                  needs-original item exists.
+                  needs-original item exists. While an item is pending, the searches (with the items' `search`)
+                  cover at least the journal's page and supplement (and its original site when the journal
+                  changed publisher: journal.sjdm.org for Judgment and Decision Making), a preprint server, an
+                  open-copy index (Unpaywall or Europe PMC) and an OSF search by author (SEARCH_KINDS). This
+                  search-list rule is a problem only when the package checked (check(root, package=...), as the
+                  readiness gate passes it; from the command line, any package of the project) is built under the
+                  current contract (see contract.py); otherwise it is a WARN line and goes under "warnings".
   unlabelled      a participant-material field filled by the build (origin derived or implementation) without
                   `extensions.material` must not hold prose either.
   private         text from sources/researcher/ and sources/private/ appears nowhere in program.json or package/;
@@ -65,6 +71,7 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import contract  # noqa: E402  older projects get the newer rules as warnings
 
 KINDS = ("schema-enough", "needs-original")
 STATUSES = ("pending", "found-open", "found-private", "supplied", "stand-in", "left-out")
@@ -109,6 +116,57 @@ MEDIA_EXT = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp", 
 TEXT_EXT = {".txt", ".md", ".json", ".jsonl", ".csv", ".tsv", ".html", ".htm", ".py", ".xml", ".yaml", ".yml", ".js",
             ".css", ".svg", ".log", ".r", ".rmd", ".qmd", ".ipynb", ".tex", ".bib", ".toml", ".ini", ".rtf", ".m"}
 CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+# The minimum public search before a material stays pending (HumanStudy-Bench design_checks.SEARCH_KINDS): each kind
+# must appear in sources/SOURCE.json `searches` or a pending item's `search` (where, query or url).
+SEARCH_KINDS = {
+    "journal": (re.compile(r"(?i)journal|publisher|supplement|cambridge\.org|springer|wiley|sciencedirect|"
+                           r"tandfonline|sagepub|frontiersin|plos|apa\.org|ucpress|collabra"),
+                "the journal's page for the paper and its supplementary material"),
+    "preprint": (re.compile(r"(?i)preprint|psyarxiv|arxiv|biorxiv|medrxiv|ssrn|researchsquare"),
+                 "preprint servers by title (PsyArXiv / OSF Preprints, arXiv, SSRN)"),
+    "open copy": (re.compile(r"(?i)unpaywall|europepmc|europe pmc|ebi\.ac\.uk"),
+                  "an open-copy index for the DOI (Unpaywall or Europe PMC)"),
+    "osf author": (re.compile(r"(?i)api\.osf\.io/v2/users|osf\.io/search\?\S*type=user|\bOSF users?\b|"
+                              r"\b(users?|authors?)\s+search|search\w*\s+(by|for)\s+(the\s+)?(authors?|users?)\b"),
+                   "an OSF search by author (https://api.osf.io/v2/users/?filter[full_name]=<surname>, then each "
+                   "match's /nodes/), not only by title"),
+}
+# Journals that moved publisher; their original site may still hold supplements the new one lacks. The last
+# value is the first year published only by the new publisher: a paper of that year or later needs no search of
+# the old site (a paper whose year is unknown still does).
+LEGACY_SITES = {
+    "judgment and decision making": ("sjdm.org", "journal.sjdm.org (the journal's original site, before Cambridge)",
+                                     2023),
+}
+
+
+def missing_searches(record, items_search, venue, year=None):
+    """What the minimum search list still lacks, given SOURCE.json and the pending items' search entries (and
+    the paper's year, which decides whether a journal's original site is on the list)."""
+    blobs = [" ".join(_str(x.get(k)) for k in ("where", "query", "url", "result"))
+             for x in _list(record.get("searches")) + list(items_search) if isinstance(x, dict)]
+    missing = [what for pattern, what in SEARCH_KINDS.values() if not any(pattern.search(b) for b in blobs)]
+    for name, (host, what, until) in LEGACY_SITES.items():
+        if isinstance(year, int) and year >= until:
+            continue
+        if name in venue.casefold() and not any(host in b for b in blobs):
+            missing.append(what)
+    return missing
+
+
+def paper_year(program, record):
+    """The paper's year as an int (program.json source.year or the overview's year field, SOURCE.json paper.year),
+    or None when none is stated."""
+    candidates = [_dict(_dict(program).get("source")).get("year"), _dict(_dict(record).get("paper")).get("year")]
+    candidates += [f.get("value") for n in _list(_dict(program).get("nodes")) if isinstance(n, dict)
+                   and n.get("kind") == "overview" for f in _list(n.get("fields")) if isinstance(f, dict)
+                   and f.get("id") == "year"]
+    for value in candidates:
+        m = re.search(r"(?<!\d)(1[89]\d\d|20\d\d)(?!\d)", str(value)) if value is not None and \
+            not isinstance(value, bool) else None
+        if m:
+            return int(m.group(1))
+    return None
 
 
 def _json(path):
@@ -256,7 +314,10 @@ def text_of(path):
         if suffix == ".pdf":
             import check_quotes
             return "\n".join(check_quotes.Pdf(path).load() or [])
-        if suffix in (".docx", ".pptx", ".xlsx", ".odt", ".odp", ".ods"):
+        if suffix == ".docx":   # paragraph and line breaks kept; a Qualtrics export's "Page Break" lines dropped
+            import docx_text
+            return "\n\n".join("\n".join(page) for page in docx_text.read(path)["pages"])
+        if suffix in (".pptx", ".xlsx", ".odt", ".odp", ".ods"):
             out = []
             with zipfile.ZipFile(path) as z:
                 for name in z.namelist():
@@ -497,12 +558,15 @@ def what_in(what, title):
     return bool(want) and want <= set(words(title))
 
 
-def check(root):
+def check(root, package=None):
+    """The materials report for a project folder. `package` (package/<slug>) decides whether the newer rules block
+    (contract.py); without it (the command line) any current-contract package of the project makes them block."""
     root = Path(root).resolve()
+    current = contract.current_contract(package) if package is not None else contract.project_current(root)
     program = _json(root / "program.json")
     if not isinstance(program, dict):
-        return {"problems": [("program.json is missing or not JSON", "")], "notes": [], "items": []}
-    problems, notes, items = [], [], []
+        return {"problems": [("program.json is missing or not JSON", "")], "notes": [], "items": [], "warnings": []}
+    problems, notes, items, warnings = [], [], [], []
     add = lambda msg, fix="": problems.append((msg, fix))
     evidence = {e.get("id"): e for e in _list(program.get("evidence")) if isinstance(e, dict) and isinstance(e.get("id"), str)}
     issues = [i for i in _list(program.get("issues")) if isinstance(i, dict)]
@@ -513,6 +577,7 @@ def check(root):
     paper = "paper.pdf" if (root / "paper.pdf").is_file() else (_str(_dict(program.get("source")).get("filename")) or "paper.pdf")
     external = set()      # files whose provenance must be recorded (url, license, link to the paper, version)
     any_original = False
+    pending_search = None   # the search entries of pending needs-original items (a list once one is pending)
     # A program built under this rule classifies every material; in an older program an unclassified one is a note.
     adopted = any(material_of(f) is not None for _, f in fields(program))
     flag = (lambda msg, fix="": problems.append((msg, fix))) if adopted else (lambda msg, fix="": notes.append(msg))
@@ -634,6 +699,7 @@ def check(root):
                 add("%s: origin %s claims a source the item does not have" % (where, f.get("origin")),
                     "origin unknown, state missing")
         if status == "pending":
+            pending_search = (pending_search or []) + search
             titled = [i for i in mine if i.get("severity") in ("blocking", "decision")]
             if not _str(m.get("asked")).strip():
                 notes.append("%s: %s has not been asked about yet; ask in the one consolidated materials question"
@@ -761,6 +827,15 @@ def check(root):
             'record each place searched: {"where": "OSF search by DOI", "query": "...", "url": "...", "date": "...", '
             '"result": "found ... / nothing"} (sources.py keeps the key)')
 
+    if pending_search is not None:
+        venue = " ".join(_str(_dict(program.get("source")).get(k)) for k in ("venue", "journal"))
+        venue += " " + " ".join(_str(record.get(k)) for k in ("journal", "venue"))
+        lacking = missing_searches(record, pending_search, venue, paper_year(program, record))
+        if lacking:   # added with the shared reply reader: blocks only a current-contract project (contract.py)
+            (problems if current else warnings).append(("materials are still pending, but the search skipped %s" % "; ".join(lacking),
+                "search each (title, DOI, authors) and record it in sources/SOURCE.json searches, including those that "
+                "find nothing, before asking the researcher for the materials"))
+
     # researcher and private files stay out of everything that can be published
     for rel in sorted(p.relative_to(root).as_posix() for p in researcher_files(root)):
         if _str(_dict(recorded.get(rel)).get("license")) != RESEARCHER_LICENSE:
@@ -788,7 +863,7 @@ def check(root):
         add("%s copies the private material %s (\"%s ...\")" % (shown, src, text[:60]),
             "keep researcher-supplied and not-openly-licensed materials only in %s/ or %s/; reference the file "
             "(the package reads it at run time)" % PRIVATE_DIRS)
-    return {"problems": problems, "notes": notes, "items": items}
+    return {"problems": problems, "notes": notes, "items": items, "warnings": warnings}
 
 
 def main(argv=None):
@@ -801,6 +876,9 @@ def main(argv=None):
         Path(a.json).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     for msg, fix in report["problems"]:
         print("PROBLEM %s" % msg + ("\n        fix: %s" % fix if fix else ""))
+    for msg, fix in report.get("warnings") or []:
+        print("WARN    %s (older build: blocking once rebuilt with task/replies.py)" % msg
+              + ("\n        fix: %s" % fix if fix else ""))
     for line in report["notes"]:
         print("note    " + line)
     counts = {}

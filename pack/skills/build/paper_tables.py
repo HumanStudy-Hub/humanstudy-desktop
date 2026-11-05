@@ -20,6 +20,9 @@ Prints, as JSON:
              (pypdfium2 from the HumanStudy runtime; the pdftoppm command when pypdfium2 is absent).
              Open them and read the table or number from the picture.
 
+supplement_inventory(pdf) lists the numbered tables ("Table S1") of a supplement PDF under sources/ with the
+decimal values of their rows, for check_results.py's supplement check.
+
 check_results.py (the readiness "results" check) uses the same functions: a table that needs the page
 image must have a table field with its label (or be listed in sources/SOURCE.json `paperTables` as
 `other` or `not-in-paper`), and a sign_loss number recorded only without its minus fails unless the
@@ -306,6 +309,57 @@ def render_pages(pdf, pages, out_dir, dpi=150):
         if prefix.with_suffix(".png").is_file():
             written.append(str(prefix.with_suffix(".png")))
     return written
+
+
+# --------------------------------------------------------------------------- supplement tables
+# Numbered tables of a PDF under sources/ other than the paper ("Table S1. Descriptive statistics ...",
+# "Supplementary Table 2"): a fetched or uploaded supplement's descriptive and result tables are results.
+
+SUPPLEMENT_CAPTION_RE = re.compile(
+    r"^\s*(?:(?:Supplementary|Supplemental|Online)\s+)?(?:Table|TABLE)\s+(S\s?\d{1,2}[A-Za-z]?|\d{1,2}[A-Za-z]?)"
+    r"(?![\w])\s*[.:|–—-]?\s*(\S[^\n]*)?$")
+DECIMAL_RE = re.compile(r"(?<![\w.])-?(?:\d+\.\d+|\.\d+)(?![\w])")
+
+
+def supplement_pdfs(root, paper=None):
+    """PDFs under sources/ (open, private, researcher) other than the paper itself."""
+    root = Path(root)
+    folder = root / "sources"
+    if not folder.is_dir():
+        return []
+    paper = Path(paper).resolve() if paper else None
+    return [p for p in sorted(folder.rglob("*.pdf")) if p.is_file() and not p.is_symlink()
+            and (paper is None or p.resolve() != paper)]
+
+
+def supplement_inventory(pdf):
+    """Every numbered table of a supplement PDF: its id ("S1"), page, caption, the decimal values of the
+    table rows the text layer holds under the caption, `text_layer` (six or more of them) and `result`."""
+    tables, current = {}, None
+    for index, page in enumerate(page_texts(pdf, layout=True)):
+        lines = page.splitlines()
+        for at, line in enumerate(lines):
+            caption = SUPPLEMENT_CAPTION_RE.match(line)
+            if caption:
+                number = re.sub(r"\s+", "", caption.group(1)).upper()
+                title = (caption.group(2) or "").strip()
+                if not title and at + 1 < len(lines):
+                    title = lines[at + 1].strip()
+                current = tables.setdefault(number, {"table": number, "page": index + 1, "caption": title[:160],
+                                                     "values": []})
+                continue
+            if current is not None and _table_row(line):
+                current["values"] += DECIMAL_RE.findall(line.replace("−", "-").replace("–", "-"))
+    out = []
+    for table in tables.values():
+        table["values"] = sorted(set(table["values"]))
+        table["text_layer"] = len(table["values"]) >= 6
+        caption = table["caption"]
+        table["result"] = not (NON_RESULT_CAPTION_RE.search(caption) and not re.search(r"(?i)result|effect|mean",
+                                                                                         caption)) \
+            and bool(RESULT_CAPTION_RE.search(caption) or table["text_layer"])
+        out.append(table)
+    return out
 
 
 # --------------------------------------------------------------------------- lost minus signs

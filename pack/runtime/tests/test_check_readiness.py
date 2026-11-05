@@ -423,6 +423,22 @@ class CheckPackageGate(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("FAIL survey files (qsf_flow.py):", out)
 
+    def test_a_word_or_design_check_that_raises_is_one_finding_not_a_traceback(self):
+        from unittest import mock
+        import docx_text
+
+        def boom(*a, **k):
+            raise NotImplementedError("That compression method is not supported")
+        with mock.patch.object(docx_text, "problems", boom):
+            code, out = self.run_package(False)
+            self.assertEqual(code, 0, out)
+            self.assertIn("warn  docx_text.py could not finish (NotImplementedError: That compression method", out)
+            self.assertIn("PASS package checks", out)
+            code, out = self.run_package(True)
+            self.assertEqual(code, 1, out)
+            self.assertIn("docx_text.py could not finish", out)
+            self.assertNotIn("Traceback", out)
+
 
 if __name__ == "__main__":
     unittest.main()

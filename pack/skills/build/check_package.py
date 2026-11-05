@@ -21,12 +21,15 @@ participants what the paper says they were not told, the memory design is a reco
 unparsed reply does not drop a participant, missing instructions are a decision. Also in a project:
 downloaded sources carry a stated licence (fetch_source.py), the authors' analysis code, survey versions and
 researcher questions are checked against them (check_source_use.py), and no survey text participants never
-saw is used (qsf_flow.py). A package with the shared reply reader (task/replies.py) also runs the
-answer-aware smoke test (check_replies.py) and the every-answer-recorded check (recorded_answers.py; when it
+saw is used (qsf_flow.py), no participant text carries Word-export markup or runs two lines of a .docx under
+sources/ together (docx_text.py), and no researcher question is about a licence, a blocked condition says what is
+missing, and the layout is recorded (design_checks.py). A package with the shared reply reader (task/replies.py) also
+runs the answer-aware smoke test (check_replies.py) and the every-answer-recorded check (recorded_answers.py; when it
 cannot judge, the reason is printed in its ok line). A package without task/replies.py (built before the shared
-reader) gets a note line instead, not a failure. For such an older package the downloaded-source, source-use and
-survey findings, and check_validity.py's newer prompt rules, are printed as `warn  <message>  [fix: ...]` lines
-and the package still passes (contract.py); rebuilding under the current contract makes them failures.
+reader) gets a note line instead, not a failure. For such an older package the downloaded-source, source-use, survey,
+Word-source and design findings, and check_validity.py's newer prompt rules, are printed as
+`warn  <message>  [fix: ...]` lines and the package still passes (contract.py); rebuilding under the current contract
+makes them failures.
 """
 from __future__ import annotations
 
@@ -230,6 +233,23 @@ def main() -> None:
                 f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
         print("ok   survey files: no text participants never saw; items marked not shown are unused"
               + (" (older build: findings above are warnings)" if bad else ""))
+        from docx_text import problems as word_problems
+        from design_checks import problems as design_problems
+
+        bad = []
+        for name, check in (("docx_text.py", word_problems), ("design_checks.py", design_problems)):
+            try:
+                bad += check(Path(source).resolve().parent, root)
+            except Exception as exc:     # one finding line, never a traceback that hides every other check
+                bad.append(("%s could not finish (%s: %s)" % (name, type(exc).__name__, str(exc)[:200]),
+                            "fix the file it names, or report this to the HumanStudy Hub developers"))
+        if bad and not current:
+            warn(bad)
+        elif bad:
+            fail("Word sources and design disclosures (docx_text.py, design_checks.py):\n" + "\n".join(
+                f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
+        print("ok   Word sources: no export markup or run-together lines; no licence question; blocked conditions "
+              "and the layout recorded" + (" (older build: findings above are warnings)" if bad else ""))
     print("PASS package checks")
 
 

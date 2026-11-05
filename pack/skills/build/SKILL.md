@@ -144,6 +144,15 @@ instruction screens (both framings)", not "m-s4.instruction-wording".
      ("The authors' analysis code" below). Record every search in `sources/SOURCE.json` → `searches` (`{"where", "query", "url",
      "date", "result"}`) and every place looked for an item in its `search` (`{"where", "url", "found"}`),
      so the question lists only what is still missing.
+   - **Minimum search list.** Before anything stays `pending`, the searches record at least: the journal's own
+     page for the paper and its supplementary material, and the journal's *original* site when it changed
+     publisher (Judgment and Decision Making before 2023: `journal.sjdm.org/<vol>/<id>/`, which can hold a
+     supplement Cambridge lacks; required when the paper's year is unknown); the preprint servers by title (PsyArXiv / OSF Preprints, arXiv, SSRN); an
+     open-copy index for the DOI (Unpaywall, `https://api.unpaywall.org/v2/<doi>?email=<contact>`, or Europe
+     PMC, `https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=DOI:<doi>&format=json`); and an OSF
+     search by author, not only by title (`https://api.osf.io/v2/users/?filter[full_name]=<surname>`, then each
+     match's `/nodes/`). Record each, including those that find nothing. `check_materials.py` fails a pending
+     item while one of these is missing.
    - **Check before using anything.** It must be tied to this paper (DOI, title or author match, or linked
      from the paper or its OSF project), with the version noted (published SI, preprint v2, repository
      snapshot of a date). Save it with `python .opencode/skills/build/fetch_source.py . <url> --linked "linked from p. 9"
@@ -172,7 +181,8 @@ instruction screens (both framings)", not "m-s4.instruction-wording".
      it, and tell the researcher.
    - **Never participant data.** Do not download trial-level responses, response or session files or
      demographics, not even to read the sequences or orders participants saw. When those exist only inside
-     participant data files, ask the researcher and say so in the question. A file that mixes materials and
+     participant data files, ask the researcher and say so in the question, item by item ("the demographic
+     coding is only in the data file, which we do not open"). A file that mixes materials and
      responses is not used. (Human data for comparing results are a separate step the researcher asks for; see
      "Human data" below.)
    - **Ask once, early.** Put every item still missing, from all studies, into ONE question with the
@@ -225,7 +235,8 @@ Run `python .opencode/skills/build/check_materials.py .` until it prints `PASS`:
 item that is wording, holds prose no cited quote prints, lacks evidence or blocks; a needs-original item
 with invented content, without an issue naming it, answered without `asked`/`answer`, copied from a file
 without an open license, or from participant data; a downloaded file without url, license, link to the
-paper or version; participant data under `sources/`; a missing `searches` record; and private text (from `sources/researcher/` or
+paper or version; participant data under `sources/`; a missing `searches` record, or one that skips the minimum search list while
+an item is pending; and private text (from `sources/researcher/` or
 `sources/private/`) in program.json or package/. Community and agent exports leave both folders out,
 refuse to export while their text is in the program or the package, and leave out any artifact (a
 simulation log) that copies it. What no script can check, check yourself: that a file under `sources/open/`
@@ -276,6 +287,14 @@ alone): it fails survey text that only an unreachable question carries in a prog
 cites the `.qsf`, in a `materials.json` entry whose source is the `.qsf`, or in a string literal of
 `task/adapter.py`; a marked item the run still uses; and a "mixed" item without state `check`.
 
+- **Word copies.** Read a `.docx` (a Qualtrics "Export to Word" copy, a materials document) with `python
+  .opencode/skills/build/docx_text.py sources/open/<file>.docx [--json .humanstudy/tmp/<file>.json]`, never by
+  joining its text runs yourself. It keeps paragraph and line breaks ("Scenario 1" and "In this study ..." stay
+  apart), and a page break, including the grey "Page Break" line a Qualtrics export prints between pages, ends a
+  page and is never text. Export lines ("Start of Block:", "Display This Question:", "Standard: ... (7
+  Questions)") are listed apart under `export_lines`: they describe the flow, not what participants read. The
+  package check (`docx_text.py --check .`) fails participant text in `materials.json` or a `verbatim` program
+  field that carries such markup or runs two lines of a Word file under `sources/` together.
 - **Survey versions.** A project often holds several versions of a survey: a Qualtrics export and its Word
   copy, one per phase, a pilot, an edited copy saved under the same name. Before transcribing, compare each
   survey file under `sources/` with the paper: the number and order of scenarios or blocks, the wording of every
@@ -367,6 +386,44 @@ table, on the result node it reports (sample tables on `participants`, stimulus 
   quantities, `table` omitted and `title` saying it was assembled from the text) when there are
   several groups or items, otherwise one field per quantity (`n-condition-a`, `m-condition-a`, ...).
   The descriptive sentence may stay; the numbers must also be in fields.
+- Results printed only in the text count as much as the tables: every test statistic, effect size, CI
+  and SE with **the p value printed next to it** ("b = 0.25, p = .048" is recorded only when both are),
+  "men 26% vs women 18%", "85 (45.5%) knew the source", "12 out of the 16 options", a pooled model the
+  tables do not show, and a pattern or verdict rule the paper states in words (record its counts and its
+  rule). A number in effects.json `reported` counts as recorded.
+- **The sample's make-up** for each study: sex or gender counts or shares and age (mean, SD), as
+  printed, in the participants node's `characteristics` (or a result field).
+- **Every result the abstract names** is recorded (a result field or an effect; `state: "missing"` with
+  an issue when the replay cannot compute it). A finding whose words no result field or effect carries
+  is mapped in `sources/SOURCE.json` → `abstractResults`: `[{"claim": "men are more likely than women to
+  tell an altruistic white lie", "recordedIn": ["result-gender.awl-logit"]}, {"claim": "<an
+  interpretation>", "notRecorded": "a reading of results (i) and (ii), no statistic of its own"}]`.
+  `claim` is the abstract's own words; `recordedIn` names `<node id>.<field id>` or `effect:<id>`.
+- **The supplement's tables.** A supplement PDF under `sources/` (fetched or uploaded) is part of the
+  paper's results: its numbered descriptive and result tables (item means and SDs, item-total
+  correlations, regressions) are transcribed cell by cell like a paper table, as a table field whose
+  value also has `"source": "sources/open/<file>"` (label `"Table S1"`), and listed in `paperTables` as
+  `{"table": "S1", "source": "sources/open/<file>", "page": 3, "kind": "result", "recordedIn":
+  "<node id>.<field id>"}`; a table without results is `"kind": "other"` with `what`, and a PDF that is
+  not this paper's supplement is `{"source": "<path>", "kind": "other", "what": "..."}` without `table`.
+  A supplement under `sources/private/` or `sources/researcher/` is never exported, so its cells never go
+  into program.json: list each of its result tables as a reference, `{"table": "S1", "source":
+  "sources/private/<file>", "page": 3, "kind": "result"}`, and say in an issue that its numbers stay in the
+  researcher's copy.
+- `check_results.py` reads the paper's text and fails when more than half of its exact p values (six
+  or more) or of its "x% vs y%" / "n (x%)" pairs are not recorded, when the sample's sex or age is
+  printed but recorded nowhere, when a results paragraph prints four or more numbers none of which is
+  recorded, when an abstract finding is neither recorded nor in `abstractResults`, and when a
+  supplement's result table is not recorded. Numbers after a citation, in a power analysis or a design
+  probability the words beside it govern ("with probability p = .3", "10 points with p = .25") are not
+  counted; a bare "with" never makes a p a design value. A passage it reads as a result that is not
+  one (a payoff or design value, another study's result) goes in `sources/SOURCE.json` → `resultsNotRecorded`: `[{"page": 4, "quote":
+  "<the passage's exact text>", "reason": "..."}]`. The quote must be printed on that page (the page is
+  required) and clears only the numbers inside it. A quote that prints a test result (a p value, `t(df) =`,
+  `F(df1, df2) =`, `χ²(df) =`, `r(df) =`, `b`/`d`/`z`/`OR` = a number, a 95% CI) is refused unless its
+  reason names a power analysis, a design value or probability, a payoff, another study, a previous
+  study's result, or a citation ("cited", "from Smith (2010)", "Smith et al."). A result of this
+  paper never goes there.
 - Effects keep pointing to the cells they use: the effect's `resultIds` name the result node,
   its `reported` numbers are the cells, its `reported.evidenceIds` cite an evidence record whose
   quote is the printed row(s) (also listed in the table field's `evidenceIds`), and its `notes`
@@ -495,8 +552,11 @@ Rules the runner depends on:
   `analysis` node id.
 - `run_sessions(llm, seed, n, arms=None)`: `llm(prompt) -> str` is injected; call it for every
   original human participant (never a script, distribution or fixed answer for a role the paper
-  did not script). `n` is the sampling unit stated in `task.json`. `arms=None` runs every arm the
-  paper's comparisons need; each session dict carries `condition` and `arm`. The adapter builds
+  did not script). `n` is the sampling unit stated in `task.json`, either one number for every condition
+  or a dict from condition id to its number (`{"awl_dg": 357, "awl_pd": 257}`), so a run can use the paper's
+  unequal cells: read it with `replies.sessions_for(n, arm)`. Give each condition the paper's analysed n as
+  `"paper_n"` when the paper reports it; the smoke test then runs one condition with a dict. `arms=None` runs
+  every arm the paper's comparisons need; each session dict carries `condition` and `arm`. The adapter builds
   its own prompts from `materials/materials.json`, parses replies into the response format the
   paper used, and needs nothing from the researcher at run time.
   Keep the prompt for one participant and the reply parser as module-level functions
@@ -546,6 +606,23 @@ Rules the runner depends on:
       pairs). An arm that cannot run yet raises a clear error naming what it needs, under a `blocking` issue,
       or returns a session record marked blocked (`{"arm": ..., "condition": ..., "blocked": "<what is
       needed>"}`); it never crashes.
+    - **A blocked condition says exactly what is missing.** In `task/task.json` a condition with `"status":
+      "blocked"` carries `blocked_reason` (one sentence), `blocked_missing` (each missing item by its `what`)
+      and `blocked_results` (the result fields or headline findings that cannot be computed without it). List
+      only what no source prints: when the paper prints the scale's anchors ("1 (not at all profound)") and a
+      supplement its range, the instruction wording is missing, not the scale. The report's "Needs you" line
+      names the headline result that stays blocked.
+  - **Layout and order are departures too.** Record how items are paged in `task/task.json` `"presentation":
+    {"layout": "one statement per screen", "origin": "reported" | "verbatim" | "derived", "evidence": "<the
+    passage or survey page, when reported>"}`. When no source says whether items came one per screen or as one
+    list page ("Below are a series of statements" suggests a list), `origin` is `derived` and the choice is a
+    departure: a `decision` issue (id or title naming the layout, e.g. `presentation-layout`) giving the choice,
+    why, and its likely effect. When the replay drops or moves tasks that came before the replayed block
+    (ratings that came 7th, after six cognitive measures, now come first), record the order change and its
+    possible context effect as a `decision` issue too, besides the omission itself, and say so when the paper
+    itself changed the order between studies on purpose. `design_checks.py` (run by check_package.py) fails a
+    blocked condition without the three keys, a package with the shared reply reader and no `presentation`,
+    and a `derived` layout without its issue.
   - Instructions between blocks, sessions or phases appear in the first prompt of the new block when
     the paper shows them there ("the upcoming block is completely independent", a break of one week),
     never only inside a later trial log. No script checks this (the captured prompts carry no block
@@ -602,8 +679,14 @@ Rules the runner depends on:
   - Each session's `status` is one of `completed`, `excluded` (with `exclusion_reason`: a failed check, as the
     paper excludes), `unparsed` (`page.unparsed` lists which answer and the replies tried) or `blocked`.
     `evaluate` reports how many sessions of each status every arm had.
-  - `ask` retries an unreadable reply once and never guesses: "1", "1.", "1. Be nice", "Be nice" and "be nice"
-    are read; "1 or 2" and "1. Be fair" are not. A bipolar scale that prints the same label twice (`3 2 1 0 1
+  - `ask` retries an unreadable or ambiguous reply once and never guesses: "1", "1.", "1. Be nice", "Be nice",
+    "be nice" and a number word ("Three") are read; "1 or 2" and "1. Be fair" are not. When every label of a list
+    is an amount ("0c" ... "20c", "$0.10", "30 hours"), a reply naming the amount ("10c", "$0.10", "I give 10
+    cents") is read, and a bare number that is both an option number and another option's amount ("10" on "6.
+    10c ... 10. 18c") is asked again, never guessed; such a list asks for the number followed by the option as
+    printed. Transcribe printed typos as printed ("Tranfer the 10c"): a reply that spells exactly one label
+    correctly is read, and `aliases={"Tranfer the 10c": ["Transfer"]}` adds other spellings the reader accepts
+    (never shown, never another option's label). A bipolar scale that prints the same label twice (`3 2 1 0 1
     2 3`) needs `codes` that tell the two sides apart. Work around a reader limit in the adapter, never by
     editing the copy.
 - **Smoke test.** `python .opencode/skills/build/check_replies.py .` (check_package.py runs it) runs every
@@ -623,7 +706,8 @@ Rules the runner depends on:
   check cannot judge (a timeout, sessions that differ with the same seed, the time budget), its ok line says
   `every answer recorded: not judged (<reason>)`; say so in the report instead of claiming the check passed.
 - Run size: once check_package.py passes, run `python .opencode/skills/build/estimate_run.py
-  package/<paper-slug> --n <sessions at the paper's analysed N, summed over conditions>` (add
+  package/<paper-slug> --n <sessions at the paper's analysed N, summed over conditions>` (or `--n paper` for
+  each condition's `paper_n`, or `--n id=n,id=n` for the paper's cell sizes; add
   `--price-in`/`--price-out` for the model's price per million tokens and `--max-tokens` when the run script
   passes an output limit). It captures the prompts offline like check_validity.py, scales calls and prompt
   lengths to N (tokens ≈ characters / 4), and says whether one run fits the hosted model relay (200,000
@@ -639,13 +723,16 @@ Rules the runner depends on:
   `buildContract` 2; see contract.py) gets the rules
   added with it as warnings, not failures, so a project that was ready stays ready after an app update. The
   readiness gate then always adds one `contract` warning, "older build: newer build rules are warnings;
-  rebuild with the current build skill to make them blocking". The checks
-  print them as `WARN ...` (check_validity.py, check_results.py) or `warn  ...` (check_package.py) lines and
-  still print PASS: prompts that mention earlier screens they do not carry, a memory design that carries
+  rebuild with the current build skill to make them blocking". The checks print them as `WARN ...`
+  (check_validity.py, check_results.py, check_materials.py, effects.py) or `warn  ...` (check_package.py) lines
+  and still print PASS: prompts that mention earlier screens they do not carry, a memory design that carries
   nothing, internal ids in prompts, a declared condition that crashes or refuses without a blocking issue,
-  image-only tables, lost minus signs, impossible CI or p values, and the downloaded-source, source-use and
-  survey-flow findings. Rebuilding the package with `task/replies.py` and `"buildContract": 2` makes all of
-  them blocking.
+  image-only tables, lost minus signs, impossible CI or p values, results printed only in the text, unrecorded
+  abstract findings and supplement tables, a pending material whose searches skip the minimum search list, a
+  computed effect block that does not hold what `reported` claims (statistic, scale, one value, n), and the
+  downloaded-source, source-use (including a question check that leaves out the paper), survey-flow,
+  Word-source and design-disclosure findings. Rebuilding the package with `task/replies.py` and
+  `"buildContract": 2` makes all of them blocking.
 
 ### Effects: from hypotheses to computable effects
 
@@ -718,6 +805,25 @@ Rules:
   `{"status": "not_ready", "reason"}`). Keep cells raw (n, mean, sd, or counts).
 - `compute.compareAs` only when the computed and reported numbers are the same quantity under
   another name, with the reason (an OLS coefficient on one condition dummy is the mean difference).
+- `compute` claims to compute *what `reported` holds*, so:
+  - **The same statistic.** The computed metric is a reported estimate's metric, or the mean or risk
+    difference of the reported cells, or `compareAs` says why they are the same: a correlation or an α
+    is never checked by a t test, a d never by a raw mean difference without the cell means, a
+    regression coefficient never by a mean difference unless `compareAs` gives the reason. With only a
+    test reported, compute the same test. Per-arm means and SDs need cells with `sd`. A package block
+    that is not ready on the check's stand-in run (its keys cannot be seen) is declared in
+    `evaluation/evaluation.py`, read as text and never run: `OUTPUT_KINDS = {"elig_mb_correlation":
+    "correlation", "dg_mean_share": {"kinds": "mean sd", "unit": "share"}}` (or set `compute.metric`).
+  - **The same scale.** A share or percentage of the endowment is never checked against a mean in
+    cents, points or seconds: compute it on the paper's scale (`outcome.scale` says which; a block may
+    say its `unit`).
+  - **One value per effect.** Several estimates of one metric are several effects (one per comparison,
+    outcome or row), unless each names a distinct `variant` of the same quantity.
+  - **The paper's n.** When an arm's n is the same in most of a study's effects but clearly smaller in
+    one (125 where the others have 188), the paper dropped part of that group from that comparison,
+    often in a sentence of the text. Find why, drop the same participants in the computation, and say
+    so: `"compute": {..., "exclusion": "framing A had no 50/50 option in phase 2 (p. 7); left out of this
+    comparison"}` (or a `where` flag, or a `reported.missing` entry).
 - `population` says whose responses the reported numbers describe: omit it for human participants;
   a paper that itself tests AI models records each model's result as an effect with
   `{"kind": "ai-model", "models": ["gpt-4o"]}` (or `human-vs-ai-model`, `ai-model-vs-ai-model`), so a
@@ -754,7 +860,8 @@ also fails an effect whose quotes or study print N while `reported.n` is empty a
 nothing about it, a `reported.n` its quotes do not account for (printed, a printed total minus a printed exclusion
 count, a printed per-group N times the arms, the sum of the cells, or df + 1 / df + 2 of a printed test),
 a signed estimate whose sign disagrees with its own cells, a CI that does not contain its value, and
-an unsigned printed estimate without cells or `signBasis`. Its warnings list program
+an unsigned printed estimate without cells or `signBasis`, and a computed block that does not hold the
+reported statistic, scale, single value or n (the rules above). Its warnings list program
 nodes no hypothesis or effect reaches; link them where the paper links them. With human data, run
 `study_core.py reproduce` (it uses `effects.json`) through the launcher, as in section 3's human
 data step, and report the verdict per effect.
@@ -838,8 +945,11 @@ Licence: <what paper.pdf itself prints, e.g. "CC BY 4.0 (printed on page 1)", or
 
 The licence line reports what the PDF prints first (`sources/SOURCE.json` → `pdf.license` and its
 evidence); licences of other sources (OSF, the journal's metadata) may follow on the same line. A licence
-doubt about a third-party file is never one of the researcher's questions (they do not hold its rights):
-state it on the Licence line and keep the file under `sources/private/`.
+doubt about a third-party file (a supplement with no licence of its own) is never one of the researcher's
+questions (they do not hold its rights): record it for the Hub in `sources/SOURCE.json` → `licencePolicy`
+(`[{"path": "sources/private/<file>", "licence": "<as stated, or none stated>", "evidence": "<where it is or is
+not stated>", "use": "researcher-own-use-only"}]`), keep the file under `sources/private/`, and state the doubt
+on the Licence line. `design_checks.py` fails a question issue about licensing a file.
 
 Then:
 
@@ -880,15 +990,16 @@ question for every missing material of the paper, asked once. Retain the source 
 convert a suggested default or dismissed question into a confirmed study fact.
 
 Settle it from the sources first, then ask. The paper itself answers many questions: its own text elsewhere
-(an exclusion explained on p. 7 explains the n of a later table), arithmetic on its own numbers (units), and
-which model a number comes from. Then check every downloaded file (`sources/open/`, `sources/private/`): a
+(an exclusion explained on p. 7 explains the n of a later table), arithmetic on its own numbers (units: a pooled mean of
+4.4 cents is the printed "22% of the 20c endowment", so the coefficients are in cents), and which model a number
+comes from (a text coefficient that matches no table column may come from a pooled model). Then check every downloaded file (`sources/open/`, `sources/private/`): a
 paper-only wording may be an unused item of the survey file; a version question is settled by the file that
 matches the paper; a coding question by the analysis code. The same holds for a `check` that asks the
 researcher to "confirm" something a source settles: it is a decision taken, not a question. For each issue
 that asks the researcher something (severity `decision` or `blocking`, title ending in "?"), record
 `sources/SOURCE.json` → `questionsChecked`: `{"issue": "<issue id>", "sourcesChecked": [{"paths":
-["sources/open/<file>", ...], "answers": false, "found": "<what the file says on this point>"}]}`, covering
-every downloaded file. When a file answers it, do not ask: apply the answer, record it in
+["paper.pdf", "sources/open/<file>", ...], "answers": false, "found": "<what the file says on this point>"}]}`,
+covering the paper itself and every downloaded file. When a file answers it, do not ask: apply the answer, record it in
 `decisionsFromSources` (`{"what", "path", "locator", "quote"}`; a private file gives the locator without a
 quote), drop the question issue, and say in the report that it was decided from the sources, and where.
 `check_source_use.py` fails a question without this record and a record saying a file answers it.

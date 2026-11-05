@@ -339,6 +339,10 @@
               "where": {
                 "type": "object"
               },
+              "exclusion": {
+                "type": "string",
+                "description": "what the paper drops from this comparison and where evaluate() drops it"
+              },
               "metric": {
                 "anyOf": [
                   {
