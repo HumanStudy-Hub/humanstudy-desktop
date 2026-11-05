@@ -18,6 +18,11 @@ function isFile(path: string): boolean {
   try { return statSync(path).isFile() } catch { return false }
 }
 
+/** Output limit reserved and forwarded when a request names none. The runtime client always sends
+ *  one (default 512); this only bounds other callers. Reservation always equals the forwarded limit. */
+export const DEFAULT_OUTPUT_TOKENS = 512
+export const MAX_OUTPUT_TOKENS = 4096
+
 export interface RelayOptions {
   project: string
   /** App-owned storage, outside the package/project write boundary. */
@@ -27,14 +32,18 @@ export interface RelayOptions {
   upstream: string
   key: string
   bypass?: string
+  /** Total reservation for the run; default 200,000 (see shared/run-limits.ts for the approved plan's). */
   tokenCap?: number
+  /** Lifetime of the run capability in minutes; default 30. */
+  expiryMinutes?: number
 }
 export const relayDescriptor = (storage: string, project: string) => join(storage, createHash('sha256').update(project).digest('hex') + '.json')
 
 export async function startModelRelay(options: RelayOptions) {
   const token = randomBytes(32).toString('hex')
   const cap = options.tokenCap ?? 200_000
-  if (!options.model || !Number.isSafeInteger(cap) || cap <= 0) throw Error('Invalid run limits.')
+  const minutes = options.expiryMinutes ?? 30
+  if (!options.model || !Number.isSafeInteger(cap) || cap <= 0 || !Number.isSafeInteger(minutes) || minutes <= 0 || minutes > 24 * 60) throw Error('Invalid run limits.')
   let reserved = 0
   const folder = options.storage
   const path = relayDescriptor(folder, options.project)
@@ -71,8 +80,8 @@ export async function startModelRelay(options: RelayOptions) {
       }
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
       if (body.model !== options.model || !Array.isArray(body.messages) || !body.messages.length || body.stream) return fail(400, 'Unsupported model or request.')
-      const max = body.max_tokens ?? body.max_completion_tokens ?? 4096
-      if (!Number.isSafeInteger(max) || max < 1 || max > 4096) return fail(400, 'Output limit must be 1–4096 tokens.')
+      const max = body.max_tokens ?? body.max_completion_tokens ?? DEFAULT_OUTPUT_TOKENS
+      if (!Number.isSafeInteger(max) || max < 1 || max > MAX_OUTPUT_TOKENS) return fail(400, 'Output limit must be 1–4096 tokens.')
       // UTF-8 bytes upper-bound text tokens; extra framing reserve per message. Multimodal,
       // tools, external URLs and provider-specific routing cannot bypass the reservation.
       if (body.messages.some((m: any) => !m || !['system', 'user', 'assistant'].includes(m.role) || typeof m.content !== 'string')) return fail(400, 'Only text messages are supported.')
@@ -93,7 +102,8 @@ export async function startModelRelay(options: RelayOptions) {
       // Return only completion text and usage; upstream diagnostic fields cannot expose credentials.
       const choices = Array.isArray(reply.choices) ? reply.choices.map((c: any, index: number) => ({ index, message: { role: 'assistant', content: typeof c.message?.content === 'string' ? c.message.content : '' }, finish_reason: c.finish_reason })) : []
       const usage = Object.fromEntries(['prompt_tokens', 'completion_tokens', 'total_tokens'].map(k => [k, Number.isSafeInteger(reply.usage?.[k]) && reply.usage[k] >= 0 ? reply.usage[k] : 0]))
-      await logUsage({ event: 'completed', model: options.model, reserved: charge, usage })
+      const finish = choices.map((c: any) => typeof c.finish_reason === 'string' ? c.finish_reason.slice(0, 32) : null)
+      await logUsage({ event: 'completed', model: options.model, reserved: charge, usage, finish_reason: finish[0] ?? null, truncated: finish.includes('length') })
       res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ choices, usage, model: options.model }))
     } catch { if (!res.headersSent) fail(502, 'Run model request failed.') }
     finally { requests.delete(controller) }
@@ -104,10 +114,11 @@ export async function startModelRelay(options: RelayOptions) {
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
   const address = server.address()
   if (!address || typeof address === 'string') throw Error('Run relay unavailable.')
-  const config = { baseURL: `http://127.0.0.1:${address.port}/v1`, token, model: options.model, tokenCap: cap }
+  // expiresAt (ms since epoch) lets the launcher give the run script exactly the capability's remaining lifetime.
+  const config = { baseURL: `http://127.0.0.1:${address.port}/v1`, token, model: options.model, tokenCap: cap, expiresAt: Date.now() + minutes * 60_000 }
   try { await unlink(path).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error }); await writeFile(path, JSON.stringify(config), { mode: 0o600, flag: 'wx' }) }
   catch (error) { server.close(); throw error }
-  const expiry = setTimeout(() => void finish(), 30 * 60_000)
+  const expiry = setTimeout(() => void finish(), minutes * 60_000)
   expiry.unref()
   finish = async () => {
     if (closed) return

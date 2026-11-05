@@ -17,13 +17,35 @@ chat requests are accepted. A random per-run capability authenticates requests. 
 or OpenRouter key stays in the app process; the kernel environment removes upstream credentials.
 The kernel's own conversation transport remains a separate capability.
 
-A run reserves at most 200,000 tokens and lasts at most 30 minutes. Each request reserves its
-UTF-8 request bytes, 256 framing tokens per message, and an output limit of at most 4,096 tokens.
-Reservations are conservative and never refunded. Usage logs contain model names and token
-counts, never prompts or upstream credentials. The descriptor and usage log live in app-owned
-storage outside the project. A successful final launcher run, explicit Stop, or expiry revokes the
-capability. A failed run keeps it, within the same token and time limits, so the fixed script can
-be started again. Ending a chat turn alone does not interrupt a background simulation.
+Each request reserves its UTF-8 request bytes, 256 framing tokens per message, and its output
+limit (1 to 4,096 tokens). The relay forwards exactly that output limit upstream, so a reply can
+never use more than was reserved. A request that names no limit gets 512. `humanstudy_llm` and
+`study_core.http_llm` always send one: the call's `max_tokens` (or `max_completion_tokens`, sent
+as `max_tokens`), else `HUMANSTUDY_LLM_MAX_OUTPUT` (1 to 4,096), else 512. A 3 KB participant
+prompt in two messages reserves about 4,000 tokens per call.
+
+The run's total follows the plan the researcher approved (`app/src/shared/run-limits.ts`):
+40,000 tokens per AI participant (conditions x participants per condition), at least 200,000 and
+at most 16,000,000. The run lasts 0.2 minutes per participant, at least 30 and at most 120
+minutes. For 300 participants that is 12,000,000 tokens and 60 minutes; five 4,000-token calls
+per participant (about 1,500 calls, roughly 10 minutes at 8 in flight) fit with room for a trial
+run. When it starts the relay, the main process takes the participants per condition from the
+approval (a whole number from 1 to 60, as the Simulation tab offers; anything else is refused)
+and the conditions from the hashed `program.json`, never the condition list in the approval text.
+The Simulation tab computes the same figures for the run confirmation. The descriptor carries
+`expiresAt`, and `run_confined.py` gives the run script the capability's remaining lifetime as
+its timeout (`--no-model` runs keep 30 minutes).
+
+A reply cut off at its limit returns `finish_reason: "length"`. The relay's usage log and the
+runtime's usage log (`humanstudy_llm`) record it as `"truncated": true`;
+`study_core.http_llm` warns on stderr and counts it. Reservations are conservative and never
+refunded. Usage logs contain model names and token counts, never prompts or upstream credentials.
+The relay's descriptor and usage log live in app-owned storage outside the project. Because the
+sandboxed script can write only in its run folder, `run_confined.py` points the runtime's usage
+log there (`HUMANSTUDY_LLM_USAGE_LOG=<run folder>/llm-usage.jsonl`). A successful final launcher
+run, explicit Stop, or expiry revokes the capability. A failed run keeps it, within the same token
+and time limits, so the fixed script can be started again. Ending a chat turn alone does not
+interrupt a background simulation.
 
 `run_confined.py --no-model` runs model-free package code, such as `study_core.py reproduce`, in
 the same sandbox with no network at all, no relay and no credential, writing only to a scratch
@@ -39,9 +61,9 @@ project holds no credential; the relay descriptor and usage log live outside it)
 except for self. Sysctl reads are denied except hardware/OS names: process-info denial alone does
 not stop `KERN_PROCARGS2`, and exact-name procargs filtering proved insufficient.
 
-The run confirmation says: "Model access is limited to 200,000 tokens and 30 minutes." A
-community revision adds: "This study's code will run on your computer through a limited model
-relay (up to 200,000 tokens and 30 minutes)."
+The run confirmation says: "Model access is limited to {tokens} tokens and {minutes} minutes."
+A community revision adds: "This study's code will run on your computer through a limited model
+relay (up to {tokens} tokens and {minutes} minutes)." Both figures are the plan's limits above.
 
 ## Linux and Windows: the pre-relay path
 

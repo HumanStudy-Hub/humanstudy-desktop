@@ -796,6 +796,16 @@ def fetch_pinned(url, target, pinned, member=None, archives=None):
     return "changed", actual
 
 
+def _default_max_tokens():
+    """Per-call output limit when the caller passes none: HUMANSTUDY_LLM_MAX_OUTPUT (1-4096), else 512.
+    Same rule as the desktop runtime's humanstudy_llm; the desktop run relay reserves it per call."""
+    try:
+        n = int(os.environ.get("HUMANSTUDY_LLM_MAX_OUTPUT", ""))
+    except ValueError:
+        return 512
+    return n if 1 <= n <= 4096 else 512
+
+
 def http_llm(model, temperature=1.0):
     """llm(prompt) -> str over an OpenAI-compatible API. Keys are read from the environment only."""
     key = os.environ.get("OPENROUTER_API_KEY")
@@ -810,12 +820,23 @@ def http_llm(model, temperature=1.0):
         messages = prompt if isinstance(prompt, list) else [{"role": "user", "content": prompt}]
         if kw.get("system") and not isinstance(prompt, list):
             messages = [{"role": "system", "content": kw["system"]}] + messages
-        body = json.dumps({"model": model, "messages": messages,
+        out = kw.get("max_tokens")
+        if out is None:
+            out = kw.get("max_completion_tokens")
+        if out is None:
+            out = _default_max_tokens()
+        body = json.dumps({"model": model, "messages": messages, "max_tokens": out,
                            "temperature": kw.get("temperature", temperature)}).encode()
         req = urllib.request.Request(base.rstrip("/") + "/chat/completions", data=body,
                                      headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=180) as r:
-            return json.loads(r.read())["choices"][0]["message"]["content"] or ""
+            choice = json.loads(r.read())["choices"][0]
+        llm.calls += 1
+        if choice.get("finish_reason") == "length":  # cut off at the output limit: visible, never silent
+            llm.truncated += 1
+            print(f"warning: a reply was cut off at max_tokens={out} ({llm.truncated} so far)", file=sys.stderr)
+        return choice["message"]["content"] or ""
+    llm.calls, llm.truncated = 0, 0
     return llm
 
 

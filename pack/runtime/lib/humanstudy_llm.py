@@ -11,7 +11,14 @@ Environment, all set by the desktop app (nothing is read from or written to disk
   HUMANSTUDY_SERVER_BYPASS    optional, sent as x-vercel-protection-bypass
   HUMANSTUDY_SIM_MODEL        participant model; default: the model selected in the app (HUMANSTUDY_MODEL)
   HUMANSTUDY_LLM_CONCURRENCY  max calls in flight (default 8)
-Every call appends a line (no prompt text) to <project>/.humanstudy/tmp/llm-usage.jsonl.
+  HUMANSTUDY_LLM_MAX_OUTPUT   output-token limit sent with every call that does not pass max_tokens
+                              (default 512, 1-4096). The macOS run relay reserves this much per call
+                              against the run's token cap, so a small default fits many more participants.
+  HUMANSTUDY_LLM_USAGE_LOG    usage log file (absolute path ending in .jsonl); set by run_confined.py on
+                              macOS to <run folder>/llm-usage.jsonl, the only place a confined run can write
+Every call appends a line (no prompt text) to the usage log (default
+<project>/.humanstudy/tmp/llm-usage.jsonl), including the reply's finish_reason; "truncated": true
+marks a reply cut off at the output limit.
 Standard library only.
 """
 from __future__ import annotations
@@ -26,9 +33,12 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-__all__ = ["llm", "chat", "llm_many", "LLMError", "LLMConfigError", "model_name", "usage_log_path"]
+__all__ = ["llm", "chat", "llm_many", "LLMError", "LLMConfigError", "model_name", "usage_log_path",
+           "default_max_tokens"]
 
 DEFAULT_MODEL = "anthropic/claude-haiku-5.5"
+DEFAULT_MAX_TOKENS = 512  # per-call output limit when the caller passes none
+MAX_OUTPUT_LIMIT = 4096  # the most the desktop run relay accepts per call
 MAX_ATTEMPTS = 6
 RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524}
 
@@ -65,13 +75,31 @@ def _semaphore() -> threading.BoundedSemaphore:
         return _sem
 
 
+def default_max_tokens() -> int:
+    """Output-token limit for calls that pass no max_tokens: HUMANSTUDY_LLM_MAX_OUTPUT if it is an
+    integer from 1 to 4096, else 512."""
+    try:
+        n = int(os.environ.get("HUMANSTUDY_LLM_MAX_OUTPUT", ""))
+    except ValueError:
+        return DEFAULT_MAX_TOKENS
+    return n if 1 <= n <= MAX_OUTPUT_LIMIT else DEFAULT_MAX_TOKENS
+
+
 def model_name() -> str:
     return os.environ.get("HUMANSTUDY_SIM_MODEL") or os.environ.get("HUMANSTUDY_MODEL") or DEFAULT_MODEL
 
 
 def usage_log_path() -> Path:
-    """<project>/.humanstudy/tmp/llm-usage.jsonl; the project is HUMANSTUDY_PROJECT_DIR, else the nearest
-    parent of the working directory that has a .humanstudy folder, else the working directory."""
+    """HUMANSTUDY_LLM_USAGE_LOG when it is an absolute path ending in .jsonl inside HUMANSTUDY_PROJECT_DIR or
+    the working directory (a confined macOS run writes only in its run folder), else <project>/.humanstudy/tmp/llm-usage.jsonl; the project is
+    HUMANSTUDY_PROJECT_DIR, else the nearest parent of the working directory that has a .humanstudy
+    folder, else the working directory."""
+    explicit = os.environ.get("HUMANSTUDY_LLM_USAGE_LOG", "")
+    if explicit and "\0" not in explicit and explicit.endswith(".jsonl") and os.path.isabs(explicit):
+        target = Path(explicit).resolve()
+        roots = [Path.cwd()] + ([Path(os.environ["HUMANSTUDY_PROJECT_DIR"])] if os.environ.get("HUMANSTUDY_PROJECT_DIR") else [])
+        if any(target.is_relative_to(r.resolve()) for r in roots):  # only inside the project or run folder
+            return target
     root = os.environ.get("HUMANSTUDY_PROJECT_DIR")
     if root:
         base = Path(root)
@@ -132,16 +160,20 @@ def chat(
     **extra,
 ):
     """One chat completion. Returns the reply text, or the whole response dict when full=True.
-    Retries 429/5xx and network errors with exponential backoff (honours Retry-After)."""
+    Retries 429/5xx and network errors with exponential backoff (honours Retry-After).
+    Always sends one output limit, max_tokens: the argument, else a max_completion_tokens keyword,
+    else default_max_tokens() (512). Pass a larger max_tokens only when a reply genuinely needs it."""
     base, headers = _config()
+    alias = extra.pop("max_completion_tokens", None)
+    if max_tokens is None:
+        max_tokens = alias if alias is not None else default_max_tokens()
     body: dict = {"model": model or model_name(), "messages": messages}
     if temperature is not None:
         body["temperature"] = temperature
-    if max_tokens is not None:
-        body["max_tokens"] = max_tokens
     if seed is not None:
         body["seed"] = seed
     body.update(extra)
+    body["max_tokens"] = max_tokens
     data = json.dumps(body).encode("utf-8")
     last = "unknown error"
     last_status: int | None = None
@@ -160,6 +192,7 @@ def chat(
                 if isinstance(text, list):  # content parts
                     text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
                 u = payload.get("usage") or {}
+                finish = choice.get("finish_reason")
                 _log({
                     "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z",
                     "model": payload.get("model") or body["model"],
@@ -169,6 +202,9 @@ def chat(
                     "prompt_tokens": u.get("prompt_tokens"),
                     "completion_tokens": u.get("completion_tokens"),
                     "total_tokens": u.get("total_tokens"),
+                    "max_tokens": max_tokens,
+                    "finish_reason": finish,
+                    "truncated": finish == "length",
                 })
                 return payload if full else text
             except urllib.error.HTTPError as e:

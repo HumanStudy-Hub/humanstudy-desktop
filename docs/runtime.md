@@ -42,7 +42,11 @@ like poppler; `pdfinfo` prints `Title:`, `Pages:` and a few other fields; `hs-pd
 `HUMANSTUDY_DESKTOP_KEY` (+ `x-vercel-protection-bypass` from `HUMANSTUDY_SERVER_BYPASS`). Model:
 `HUMANSTUDY_SIM_MODEL`, else `HUMANSTUDY_MODEL`. Retries 429/5xx/network with backoff (honours Retry-After),
 at most `HUMANSTUDY_LLM_CONCURRENCY` (8) calls in flight, usage lines (no prompt text, no key) appended to
-`<project>/.humanstudy/tmp/llm-usage.jsonl`. The key lives only in the process environment.
+`<project>/.humanstudy/tmp/llm-usage.jsonl`. Every call sends `max_tokens`: the call's own value, else a
+`max_completion_tokens` keyword (sent as `max_tokens`, never both), else `HUMANSTUDY_LLM_MAX_OUTPUT`
+(1-4096), else 512; the usage line records it with the reply's `finish_reason` and `truncated` (cut off
+at the limit). `HUMANSTUDY_LLM_USAGE_LOG` (an absolute `.jsonl` path) moves the log; confined macOS runs
+write it in their run folder. See `docs/model-relay.md` for how the macOS run relay reserves it. The key lives only in the process environment.
 
 ## Signing and Gatekeeper
 
