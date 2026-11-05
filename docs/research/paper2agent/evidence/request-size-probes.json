@@ -1,0 +1,23 @@
+[
+  {
+    "request_bytes_utf8": 3900000,
+    "http_status": 400,
+    "hosting_error_code": null,
+    "invalid_model_probe": true,
+    "model_generation_requested": false
+  },
+  {
+    "request_bytes_utf8": 4100000,
+    "http_status": 413,
+    "hosting_error_code": null,
+    "invalid_model_probe": true,
+    "model_generation_requested": false
+  },
+  {
+    "request_bytes_utf8": 4700000,
+    "http_status": 413,
+    "hosting_error_code": "FUNCTION_PAYLOAD_TOO_LARGE",
+    "invalid_model_probe": true,
+    "model_generation_requested": false
+  }
+]
