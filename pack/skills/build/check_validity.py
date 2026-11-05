@@ -838,9 +838,10 @@ def leaked_ids(pkg, program, runs):
 
 def unread_defaults(path):
     """[(line, code)]: an answer that could not be read replaced by a number (`v if v is not None else 0`,
-    `page.value("c") or 0`, `0 if v is None else v`, `if v is None: v = 0`, for a name assigned from page.value(...)):
-    the participant's missing reply would enter the data as a
-    decision they never made."""
+    `page.value("c") or 0`, `0 if v is None else v`, `if v is None: v = 0`, `answer.get("value", 0)`,
+    `answer.get("value") or 0`), for an answer: page.value(...), page.answers[...], a parse(...)/ask(...) result,
+    or a name assigned from one. The participant's missing reply would enter the data as a decision they never
+    made."""
     try:
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -848,13 +849,32 @@ def unread_defaults(path):
         return []
     lines = source.splitlines()
     number = lambda n: isinstance(n, ast.Constant) and isinstance(n.value, (int, float)) and not isinstance(n.value, bool)
-    value_call = lambda n: isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "value"
-    # names that hold an answer: assigned from page.value(...)
-    answers = {t.id for a in ast.walk(tree) if isinstance(a, ast.Assign) and value_call(a.value)
-               for t in a.targets if isinstance(t, ast.Name)}
+    answers = set()
+
+    def called(n):
+        f = n.func if isinstance(n, ast.Call) else None
+        name = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else ""
+        return name
+
+    def answer(n):
+        """An expression that holds a participant's answer (or its value)."""
+        for x in ast.walk(n):
+            if isinstance(x, ast.Call) and called(x) in ("value", "ask", "parse", "parse_number", "parse_choice",
+                                                          "parse_text"):
+                return True
+            if isinstance(x, ast.Attribute) and x.attr == "answers":
+                return True
+            if isinstance(x, ast.Name) and (x.id in answers or x.id == "answers"):
+                return True
+        return False
+
+    for _ in range(3):                                   # names assigned from an answer, and from those
+        answers |= {t.id for a in ast.walk(tree) if isinstance(a, ast.Assign) and answer(a.value)
+                    for t in a.targets if isinstance(t, ast.Name)}
     is_none = lambda n, op: isinstance(n, ast.Compare) and len(n.ops) == 1 and isinstance(n.ops[0], op) \
-        and isinstance(n.left, ast.Name) and n.left.id in answers \
-        and isinstance(n.comparators[0], ast.Constant) and n.comparators[0].value is None
+        and answer(n.left) and isinstance(n.comparators[0], ast.Constant) and n.comparators[0].value is None
+    value_get = lambda n: isinstance(n, ast.Call) and called(n) == "get" and n.args \
+        and isinstance(n.args[0], ast.Constant) and n.args[0].value == "value" and answer(n.func.value)
     out = []
     for node in ast.walk(tree):
         hit = False
@@ -862,13 +882,15 @@ def unread_defaults(path):
             hit = True                                    # v if v is not None else 0
         elif isinstance(node, ast.IfExp) and number(node.body) and is_none(node.test, ast.Is):
             hit = True                                    # 0 if v is None else v
-        elif isinstance(node, ast.If) and is_none(node.test, ast.Is) and any(
+        elif isinstance(node, ast.If) and is_none(node.test, ast.Is) and isinstance(node.test.left, ast.Name) and any(
                 isinstance(b, ast.Assign) and number(b.value) and any(
                     isinstance(t, ast.Name) and t.id == node.test.left.id for t in b.targets) for b in node.body):
             hit = True                                    # if v is None: v = 0
         elif isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or) and number(node.values[-1]) \
-                and any(value_call(v) or (isinstance(v, ast.Name) and v.id in answers) for v in node.values[:-1]):
+                and any(answer(v) for v in node.values[:-1]):
             hit = True                                    # page.value("c") or 0, v or 0
+        elif value_get(node) and len(node.args) > 1 and number(node.args[1]):
+            hit = True                                    # page.answers["c"].get("value", 0)
         if hit:
             out.append((node.lineno, lines[node.lineno - 1].strip()))
     return sorted(set(out))

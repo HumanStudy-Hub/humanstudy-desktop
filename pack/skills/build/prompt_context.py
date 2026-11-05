@@ -54,10 +54,15 @@ import check_quotes  # noqa: E402
 import check_verbatim  # noqa: E402
 
 SCREEN_WORDS = 25        # a material text at least this long is an instruction-sized screen
-# what an instruction screen is called (node id or title, field labels, titles of the steps that show it); a
-# consent form, a vignette or a scenario is not one, and a keyed question never needs it
+# A screen is an instruction unless it is named as something else: a consent form, a debriefing, a vignette or
+# stimulus, a quiz or questionnaire (node id or title, field labels, titles of the steps that show it). A name
+# that says instruction on the node itself wins ("Scenario introduction", but not a debriefing whose field is
+# called "instructions"). An unnamed screen ("Printed materials") stays an instruction.
 INSTRUCTION_NAME = re.compile(r"(?i)instruct|(?<![a-z])instr(?![a-z])|\brules?\b|briefing|tutorial|explanation|"
-                              r"how to (?:play|answer|respond)|game description|task description")
+                              r"how to (?:play|answer|respond)|game description|task description|intro|overview|"
+                              r"knowledge|message")
+OTHER_NAME = re.compile(r"(?i)consent|debrief|vignette|scenario|stimul|demograph|quiz|comprehension|attention|"
+                        r"\bchecks?\b|survey|questionnaire|feedback|thank|payment|payoff")
 SHOWN = 0.6              # share of a screen's sentences a prompt must contain to show it
 MAX_FINDINGS = 4
 
@@ -142,12 +147,13 @@ def screens(program):
         segs = [p for p in check_verbatim.segments(text) if len(p.split()) >= 3]
         if len(" ".join(segs).split()) < SCREEN_WORDS:
             continue
-        names = " ".join([n["id"], str(n.get("title") or "")] + titles.get(n["id"], []) +
+        own = "%s %s" % (n["id"], n.get("title") or "")
+        names = " ".join([own] + titles.get(n["id"], []) +
                          ["%s %s" % (f.get("id"), f.get("label")) for f in n.get("fields") or [] if isinstance(f, dict)])
         out[n["id"]] = {"segments": sorted(set(segs)), "position": where.get(n["id"]),
                         "actors": sorted(actors.get(n["id"], ())),
                         "variant": n["id"] in where and n["id"] not in fixed,
-                        "instruction": bool(INSTRUCTION_NAME.search(names))}
+                        "instruction": bool(INSTRUCTION_NAME.search(own)) or not OTHER_NAME.search(names)}
     return out
 
 
@@ -198,7 +204,10 @@ def _label(run):
 
 
 def _own_screen(call, table):
-    own = [s for s in call.get("s") or [] if s in table and table[s].get("position") is not None]
+    """The latest screen of a keyed prompt that is not an instruction: the quiz text itself. A quiz too short to be
+    a screen has none, so an instruction it carries is never mistaken for the quiz (and never skipped)."""
+    own = [s for s in call.get("s") or [] if s in table and table[s].get("position") is not None
+           and not table[s].get("instruction")]
     return max(own, key=lambda s: table[s]["position"]) if own else None
 
 

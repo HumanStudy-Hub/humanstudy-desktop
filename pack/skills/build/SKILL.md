@@ -634,7 +634,9 @@ Rules the runner depends on:
     [{"screen": "<material node id>", "text": "<the repeated text>", "evidenceIds": [...]}]}`. Only when the paper
     says a screen could not be seen again, declare `"notCarried": [{"screen": ..., "reason": ..., "evidenceIds":
     [...]}]`. check_validity.py answers the keys correctly with its stand-in model, reads every prompt that
-    asks a keyed or repeated question, and fails a prompt without those screens.
+    asks a keyed or repeated question, and fails a prompt without those screens. Every screen counts as an
+    instruction unless its node id or title names it as something else (consent, debriefing, vignette, scenario,
+    stimulus, quiz, comprehension, questionnaire), so name material nodes for what they are.
   - **Arms that differ only by who took part are one simulation.** Online versus lab, two countries, two sites
     or two subject pools send identical prompts unless the adapter writes the difference into them. Effects that
     contrast such arms cannot be tested by the replay: list them in a `capabilities.json` `run.excluded` entry
@@ -719,7 +721,8 @@ Rules the runner depends on:
     (never shown, never another option's label). A bipolar scale that prints the same label twice (`3 2 1 0 1
     2 3`) needs `codes` that tell the two sides apart. A number question read from a sentence with several
     numbers takes the one after the question's own verb ("I keep 5 and contribute 15" to "How many points do
-    you contribute?" is 15; "I keep 5" alone is asked again). Several questions on one screen are read from
+    you contribute?" is 15; "I keep 5" alone is asked again). The verb is the one of the sentence that asks, and
+    a number someone else gave ("others contribute 15 on average") is never the answer. Several questions on one screen are read from
     `Q1:` lines, a JSON object, answers keyed by the word that tells the questions apart ("A: 2, B: 0, C: 3"
     for "Points for participant A/B/C"), or, when all ask for numbers, the numbers in order ("2, 0, 3"). Write
     question texts so each one names what it asks (the participant label, the verb). Work around a reader

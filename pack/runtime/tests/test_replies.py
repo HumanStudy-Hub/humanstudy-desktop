@@ -342,6 +342,21 @@ class SeveralNumbersAndLabels(unittest.TestCase):
                                   "you keep.", kind="number", minimum=0, maximum=20)
         self.assertEqual(parse("I keep 5", both)["status"], "ambiguous")
         self.assertEqual(parse("I keep 11 and contribute 9.", both)["value"], 9)
+        rules = Question("c", text="Each token you keep earns 1 point; each token you contribute earns 0.4 points "
+                                   "for each member. How much do you contribute?", kind="number")
+        self.assertEqual(parse("I keep 5 and contribute 15", rules)["value"], 15)
+        self.assertEqual(parse("I contribute 15", rules)["value"], 15)
+        asked = Question("c", text="How many tokens do you contribute?", kind="number")
+        for reply in ("Since others contribute 15 on average, I'll put in 10.", "Others contributed 12 last round; "
+                      "I'll put in 6.", "Given that the others contribute 15, I keep 20.", "Others give 15 on average.",
+                      "Others sent 5, I'll give 8."):
+            self.assertEqual(parse(reply, asked)["status"], "ambiguous", reply)
+        self.assertEqual(parse("Others typically contribute 5, I'll contribute 8.", asked)["value"], 8)
+        for seed in range(20):   # the stub writes the asked verb and reports a wrong number read with confidence
+            stub = replies.StubParticipant(seed=seed, noise=0.0, use_keys=False)
+            page = ask(stub, replies.render_questions([rules]), [rules])
+            self.assertTrue(page.ok and not stub.misreads)
+            self.assertNotIn("I give", page.replies[0])
         for seed in range(20):   # the stub never blames the adapter for the reader's caution
             stub = replies.StubParticipant(seed=seed, noise=0.0, use_keys=False)
             self.assertTrue(ask(stub, replies.render_questions([both]), [both]).ok and not stub.misreads)

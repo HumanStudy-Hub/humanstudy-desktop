@@ -255,10 +255,28 @@ class Rules(unittest.TestCase):
 
     def test_instruction_screens_are_named_so(self):
         program = {"steps": [{"id": "s1", "title": "Read the instructions", "visibleIds": ["m-a"]},
-                             {"id": "s2", "title": "Consent", "visibleIds": ["m-b"]}],
-                   "nodes": [material("m-a", INSTR1), material("m-b", INSTR2), material("m-instr3", INSTR1)]}
+                             {"id": "s2", "title": "Consent", "visibleIds": ["m-b"]},
+                             {"id": "s3", "title": "Debriefing", "visibleIds": ["m-instr-debrief"]}],
+                   "nodes": [material("m-a", INSTR1), material("m-b", INSTR2), material("m-instr3", INSTR1),
+                             material("m-printed", INSTR1), material("m-vignette", INSTR2),
+                             material("m-intro-scenario", INSTR2), material("m-instr-debrief", INSTR2)]}
         table = prompt_context.screens(program)
-        self.assertEqual({k: v["instruction"] for k, v in table.items()}, {"m-a": True, "m-b": False, "m-instr3": True})
+        # unnamed screens stay instructions; a name that says otherwise excludes; the node's own name wins
+        self.assertEqual({k: v["instruction"] for k, v in table.items()},
+                         {"m-a": True, "m-b": False, "m-instr3": True, "m-printed": True, "m-vignette": False,
+                          "m-intro-scenario": True, "m-instr-debrief": True})
+
+    def test_a_quiz_that_carries_the_instructions_does_not_hide_a_dropped_part_one(self):
+        table = {"m-p1": {"segments": ["a"], "position": 1, "actors": ["pt"], "instruction": True},
+                 "m-p2": {"segments": ["b"], "position": 5, "actors": ["pt"], "instruction": True}}
+        calls = [{"q": ["quiz1#1"], "k": True, "s": ["m-p1"]}] + \
+                [{"q": ["c#1"], "k": False, "s": ["m-p1"]} for _ in range(3)] + \
+                [{"q": ["quiz2#1"], "k": True, "s": ["m-p2"]}] + \
+                [{"q": ["c#1"], "k": False, "s": ["m-p2"]} for _ in range(3)]
+        run = {"calls_meta": calls}
+        self.assertEqual(prompt_context.quiz_screens(run, table), set())
+        self.assertEqual([g[2] for g in prompt_context.round_gaps(run, table)], [["m-p1"]])
+        self.assertEqual([g[2] for g in prompt_context.keyed_gaps(run, table)], [["m-p1"]])
 
     def test_flow_order_follows_children_and_next(self):
         program = {"steps": [{"id": "b", "next": [{"to": "c"}]}, {"id": "root", "children": ["a", "b"]},
@@ -288,8 +306,11 @@ class Rules(unittest.TestCase):
         path.write_text("v = page.value('c')\nx = v if v is not None else 0\ny = page.value('d') or 0\n"
                         "z = 0 if v is None else v\nw = v or 0\nif v is None:\n    v = 0\n"
                         "ok = v if v is not None else None\nseed = None\ns = seed if seed is not None else 0\n"
-                        "c = cfg.get('value', 0)\n", encoding="utf-8")
-        self.assertEqual([n for n, _ in check_validity.unread_defaults(path)], [2, 3, 4, 5, 6])
+                        "c = cfg.get('value', 0)\nn = args.parse_args().n or 0\n"
+                        "a = page.answers['c'].get('value', 0)\nb = page.answers['c'].get('value') or 0\n"
+                        "d = page.value('c') if page.value('c') is not None else 0\n"
+                        "e = parse(reply, q).get('value', 0)\n", encoding="utf-8")
+        self.assertEqual([n for n, _ in check_validity.unread_defaults(path)], [2, 3, 4, 5, 6, 13, 14, 15, 16])
 
 
 class ExportHonoursExclusion(unittest.TestCase):
