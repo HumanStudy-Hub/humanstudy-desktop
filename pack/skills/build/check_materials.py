@@ -148,13 +148,13 @@ LEGACY_SITES = {
 }
 
 
-def missing_searches(record, items_search, venue, year=None):
+def missing_searches(record, items_search, venue, year=None, skip_unread=True):
     """What the minimum search list still lacks, given SOURCE.json and the pending items' search entries (and
-    the paper's year, which decides whether a journal's original site is on the list)."""
-    # a search that could not read the page (403, refused ...) and found nothing there does not count
+    the paper's year, which decides whether a journal's original site is on the list). With skip_unread (a rule of
+    build contract 3) a search that could not read the page (403, refused ...) does not count."""
     blobs = [" ".join(_str(x.get(k)) for k in ("where", "query", "url", "result"))
              for x in _list(record.get("searches")) + list(items_search) if isinstance(x, dict)
-             and not unread_search(_str(x.get("result")))]
+             and not (skip_unread and unread_search(_str(x.get("result"))))]
     missing = [what for pattern, what in SEARCH_KINDS.values() if not any(pattern.search(b) for b in blobs)]
     for name, (host, what, until) in LEGACY_SITES.items():
         if isinstance(year, int) and year >= until:
@@ -733,6 +733,7 @@ def check(root, package=None):
     (contract.py); without it (the command line) any current-contract package of the project makes them block."""
     root = Path(root).resolve()
     current = contract.current_contract(package) if package is not None else contract.project_current(root)
+    strict3 = contract.rules_level(root, package)   # the rules added with contract 3 block (buildContract >= 3)
     program = _json(root / "program.json")
     if not isinstance(program, dict):
         return {"problems": [("program.json is missing or not JSON", "")], "notes": [], "items": [], "warnings": []}
@@ -1000,24 +1001,37 @@ def check(root, package=None):
     if pending_search is not None:
         venue = " ".join(_str(_dict(program.get("source")).get(k)) for k in ("venue", "journal"))
         venue += " " + " ".join(_str(record.get(k)) for k in ("journal", "venue"))
-        lacking = missing_searches(record, pending_search, venue, paper_year(program, record))
-        if lacking:   # added with the shared reply reader: blocks only a current-contract project (contract.py)
-            (problems if current else warnings).append(("materials are still pending, but the search skipped %s" % "; ".join(lacking),
-                "search each (title, DOI, authors) and record it in sources/SOURCE.json searches, including those that "
-                "find nothing, before asking the researcher for the materials"))
+        # the list (contract 2: blocks a current-contract project) and, from contract 3, searches that could not
+        # read their page do not count
+        older = missing_searches(record, pending_search, venue, paper_year(program, record), skip_unread=False)
+        unread = [x for x in missing_searches(record, pending_search, venue, paper_year(program, record))
+                  if x not in older]
+        fix = ("search each (title, DOI, authors) and record it in sources/SOURCE.json searches, including those that "
+               "find nothing, before asking the researcher for the materials")
+        if older:
+            (problems if current else warnings).append(
+                ("materials are still pending, but the search skipped %s" % "; ".join(older), fix))
+        if unread:
+            msg = "materials are still pending, and the search of %s could not read the page" % "; ".join(unread)
+            (problems.append((msg, fix)) if strict3 else warnings.append((msg + contract.OLDER_THAN_3, fix)))
 
-    # added with the source-claims rules: block only a current-contract project (contract.py)
-    newer = problems if current else warnings
+    # added with the source-claims rules (build contract 3): blocking from study.json buildContract 3, warnings below
+    def newer(msg, fix=""):
+        if strict3:
+            problems.append((msg, fix))
+        else:
+            warnings.append((msg + contract.OLDER_THAN_3, fix))
     failures = _json(root / "artifacts/failures.json")
     failures = failures if isinstance(failures, list) else _list(_dict(failures).get("failures"))
     missing = any(i["kind"] == "needs-original" and i["status"] in ("pending", "stand-in", "left-out") for i in items) \
         or any(_dict(x).get("pattern") in ("materials-not-public", "missing-information") for x in failures)
     item_searches = [s for _, f in fields(program) for s in _list(_dict(material_of(f)).get("search"))
                      if isinstance(s, dict)]
-    newer.extend(search_problems(record, program, missing, item_searches))
+    for msg, fix in search_problems(record, program, missing, item_searches):
+        newer(msg, fix)
     for rel in unlicensed_files(root):
         entry = _dict(recorded.get(rel))
-        newer.append(("%s is in sources/ but not in %s/ or %s/, without an open licence (license %s%s): its text is "
+        newer(*("%s is in sources/ but not in %s/ or %s/, without an open licence (license %s%s): its text is "
                       "treated as private and no export may carry it" % (
                           rel, OPEN_DIR, PRIVATE_DIR, _str(entry.get("license")) or "not recorded",
                           "; %s" % _str(entry.get("licenseNote")) if entry.get("licenseNote") else ""),
@@ -1047,8 +1061,11 @@ def check(root, package=None):
             flag("%s has no readable text, so no check can see whether it is copied elsewhere" % rel,
                  "save a text copy beside it (%s.txt) with its words as supplied; pictures, audio and video "
                  "need none" % Path(rel).with_suffix(""))
+    loose = set(unlicensed_files(root))
     for shown, src, text in leaks(root, gate_files(root)):
-        add("%s copies the private material %s (\"%s ...\")" % (shown, src, text[:60]),
+        # a file outside open/, private/ and researcher/ without an open licence counts as private from contract 3
+        (add if src not in loose else newer)(
+            "%s copies the private material %s (\"%s ...\")" % (shown, src, text[:60]),
             "keep researcher-supplied and not-openly-licensed materials only in %s/ or %s/; reference the file "
             "(the package reads it at run time)" % PRIVATE_DIRS)
     return {"problems": problems, "notes": notes, "items": items, "warnings": warnings}

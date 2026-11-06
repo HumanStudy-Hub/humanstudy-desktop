@@ -8,7 +8,8 @@ check_package.py runs it. It applies only to packages that use the shared reply 
 HumanStudy-Bench's agent_pipeline/package_files/replies.py). A package with neither the copy nor an
 adapter that imports it is an older package: nothing is checked and nothing is printed.
 
-  copy        task/replies.py equals the shipped copy byte for byte (never edit it: copy it again).
+  copy        task/replies.py equals the shipped copy byte for byte (never edit it: copy it again). A copy of
+              an earlier shipped reader (OLDER_SHIPPED) is a warning below study.json buildContract 3.
   import      task/adapter.py imports replies and its --smoke-test calls replies.smoke_main(Path(__file__)).
   smoke test  every runnable arm of task/task.json `conditions` runs through run_sessions twice with an
               offline stand-in that replies from the prompt text as a model would (the number printed
@@ -17,7 +18,7 @@ adapter that imports it is an older package: nothing is checked and nothing is p
               read as another option or not at all, when an arm has no `completed` session in the keyed
               pass, when a model call bypasses replies.ask, and when evaluate returns nothing (for all
               sessions or for one arm's alone).
-  own words   every question the package asks is fed its own screen's wording back, with the shipped reader in
+  own words   (current reader and buildContract >= 3 only) every question the package asks is fed its own screen's wording back, with the shipped reader in
               this process (data only, no package code): the phrase of an "Enter 10 if you choose the lottery in
               all nine rows" read as 10, a printed scale label beside its number ("0 (only believes)") read as
               that number, the words a label starts with ("Take the bet" for "Take the bet - 50% chance ...")
@@ -66,6 +67,14 @@ sys.path.insert(0, str(HERE))
 import sandbox_run  # noqa: E402
 
 SHIPPED = HERE / "package_files" / "replies.py"
+# SHA-256 of the reply readers shipped before the current one: a package built then carries one of them. Below
+# study.json buildContract 3 such a copy is a warning (the project stays ready after an app update); from 3 on,
+# the copy must be the current file.
+OLDER_SHIPPED = {
+    "490b46d91278a4698a2b08089cff7eb26df829827e2f79a4c74150516d4c8184": "2",
+    "130b21bc268438cfe7ee4ead29b6da7dd89e625f0398942ad30f1540f7d959b4": "3",
+    "98bf6e07e5fd9f5a0cdd9b174ac3b28169f9a9e7cdd362ed07c1f8a4fd6f80f4": "4",
+}
 IMPORTS = re.compile(r"(?m)^\s*(from\s+replies\s+import\b|import\s+replies\b)")   # fallback: unparsable code
 
 
@@ -106,16 +115,49 @@ def uses_replies(pkg: Path) -> bool:
     return (pkg / "task/replies.py").is_file() or imports_replies(_read(pkg / "task/adapter.py"))
 
 
-def copy_problems(pkg: Path) -> list:
-    """The copy is the shipped file, byte for byte; the adapter imports it and its smoke test calls it."""
+def _sha(path: Path) -> str:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def copy_version(pkg: Path):
+    """"current" when task/replies.py is the shipped reader byte for byte, the version ("2", "3", "4") of an
+    older shipped reader, None when it is missing or edited."""
+    digest = _sha(Path(pkg) / "task/replies.py")
+    if not digest:
+        return None
+    if digest == _sha(SHIPPED):
+        return "current"
+    return OLDER_SHIPPED.get(digest)
+
+
+def _strict(pkg: Path) -> bool:
+    import contract   # imported here: contract.py imports this module
+    return contract.strict(pkg)
+
+
+def copy_problems(pkg: Path, warnings: list = None) -> list:
+    """The copy is the shipped file, byte for byte; the adapter imports it and its smoke test calls it. An older
+    shipped reader goes to `warnings` (when given) below study.json buildContract 3."""
     pkg = Path(pkg)
     out = []
     copy = pkg / "task/replies.py"
     adapter = _read(pkg / "task/adapter.py")
+    version = copy_version(pkg) if copy.is_file() else None
     if not copy.is_file():
         out.append(("task/adapter.py imports replies, but task/replies.py is missing",
                     "copy .opencode/skills/build/package_files/replies.py to task/replies.py, unchanged"))
-    elif hashlib.sha256(copy.read_bytes()).digest() != hashlib.sha256(SHIPPED.read_bytes()).digest():
+    elif version not in (None, "current"):
+        found = ("task/replies.py is the reply reader shipped as version %s, not the current one" % version,
+                 "copy .opencode/skills/build/package_files/replies.py to task/replies.py again, unchanged, and run "
+                 "the smoke test again")
+        if warnings is not None and not _strict(pkg):
+            warnings.append((found[0] + " (older build: blocking from buildContract 3)", found[1]))
+        else:
+            out.append(found)
+    elif version is None:
         out.append(("task/replies.py differs from the shipped .opencode/skills/build/package_files/replies.py "
                     "(it is shared with HumanStudy-Bench, so every package reads replies the same way)",
                     "copy .opencode/skills/build/package_files/replies.py to task/replies.py again, unchanged; "
@@ -367,28 +409,32 @@ def own_wording_problems(asked: list) -> list:
 # --------------------------------------------------------------------------- the check
 
 def check(project: Path, pkg: Path) -> dict:
-    """{"applies", "problems": [(message, fix)], "report": smoke report or None}."""
+    """{"applies", "problems": [(message, fix)], "warnings": [(message, fix)], "report": smoke report or None}."""
     pkg = Path(pkg).resolve()
     if not uses_replies(pkg):
-        return {"applies": False, "problems": [], "report": None}
-    problems = copy_problems(pkg)
+        return {"applies": False, "problems": [], "warnings": [], "report": None}
+    warnings = []
+    problems = copy_problems(pkg, warnings)
     if not imports_replies(_read(pkg / "task/adapter.py")) or not (pkg / "task/replies.py").is_file():
-        return {"applies": True, "problems": problems, "report": None}
+        return {"applies": True, "problems": problems, "warnings": warnings, "report": None}
     report = smoke(pkg)
     fix = ("fix the adapter (not the copy of replies.py) until `python task/adapter.py --smoke-test` passes "
            "(%s)" % READING_REPLIES)
     problems += [("smoke test: %s" % p, fix) for p in report.get("problems") or []]
-    try:
-        problems += own_wording_problems(report.get("asked") or [])
-    except Exception as exc:  # noqa: BLE001  a summary the reader cannot rebuild must not crash the check
-        problems.append(("the screens' own wording could not be fed back (%s: %s)" % (type(exc).__name__, exc),
-                         "report this"))
+    # The own-wording rule tests the current reader: it applies to a package that carries that reader and is
+    # built under contract 3 (an older copy reads the package's replies, so the shipped reader proves nothing).
+    if copy_version(pkg) == "current" and _strict(pkg):
+        try:
+            problems += own_wording_problems(report.get("asked") or [])
+        except Exception as exc:  # noqa: BLE001  a summary the reader cannot rebuild must not crash the check
+            problems.append(("the screens' own wording could not be fed back (%s: %s)" % (type(exc).__name__, exc),
+                             "report this"))
     try:
         problems += unkeyed_checks(survey_checks(project), report.get("asked") or [])
     except Exception as exc:  # noqa: BLE001  reading the project's survey files must not crash the check
         problems.append(("the survey's correct-answer checks could not be compared (%s: %s)"
                          % (type(exc).__name__, exc), "report this; the .qsf may be one the reader cannot follow"))
-    return {"applies": True, "problems": problems, "report": report}
+    return {"applies": True, "problems": problems, "warnings": warnings, "report": report}
 
 
 def problems(project_root, package_root) -> list:
@@ -437,6 +483,8 @@ def main(argv=None) -> int:
         print("note    " + line)
     for msg, fix in result["problems"]:
         print("PROBLEM %s" % msg + ("\n        fix: %s" % fix if fix else ""))
+    for msg, fix in result.get("warnings") or []:
+        print("WARN    %s" % msg + ("\n        fix: %s" % fix if fix else ""))
     if result["problems"]:
         print("FAIL %d reply-reading problem(s)" % len(result["problems"]))
         return 1

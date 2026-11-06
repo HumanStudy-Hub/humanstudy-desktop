@@ -396,6 +396,7 @@ class Study:
         if name not in self._modules:
             path = self.package / ("task/adapter.py" if name == "adapter" else "evaluation/evaluation.py")
             run_notice()
+            sys.dont_write_bytecode = True   # importing package code never leaves __pycache__ in the package
             spec = importlib.util.spec_from_file_location("hs_" + name, path)
             mod = importlib.util.module_from_spec(spec)
             if str(path.parent) not in sys.path:

@@ -779,28 +779,43 @@ def check_claims(root, record):
     return out
 
 
-def problems(root):
-    """[(message, fix)] for the analysis code, survey versions and researcher questions of a project folder."""
+def findings(root):
+    """([(message, fix)] problems, [(message, fix)] warnings) for the analysis code, survey versions, researcher
+    questions and not-printed claims of a project folder. The claims rules came with build contract 3: below
+    study.json buildContract 3 their findings are warnings, so a project that was ready stays ready."""
+    import contract
     root = Path(root).resolve()
     record = cm.source_record(root)
     record = record if isinstance(record, dict) else {}
-    out = []
+    strict = contract.project_strict(root)
+    out, older = [], []
     for check in (check_analysis_code, check_survey_versions, check_questions, check_claims):
         try:
-            out += check(root, record)
+            found = check(root, record)
         except Exception as exc:  # noqa: BLE001 - a malformed record is reported, not a crash
-            out.append(("%s could not run (%s: %s)" % (check.__name__, type(exc).__name__, exc),
-                        "fix the malformed record in sources/SOURCE.json"))
-    return out
+            found = [("%s could not run (%s: %s)" % (check.__name__, type(exc).__name__, exc),
+                      "fix the malformed record in sources/SOURCE.json")]
+        if check is check_claims and not strict:
+            older += [(m + contract.OLDER_THAN_3, h) for m, h in found]
+        else:
+            out += found
+    return out, older
+
+
+def problems(root):
+    """[(message, fix)] that block: findings() without the warnings."""
+    return findings(root)[0]
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("project", nargs="?", default=".")
     a = ap.parse_args(argv)
-    found = problems(a.project)
+    found, older = findings(a.project)
     for msg, fix in found:
         print("PROBLEM %s" % msg + ("\n        fix: %s" % fix if fix else ""))
+    for msg, fix in older:
+        print("WARN    %s" % msg + ("\n        fix: %s" % fix if fix else ""))
     if found:
         print("FAIL %d problem(s) in how the build used its sources" % len(found))
         return 1

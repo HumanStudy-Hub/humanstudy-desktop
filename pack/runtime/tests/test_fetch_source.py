@@ -545,6 +545,15 @@ class Verify(Base):
         self.assertEqual((status, len(opener.requests), self.pauses), ("gone", 1, []))
         self.assertEqual(quiet(fetch_source.main, ["--verify", str(self.root)]), 1)
 
+    def test_an_http_error_without_a_body_is_not_closed(self):
+        # Python 3.9: HTTPError(..., fp=None).close() raises KeyError; the answer must still read as gone
+        class Bodiless(urllib.error.HTTPError):
+            def close(self):
+                raise KeyError("file")
+        gone = Bodiless(self.URL, 410, "gone", email.message.Message(), None)
+        gone.fp = None   # as Python 3.9 leaves it (later versions put an empty body there)
+        self.assertEqual(self.status({self.URL: [gone]})[0], "gone")
+
     def test_transient_retries_then_not_rechecked(self):
         status, detail, opener = self.status({self.URL: [503], "https://api.osf.io/v2/files/abcde/": [503]}, attempts=2)
         self.assertEqual(status, "not re-checked")

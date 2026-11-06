@@ -431,6 +431,40 @@ class Screens(Fixture):
         self.assertEqual(problems, [])
 
 
+class ContractGate(Fixture):
+    """The analysis run's rules came with build contract 3: problems from study.json buildContract 3, warnings
+    below (a run that times out, too), so a project that was ready stays ready after an app update."""
+
+    def verdict(self, contract, probe):
+        from unittest import mock
+        root, pkg = self.package(rating())
+        if contract is not None:
+            (pkg / "study.json").write_text(json.dumps({"buildContract": contract}), encoding="utf-8")
+        with mock.patch.object(check_validity, "prompts_of", lambda p: {"runs": []}), \
+                mock.patch.object(check_validity, "probe_of", lambda p, root=None: probe):
+            report = check_validity.check(root, pkg)
+        return [m for m, _ in report["problems"]], [m for m, _ in report["warnings"]]
+
+    def test_a_timed_out_analysis_run_warns_below_contract_3(self):
+        hung = {"error": "the analysis run did not finish within 360 s", "timedOut": True}
+        for contract in (None, 2):
+            problems, warnings = self.verdict(contract, hung)
+            self.assertFalse([m for m in problems if "could not judge the effects" in m], (contract, problems))
+            self.assertTrue([m for m in warnings if "could not judge the effects" in m
+                             and "blocking from buildContract 3" in m], (contract, warnings))
+        problems, warnings = self.verdict(3, hung)
+        self.assertTrue([m for m in problems if "could not judge the effects" in m], problems)
+
+    def test_an_effect_that_does_not_compute_warns_below_contract_3(self):
+        root, pkg = self.package(rating(value="v"))
+        crashing = self.probe(root, pkg)
+        problems, warnings = self.verdict(2, crashing)
+        self.assertFalse([m for m in problems if "never compute" in m], problems)
+        self.assertTrue([m for m in warnings if "never compute" in m], warnings)
+        problems, _ = self.verdict(3, crashing)
+        self.assertTrue([m for m in problems if "never compute" in m], problems)
+
+
 class CompiledPython(unittest.TestCase):
     def test_a_package_ships_no_pycache(self):
         root = Path(tempfile.mkdtemp(prefix="analysis-run-"))

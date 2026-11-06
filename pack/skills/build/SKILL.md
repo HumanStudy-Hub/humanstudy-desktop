@@ -567,10 +567,17 @@ evaluation/evaluation.py       evaluate(sessions) -> dict; not_ready when a test
 ```
 
 Every package built or rebuilt now carries `task/replies.py` and `"buildContract": 3` in study.json; they
-mark it as built under the current rules, which are then blocking. (Contract 2 packages keep the reader rules
-blocking; the effects and capabilities rules added with contract 3 print as warnings for them.) Removing either (or leaving it out) to
-pass a check is forbidden: a stamped package without the reader fails, and the readiness gate shows every
-package without both as an "older build" to the researcher.
+mark it as built under the current rules, which are then blocking. Removing either, lowering the number or
+leaving it out to pass a check is forbidden: a stamped package without the reader fails, and the readiness gate
+shows a package below contract 3 to the researcher with a `contract` warning.
+
+**Build contract.** Which rules block depends on study.json `buildContract` (contract.py), so a project that
+was ready stays ready after an app update:
+
+| Rules | Checked by | below 3 (contract 2, or a legacy package) | 3 |
+|---|---|---|---|
+| Shared reader (present, unchanged copy, answer-aware smoke test, every answer recorded); prompt rules (memory claims, internal ids, crashing arms, unread answers turned into numbers); downloaded sources, source use, survey flow, Word sources, design disclosures; minimum search list; result-table rules | check_package, check_replies, recorded_answers, check_validity, check_results, check_materials, effects.py | block at contract 2; warn on a legacy package (no reader, no buildContract) | block |
+| Everything added with contract 3: an earlier release of `task/replies.py`; a reply in the screen's own words read wrongly (current reader only); `__pycache__` / `.pyc` in the package; the analysis run and its rules (effects compute, unread answers, answer gates, memory across tasks, summaries, check stimuli, question kinds, export text and design names in prompts; a run that times out); not-printed claims; unread searches, issue pages, OSF listings, author data, unlicensed files in `sources/` and copies of them; a batch list (`SOURCES.json`) that disagrees with SOURCE.json; survey pictures, opt-out boxes and display logic; verbatim image-only pages, opt-out boxes as anchors and mismatches with a cited `.qsf` / `.docx`; the effects and capabilities rules (scale, signs, pooled and model-based values, hypothesis status, `run.excluded` arms) | check_replies, check_package, check_validity, check_source_use, check_materials, sources.py, qsf_flow, check_verbatim, effects.py, capabilities.py | warn (`... (older build: blocking from buildContract 3)`) | block |
 
 Do not write `source/evidence.json` or `audit/missing_information.json`: the evidence and the
 missing information are `program.json`'s `evidence` and `issues`, and every tool reads them there.
@@ -711,8 +718,9 @@ Rules the runner depends on:
 - **Reading replies.** Copy `.opencode/skills/build/package_files/replies.py` into the package as
   `task/replies.py`, unchanged (check_package.py compares it byte for byte; it is the same file as
   HumanStudy-Bench's, so packages read replies the same way in both), and ask every question a participant
-  answers through it: `sys.path.insert(0, str(Path(__file__).resolve().parent))`, then `from replies import
-  Question, ask, render_questions, smoke_main`; describe each question as `Question(id, text, options, ...)`,
+  answers through it: `sys.path.insert(0, str(Path(__file__).resolve().parent))` and `sys.dont_write_bytecode =
+  True` (no `__pycache__` in the package), then `from replies import Question, ask, render_questions,
+  smoke_main`; describe each question as `Question(id, text, options, ...)`,
   end the prompt with `render_questions(questions)`, read the answers from `ask(llm, prompt, questions)`.
   Never write your own reply parser and never call `llm` directly. End the adapter with `if __name__ ==
   "__main__" and "--smoke-test" in sys.argv: sys.exit(smoke_main(Path(__file__)))`.
@@ -793,20 +801,12 @@ Rules the runner depends on:
   `check_materials.py`.
   Each failing check shows its first problem in the Simulation tab. Editing the checkers inside the
   project changes nothing there: fix the program, the package or effects.json.
-- Older builds: a legacy package built before the shared reply reader (no `task/replies.py` and no study.json
-  `buildContract` 2; see contract.py) gets the rules
-  added with it as warnings, not failures, so a project that was ready stays ready after an app update. The
-  readiness gate then always adds one `contract` warning, "older build: newer build rules are warnings;
-  rebuild with the current build skill to make them blocking". The checks print them as `WARN ...`
-  (check_validity.py, check_results.py, check_materials.py, effects.py) or `warn  ...` (check_package.py) lines
-  and still print PASS: prompts that mention earlier screens they do not carry, a memory design that carries
-  nothing, internal ids in prompts, a declared condition that crashes or refuses without a blocking issue,
-  image-only tables, lost minus signs, impossible CI or p values, results printed only in the text, unrecorded
-  abstract findings and supplement tables, a pending material whose searches skip the minimum search list, a
-  computed effect block that does not hold what `reported` claims (statistic, scale, one value, n), and the
-  downloaded-source, source-use (including a question check that leaves out the paper), survey-flow,
-  Word-source and design-disclosure findings. Rebuilding the package with `task/replies.py` and
-  `"buildContract": 3` makes all of them blocking.
+- Older builds: the rules a package's contract does not make blocking (the **Build contract** table above)
+  print as `WARN ...` (check_validity.py, check_results.py, check_materials.py, check_verbatim.py, effects.py,
+  capabilities.py) or `warn  ...` (check_package.py) lines, and the check still prints PASS. The readiness gate
+  lists them as warnings and adds one `contract` warning: "older build: ..." for a legacy package without the
+  shared reader, "build contract below 3: ..." for a contract 2 package. Rebuilding the package with
+  `task/replies.py` and `"buildContract": 3` makes all of them blocking.
 
 ### Rules from the batch reviews (contract 3)
 
@@ -819,8 +819,8 @@ nothing (a within-person correlation across fresh calls is set by construction).
 what stayed on screen, make the replay-memory issue `blocking` so the researcher decides; never mark memory
 "none" as a non-blocking decision when an outcome is within-person. (check_validity)
 
-**Prompts are screen text only.** No "Start of Block", page breaks, `${...}`, condition names, build-written
-intros not declared as stand-ins, or running summaries ("Your answers so far") that a condition's screens did
+**Prompts are screen text only.** No survey or Word export lines (see "Survey files", Word copies), `${...}`,
+condition names, build-written intros not declared as stand-ins, or running summaries ("Your answers so far") that a condition's screens did
 not show. A comprehension, recall or attention check is asked without the stimulus on screen unless a cited
 source says it stayed. (check_validity, on prompts captured from a stub run)
 
@@ -861,7 +861,8 @@ others went.
   as not like-for-like.
 - A hypothesis is `tested` only when the replay computes every effect naming it and they cover its program
   studies. Use `partial` with a `reason` when only some do (excluded effects, one design or site of a pooled
-  hypothesis, one side of a comparison); `untested` / `not-computable` when none do. Give the excluded half its
+  hypothesis, one side of a comparison); `untested` with `untestedBecause: "not-computable"` and a `reason` when
+none do. Give the excluded half its
   own effect listed in `run.excluded.effects` rather than leaving it out.
 - Before writing "n / means / SDs not printed" in `missing`, check the recorded result tables.
 
@@ -870,7 +871,12 @@ others went.
 still run with this part left out (pictures, timers, demographics, questionnaires). `effects` = every effect
 the replay cannot compute, including every effect on a blocked arm. Never list a runnable arm under `arms`.
 
-**Build with `PYTHONDONTWRITEBYTECODE=1`.** Packages never ship `__pycache__`.
+**Build with `PYTHONDONTWRITEBYTECODE=1`.** Packages never ship `__pycache__` (the adapter sets
+`sys.dont_write_bytecode = True` before `from replies import ...`; see Reading replies).
+
+Searches, OSF listings, not-printed claims and supplements kept in `sources/` follow "Materials the paper does
+not print" (Search completeness, "Not printed" must be true); pictures, opt-out boxes and display logic of survey
+questions follow "Survey files". They are not repeated here.
 
 ### Effects: from hypotheses to computable effects
 

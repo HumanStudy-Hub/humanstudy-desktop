@@ -1155,12 +1155,26 @@ def problems(root: Path, package: Path | None = None) -> list[tuple[str, str]]:
     [(message, fix)]; empty when the project has no .qsf with a survey flow. A record of a shape the check
     does not expect never crashes it: the failure is one problem line, not a traceback.
     """
+    return findings(root, package)[0]
+
+
+def findings(root: Path, package: Path | None = None) -> tuple:
+    """(problems, warnings). The transcription rules (pictures, opt-out boxes, display logic) came with build
+    contract 3: below study.json buildContract 3 (the package given, else any package of the project) their
+    findings are warnings, so a project that was ready stays ready."""
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import contract
+    strict = contract.rules_level(root, package)
+    older: list = []
     try:
-        return _problems(root, package)
+        found = _problems(root, package, None if strict else older)
+        return found, [(m + contract.OLDER_THAN_3, h) for m, h in older]
     except Exception as exc:  # noqa: BLE001  a malformed project must not stop the package check
         return [("the survey-flow check could not complete (%s: %s)" % (type(exc).__name__, str(exc)[:160]),
                  "check program.json and materials/materials.json for records of the wrong shape (check_program.py "
-                 "names them); if they are fine, report this with the .qsf")]
+                 "names them); if they are fine, report this with the .qsf")], []
 
 
 # Declaring what a transcription leaves out: a key such as "images" / "figure" with a value, a note that names the
@@ -1369,7 +1383,7 @@ def _lists(value: Any, path: str = "", parent: dict | None = None) -> Iterable[t
             yield from _lists(item, f"{path}[{index}]", parent)
 
 
-def _problems(root: Path, package: Path | None) -> list[tuple[str, str]]:
+def _problems(root: Path, package: Path | None, older: list | None = None) -> list[tuple[str, str]]:
     root = Path(root).resolve()
     reach = survey_reaches(root)
     if not reach:
@@ -1449,7 +1463,7 @@ def _problems(root: Path, package: Path | None) -> list[tuple[str, str]]:
         more = f" and {count - 1} more of its strings" if count > 1 else ""
         out.append((f"{where} uses survey text from {qid}, which participants never saw ({reason}; see qsf_flow.py's "
                     f"not_reachable list): {_short(text, 70)!r}{more}", FIX_UNREACHABLE))
-    out += _transcription_problems(root, reach, program, _packages(root, package))
+    (out if older is None else older).extend(_transcription_problems(root, reach, program, _packages(root, package)))
     return out
 
 
@@ -1569,9 +1583,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--package", type=Path, help="with --check: only this package/<slug>")
     args = parser.parse_args(argv)
     if args.check is not None:
-        found = problems(args.check, args.package)
+        found, older = findings(args.check, args.package)
         for message, fix in found:
             print(f"PROBLEM {message}" + (f"\n        fix: {fix}" if fix else ""))
+        for message, fix in older:
+            print(f"WARN    {message}" + (f"\n        fix: {fix}" if fix else ""))
         print(f"FAIL {len(found)} survey problem(s)" if found else "PASS survey files")
         return 1 if found else 0
     if args.qsf is None:

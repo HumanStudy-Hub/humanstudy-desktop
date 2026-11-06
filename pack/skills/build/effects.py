@@ -50,7 +50,7 @@ for an older build, so a project that was ready stays ready):
                 never a replayed arm's cell.
   status        a hypothesis is `tested` only when the replay computes every effect naming it (none in
                 capabilities.json run.excluded[].effects, none on a blocked arm) and they cover its program studies;
-                `partial` (with a reason) when only some do; `untested` / not-computable when none do.
+                `partial` (with a reason) when only some do; `untested` (untestedBecause not-computable) when none do.
   not printed   a reported.missing entry that says n, means, SDs or counts are not printed, while a result table
                 recorded in program.json for the study prints them, names that table to say why.
 Warnings only: a prediction whose quote says "increases" while the study's design or hypothesis text says the

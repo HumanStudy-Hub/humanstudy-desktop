@@ -595,7 +595,8 @@ def _get(url, attempts=4, accept=None, limit=MAX_FILE, sleep=time.sleep, timeout
                     chunks.append(chunk)
             return b"".join(chunks)
         except urllib.error.HTTPError as exc:
-            exc.close()
+            if getattr(exc, "fp", None) is not None:   # an HTTPError without a body has no fp; close() then fails
+                exc.close()
             if exc.code in GONE_CODES:
                 raise SourceGone("%s answered HTTP %d" % (public_url(url), exc.code)) from exc
             last = "HTTP %d" % exc.code

@@ -253,7 +253,12 @@ class Materials(unittest.TestCase):
         self.program["nodes"].pop()
         self.material("instruction-text")["search"].append(
             {"where": "JDM original site", "url": "https://journal.sjdm.org/15/15415a/", "found": False})
-        # the article folder is not where JDM lists an article's files: its issue page is
+        # the article folder is not where JDM lists an article's files: its issue page is (a rule of build
+        # contract 3: a warning for this contract 2 project, a problem once study.json says buildContract 3)
+        self.assertFalse(any("issue page" in p for p in self.problems()))
+        self.assertTrue(any("issue page" in m and "blocking from buildContract 3" in m
+                            for m, _ in self.check()["warnings"]))
+        self.write("package/study/study.json", json.dumps({"buildContract": 3}))
         self.assertEqual([p for p in self.problems() if "search skipped" in p and "issue page" not in p], [])
         self.assertTrue(any("issue page" in p for p in self.problems()))
         self.material("instruction-text")["search"].append(

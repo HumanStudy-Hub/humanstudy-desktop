@@ -474,6 +474,34 @@ class Batch2Reader(unittest.TestCase):
         self.assertEqual(self.read("I'd give UNICEF the full 1.70", Question(
             "g", text="How much do you give to UNICEF?", kind="number", minimum=0, maximum=1.7, integer=False)), 1.7)
 
+    def test_a_number_beside_except_but_or_a_fraction_is_never_read(self):
+        tokens = Question("c", "How many tokens do you contribute (0-20)?", kind="number", minimum=0, maximum=20)
+        for reply in ("I'd contribute all but one", "Everything except two", "I contribute one third",
+                      "None of my tokens except five", "all but 1", "I'd contribute 10 less than half", "minus 2",
+                      "more than 5", "10 percent of my tokens"):
+            self.assertEqual(self.read(reply, tokens), "ambiguous", reply)
+        for reply in ("All rows except one", "in every row but one", "I choose the lottery in all nine rows except one"):
+            self.assertEqual(self.read(reply, self.CEM), "ambiguous", reply)   # neither 1 nor the corner's 10
+        self.assertEqual(self.read("I contribute 5", tokens), 5)
+        self.assertEqual(self.read("I choose the lottery in all nine rows", self.CEM), 10)
+
+    def test_no_doubt_and_a_double_negation_are_never_no(self):
+        for reply in ("No doubt about it", "I would not say no", "I'm not saying no"):
+            self.assertNotEqual(self.read(reply, self.SEEN), 1, reply)
+        self.assertEqual(self.read("I would not say no", self.SEEN), "ambiguous")
+        for reply, index in (("No", 1), ("No, I have not", 1), ("I would not", 1), ("Yes", 0)):
+            self.assertEqual(self.read(reply, self.SEEN), index, reply)
+
+    def test_left_over_is_not_giving_unless_left_to_someone(self):
+        for reply in ("I have 5 left", "5 left"):
+            self.assertEqual(self.read(reply, self.GIVE), "ambiguous", reply)
+            self.assertEqual(self.read(reply, self.TAKE), "ambiguous", reply)
+        self.assertEqual(self.read("I'd leave 5 for him", self.GIVE), 5)
+        self.assertEqual(self.read("5 left for the other participant", self.GIVE), 5)
+        self.assertEqual(self.read("I leave 0.5 to the other participant", self.TAKE), "ambiguous")
+        leave = Question("l", "How much do you leave for the other player?", kind="number", minimum=0, maximum=10)
+        self.assertEqual(self.read("I leave 5", leave), 5)
+
     def test_zero_said_in_words(self):
         for question, reply in ((self.TAKE, "I'll take nothing."), (self.TAKE, "I would not take anything"),
                                 (self.TAKE, "I don't want to take any money."), (self.CONTRIBUTE, "I contribute nothing"),
@@ -662,6 +690,79 @@ class Batch2Reader(unittest.TestCase):
                 stub = replies.StubParticipant(seed=seed, noise=0.0, use_keys=False)
                 page = ask(stub, replies.render_questions([question]), [question])
                 self.assertTrue(page.ok and not stub.misreads, (question.text, page.replies, stub.misreads))
+
+
+class ShippedVersions(unittest.TestCase):
+    """An earlier shipped reader in task/replies.py: a warning below buildContract 3, a problem from 3; the
+    own-wording rule runs only on the current reader at contract 3; the analysis run's stand-in uses that copy."""
+
+    V4 = "98bf6e07e5fd9f5a0cdd9b174ac3b28169f9a9e7cdd362ed07c1f8a4fd6f80f4"
+
+    def package(self, copy_bytes, contract=None):
+        root = Path(tempfile.mkdtemp(prefix="replies-version-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        pkg = root / "package/x"
+        (pkg / "task").mkdir(parents=True)
+        (pkg / "task/replies.py").write_bytes(copy_bytes)
+        (pkg / "task/adapter.py").write_text(
+            "import replies\nif __name__ == '__main__': replies.smoke_main(Path(__file__))\n", encoding="utf-8")
+        if contract is not None:
+            (pkg / "study.json").write_text(json.dumps({"buildContract": contract}), encoding="utf-8")
+        return root, pkg
+
+    def older_copy(self):
+        """The v4 reader as it shipped: from git when the history is there, else a stand-in with its hash."""
+        run = subprocess.run(["git", "-C", str(REPO), "log", "--format=%H", "--", "pack/skills/build/package_files/replies.py"],
+                             capture_output=True, text=True)
+        for commit in run.stdout.split():
+            body = subprocess.run(["git", "-C", str(REPO), "show", "%s:pack/skills/build/package_files/replies.py" % commit],
+                                  capture_output=True).stdout
+            import hashlib
+            if hashlib.sha256(body).hexdigest() == self.V4:
+                return body
+        self.skipTest("the v4 reader is not in this checkout's history")
+
+    def test_the_known_versions(self):
+        self.assertEqual(check_replies.OLDER_SHIPPED[self.V4], "4")
+        _, pkg = self.package(check_replies.SHIPPED.read_bytes())
+        self.assertEqual(check_replies.copy_version(pkg), "current")
+        _, pkg = self.package(b"# edited\n")
+        self.assertIsNone(check_replies.copy_version(pkg))
+        self.assertTrue(check_replies.copy_problems(pkg, []))   # an edited copy fails at every contract
+
+    def test_an_older_shipped_copy_warns_below_contract_3_and_fails_from_it(self):
+        old = self.older_copy()
+        for contract in (None, 2):
+            _, pkg = self.package(old, contract)
+            self.assertEqual(check_replies.copy_version(pkg), "4")
+            warnings = []
+            self.assertEqual(check_replies.copy_problems(pkg, warnings), [])
+            self.assertTrue(any("shipped as version 4" in m and "buildContract 3" in m for m, _ in warnings))
+        _, pkg = self.package(old, 3)
+        problems = check_replies.copy_problems(pkg, [])
+        self.assertTrue(any("shipped as version 4" in m for m, _ in problems), problems)
+        # the analysis run's stand-in replies with the package's own reader
+        sys.path.insert(0, str(BUILD))
+        import check_validity
+        self.assertEqual(check_validity.stand_in_reader(pkg), pkg / "task/replies.py")
+        _, current = self.package(check_replies.SHIPPED.read_bytes(), 3)
+        self.assertIsNone(check_validity.stand_in_reader(current))
+
+    def test_own_wording_runs_only_on_the_current_reader_at_contract_3(self):
+        from unittest import mock
+        asked = [replies._asked_summary(Batch2Reader.CEM)]
+        report = {"ok": True, "arms": {}, "problems": [], "asked": asked}
+        lost = [("question cem: a reply in the screen's own words ...", "fix")]
+        for contract, current, runs in ((2, True, False), (3, True, True), (3, False, False)):
+            body = check_replies.SHIPPED.read_bytes() if current else self.older_copy()
+            root, pkg = self.package(body, contract)
+            (pkg / "task/adapter.py").write_text("import replies\nreplies.smoke_main(__file__)\n", encoding="utf-8")
+            with mock.patch.object(check_replies, "smoke", lambda p: report), \
+                    mock.patch.object(check_replies, "own_wording_problems", lambda a: list(lost)), \
+                    mock.patch.object(check_replies, "survey_checks", lambda p: []):
+                result = check_replies.check(root, pkg)
+            self.assertEqual(any(m.startswith("question cem") for m, _ in result["problems"]), runs,
+                             (contract, current, result))
 
 
 class OwnWording(unittest.TestCase):

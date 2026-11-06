@@ -20,6 +20,8 @@ normalisation check_quotes.py uses:
               record `verification: "image-compared"` (the rendered page read again word by word): a problem
   opt out as anchor  a list in the value puts a Qualtrics slider's opt-out box ("Not Applicable", the
               export's Labels "NA" with Configuration.NotApplicable) among the scale's anchors: a problem
+  (image only, opt out as anchor, and partial / not found against a cited .qsf or .docx are rules of build
+  contract 3: problems when study.json says buildContract >= 3, WARN lines below, so a ready project stays ready.)
   table text layer   a table field whose text cells mostly (>= 50%) match a garbled text layer: a note
   close unverified   close, and every evidence record it cites is marked `verification: "unverified"`
                      because the page's text layer is garbled (OCR): a note, to compare with the image
@@ -404,11 +406,41 @@ def check(program_path):
             status = "image_only"
             info += ("; the words cannot be compared with a text layer: read the rendered page again word by word and "
                      "record it on each evidence record (\"verification\": \"image-compared\"), or relabel the field")
-        results.append({"field": where, "status": status, "info": info, "pages": pages})
+        result = {"field": where, "status": status, "info": info, "pages": pages}
+        if any(str(r).lower().endswith(NEW_SOURCES) for r in cited_files(ids, evidence, default)):
+            result["newSource"] = True   # compared since build contract 3 (a .qsf or .docx is cited)
+        results.append(result)
     counts = {}
     for r in results:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
-    return {"counts": counts, "results": results}
+    import contract
+    return {"counts": counts, "results": results, "strict": contract.project_strict(root)}
+
+
+PASSING = ("found", "unchecked", "table_text_layer", "close_unverified", "reference")
+NEW_SOURCES = (".qsf", ".docx")             # files compared since build contract 3
+CONTRACT3_STATUSES = ("image_only", "opt_out_as_anchor")
+
+
+def contract3_finding(result):
+    """A finding only the rules of build contract 3 make: an image-only cited page, an opt-out box among the
+    anchors, or a mismatch with a cited .qsf or .docx (not compared before)."""
+    return result["status"] in CONTRACT3_STATUSES or (bool(result.get("newSource")) and result["status"] not in PASSING)
+
+
+def split_findings(report, strict=None):
+    """(problems, warnings): results that are not the printed words; below study.json buildContract 3 the
+    findings of contract 3's rules are warnings, so a project that was ready stays ready."""
+    strict = report.get("strict", True) if strict is None else strict
+    bad = [r for r in report["results"] if r["status"] not in PASSING]
+    if strict:
+        return bad, []
+    return [r for r in bad if not contract3_finding(r)], [r for r in bad if contract3_finding(r)]
+
+
+def contract_note():
+    import contract
+    return contract.OLDER_THAN_3
 
 
 def main(argv=None):
@@ -419,9 +451,8 @@ def main(argv=None):
     report = check(a.program)
     if a.json:
         Path(a.json).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    bad = [r for r in report["results"] if r["status"] not in ("found", "unchecked", "table_text_layer", "close_unverified",
-                                                              "reference")]
-    for r in bad:
+    bad, older = split_findings(report)
+    for r in bad + older:
         fix = ("copy the words from the raw text layer (`hs-pdf pages` without --layout) or the page image, one "
                "space between words; --layout output is for reading tables, never for verbatim text"
                if r["status"] == "layout_split" else
@@ -432,8 +463,8 @@ def main(argv=None):
                if r["status"] == "opt_out_as_anchor" else
                "copy the exact printed words and cite their page, or relabel the field reported (derived with a "
                "derivation) if it is not a transcription; never invent text")
-        print("PROBLEM %s (p. %s): %s: %s\n        fix: %s"
-              % (r["field"], ",".join(r.get("pages") or []) or "?", r["status"].replace("_", " "), r["info"], fix))
+        print("%s %s (p. %s): %s: %s\n        fix: %s"
+              % ("PROBLEM" if r in bad else "WARN   ", r["field"] + ("" if r in bad else contract_note()), ",".join(r.get("pages") or []) or "?", r["status"].replace("_", " "), r["info"], fix))
     for r in report["results"]:
         if r["status"] in ("unchecked", "table_text_layer", "close_unverified"):
             print("note    %s: %s (%s); compare it with the page image yourself" % (r["field"], r["status"].replace("_", " "), r["info"]))

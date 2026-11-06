@@ -1439,10 +1439,23 @@ def _probe_child(pkg, nonce):
     import time
     time.sleep = lambda *a, **k: None
     sys.dont_write_bytecode = True
-    spec = importlib.util.spec_from_file_location("humanstudy_replies_shipped", SHIPPED_REPLIES)
-    replies = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = replies
-    spec.loader.exec_module(replies)
+    replies = None
+    own = stand_in_reader(pkg)
+    if own is not None:   # the package's own (older, shipped) reader: stand-in replies it reads as the package does
+        try:
+            spec = importlib.util.spec_from_file_location("humanstudy_replies_package", own)
+            replies = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = replies
+            spec.loader.exec_module(replies)
+            if not all(hasattr(replies.StubParticipant, a) for a in STUB_API) or not hasattr(replies, "runnable_arms"):
+                replies = None
+        except Exception:  # noqa: BLE001  an unreadable copy: the shipped reader
+            replies = None
+    if replies is None:
+        spec = importlib.util.spec_from_file_location("humanstudy_replies_shipped", SHIPPED_REPLIES)
+        replies = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = replies
+        spec.loader.exec_module(replies)
     sys.path.insert(0, str(EFFECTS_CORE))
     import effects_core as ec
     here = str(Path(__file__).resolve().parent)
@@ -1456,6 +1469,20 @@ def _probe_child(pkg, nonce):
     except BaseException as exc:  # noqa: BLE001  an import error in the package is a finding, not a crash
         report = {"error": "%s: %s" % (type(exc).__name__, str(exc)[:300])}
     print(marked(PROBE_MARK, nonce, json.dumps(report, default=str, ensure_ascii=True)), flush=True)
+
+
+STUB_API = ("_current", "_one", "_region", "answer_for")   # what _Probe uses of replies.StubParticipant
+
+
+def stand_in_reader(pkg):
+    """The package's task/replies.py when it is an earlier shipped reader (check_replies.OLDER_SHIPPED): the
+    analysis run's stand-in then writes replies as that reader expects, so an older package is not judged by the
+    current reader's stand-in. None for the current reader, an edited copy or no copy (the shipped file is used)."""
+    try:
+        import check_replies
+        return Path(pkg) / "task/replies.py" if check_replies.copy_version(pkg) not in (None, "current") else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _project_copy(pkg, work, root=None):
@@ -2314,23 +2341,27 @@ def check(root, package=None, capture_prompts=True):
                     "participants only by the paper's own rule; when the paper prints that rule, put "
                     "`# exclusion: <evidence id>` on the line above (the quote must state the exclusion)")
 
-        # the analysis run: effects compute, unread answers, answer gates, memory across tasks (batch-2 reviews)
+        # the analysis run: effects compute, unread answers, answer gates, memory across tasks (batch-2 reviews).
+        # Rules of build contract 3: problems only when study.json says buildContract >= 3 (contract.strict),
+        # warnings below, so a project that was ready before an app update stays ready.
         warn = lambda msg, fix="": warnings.append((msg, fix))  # noqa: E731  a heuristic: printed, never a failure
+        newer3 = add if contract.strict(pkg) else (
+            lambda msg, fix="": warnings.append((msg + contract.OLDER_THAN_3, fix)))
         hung = "did not finish" in str(cap.get("error") or "")   # already a failure; a second wait adds nothing
         probe = probe_of(pkg, root=root) if capture_prompts and not hung and (
             (root / "effects.json").is_file() or current) else {}
-        analysis = effect_rules(root, pkg, probe, newer, warn, notes) if probe else None
-        split = split_rules(root, pkg, program, newer)
+        analysis = effect_rules(root, pkg, probe, newer3, warn, notes) if probe else None
+        split = split_rules(root, pkg, program, newer3)
         if probe and not probe.get("error"):
-            unread_rules(probe, newer, warn)
-            question_rules(pkg, probe, newer, warn)
+            unread_rules(probe, newer3, warn)
+            question_rules(pkg, probe, newer3, warn)
             if not split:
-                memory_rules(root, pkg, program, probe, newer)
-            summary_rules(probe, participant_text(program, root), newer)
-            check_rules(program, _json(pkg / "materials/materials.json") or {}, probe, newer)
+                memory_rules(root, pkg, program, probe, newer3)
+            summary_rules(probe, participant_text(program, root), newer3)
+            check_rules(program, _json(pkg / "materials/materials.json") or {}, probe, newer3)
         static_unread_rules(pkg, warn)
         if runs:
-            prompt_text_rules(root, pkg, program, runs, pieces, newer, warn)
+            prompt_text_rules(root, pkg, program, runs, pieces, newer3, warn)
 
     # missing instructions: one rule (blocking only when the adapter refuses to run without the text)
     # Blocking is right when the adapter refuses to run without the text: the whole study, or the arms that need it
@@ -2379,7 +2410,7 @@ def main(argv=None):
     for msg, fix in report["problems"]:
         print("PROBLEM %s" % msg + ("\n        fix: %s" % fix if fix else ""))
     for msg, fix in report.get("warnings") or []:
-        print("WARN    %s%s" % (msg, "" if report.get("currentContract") else
+        print("WARN    %s%s" % (msg, "" if report.get("currentContract") or "(older build:" in msg else
                                 " (older build: blocking once rebuilt with task/replies.py)")
               + ("\n        fix: %s" % fix if fix else ""))
     for line in report["notes"]:

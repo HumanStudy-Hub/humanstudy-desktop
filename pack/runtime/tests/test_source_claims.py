@@ -66,6 +66,10 @@ class Project(unittest.TestCase):
         self.write("package/paper/task/task.json", {"conditions": [{"id": "a"}]})
         self.write("package/paper/task/adapter.py", "def run_sessions(llm, seed, n, arms=None):\n    return []\n")
         self.write("package/paper/task/replies.py", "# the shared reply reader: current contract\n")
+        self.contract(3)   # the rules of this file came with build contract 3
+
+    def contract(self, level):
+        self.write("package/paper/study.json", {"buildContract": level})
 
     def write(self, rel, data):
         path = self.root / rel
@@ -266,10 +270,79 @@ class Searches(Project):
         self.assertTrue(any("sources/supplement.txt is in sources/ but not in" in m for m in found), found)
         self.assertTrue(any("copies the private material sources/supplement.txt" in m for m in found), found)
         self.assertIn("sources/supplement.txt", check_materials.private_paths(self.root))
-        # an older-contract project gets a warning only
-        (self.root / "package/paper/task/replies.py").unlink()
+        # a contract 2 project (and an older one) gets warnings only
+        for older in (2, None):
+            if older is None:
+                (self.root / "package/paper/task/replies.py").unlink()
+                (self.root / "package/paper/study.json").unlink()
+            else:
+                self.contract(older)
+            report = check_materials.check(self.root, self.root / "package/paper")
+            self.assertEqual([m for m, _ in report["problems"] if "supplement.txt" in m], [], older)
+            self.assertTrue(any("is in sources/ but not in" in m and "blocking from buildContract 3" in m
+                                for m, _ in report["warnings"]), older)
+            self.assertTrue(any("copies the private material" in m for m, _ in report["warnings"]), older)
+
+
+class ContractGate(Project):
+    """Every rule added with build contract 3 blocks only from study.json buildContract 3: below, a warning."""
+
+    def test_survey_transcription_rules_warn_below_contract_3(self):
+        self.save({"source": QSF, "screens": [{"id": "intro", "text": INTRO}]})
+        self.contract(2)
+        found, older = qsf_flow.findings(self.root)
+        self.assertFalse([m for m, _ in found if "QID1" in m], found)
+        self.assertTrue(any("QID1" in m and "blocking from buildContract 3" in m for m, _ in older), older)
+        self.assertEqual(qsf_flow.problems(self.root), found)
+        self.contract(3)
+        found, older = qsf_flow.findings(self.root)
+        self.assertTrue(any("QID1" in m for m, _ in found), found)
+        self.assertEqual(older, [])
+
+    def test_claims_warn_below_contract_3(self):
+        self.save(fields=[])
+        self.write("artifacts/failures.json", [{"pattern": "materials-not-public", "where": "Design materials",
+                                                "what": "The materials of the other 44 designs are not public."}])
+        self.write("sources/SOURCE.json", {"searches": [
+            {"where": "OSF project", "url": "https://osf.io/abcde/",
+             "result": "found 45 design folders (CC-BY 4.0); only design XUW82 was imported"}]})
+        self.contract(2)
+        found, older = check_source_use.findings(self.root)
+        self.assertFalse([m for m, _ in found if m.startswith("claims:")], found)
+        self.assertTrue(any("located and not imported" in m for m, _ in older), older)
+        self.contract(3)
+        found, older = check_source_use.findings(self.root)
+        self.assertTrue(any("located and not imported" in m for m, _ in found), found)
+
+    def test_unread_search_warns_below_contract_3(self):
+        self.write("paper.pdf", b"%PDF-1.4 stand-in")
+        self.save(fields=[])
+        self.write("sources/SOURCE.json", {"searches": [
+            {"where": "journal original site", "url": "https://journal.example.org/15/151029/",
+             "result": "nothing: HTTP 403, no supplement or data links found"}]})
+        self.contract(2)
         report = check_materials.check(self.root, self.root / "package/paper")
-        self.assertTrue(any("is in sources/ but not in" in m for m, _ in report["warnings"]))
+        self.assertFalse([m for m, _ in report["problems"] if "could not be read" in m])
+        self.assertTrue([m for m, _ in report["warnings"] if "could not be read" in m])
+
+    def test_verbatim_rules_warn_below_contract_3(self):
+        field = {"id": "policy", "origin": "verbatim", "state": "confirmed", "evidenceIds": ["ev-qsf"],
+                 "value": {"text": POLICY, "anchors": ["Not Applicable", "Not at all", "Somewhat", "Very much"]}}
+        changed = {"id": "worded", "origin": "verbatim", "state": "confirmed", "evidenceIds": ["ev-qsf"],
+                   "value": "How strongly do you oppose any new tax on airline tickets bought this year?"}
+        self.save(fields=[field, changed])
+        self.contract(2)
+        report = check_verbatim.check(self.root / "program.json")
+        self.assertFalse(report["strict"])
+        bad, older = check_verbatim.split_findings(report)
+        self.assertEqual(bad, [])
+        self.assertEqual({r["field"] for r in older}, {"m.policy", "m.worded"})
+        self.contract(3)
+        bad, older = check_verbatim.split_findings(check_verbatim.check(self.root / "program.json"))
+        self.assertEqual(({r["field"] for r in bad}, older), ({"m.policy", "m.worded"}, []))
+        # an image-only page is a contract 3 rule; a mismatch with a PDF stays a problem at every contract
+        self.assertTrue(check_verbatim.contract3_finding({"status": "image_only"}))
+        self.assertFalse(check_verbatim.contract3_finding({"status": "partial"}))
 
 
 class Licences(Project):
@@ -307,6 +380,13 @@ class Licences(Project):
         found = [m for m, _ in sources.problems(project)]
         self.assertTrue(any("sources/esm.pdf with license unknown" in m for m in found), found)
         self.assertTrue(any(QSF + " as CC-BY-4.0" in m and "NO licence" in m for m in found), found)
+        # a rule of build contract 3: a contract 2 project gets warnings
+        study = project / "package/paper/study.json"
+        study.write_text(json.dumps({"buildContract": 2}), encoding="utf-8")
+        found, older = sources.findings(project)
+        self.assertFalse([m for m, _ in found if "batch list" in m], found)
+        self.assertTrue(any("sources/esm.pdf with license unknown" in m and "buildContract 3" in m for m, _ in older))
+        study.write_text(json.dumps({"buildContract": 3}), encoding="utf-8")
         for f in data["files"]:
             f["batchLicence"] = "the list is wrong: checked the file and its page"
         (project / "sources/SOURCE.json").write_text(json.dumps(data), encoding="utf-8")

@@ -301,12 +301,33 @@ def batch_disagreements(root, data, program=None):
 
 
 def problems(root):
-    """What is missing or stale in sources/SOURCE.json, as (message, fix) pairs."""
+    """What is missing or stale in sources/SOURCE.json, as (message, fix) pairs (findings() without warnings)."""
+    return findings(root)[0]
+
+
+def findings(root):
+    """(problems, warnings). The batch-list rule (batch_disagreements) came with build contract 3: below
+    study.json buildContract 3 its findings are warnings, so a project that was ready stays ready."""
     root = Path(root).resolve()
+    out, data, program = _problems(root)
+    batch = batch_disagreements(root, data, program) if data is not None else []
+    if not batch:
+        return out, []
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import contract
+    if contract.project_strict(root):
+        return out + batch, []
+    return out, [(m + contract.OLDER_THAN_3, h) for m, h in batch]
+
+
+def _problems(root):
+    """(problems without the batch-list rule, SOURCE.json or None, program.json)."""
     fix = "run the build skill's sources.py on the project folder"
     data = load(root / NAME)
     if data is None:
-        return [("%s is missing: the paper's hash and license are not recorded" % NAME, fix)]
+        return [("%s is missing: the paper's hash and license are not recorded" % NAME, fix)], None, {}
     program = load(root / "program.json") or {}
     recorded = {f.get("path"): f for f in data.get("files") or [] if isinstance(f, dict)}
     out = []
@@ -329,8 +350,7 @@ def problems(root):
                     "put the PDF the page numbers refer to at paper.pdf"))
     elif ((data.get("pdf") or {}).get("sha256") != sha256(root / paper)):
         out.append(("%s#pdf does not hold the current SHA-256 of %s" % (NAME, paper), fix))
-    out += batch_disagreements(root, data, program)
-    return out
+    return out, data, program
 
 
 def pairs(values, flag):
@@ -357,9 +377,11 @@ def main(argv=None):
     a = ap.parse_args(argv)
     root = Path(a.root)
     if a.check:
-        found = problems(root)
+        found, older = findings(root)
         for msg, hint in found:
             print("PROBLEM %s\n        fix: %s" % (msg, hint))
+        for msg, hint in older:
+            print("WARN    %s\n        fix: %s" % (msg, hint))
         print("FAIL %d problem(s) in %s" % (len(found), NAME) if found else "PASS %s" % NAME)
         return 1 if found else 0
     data = build(root, pairs(a.license, "--license"), pairs(a.license_evidence, "--license-evidence"),

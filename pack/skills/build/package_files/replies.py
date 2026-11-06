@@ -721,6 +721,8 @@ YES_RE = re.compile(r"^(?:yes|yeah|yep|yup|i\s+(?:have|did|do|am|would|will)(?!\
 NO_RE = re.compile(r"^(?:no|nope|nah|never|i\s+have\s+not|i\s+did\s+not|i\s+do\s+not|i\s+am\s+not|"
                    r"i\s+would\s+not|i\s+will\s+not|i\s+have\s+never|not\s+seen)\b")
 
+# "No" that is not an answer of no: "No doubt about it", "No question", "No problem".
+NOT_NO_RE = re.compile(r"^no\s+(?:doubt|question|problem|worries|kidding|way\s+i\s+would\s+not)\b")
 UNSURE_RE = re.compile(r"\b(?:know|remember|recall|sure|certain|idea|maybe|perhaps|unsure|possibly|might)\b")
 
 
@@ -768,6 +770,11 @@ def _worded_choice(body: str, question: Question) -> tuple:
     yes, no = pair
     first = re.split(r"[,.;:!\-\u2013\u2014]", expanded, maxsplit=1)[0].strip()
     said_yes, said_no = bool(YES_RE.match(first)), bool(NO_RE.match(first))
+    if said_no and NOT_NO_RE.match(first):
+        return None, "ambiguous"         # "No doubt about it", "No question": an emphatic yes, never a no
+    said = NO_RE.match(first)
+    if said_no and not re.match(r"(?:no|nope|nah)\b", said.group(0)) and re.search(r"\bno\b", expanded[said.end():]):
+        return None, "ambiguous"         # "I would not say no", "I am not saying no": a double negation
     if said_yes == said_no:
         return None, "unparsed"
     if UNSURE_RE.search(expanded):
@@ -903,6 +910,24 @@ TO_OTHER_RE = re.compile(r"(?i:\b(?:to|for)\s+(?:the\s+|a\s+|an\s+|my\s+)?(?:oth
 TO_SELF_RE = re.compile(r"(?i)\b(?:to|for)\s+(?:me|myself)\b")
 
 
+LEFT_STEMS = ("leav", "left")
+# "leave 5 to the other", "5 left for him": with a recipient, leaving is passing on. "I have 5 left", "I leave 5" alone
+# say what remains, not to whom: on its own side only when the question itself asks with leave.
+RECIPIENT_AFTER_RE = re.compile(r"(?i)^(?:[\s:=]+[^\s.;:!?,]+){0,5}?\s+(?:to|for)\s+(?!(?:me|myself|mine|later)\b)"
+                                r"[a-z]")
+
+
+def _with_recipient(text: str, end: int) -> bool:
+    """A leave/left verb ending at ``end`` is followed (in its clause) by to/for someone else."""
+    clause = CLAUSE_RE.split(text[end:], maxsplit=1)[0]
+    return bool(RECIPIENT_AFTER_RE.match(clause))
+
+
+def _bare_left(stem: str, text: str, end: int, question: Question) -> bool:
+    """A leave/left that says what remains, not who receives it, in a question not asked with leave."""
+    return stem in LEFT_STEMS and not _with_recipient(text, end) and not (_asked_verbs(question) & set(LEFT_STEMS))
+
+
 def _side(stems: Iterable[str]) -> Optional[str]:
     """"keep" or "pass" for verbs all on one side of a split (keep/take vs give/leave); None otherwise."""
     stems = set(stems)
@@ -910,9 +935,16 @@ def _side(stems: Iterable[str]) -> Optional[str]:
     return "keep" if keep and not give else "pass" if give and not keep else None
 
 
-def _said_verbs(text: str) -> set:
-    """The action verbs the participant says of themself (not "others give", not "last round I gave")."""
-    return {m.group(1).lower() for m in VERB_RE.finditer(text) if not _by_others(text, m.start())}
+def _said_verbs(text: str, question: Optional[Question] = None) -> set:
+    """The action verbs the participant says of themself (not "others give", not "last round I gave"). A bare
+    leave/left ("I have 5 left") is "left over": on neither side of a split."""
+    out = set()
+    for m in VERB_RE.finditer(text):
+        if _by_others(text, m.start()):
+            continue
+        stem = m.group(1).lower()
+        out.add("left over" if question is not None and _bare_left(stem, text, m.end(), question) else stem)
+    return out
 
 
 def _other_side(text: str, question: Question) -> bool:
@@ -922,12 +954,12 @@ def _other_side(text: str, question: Question) -> bool:
     side = _side(_asked_verbs(question))
     if side is None:
         return False
-    said = _said_verbs(text)
+    said = _said_verbs(text, question)
     own, other = (KEEP_VERBS, PASS_VERBS) if side == "keep" else (PASS_VERBS, KEEP_VERBS)
     if said & set(own):
         return False
-    if said & set(other):
-        return True
+    if said & (set(other) | {"left over"}):
+        return True     # "I keep 5" to a give question; "I have 5 left" to either: what remains, not what is asked
     return bool((TO_OTHER_RE if side == "keep" else TO_SELF_RE).search(text))
 
 
@@ -937,7 +969,13 @@ def _opposite_positions(text: str, question: Question) -> set:
     if side is None:
         return set()
     other = set(PASS_VERBS if side == "keep" else KEEP_VERBS)
-    return {position for verb, _, position in _tied(text) if verb in other}
+    bare = {m.end() for m in VERB_RE.finditer(text) if _bare_left(m.group(1).lower(), text, m.end(), question)}
+    out = set()
+    for verb, _, position in _tied(text):
+        if verb in other or (verb in LEFT_STEMS and any(end <= position for end in bare)
+                             and not CLAUSE_RE.search(text[max(e for e in bare if e <= position):position])):
+            out.add(position)
+    return out
 
 
 # --------------------------------------------------------------------------- words, corners and scale labels
@@ -1038,6 +1076,9 @@ def _corner_value(text: str, question: Question) -> Any:
         clause = _clause(phrase)
         for start in range(len(reply) - len(clause) + 1) if clause else ():
             if reply[start:start + len(clause)] == clause:
+                after = reply[start + len(clause):start + len(clause) + 1]
+                if after and after[0] in EXCEPTING:
+                    continue        # "all nine rows except one": not the corner
                 rest = reply[:start] + reply[start + len(clause):]
                 if all(word in FILLER_WORDS or word == _number_text(value) for word in rest):
                     hits.add(value)
@@ -1045,6 +1086,24 @@ def _corner_value(text: str, question: Question) -> Any:
     if len(hits) > 1:
         return "ambiguous"
     return hits.pop() if hits else None
+
+
+EXCEPTING = {"except", "but", "excepting", "save", "apart", "other", "minus", "less", "fewer", "besides"}
+# A number that is not the answer itself but a part of one: "all but one", "everything except two", "none of my
+# tokens except five", "one third", "10 less than half", "minus 2", "more than 5", "10 percent of my tokens".
+EXCEPTED_RE = re.compile(
+    r"\b(?:but|except(?:ing)?|other\s+than|apart\s+from|save\s+for|besides|minus|less(?:\s+than)?|"
+    r"fewer(?:\s+than)?|more\s+than)\s+(?:(?:the|a|an|about|maybe|only|just)\s+)?(?:\d|(?:a\s+)?(?:third|half|quarter)\b)"
+    r"|\d+(?:\.\d+)?\s+(?:less|fewer|more\s+than|minus|except|other\s+than)\b"
+    r"|\b(?:\d+|a|an|one)[\s-]+(?:thirds?|halves|half|quarters?|fifths?|tenths?)\b"
+    r"|\d+(?:\.\d+)?\s*(?:%|percent|per\s?cent)\s+of\b"
+    r"|\b(?:all|everything|every|each|none|nothing|no)\b[^.;!?\d]{0,40}\b(?:but|except|other\s+than|apart\s+from|"
+    r"save)\b")
+
+
+def _excepted(text: str) -> bool:
+    """The reply states its number relative to another amount or as a share of one; never read."""
+    return bool(EXCEPTED_RE.search(_words_to_digits(_expand(text))))
 
 
 def _never_corner(reply: List[str], question: Question) -> Optional[float]:
@@ -1229,6 +1288,8 @@ def parse_number(reply: str, question: Question) -> Dict[str, Any]:
     cleaned = _clean(reply).replace("\u2212", "-")
     text = LEAD_RE.sub("", cleaned, count=1)
     text = re.sub(r"(?<![\w.])\.(\d)", r"0.\1", text)                 # ".9" is 0.9
+    if _excepted(text):
+        return _result(question, "ambiguous", reply)   # "all but one", "everything except two", "one third"
     corner = _corner_value(cleaned, question)
     if corner == "ambiguous":
         return _result(question, "ambiguous", reply)
@@ -2092,6 +2153,7 @@ def smoke_package(root: Path, seed: int = 0) -> Dict[str, Any]:
 
 def smoke_main(package_root: Any = None) -> int:
     """``python task/adapter.py --smoke-test``: print the report; exit 1 when it fails."""
+    sys.dont_write_bytecode = True   # evaluation.py and the adapter's siblings leave no __pycache__ in the package
     root = Path(package_root) if package_root else Path(__file__).resolve().parents[1]
     if root.is_file():
         root = root.resolve().parents[1]

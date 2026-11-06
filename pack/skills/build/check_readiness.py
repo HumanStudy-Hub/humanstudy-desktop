@@ -10,12 +10,16 @@ Prints one JSON document, {"problems": [{"check", "reason"}], "checks": {name: "
 check_results.py, effects.py (the effect-link rules) and check_materials.py (the minimum search list), at most
 WARNINGS_MAX per check and then "and N more". Such a package also always carries one "contract" warning,
 OLDER_BUILD. They never make a package not ready; a rebuild under the current contract turns them into problems.
+The rules added with build contract 3 (see contract.py and SKILL.md "Build contract") are problems only for a package
+whose study.json says buildContract >= 3; below that their findings are warnings too, and the report carries one
+"contract" warning, OLDER_THAN_3_BUILD.
 Checks, each the same rule as
 the script the build skill (SKILL.md) tells the agent to run until it prints PASS:
 
   program    check_program.py program.json --complete (schema read from this copy, not the project's)
   sources    sources.py . --check (sources/SOURCE.json: every source file with its hash and license)
-  package    check_package.py package/<slug> (files, bindings, the adapter smoke test, check_validity.py)
+  package    check_package.py package/<slug> --no-validity (files, bindings, the adapter smoke test, the replies
+             checks, sources used, survey, Word and design checks; every failure, not only the first)
   validity   check_validity.py . --package package/<slug> (prompts captured from a stand-in model run)
   verbatim   check_verbatim.py program.json
   results    check_results.py program.json (a printed table left untranscribed needs its reason)
@@ -34,6 +38,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -44,16 +49,18 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "export" / "agent"))
 
 REASON_MAX = 300
-# check_package.py runs, one after another: the adapter smoke test (120 s), the answer-aware replies smoke test
-# (check_replies.py, 300 s), the every-answer-recorded check (recorded_answers.py, 150 s) and check_validity's
-# prompt capture (300 s) and analysis run (360 s, every arm on keyed stand-in sessions), plus a margin for copying
-# and the offline checks.
-PACKAGE_TIMEOUT = 1300
+# check_package.py --no-validity runs, one after another: the adapter smoke test (120 s), the answer-aware replies
+# smoke test (check_replies.py, 300 s) and the every-answer-recorded check (recorded_answers.py, 150 s), plus a
+# margin for copying and the offline checks. check_validity.py (its prompt capture, 300 s, and analysis run, 360 s)
+# runs once, as the validity check below, not again inside check_package.py.
+PACKAGE_TIMEOUT = 700
 
 
 WARNINGS_MAX = 20   # warnings listed per check; the rest are counted
 OLDER_BUILD = ("older build: newer build rules are warnings; rebuild with the current build skill to make them "
                "blocking")
+OLDER_THAN_3_BUILD = ("build contract below 3: the rules added with contract 3 are warnings; rebuild with the current "
+                      "build skill (it writes buildContract 3) to make them blocking")
 
 
 def one_line(text):
@@ -95,7 +102,8 @@ def program_problems(root):
 
 def sources_problems(root):
     import sources
-    return [m for m, _ in sources.problems(root)]
+    found, older = sources.findings(root)
+    return [m for m, _ in found], [m for m, _ in older]
 
 
 def package_warnings(stdout):
@@ -114,7 +122,8 @@ def package_problems(root, slug):
     pkg = root / "package" / slug
     with tempfile.TemporaryDirectory(prefix="readiness-package-") as work:
         try:
-            run = subprocess.run([sys.executable, "-I", "-B", "-X", "utf8", str(HERE / "check_package.py"), str(pkg)],
+            run = subprocess.run([sys.executable, "-I", "-B", "-X", "utf8", str(HERE / "check_package.py"), str(pkg),
+                                  "--no-validity"],
                                  cwd=work, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                  encoding="utf-8", errors="replace", timeout=PACKAGE_TIMEOUT)
         except subprocess.TimeoutExpired:
@@ -122,20 +131,29 @@ def package_problems(root, slug):
     return package_failure(run), package_warnings(run.stdout)
 
 
+FAIL_COUNT = re.compile(r"^FAIL \d+ check\(s\) failed$")
+
+
 def package_failure(run):
+    """Every FAIL line of check_package.py (it goes on after a failure the later checks do not depend on), except
+    those the program, sources and validity checks report themselves."""
     if run.returncode == 0:
         return []
     lines = [l.strip() for l in run.stdout.splitlines() if l.strip()]
-    at = next((i for i, l in enumerate(lines) if l.startswith("FAIL")), None)
-    if at is None:
+    found = []
+    for at, line in enumerate(lines):
+        if not line.startswith("FAIL") or FAIL_COUNT.match(line):
+            continue
+        head = line[4:].strip()
+        # The program, sources and validity checks report these rules themselves, with every problem counted.
+        if head.startswith(("package validity (check_validity.py)", "sources/SOURCE.json:", "program has problems:")):
+            continue
+        if head.endswith(":"):
+            head = head[:-1] + (": " + lines[at + 1].split("  [fix:", 1)[0] if at + 1 < len(lines) else "")
+        found.append(head)
+    if not found and not any(l.startswith("FAIL") for l in lines):
         return ["check_package.py stopped (exit %s): %s" % (run.returncode, (run.stderr or run.stdout).strip()[-200:])]
-    head = lines[at][4:].strip()
-    # The program, sources and validity checks report these rules themselves, with every problem counted.
-    if head.startswith(("package validity (check_validity.py)", "sources/SOURCE.json:", "program has problems:")):
-        return []
-    if head.endswith(":"):
-        head = head[:-1] + (": " + lines[at + 1].split("  [fix:", 1)[0] if at + 1 < len(lines) else "")
-    return [head]
+    return found
 
 
 def validity_problems(root, slug):
@@ -147,8 +165,9 @@ def validity_problems(root, slug):
 def verbatim_problems(root):
     import check_verbatim
     report = check_verbatim.check(root / "program.json")
-    return ["%s: %s: %s" % (r["field"], r["status"].replace("_", " "), r["info"]) for r in report["results"]
-            if r["status"] not in ("found", "unchecked", "table_text_layer", "close_unverified")]
+    bad, older = check_verbatim.split_findings(report)   # passing statuses include `reference`
+    line = lambda r: "%s: %s: %s" % (r["field"], r["status"].replace("_", " "), r["info"])  # noqa: E731
+    return [line(r) for r in bad], [line(r) + check_verbatim.contract_note() for r in older]
 
 
 def results_problems(root, slug):
@@ -257,6 +276,13 @@ def run_checks(root, slug):
         current = True
     if not current:
         warnings.append({"check": "contract", "reason": OLDER_BUILD})
+    else:
+        try:
+            strict = contract.strict(root / "package" / slug)
+        except Exception:  # noqa: BLE001
+            strict = True
+        if not strict:
+            warnings.append({"check": "contract", "reason": OLDER_THAN_3_BUILD})
     return {"problems": problems, "checks": status, "warnings": warnings}
 
 

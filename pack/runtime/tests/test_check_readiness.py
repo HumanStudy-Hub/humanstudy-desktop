@@ -273,13 +273,26 @@ class OlderBuildWarnings(unittest.TestCase):
         for check in ("validity", "results", "package"):
             self.assertIn(check, problems, report)
         self.assertIn("sources used", problems["package"])
-        self.assertEqual(report["warnings"], [])
+        # a contract 2 package: only the note that the rules added with contract 3 are warnings
+        self.assertEqual([w["check"] for w in report["warnings"]], ["contract"])
+        self.assertIn("build contract below 3", report["warnings"][0]["reason"])
 
     def test_a_ready_older_package_carries_only_the_contract_warning(self):
         report, problems = readiness(self.project())
         self.assertEqual(problems, {})
         self.assertEqual(report["warnings"], [{"check": "contract", "reason": "older build: newer build rules are "
                                                "warnings; rebuild with the current build skill to make them blocking"}])
+
+    def test_a_contract_3_package_has_no_contract_warning(self):
+        root = newer_rule_project(self.project)
+        shutil.copy2(BUILD / "package_files/replies.py", root / "package/fixture/task/replies.py")
+        study = root / "package/fixture/study.json"
+        study.write_text(json.dumps(dict(json.loads(study.read_text(encoding="utf-8")), buildContract=3)),
+                         encoding="utf-8")
+        report, problems = readiness(root)
+        for check in ("validity", "results", "package"):
+            self.assertIn(check, problems, report)
+        self.assertNotIn("contract", [w["check"] for w in report["warnings"]])
 
     def test_leaving_replies_out_does_not_dodge_the_newer_rules(self):
         root = newer_rule_project(self.project)
@@ -289,7 +302,8 @@ class OlderBuildWarnings(unittest.TestCase):
         report, problems = readiness(root)
         for check in ("validity", "results", "package"):
             self.assertIn(check, problems, report)
-        self.assertNotIn("contract", [w["check"] for w in report["warnings"]])
+        self.assertNotIn("older build: newer build rules are warnings; rebuild with the current build skill to make "
+                         "them blocking", [w["reason"] for w in report["warnings"]])
 
 
 class ContractSigns(unittest.TestCase):
@@ -313,6 +327,17 @@ class ContractSigns(unittest.TestCase):
 
     def source(self, record):
         (self.root / "sources/SOURCE.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def test_the_rules_of_contract_3_block_only_from_build_contract_3(self):
+        for marked, level, strict in (('{"buildContract": 3}', 3, True), ('{"buildContract": 4}', 4, True),
+                                      ('{"buildContract": 2}', 2, False), ('{"buildContract": "3"}', 0, False),
+                                      ('{"buildContract": true}', 0, False), ("{bad", 0, False), ("{}", 0, False)):
+            (self.pkg / "study.json").write_text(marked, encoding="utf-8")
+            self.assertEqual(self.contract.build_contract(self.pkg), level, marked)
+            self.assertEqual(self.contract.strict(self.pkg), strict, marked)
+            self.assertEqual(self.contract.project_strict(self.root), strict, marked)
+            self.assertEqual(self.contract.rules_level(self.root, self.pkg), strict, marked)
+        self.assertFalse(self.contract.strict(None))
 
     def test_an_older_project_is_not_current(self):
         self.assertFalse(self.contract.current_contract(self.pkg))
@@ -384,17 +409,22 @@ class CheckPackageGate(unittest.TestCase):
         self.root = make_project()
         self.addCleanup(shutil.rmtree, self.root.parent, True)
 
-    def run_package(self, current, fetched=(), survey=()):
+    def run_package(self, current, fetched=(), survey=(), strict=False, validity=None, extra_args=()):
         import contextlib
         import io
         from unittest import mock
+        import check_validity
         check_package, contract, fetch_source, qsf_flow = self.mods
         out = io.StringIO()
+        report = validity or {"problems": [], "warnings": [], "notes": [], "method": None, "analysis": None}
         with mock.patch.object(contract, "current_contract", lambda p: current), \
+                mock.patch.object(contract, "strict", lambda p: strict), \
+                mock.patch.object(check_validity, "check", lambda *a, **k: report), \
                 mock.patch.object(fetch_source, "problems", lambda *a, **k: list(fetched)), \
-                mock.patch.object(qsf_flow, "problems", lambda *a, **k: list(survey)), \
+                mock.patch.object(qsf_flow, "findings", lambda *a, **k: (list(survey), [])), \
                 mock.patch.object(check_package, "reply_checks", lambda p: ([], "ok   replies (not under test)")), \
-                mock.patch.object(sys, "argv", ["check_package.py", str(self.root / "package/fixture")]), \
+                mock.patch.object(sys, "argv", ["check_package.py", str(self.root / "package/fixture")]
+                                  + list(extra_args)), \
                 contextlib.redirect_stdout(out):
             try:
                 check_package.main()
@@ -422,6 +452,49 @@ class CheckPackageGate(unittest.TestCase):
         code, out = self.run_package(True, survey=bad)
         self.assertEqual(code, 1, out)
         self.assertIn("FAIL survey files (qsf_flow.py):", out)
+
+    def test_compiled_python_warns_below_contract_3_and_fails_from_it(self):
+        cache = self.root / "package/fixture/task/__pycache__"
+        cache.mkdir(parents=True)
+        (cache / "replies.cpython-312.pyc").write_bytes(b"x")
+        code, out = self.run_package(True, strict=False)
+        self.assertEqual(code, 0, out)
+        self.assertIn("warn  compiled Python in the package: task/__pycache__ (older build: blocking from "
+                      "buildContract 3)", out)
+        code, out = self.run_package(True, strict=True)
+        self.assertEqual(code, 1, out)
+        self.assertIn("FAIL compiled Python in the package: task/__pycache__", out)
+
+    def test_a_validity_failure_does_not_hide_the_later_checks(self):
+        validity = {"problems": [("a prompt tells participants the hypothesis", "remove it")], "warnings": [],
+                    "notes": [], "method": None, "analysis": None}
+        survey = [("survey text participants never saw: QID9 of x.qsf", "remove it")]
+        code, out = self.run_package(True, survey=survey, validity=validity)
+        self.assertEqual(code, 1, out)
+        self.assertIn("FAIL package validity (check_validity.py):", out)
+        self.assertIn("FAIL survey files (qsf_flow.py):", out)
+        self.assertIn("ok   Word sources", out)
+        self.assertIn("FAIL 2 check(s) failed", out)
+        # check_readiness.py runs check_validity.py itself: check_package skips it, the rest still runs
+        code, out = self.run_package(True, survey=survey, validity=validity, extra_args=["--no-validity"])
+        self.assertEqual(code, 1, out)
+        self.assertNotIn("package validity (check_validity.py)", out)
+        self.assertIn("note package validity skipped", out)
+        self.assertIn("FAIL survey files (qsf_flow.py):", out)
+
+    def test_readiness_reads_every_failure_of_check_package(self):
+        import check_readiness
+        from types import SimpleNamespace
+        out = ("ok   required files present\nFAIL package validity (check_validity.py):\n  x\n"
+               "FAIL survey files (qsf_flow.py):\n  QID9 never shown  [fix: remove it]\n"
+               "FAIL reading replies (check_replies.py, recorded_answers.py):\n  smoke test: arm a crashed  [fix: f]\n"
+               "FAIL 3 check(s) failed\n")
+        found = check_readiness.package_failure(SimpleNamespace(returncode=1, stdout=out, stderr=""))
+        self.assertEqual(found, ["survey files (qsf_flow.py): QID9 never shown",
+                                 "reading replies (check_replies.py, recorded_answers.py): smoke test: arm a crashed"])
+        only_validity = "FAIL package validity (check_validity.py):\n  x\nFAIL 1 check(s) failed\n"
+        self.assertEqual(check_readiness.package_failure(SimpleNamespace(returncode=1, stdout=only_validity,
+                                                                         stderr="")), [])
 
     def test_a_word_or_design_check_that_raises_is_one_finding_not_a_traceback(self):
         from unittest import mock
@@ -457,11 +530,12 @@ class Timeouts(unittest.TestCase):
             import recorded_answers
         finally:
             sys.path.remove(str(BUILD))
-        # smoke, replies, answers, capture, analysis run
-        steps = 120 + check_replies.SMOKE_TIMEOUT + recorded_answers.CHECK_TIMEOUT + 300 + check_validity.PROBE_TIMEOUT
+        # check_package.py --no-validity: smoke, replies, answers (check_validity runs once, as the validity check)
+        steps = 120 + check_replies.SMOKE_TIMEOUT + recorded_answers.CHECK_TIMEOUT
         self.assertGreater(check_readiness.PACKAGE_TIMEOUT, steps)
-        self.assertGreaterEqual(check_readiness.PACKAGE_TIMEOUT, 1300)
+        self.assertGreaterEqual(check_readiness.PACKAGE_TIMEOUT, 700)
+        self.assertIn('"--no-validity"', (BUILD / "check_readiness.py").read_text(encoding="utf-8"))
         source = (REPO / "app/src/main/scientific-readiness.ts").read_text(encoding="utf-8")
         minutes = int(re.search(r"SCIENTIFIC_TIMEOUT_MS = (\d+) \* 60_000", source).group(1))
-        # check_package, then check_validity's own capture (300 s) and analysis run, and the effects field check (300 s)
+        # check_package, then check_validity's capture (300 s) and analysis run, and the effects field check (300 s)
         self.assertGreater(minutes * 60, check_readiness.PACKAGE_TIMEOUT + 300 + check_validity.PROBE_TIMEOUT + 300)
