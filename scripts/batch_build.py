@@ -3,6 +3,7 @@
 
     python scripts/batch_build.py --pdfs papers/ --work runs/batch-1 [--jobs 4] [--model sonnet]
                                   [--agent claude|codex] [--limit 20] [--python <python with pypdf>]
+                                  [--max-budget-usd 8] [--total-budget-usd 60]
 
 A paper with supplements is a folder holding paper.pdf and its other files (supplements, materials); those go to
 sources/.
@@ -17,9 +18,16 @@ non-interactive agent session builds program.json and the replay package with ev
 No simulation is run. A paper whose project already holds a passing program is skipped, so the
 command can be rerun after an interruption; `--rebuild` starts those again.
 
-Writes `<work>/results.json` and `<work>/results.csv`: per paper the build time, cost, checks,
-readiness, issue counts, quote check, table fields, verbatim fields and the source record check. Projects contain
-the papers' text: keep `<work>` private.
+Spending caps: --max-budget-usd caps one paper's session (passed to the claude CLI as --max-budget-usd; the
+other agents have no such flag, so there it only reserves budget). --total-budget-usd caps the run: a paper is
+launched only while the cost spent so far plus the per-paper cap of every paper still running plus its own cap
+fits under the total; the others are recorded "skipped: budget". It needs --max-budget-usd. A finished paper
+counts its reported cost (its cap when the agent reports none).
+
+Writes `<work>/results-<UTC time>.json` and `.csv` for each run, and merges them into `<work>/results.json` and
+`results.csv` (a paper's newest row replaces its earlier one; papers not in this run keep theirs): per paper the
+build time, cost, checks, readiness, issue counts, quote check, table fields, verbatim fields and the source
+record check. Projects contain the papers' text: keep `<work>` private.
 Codex support is untested.
 """
 import argparse
@@ -30,6 +38,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -104,21 +113,82 @@ def opencode_env(env, model, work):
     return env
 
 
-def agent_command(agent, model):
+def agent_command(agent, model, max_budget=None):
     if agent == "opencode":
         return [opencode_binary(), "run", "--format", "json", PROMPT]
     if agent == "claude":
         return ["claude", "-p", PROMPT, "--model", model, "--dangerously-skip-permissions",
-                "--strict-mcp-config", "--output-format", "json"]
+                "--strict-mcp-config", "--output-format", "json"] + (
+                    ["--max-budget-usd", "%g" % max_budget] if max_budget else [])
     return ["codex", "exec", "--full-auto", "--skip-git-repo-check"] + (["-m", model] if model else []) + [PROMPT]
 
 
-def build(project, agent, model, env, timeout):
+class Budget:
+    """The run's spending: a paper starts only when what is spent, what running papers may still spend (their cap)
+    and its own cap fit under the total. Thread-safe."""
+
+    def __init__(self, total=None, per_paper=None):
+        self.total, self.per_paper = total, per_paper
+        self.spent, self.reserved = 0.0, 0.0
+        self.lock = threading.Lock()
+
+    def reserve(self):
+        with self.lock:
+            if self.total is not None and self.spent + self.reserved + (self.per_paper or 0) > self.total + 1e-9:
+                return False
+            self.reserved += self.per_paper or 0
+            return True
+
+    def settle(self, cost):
+        """A launched paper finished: free its reservation and count what it cost (its cap when unknown)."""
+        with self.lock:
+            self.reserved -= self.per_paper or 0
+            self.spent += cost if isinstance(cost, (int, float)) else (self.per_paper or 0)
+
+
+def write_results(work, rows, meta, stamp):
+    """This run's rows to results-<stamp>.json/.csv; merged with earlier runs into results.json/.csv."""
+    work = Path(work)
+    run_rows = sorted(rows, key=lambda r: r["project"])
+    _write(work / ("results-%s" % stamp), dict(meta, run=stamp, rows=run_rows))
+    merged = {}
+    try:
+        old = json.loads((work / "results.json").read_text(encoding="utf-8"))
+        for r in old.get("rows") or []:
+            if isinstance(r, dict) and r.get("project"):
+                merged[r["project"]] = r
+    except (OSError, ValueError, AttributeError):
+        pass
+    for r in run_rows:
+        if r.get("skipped") and r["project"] in merged:
+            continue   # not built in this run: the earlier row says more
+        merged[r["project"]] = dict(r, run=stamp)
+    runs = []
+    try:
+        runs = json.loads((work / "results.json").read_text(encoding="utf-8")).get("runs") or []
+    except (OSError, ValueError, AttributeError):
+        pass
+    _write(work / "results", dict(meta, runs=list(runs) + [stamp], rows=sorted(merged.values(), key=lambda r: r["project"])))
+    return run_rows, sorted(merged.values(), key=lambda r: r["project"])
+
+
+def _write(base, data):
+    Path(str(base) + ".json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    keys = []
+    for r in data["rows"]:
+        keys += [k for k in r if k not in keys]
+    with open(str(base) + ".csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=keys)
+        w.writeheader()
+        w.writerows(data["rows"])
+
+
+def build(project, agent, model, env, timeout, max_budget=None):
     start = time.time()
     with open(project / "build.log", "w", encoding="utf-8") as log:
         try:
             # PWD too: OpenCode resolves the project (and its skills) from it, not from the process cwd
-            run = subprocess.run(agent_command(agent, model), cwd=str(project), stdin=subprocess.DEVNULL,
+            run = subprocess.run(agent_command(agent, model, max_budget), cwd=str(project), stdin=subprocess.DEVNULL,
                                  stdout=log, stderr=subprocess.STDOUT, env=dict(env, PWD=str(project)),
                                  timeout=timeout)
             code = run.returncode
@@ -198,7 +268,16 @@ def main(argv=None):
     ap.add_argument("--timeout", type=int, default=3600, help="seconds per paper")
     ap.add_argument("--rebuild", action="store_true", help="rebuild papers that already passed")
     ap.add_argument("--python", default=sys.executable, help="Python with pypdf, for the checks")
+    ap.add_argument("--max-budget-usd", type=float, help="spending cap per paper (claude CLI --max-budget-usd)")
+    ap.add_argument("--total-budget-usd", type=float, help="spending cap for the run (needs --max-budget-usd)")
     a = ap.parse_args(argv)
+    if a.total_budget_usd is not None and not a.max_budget_usd:
+        ap.error("--total-budget-usd needs --max-budget-usd (the most one paper may spend)")
+    if a.max_budget_usd and a.agent != "claude":
+        print("note: %s has no per-session spending cap; --max-budget-usd only reserves budget" % a.agent,
+              file=sys.stderr)
+    budget = Budget(a.total_budget_usd, a.max_budget_usd)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     model = a.model or {"claude": "sonnet", "opencode": "anthropic/claude-sonnet-5.5"}.get(a.agent)
     src = Path(a.pdfs)
     pdfs = find_papers(src)
@@ -239,10 +318,18 @@ def main(argv=None):
         done = (project / "program.json").is_file() and checks(project, a.python)["programComplete"]
         if done and not a.rebuild:
             row["skipped"] = "already built"
+        elif not budget.reserve():
+            row["skipped"] = "budget"
+            return row
         else:
             setup(pdf, project, skill)
-            row.update(build(project, a.agent, model, env, a.timeout))
-        row.update(usage(project))
+            try:
+                row.update(build(project, a.agent, model, env, a.timeout, a.max_budget_usd))
+            finally:
+                row.update(usage(project))
+                budget.settle(row.get("costUsd"))
+        if "costUsd" not in row:
+            row.update(usage(project))
         row.update(checks(project, a.python))
         return row
 
@@ -254,20 +341,13 @@ def main(argv=None):
             print("[%d/%d] %s: %s, program %s, package %s, %s" % (
                 i, len(pdfs), row["project"], row.get("skipped") or "%s min" % row.get("minutes"),
                 "PASS" if row.get("programComplete") else "FAIL", row.get("package"), row.get("readiness")), flush=True)
-    rows.sort(key=lambda r: r["project"])
-    (work / "results.json").write_text(json.dumps({"agent": a.agent, "model": model, "rows": rows}, indent=2) + "\n",
-                                       encoding="utf-8")
-    keys = []
-    for r in rows:
-        keys += [k for k in r if k not in keys]
-    with open(work / "results.csv", "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=keys)
-        w.writeheader()
-        w.writerows(rows)
+    meta = {"agent": a.agent, "model": model, "maxBudgetUsd": a.max_budget_usd, "totalBudgetUsd": a.total_budget_usd}
+    rows, _ = write_results(work, rows, meta, stamp)
     ok = sum(1 for r in rows if r.get("programComplete"))
-    cost = sum(r.get("costUsd") or 0 for r in rows)
-    print("%d/%d papers built with a passing program; cost $%.2f; results in %s" % (ok, len(rows), cost,
-                                                                                   work / "results.csv"))
+    skipped = sum(1 for r in rows if r.get("skipped") == "budget")
+    print("%d/%d papers built with a passing program; this run spent $%.2f%s; results in %s (merged: %s)" % (
+        ok, len(rows), budget.spent, "; %d skipped for the budget" % skipped if skipped else "",
+        work / ("results-%s.csv" % stamp), work / "results.csv"))
     return 0
 
 
