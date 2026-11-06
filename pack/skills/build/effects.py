@@ -10,7 +10,7 @@ sessions do not: human and AI sessions must be computed the same way. (With huma
 or $HUMANSTUDY_HUMAN_DATA the human side is read too; a field neither side has is only reported.)
 
 The rules and the computation live in ../export/agent/effects_core.py (shipped with every agent export).
-These build rules are checked here only (effects_core.py, which HumanStudy-Bench copies, is unchanged):
+These build rules are checked here only, not in effects_core.py (which HumanStudy-Bench copies):
 
   sample size   an effect whose quotes print N (N = 40, n = 39, 120 participants), or whose study has a
                 participant count in program.json, records it in reported.n (or cells.<arm>.n), or says in
@@ -37,6 +37,24 @@ These build rules are checked here only (effects_core.py, which HumanStudy-Bench
                 - one value: several estimates of one metric without distinct `variant`s are several effects.
                 - n: an arm whose n is the same in most of a study's effects but clearly smaller in one needs the
                   exclusion stated (compute.exclusion, a compute.where flag, or reported.missing / notes).
+
+Rules of build contract 3 (problems when the package's study.json says "buildContract": 3 or higher, warnings
+for an older build, so a project that was ready stays ready):
+  scale         a proportion or risk difference estimate states `scale` ("proportion" 0-1 or "percentage_points");
+                one beyond -1..1 is never a proportion.
+  sign          on a two-group or paired contrast an unsigned metric (phi, Cramer's V, chi-square, F, eta squared)
+                carries `signBasis`; op contingency has compute.success so it returns a signed value; a package
+                block of an unsigned metric says "signed": true.
+  scope         reported numbers pooled across sites/countries/designs say reported.scope (+ scopeNote); a
+                model-based estimate (posterior, mixed or random-effects model) says estimateType; a pooled value is
+                never a replayed arm's cell.
+  status        a hypothesis is `tested` only when the replay computes every effect naming it (none in
+                capabilities.json run.excluded[].effects, none on a blocked arm) and they cover its program studies;
+                `partial` (with a reason) when only some do; `untested` / not-computable when none do.
+  not printed   a reported.missing entry that says n, means, SDs or counts are not printed, while a result table
+                recorded in program.json for the study prints them, names that table to say why.
+Warnings only: a prediction whose quote says "increases" while the study's design or hypothesis text says the
+opposite about the same outcome, and a pooled or generalising hypothesis left `tested` while parts are excluded.
 """
 import importlib.util
 import json
@@ -53,6 +71,10 @@ import effects_core  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sandbox_run  # noqa: E402
 import contract  # noqa: E402  older projects get the newer link rules as warnings
+import capabilities  # noqa: E402  arms the package runs, blocked effects, the build contract level
+
+EFFECTS_RULES_CONTRACT = 3   # study.json buildContract from which contract_rules() are problems
+OLDER = " (older build: blocking from buildContract %d)" % EFFECTS_RULES_CONTRACT
 
 
 def _module(path, name):
@@ -118,6 +140,11 @@ def _field_gaps(root, effects):
     links = link_problems(effects, blocks, declarations, "blocks" in got)
     notes = ["package effect blocks not computed on the stand-in run (%s)" % got["blocksError"]] \
         if got.get("blocksError") else []
+    signs = block_sign_rules(effects, blocks)
+    if strict_contract(root):
+        links += signs
+    else:
+        notes += [x + OLDER for x in signs]
     if "humanError" in got:
         return [], notes + ["human sessions not loaded (%s)" % got["humanError"]], links
     sessions, human = got.get("ai") or [], got.get("human") or []
@@ -173,6 +200,7 @@ def _shape(block):
     test = block.get("test") if isinstance(block.get("test"), dict) else {}
     cells = block.get("cells") if isinstance(block.get("cells"), dict) else {}
     return {"status": block.get("status"), "metric": block.get("metric") if isinstance(block.get("metric"), str) else None,
+            "signed": block.get("signed") is True,
             "unit": str(block.get("unit"))[:60] if block.get("unit") else None,
             "scale": str(block.get("scale"))[:60] if block.get("scale") else None,
             "test": {"statistic": test.get("statistic")},
@@ -510,7 +538,8 @@ def _effect_links(e, blocks, declarations, ran):
     # metric, compute.compareAs, or the difference of the reported cell means / shares); else, with only a
     # test reported, the block holds the same test; else the cells' kinds
     def comparable(metric):
-        return effects_core.compare(e, {"status": "computed", "metric": metric, "value": 0.0}).get("comparable")
+        c = effects_core.compare(e, {"status": "computed", "metric": metric, "value": 0.0})
+        return c.get("comparable") or c.get("scaleUnknown")   # the scale has its own rule (contract_rules)
     need = cell_kinds & {"mean", "share"}
     if any(comparable(m) for m in metrics):
         ok, claimed = True, ""
@@ -554,6 +583,22 @@ def _effect_links(e, blocks, declarations, ran):
     if clash:
         out.append("%s: reported is %s but the computed value is in %s; compute it on the paper's scale (the mean "
                    "share of the endowment, not the mean in cents; a percentage as a percentage)" % ((where,) + clash))
+    return out
+
+
+def block_sign_rules(effects, blocks):
+    """A package block of an unsigned metric (phi, Cramer's V, ...) on a two-group or paired contrast that does not
+    say "signed": true: a reversed result would read as a match."""
+    out = []
+    for e in effects.get("effects") or []:
+        if not isinstance(e, dict) or not effects_core.directional(e):
+            continue
+        b = blocks.get(_key(e.get("compute"))) if (e.get("compute") or {}).get("op") == "package" else None
+        if isinstance(b, dict) and b.get("status") == "computed" and b.get("metric") in effects_core.UNSIGNED_METRICS \
+                and not b.get("signed"):
+            out.append("effect %s: its package block returns %s, which has no sign, for a %s contrast; return the "
+                       "value signed treatment minus reference with \"signed\": true (or a signed metric such as a risk "
+                       "difference)" % (e.get("id"), b["metric"], (e.get("contrast") or {}).get("kind")))
     return out
 
 
@@ -612,6 +657,276 @@ def _n_problems(effs):
     return list(dict.fromkeys(out))
 
 
+# ---- contract 3: scale, sign, scope, hypothesis status, "not printed" claims ---------------------------
+
+def contract_rules(root, effects, program, caps=None):
+    """(rules, warnings). `rules` are problems for a package built under contract 3 (study.json
+    "buildContract": 3 or higher) and warnings for an older build; `warnings` never block (heuristics)."""
+    rules, warnings = [], []
+    root = Path(root)
+    if caps is None:
+        caps = _load(root / "capabilities.json")
+    arms = capabilities.package_arms(root)
+    evidence = {e.get("id"): e for e in program.get("evidence") or [] if isinstance(e, dict)}
+    for e in effects.get("effects") or []:
+        if not isinstance(e, dict):
+            continue
+        try:
+            rules += _scale_rules(e) + _sign_rules(e) + _scope_rules(e, arms)
+            r, w = _missing_vs_tables(e, program)
+            rules += r
+            warnings += w + _direction_words(e, effects, program, evidence)
+        except Exception:   # noqa: BLE001 - a malformed effect: effects_core reports its shape
+            continue
+    r, w = _status_rules(effects, program, caps, arms)
+    return rules + r, warnings + w
+
+
+def strict_contract(root):
+    """True when the project's package says study.json buildContract >= EFFECTS_RULES_CONTRACT."""
+    return capabilities.contract_level(root) >= EFFECTS_RULES_CONTRACT
+
+
+def _load(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _estimates(e):
+    rep = e.get("reported") if isinstance(e.get("reported"), dict) else {}
+    return [x for x in rep.get("estimates") or [] if isinstance(x, dict)] if isinstance(rep.get("estimates"), list) else []
+
+
+def _scale_rules(e):
+    """A proportion or risk difference says its scale; a value beyond 0-1 is never a proportion."""
+    out = []
+    for j, est in enumerate(_estimates(e)):
+        value = _num(est.get("value"))
+        if est.get("metric") not in effects_core.PROPORTION_METRICS or value is None or "scale" in est:
+            continue
+        at = "effect %s reported.estimates[%d] (%s = %g)" % (e.get("id"), j, est["metric"], value)
+        if abs(value) > 1:
+            out.append("%s: a %s beyond -1..1 is not a 0-1 proportion; set scale \"percentage_points\" when the paper "
+                       "prints percentage points (compare() converts it), else correct the value" % (at, est["metric"]))
+        else:
+            out.append("%s: say the scale it is printed on: scale \"proportion\" (0-1) or \"percentage_points\" "
+                       "(0-100); the replay computes proportions" % at)
+    return out
+
+
+def _sign_rules(e):
+    """A two-group or paired contrast is signed treatment minus reference on both sides: an unsigned metric (phi,
+    Cramer's V, chi-square, F, eta squared) hides a reversed result."""
+    if not effects_core.directional(e):
+        return []
+    out = []
+    for j, est in enumerate(_estimates(e)):
+        value = _num(est.get("value"))
+        if est.get("metric") in effects_core.UNSIGNED_METRICS and value is not None and value >= 0 \
+                and not str(est.get("signBasis") or "").strip():
+            out.append("effect %s reported.estimates[%d] (%s = %g): an unsigned metric on a %s contrast; add "
+                       "`signBasis` with the printed words or cells that say which arm is higher (store it negative "
+                       "when the treatment arm is lower), or report a signed metric (risk difference, log odds ratio)"
+                       % (e.get("id"), j, est["metric"], value, (e.get("contrast") or {}).get("kind")))
+    comp = e.get("compute") if isinstance(e.get("compute"), dict) else {}
+    if comp.get("op") == "contingency" and "success" not in comp:
+        out.append("effect %s: compute.op contingency returns an unsigned phi / Cramer's V for this %s contrast; add "
+                   "compute.success (the level(s) that count as the outcome) so the op signs it treatment minus "
+                   "reference, or use proportion_difference" % (e.get("id"), (e.get("contrast") or {}).get("kind")))
+    return out
+
+
+def _scope_rules(e, arms):
+    """A pooled, other-sample or model-based reported value says so (reported.scope, estimates[].estimateType), and
+    a pooled value is never stored as one replayed arm's cell."""
+    rep = e.get("reported") if isinstance(e.get("reported"), dict) else None
+    if rep is None:
+        return []
+    out, where = [], "effect %s" % e.get("id")
+    text = " ".join([str(x) for x in rep.get("missing") or [] if isinstance(rep.get("missing"), list)] +
+                    [str(x.get("variant") or "") for x in _estimates(e)] + [str(e.get("notes") or "")])
+    if "scope" not in rep and effects_core.POOLED_WORDS.search(text):
+        out.append("%s: its reported numbers look pooled across sites, countries or designs (%r); set reported.scope "
+                   "(\"pooled\", \"other-sample\" or \"replayed-sample\") with scopeNote, so compare() does not show a "
+                   "pooled value as the replayed sample's" % (where, effects_core.POOLED_WORDS.search(text).group()))
+    for j, est in enumerate(_estimates(e)):
+        if "estimateType" not in est and effects_core.MODEL_WORDS.search(str(est.get("variant") or "") + " " +
+                                                                       str(e.get("notes") or "")):
+            out.append("%s reported.estimates[%d]: its variant or notes name a model (%r); set estimateType "
+                       "\"model-based\" (a posterior, mixed or random-effects estimate) or \"descriptive\", so a replay "
+                       "that fits no model is not compared with it as the same quantity"
+                       % (where, j, effects_core.MODEL_WORDS.search(str(est.get("variant") or "") + " " +
+                                                                    str(e.get("notes") or "")).group()))
+    cells = rep.get("cells") if isinstance(rep.get("cells"), dict) else {}
+    if rep.get("scope") == "pooled" and arms:
+        bound = [a for a in cells if a in arms["by"]]
+        if bound:
+            out.append("%s: reported.scope is pooled but its cells are stored under the replayed arm(s) %s; a pooled "
+                       "value is not that arm's: record the arm's own printed value, or move the pooled value to an "
+                       "estimate (scope pooled) and leave the cell out" % (where, ", ".join(bound)))
+    return out
+
+
+NOT_PRINTED = re.compile(r"(?i)\bnot (?:printed|reported|given|shown|stated|available)|\bunavailable\b|"
+                         r"\bnot in the (?:paper|text)\b|\bno\b[^.;]{0,40}\b(?:printed|reported)\b")
+TABLE_NAMED = re.compile(r"(?i)\btable\s*S?\d")
+CLAIMS = (("n", re.compile(r"(?<![\w/])[Nn](?![\w/])|sample size|group size")),
+          ("means", re.compile(r"(?i)\bmeans?\b|\baverage")),
+          ("SDs", re.compile(r"(?i)\bSDs?\b|standard deviation|\bs\.d\.")),
+          ("counts", re.compile(r"(?i)\bcounts?\b|frequenc|how many")))
+TABLE_HAS = {"n": re.compile(r"(?<![\w])[Nn]\s*=\s*\d|^\s*[Nn]\s*$|\(n\)"),
+             "means": re.compile(r"(?i)\bmeans?\b|^\s*M\s*$|\bM\s*\(SD\)|\d\s*\[\d+(?:\.\d+)?\]|\d\s*\(\d+\.\d+\)"),
+             "SDs": re.compile(r"(?i)\bSD\b|\bs\.d\.|\d\s*\[\d+\.\d+\]|\d\s*\(\d+\.\d+\)"),
+             "counts": re.compile(r"^\s*\d[\d,]*\s*\(\d+(?:\.\d+)?%\)\s*$")}
+
+
+def _tables_of(program, e):
+    """(label, where, text cells) for result tables program.json records for the effect's study or result nodes."""
+    study, results = e.get("studyId"), set(e.get("resultIds") or [])
+    out = []
+    for n in program.get("nodes") or []:
+        if not isinstance(n, dict) or n.get("kind") not in ("result", "finding"):
+            continue
+        if n.get("id") not in results and study not in (n.get("studyIds") or []):
+            continue
+        for f in n.get("fields") or []:
+            v = f.get("value") if isinstance(f, dict) else None
+            if isinstance(v, dict) and isinstance(v.get("columns"), list) and isinstance(v.get("rows"), list) \
+                    and re.match(r"(?i)\s*table\b", str(v.get("table") or "")):
+                cells = [str(c) for c in v["columns"]] + [str(c) for r in v["rows"] if isinstance(r, list) for c in r]
+                label = "%s%s" % (v.get("table") or f.get("label") or f.get("id"),
+                                  " (p. %s)" % v["page"] if v.get("page") else "")
+                out.append((label, "%s.%s" % (n.get("id"), f.get("id")), cells))
+    return out
+
+
+def _missing_vs_tables(e, program):
+    """A reported.missing entry saying n, means, SDs or counts are not printed, while a result table recorded for
+    the effect's study prints that kind of number. (rules, warnings): a rule when the table's header or cells
+    show it; the entry may name the table to say why its numbers are not this effect's."""
+    rep = e.get("reported") if isinstance(e.get("reported"), dict) else {}
+    missing = rep.get("missing") if isinstance(rep.get("missing"), list) else []
+    claims = [m for m in missing if isinstance(m, str) and NOT_PRINTED.search(m) and not TABLE_NAMED.search(m)]
+    if not claims:
+        return [], []
+    tables = _tables_of(program, e)
+    out = []
+    for m in claims:
+        # what the entry says is not printed: the words before "not printed" in the same clause
+        subject = " ".join(re.split(r"[;.:]|\bonly\b|\bbut\b", m[:x.start()])[-1] for x in NOT_PRINTED.finditer(m))
+        for kind, said in CLAIMS:
+            if not said.search(subject):
+                continue
+            hits = [(label, where) for label, where, cells in tables if any(TABLE_HAS[kind].search(c) for c in cells)]
+            if hits:
+                out.append("effect %s: reported.missing says %r, but %s, recorded in program.json %s, prints %s for "
+                           "this study; take the numbers from it, or say in the entry why the table's numbers are "
+                           "not this effect's (name the table)" % (e.get("id"), m[:90], hits[0][0], hits[0][1], kind))
+                break
+    return out, []
+
+
+UP_WORDS = re.compile(r"(?i)\b(?:increase[sd]?|increasing|more likely|higher|greater|raises?|raised|boosts?)\b")
+DOWN_WORDS = re.compile(r"(?i)\b(?:decrease[sd]?|decreasing|less likely|lower|reduce[sd]?|reducing|fewer|"
+                        r"diminish(?:es|ed)?)\b")
+STOP = set("that this with from than were their there they them have been which when what into about those these "
+           "people participants condition conditions compared other more less likely".split())
+
+
+def _content(text):
+    return {w for w in re.findall(r"[a-z]{4,}", str(text).lower()) if w not in STOP}
+
+
+def _direction_words(e, effects, program, evidence):
+    """Warn when the quotes a directional prediction rests on (prediction.evidenceIds and the evidence of its
+    hypothesis node) say one direction in one sentence and the opposite in another about the same outcome.
+    Limit: which arm a sentence puts first is not read, so a passage elsewhere in the paper (a design summary)
+    that states the opposite with other arm names (Wong H5: "joint" vs "broad bracketing") is not caught."""
+    pred = e.get("prediction") if isinstance(e.get("prediction"), dict) else {}
+    if pred.get("direction") not in ("positive", "negative"):
+        return []
+    # a hypothesis with several directional effects states several contrasts ("more likely in A, less in B")
+    siblings = [x for x in effects.get("effects") or [] if isinstance(x, dict) and x is not e
+                and set(x.get("hypothesisIds") or []) & set(e.get("hypothesisIds") or [])
+                and (x.get("prediction") or {}).get("direction") in ("positive", "negative")]
+    if siblings:
+        return []
+    ids = list(pred.get("evidenceIds") or [])
+    nodes = {n.get("id"): n for n in program.get("nodes") or [] if isinstance(n, dict)}
+    hyps = {h.get("id"): h for h in effects.get("hypotheses") or [] if isinstance(h, dict)}
+    for hid in e.get("hypothesisIds") or []:
+        node = nodes.get((hyps.get(hid) or {}).get("nodeId")) or {}
+        ids += [i for f in node.get("fields") or [] if isinstance(f, dict) for i in f.get("evidenceIds") or []]
+    found = [(i, s) for i in dict.fromkeys(ids) if i in evidence
+             for s in re.split(r"(?<=[.;])\s+", str(evidence[i].get("quote") or ""))]
+    ups = [(i, s) for i, s in found if UP_WORDS.search(s) and not DOWN_WORDS.search(s)]
+    downs = [(i, s) for i, s in found if DOWN_WORDS.search(s) and not UP_WORDS.search(s)]
+    for i, up in ups:
+        for j, down in downs:
+            # two passages (one quote listing several contrasts says "more" of one and "less" of another)
+            if i != j and len(_content(up) & _content(down)) >= 3:
+                return ["effect %s: prediction.direction %s rests on quotes that say both %r (%s) and %r (%s) about "
+                        "the same outcome; check which direction the paper predicts and record a check issue (or "
+                        "direction unspecified) if the paper is inconsistent"
+                        % (e.get("id"), pred["direction"], up[:90], i, down[:90], j)]
+    return []
+
+
+def _status_rules(effects, program, caps, arms):
+    """A hypothesis is tested only when the replay computes all its effects and they cover its studies; partial
+    when only some do; untested (not-computable) when none do."""
+    rules, warnings = [], []
+    run = (caps or {}).get("run") if isinstance((caps or {}).get("run"), dict) else {}
+    items = [x for x in run.get("excluded") or [] if isinstance(x, dict)]
+    not_run = {x: str(item.get("reason") or "")[:80] for item in items for x in item.get("effects") or []
+               if isinstance(item.get("effects"), list) and isinstance(x, str)}
+    for eid, why in capabilities.blocked_effects(caps, effects, arms).items():
+        not_run.setdefault(eid, why)
+    nodes = {n.get("id"): n for n in program.get("nodes") or [] if isinstance(n, dict)}
+    effs = [e for e in effects.get("effects") or [] if isinstance(e, dict)]
+    content_only = [x for x in items if not x.get("effects")]
+    for h in effects.get("hypotheses") or []:
+        if not isinstance(h, dict):
+            continue
+        status, hid = h.get("status"), h.get("id")
+        naming = [e for e in effs if hid in (e.get("hypothesisIds") or [])]
+        tests = [e for e in naming if e.get("role") in ("test", "robustness")] or naming
+        if not tests or status not in ("tested", "partial"):
+            continue
+        computed = [e for e in tests if e.get("id") not in not_run]
+        where = "hypothesis %s (%s)" % (hid, status)
+        if not computed:
+            rules.append("%s: the replay computes none of its effects (%s); mark it untested with untestedBecause "
+                         "\"not-computable\" and the reason" % (where, "; ".join(
+                             "%s: %s" % (e.get("id"), not_run[e.get("id")]) for e in tests[:4])))
+            continue
+        if status != "tested":
+            continue
+        left = [e.get("id") for e in tests if e.get("id") in not_run]
+        node = nodes.get(h.get("nodeId")) or {}
+        studies = [str(x) for x in node.get("studyIds") or []]
+        covered = {str(e.get("studyId")) for e in computed}
+        if left:
+            rules.append("%s: the replay computes %d of its %d effects (not %s); mark it partial with a reason"
+                         % (where, len(computed), len(tests), ", ".join(left)))
+        elif studies and not set(studies) <= covered:
+            rules.append("%s: it is stated for %s, but its computed effects come from %s only; a single design, site or "
+                         "study does not test it: mark it partial with a reason (or untested)"
+                         % (where, ", ".join(studies), ", ".join(sorted(covered))))
+        else:
+            text = " ".join([str(node.get("title") or "")] + [str(f.get("value")) for f in node.get("fields") or []
+                                                              if isinstance(f, dict) and f.get("id") in ("statement", "scope")])
+            m = re.search(r"(?i)\bpooled\b|meta-?analy\w*|generali[sz]\w*|across (?:all |the )?(?:\d+ )?(?:countries|"
+                          r"sites|labs|laboratories|designs|samples|teams|nations)", text)
+            if m and content_only:
+                warnings.append("%s: it is about %r while run.excluded leaves parts out (%s); if the replay covers only "
+                                "part of that scope, mark it partial with a reason"
+                                % (where, m.group(), "; ".join(str(x.get("what"))[:50] for x in content_only[:3])))
+    return rules, warnings
+
+
 def _has(session, path):
     cur = session
     for part in str(path).split("."):
@@ -642,12 +957,17 @@ def main(args):
     program = json.loads((root / "program.json").read_text(encoding="utf-8"))
     problems, warnings = effects_core.check(root, effects, program)
     problems += build_rules(effects, program)
+    rules, soft = contract_rules(root, effects, program)
+    strict = strict_contract(root)
+    problems += rules if strict else []
     gaps, notes, older = field_report(root, effects) if not problems else ([], [], [])
     problems += gaps
-    for w in warnings + notes:
+    for w in warnings + soft + notes:
         print("warning: " + w)
     for w in older:
         print("WARN    %s (older build: blocking once rebuilt with task/replies.py)" % w)
+    for w in [] if strict else rules:
+        print("WARN    %s%s" % (w, OLDER))
     for p in problems:
         print("problem: " + p)
     print("FAIL" if problems else "PASS (%d hypotheses, %d effects)"

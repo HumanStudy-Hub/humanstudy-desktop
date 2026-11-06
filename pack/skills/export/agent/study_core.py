@@ -437,14 +437,56 @@ class Study:
                           ["list_open_issues shows what the paper does not state",
                            "a researcher settles each blocking issue in the HumanStudy app (never fill it in silently)"])
 
+    def runnable_arms(self):
+        """Arms the package's task/task.json `conditions` run (status not "blocked"); None when it names none."""
+        try:
+            task = json.loads((self.package / "task/task.json").read_text(encoding="utf-8")) if self.package else None
+        except (OSError, ValueError):
+            return None
+        conds = task.get("conditions") if isinstance(task, dict) else None
+        if isinstance(conds, dict):
+            conds = [dict(v, id=k) if isinstance(v, dict) else {"id": k} for k, v in conds.items()]
+        if not isinstance(conds, list):
+            return None
+        runs = [c.get("id") or c.get("arm") for c in conds if isinstance(c, dict) and c.get("status") != "blocked"
+                and c.get("runnable") is not False]
+        return {a for a in runs if isinstance(a, str)} if conds else None
+
+    def _excluded(self):
+        run = (self.caps or {}).get("run") if isinstance((self.caps or {}).get("run"), dict) else {}
+        return [x for x in run.get("excluded") or [] if isinstance(x, dict)]
+
+    def refused_arms(self):
+        """{arm: reason} for arms that cannot be run: capabilities.json run.excluded[].arms. `affectsArms` names
+        arms that run with part of the content left out and is never refused. Older builds also used `arms` for
+        that, so an arm the package's task.json runs is not refused (it is reported as affected instead)."""
+        runnable = self.runnable_arms() or set()
+        out = {}
+        for item in self._excluded():
+            for arm in item.get("arms") or [] if isinstance(item.get("arms"), list) else []:
+                if isinstance(arm, str) and arm not in runnable:
+                    out.setdefault(arm, item.get("reason"))
+        return out
+
+    def affected(self, arms):
+        """run.excluded entries that leave part of the content out of the chosen arms (affectsArms, or an older
+        build's `arms` naming an arm that runs)."""
+        runnable = self.runnable_arms() or set()
+        chosen = set(arms or [])
+        out = []
+        for item in self._excluded():
+            names = set(item.get("affectsArms") or []) | (set(item.get("arms") or []) & runnable)
+            if names & chosen:
+                out.append(item)
+        return out
+
     def require_arms(self, arms):
         """Refuse arms the study declares it cannot run (capabilities.json run.excluded[].arms)."""
-        excluded = ((self.caps or {}).get("run") or {}).get("excluded") or []
-        for item in excluded:
-            hit = sorted(set(arms or []) & set(item.get("arms") or []))
-            if hit:
-                raise Refusal("%s cannot be run: %s" % (", ".join(hit), item.get("reason")), "run.excluded",
-                              ["run the other arms", "see capabilities for what is excluded and why"])
+        refused = self.refused_arms()
+        hit = [a for a in arms or [] if a in refused]
+        if hit:
+            raise Refusal("%s cannot be run: %s" % (", ".join(hit), refused[hit[0]]), "run.excluded",
+                          ["run the other arms", "see capabilities for what is excluded and why"])
 
     def _sessions(self, llm, seed, n, arms):
         self.require_ready()
@@ -575,7 +617,9 @@ class Study:
         """Sessions plus the paper's analysis; partial when part of the paper was not run or analysed."""
         evaluation = self.evaluate(sessions)
         run = (self.capabilities().get("run") or {})
-        skipped = [] if arms else list(run.get("excluded") or [])  # chosen arms: excluded ones were refused
+        # all arms: every excluded part is skipped; chosen arms: refused ones never ran, so only parts left out of
+        # the chosen arms (affectsArms) are skipped
+        skipped = self.affected(arms) if arms else list(run.get("excluded") or [])
         status = "partial" if skipped or has_not_ready(evaluation) else "ok"
         out = {"status": status, "note": SIMULATION_NOTE, "evaluation": evaluation, "sessions": sessions}
         if self.effects:
