@@ -82,6 +82,7 @@ import random
 import re
 import shutil
 import sys
+import time
 import unicodedata
 from pathlib import Path
 
@@ -367,7 +368,7 @@ class StandIn:
         self.cap, self.prompts, self.replies, self.meta, self.table = cap, prompts, replies, meta, table
         self.seen = {}   # prompt -> screens shown: a repeated screen is read once
 
-    def _record(self, prompt, qids=(), keyed=False):
+    def _record(self, prompt, qids=(), keyed=False, texts=()):
         if len(self.prompts) >= self.cap:
             raise _Stop()
         text = prompt if isinstance(prompt, str) else json.dumps(prompt, ensure_ascii=False)
@@ -375,7 +376,8 @@ class StandIn:
         if self.table and text not in self.seen and len(self.seen) < 5000:
             self.seen[text] = prompt_context.present(text, self.table)
         shown = (self.seen[text] if text in self.seen else prompt_context.present(text, self.table)) if self.table else []
-        self.meta.append({"q": [str(q)[:120] for q in qids][:12], "k": keyed, "s": shown})
+        self.meta.append({"q": [str(q)[:120] for q in qids][:12], "k": keyed, "s": shown,
+                          "t": [str(t)[:300] for t in texts][:12]})
         return text
 
     def __call__(self, prompt, *a, **k):
@@ -387,8 +389,8 @@ class StandIn:
         questions = list(questions or [])
         keyed = any(_keyed(q) for q in questions)
         # a question is the same question again only with the same id and the same text (a round, not a block)
-        text = self._record(prompt, ["%s#%s" % (getattr(q, "id", "?"), hashlib.sha1(
-            str(getattr(q, "text", "")).encode("utf-8", "replace")).hexdigest()[:8]) for q in questions], keyed)
+        text = self._record(prompt, [_qkey(q) for q in questions], keyed,
+                            [getattr(q, "text", "") or "" for q in questions])
         if not keyed:
             reply = _standin(text)
         elif len(questions) == 1:
@@ -558,7 +560,9 @@ def _run_record(rec):
                           if isinstance(m.get("q"), list) else [],
                           "k": m.get("k") is True,
                           "s": [clean(x) for x in m.get("s") or [] if isinstance(x, str)][:200]
-                          if isinstance(m.get("s"), list) else []}
+                          if isinstance(m.get("s"), list) else [],
+                          "t": [str(x)[:300] for x in m.get("t") or [] if isinstance(x, str)][:12]
+                          if isinstance(m.get("t"), list) else []}
                          for m in meta[:CALL_CAP + ARM_CAP] if isinstance(m, dict)]
     out["seq"] = [p for p in out.get("seq") or [] if isinstance(p, list) and len(p) == 2
                   and all(isinstance(x, str) for x in p)] if isinstance(out.get("seq"), list) else []
@@ -949,6 +953,1098 @@ def excused(path, line_no, evidence):
     return False
 
 
+# ---- the analysis run: every runnable arm with a keyed stand-in, scored as the playground scores it ----------
+
+PROBE_MARK = "@@PROBE@@"
+PROBE_N = 10             # sessions per runnable arm, as a small playground run
+PROBE_BIG_N = 40         # once more when an effect is still not computed at PROBE_N (too few, or a real fault?)
+PROBE_TIMEOUT = 360      # the confined child (check_readiness.PACKAGE_TIMEOUT counts it)
+PROBE_SOFT = 200         # seconds after which the child starts no further probe run
+PROBE_ARMS = 24          # arms probed for memory, answer gates and unread answers (within PROBE_SOFT)
+PROBE_QUESTIONS = 8      # questions per arm forced to each option or left unread
+PROBE_OPTIONS = 6        # options tried per question
+PROBE_ASKS = 1500        # asks per session in one probe run before it is stopped (an adapter recruiting forever)
+PROBE_HARD = 300         # seconds after which every probe run is stopped where it is
+UNREAD = "Hmm, I am not sure what to say here."
+SHIPPED_REPLIES = Path(__file__).resolve().parent / "package_files" / "replies.py"
+EFFECTS_CORE = Path(__file__).resolve().parent.parent / "export" / "agent"
+# an effect block whose reason is an exception's text: the analysis crashed (a type error caught by the package)
+CRASH_REASON = re.compile(r"\b[A-Z]\w*(?:Error|Exception)\b|unsupported operand|not subscriptable|"
+                          r"has no attribute|object is not|invalid literal|could not convert|not supported between|"
+                          r"must be (?:real number|str|int)|Traceback")
+NO_KEY = re.compile(r"returned nothing for key|has no key|no effect_estimates entry")
+NO_VARIANCE = re.compile(r"(?i)varian|variation|constant|all (?:the )?same|identical|singular|no spread|zero sd")
+COMPLETED = ("completed", "complete")
+
+
+def _qkey(q):
+    """A question is the same question only with the same id and the same text (a round, not a block)."""
+    return "%s#%s" % (getattr(q, "id", "?"), hashlib.sha1(
+        str(getattr(q, "text", "")).encode("utf-8", "replace")).hexdigest()[:8])
+
+
+def _qsum(q):
+    return {"key": _qkey(q), "id": str(getattr(q, "id", "?"))[:80], "text": str(getattr(q, "text", "") or "")[:300],
+            "kind": str(getattr(q, "kind", "choice")), "keyed": getattr(q, "key", None) is not None,
+            "required": bool(getattr(q, "required", True)),
+            "options": [str(o)[:80] for o in (getattr(q, "options", None) or [])][:12]}
+
+
+class _Runaway(BaseException):
+    """Ends a probe run that does not finish (raised through the adapter's own `except Exception`)."""
+
+
+DEADLINE = [None]
+
+
+class _Probe:
+    """The keyed stand-in of the analysis run: the shipped replies.StubParticipant, answering every keyed question
+    correctly, with each reply drawn from the prompt rather than from the call order, so two runs of one arm differ
+    only where they are told to: `alt` {ask index: another draw}, `force` {question key: option index, for every ask
+    of it}, `unread` {ask index: question key left unread on every attempt}, `unread_first` (a question key whose
+    first ask stays unread). An ask is one replies.ask() call (its retries are the same ask)."""
+
+    def __init__(self, replies, seed, alt=None, force=None, unread=None, unread_first=None, n=PROBE_N):
+        self.limit = PROBE_ASKS * max(1, n)
+        self.stub = replies.StubParticipant(seed, noise=0.0, use_keys=True)
+        self.seed, self.alt, self.force = seed, dict(alt or {}), dict(force or {})
+        self.unread, self.unread_first, self.first_at = dict(unread or {}), unread_first, None
+        self.asks, self.log, self.prompts, self.replies, self.current = 0, [], [], [], -1
+        self.seen = {}
+
+    def _tick(self):
+        if self.asks > self.limit:
+            raise _Runaway("more than %d asks in one run of the arm" % self.limit)
+        if DEADLINE[0] is not None and time.monotonic() > DEADLINE[0]:
+            raise _Runaway("the analysis run's time ran out")
+
+    def _draw(self, text, salt=""):
+        """Seed the stub from the prompt and how often this prompt came before: participants who read the same
+        screen still answer differently, and a run repeated with one change answers the same elsewhere."""
+        seen = self.seen[text] = self.seen.get(text, 0) + 1
+        h = hashlib.sha256(("%s\x00%s\x00%d\x00%s" % (self.seed, salt, seen, text)).encode("utf-8", "replace")).hexdigest()
+        self.stub.rng = random.Random(int(h[:16], 16))
+
+    def __call__(self, prompt, *a, **k):     # a direct llm(prompt) call (an adapter without replies.ask)
+        text = prompt if isinstance(prompt, str) else json.dumps(prompt, ensure_ascii=False)
+        self._tick()
+        self.current = self.asks
+        self.asks += 1
+        self.prompts.append(text)
+        self.log.append([])
+        self._draw(text, "alt%s" % self.alt[self.current] if self.current in self.alt else "")
+        reply = self.stub(text)
+        self.replies.append(reply)
+        return reply
+
+    def answer_for(self, prompt, questions, attempt=0, final=True):
+        originals = list(questions or [])
+        questions = [self.stub._current(q) for q in originals]
+        text = prompt if isinstance(prompt, str) else json.dumps(prompt, ensure_ascii=False)
+        keys = [_qkey(q) for q in questions]
+        if attempt == 0:
+            self._tick()
+            self.current = self.asks
+            self.asks += 1
+            self.prompts.append(text)
+            self.log.append([_qsum(q) for q in originals])
+            if self.unread_first in keys and self.first_at is None:
+                self.first_at = self.current
+        i = self.current
+        unread = {self.unread[i]} if i in self.unread else set()
+        if self.unread_first in keys and self.first_at == i:
+            unread.add(self.unread_first)
+        forced = {k: self.force[k] for k in keys if k in self.force}
+        self._draw(text, "alt%s" % self.alt[i] if i in self.alt else "")
+        if not unread and not forced:
+            reply = self.stub.answer_for(text, questions, attempt=attempt, final=True)
+        else:
+            parts = []
+            for n, (q, k) in enumerate(zip(questions, keys), 1):
+                if k in unread:
+                    parts.append(UNREAD if len(questions) == 1 else "not sure")
+                elif k in forced and q.kind == "choice" and forced[k] < len(q.codes):
+                    parts.append(q.codes[forced[k]])
+                else:
+                    parts.append(self.stub._one(q, self.stub._region(text, n, len(questions))))
+            reply = parts[0] if len(parts) == 1 else "\n".join("Q%d: %s" % (n, x) for n, x in enumerate(parts, 1))
+        if attempt == 0:
+            self.replies.append(reply)
+        return reply
+
+
+class _Tracked(dict):
+    """A session dict that remembers keys the analysis asked for and did not find (key drift: `fwd` read, `fwd4`
+    written). Used only for the diagnosis, never for the verdict."""
+    where = "session"
+    misses = []
+
+    def get(self, key, default=None):
+        if not dict.__contains__(self, key):
+            _Tracked.misses.append((self.where, str(key)))
+        return dict.get(self, key, default)
+
+    def __getitem__(self, key):
+        if not dict.__contains__(self, key):
+            _Tracked.misses.append((self.where, str(key)))
+        return dict.__getitem__(self, key)
+
+
+class _TrackedEvaluation(_Tracked):
+    where = "evaluation"
+
+
+def _wrap(value, cls=_Tracked):
+    if isinstance(value, dict):
+        return cls({k: _wrap(v, cls) for k, v in value.items()})
+    if isinstance(value, list):
+        return [_wrap(v, cls) for v in value]
+    return value
+
+
+def _keys(value, acc=None):
+    acc = set() if acc is None else acc
+    if isinstance(value, dict):
+        for k, v in value.items():
+            acc.add(str(k))
+            _keys(v, acc)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _keys(v, acc)
+    return acc
+
+
+def _statuses(sessions):
+    out = {}
+    for s in sessions or []:
+        status = str(s.get("status")) if isinstance(s, dict) else "?"
+        out[status] = out.get(status, 0) + 1
+    return out
+
+
+def _not_completed(sessions):
+    return sum(1 for s in sessions or [] if not isinstance(s, dict) or s.get("status") not in COMPLETED)
+
+
+def _people(session):
+    """Participants one session record holds: a group game's record lists its members."""
+    sizes = [len(v) for k, v in session.items() if isinstance(v, list) and re.fullmatch(
+        r"(?i)members|participants|players|subjects|group(?:_members)?|agents", str(k))
+        and v and all(isinstance(x, (dict, str)) for x in v)]
+    return max(sizes + [1])
+
+
+def _computed(block):
+    v = block.get("value") if isinstance(block, dict) else None
+    return isinstance(block, dict) and block.get("status") == "computed" and isinstance(v, (int, float)) \
+        and not isinstance(v, bool) and v == v and abs(v) != float("inf")
+
+
+def _load(path, name):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    if str(path.parent) not in sys.path:
+        sys.path.insert(0, str(path.parent))
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _run(adapter, probe, seed, n, arm):
+    try:
+        got = adapter.run_sessions(probe, seed, n, arms=[arm]) if arm is not None else adapter.run_sessions(probe, seed, n)
+    except _Runaway as exc:
+        return None, "stopped: %s" % exc
+    except Exception as exc:  # noqa: BLE001  the arm's own error: the smoke test and the arms rule report it
+        return None, "%s: %s" % (type(exc).__name__, str(exc)[:300])
+    return ([s for s in got if isinstance(s, dict)] if isinstance(got, list) else []), None
+
+
+def _score(ec, module, effects, sessions):
+    """(evaluation, {effect id: block}, error), exactly as study_core.result: evaluate(sessions), then
+    effects_core.compute (op package: effect_estimates(evaluation)[compute.key])."""
+    try:
+        evaluation = module.evaluate(sessions)
+    except Exception as exc:  # noqa: BLE001
+        return None, {}, "evaluate() raised %s: %s" % (type(exc).__name__, str(exc)[:300])
+    try:
+        blocks = ec.compute(effects, sessions, evaluation, module)
+    except Exception as exc:  # noqa: BLE001  effects_core catches only Key/Type/Value/ZeroDivision errors
+        return evaluation, {}, "effect_estimates() raised %s: %s" % (type(exc).__name__, str(exc)[:300])
+    return evaluation, {b.get("effectId"): b for b in blocks if isinstance(b, dict)}, None
+
+
+def _counts(blocks, ids):
+    """{effect id: n} of the computed blocks (n as the block reports it)."""
+    out = {}
+    for eid in ids:
+        b = blocks.get(eid) or {}
+        if _computed(b) and isinstance(b.get("n"), (int, float)) and not isinstance(b.get("n"), bool):
+            out[eid] = b["n"]
+    return out
+
+
+def _diagnose(ec, module, effects, sessions):
+    """Keys the analysis read and no session carries (with the keys that are close: drift), and keys
+    effect_estimates read from evaluate()'s result that evaluate() does not return (a dropped `_sessions`)."""
+    import difflib
+    _Tracked.misses = []
+    have = _keys(sessions)
+    returned = set()
+    try:
+        wrapped = _wrap(sessions)
+        evaluation = module.evaluate(wrapped)
+        returned = _keys(evaluation)
+        ec.compute(effects, wrapped, _wrap(evaluation, _TrackedEvaluation), module)
+    except Exception:  # noqa: BLE001  a crash is reported from the plain run
+        pass
+    drift, dropped = {}, []
+    for where, key in _Tracked.misses:
+        if where == "session" and key not in have and len(key) >= 3 and key not in drift:
+            near = {h for h in have if h != key and (h.startswith(key) or key.startswith(h)) and len(h) >= 3
+                    and abs(len(h) - len(key)) <= 3}
+            near |= set(difflib.get_close_matches(key, sorted(have), 3, 0.8))
+            if near:
+                drift[key] = sorted(near)[:4]
+        elif where == "evaluation" and key not in returned and key not in dropped:
+            dropped.append(key)
+    return drift, dropped[:6]
+
+
+def _blocks(prompts):
+    """A block number per prompt: consecutive prompts that share a line (not one every prompt has) are one task."""
+    keys = [{_line_key(l) for l in p.splitlines() if len(l.strip()) >= 20} for p in prompts]
+    fixed = set.intersection(*keys) if keys else set()
+    out, block = [], 0
+    for k in range(len(prompts)):
+        if k and not ((keys[k] & keys[k - 1]) - fixed):
+            block += 1
+        out.append(block)
+    return out
+
+
+def _scored(log):
+    return [i for i, qs in enumerate(log) if any(q["kind"] != "text" and not q["keyed"] for q in qs)]
+
+
+def _memory(adapter, replies, arm, seed, n, base):
+    """Does anything a participant answered in one task reach the prompts of a later task? Each tested answer is
+    redrawn (another option) and the run repeated: a later block's prompt that changes carries it."""
+    prompts = base.prompts
+    blocks = _blocks(prompts)
+    scored = _scored(base.log)
+    if len(prompts) < 4 or not blocks or blocks[-1] < 1 or not scored:
+        return {"judged": False, "asks": len(prompts), "blocks": (blocks[-1] + 1) if blocks else 0}
+    again = _Probe(replies, seed)
+    _run(adapter, again, seed, n, arm)
+    if again.prompts != prompts:      # an adapter that varies run to run cannot be compared with itself
+        return {"judged": False, "asks": len(prompts), "reason": "the same run sent different prompts twice"}
+    tests = []
+    for j in dict.fromkeys(i for i in (scored[0], scored[len(scored) // 2]) if blocks[i] < blocks[-1]):
+        test = None
+        # a redrawn reply may say the same answer in other words: try a few, and stop at one a later task shows
+        for salt in range(1, 7):
+            alt = _Probe(replies, seed, alt={j: salt})
+            _run(adapter, alt, seed, n, arm)
+            if len(alt.replies) <= j or alt.replies[j] == base.replies[j]:
+                continue
+            other = alt.prompts
+            changed = [k for k in range(j + 1, max(len(prompts), len(other)))
+                       if k >= len(prompts) or k >= len(other) or prompts[k] != other[k]]
+            later = [k for k in changed if k >= len(blocks) or blocks[k] > blocks[j]]
+            if test is None or len(later) > test["laterBlocks"]:
+                test = {"ask": j, "block": blocks[j], "changed": len(changed), "laterBlocks": len(later)}
+            if later:
+                break
+        if test:
+            tests.append(test)
+    return {"judged": bool(tests), "asks": len(prompts), "blocks": blocks[-1] + 1, "tests": tests,
+            "stateless": bool(tests) and all(t["laterBlocks"] == 0 for t in tests)}
+
+
+def _probe(pkg, replies, ec):
+    start = time.monotonic()
+    DEADLINE[0] = start + PROBE_HARD
+    late = lambda: time.monotonic() - start > PROBE_SOFT  # noqa: E731
+    project = pkg.parent.parent
+    task = _obj(_json(pkg / "task/task.json"))
+    adapter = _load(pkg / "task/adapter.py", "hs_probe_adapter")
+    module = _load(pkg / "evaluation/evaluation.py", "hs_probe_evaluation") \
+        if (pkg / "evaluation/evaluation.py").is_file() else None
+    arms = replies.runnable_arms(task)[0] or [None]
+    try:
+        table = prompt_context.probes(_json(project / "program.json") or {}, _json(pkg / "materials/materials.json") or {})
+    except Exception:  # noqa: BLE001  no screens known: the check-stimulus rule has nothing to read
+        table = {}
+    out = {"arms": {}, "effects": {}, "memory": {}, "gates": [], "unreadOutcome": [], "groupDrop": [],
+           "questions": {}, "notJudged": []}
+    base, sessions_of = {}, {}
+    for i, arm in enumerate(arms):
+        seed = 20261106 + 101 * i
+        probe = _Probe(replies, seed)
+        got, err = _run(adapter, probe, seed, PROBE_N, arm)
+        name = arm if arm is not None else "(all arms)"
+        out["arms"][name] = {"error": err, "asks": probe.asks, "statuses": _statuses(got)}
+        if err and err.startswith("stopped:"):
+            out["notJudged"].append("arm %s (%s)" % (name, err))
+        grouped = {tuple(sorted(q["text"][:160] for q in qs)) for qs in probe.log if len(qs) >= 2}
+        out["arms"][name]["grouped"] = [list(g) for g in sorted(grouped)[:40]]
+        out["arms"][name]["singles"] = sorted({qs[0]["text"][:160] for qs in probe.log if len(qs) == 1})[:300]
+        out["arms"][name]["calls"] = [{"k": any(q["keyed"] for q in qs), "t": [q["text"][:200] for q in qs][:8],
+                                       "s": prompt_context.present(prompt, table) if table else []}
+                                      for prompt, qs in list(zip(probe.prompts, probe.log))[:150]]
+        out["arms"][name]["summary"] = next((l.strip()[:200] for p in probe.prompts for l in p.splitlines()
+                                             if SUMMARY_LINE.search(l)), None)
+        base[name], sessions_of[name] = (probe, seed, arm), got or []
+        for qs in probe.log:
+            for q in qs:
+                if len(out["questions"]) < 400:
+                    out["questions"].setdefault(q["key"], q)
+    sessions = [s for got in sessions_of.values() for s in got]
+    effects = _json(project / "effects.json")
+    listed = [e for e in (effects or {}).get("effects") or [] if isinstance(e, dict) and isinstance(e.get("id"), str)] \
+        if isinstance(effects, dict) else []
+    excluded = prompt_context.excluded_effects(_json(project / "capabilities.json"))
+    out["excluded"] = sorted(excluded)
+    live = [e["id"] for e in listed if e["id"] not in excluded]
+    blocks = {}
+    if listed and module is not None and sessions:
+        evaluation, blocks, error = _score(ec, module, effects, sessions)
+        out["effectsError"] = error
+        try:
+            returned = module.effect_estimates(evaluation) if hasattr(module, "effect_estimates") else {}
+            out["keysReturned"] = sorted(map(str, returned or {}))[:80]
+        except Exception:  # noqa: BLE001  effects_core reports it per effect (a crash), or _score did
+            out["keysReturned"] = None
+        for e in listed:
+            comp = _obj(e.get("compute"))
+            b = blocks.get(e["id"]) or {}
+            fields = [comp.get(k) for k in ("field", "withField") if isinstance(comp.get(k), str)]
+            out["effects"][e["id"]] = {
+                "op": comp.get("op"), "key": comp.get("key"), "status": b.get("status"), "computed": _computed(b),
+                "reason": str(b.get("reason") or "")[:300], "n": b.get("n"), "study": e.get("studyId"),
+                "missingFields": [f for f in fields if not any(ec.field(s, f) is not None for s in sessions)]}
+        bad = [eid for eid in live if not out["effects"][eid]["computed"]]
+        if bad and not out.get("effectsError"):
+            out["drift"], out["dropped"] = _diagnose(ec, module, effects, sessions)
+            small = [eid for eid in bad if not CRASH_REASON.search(out["effects"][eid]["reason"])
+                     and not NO_KEY.search(out["effects"][eid]["reason"])]
+            if small and not late():
+                more, cut = [], None
+                for i, (name, (probe, seed, arm)) in enumerate(base.items()):
+                    got, big_err = _run(adapter, _Probe(replies, seed + 7, n=PROBE_BIG_N), seed + 7, PROBE_BIG_N, arm)
+                    more += got or []
+                    if big_err and big_err.startswith("stopped"):
+                        cut = big_err
+                _, big, big_error = _score(ec, module, effects, more)
+                big_error = cut or big_error
+                out["bigN"] = PROBE_BIG_N
+                out["bigStatuses"] = _statuses(more)
+                for eid in small:
+                    b = big.get(eid) or {}
+                    out["effects"][eid]["big"] = {"computed": _computed(b),
+                                                  "reason": str(big_error or b.get("reason") or "")[:300]}
+            elif small:
+                out["notJudged"].append("a run of %d sessions per arm (time)" % PROBE_BIG_N)
+    # one arm at a time, one participant (or a pair): memory across tasks, answer gates, unread answers
+    counted = _counts(blocks, live) if blocks else {}
+    for i, (name, (probe, seed, arm)) in enumerate(list(base.items())[:PROBE_ARMS]):
+        if late():
+            out["notJudged"].append("arms after %s (time)" % name)
+            break
+        one_seed, n1 = seed + 1, 1
+        one = _Probe(replies, one_seed)
+        got, err = _run(adapter, one, one_seed, 1, arm)
+        if err or not got:
+            one, n1 = _Probe(replies, one_seed), 2
+            got, err = _run(adapter, one, one_seed, 2, arm)
+        if err or not one.asks:
+            continue
+        out["memory"][name] = _memory(adapter, replies, arm, one_seed, n1, one)
+        asked = {}
+        for qs in one.log:
+            for q in qs:
+                asked.setdefault(q["key"], q)
+        # a question whose answer decides completed or excluded is a check: it needs key=
+        for q in [q for q in asked.values() if q["kind"] == "choice" and not q["keyed"] and len(q["options"]) >= 2][
+                :PROBE_QUESTIONS]:
+            if late():
+                break
+            outcome = {}
+            for k in range(min(len(q["options"]), PROBE_OPTIONS)):
+                forced = _Probe(replies, one_seed, force={q["key"]: k})
+                got_k, err_k = _run(adapter, forced, one_seed, n1, arm)
+                if err_k or not got_k:
+                    continue
+                left = [s for s in got_k if s.get("status") not in COMPLETED]
+                status = "completed" if not left else "%s%s" % (left[0].get("status"), (
+                    " (%s)" % str(left[0].get("exclusion_reason"))[:120]) if left[0].get("exclusion_reason") else "")
+                outcome.setdefault(status, []).append(q["options"][k])
+                if "completed" in outcome and len(outcome) > 1:
+                    break
+            if "completed" in outcome and len(outcome) > 1:
+                out["gates"].append({"arm": name, "id": q["id"], "text": q["text"], "outcome": outcome})
+        # an optional answer the analysis uses: when it is unread, the session must not stay completed with no outcome
+        if counted and sessions and not late():
+            _, with_one, _ = _score(ec, module, effects, sessions + got)
+            own = {eid: n - counted.get(eid, 0) for eid, n in _counts(with_one, live).items()}
+            own = {eid: d for eid, d in own.items() if d > 0}
+            for q in [q for q in asked.values() if not q["required"] and q["kind"] != "text"][:PROBE_QUESTIONS]:
+                if not own or late():
+                    break
+                lost_probe = _Probe(replies, one_seed, unread_first=q["key"])
+                got_q, err_q = _run(adapter, lost_probe, one_seed, n1, arm)
+                if err_q or not got_q or _not_completed(got_q) > _not_completed(got):
+                    continue
+                _, with_q, _ = _score(ec, module, effects, sessions + got_q)
+                mine = {eid: n - counted.get(eid, 0) for eid, n in _counts(with_q, live).items()}
+                lost = sorted(eid for eid in own if mine.get(eid, 0) <= 0)
+                if lost:
+                    out["unreadOutcome"].append({"arm": name, "id": q["id"], "text": q["text"], "lost": lost,
+                                                 "none": all(mine.get(eid, 0) <= 0 for eid in own)})
+        # one unread reply in a multi-participant run: how many sessions stop being completed?
+        group_probe = probe
+        scored = _scored(group_probe.log)
+        for m in dict.fromkeys(scored[len(scored) * k // 3] for k in (1, 2) if scored):
+            if late():
+                break
+            q = next(q for q in group_probe.log[m] if q["kind"] != "text" and not q["keyed"])
+            hit = _Probe(replies, seed, unread={m: q["key"]})
+            got_m, err_m = _run(adapter, hit, seed, PROBE_N, arm)
+            if err_m or got_m is None:
+                continue
+            was = sessions_of.get(name) or []
+            newly = [s for k, s in enumerate(got_m) if s.get("status") not in COMPLETED
+                     and (k >= len(was) or was[k].get("status") in COMPLETED)]
+            # only a record that holds several people: separate records that change are other answers drawn after a
+            # shorter session, not this reply's doing
+            groups = [s for s in newly if _people(s) >= 2]
+            people = sum(_people(s) for s in groups)
+            if people >= 2:
+                newly = groups
+                out["groupDrop"].append({"arm": name, "id": q["id"], "text": q["text"], "sessions": len(newly),
+                                         "people": people, "statuses": _statuses(got_m)})
+                break
+    out["seconds"] = round(time.monotonic() - start, 1)
+    return out
+
+
+def _probe_child(pkg, nonce):
+    """In the confined child: the analysis run on the package copy; one marker line."""
+    import contextlib
+    import importlib.util
+    import io
+    import os
+    import time
+    time.sleep = lambda *a, **k: None
+    sys.dont_write_bytecode = True
+    spec = importlib.util.spec_from_file_location("humanstudy_replies_shipped", SHIPPED_REPLIES)
+    replies = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = replies
+    spec.loader.exec_module(replies)
+    sys.path.insert(0, str(EFFECTS_CORE))
+    import effects_core as ec
+    here = str(Path(__file__).resolve().parent)
+    while here in sys.path:   # the package imports its own siblings, never a checker module
+        sys.path.remove(here)
+    sys.path.remove(str(EFFECTS_CORE))
+    os.chdir(pkg)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            report = _probe(pkg, replies, ec)
+    except BaseException as exc:  # noqa: BLE001  an import error in the package is a finding, not a crash
+        report = {"error": "%s: %s" % (type(exc).__name__, str(exc)[:300])}
+    print(marked(PROBE_MARK, nonce, json.dumps(report, default=str, ensure_ascii=True)), flush=True)
+
+
+def _project_copy(pkg, work, root=None):
+    """A copy of the package at work/project/package/<slug> with what the format puts beside program.json (from the
+    project root the check was given, else the package's grandparent)."""
+    from check_package import BESIDE_PROGRAM
+    copy = work / "project" / "package" / pkg.name
+    sandbox_run_mod().copy_tree(pkg, copy, ignore=shutil.ignore_patterns("__pycache__", ".git"))
+    project = Path(root) if root is not None else pkg.parent.parent
+    if (root is not None or pkg.parent.name == "package") and (project / "program.json").is_file():
+        for f in project.iterdir():  # only what the project format puts beside program.json
+            if f.is_file() and not f.is_symlink() and (f.name in BESIDE_PROGRAM or f.suffix.lower() == ".pdf"):
+                shutil.copy2(f, work / "project" / f.name)
+        if (project / "sources").is_dir() and not (project / "sources").is_symlink():
+            sandbox_run_mod().copy_tree(project / "sources", work / "project" / "sources")
+    return copy
+
+
+def sandbox_run_mod():
+    import sandbox_run
+    return sandbox_run
+
+
+def probe_of(pkg, timeout=PROBE_TIMEOUT, root=None):
+    """The analysis run of the package, confined (sandbox_run.py): its report, or {"error": ...}."""
+    from check_replies import read_marked
+    with sandbox_run_mod().work_dir(prefix="check-analysis-") as work:
+        copy = _project_copy(pkg, work, root)
+        nonce = new_nonce()
+        run = sandbox_run_mod().run_python(Path(__file__).resolve(), ["--probe", str(copy)], cwd=copy, work=work,
+                                           timeout=timeout, env={NONCE_ENV: nonce})
+    if run.timed_out:
+        return {"error": "the analysis run did not finish within %d s" % timeout, "timedOut": True}
+    report, forged = read_marked(run.stdout, PROBE_MARK, nonce)
+    if forged:
+        return {"error": "the analysis run's report cannot be trusted: " + forged}
+    if not isinstance(report, dict):
+        return {"error": "the analysis run could not be run: " + ((run.stderr or run.stdout or "").strip()[-400:]
+                                                                  or "no output")}
+    return report
+
+
+# ---- rules on the analysis run and on the prompts as sent (batch-2 reviews) ---------------------------------
+
+# Qualtrics and Word export text that is never part of a participant's screen
+EXPORT_MARKS = re.compile(r"\b(?:Start|End) of Block\b|^\s*Page Break\s*$|\$\{[^}\n]{1,120}\}|\bDefault Question Block\b|"
+                          r"</?w:[A-Za-z]+|<(?:div|span|br|p|strong|em|font|img|table|tr|td|ul|li)\b[^>]*>|&nbsp;",
+                          re.I | re.M)
+CHECK_TEXT = re.compile(r"(?i)comprehension (?:question|check|test)|attention check|paying attention|"
+                        r"recall (?:question|check|test)|manipulation check|"
+                        r"which of the following (?:was|were|is|did|happened)|was not mentioned|were not mentioned|"
+                        r"according to the (?:story|scenario|text|vignette|passage|description)\b.{0,80}\?|"
+                        r"what (?:did|was|were) .{0,60}\b(?:in|from) the (?:story|scenario|text|vignette|passage)")
+ATTENTION_TEXT = re.compile(r"(?i)attention check|paying attention|to (?:show|indicate|confirm|prove) (?:that )?you(?:'re| are)"
+                            r" (?:reading|attentive|paying)|this is an attention|comprehension (?:question|check)|"
+                            r"manipulation check|please (?:select|choose|click|pick|type|enter|write) (?:the (?:word|number|"
+                            r"option|answer) )?[\"'“‘]")
+STIMULUS_NAME = re.compile(r"(?i)vignette|scenario|stimul|\bstor(?:y|ies)\b|passage|article|case description|reading text")
+SUMMARY_LINE = re.compile(r"(?i)\b(?:your|the) (?:own )?(?:answers?|choices?|decisions?|responses?|selections?) (?:so far|until now|"
+                          r"up to now|(?:on|from) (?:the )?(?:previous|earlier) (?:pages?|days?|screens?|questions?))"
+                          r"|\byou (?:have )?(?:chose|chosen|answered|selected|picked|decided) .{0,40}\b(?:so far|previously)")
+WITHIN_TEXT = re.compile(r"(?i)within[- ](?:subjects?|participants?|persons?)|repeated[- ]measures?|"
+                         r"(?:each|every|all) participants? (?:completed|answered|did|rated|read|faced|saw|went through|"
+                         r"took part in) (?:all|each|both|every)\b")
+WITHIN_SESSION = re.compile(r"(?i)(?:each|every|all) participants? (?:completed|answered|did|rated|read|faced|saw|went through|"
+                            r"took part in) (?:all|each of|every one of) (?:the )?(?:\w+ ){0,2}(?:scenarios|vignettes|"
+                            r"studies|experiments|tasks|stories|problems)|(?:scenario|vignette|story|study) order "
+                            r"(?:was |were )?(?:randomi[sz]ed|random|counterbalanced)|order of the (?:\w+ )?(?:scenarios|"
+                            r"vignettes|studies|experiments|stories|problems) (?:was |were )?(?:randomi[sz]ed|random|"
+                            r"counterbalanced)|all (?:\w+ ){0,2}(?:studies|scenarios|vignettes) in (?:one|a single) "
+                            r"(?:session|survey)")
+SPLIT_TEXT = re.compile(r"(?i)\bone (?:scenario|vignette|study|story|task|problem) (?:per|for each) (?:ai )?"
+                        r"(?:participant|agent|session)")
+TEXTY = {"text", "te", "open", "open-ended", "open ended", "free", "free text", "freetext", "essay", "string", "textentry",
+         "text entry", "text_entry", "short answer"}
+CHOICEY = {"choice", "mc", "multi", "multiple", "multiple choice", "radio", "select", "single", "dropdown", "checkbox",
+           "multi-select", "single choice"}
+NUMBERY = {"number", "numeric", "integer", "float", "slider", "number entry", "numeric entry"}
+
+
+def _within_effect(e):
+    con = _obj(e.get("contrast"))
+    return e.get("design") in ("within", "correlational") or con.get("kind") in ("association", "paired")
+
+
+def _association(e):
+    con, comp = _obj(e.get("contrast")), _obj(e.get("compute"))
+    return e.get("design") == "within" and (con.get("kind") == "association" or comp.get("op") == "correlation")
+
+
+def _design_texts(program):
+    return [str(f.get("value")) for n, f in _fields(program) if n.get("kind") == "design"
+            and isinstance(f.get("value"), str)]
+
+
+def _ids(listed, limit=8):
+    listed = list(listed)
+    return ", ".join(listed[:limit]) + (" and %d more" % (len(listed) - limit) if len(listed) > limit else "")
+
+
+def _arm_statuses(probe):
+    return "; ".join("%s: %s" % (arm, ", ".join("%d %s" % (n, s) for s, n in sorted((r.get("statuses") or {}).items()))
+                                 or "no sessions")
+                     for arm, r in list((probe.get("arms") or {}).items())[:8])
+
+
+def effect_rules(root, pkg, probe, newer, warn, notes):
+    """effects.json: every effect not listed in capabilities.json run.excluded[].effects computes a number on the
+    analysis run (10 keyed stand-in sessions per runnable arm, evaluate() then effects_core.compute, as the
+    playground does). Returns the summary line."""
+    effects = _json(root / "effects.json")
+    if not isinstance(effects, dict):
+        return None
+    if probe.get("error"):
+        (newer if probe.get("timedOut") else warn)("the analysis run could not judge the effects: %s" % probe["error"],
+             "make `run_sessions` and `evaluate` run offline with the stand-in (python check_validity.py . shows it)")
+        return None
+    results = probe.get("effects") or {}
+    excluded = set(probe.get("excluded") or [])
+    live = [eid for eid in results if eid not in excluded]
+    ran = [a for a, r in (probe.get("arms") or {}).items() if not r.get("error") and (r.get("statuses") or {})]
+    completed = sum((r.get("statuses") or {}).get(s, 0) for r in (probe.get("arms") or {}).values() for s in COMPLETED)
+    sessions = "(analysis run, %d keyed stand-in sessions per arm: %s)" % (PROBE_N, _arm_statuses(probe))
+    if not (pkg / "evaluation/evaluation.py").is_file():
+        return None
+    if results and not live and ran:
+        newer("no effect of effects.json is computed from the arms the package runs (%s): all %d effects are listed in "
+              "capabilities.json run.excluded" % (", ".join(ran[:8]), len(results)),
+              "write the effects of the studies the replay runs (the paper's tests of those arms, with their reported "
+              "numbers), or leave those arms out of the package; an export with no computable effect has nothing to "
+              "compare")
+    elif ran and results:
+        effects_list = [e for e in effects.get("effects") or [] if isinstance(e, dict)]
+        task = _obj(_json(pkg / "task/task.json"))
+        studies = {c.get("study") for c in _obj_list(task.get("conditions")) if c.get("id") in ran and c.get("study")}
+        covered = {e.get("studyId") for e in effects_list if e.get("id") in live}
+        idle = sorted(s for s in studies if isinstance(s, str) and s not in covered)
+        if idle and any(e.get("studyId") for e in effects_list):
+            warn("studies %s run (task.json conditions) but no effect of effects.json that is not excluded belongs to "
+                 "them" % ", ".join(idle[:6]),
+                 "add the paper's tests of these studies to effects.json, or say in the report why they have none")
+    if probe.get("effectsError"):
+        newer("the analysis cannot score the replay: %s %s" % (probe["effectsError"], sessions),
+              "fix evaluation/evaluation.py so evaluate(sessions) and effect_estimates(evaluate(sessions)) run on the "
+              "sessions run_sessions returns (the playground calls them exactly so)")
+        return "analysis run: evaluate() failed"
+    crash, nokey, field, small_ok, stub, other, unjudged = [], [], [], [], [], [], []
+    stopped = [a for a, r in (probe.get("arms") or {}).items() if str(r.get("error") or "").startswith("stopped")]
+    for eid in live:
+        r = results[eid]
+        if r.get("computed"):
+            continue
+        reason = r.get("reason") or ""
+        big = r.get("big") or {}
+        if CRASH_REASON.search(reason) or CRASH_REASON.search(big.get("reason") or ""):
+            crash.append((eid, reason or big.get("reason")))
+        elif NO_KEY.search(reason):
+            nokey.append((eid, r.get("key")))
+        elif r.get("missingFields"):
+            field.append((eid, r["missingFields"]))
+        elif big.get("computed"):
+            small_ok.append(eid)
+        elif NO_VARIANCE.search(big.get("reason") or reason):
+            stub.append((eid, big.get("reason") or reason))
+        elif probe.get("drift") or probe.get("dropped"):
+            other.append((eid, reason))
+        elif not big or str(big.get("reason") or "").startswith("stopped") or stopped:
+            unjudged.append(eid)
+        else:
+            other.append((eid, big.get("reason") or reason))
+    if crash:
+        reasons = sorted({x for _, x in crash})
+        newer("%d effect(s) never compute because the analysis crashes: %s; e.g. \"%s\" %s"
+              % (len(crash), _ids(e for e, _ in crash), reasons[0][:200], sessions),
+              "the evaluation must turn the recorded answers into numbers itself: a choice answer is the option's label "
+              "(replies Page.value), so map it to the scale's code before averaging; then rerun check_package.py")
+    if nokey:
+        returned = probe.get("keysReturned")
+        newer("%d effect(s) name a compute.key that effect_estimates() does not return: %s%s"
+              % (len(nokey), _ids("%s (key %r)" % kv for kv in nokey),
+                 "; it returns %s" % _ids(returned or [], 10) if returned is not None else ""),
+              "make effects.json compute.key and evaluation.effect_estimates() use the same names")
+    if field:
+        newer("%d effect(s) read session fields no session carries: %s" % (len(field), _ids(
+            "%s (%s)" % (e, ", ".join(f)) for e, f in field)),
+              "make effects.json compute.field name the field run_sessions writes (a dotted path into the session)")
+    if other:
+        cause = []
+        for key, near in sorted((probe.get("drift") or {}).items()):
+            cause.append("the analysis reads %r, which no session carries (the sessions have %s)"
+                         % (key, ", ".join(repr(x) for x in near)))
+        for key in probe.get("dropped") or []:
+            cause.append("effect_estimates() reads evaluation[%r], which evaluate() does not return" % key)
+        if cause:
+            newer("%d effect(s) never compute: %s; %s"
+                  % (len(other), _ids(e for e, _ in other), "; ".join(cause[:4])),
+                  "use one name for each answer in task/adapter.py and evaluation/evaluation.py, and return from "
+                  "evaluate() everything effect_estimates() reads; a key mismatch looks like \"too few participants\"")
+        else:
+            newer("%d effect(s) do not compute even with %d keyed stand-in sessions per arm: %s; e.g. \"%s\" %s"
+                  % (len(other), probe.get("bigN") or PROBE_N, _ids(e for e, _ in other), other[0][1][:200], sessions),
+                  "find why the analysis gets no data for them (an exclusion every session hits, a check without its "
+                  "key=, an arm that never completes); or list them in capabilities.json run.excluded[].effects with "
+                  "the reason they cannot be computed by the replay")
+    if stub:
+        warn("%d effect(s) compute no value on the stand-in run because the answers do not vary (%s; e.g. \"%s\"); the "
+             "stand-in cannot tell whether real replies would" % (len(stub), _ids(e for e, _ in stub), stub[0][1][:160]),
+             "check that a model's free-text or numeric answer is read and scored as the paper scores it")
+    if unjudged:
+        notes.append("analysis run: %s not computed with %d sessions per arm, and the larger run did not finish "
+                     "(time or a stopped arm): not judged" % (_ids(unjudged), PROBE_N))
+    if small_ok:
+        notes.append("analysis run: %s compute only with %d sessions per arm (10 were too few)"
+                     % (_ids(small_ok), probe.get("bigN") or PROBE_N))
+    for item in probe.get("notJudged") or []:
+        notes.append("analysis run: not judged: %s" % item)
+    done = sum(1 for eid in live if results[eid].get("computed") or results[eid].get("big", {}).get("computed"))
+    return "%d of %d effects compute (%d excluded by capabilities.json; %d completed stand-in sessions)" % (
+        done, len(live), len(results) - len(live), completed)
+
+
+def _obj_list(value):
+    if isinstance(value, dict):
+        value = [dict(v, id=k) if isinstance(v, dict) else {"id": k} for k, v in value.items()]
+    return [v for v in value or [] if isinstance(v, dict)] if isinstance(value, list) else []
+
+
+def unread_rules(probe, newer, warn):
+    """One unread reply never ends several sessions (a group); an optional answer the analysis uses never leaves a
+    completed session without its outcome; a choice that decides completed or excluded is keyed."""
+    for g in probe.get("groupDrop") or []:
+        newer("arm %s: one unread reply (to %s \"%s\") removed %d participants (%d session record(s)), not only the "
+              "participant who gave it (%s)"
+              % (g["arm"], g["id"], g["text"][:100], g.get("people", g["sessions"]), g["sessions"],
+                 ", ".join("%d %s" % (n, s) for s, n in sorted(g["statuses"].items()))),
+              "an unparsed reply is recorded on its trial and the participant is kept (build SKILL.md, unparsed "
+              "replies): the group plays on with what the original screen showed for a missing decision; drop people or "
+              "groups only by the paper's own rule (a timeout dropout is not an unread reply), with `# exclusion:`")
+    fix = ("an answer the analysis needs is required (its loss ends the session as `unparsed`, so the loss is "
+           "counted and reported), or the session records it as unparsed and evaluate() reports how many were lost")
+    by_arm = {}
+    for u in probe.get("unreadOutcome") or []:
+        by_arm.setdefault((u["arm"], bool(u["none"])), []).append(u)
+    for (arm, none), found in sorted(by_arm.items(), key=lambda kv: (not kv[0][1], kv[0][0])):
+        if not none:
+            continue
+        lost = sorted({e for u in found for e in u["lost"]})
+        newer("arm %s: when one answer to %s (required=False) is unread, the session stays `completed` but counts in no "
+              "effect at all: a completed session with no outcome (%s)"
+              % (arm, "; ".join("%s \"%s\"" % (u["id"], u["text"][:80]) for u in found[:3])
+                 + (" and %d more" % (len(found) - 3) if len(found) > 3 else ""), _ids(lost, 6)), fix)
+    partial = [(arm, found) for (arm, none), found in sorted(by_arm.items()) if not none]
+    if partial:   # the session still counts elsewhere: a loss to report, not a broken record
+        arm, found = partial[0]
+        warn("when one optional answer (required=False) is unread, the session stays `completed` but drops out of "
+             "effects that use it, in %d arm(s) (%s); e.g. arm %s: %s \"%s\" (%s)"
+             % (len(partial), _ids((a for a, _ in partial), 6), arm, found[0]["id"], found[0]["text"][:80],
+                _ids(sorted({e for u in found for e in u["lost"]}), 6)), fix)
+    for g in probe.get("gates") or []:
+        outcome = g.get("outcome") or {}
+        other = "; ".join("%s -> %s" % (" / ".join(v[:3]), k) for k, v in outcome.items() if k != "completed")
+        newer("arm %s: question %s \"%s\" decides whether a session is completed (%s) or not (%s), but it is asked "
+              "without key=" % (g["arm"], g["id"], g["text"][:120], " / ".join(outcome.get("completed", [])[:3]), other),
+              "a comprehension, attention, consent or screening question is asked with key= (the correct option); the "
+              "keyed stand-in then passes it as an attentive participant would, and the smoke test shows every gate is "
+              "passable")
+
+
+def asymmetric_any(path):
+    """[(line, code)]: an any()/all() over answers that settles as True while some answers are unread, but needs every
+    answer read to settle as False (`if any(v == "Yes" for v in vals): return True` then `return None if any(v is None
+    for v in vals) else False`): unread answers then drop "no" sayers and keep "yes" sayers."""
+    try:
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+    except (OSError, SyntaxError, ValueError):
+        return []
+    lines = source.splitlines()
+
+    def over(call):
+        """(iterable name, elt) of any(... for v in NAME) / all(...), or None."""
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id in ("any", "all")
+                and len(call.args) == 1 and isinstance(call.args[0], (ast.GeneratorExp, ast.ListComp))):
+            return None
+        gen = call.args[0]
+        if len(gen.generators) != 1 or not isinstance(gen.generators[0].iter, ast.Name):
+            return None
+        return gen.generators[0].iter.id, gen.elt, call.func.id
+
+    def none_test(elt):
+        return isinstance(elt, ast.Compare) and any(isinstance(op, (ast.Is, ast.IsNot)) for op in elt.ops) \
+            and any(isinstance(c, ast.Constant) and c.value is None for c in elt.comparators)
+
+    def value_test(elt):
+        return isinstance(elt, ast.Compare) and any(isinstance(op, (ast.Eq, ast.NotEq, ast.In, ast.NotIn)) for op in elt.ops) \
+            and not none_test(elt)
+
+    out = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        settles, waits = {}, {}
+        for node in ast.walk(fn):
+            if isinstance(node, ast.If):
+                got = over(node.test)
+                if got and got[2] == "any" and value_test(got[1]) and any(isinstance(b, ast.Return) for b in node.body):
+                    settles.setdefault(got[0], node.lineno)
+            if isinstance(node, ast.IfExp):
+                got = over(node.test)
+                yields_none = any(isinstance(x, ast.Constant) and x.value is None for x in (node.body, node.orelse))
+                if got and none_test(got[1]) and yields_none:
+                    waits.setdefault(got[0], node.lineno)
+                if got and got[2] == "any" and value_test(got[1]) and isinstance(node.body, ast.Constant) \
+                        and isinstance(node.orelse, ast.IfExp):
+                    settles.setdefault(got[0], node.lineno)
+            if isinstance(node, ast.If):
+                got = over(node.test)
+                if got and none_test(got[1]) and any(isinstance(b, ast.Return) and isinstance(b.value, ast.Constant)
+                                                     and b.value.value is None for b in node.body):
+                    waits.setdefault(got[0], node.lineno)
+        for name, line in settles.items():
+            if name in waits and line <= waits[name]:
+                out.append((line, lines[line - 1].strip()))
+    return sorted(set(out))
+
+
+def static_unread_rules(pkg, warn):
+    for rel in ("task/adapter.py", "evaluation/evaluation.py"):
+        for line_no, code in asymmetric_any(pkg / rel):
+            warn("%s:%d: an any()/all() over answers keeps a result when some answers are unread but needs every answer "
+                 "read for the other result (%s): unread replies then remove one kind of answer more than the other"
+                 % (rel, line_no, code[:120]),
+                 "treat an unread answer the same way whatever the others say: the aggregate is unread (None) whenever "
+                 "an answer it needs is unread, or count only read answers in both directions; report how many were "
+                 "unread")
+
+
+def prompt_text_rules(root, pkg, program, runs, pieces, newer, warn):
+    """Export markup in a prompt as sent, condition or hypothesis names, and build-written prose that materials.json
+    does not hold."""
+    marks = {}
+    for r in runs:
+        for line in r.get("lines") or []:
+            m = EXPORT_MARKS.search(line)
+            if m:
+                marks.setdefault(m.group(0).strip()[:40], (_label(r), line.strip()[:160]))
+    if marks:
+        newer("prompts as sent carry survey or Word export text no participant saw: " + "; ".join(
+            "%r in %s (\"%s\")" % (k, w, l) for k, (w, l) in list(marks.items())[:5]),
+              "build each screen from its text (docx_text.py for Word, qsf_flow.py for Qualtrics), never from export "
+              "lines: block markers (\"Start of Block\"), page breaks, piped-text codes (${...}) and markup are not "
+              "screen text; check the consent and first screens of the dumped prompts")
+    materials = _json(pkg / "materials/materials.json")
+    visible = " ".join(norm(t) for t in _strings(materials))
+    visible += " " + " ".join(pieces)
+    names = {}
+    task = _obj(_json(pkg / "task/task.json"))
+    for c in _obj_list(task.get("conditions")):
+        if isinstance(c.get("title"), str):
+            names[c["title"]] = "condition title"
+    for n in program.get("nodes") or []:
+        if isinstance(n, dict) and n.get("kind") in ("condition", "hypothesis") and isinstance(n.get("title"), str):
+            names[n["title"]] = "%s title" % n["kind"]
+    effects = _obj(_json(root / "effects.json"))
+    for h in effects.get("hypotheses") or []:
+        if isinstance(h, dict) and isinstance(h.get("label"), str):
+            names[h["label"]] = "hypothesis label"
+    leaks = []
+    lines = "\n".join(norm(l) for r in runs for l in r.get("lines") or [])
+    for name, what in names.items():
+        nn = norm(name)
+        if len(nn.split()) >= 3 and nn not in visible and has_phrase(lines, nn):
+            leaks.append("%s %r" % (what, name))
+    if leaks:
+        newer("prompts name the design the participant must not know: " + "; ".join(leaks[:5]),
+              "never show condition, arm or hypothesis names; a participant must not read their condition from the "
+              "prompt")
+    # build-written prose sent to participants: in an adapter string literal, not in materials.json
+    try:
+        tree = ast.parse((pkg / "task/adapter.py").read_text(encoding="utf-8"))
+        skip = _docstrings(tree)
+        literals = [norm(n.value) for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                    and id(n) not in skip and len(n.value.split()) >= 10]
+    except (OSError, SyntaxError, ValueError):
+        literals = []
+    stand_ins = " ".join(norm(t) for k, v in _obj(materials).items() if re.search(r"(?i)stand.?in", str(k))
+                         for t in _strings(v))
+    asked = {norm(t) for r in runs for c in r.get("calls_meta") or [] for t in c.get("t") or []}
+    asked = " \n ".join(a for a in asked if a)
+    written = {}
+    for r in runs:
+        for line in r.get("lines") or []:
+            nl = norm(line)
+            if len(nl.split()) < 10 or nl in visible or nl in stand_ins or nl in asked:
+                continue
+            rest = authored(line, pieces)
+            if len([w for w in rest.split() if w != "|"]) < 10:
+                continue
+            if any(nl in lit for lit in literals):
+                written.setdefault(line.strip()[:160], _label(r))
+    if written:
+        warn("prompts carry build-written prose that materials/materials.json does not hold or label as a stand-in: "
+             + "; ".join("\"%s\" (%s)" % kv for kv in list(written.items())[:3])
+             + (" and %d more" % (len(written) - 3) if len(written) > 3 else ""),
+             "use the printed screen text; when no source prints it, put the wording in materials.json `standIns` "
+             "with a decision issue so the researcher sees it, and never claim it is what the screen showed")
+
+
+def check_rules(program, materials, probe, newer):
+    """A comprehension, attention or recall question is not answered with the stimulus it tests on screen again,
+    unless a cited source says the stimulus stayed visible (materials.json screenMemory.repeats). Read from the
+    analysis run (each arm on its own, every check answered as an attentive participant would)."""
+    table = prompt_context.screens(program)
+    names = {n.get("id"): "%s %s" % (n.get("id"), n.get("title") or "") for n in program.get("nodes") or []
+             if isinstance(n, dict)}
+    stimuli = {s for s, v in table.items() if not v.get("instruction") and STIMULUS_NAME.search(names.get(s, ""))}
+    if not stimuli:
+        return
+    declared = {d["screen"] for d in prompt_context.declarations(materials)["repeats"]}
+    gates = {norm(g.get("text") or "") for g in probe.get("gates") or []}
+    found = {}
+    for arm, r in (probe.get("arms") or {}).items():
+        seen = set()
+        for i, c in enumerate(r.get("calls") or []):
+            texts = c.get("t") or []
+            shown = set(c.get("s") or [])
+            if c.get("k") or any(CHECK_TEXT.search(t) for t in texts) or any(norm(t) in gates for t in texts):
+                for s in sorted((shown & stimuli & seen) - declared):
+                    found.setdefault(s, ("arm %s ask %d" % (arm, i + 1), (texts or ["?"])[0][:100]))
+            seen |= shown
+    if found:
+        newer("a check question is answered with the stimulus it tests on screen again (the participant read it "
+              "earlier and answers from memory unless a source says it stayed visible): " + "; ".join(
+                  "%s shown with \"%s\" (%s)" % (s, q, w) for s, (w, q) in list(found.items())[:4]),
+              "send the comprehension, attention or recall question without the stimulus text; only when a cited source "
+              "says the text stayed on screen, declare it in materials/materials.json screenMemory.repeats with its "
+              "evidenceIds")
+
+
+def summary_rules(probe, pieces, newer):
+    """A running list of the participant's earlier answers must not undo a manipulation of how many decisions are
+    visible at once: one arm asks a set of questions on one screen, another asks them one per screen and shows "your
+    answers so far" (read from the analysis run, every arm on its own)."""
+    arms = probe.get("arms") or {}
+    found = []
+    for arm, r in arms.items():
+        summary = r.get("summary")
+        if not summary or not authored(summary, pieces).strip(" |"):
+            continue   # the original screens printed it: it is what the humans saw
+        singles = {norm(t) for t in r.get("singles") or [] if norm(t)}
+        for other, o in arms.items():
+            if other != arm and any(len({norm(t) for t in g} & singles) >= 2 for g in o.get("grouped") or []):
+                found.append((arm, summary[:100], other))
+                break
+    if found:
+        newer("a running summary of earlier answers works against the manipulation: " + "; ".join(
+            "arm %s shows \"%s\" while arm %s presents the same questions on one screen, so the summary hands the "
+            "one-at-a-time arm what its screens withhold" % f for f in found[:3]),
+              "carry only what that condition's screens showed (the original said \"in the previous page you "
+              "indicated...\" only where it did); conditions that differ by how many decisions are visible at once must "
+              "keep that difference in the prompts")
+
+
+def question_rules(pkg, probe, newer, warn):
+    """An attention or comprehension check is keyed; the adapter asks a question as the kind its material declares."""
+    gates = {g.get("id") for g in probe.get("gates") or []}
+    questions = list((probe.get("questions") or {}).values())
+    loose = [q for q in questions if not q.get("keyed") and q.get("id") not in gates
+             and ATTENTION_TEXT.search(q.get("text") or "")]
+    if loose:
+        warn("questions read like an attention or comprehension check but are asked without key=: " + "; ".join(
+            "%s \"%s\"" % (q["id"], q["text"][:100]) for q in loose[:4]),
+             "give key= the answer the original survey required (the check passes for an attentive participant); if the "
+             "question is not a check, ignore this")
+    materials = _json(pkg / "materials/materials.json")
+    declared = []
+
+    def walk(v):
+        if isinstance(v, dict):
+            kind = next((str(v[k]).strip().lower() for k in ("type", "kind", "questionType", "qtype", "response")
+                         if isinstance(v.get(k), str)), None)
+            text = v.get("text") if isinstance(v.get("text"), str) else None
+            if kind and text and len(norm(text).split()) >= 5:
+                declared.append((kind, norm(text), v.get("tag") or v.get("id") or v.get("qid")))
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+    walk(materials)
+    if not declared:
+        return
+    adaptations = norm(json.dumps([_obj(materials).get("replayAdaptations"),
+                                   _obj(_json(pkg / "task/task.json")).get("replayAdaptations"),
+                                   _obj(_json(pkg / "study.json")).get("replayAdaptations")], ensure_ascii=False))
+    group = lambda k: "text" if k in TEXTY else "choice" if k in CHOICEY else "number" if k in NUMBERY else None  # noqa
+    wrong = []
+    for kind, text, tag in declared:
+        want = group(kind)
+        if want is None:
+            continue
+        for q in questions:
+            asked = q.get("kind")
+            qt = norm(q.get("text") or "")
+            if not qt or text not in qt:
+                continue
+            if want == asked or (want == "number" and asked == "choice"):
+                continue
+            if want == "text" and len(text) < 0.8 * len(qt):
+                continue   # a "text" display block quoted inside a longer question's stem is not that question
+            if tag and norm(str(tag)) and has_phrase(adaptations, norm(str(tag))):
+                continue
+            wrong.append((tag or q.get("id"), kind, asked, q.get("text", "")[:90]))
+            break
+    if wrong:
+        newer("the adapter asks questions as another kind than materials.json declares: " + "; ".join(
+            "%s declared %s, asked as %s (\"%s\")" % w for w in wrong[:4]),
+              "ask each question as the screen asked it (a \"type the word\" box is free text, read and scored as the "
+              "survey scored it); a change of question type is a replay adaptation: record it in replayAdaptations "
+              "naming the question, with its likely effect")
+
+
+def memory_rules(root, pkg, program, probe, newer):
+    """Within-person outcomes need what the participant carried from task to task, or the researcher's decision."""
+    effects = _obj(_json(root / "effects.json"))
+    excluded = set(probe.get("excluded") or [])
+    live = [e for e in effects.get("effects") or [] if isinstance(e, dict) and e.get("id") not in excluded]
+    stateless = {a: m for a, m in (probe.get("memory") or {}).items() if m.get("stateless")}
+    memory = [(n, f) for n, f in _fields(program) if f.get("id") == "replay-memory"]
+    none = [n.get("id") for n, f in memory if _obj(f.get("value")).get("design") == "none"]
+    decided = any(f.get("origin") == "researcher" for _, f in memory) or any(
+        isinstance(i, dict) and i.get("fieldId") == "replay-memory" and i.get("severity") == "blocking"
+        for i in program.get("issues") or [])
+    texts = _design_texts(program)
+    within_text = [t for t in texts if WITHIN_TEXT.search(t) or WITHIN_SESSION.search(t)]
+    asks = max([m.get("asks") or 0 for m in (probe.get("memory") or {}).values()] + [0])
+    evidence = "; ".join("arm %s: %d prompts in %d tasks, a redrawn answer changed no prompt of a later task"
+                         % (a, m.get("asks"), m.get("blocks")) for a, m in list(stateless.items())[:3])
+    assoc = [e["id"] for e in live if _association(e)]
+    if stateless and assoc:
+        newer("effects %s are associations between answers one participant gave on separately prompted tasks, but each "
+              "task is a fresh call that carries nothing of the participant's earlier tasks (%s): the association is "
+              "set by construction, not by the participant" % (_ids(assoc), evidence),
+              "give each participant what the humans carried from task to task (one conversation, or their earlier "
+              "screens and answers as the memory design records them), or list these effects in capabilities.json "
+              "run.excluded[].effects with that reason")
+        return
+    within = [e["id"] for e in live if _within_effect(e)]
+    if (within or within_text) and (stateless or (none and asks >= 2)) and not decided:
+        newer("the outcomes are within-person (%s) but the replay gives a participant no memory across screens (%s); "
+              "that is recorded only as a non-blocking decision" % (
+                  "effects " + _ids(within, 5) if within else "design: \"%s\"" % within_text[0][:120],
+                  evidence or "replay-memory design 'none' on %s" % ", ".join(none[:4])),
+              "carry what the participants carried (their earlier screens and answers, or one conversation), or make "
+              "the replay-memory issue `blocking` so the researcher decides before anything runs (or record the "
+              "researcher's choice, origin `researcher`), stating the expected effect on these outcomes")
+
+
+def split_rules(root, pkg, program, newer):
+    """One human who did several scenarios or studies is one agent, not one agent per scenario."""
+    task = _obj(_json(pkg / "task/task.json"))
+    conditions = [c for c in _obj_list(task.get("conditions")) if c.get("status") != "blocked"]
+    studies = {c.get("study") for c in conditions if c.get("study")}
+    if len(studies) < 2:
+        return
+    texts = _design_texts(program)
+    said = next((t for t in texts if WITHIN_SESSION.search(t)), None)
+    adaptations = task.get("replayAdaptations")
+    declared = next((t for t in [task.get("agents")] + (adaptations if isinstance(adaptations, list) else [])
+                     if isinstance(t, str) and SPLIT_TEXT.search(t)), None)
+    if not (said or declared):
+        return
+    caps = _json(root / "capabilities.json")
+    excluded = prompt_context.excluded_effects(caps)
+    effects = _obj(_json(root / "effects.json"))
+    split_effects = [e.get("id") for e in effects.get("effects") or [] if isinstance(e, dict)
+                     and e.get("studyId") in studies and e.get("id") not in excluded]
+    if said and split_effects:
+        newer("each participant took part in several of the studies or scenarios (\"%s\"), but every AI participant "
+              "answers one (%d conditions over %d studies); effects %s still compare with humans who did them all%s"
+              % (said[:140], len(conditions), len(studies), _ids(split_effects, 6),
+                 " (the package says so: \"%s\")" % declared[:100] if declared else ""),
+              "run one AI participant through the sequence a human saw (the survey's order and randomisation, with "
+              "what they carried), or list every affected effect in capabilities.json run.excluded[].effects with that "
+              "reason (and record the paper's first-answered estimates where it prints them)")
+        return True
+    return False
+
+
 # ---- the check -------------------------------------------------------------------------------------
 
 def screen_rules(root, pkg, program, runs, newer):
@@ -1062,7 +2158,7 @@ def check(root, package=None, capture_prompts=True):
                 "contain; or `notApplicable` with the reason when it is not about what participants knew")
 
     # prompts
-    method, runs, texts, arm_refused = None, [], [], False
+    method, runs, texts, arm_refused, analysis = None, [], [], False, None
     if pkg is None:
         notes.append("no package/<slug>/task/adapter.py: prompts not checked")
     else:
@@ -1218,6 +2314,24 @@ def check(root, package=None, capture_prompts=True):
                     "participants only by the paper's own rule; when the paper prints that rule, put "
                     "`# exclusion: <evidence id>` on the line above (the quote must state the exclusion)")
 
+        # the analysis run: effects compute, unread answers, answer gates, memory across tasks (batch-2 reviews)
+        warn = lambda msg, fix="": warnings.append((msg, fix))  # noqa: E731  a heuristic: printed, never a failure
+        hung = "did not finish" in str(cap.get("error") or "")   # already a failure; a second wait adds nothing
+        probe = probe_of(pkg, root=root) if capture_prompts and not hung and (
+            (root / "effects.json").is_file() or current) else {}
+        analysis = effect_rules(root, pkg, probe, newer, warn, notes) if probe else None
+        split = split_rules(root, pkg, program, newer)
+        if probe and not probe.get("error"):
+            unread_rules(probe, newer, warn)
+            question_rules(pkg, probe, newer, warn)
+            if not split:
+                memory_rules(root, pkg, program, probe, newer)
+            summary_rules(probe, participant_text(program, root), newer)
+            check_rules(program, _json(pkg / "materials/materials.json") or {}, probe, newer)
+        static_unread_rules(pkg, warn)
+        if runs:
+            prompt_text_rules(root, pkg, program, runs, pieces, newer, warn)
+
     # missing instructions: one rule (blocking only when the adapter refuses to run without the text)
     # Blocking is right when the adapter refuses to run without the text: the whole study, or the arms that need it
     # (some arm run stops with an error while others run).
@@ -1241,7 +2355,7 @@ def check(root, package=None, capture_prompts=True):
                 "adapter refuses to run without it (this one runs); never a `check`, and never written into a "
                 "verbatim field")
     return {"problems": problems, "notes": notes, "method": method, "notApplicable": not_applicable,
-            "warnings": warnings, "currentContract": current}
+            "warnings": warnings, "currentContract": current, "analysis": analysis}
 
 
 def main(argv=None):
@@ -1249,6 +2363,10 @@ def main(argv=None):
     if argv[:1] == ["--capture"]:
         nonce = child_nonce()   # before the adapter is imported
         capture(Path(argv[1]).resolve(), nonce)
+        return 0
+    if argv[:1] == ["--probe"]:
+        nonce = child_nonce()   # before any package code is imported
+        _probe_child(Path(argv[1]).resolve(), nonce)
         return 0
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", nargs="?", default=".")
@@ -1261,12 +2379,15 @@ def main(argv=None):
     for msg, fix in report["problems"]:
         print("PROBLEM %s" % msg + ("\n        fix: %s" % fix if fix else ""))
     for msg, fix in report.get("warnings") or []:
-        print("WARN    %s (older build: blocking once rebuilt with task/replies.py)" % msg
+        print("WARN    %s%s" % (msg, "" if report.get("currentContract") else
+                                " (older build: blocking once rebuilt with task/replies.py)")
               + ("\n        fix: %s" % fix if fix else ""))
     for line in report["notes"]:
         print("note    " + line)
     if report["method"]:
         print("prompts read from: " + report["method"])
+    if report.get("analysis"):
+        print("analysis run: " + report["analysis"])
     if report["problems"]:
         print("FAIL %d validity problem(s)" % len(report["problems"]))
         return 1
