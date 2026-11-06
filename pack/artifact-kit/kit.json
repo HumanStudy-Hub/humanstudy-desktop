@@ -1,6 +1,6 @@
 {
   "name": "hs-artifact-kit",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "files": {
     "hs-kit.js": { "license": "MIT", "origin": "HumanStudy Hub" },
     "hs-kit.css": { "license": "MIT", "origin": "HumanStudy Hub" },
