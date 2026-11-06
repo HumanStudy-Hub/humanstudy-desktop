@@ -17,6 +17,15 @@ adapter that imports it is an older package: nothing is checked and nothing is p
               read as another option or not at all, when an arm has no `completed` session in the keyed
               pass, when a model call bypasses replies.ask, and when evaluate returns nothing (for all
               sessions or for one arm's alone).
+  own words   every question the package asks is fed its own screen's wording back, with the shipped reader in
+              this process (data only, no package code): the phrase of an "Enter 10 if you choose the lottery in
+              all nine rows" read as 10, a printed scale label beside its number ("0 (only believes)") read as
+              that number, the words a label starts with ("Take the bet" for "Take the bet - 50% chance ...")
+              and a worded yes/no read as that option. A reply in the screen's own words that is read as
+              something else, or not at all, fails: answers in a corner's or a scale end's own wording would be
+              lost selectively.
+  added text  a numeric range the reader adds to a prompt that the question does not state is listed as a
+              note: record it as a replay adaptation, or ask with range_hint=False.
   keyed       every question a recorded Qualtrics survey (a .qsf under sources/) accepts only with a
               correct answer (custom validation, forced or not) is asked with `key=`, and the key is an
               answer the survey accepts. Read with qsf_flow.py; skipped when that reader is absent.
@@ -296,6 +305,65 @@ def unkeyed_checks(checks: list, asked: list) -> list:
     return out
 
 
+# --------------------------------------------------------------------------- the screen's own wording
+
+_SHIPPED_MODULE = None
+
+
+def shipped_reader():
+    """The shipped replies.py, loaded once in this process (our own file, never the package's copy)."""
+    global _SHIPPED_MODULE
+    if _SHIPPED_MODULE is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("humanstudy_replies_checker", SHIPPED)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        _SHIPPED_MODULE = module
+    return _SHIPPED_MODULE
+
+
+def _question_of(reader, item: dict):
+    """The asked question rebuilt from the smoke report's summary; None when the summary cannot be rebuilt."""
+    try:
+        kind = item.get("kind")
+        return reader.Question(str(item.get("id")), str(item.get("text") or ""), item.get("options") or None,
+                               kind=kind, codes=item.get("codes") if kind == "choice" else None,
+                               minimum=item.get("minimum"), maximum=item.get("maximum"),
+                               integer=item.get("integer", True), multiple=bool(item.get("multiple")),
+                               corners=item.get("corners") or None)
+    except (TypeError, ValueError):
+        return None
+
+
+def own_wording_problems(asked: list) -> list:
+    """[(message, fix)] for every asked question whose own wording (replies.own_wording) is not read as meant."""
+    reader = shipped_reader()
+    out = []
+    for item in asked or []:
+        if not isinstance(item, dict):
+            continue
+        question = _question_of(reader, item)
+        if question is None:
+            continue
+        for reply, meant in reader.own_wording(question):
+            answer = reader.parse(reply, question)
+            got = answer.get("value") if question.kind == "number" else answer.get("index")
+            if answer.get("status") == "ok" and got == meant:
+                continue
+            shown = meant if question.kind == "number" else question.options[meant]
+            read = got if answer.get("status") == "ok" and question.kind == "number" else \
+                (question.options[got] if answer.get("status") == "ok" else answer.get("status"))
+            out.append(("question %s: a reply in the screen's own words, %r, should be read as %r but is read as %r; "
+                        "answers given in the screen's own wording would be lost or misrecorded"
+                        % (item.get("id"), reply, str(shown)[:80], str(read)[:80]),
+                        "word the question as the screen does (its own 'Enter N if ...' phrase, its printed scale "
+                        "labels and options); pass corners= or aliases= for wording the screen defines another way; "
+                        "if the screen's own words still cannot be read, report it as a reader gap"))
+            break
+    return out
+
+
 # --------------------------------------------------------------------------- the check
 
 def check(project: Path, pkg: Path) -> dict:
@@ -310,6 +378,11 @@ def check(project: Path, pkg: Path) -> dict:
     fix = ("fix the adapter (not the copy of replies.py) until `python task/adapter.py --smoke-test` passes "
            "(%s)" % READING_REPLIES)
     problems += [("smoke test: %s" % p, fix) for p in report.get("problems") or []]
+    try:
+        problems += own_wording_problems(report.get("asked") or [])
+    except Exception as exc:  # noqa: BLE001  a summary the reader cannot rebuild must not crash the check
+        problems.append(("the screens' own wording could not be fed back (%s: %s)" % (type(exc).__name__, exc),
+                         "report this"))
     try:
         problems += unkeyed_checks(survey_checks(project), report.get("asked") or [])
     except Exception as exc:  # noqa: BLE001  reading the project's survey files must not crash the check
@@ -329,6 +402,11 @@ def summary(report: dict) -> list:
     for arm, counts in (report or {}).get("arms", {}).items():
         statuses = ", ".join("%d %s" % (n, s) for s, n in sorted(counts.get("statuses", {}).items())) or "none"
         lines.append("%s: %d sessions (%s)" % (arm, counts.get("sessions", 0), statuses))
+    added = (report or {}).get("reader_added_text") or []
+    if added:
+        lines.append("the reader adds to %d question(s) text the screen does not show (%s): record it in "
+                     "task.json replayAdaptations, or ask with range_hint=False"
+                     % (len(added), ", ".join("%s: %s" % (a.get("question"), a.get("added")) for a in added[:5])))
     return lines
 
 
