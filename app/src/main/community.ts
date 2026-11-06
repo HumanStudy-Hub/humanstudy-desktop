@@ -425,7 +425,7 @@ export async function forkCommunityStudy(
 }
 
 // ---- openExternal ---------------------------------------------------------------------
-const EXTERNAL_HOSTS = new Set(['github.com', 'raw.githubusercontent.com', 'humanstudy-hub.org', 'www.humanstudy-hub.org'])
+const EXTERNAL_HOSTS = new Set(['github.com', 'raw.githubusercontent.com', 'humanstudy-hub.com', 'www.humanstudy-hub.com', 'forum.humanstudy-hub.com'])
 export function isAllowedExternal(url: unknown): url is string {
   if (typeof url !== 'string') return false
   try {

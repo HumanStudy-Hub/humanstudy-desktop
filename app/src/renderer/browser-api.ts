@@ -298,7 +298,7 @@ if (!('humanstudy' in window)) {
   const account: AccountStatus = {
     signedIn: false,
     unlocked: false,
-    server: 'https://humanstudy-hub-web.vercel.app',
+    server: 'https://humanstudy-hub.com',
     modelAccess: 'none',
   }
   const query = new URLSearchParams(location.search)
