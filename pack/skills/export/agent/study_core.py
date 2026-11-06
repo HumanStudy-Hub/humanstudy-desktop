@@ -578,8 +578,8 @@ class Study:
                                            for h in hs], phenomena=phen,
                             reportedSource=self.cite(rep.get("evidenceIds"))))
         return {"programId": self.program.get("id"), "topics": topics, "effects": out,
-                "untested": [{"id": h["id"], "statement": h["statement"], "because": h.get("untestedBecause"),
-                              "reason": h.get("reason")} for h in hyps.values() if h.get("status") == "untested"]}
+                "untested": [{"id": h["id"], "statement": h["statement"], "status": h.get("status"),
+                              "because": h.get("untestedBecause"), "reason": h.get("reason")} for h in hyps.values() if h.get("status") in ("untested", "partial")]}
 
     def graph(self, node=None, edge_type=None):
         """The paper's typed graph (program nodes, steps, effects, constructs; core edge types). With node,

@@ -527,7 +527,7 @@ sidecars). `program.json` stays the single source: the package refers to it and 
 ```text
 study.json                     overview; programRef: {"path": "../../program.json", "id": <program id>};
                                readiness: {status: ready|blocked, blocking: [...issue ids]};
-                               "buildContract": 2 (no copy of the program)
+                               "buildContract": 3 (no copy of the program)
 source/paper_metadata.json     bibliography + external_sources (empty if none authorized)
 materials/materials.json       participant-visible material by study and condition, verbatim
 task/task.json                 agents, roles, order, visibility, scripted roles + justification,
@@ -537,8 +537,9 @@ task/replies.py                unchanged copy of .opencode/skills/build/package_
 evaluation/evaluation.py       evaluate(sessions) -> dict; not_ready when a test cannot run
 ```
 
-Every package built or rebuilt now carries `task/replies.py` and `"buildContract": 2` in study.json; they
-mark it as built under the current rules, which are then blocking. Removing either (or leaving it out) to
+Every package built or rebuilt now carries `task/replies.py` and `"buildContract": 3` in study.json; they
+mark it as built under the current rules, which are then blocking. (Contract 2 packages keep the reader rules
+blocking; the effects and capabilities rules added with contract 3 print as warnings for them.) Removing either (or leaving it out) to
 pass a check is forbidden: a stamped package without the reader fails, and the readiness gate shows every
 package without both as an "older build" to the researcher.
 
@@ -776,7 +777,71 @@ Rules the runner depends on:
   computed effect block that does not hold what `reported` claims (statistic, scale, one value, n), and the
   downloaded-source, source-use (including a question check that leaves out the paper), survey-flow,
   Word-source and design-disclosure findings. Rebuilding the package with `task/replies.py` and
-  `"buildContract": 2` makes all of them blocking.
+  `"buildContract": 3` makes all of them blocking.
+
+### Rules from the batch reviews (contract 3)
+
+Independent reviews of 15 batch builds found packages that passed every check yet could not reproduce the
+paper. These rules close those gaps; the checks named enforce them.
+
+**One human is one agent.** If humans did several scenarios, tasks or vignettes, one agent does them in the
+same order and carries what that person saw and answered. Never correlate answers from calls that share
+nothing (a within-person correlation across fresh calls is set by construction). If the paper does not say
+what stayed on screen, make the replay-memory issue `blocking` so the researcher decides; never mark memory
+"none" as a non-blocking decision when an outcome is within-person. (check_validity)
+
+**Prompts are screen text only.** No "Start of Block", page breaks, `${...}`, condition names, build-written
+intros not declared as stand-ins, or running summaries ("Your answers so far") that a condition's screens did
+not show. A comprehension, recall or attention check is asked without the stimulus on screen unless a cited
+source says it stayed. (check_validity, on prompts captured from a stub run)
+
+**Checks have `key=`.** Every attention, comprehension, consent or screening question has a `key=`. Ask each
+question as the type materials.json declares, or record the change in `replayAdaptations`.
+
+**The analysis must run.** check_validity runs every arm with a keyed stand-in and computes every effect as the
+playground does. An effect that does not compute fails unless `capabilities.json run.excluded[].effects`
+lists it with a reason. Read the stated cause (a crash, a key mismatch, `_sessions` not returned by
+`evaluate()`) and fix the code; never fix it by excluding the effect.
+
+**One unread reply costs one answer.** Never end a group or a participant because of one unread reply. An
+answer the analysis uses is `required=True`, or the session records it as unparsed; a completed session always
+has its outcome. Aggregations over answers ("any said yes") treat an unread answer the same whichever way the
+others went.
+
+**Reading replies** (`task/replies.py` v5):
+- Store a choice's scale point for analysis with `page.number(qid)` (or `page.code(qid)`); `page.value(qid)` is
+  the label as printed, for display and label comparisons only. Never sum or average `page.value()` of a choice.
+- The reader adds "from A to B" to a numeric question only when its text does not state the range;
+  `check_replies` lists every addition. Pass `range_hint=False` when participants never saw the range,
+  otherwise record the hint in `task.json` `replayAdaptations`.
+- Put the screen's own corner wording in the question text ("Enter 10 if you choose the lottery in all nine
+  rows"); the reader reads it back. Pass `corners={"phrase": N}` only for wording the screen defines elsewhere.
+- Score free-text correct/lure answers with `replies.final_answer(reply, {"correct": [...], "lure": [...]})`,
+  citing the paper's coding rule; never "matches correct and not lure".
+- Transcribe paired options as printed ("Take the bet" / "NOT take the bet"); the reader matches label heads
+  and worded yes/no, never "X" for "NOT X".
+
+**Effects** (effects.py, effects_core):
+- A proportion or risk-difference estimate states `scale` (`"proportion"` or `"percentage_points"`, as printed).
+- On a two-group or paired contrast, phi, Cramér's V, χ², F or η² is signed: the reported value gets
+  `signBasis` (negative when the treatment arm is lower), op `contingency` gets `compute.success`, and a package
+  block returns the signed value with `"signed": true`.
+- Numbers pooled across sites, countries, designs or labs set `reported.scope: "pooled"` with `scopeNote`
+  (`"other-sample"` for another site or subgroup) and are never stored as a replayed arm's cell. A posterior,
+  mixed, multilevel or random-effects estimate sets `estimateType: "model-based"`. Such comparisons are shown
+  as not like-for-like.
+- A hypothesis is `tested` only when the replay computes every effect naming it and they cover its program
+  studies. Use `partial` with a `reason` when only some do (excluded effects, one design or site of a pooled
+  hypothesis, one side of a comparison); `untested` / `not-computable` when none do. Give the excluded half its
+  own effect listed in `run.excluded.effects` rather than leaving it out.
+- Before writing "n / means / SDs not printed" in `missing`, check the recorded result tables.
+
+**Capabilities:** one `run.excluded` entry per part: `{"what", "reason", "arms" | "affectsArms", "effects"}`.
+`arms` = arms that cannot be run at all (blocked in task.json); tools refuse them. `affectsArms` = arms that
+still run with this part left out (pictures, timers, demographics, questionnaires). `effects` = every effect
+the replay cannot compute, including every effect on a blocked arm. Never list a runnable arm under `arms`.
+
+**Build with `PYTHONDONTWRITEBYTECODE=1`.** Packages never ship `__pycache__`.
 
 ### Effects: from hypotheses to computable effects
 

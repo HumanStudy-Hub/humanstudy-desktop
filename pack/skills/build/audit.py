@@ -539,7 +539,7 @@ def probe(root, n):
         st = study_core.Study(root)
     except Exception as exc:
         return {"error": "study_core could not load the study: %s" % exc}
-    excluded = [a for item in ((st.caps or {}).get("run") or {}).get("excluded") or [] for a in item.get("arms") or []]
+    excluded = list(st.refused_arms())  # arms the study cannot run (not `affectsArms`: those run with a part left out)
     if excluded:
         try:
             st._sessions(lambda p, *a, **k: "", 1, 1, excluded[:1])

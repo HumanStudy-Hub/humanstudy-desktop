@@ -46,7 +46,8 @@ sys.path.insert(0, str(HERE.parent / "export" / "agent"))
 REASON_MAX = 300
 # check_package.py runs, one after another: the adapter smoke test (120 s), the answer-aware replies smoke test
 # (check_replies.py, 300 s), the every-answer-recorded check (recorded_answers.py, 150 s) and check_validity's
-# prompt capture (300 s), plus a margin for copying and the offline checks.
+# prompt capture (300 s) and analysis run (360 s, every arm on keyed stand-in sessions), plus a margin for copying
+# and the offline checks.
 PACKAGE_TIMEOUT = 1300
 
 
@@ -171,6 +172,11 @@ def effects_problems(root, slug):
     found, _ = effects.effects_core.check(root, doc, program)
     found += effects.build_rules(doc, program)
     warned = []
+    # rules added with buildContract 3 (scale, signed metrics, pooled values, hypothesis status, arms): blocking
+    # for contract 3 packages, warnings for older ones, as effects.py prints them
+    rules, hints = effects.contract_rules(root, doc, program)
+    (found if effects.strict_contract(root) else warned).extend(rules)
+    warned += hints
     if not found:  # as effects.py: the field check runs the adapter (confined) only on an otherwise clean file
         gaps, _, warned = effects.field_report(root, doc, package=root / "package" / slug)
         found += gaps
