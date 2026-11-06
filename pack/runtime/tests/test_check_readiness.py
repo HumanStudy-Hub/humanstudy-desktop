@@ -453,13 +453,15 @@ class Timeouts(unittest.TestCase):
         try:
             import check_readiness
             import check_replies
+            import check_validity
             import recorded_answers
         finally:
             sys.path.remove(str(BUILD))
-        steps = 120 + check_replies.SMOKE_TIMEOUT + recorded_answers.CHECK_TIMEOUT + 300   # smoke, replies, answers, capture
+        # smoke, replies, answers, capture, analysis run
+        steps = 120 + check_replies.SMOKE_TIMEOUT + recorded_answers.CHECK_TIMEOUT + 300 + check_validity.PROBE_TIMEOUT
         self.assertGreater(check_readiness.PACKAGE_TIMEOUT, steps)
         self.assertGreaterEqual(check_readiness.PACKAGE_TIMEOUT, 1300)
         source = (REPO / "app/src/main/scientific-readiness.ts").read_text(encoding="utf-8")
         minutes = int(re.search(r"SCIENTIFIC_TIMEOUT_MS = (\d+) \* 60_000", source).group(1))
-        # check_package, then check_validity's own capture (300 s) and the effects field check (300 s)
-        self.assertGreater(minutes * 60, check_readiness.PACKAGE_TIMEOUT + 300 + 300)
+        # check_package, then check_validity's own capture (300 s) and analysis run, and the effects field check (300 s)
+        self.assertGreater(minutes * 60, check_readiness.PACKAGE_TIMEOUT + 300 + check_validity.PROBE_TIMEOUT + 300)

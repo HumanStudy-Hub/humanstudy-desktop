@@ -23,7 +23,9 @@ downloaded sources carry a stated licence (fetch_source.py), the authors' analys
 researcher questions are checked against them (check_source_use.py), and no survey text participants never
 saw is used (qsf_flow.py), no participant text carries Word-export markup or runs two lines of a .docx under
 sources/ together (docx_text.py), and no researcher question is about a licence, a blocked condition says what is
-missing, and the layout is recorded (design_checks.py). A package with the shared reply reader (task/replies.py) also
+missing, and the layout is recorded (design_checks.py). check_validity.py also runs the analysis: every runnable arm
+with keyed stand-in replies, then evaluate() and effect_estimates() as the replay does; an effect that does not compute
+and is not excluded in capabilities.json fails. No package ships compiled Python (__pycache__, .pyc). A package with the shared reply reader (task/replies.py) also
 runs the answer-aware smoke test (check_replies.py) and the every-answer-recorded check (recorded_answers.py; when it
 cannot judge, the reason is printed in its ok line). A package without task/replies.py (built before the shared
 reader) gets a note line instead, not a failure. For such an older package the downloaded-source, source-use, survey,
@@ -68,6 +70,13 @@ def warn(bad: list) -> None:
         print(f"warn  {m}" + (f"  [fix: {h}]" if h else ""))
 
 
+def compiled(root: Path) -> list:
+    """__pycache__ folders and stray .pyc/.pyo files in a package, outermost first, relative to it."""
+    found = sorted(str(p.relative_to(root)) for p in root.rglob("*")
+                   if p.name == "__pycache__" or p.suffix in (".pyc", ".pyo"))
+    return [c for c in found if not any(c.startswith(d + "/") for d in found)]
+
+
 def reply_checks(root: Path) -> tuple:
     """([(message, fix)], the line to print) for the shared reply reader's checks (check_replies.py,
     recorded_answers.py). A package without task/replies.py (built before the shared reader) gets a note line,
@@ -106,6 +115,20 @@ def main() -> None:
     if missing:
         fail("missing required files: " + ", ".join(missing))
     print("ok   required files present")
+
+    # Compiled Python is a by-product of running the package, not part of it: it goes stale against the source
+    # beside it, differs per interpreter and carries the builder's local paths.
+    cache = compiled(root)
+    if cache:
+        msg = "compiled Python in the package: " + ", ".join(cache[:6]) + (
+            f" and {len(cache) - 6} more" if len(cache) > 6 else "")
+        hint = ("delete it (rm -r " + " ".join(cache[:3]) + "); run Python with -B or PYTHONDONTWRITEBYTECODE=1 "
+                "while building")
+        if current:
+            fail(f"{msg}  [fix: {hint}]")
+        warn([(msg, hint)])
+    else:
+        print("ok   no compiled Python (__pycache__, .pyc) in the package")
 
     for path in root.rglob("*.json"):
         try:
@@ -223,6 +246,8 @@ def main() -> None:
                 f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in report["problems"]))
         warn([("validity: " + m, h) for m, h in report.get("warnings") or []])
         print("ok   package validity: nothing participants were not told is in a prompt; memory design recorded")
+        if report.get("analysis"):
+            print("ok   analysis run: " + report["analysis"])
         from qsf_flow import problems as survey_problems
 
         bad = survey_problems(Path(source).resolve().parent, root)
