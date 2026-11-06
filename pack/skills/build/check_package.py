@@ -89,7 +89,7 @@ def warn(bad: list) -> None:
 
 def compiled(root: Path) -> list:
     """__pycache__ folders and stray .pyc/.pyo files in a package, outermost first, relative to it."""
-    found = sorted(str(p.relative_to(root)) for p in root.rglob("*")
+    found = sorted(p.relative_to(root).as_posix() for p in root.rglob("*")
                    if p.name == "__pycache__" or p.suffix in (".pyc", ".pyo"))
     return [c for c in found if not any(c.startswith(d + "/") for d in found)]
 
