@@ -13,7 +13,13 @@ normalisation check_quotes.py uses:
   elsewhere   found, but only on pages the field does not cite
   partial     some pieces are not in the source: added or reworded text
   not_found   no piece is in the source
-  unchecked   the cited file has no text layer (scanned) or is not readable here; numbers-only values
+  unchecked   the cited file is not readable here; numbers-only values
+  reference   the value is a reference to a file ({"file": "sources/private/..."}) that keeps the text out of
+              the program: nothing to compare
+  image only  a cited PDF page has no text layer (a scanned page, a screenshot) and the evidence does not
+              record `verification: "image-compared"` (the rendered page read again word by word): a problem
+  opt out as anchor  a list in the value puts a Qualtrics slider's opt-out box ("Not Applicable", the
+              export's Labels "NA" with Configuration.NotApplicable) among the scale's anchors: a problem
   table text layer   a table field whose text cells mostly (>= 50%) match a garbled text layer: a note
   close unverified   close, and every evidence record it cites is marked `verification: "unverified"`
                      because the page's text layer is garbled (OCR): a note, to compare with the image
@@ -23,7 +29,10 @@ normalisation check_quotes.py uses:
                      every raw reader available (pypdf, pdfplumber, pdftotext without -layout) is consulted
 
 A piece that runs from one page onto the next is matched past the running head, page number or
-footer between them.
+footer between them. Besides PDFs and text files, a Word file (.docx, docx_text.py's pages) and a Qualtrics
+export (.qsf) are read: a survey is one page per question participants saw, in flow order (qsf_flow.py:
+question text, options, rows, columns, slider anchors, opt-out box, validation message; HTML stripped,
+whitespace normalised), and evidence that names a question id (locator {"pointer": "QID9"}) cites its page.
 
 Anything else (close, elsewhere, partial, not_found) is a problem (exit 1). Fix it by copying the exact printed words into
 the field and citing the right page, or, when the field is a description, paraphrase or summary rather
@@ -62,6 +71,9 @@ def is_table(value):
 
 
 TABLE_META = ("table", "page", "uncertain")  # table keys that are not printed text
+# keys of a transcribed item that name it rather than print it (a survey question id, a reply key, a type)
+ID_KEYS = ("qid", "qsfId", "qsfTag", "tag", "key", "id", "type", "kind", "pointer", "file", "format", "min", "max",
+           "minimum", "maximum", "step", "shuffle", "randomize", "required")
 
 
 def table_cells(value):
@@ -85,8 +97,8 @@ def raw_pieces(value):
         return [p for c in table_cells(value) for p in re.split(r"\s+/\s+", c)]
     if isinstance(value, list):
         return [p for v in value for p in raw_pieces(v)]
-    if isinstance(value, dict):
-        return [p for v in value.values() for p in raw_pieces(v)]
+    if isinstance(value, dict):   # identifiers beside the text ({"qid": "QID7", "text": ...}) are not printed words
+        return [p for k, v in value.items() if k not in ID_KEYS for p in raw_pieces(v)]
     return re.split(r"\n+|;\s+|\s\|\s", text_of(value))
 
 
@@ -160,6 +172,7 @@ def wide_spaces(value):
 class Sources:
     def __init__(self, root):
         self.root, self.cache, self.layer_cache = root, {}, {}
+        self.qids, self.reports = {}, {}   # per .qsf: question id -> page, and the questions in page order
 
     def layers(self, rel):
         """Normalised page lists of every raw reader for one file (the primary reader first)."""
@@ -175,12 +188,54 @@ class Sources:
         if rel not in self.cache:
             path, pages = (self.root / rel).resolve(), None
             if path.is_file() and self.root in path.parents:
-                if path.suffix.lower() == ".pdf":
+                suffix = path.suffix.lower()
+                if suffix == ".pdf":
                     pages = [check_quotes.normalise(t) for t in check_quotes.Pdf(path).load()] or None
-                elif path.suffix.lower() in (".txt", ".md", ".html", ".csv", ".tsv", ".json"):
+                elif suffix == ".qsf":
+                    pages = self._qsf(rel, path)
+                elif suffix == ".docx":
+                    try:
+                        import docx_text
+                        pages = [check_quotes.normalise("\n".join(p)) for p in docx_text.read(path)["pages"]] or None
+                    except Exception:  # noqa: BLE001  an unreadable Word file stays unchecked
+                        pages = None
+                elif suffix in (".txt", ".md", ".html", ".csv", ".tsv", ".json"):
                     pages = [check_quotes.normalise(path.read_text(encoding="utf-8", errors="replace"))]
             self.cache[rel] = pages
         return self.cache[rel]
+
+    def _qsf(self, rel, path):
+        """A survey export as one page per question participants saw, in flow order (qsf_flow.py): question
+        text, options, rows, columns, slider anchors, the opt-out box and the validation message, HTML
+        stripped. A question cited by id (locator {"pointer": "QID9"}) is that page."""
+        try:
+            import qsf_flow
+            report = qsf_flow.read_qsf(path)
+        except Exception:  # noqa: BLE001  not a survey export: unreadable here
+            return None
+        questions = [q for b in report["blocks"].values() for q in b["questions"]]
+        if not questions:   # no survey flow: every question in the file
+            data = qsf_flow.load_qsf(path)
+            raw = qsf_flow._questions(data)
+            questions = [qsf_flow._question(q, raw, []) for q in raw.values()]
+        self.qids[rel] = {}
+        pages = []
+        for q in questions:
+            self.qids[rel][q["qid"]] = len(pages) + 1
+            self.reports.setdefault(rel, []).append(q)
+            pages.append(check_quotes.normalise("\n".join(qsf_flow._record_texts(q))))
+        return pages or None
+
+    def locate(self, rel, locator):
+        """The page a non-PDF locator names: a survey question id ("QID12") in any locator value."""
+        if rel not in self.qids:
+            self.pages(rel)
+        ids = self.qids.get(rel) or {}
+        for value in (locator or {}).values() if isinstance(locator, dict) else []:
+            for qid in re.findall(r"QID\d+", str(value)):
+                if qid in ids:
+                    return ids[qid]
+        return None
 
 
 def across(q, seams):
@@ -204,7 +259,11 @@ def compare(segs, evidence, ids, sources, default):
     for eid in ids:
         e = evidence.get(eid)
         if e:
-            by_file.setdefault(e.get("path") or default, set()).add((e.get("locator") or {}).get("page"))
+            rel, locator = e.get("path") or default, e.get("locator") or {}
+            page = locator.get("page") if isinstance(locator, dict) else None
+            if not isinstance(page, int) and hasattr(sources, "locate"):
+                page = sources.locate(rel, locator)   # a survey question cited by id
+            by_file.setdefault(rel, set()).add(page)
     windows, wholes, seams = [], [], []
     for rel, pages in by_file.items():
         doc = sources.pages(rel)
@@ -212,7 +271,8 @@ def compare(segs, evidence, ids, sources, default):
             unreadable.append(rel)
             continue
         nums = sorted(p for p in pages if isinstance(p, int) and 1 <= p <= len(doc))
-        if (nums and all(len(doc[n - 1]) < 40 for n in nums)) or sum(len(d) for d in doc) < 40:
+        if (str(rel).lower().endswith(".pdf") and nums and all(len(doc[n - 1]) < 40 for n in nums)) \
+                or sum(len(d) for d in doc) < 40:
             unreadable.append("%s (no text layer on the cited page(s))" % rel)
             continue
         near = sorted({x for n in nums for x in (n - 1, n, n + 1) if 1 <= x <= len(doc)})
@@ -258,6 +318,45 @@ def field_status(value, evidence, ids, sources, default):
     return status, info
 
 
+IMAGE_COMPARED = ("image-compared", "ocr")
+REFERENCE_KEYS = {"file", "path", "locator", "section", "page", "pages", "note", "sha256"}
+
+
+def image_compared(ids, evidence):
+    """Every evidence record the field cites says its image-only page was compared with the words, word by word."""
+    records = [evidence.get(i) or {} for i in ids]
+    return bool(records) and all(str(e.get("verification", "")).lower() in IMAGE_COMPARED for e in records)
+
+
+def cited_files(ids, evidence, default):
+    return list(dict.fromkeys((evidence.get(i) or {}).get("path") or default for i in ids if i in evidence))
+
+
+def opt_out_anchors(value, surveys):
+    """A list in the value that puts a slider's opt-out box ("Not Applicable") among its anchors, as a message."""
+    sliders = [q for questions in surveys for q in questions
+               if isinstance(q.get("scale"), dict) and q["scale"].get("not_applicable")]
+    if not sliders:
+        return None
+
+    def lists(v):
+        if isinstance(v, list):
+            yield v
+            for x in v:
+                yield from lists(x)
+        elif isinstance(v, dict):
+            for x in v.values():
+                yield from lists(x)
+    for item in lists(value):
+        texts = {str(x).strip().casefold() for x in item if isinstance(x, str)}
+        for q in sliders:
+            na = q["scale"]["not_applicable"]
+            if na.strip().casefold() in texts and texts & {str(x).strip().casefold() for x in q["scale"].get("labels") or []}:
+                return ("%r is listed among the anchors, but in %s (%s) it is a separate opt-out box, not a point on "
+                        "the scale (anchors: %s)" % (na, q.get("qid"), q.get("tag"), ", ".join(q["scale"].get("labels") or [])))
+    return None
+
+
 def check(program_path):
     program_path = Path(program_path).resolve()
     root = program_path.parent
@@ -277,6 +376,11 @@ def check(program_path):
         if not ids:
             results.append({"field": where, "status": "no_evidence", "info": "verbatim with no evidence"})
             continue
+        value = f.get("value")
+        if isinstance(value, dict) and value.get("file") and set(value) <= REFERENCE_KEYS:
+            # a reference to a file kept out of the program (found-private, researcher-supplied): no text to compare
+            results.append({"field": where, "status": "reference", "info": "a reference to %s" % value.get("file")})
+            continue
         status, info = field_status(f.get("value"), evidence, ids, sources, default)
         pages = sorted({str(((evidence.get(i) or {}).get("locator") or {}).get("page")) for i in ids if i in evidence})
         cited = {}
@@ -286,11 +390,20 @@ def check(program_path):
             if isinstance(page, int):
                 cited.setdefault(e.get("path") or default, set()).update((page - 1, page, page + 1))
         split = [x for rel, near in cited.items() for x in splits(f.get("value"), sources.layers(rel), sorted(near))]
-        wide = wide_spaces(f.get("value"))
+        # column padding comes from a PDF's --layout extraction; a Word or survey file has its own spacing
+        wide = wide_spaces(f.get("value")) if any(str(r).lower().endswith(".pdf")
+                                                   for r in cited_files(ids, evidence, default)) else []
         if status != "unchecked" and (split or wide):
             status, info = "layout_split", "; ".join(
                 ["%r is printed %r in the raw text layer" % x for x in split[:6]] +
                 (["runs of spaces from a column-aligned extraction: %s" % ", ".join(repr(w) for w in wide[:3])] if wide else []))
+        opt_out = opt_out_anchors(f.get("value"), [sources.reports.get(rel) or [] for rel in cited_files(ids, evidence, default)])
+        if opt_out:
+            status, info = "opt_out_as_anchor", opt_out
+        elif status == "unchecked" and "no text layer" in (info or "") and not image_compared(ids, evidence):
+            status = "image_only"
+            info += ("; the words cannot be compared with a text layer: read the rendered page again word by word and "
+                     "record it on each evidence record (\"verification\": \"image-compared\"), or relabel the field")
         results.append({"field": where, "status": status, "info": info, "pages": pages})
     counts = {}
     for r in results:
@@ -306,11 +419,17 @@ def main(argv=None):
     report = check(a.program)
     if a.json:
         Path(a.json).write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    bad = [r for r in report["results"] if r["status"] not in ("found", "unchecked", "table_text_layer", "close_unverified")]
+    bad = [r for r in report["results"] if r["status"] not in ("found", "unchecked", "table_text_layer", "close_unverified",
+                                                              "reference")]
     for r in bad:
         fix = ("copy the words from the raw text layer (`hs-pdf pages` without --layout) or the page image, one "
                "space between words; --layout output is for reading tables, never for verbatim text"
                if r["status"] == "layout_split" else
+               "render the page (paper_tables.py --render), compare every word with the field, fix any slip and set "
+               "the evidence's verification to image-compared; a page nobody compared is not verbatim"
+               if r["status"] == "image_only" else
+               "keep the slider's anchors as the survey numbers them and give the opt-out box its own key"
+               if r["status"] == "opt_out_as_anchor" else
                "copy the exact printed words and cite their page, or relabel the field reported (derived with a "
                "derivation) if it is not a transcription; never invent text")
         print("PROBLEM %s (p. %s): %s: %s\n        fix: %s"

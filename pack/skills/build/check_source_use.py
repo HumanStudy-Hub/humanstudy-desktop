@@ -35,6 +35,16 @@ Prints every problem with a fix, then PASS or FAIL (exit 1). Records live in sou
                  downloads, an entry that exists must still list the paper. An entry that says a
                  file answers it fails: take the decision, record it in `decisionsFromSources` ({"what", "path",
                  "locator", "quote"}; a private file gives the locator without quote), and drop the question.
+  claims         a claim that material or a rule is not printed or not public (a failures.json entry with
+                 pattern materials-not-public / missing-information or such words, a run.excluded reason, an
+                 issue title or reason, a pending / stand-in / left-out item, a field note) is searched for in the
+                 text of every source the build holds (the paper, PDFs, .qsf one page per block, .docx, text
+                 files). A page that mentions enough of the claim's terms (rare ones; a close match in the paper)
+                 needs a `claimsChecked` entry {"claim": <id>, "sourcesChecked": [{"path", "pages", "prints":
+                 false, "found": "what the page says"}]}; "prints": true fails (use it, drop the claim). While a
+                 claim stands, a PDF page without a text layer fails unless `pagesRead` records it ({"path",
+                 "pages", "how", "holds"}), and a search that located openly licensed material it did not import
+                 ("only ... was imported") fails.
 
 A project without downloaded files and without analysis code passes unchanged; a file placed under sources/open/
 by hand (no url, no retrieved date) is not held to the analysis-code and question rules. A malformed SOURCE.json
@@ -478,13 +488,304 @@ def check_questions(root, record):
     return out
 
 
+# --------------------------------------------------------------------------- 4. "not printed / not public" claims
+
+NOT_PRINTED = re.compile(
+    r"(?i)\bnot\s+(?:\w+\s+){0,2}?(?:printed|public|publicly\s+available|reported|available|included|shown)\b|\bunprinted\b|\bdoes(?:\s+not|n't)\s+print\b|\bprints\s+no\b|\bno\s+(?:public|"
+    r"general)\s+(?:text|source|copy|materials?)\b|\bonly\s+as\s+(?:images?|screenshots?|pictures?|scans?)\b|"
+    r"\bexist\s+only\s+as\b|\bno\s+text\s+layer\b|\bnot\s+in\s+the\s+(?:paper|supplement|si|osf|public)\b")
+# A claim about a reported statistic ("N is not printed", "the exact p value is not printed") is a results matter.
+STAT_CLAIM = re.compile(r"(?i)^\W*(?:the\s+)?(?:exact\s+)?(?:n|ns|df|p|p\s+values?|se|sd|sds|cell\s+(?:sizes|counts|means)|"
+                        r"means?|degrees\s+of\s+freedom|test\s+statistics?|statistics?|number\s+of\s+observations|"
+                        r"(?:total|per[- ]condition|analysed)\s+n|n\s+of|joint|correlations?)\b")
+CLAIM_PATTERNS = ("materials-not-public", "missing-information")
+CLAIM_STOP = set("""paper papers printed print prints public publicly text texts available found source sources supplement
+supplementary appendix appendices exact exactly described describe describes description replay replays replayed stand
+stands labelled label labels original originals missing wording words therefore only other these those their which from
+with that this each were have does into also there about through before after cannot until while where when what would
+could should because material materials study studies participant participants paper's not none nor than then them they
+been being here more most many some such shown show shows given given provided included stated specified reported
+report reports public online files file page pages build builder used uses using runs running needs need needed
+researcher authors author pdf osf journal article articles version versions instead without within across left
+supplied supply until meanwhile labelled accepted provisional nothing cannot adapter needs original stand three four
+five two one json both all every""".split())
+STEM = 5           # letters a word is compared by ("predicates" and "predicate" agree)
+WINDOW = 60        # words within which a claim's terms count as one mention
+MIN_TERMS = 2      # distinct claim terms in one window
+RARE_SHARE = 0.25  # at least one of them on no more than this share of the pages
+RARER_SHARE = 0.1  # two terms suffice when both are this rare
+PAPER_TERMS = 4    # in the paper itself, a mention needs this many terms (two of them rare)
+MAX_HITS = 3       # pages reported per claim
+LOCATED_NOT_IMPORTED = re.compile(r"(?i)\bonly\b[^.;]{0,80}\b(?:was|were)\s+(?:imported|downloaded|fetched|used)\b|"
+                                  r"\b(?:was|were)\s+not\s+(?:imported|downloaded|fetched)\b|\bnot\s+(?:yet\s+)?imported\b")
+OPEN_WORDS = re.compile(r"(?i)\bcc[- ]?by\b|\bcc0\b|creative\s+commons|open\s+licen[cs]e")
+
+
+def _stem(word):
+    return word[:STEM]
+
+
+def _terms(text):
+    return [_stem(w) for w in re.findall(r"[a-z]{4,}", str(text or "").lower()) if w not in CLAIM_STOP]
+
+
+def _load_json(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _claimed(text):
+    """The text holds a sentence saying something is not printed or not public that is not about a statistic."""
+    return any(NOT_PRINTED.search(x) and not STAT_CLAIM.search(x) for x in re.split(r"(?<=[.;])\s+", str(text or "")))
+
+
+def claims(root, program=None):
+    """Every place the build says material or a rule is not printed or not public: [{"id", "text", "kind"}].
+    Ids: failures[i] (artifacts/failures.json), run.excluded[i] (capabilities.json), an issue id, or node.field."""
+    root = Path(root)
+    program = program if isinstance(program, dict) else _program(root)
+    out = []
+    failures = _load_json(root / "artifacts/failures.json")
+    for i, f in enumerate(failures if isinstance(failures, list) else []):
+        if not isinstance(f, dict):
+            continue
+        text = " ".join(str(f.get(k) or "") for k in ("where", "what"))
+        if f.get("pattern") in CLAIM_PATTERNS or _claimed(f.get("what")):
+            out.append({"id": "failures[%d]" % i, "text": text, "kind": str(f.get("pattern") or "claim")})
+    caps = _load_json(root / "capabilities.json")
+    run = caps.get("run") if isinstance(caps, dict) and isinstance(caps.get("run"), dict) else {}
+    for i, x in enumerate(_list(run.get("excluded"))):
+        text = "%s %s" % (x.get("what") or "", x.get("reason") or "")
+        if _claimed(x.get("reason")):
+            out.append({"id": "run.excluded[%d]" % i, "text": text, "kind": "excluded"})
+    materials = {(n.get("id"), f.get("id")) for n in _list(program.get("nodes")) for f in _list(n.get("fields"))
+                 if isinstance(f.get("extensions"), dict) and isinstance(f["extensions"].get("material"), dict)}
+    for issue in _list(program.get("issues")):
+        if (issue.get("nodeId"), issue.get("fieldId")) in materials:
+            continue   # the material item itself is the claim
+        text = " ".join(str(issue.get(k) or "") for k in ("title", "reason"))
+        if isinstance(issue.get("id"), str) and any(_claimed(issue.get(k)) for k in ("title", "reason", "description")):
+            out.append({"id": issue["id"], "text": text, "kind": "issue"})
+    for n in _list(program.get("nodes")):
+        for f in _list(n.get("fields")):
+            where = "%s.%s" % (n.get("id"), f.get("id"))
+            m = (f.get("extensions") or {}).get("material") if isinstance(f.get("extensions"), dict) else None
+            if isinstance(m, dict) and m.get("kind") == "needs-original" and m.get("status") in ("pending", "stand-in",
+                                                                                                  "left-out"):
+                out.append({"id": where, "kind": "material " + str(m.get("status")),
+                            "text": "%s %s" % (m.get("what") or "", f.get("label") or "")})
+                continue
+            strings = [s for s in (f.get("value"), f.get("note"), f.get("derivation"), f.get("basis"))
+                       if isinstance(s, str)]
+            said = [s for s in strings if NOT_PRINTED.search(s)]
+            sentences = [x for s in said for x in re.split(r"(?<=[.;])\s+", s) if NOT_PRINTED.search(x)
+                         and not STAT_CLAIM.search(x)]
+            if sentences:
+                out.append({"id": where, "kind": "field", "text": "%s %s" % (f.get("label") or f.get("id"),
+                                                                              " ".join(sentences))})
+    return out
+
+
+def _qsf_pages(path):
+    """A survey export as one page per block: its description and every question's text, options and labels."""
+    try:
+        import qsf_flow
+        data = qsf_flow.load_qsf(path)
+        questions = qsf_flow._questions(data)
+        pages = []
+        for bid, block in qsf_flow._blocks(data).items():
+            texts = [str(block.get("Description") or "")]
+            for e in block.get("BlockElements") or []:
+                q = questions.get(e.get("QuestionID")) if isinstance(e, dict) else None
+                if q:
+                    texts += qsf_flow._record_texts(qsf_flow._question(q, questions, []))
+            pages.append("\n".join(texts))
+        return pages
+    except Exception:  # noqa: BLE001  not a survey export: read as text
+        return [cm.text_of(path)]
+
+
+def source_pages(root):
+    """{project path: [page text, ...]} of the paper and every readable file under sources/ (never data)."""
+    root = Path(root)
+    program = _program(root)
+    source = program.get("source") if isinstance(program.get("source"), dict) else {}
+    paper = "paper.pdf" if (root / "paper.pdf").is_file() else str(source.get("filename") or "paper.pdf")
+    out = {}
+    for rel in ([paper] if (root / paper).is_file() else []) + _files(root):
+        path = root / rel
+        suffix = path.suffix.lower()
+        try:
+            if suffix == ".pdf":
+                import check_quotes
+                pages = check_quotes.Pdf(path).load() or []
+            elif suffix == ".qsf":
+                pages = _qsf_pages(path)
+            elif suffix == ".docx":
+                import docx_text
+                pages = ["\n".join(p) for p in docx_text.read(path)["pages"]]
+            else:
+                pages = [cm.text_of(path)]
+        except Exception:  # noqa: BLE001  an unreadable file has no pages
+            pages = []
+        if any(str(p).strip() for p in pages) or suffix == ".pdf" and pages:
+            out[rel] = [str(p or "") for p in pages]
+    return out
+
+
+def unread_pages(pages):
+    """{path: [page numbers]} of PDF pages without a text layer (scanned pages, screenshots)."""
+    return {rel: [i for i, t in enumerate(doc, 1) if len(re.sub(r"\s+", "", t)) < 40]
+            for rel, doc in pages.items() if rel.lower().endswith(".pdf")}
+
+
+def _ranges(numbers):
+    out, run = [], []
+    for n in sorted(numbers):
+        if run and n == run[-1] + 1:
+            run.append(n)
+        else:
+            if run:
+                out.append(run)
+            run = [n]
+    if run:
+        out.append(run)
+    return ", ".join("%d" % r[0] if len(r) == 1 else "%d-%d" % (r[0], r[-1]) for r in out)
+
+
+def _page_set(value):
+    """Page numbers a record names: 4, "4", "16-47", "pp. 3, 5-6", [1, 2]."""
+    found = set()
+    for part in value if isinstance(value, list) else [value]:
+        for a, b in re.findall(r"(\d+)\s*(?:[-–]\s*(\d+))?", str(part if part is not None else "")):
+            lo, hi = int(a), int(b or a)
+            if hi - lo <= 2000:
+                found.update(range(min(lo, hi), max(lo, hi) + 1))
+    return found
+
+
+def mentions(claim_terms, pages, paper=None):
+    """[(score, path, page, snippet)]: pages where at least MIN_TERMS of the claim's terms (one of them rare)
+    occur within WINDOW words, best first."""
+    docs = [(rel, i, re.findall(r"[a-z]{4,}", t.lower()), t) for rel, doc in pages.items() for i, t in enumerate(doc, 1)]
+    total = max(1, len(docs))
+    df = {}
+    for _, _, words, _ in docs:
+        for s in {_stem(w) for w in words}:
+            df[s] = df.get(s, 0) + 1
+    wanted = {t for t in claim_terms if df.get(t)}
+    if len(wanted) < MIN_TERMS:
+        return []
+    import math
+    idf = {t: math.log(total / df[t]) for t in wanted}
+    rare = {t for t in wanted if df[t] <= max(1, RARE_SHARE * total)}
+    rarer = {t for t in wanted if df[t] <= max(1, RARER_SHARE * total)}
+    hits = []
+    for rel, page, words, raw in docs:
+        stems = [_stem(w) for w in words]
+        positions = [(k, s) for k, s in enumerate(stems) if s in wanted]
+        best, best_at = (0.0, set()), 0
+        for j, (k, _) in enumerate(positions):
+            inside = {s for kk, s in positions[j:] if kk - k <= WINDOW}
+            score = sum(idf[s] for s in inside)
+            # three terms with one rare, or two that are both rarer: one shared word is a coincidence
+            strong = len(inside) >= MIN_TERMS + 1 and inside & rare or len(inside) >= MIN_TERMS and inside <= rarer
+            if rel == paper:   # the paper is what the build read first: only a close match there counts
+                strong = strong and len(inside) >= PAPER_TERMS and len(inside & rare) >= 2
+            if strong and score > best[0]:
+                best, best_at = (score, inside), k
+        if best[0]:
+            snippet = " ".join(words[max(0, best_at - 3):best_at + 14])
+            hits.append((round(best[0], 2), rel, page, snippet, sorted(best[1])))
+    hits.sort(key=lambda h: -h[0])
+    return hits
+
+
+def check_claims(root, record):
+    """A claim that material or a rule is not printed or not public must survive the sources the build holds."""
+    program = _program(root)
+    found = claims(root, program)
+    if not found:
+        return []
+    out = []
+    pages = source_pages(root)
+    source = program.get("source") if isinstance(program.get("source"), dict) else {}
+    paper = "paper.pdf" if (Path(root) / "paper.pdf").is_file() else str(source.get("filename") or "paper.pdf")
+    checked = {}
+    for r in _list(record.get("claimsChecked")):
+        if isinstance(r.get("claim"), str):
+            checked.setdefault(r["claim"], []).extend(_list(r.get("sourcesChecked")))
+    # 1. pages nobody read: a PDF page with no text layer in a file the build holds
+    read = {}
+    for r in _list(record.get("pagesRead")):
+        if isinstance(r.get("path"), str) and str(r.get("how", "")).strip() and _words(r.get("holds")) >= 2:
+            read.setdefault(_norm(r["path"]), set()).update(_page_set(r.get("pages")))
+    unread = {rel: [p for p in nums if p not in read.get(rel, set())] for rel, nums in unread_pages(pages).items()}
+    unread = {rel: nums for rel, nums in unread.items() if nums}
+    if unread:
+        out.append(("claims: %d claim(s) say material is not printed or not public (%s), but pages of the sources "
+                    "have no text layer and are not recorded as read: %s"
+                    % (len(found), ", ".join(c["id"] for c in found[:4]) + (" ..." if len(found) > 4 else ""),
+                       "; ".join("%s pp. %s" % (rel, _ranges(nums)) for rel, nums in sorted(unread.items()))),
+                    "render each page (paper_tables.py --render <dir>, or pdf_pages.py) and read it; record "
+                    "sources/SOURCE.json pagesRead: [{\"path\": \"<file>\", \"pages\": \"16-47\", \"how\": \"rendered\", "
+                    "\"holds\": \"<what the pages show: instruction screenshots, a figure ...>\"}]. Screenshots of "
+                    "instructions are printed material: transcribe them, never call them not public"))
+    # 2. a search record that located open material the build then did not import
+    located = [s for s in _list(record.get("searches")) if LOCATED_NOT_IMPORTED.search(str(s.get("result", "")))
+               and OPEN_WORDS.search(str(s.get("result", "")))]
+    gaps = [c for c in found if c["kind"] in ("materials-not-public", "material pending", "material left-out")]
+    if located and gaps:
+        s = located[0]
+        out.append(("claims: %s say(s) the material is missing, but sources/SOURCE.json searches record openly licensed "
+                    "material that was located and not imported (%s: \"%s\")"
+                    % (", ".join(c["id"] for c in gaps[:4]) + (" ..." if len(gaps) > 4 else ""), s.get("where") or s.get("url"),
+                       str(s.get("result"))[:200]),
+                    "import it with fetch_source.py (every file it needs, with its licence), or record the scope "
+                    "decision as a decision issue that names the located files; 'materials-not-public' and a pending "
+                    "item are for material no public source holds"))
+    # 3. the sources mention what the claim says they lack: name the pages, and require a record of what they say
+    unresolved, printed = [], []
+    for c in found:
+        hits = [h for h in mentions(set(_terms(c["text"])), pages, paper)][:MAX_HITS]
+        if not hits:
+            continue
+        records = checked.get(c["id"], [])
+        if any(item.get("prints") is True for item in records):
+            printed.append(c["id"])
+            continue
+        open_hits = []
+        for score, rel, page, snippet, terms in hits:
+            ok = any(_norm(item.get("path")) == rel and page in _page_set(item.get("pages"))
+                     and _words(item.get("found")) >= 3 for item in records)
+            if not ok:
+                open_hits.append("%s p. %d (%s: \"%s ...\")" % (rel, page, ", ".join(terms[:4]), snippet[:90]))
+        if open_hits:
+            unresolved.append("'%s' [%s]: %s" % (c["id"], c["text"][:80].strip(), "; ".join(open_hits)))
+    if unresolved:
+        out.append(("claims: the sources mention what these claims call not printed or not public; read each page "
+                    "before keeping the claim: " + " | ".join(unresolved[:6])
+                    + (" | and %d more" % (len(unresolved) - 6) if len(unresolved) > 6 else ""),
+                    "read the pages; when they print it, use it (transcribe, apply the rule) and drop the claim; "
+                    "otherwise record sources/SOURCE.json claimsChecked: {\"claim\": \"<id>\", \"sourcesChecked\": "
+                    "[{\"path\": \"<file>\", \"pages\": \"4\", \"prints\": false, \"found\": \"<what the page says on "
+                    "this point>\"}]}"))
+    if printed:
+        out.append(("claims: claimsChecked says a source prints what %s calls not printed" % ", ".join(printed[:6]),
+                    "use what the source prints and remove the claim (failures.json, run.excluded, the issue or the "
+                    "material status)"))
+    return out
+
+
 def problems(root):
     """[(message, fix)] for the analysis code, survey versions and researcher questions of a project folder."""
     root = Path(root).resolve()
     record = cm.source_record(root)
     record = record if isinstance(record, dict) else {}
     out = []
-    for check in (check_analysis_code, check_survey_versions, check_questions):
+    for check in (check_analysis_code, check_survey_versions, check_questions, check_claims):
         try:
             out += check(root, record)
         except Exception as exc:  # noqa: BLE001 - a malformed record is reported, not a crash

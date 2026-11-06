@@ -201,12 +201,18 @@ class AgentPackage(unittest.TestCase):
         (self.root / "sources/researcher").mkdir(parents=True)
         (self.root / "sources/researcher/instructions.txt").write_text(text, encoding="utf-8")
         (self.root / "sources/open.txt").write_text("An openly licensed supplement.", encoding="utf-8")
+        (self.root / "sources/loose.txt").write_text("A supplement saved beside the others with no license stated.",
+                                                     encoding="utf-8")
+        (self.root / "sources/SOURCE.json").write_text(json.dumps({"files": [
+            {"path": "sources/open.txt", "license": "CC-BY-4.0", "licenseEvidence": "its page: CC BY 4.0"},
+            {"path": "sources/loose.txt", "license": "unknown"}]}), encoding="utf-8")
         (self.root / "sources/private").mkdir()
         (self.root / "sources/private/screens.txt").write_text("Public screens without any license.", encoding="utf-8")
         run = export(self.root, "--include-sources")
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         skill = self.root / "exports/agent/study-5"
         self.assertTrue((skill / "sources/open.txt").is_file())
+        self.assertFalse((skill / "sources/loose.txt").exists(), "no open licence: it stays, wherever it is saved")
         self.assertFalse((skill / "sources/researcher").exists(), "researcher-supplied materials stay in the project")
         self.assertFalse((skill / "sources/private").exists(), "materials without an open license stay too")
         listed = (skill / "references/sources.md").read_text(encoding="utf-8")

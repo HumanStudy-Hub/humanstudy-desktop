@@ -154,6 +154,24 @@ instruction screens (both framings)", not "m-s4.instruction-wording".
      search by author, not only by title (`https://api.osf.io/v2/users/?filter[full_name]=<surname>`, then each
      match's `/nodes/`). Record each, including those that find nothing. `check_materials.py` fails a pending
      item while one of these is missing.
+   - **Search completeness.** A page that refused (403, a bot check, a refused connection, a timeout) checked
+     nothing: record `"result": "not checked: <the error>"`, never "nothing found", and reach the place another way;
+     it does not count as that search. For Judgment and Decision Making also read the issue page that lists the
+     article (`journal.sjdm.org/vol<N>.<issue>.html`, also on jbaron.org): JDM posts each article's data and
+     materials there, not in the article folder. For every OSF component a used file comes from, list all its files
+     with `fetch_source.py . --list <OSF URL>` (metadata only; writes `osfListings`) and give each a `use`:
+     `fetched`, or `"not fetched"` with a `reason`. Participant data it lists are marked and never fetched; when
+     the authors' data exist anywhere you looked, record `"authorData": {"exists": true, "where": "<url>",
+     "files": [...], "fetched": false}` in SOURCE.json so the researcher knows, and never download them.
+   - **"Not printed" and "not public" must be true.** Before keeping a `materials-not-public` or
+     `missing-information` failure, a `run.excluded` reason, a pending, stand-in or left-out item, or a field note
+     that says something is not printed or not available, search the text of every source the build holds
+     (paper, SI, `.qsf`, Word copies) for it. `check_source_use.py` names the pages that mention the claim's terms;
+     read each and record `claimsChecked: [{"claim": "<id it prints>", "sourcesChecked": [{"path", "pages",
+     "prints": false, "found": "<what the page says on this point>"}]}]`, or use what the page prints and drop
+     the claim. A PDF page with no text layer (screenshots, a scanned appendix) is unread until you render it
+     (`paper_tables.py --render`, `pdf_pages.py`) and record `pagesRead: [{"path", "pages", "how", "holds"}]`;
+     no claim passes while one is unread.
    - **Check before using anything.** It must be tied to this paper (DOI, title or author match, or linked
      from the paper or its OSF project), with the version noted (published SI, preprint v2, repository
      snapshot of a date). Save it with `python .opencode/skills/build/fetch_source.py . <url> --linked "linked from p. 9"
@@ -170,7 +188,12 @@ instruction screens (both framings)", not "m-s4.instruction-wording".
      them in SOURCE.json `licenceLookups`. A registration without its own license does not take its project's. A
      file whose SHA-256 equals a looked-up file in an openly licensed project carries that license; cite the lookup
      in `--license-evidence` ("OSF licence lookup (licenceLookups, <url>): same SHA-256 as <file>"). Never run,
-     import or open as code anything you downloaded; analysis code is read, never run. An item copied from `sources/open/` is `verbatim` (`status:
+     import or open as code anything you downloaded; analysis code is read, never run. A supplement saved
+     anywhere else under `sources/` (its root) without a recorded open licence is private like `sources/private/`:
+     move it there. The SI or ESM of a CC BY article that states no licence of its own stays `unknown`;
+     `sources.py` notes it "supplement of CC BY article, no own licence". When a batch list (`SOURCES.json`
+     beside the project) states another licence for a file, check it and record the licence, or `batchLicence`
+     on the file entry saying why the list does not apply. An item copied from `sources/open/` is `verbatim` (`status:
      "found-open"`, cite the file); one from `sources/private/` is a reference to the file like a supplied
      one (`status: "found-private"`, value `{"file": ...}`, never the text in the program). Evidence that
      cites a file under `sources/private/` or `sources/researcher/` gives its `path` and `locator` with no
@@ -286,7 +309,13 @@ from it, not from the raw `.qsf`:
 The package check runs `qsf_flow.py`'s survey check (`python .opencode/skills/build/qsf_flow.py --check .` runs it
 alone): it fails survey text that only an unreachable question carries in a program.json field whose evidence
 cites the `.qsf`, in a `materials.json` entry whose source is the `.qsf`, or in a string literal of
-`task/adapter.py`; a marked item the run still uses; and a "mixed" item without state `check`.
+`task/adapter.py`; a marked item the run still uses; and a "mixed" item without state `check`. It also fails a
+transcription of a shown question that drops its pictures (the outline prints `IMAGES:`) without an `images` or
+`figure` entry with state missing on the item or a `run.excluded` / `replayAdaptations` entry naming it; a
+slider's opt-out box ("Not Applicable") listed among its anchors (the anchors are the numbered labels; the
+opt-out is separate); and a question shown only under display logic that the replay asks unconditionally, or in
+the same prompt as the question that decides it. `check_verbatim.py` compares `.qsf` question, choice and label
+text (HTML stripped, spaces normalised) the same way it compares a PDF.
 
 - **Word copies.** Read a `.docx` (a Qualtrics "Export to Word" copy, a materials document) with `python
   .opencode/skills/build/docx_text.py sources/open/<file>.docx [--json .humanstudy/tmp/<file>.json]`, never by

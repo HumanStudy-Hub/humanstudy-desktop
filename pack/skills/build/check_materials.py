@@ -51,6 +51,14 @@ Rules (each a problem; PASS only without any):
                   search-list rule is a problem only when the package checked (check(root, package=...), as the
                   readiness gate passes it; from the command line, any package of the project) is built under the
                   current contract (see contract.py); otherwise it is a WARN line and goes under "warnings".
+                  Gated the same way (search_problems): a search that could not read the page (403, refused ...)
+                  but records "nothing found"; such a search does not count toward the list; a JDM paper whose
+                  materials are missing without a search of the journal's issue page (ISSUE_PAGES); an OSF
+                  component a used file comes from without an `osfListings` entry, or with listed files that have
+                  no `use` (or "not fetched" without a reason); participant data fetched; author data the searches
+                  or listings show without an `authorData` record. Also gated: a file under sources/ outside
+                  open/, private/ and researcher/ without a recorded open licence (unlicensed_files), which
+                  counts as private everywhere (text it shares with the openly licensed paper excepted).
   unlabelled      a participant-material field filled by the build (origin derived or implementation) without
                   `extensions.material` must not hold prose either.
   private         text from sources/researcher/ and sources/private/ appears nowhere in program.json or package/;
@@ -143,8 +151,10 @@ LEGACY_SITES = {
 def missing_searches(record, items_search, venue, year=None):
     """What the minimum search list still lacks, given SOURCE.json and the pending items' search entries (and
     the paper's year, which decides whether a journal's original site is on the list)."""
+    # a search that could not read the page (403, refused ...) and found nothing there does not count
     blobs = [" ".join(_str(x.get(k)) for k in ("where", "query", "url", "result"))
-             for x in _list(record.get("searches")) + list(items_search) if isinstance(x, dict)]
+             for x in _list(record.get("searches")) + list(items_search) if isinstance(x, dict)
+             and not unread_search(_str(x.get("result")))]
     missing = [what for pattern, what in SEARCH_KINDS.values() if not any(pattern.search(b) for b in blobs)]
     for name, (host, what, until) in LEGACY_SITES.items():
         if isinstance(year, int) and year >= until:
@@ -389,15 +399,149 @@ def source_record(root):
     return data if isinstance(data, dict) else {}
 
 
+def unlicensed_files(root):
+    """Project-relative paths of files under sources/ but outside sources/open/, sources/private/ and
+    sources/researcher/ (e.g. a supplement saved in the sources/ root) without a recorded open licence."""
+    root = Path(root)
+    folder = root / "sources"
+    if not folder.is_dir() or folder.is_symlink():
+        return []
+    recorded = {norm_rel(f.get("path")): f for f in _list(source_record(root).get("files"))
+                if isinstance(f, dict) and isinstance(f.get("path"), str)}
+    out = []
+    for p in sorted(folder.rglob("*")):
+        rel = p.relative_to(root).as_posix()
+        if not p.is_file() or p.name.startswith(".") or rel == "sources/SOURCE.json" or under(rel, OPEN_DIR) \
+                or private_rel(rel) or "__pycache__" in p.parts:
+            continue
+        if not OPEN_LICENSE.match(_str(_dict(recorded.get(rel)).get("license"))):
+            out.append(rel)
+    return out
+
+
 def private_paths(root):
-    """Project-relative paths no export publishes: sources/researcher/**, sources/private/** and every file
-    sources/SOURCE.json records with license `researcher-supplied` or `"private": true`."""
+    """Project-relative paths no export publishes: sources/researcher/**, sources/private/**, every file
+    sources/SOURCE.json records with license `researcher-supplied` or `"private": true`, and every file elsewhere
+    under sources/ without a recorded open licence (unlicensed_files)."""
     root = Path(root)
     out = {p.relative_to(root).as_posix() for p in private_files(root)}
     for f in _list(source_record(root).get("files")):
         if isinstance(f, dict) and isinstance(f.get("path"), str) and (
                 _str(f.get("license")).lower() == RESEARCHER_LICENSE or f.get("private") is True):
             out.add(norm_rel(f["path"]))
+    out.update(unlicensed_files(root))
+    return out
+
+
+# --- search completeness -----------------------------------------------------------------------------------------
+# A search that could not read the place it names (403, a refused connection, a bot check, a timeout) checked
+# nothing: it is recorded "not checked", never "nothing found", and it does not count as that search.
+ACCESS_FAILED = re.compile(r"(?i)\b(?:40[1-9]|429|5\d\d)\b|forbidden|refused|denied|blocked|captcha|bot[- ]check|"
+                           r"cloudflare|timed?[- ]?out|could not (?:be )?(?:fetch|read|load|open|reach)|"
+                           r"unreachable|not readable|access (?:refused|denied)")
+NOTHING_FOUND = re.compile(r"(?i)^\W*(?:nothing|none|no (?:\w+ ){0,3}(?:found|links?|files?|supplement|materials?|hits?)|"
+                           r"0 hits)|\bnothing (?:found|listed)\b|\bno (?:\w+ ){0,3}(?:links?|files?) (?:found|listed)\b")
+NOT_CHECKED = re.compile(r"(?i)\bnot checked\b|\bunchecked\b")
+# Journals that post an article's files (data, materials) on the issue's table of contents, not on the article page
+ISSUE_PAGES = {
+    "judgment and decision making": (
+        re.compile(r"(?i)(?:sjdm\.org|jbaron\.org)/(?:journal/)?vol\d+(?:\.\d+)?\.html?|"
+                   r"(?:sjdm\.org|jbaron\.org)\S*\b(?:issue|toc|contents)\b|"
+                   r"\b(?:issue|toc|table[- ]of[- ]contents)\b[^.;]{0,40}(?:sjdm|jbaron)|"
+                   r"(?:sjdm|jbaron)[^.;]{0,60}\b(?:issue page|table of contents)"),
+        "the journal's issue page (journal.sjdm.org/vol<N>.<issue>.html, also served by jbaron.org): JDM lists each "
+        "article's data and materials there, not in the article folder", 2023),
+}
+OSF_NODE_URL = re.compile(r"(?i)osf\.io/(?:v2/nodes/)?([a-z0-9]{5})(?:/|$)")
+DATA_WORDS = re.compile(r"(?i)\b(?:data(?:sets?)?\s*\((?:csv|xlsx?|sav|txt)\)|data\s+files?|raw data|dataset|"
+                        r"(?:csv|xlsx|sav|dta)\b[^.;]{0,30}\bdata|data\b[^.;]{0,20}\b(?:csv|xlsx|sav|dta))\b")
+
+
+def unread_search(result):
+    """True when a search result says the place could not be read and nothing was found there."""
+    return bool(ACCESS_FAILED.search(result) and (NOTHING_FOUND.search(result) or NOT_CHECKED.search(result)
+                                                   or re.search(r"(?i)could not|not (?:be )?fetched", result)))
+
+
+def used_osf_components(record):
+    """{component id: [files the build holds from it]} from licenceLookups (the node that holds each file)."""
+    lookups = [x for x in _list(record.get("licenceLookups")) if isinstance(x, dict)]
+    out = {}
+    for f in _list(record.get("files")):
+        if not isinstance(f, dict) or "osf.io" not in _str(f.get("url")):
+            continue
+        tail = _str(f.get("url")).rstrip("/").rsplit("/", 1)[-1].lower()
+        node = None
+        for x in lookups:
+            if _str(x.get("url")).rstrip("/").rsplit("/", 1)[-1].lower() == tail or (
+                    isinstance(x.get("file"), dict) and _str(x["file"].get("sha256")).lower() == _str(f.get("sha256")).lower()
+                    and f.get("sha256")):
+                projects = [p for p in _list(x.get("projects")) if isinstance(p, dict) and p.get("id")]
+                node = projects[0]["id"] if projects else None
+                break
+        if node is None:
+            m = OSF_NODE_URL.search(_str(f.get("url")))
+            node = m.group(1) if m and "/download/" not in _str(f.get("url")) else None
+        if node:
+            out.setdefault(node, []).append(_str(f.get("path")))
+    return out
+
+
+def search_problems(record, program, materials_missing, item_searches=()):
+    """[(message, fix)]: searches recorded as finding nothing where they could not read the page, a journal whose
+    issue page holds the article's files but was not searched, OSF components used without a listing of every file,
+    and author data that exist but are not recorded (or were fetched)."""
+    out = []
+    searches = [s for s in _list(record.get("searches")) if isinstance(s, dict)]
+    for i, s in enumerate(searches):
+        result = _str(s.get("result"))
+        if ACCESS_FAILED.search(result) and NOTHING_FOUND.search(result) and not NOT_CHECKED.search(result):
+            out.append(("sources/SOURCE.json searches[%d] (%s) records \"%s\": the page could not be read, so nothing "
+                        "was checked there" % (i, _str(s.get("where"))[:60], result[:140]),
+                        "record it as \"not checked: <the error>\" and search the same place another way (the issue or "
+                        "listing page, an API, an archived copy); a material is not missing because a page refused"))
+    venue = " ".join(_str(_dict(program.get("source")).get(k)) for k in ("venue", "journal")).casefold()
+    year = paper_year(program, record)
+    blobs = " ".join(" ".join(_str(s.get(k)) for k in ("where", "query", "url", "result")) for s in searches + list(item_searches))
+    for name, (pattern, what, until) in ISSUE_PAGES.items():
+        if name in venue and materials_missing and not (isinstance(year, int) and year >= until) \
+                and not pattern.search(blobs):
+            out.append(("materials are missing, but the search skipped %s" % what,
+                        "read the issue page that lists this article and record it in searches (url, result), "
+                        "including the files it lists for the article"))
+    listings = {_str(x.get("node")).lower(): x for x in _list(record.get("osfListings")) if isinstance(x, dict)}
+    for node, held in sorted(used_osf_components(record).items()):
+        listing = listings.get(node.lower())
+        if not listing:
+            out.append(("%s come(s) from OSF component %s, but sources/SOURCE.json has no listing of that component's "
+                        "other files" % (", ".join(held[:3]), node),
+                        "run fetch_source.py . --list https://osf.io/%s/ (metadata only) and give each listed file a "
+                        "use: fetched, or \"not fetched\" and why (participant data are listed, never fetched)" % node))
+            continue
+        files = [f for f in _list(listing.get("files")) if isinstance(f, dict)]
+        silent = [_str(f.get("path") or f.get("name")) for f in files
+                  if not _str(f.get("use")).strip() or (_str(f.get("use")).startswith("not fetched")
+                                                       and not _str(f.get("reason")).strip())]
+        if silent:
+            out.append(("osfListings %s: %d listed file(s) have no use or no reason: %s"
+                        % (node, len(silent), ", ".join(silent[:6]) + (" ..." if len(silent) > 6 else "")),
+                        "say for each file: fetched, or \"not fetched\" and why (not participant material, a duplicate "
+                        "of <file>, participant data ...)"))
+        fetched_data = [_str(f.get("path") or f.get("name")) for f in files if f.get("data") and _str(f.get("use")) == "fetched"]
+        if fetched_data:
+            out.append(("osfListings %s: participant data were fetched: %s" % (node, ", ".join(fetched_data[:4])),
+                        "delete them; participant data are recorded (authorData), never downloaded"))
+    data_seen = any(f.get("data") for x in listings.values() for f in _list(x.get("files")) if isinstance(f, dict)) or \
+        any(DATA_WORDS.search(_str(s.get("result"))) and not re.search(r"(?i)\bno (?:\w+ ){0,3}data\b", _str(s.get("result")))
+            for s in searches)
+    author = record.get("authorData")
+    if isinstance(author, dict) and author.get("fetched") is True:
+        out.append(("sources/SOURCE.json authorData says the authors' data were fetched",
+                    "participant data are never downloaded: delete them and record only where they are"))
+    elif data_seen and not (isinstance(author, dict) and "exists" in author and _str(author.get("where")).strip()):
+        out.append(("the searches or OSF listings show the authors' data, but sources/SOURCE.json records no authorData",
+                    'record {"authorData": {"exists": true, "where": "<url of the listing or page>", "files": [...], '
+                    '"fetched": false}}: name them so the researcher knows they exist; never download them'))
     return out
 
 
@@ -432,13 +576,39 @@ def private_index(root):
     """({shingle: private file}, {sha256: private file}) over every private file."""
     texts, hashes = {}, {}
     root = Path(root)
+    loose = set(unlicensed_files(root))
+    open_text = None
     for rel in sorted(private_paths(root)):
         path = root / rel
         if path.is_file() and not path.is_symlink():
             hashes.setdefault(sha(path), rel)
-            for s in shingles(text_of(path)):
+            found = shingles(text_of(path))
+            if rel in loose:   # a supplement repeats the openly licensed paper's title, authors ...: that text is open
+                if open_text is None:
+                    open_text, meta = open_shingles(root), paper_words(root)
+                found = [s for s in found if " %s " % s not in open_text
+                         and sum(w in meta for w in s.split()) * 2 < len(s.split())]
+            for s in found:
                 texts.setdefault(s, rel)
     return texts, hashes
+
+
+def open_shingles(root):
+    """The paper's words (one padded string) when sources/SOURCE.json records an open licence for it, else ''."""
+    record = source_record(root)
+    pdf = _dict(record.get("pdf"))
+    name = _str(pdf.get("filename")) or "paper.pdf"
+    if not OPEN_LICENSE.match(_str(pdf.get("license"))) or not (Path(root) / name).is_file():
+        return ""
+    return " %s " % " ".join(words(text_of(Path(root) / name)))
+
+
+def paper_words(root):
+    """Words of the paper's title, authors, venue and DOI (program.json source, SOURCE.json paper): a supplement's
+    header repeats them, and they are not its material."""
+    program = _dict(_json(Path(root) / "program.json"))
+    values = list(_dict(program.get("source")).values()) + list(_dict(source_record(root).get("paper")).values())
+    return {w for v in values for w in words(" ".join(strings(v)) if not isinstance(v, str) else v)}
 
 
 def researcher_shingles(root):
@@ -835,6 +1005,24 @@ def check(root, package=None):
             (problems if current else warnings).append(("materials are still pending, but the search skipped %s" % "; ".join(lacking),
                 "search each (title, DOI, authors) and record it in sources/SOURCE.json searches, including those that "
                 "find nothing, before asking the researcher for the materials"))
+
+    # added with the source-claims rules: block only a current-contract project (contract.py)
+    newer = problems if current else warnings
+    failures = _json(root / "artifacts/failures.json")
+    failures = failures if isinstance(failures, list) else _list(_dict(failures).get("failures"))
+    missing = any(i["kind"] == "needs-original" and i["status"] in ("pending", "stand-in", "left-out") for i in items) \
+        or any(_dict(x).get("pattern") in ("materials-not-public", "missing-information") for x in failures)
+    item_searches = [s for _, f in fields(program) for s in _list(_dict(material_of(f)).get("search"))
+                     if isinstance(s, dict)]
+    newer.extend(search_problems(record, program, missing, item_searches))
+    for rel in unlicensed_files(root):
+        entry = _dict(recorded.get(rel))
+        newer.append(("%s is in sources/ but not in %s/ or %s/, without an open licence (license %s%s): its text is "
+                      "treated as private and no export may carry it" % (
+                          rel, OPEN_DIR, PRIVATE_DIR, _str(entry.get("license")) or "not recorded",
+                          "; %s" % _str(entry.get("licenseNote")) if entry.get("licenseNote") else ""),
+                      "move it to %s/ and rerun sources.py; or record the open licence it states (and where) and move "
+                      "it to %s/" % (PRIVATE_DIR, OPEN_DIR)))
 
     # researcher and private files stay out of everything that can be published
     for rel in sorted(p.relative_to(root).as_posix() for p in researcher_files(root)):

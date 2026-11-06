@@ -21,8 +21,10 @@ SCRIPTS = {
               "check_results.py", "check_verbatim.py", "check_validity.py", "sources.py", "capabilities.py", "effects.py",
               "sandbox_run.py", "check_materials.py", "fetch_source.py", "qsf_flow.py", "check_replies.py",
               "recorded_answers.py", "package_files/replies.py", "estimate_run.py", "paper_tables.py",
-              "check_source_use.py", "contract.py", "docx_text.py", "design_checks.py", "prompt_context.py"],
-    "export": ["agent_package.py", "agent/study_core.py", "agent/mcp_server.py", "agent/effects_core.py"],
+              "check_source_use.py", "contract.py", "docx_text.py", "design_checks.py", "prompt_context.py",
+              "audit.py", "audit-book.json"],
+    "export": ["agent_package.py", "community.py", "agent/study_core.py", "agent/mcp_server.py",
+               "agent/effects_core.py"],
 }
 PATHS = [
     (".opencode/skills/build/", "$HS/scripts/build/"),
