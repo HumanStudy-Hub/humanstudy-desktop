@@ -4,7 +4,7 @@
 // Tokens and keys are never logged and never returned to the renderer.
 import type { AccountStatus } from '../preload/types'
 
-export const DEFAULT_SERVER = 'https://humanstudy-hub-web.vercel.app'
+export const DEFAULT_SERVER = 'https://humanstudy-hub.com'
 
 export interface DesktopConfig {
   supabaseUrl: string
