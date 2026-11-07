@@ -432,6 +432,7 @@ const ROWS: Row[] = [
   // ---- paper tab (SourceDrawer)
   ['paper.cited', 'Page {page} · cited by {id}', '第 {page} 页 · 被 {id} 引用'],
   ['paper.back', 'Back to the study', '回到研究'],
+  ['paper.page_of', 'p. {n} / {total}', '第 {n} / {total} 页'],
   ['paper.none', 'This project has no paper.pdf.', '这个项目还没有论文 PDF。'],
 
   // ---- Home

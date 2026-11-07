@@ -50,7 +50,9 @@ export function buildMenu(hooks: MenuHooks): Menu {
         { label: 'New window', accelerator: 'CmdOrCtrl+Shift+N', click: () => hooks.newWindow() },
         { label: 'Open folder…', accelerator: 'CmdOrCtrl+O', click: (_item, _win, event) => send({ command: 'openFolder', accelerator: Boolean(event?.triggeredByAccelerator) }) },
         { type: 'separator' },
-        { role: 'close', label: 'Close window', accelerator: 'CmdOrCtrl+W' },
+        // ⌘W closes the open file tab (or Compare) first, like an editor; with none open it closes the window.
+        { label: 'Close tab', accelerator: 'CmdOrCtrl+W', click: (_item, _win, event) => send({ command: 'closeTab', accelerator: Boolean(event?.triggeredByAccelerator) }) },
+        { role: 'close', label: 'Close window', accelerator: 'CmdOrCtrl+Shift+W' },
         ...(mac
           ? []
           : ([
@@ -77,6 +79,14 @@ export function buildMenu(hooks: MenuHooks): Menu {
         ...(app.isPackaged
           ? []
           : ([{ type: 'separator' }, { role: 'reload' }, { role: 'toggleDevTools' }] as MenuItemConstructorOptions[])),
+      ],
+    },
+    {
+      // Back returns to the tab, citation, study or project the reader came from (renderer nav.ts).
+      label: 'Go',
+      submenu: [
+        { label: 'Back', accelerator: 'CmdOrCtrl+[', click: (_item, _win, event) => send({ command: 'back', accelerator: Boolean(event?.triggeredByAccelerator) }) },
+        { label: 'All projects', accelerator: 'CmdOrCtrl+Shift+H', click: (_item, _win, event) => send({ command: 'projects', accelerator: Boolean(event?.triggeredByAccelerator) }) },
       ],
     },
     { role: 'windowMenu' },

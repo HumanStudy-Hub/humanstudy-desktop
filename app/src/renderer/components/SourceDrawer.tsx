@@ -250,8 +250,10 @@ export function SourceDrawer({
 
   // The page in view: the one the app scrolled to, then whatever the reader scrolls to.
   const shown = useRef(0)
+  const [shownPage, setShownPage] = useState(0)
   const noteShown = (page: number, by: 'citation' | 'scroll') => {
     if (shown.current === page) return
+    setShownPage(page)
     track('source.page', {
       target: `page.${page}`,
       durationMs: shown.current ? lap('source.page') : (lap('source.page'), undefined),
@@ -281,16 +283,23 @@ export function SourceDrawer({
   }, [pages.length])
 
   // A citation: find the quote (cited page first), box it, scroll to it, report what was found.
+  // Each citation is followed once. Showing the paper again (a tab switch, Compare) keeps the
+  // reader's place instead of jumping back to the last citation.
+  const handled = useRef<SourceRef | null>(null)
   useEffect(() => {
+    if (!source || !doc || !loadPage || !pages.length || !active) return
+    if (handled.current === source) return
+    handled.current = source
     setHit(null)
     setVerdict(null)
-    if (!source || !doc || !loadPage || !pages.length || !active) return
     let cancelled = false
+    let finished = false
     const page = Math.min(doc.numPages, Math.max(1, source.page))
     scrollTo(page)
     const quote = source.quote?.trim() ?? ''
     if (!quote) return
     void (async () => {
+      try {
       const order = Array.from({ length: doc.numPages }, (_, i) => i + 1).sort(
         (a, b) => Math.abs(a - page) - Math.abs(b - page),
       )
@@ -316,11 +325,16 @@ export function SourceDrawer({
           target: source.nodeId,
           metadata: { page: source.page, found: result.found, foundOn: result.page ?? null, differs: Boolean(result.differs) },
         })
+      } finally {
+        finished = true
+      }
     })().catch((e) => {
       if (!cancelled) setErr(String(e))
     })
     return () => {
       cancelled = true
+      // Interrupted before the quote was located: look again when the paper is shown next.
+      if (!finished && handled.current === source) handled.current = null
     }
   }, [source, doc, loadPage, pages.length, active])
   function scrollTo(page: number, rect?: Rect) {
@@ -435,6 +449,7 @@ export function SourceDrawer({
           >
             +
           </button>
+          {doc && shownPage > 0 && <span className="paper-page-of" aria-live="polite">{t('paper.page_of', { n: shownPage, total: doc.numPages })}</span>}
         </div>
       )}
       {replaced && (

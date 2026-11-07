@@ -107,7 +107,7 @@ export default function StudyModel(props: StudyModelProps) {
       {!!props.support.other?.length && <><span className={s.supportOther}>{t('model.support_other')}</span>{props.support.other.map(o => <button key={o.id} className={s.supportOther} title={o.file} onClick={() => open(o.id)}>{titleOf(program, o.id)}{o.file ? ` · ${o.file}` : ''}</button>)}</>}
       {props.onClearSupport && <button className={s.supportClose} aria-label={t('chat.clear')} onClick={props.onClearSupport}>×</button>}
     </div>}
-    <div className={s.scroll} ref={scroll}>
+    <div className={s.scroll} ref={scroll} data-study-scroll>
       {view === 'study' && <header className={s.heading}>
         <h1>{paper?.title ?? program.title}</h1>
         {paper && paper.meta.length > 0 && <p>{paper.meta[0]}{paper.meta.length > 1 && <>. <i>{paper.meta.slice(1).join(', ')}</i></>}</p>}

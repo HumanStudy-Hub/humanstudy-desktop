@@ -116,6 +116,8 @@ code, pre { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 1
 .titlebar button, .titlebar .menu { -webkit-app-region: no-drag; }
 .brand { display: flex; align-items: center; gap: 8px; font-family: var(--font-serif); font-size: var(--text-lg); font-weight: 500; color: var(--text); }
 .brand-mark { display: none; }
+.brand-home { padding: 0; font: inherit; color: inherit; }
+.brand-home:hover { color: var(--accent); }
 .crumb { font-family: var(--font-sans); font-size: var(--text-sm); font-weight: 500; color: var(--muted); }
 .titlebar-actions { display: flex; gap: 4px; align-items: center; }
 
@@ -874,6 +876,8 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
 
 .paper-tools { display: flex; justify-content: flex-end; gap: 2px; padding: 3px 10px; border-bottom: 1px solid var(--line); }
 .paper-tools .ghost { padding: 3px 8px; font-size: 12px; }
+.wb-study-host { display: contents; }
+.paper-page-of { order: -1; margin-right: auto; align-self: center; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .pdf-mark { position: absolute; z-index: 3; padding: 0; border: 0; border-radius: 1px; background: #ecc35255; cursor: pointer; mix-blend-mode: multiply; }
 .pdf-mark:hover, .pdf-mark:focus-visible { outline: 1px solid var(--accent); background: #ecc35280; }
 .paper-ask { flex-wrap: wrap; white-space: normal; max-width: calc(100% - 16px); }

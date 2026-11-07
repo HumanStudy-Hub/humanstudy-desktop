@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useImperativeHandle, useMemo, useState, type Ref } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import type { CommunityStudy, CommunityStudyDetail } from '../../preload/types'
 import { isExtracted, matchesResearch, researchAvailability, researchRank } from '../../shared/research-search'
 import { relativeTime } from './Home'
 import { track } from '../telemetry'
+import { remember } from '../nav'
 
 const REPO_URL = 'https://github.com/HumanStudy-Hub/HumanStudy-Bench'
 
@@ -112,11 +113,30 @@ export function Studies({ query, onOpenProject, ref }: Props) {
       .sort((a, b) => researchRank(b, q) - researchRank(a, q) || a.id.localeCompare(b.id))
   }, [list, query, topic, pending])
 
-  useImperativeHandle(ref, () => ({ openFirst: () => shown[0] && setOpenId(shown[0].id) }), [shown])
+  // Opening a study is a place Back (nav.ts) returns from; leaving it keeps the list where it was.
+  const openNow = useRef(openId)
+  openNow.current = openId
+  const listScroll = useRef(0)
+  const openStudy = useCallback((id: string) => {
+    listScroll.current = document.querySelector<HTMLElement>('[data-library-scroll]')?.scrollTop ?? 0
+    setOpenId(id)
+    remember('library', () => {
+      if (openNow.current !== id) return false
+      setOpenId(null)
+    })
+  }, [])
+  const back = useCallback(() => setOpenId(null), [])
+  const onTopic = useCallback((next: { id: string; label: string } | null) => { setTopic(next); setOpenId(null) }, [])
+  useEffect(() => {
+    if (openId || !listScroll.current) return
+    const el = document.querySelector<HTMLElement>('[data-library-scroll]')
+    if (el) el.scrollTop = listScroll.current
+  }, [openId])
+  useImperativeHandle(ref, () => ({ openFirst: () => shown[0] && openStudy(shown[0].id) }), [shown, openStudy])
 
   if (openId) {
     const summary = list?.find((s) => s.id === openId) ?? null
-    return <StudyPage id={openId} summary={summary} onBack={() => setOpenId(null)} onTopic={next => { setTopic(next); setOpenId(null) }} onOpenProject={onOpenProject} />
+    return <StudyPage id={openId} summary={summary} onBack={back} onTopic={onTopic} onOpenProject={onOpenProject} />
   }
 
   const offline = typeof navigator !== 'undefined' && !navigator.onLine
@@ -176,7 +196,7 @@ export function Studies({ query, onOpenProject, ref }: Props) {
         <ul className="study-list">
           {shown.slice(0, visibleCount).map((s) => (
             <li key={s.id} className="study-card research-card">
-              <button className="research-card-open" onClick={() => setOpenId(s.id)}>
+              <button className="research-card-open" onClick={() => openStudy(s.id)}>
                 <strong className="study-card-title">{s.title}</strong>
                 <span className="muted small">{byline(s, 3)}</span>
                 {s.description && <span className="study-card-desc">{s.description}</span>}

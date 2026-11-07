@@ -306,7 +306,7 @@ export interface KernelInstallStatus {
 
 /** A native menu action for the renderer. */
 export interface MenuCommand {
-  command: 'newProject' | 'openFolder' | 'pane' | 'settings'
+  command: 'newProject' | 'openFolder' | 'pane' | 'settings' | 'back' | 'projects' | 'closeTab'
   /** For 'pane': 'agent' | 'study' | 'paper' | 'files'. */
   arg?: string
   /** Chosen with the item's keyboard accelerator rather than the menu itself. */
