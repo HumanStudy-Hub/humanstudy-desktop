@@ -4,6 +4,7 @@
     python .opencode/skills/build/fetch_source.py . <url> [--name file.ext] [--private]
            [--linked "linked from p. 9"] [--source-version "OSF snapshot 2026-11-04"]
     python .opencode/skills/build/fetch_source.py . --licence <OSF project, registration, component or file URL>
+    python .opencode/skills/build/fetch_source.py . --list <OSF component or file URL>
     python .opencode/skills/build/fetch_source.py --verify .
     python .opencode/skills/build/fetch_source.py --check .
 
@@ -41,6 +42,13 @@ name and the SHA-256 OSF lists, the licence of its project and of each parent up
 one, and, for a registration, the licence of the project it was registered from (recorded for the reader; a
 registration does not take it automatically). Appends the record to SOURCE.json `licenceLookups` with every
 API URL asked. A file whose SHA-256 equals a looked-up file in an openly licensed project carries that licence.
+
+--list: downloads nothing but metadata. Lists every file of the OSF component that holds the URL (all folders,
+every page of the listing) and records it in SOURCE.json `osfListings` ({node, url, checked, listed, files: [{name,
+path, bytes, sha256, use, reason, data}], asked}). A file the build holds (same SHA-256) is `fetched`; a file whose
+name, format or folder marks participant data is `data: true`, "not fetched (participant data)", and is never
+downloaded; the build gives every other file a use ("not fetched" and why). check_materials.py requires a
+listing of each OSF component a used file comes from.
 
 --check (offline): problems() below. A file under sources/open/ without an open licence fails (in the package
 check that is check_materials.py's finding; problems() adds only the lookup fix); when a licenceLookups record
@@ -587,7 +595,8 @@ def _get(url, attempts=4, accept=None, limit=MAX_FILE, sleep=time.sleep, timeout
                     chunks.append(chunk)
             return b"".join(chunks)
         except urllib.error.HTTPError as exc:
-            exc.close()
+            if getattr(exc, "fp", None) is not None:   # an HTTPError without a body has no fp; close() then fails
+                exc.close()
             if exc.code in GONE_CODES:
                 raise SourceGone("%s answered HTTP %d" % (public_url(url), exc.code)) from exc
             last = "HTTP %d" % exc.code
@@ -870,6 +879,89 @@ def record_lookup(root, record):
     return data
 
 
+MAX_LISTED = 2000   # files one component listing records before it stops (it says so)
+
+
+def osf_listing(url, sleep=time.sleep):
+    """Every file in the OSF component that holds `url` (a component, or a file in one), from the API: name, folder
+    path, size and the SHA-256 OSF lists. Downloads nothing but metadata, and never a file. A file whose name or
+    format marks participant data is marked `data` with use "not fetched (participant data)"; every other file
+    gets use "fetched" when its SHA-256 equals a file the build holds, otherwise the build fills `use`."""
+    m = OSF_STORAGE_FILE.match(url.strip()) or OSF_URL.match(url.strip())
+    if not m:
+        raise ValueError("--list takes an OSF component or file URL (https://osf.io/<id>/)")
+    osf_id, asked = m.group(1), []
+    node_id = osf_id
+    record = _api_json("https://api.osf.io/v2/files/%s/" % osf_id, asked, sleep)
+    data = record.get("data") if isinstance(record, dict) else None
+    if isinstance(data, dict) and data.get("type") == "files":
+        target = ((data.get("relationships") or {}).get("target") or {}).get("data") or {}
+        node_id = target.get("id") or osf_id
+    files, complete = [], True
+    first = "https://api.osf.io/v2/nodes/%s/files/osfstorage/?page[size]=100" % node_id
+    queue = [first]
+    while queue:
+        page = queue.pop(0)
+        answer = _api_json(page, asked, sleep)
+        if not isinstance(answer, dict):
+            if page == first:
+                raise ValueError("OSF lists no public files for component %s" % node_id)
+            complete = False
+            continue
+        for item in answer.get("data") or []:
+            if not isinstance(item, dict):
+                continue
+            attributes = item.get("attributes") or {}
+            if attributes.get("kind") == "folder":
+                related = (((item.get("relationships") or {}).get("files") or {}).get("links") or {}).get("related")
+                href = related.get("href") if isinstance(related, dict) else related
+                if isinstance(href, str):
+                    queue.append(href)
+                continue
+            hashes = (attributes.get("extra") or {}).get("hashes") or {}
+            sha = hashes.get("sha256") if isinstance(hashes, dict) else None
+            name = str(attributes.get("name") or "")
+            entry = {"name": name, "path": attributes.get("materialized_path") or "/" + name,
+                     "bytes": attributes.get("size"), "sha256": sha.lower() if isinstance(sha, str) else None}
+            folder = str(entry["path"]).strip("/").split("/")[:-1]
+            why = data_name(name) or ("it is in a data folder" if any(DATA_FOLDER.match(x) for x in folder) else "")
+            if why:
+                entry.update({"data": True, "use": "not fetched (participant data)", "reason": why})
+            files.append(entry)
+            if len(files) >= MAX_LISTED:
+                complete, queue = False, []
+                break
+        nxt = (answer.get("links") or {}).get("next")
+        if isinstance(nxt, str) and len(files) < MAX_LISTED:
+            queue.append(nxt)
+    return {"node": node_id, "url": public_url(url.strip()), "checked": dt.date.today().isoformat(),
+            "listed": "complete" if complete else "partial", "files": files, "asked": asked}
+
+
+def record_listing(root, record):
+    """Append (or replace, same component) a listing in SOURCE.json `osfListings`; a listed file the build holds
+    (same SHA-256) is marked fetched, and what an earlier listing of the component said about a file is kept."""
+    root = Path(root).resolve()
+    data = sources.load(root / NAME) or sources.build(root)
+    held = {str(f.get("sha256") or "").lower(): f.get("path") for f in data.get("files") or []
+            if isinstance(f, dict) and f.get("sha256")}
+    old = next((x for x in data.get("osfListings") or [] if isinstance(x, dict) and x.get("node") == record["node"]), {})
+    before = {(f.get("path"), f.get("sha256")): f for f in old.get("files") or [] if isinstance(f, dict)}
+    for f in record["files"]:
+        if f.get("sha256") and f["sha256"] in held:
+            f.update({"use": "fetched", "file": held[f["sha256"]]})
+        elif not f.get("data"):
+            kept = before.get((f.get("path"), f.get("sha256"))) or {}
+            for k in ("use", "reason"):
+                if kept.get(k):
+                    f[k] = kept[k]
+    listings = [x for x in data.get("osfListings") or [] if isinstance(x, dict) and x.get("node") != record["node"]]
+    data["osfListings"] = listings + [record]
+    (root / "sources").mkdir(exist_ok=True)
+    _write_json(root / NAME, data)
+    return data
+
+
 def is_open(license):
     return bool(OPEN_LICENSE.match(str(license or "").strip()))
 
@@ -1077,6 +1169,9 @@ def main(argv=None):
     ap.add_argument("--source-version", help="which version it is")
     ap.add_argument("--licence", "--license", dest="lookup", metavar="OSF_URL",
                     help="look up an OSF licence (downloads nothing); record a stated licence with sources.py --license")
+    ap.add_argument("--list", dest="listing", metavar="OSF_URL",
+                    help="list every file of the OSF component holding this URL (metadata only, nothing is "
+                         "downloaded) into SOURCE.json osfListings")
     ap.add_argument("--verify", action="store_true", help="re-download every recorded source and compare")
     ap.add_argument("--check", action="store_true", help="offline licence and link checks")
     a = ap.parse_args(argv)
@@ -1097,6 +1192,18 @@ def main(argv=None):
         bad = [r for r in results if r[2] in FAILING]
         print("FAIL %d source(s) differ, are gone or refuse the re-check" % len(bad) if bad else "PASS sources re-checked")
         return 1 if bad else 0
+    if a.listing:
+        try:
+            data = record_listing(root, osf_listing(a.listing))
+        except (ValueError, OSError) as exc:
+            print("Not listed: %s" % exc, file=sys.stderr)
+            return 1
+        listing = data["osfListings"][-1]
+        for f in listing["files"]:
+            print("%-28s %s" % (f.get("use") or "(say: fetched / not fetched + reason)", f["path"]))
+        print("recorded %d file(s) of OSF component %s (%s) in %s osfListings; give each file without a use "
+              "\"not fetched\" and a reason, or fetch it" % (len(listing["files"]), listing["node"], listing["listed"], NAME))
+        return 0
     if bool(a.lookup) == bool(a.url):
         ap.error("give one URL to download, or --licence <OSF URL> alone, or --verify / --check (a licence the "
                  "file states is recorded with sources.py --license PATH=LICENSE)")

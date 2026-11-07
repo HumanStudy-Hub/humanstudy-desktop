@@ -154,6 +154,24 @@ instruction screens (both framings)", not "m-s4.instruction-wording".
      search by author, not only by title (`https://api.osf.io/v2/users/?filter[full_name]=<surname>`, then each
      match's `/nodes/`). Record each, including those that find nothing. `check_materials.py` fails a pending
      item while one of these is missing.
+   - **Search completeness.** A page that refused (403, a bot check, a refused connection, a timeout) checked
+     nothing: record `"result": "not checked: <the error>"`, never "nothing found", and reach the place another way;
+     it does not count as that search. For Judgment and Decision Making also read the issue page that lists the
+     article (`journal.sjdm.org/vol<N>.<issue>.html`, also on jbaron.org): JDM posts each article's data and
+     materials there, not in the article folder. For every OSF component a used file comes from, list all its files
+     with `fetch_source.py . --list <OSF URL>` (metadata only; writes `osfListings`) and give each a `use`:
+     `fetched`, or `"not fetched"` with a `reason`. Participant data it lists are marked and never fetched; when
+     the authors' data exist anywhere you looked, record `"authorData": {"exists": true, "where": "<url>",
+     "files": [...], "fetched": false}` in SOURCE.json so the researcher knows, and never download them.
+   - **"Not printed" and "not public" must be true.** Before keeping a `materials-not-public` or
+     `missing-information` failure, a `run.excluded` reason, a pending, stand-in or left-out item, or a field note
+     that says something is not printed or not available, search the text of every source the build holds
+     (paper, SI, `.qsf`, Word copies) for it. `check_source_use.py` names the pages that mention the claim's terms;
+     read each and record `claimsChecked: [{"claim": "<id it prints>", "sourcesChecked": [{"path", "pages",
+     "prints": false, "found": "<what the page says on this point>"}]}]`, or use what the page prints and drop
+     the claim. A PDF page with no text layer (screenshots, a scanned appendix) is unread until you render it
+     (`paper_tables.py --render`, `pdf_pages.py`) and record `pagesRead: [{"path", "pages", "how", "holds"}]`;
+     no claim passes while one is unread.
    - **Check before using anything.** It must be tied to this paper (DOI, title or author match, or linked
      from the paper or its OSF project), with the version noted (published SI, preprint v2, repository
      snapshot of a date). Save it with `python .opencode/skills/build/fetch_source.py . <url> --linked "linked from p. 9"
@@ -170,7 +188,12 @@ instruction screens (both framings)", not "m-s4.instruction-wording".
      them in SOURCE.json `licenceLookups`. A registration without its own license does not take its project's. A
      file whose SHA-256 equals a looked-up file in an openly licensed project carries that license; cite the lookup
      in `--license-evidence` ("OSF licence lookup (licenceLookups, <url>): same SHA-256 as <file>"). Never run,
-     import or open as code anything you downloaded; analysis code is read, never run. An item copied from `sources/open/` is `verbatim` (`status:
+     import or open as code anything you downloaded; analysis code is read, never run. A supplement saved
+     anywhere else under `sources/` (its root) without a recorded open licence is private like `sources/private/`:
+     move it there. The SI or ESM of a CC BY article that states no licence of its own stays `unknown`;
+     `sources.py` notes it "supplement of CC BY article, no own licence". When a batch list (`SOURCES.json`
+     beside the project) states another licence for a file, check it and record the licence, or `batchLicence`
+     on the file entry saying why the list does not apply. An item copied from `sources/open/` is `verbatim` (`status:
      "found-open"`, cite the file); one from `sources/private/` is a reference to the file like a supplied
      one (`status: "found-private"`, value `{"file": ...}`, never the text in the program). Evidence that
      cites a file under `sources/private/` or `sources/researcher/` gives its `path` and `locator` with no
@@ -286,7 +309,13 @@ from it, not from the raw `.qsf`:
 The package check runs `qsf_flow.py`'s survey check (`python .opencode/skills/build/qsf_flow.py --check .` runs it
 alone): it fails survey text that only an unreachable question carries in a program.json field whose evidence
 cites the `.qsf`, in a `materials.json` entry whose source is the `.qsf`, or in a string literal of
-`task/adapter.py`; a marked item the run still uses; and a "mixed" item without state `check`.
+`task/adapter.py`; a marked item the run still uses; and a "mixed" item without state `check`. It also fails a
+transcription of a shown question that drops its pictures (the outline prints `IMAGES:`) without an `images` or
+`figure` entry with state missing on the item or a `run.excluded` / `replayAdaptations` entry naming it; a
+slider's opt-out box ("Not Applicable") listed among its anchors (the anchors are the numbered labels; the
+opt-out is separate); and a question shown only under display logic that the replay asks unconditionally, or in
+the same prompt as the question that decides it. `check_verbatim.py` compares `.qsf` question, choice and label
+text (HTML stripped, spaces normalised) the same way it compares a PDF.
 
 - **Word copies.** Read a `.docx` (a Qualtrics "Export to Word" copy, a materials document) with `python
   .opencode/skills/build/docx_text.py sources/open/<file>.docx [--json .humanstudy/tmp/<file>.json]`, never by
@@ -527,7 +556,7 @@ sidecars). `program.json` stays the single source: the package refers to it and 
 ```text
 study.json                     overview; programRef: {"path": "../../program.json", "id": <program id>};
                                readiness: {status: ready|blocked, blocking: [...issue ids]};
-                               "buildContract": 2 (no copy of the program)
+                               "buildContract": 3 (no copy of the program)
 source/paper_metadata.json     bibliography + external_sources (empty if none authorized)
 materials/materials.json       participant-visible material by study and condition, verbatim
 task/task.json                 agents, roles, order, visibility, scripted roles + justification,
@@ -537,10 +566,18 @@ task/replies.py                unchanged copy of .opencode/skills/build/package_
 evaluation/evaluation.py       evaluate(sessions) -> dict; not_ready when a test cannot run
 ```
 
-Every package built or rebuilt now carries `task/replies.py` and `"buildContract": 2` in study.json; they
-mark it as built under the current rules, which are then blocking. Removing either (or leaving it out) to
-pass a check is forbidden: a stamped package without the reader fails, and the readiness gate shows every
-package without both as an "older build" to the researcher.
+Every package built or rebuilt now carries `task/replies.py` and `"buildContract": 3` in study.json; they
+mark it as built under the current rules, which are then blocking. Removing either, lowering the number or
+leaving it out to pass a check is forbidden: a stamped package without the reader fails, and the readiness gate
+shows a package below contract 3 to the researcher with a `contract` warning.
+
+**Build contract.** Which rules block depends on study.json `buildContract` (contract.py), so a project that
+was ready stays ready after an app update:
+
+| Rules | Checked by | below 3 (contract 2, or a legacy package) | 3 |
+|---|---|---|---|
+| Shared reader (present, unchanged copy, answer-aware smoke test, every answer recorded); prompt rules (memory claims, internal ids, crashing arms, unread answers turned into numbers); downloaded sources, source use, survey flow, Word sources, design disclosures; minimum search list; result-table rules | check_package, check_replies, recorded_answers, check_validity, check_results, check_materials, effects.py | block at contract 2; warn on a legacy package (no reader, no buildContract) | block |
+| Everything added with contract 3: an earlier release of `task/replies.py`; a reply in the screen's own words read wrongly (current reader only); `__pycache__` / `.pyc` in the package; the analysis run and its rules (effects compute, unread answers, answer gates, memory across tasks, summaries, check stimuli, question kinds, export text and design names in prompts; a run that times out); not-printed claims; unread searches, issue pages, OSF listings, author data, unlicensed files in `sources/` and copies of them; a batch list (`SOURCES.json`) that disagrees with SOURCE.json; survey pictures, opt-out boxes and display logic; verbatim image-only pages, opt-out boxes as anchors and mismatches with a cited `.qsf` / `.docx`; the effects and capabilities rules (scale, signs, pooled and model-based values, hypothesis status, `run.excluded` arms) | check_replies, check_package, check_validity, check_source_use, check_materials, sources.py, qsf_flow, check_verbatim, effects.py, capabilities.py | warn (`... (older build: blocking from buildContract 3)`) | block |
 
 Do not write `source/evidence.json` or `audit/missing_information.json`: the evidence and the
 missing information are `program.json`'s `evidence` and `issues`, and every tool reads them there.
@@ -681,8 +718,9 @@ Rules the runner depends on:
 - **Reading replies.** Copy `.opencode/skills/build/package_files/replies.py` into the package as
   `task/replies.py`, unchanged (check_package.py compares it byte for byte; it is the same file as
   HumanStudy-Bench's, so packages read replies the same way in both), and ask every question a participant
-  answers through it: `sys.path.insert(0, str(Path(__file__).resolve().parent))`, then `from replies import
-  Question, ask, render_questions, smoke_main`; describe each question as `Question(id, text, options, ...)`,
+  answers through it: `sys.path.insert(0, str(Path(__file__).resolve().parent))` and `sys.dont_write_bytecode =
+  True` (no `__pycache__` in the package), then `from replies import Question, ask, render_questions,
+  smoke_main`; describe each question as `Question(id, text, options, ...)`,
   end the prompt with `render_questions(questions)`, read the answers from `ask(llm, prompt, questions)`.
   Never write your own reply parser and never call `llm` directly. End the adapter with `if __name__ ==
   "__main__" and "--smoke-test" in sys.argv: sys.exit(smoke_main(Path(__file__)))`.
@@ -763,20 +801,82 @@ Rules the runner depends on:
   `check_materials.py`.
   Each failing check shows its first problem in the Simulation tab. Editing the checkers inside the
   project changes nothing there: fix the program, the package or effects.json.
-- Older builds: a legacy package built before the shared reply reader (no `task/replies.py` and no study.json
-  `buildContract` 2; see contract.py) gets the rules
-  added with it as warnings, not failures, so a project that was ready stays ready after an app update. The
-  readiness gate then always adds one `contract` warning, "older build: newer build rules are warnings;
-  rebuild with the current build skill to make them blocking". The checks print them as `WARN ...`
-  (check_validity.py, check_results.py, check_materials.py, effects.py) or `warn  ...` (check_package.py) lines
-  and still print PASS: prompts that mention earlier screens they do not carry, a memory design that carries
-  nothing, internal ids in prompts, a declared condition that crashes or refuses without a blocking issue,
-  image-only tables, lost minus signs, impossible CI or p values, results printed only in the text, unrecorded
-  abstract findings and supplement tables, a pending material whose searches skip the minimum search list, a
-  computed effect block that does not hold what `reported` claims (statistic, scale, one value, n), and the
-  downloaded-source, source-use (including a question check that leaves out the paper), survey-flow,
-  Word-source and design-disclosure findings. Rebuilding the package with `task/replies.py` and
-  `"buildContract": 2` makes all of them blocking.
+- Older builds: the rules a package's contract does not make blocking (the **Build contract** table above)
+  print as `WARN ...` (check_validity.py, check_results.py, check_materials.py, check_verbatim.py, effects.py,
+  capabilities.py) or `warn  ...` (check_package.py) lines, and the check still prints PASS. The readiness gate
+  lists them as warnings and adds one `contract` warning: "older build: ..." for a legacy package without the
+  shared reader, "build contract below 3: ..." for a contract 2 package. Rebuilding the package with
+  `task/replies.py` and `"buildContract": 3` makes all of them blocking.
+
+### Rules from the batch reviews (contract 3)
+
+Independent reviews of 15 batch builds found packages that passed every check yet could not reproduce the
+paper. These rules close those gaps; the checks named enforce them.
+
+**One human is one agent.** If humans did several scenarios, tasks or vignettes, one agent does them in the
+same order and carries what that person saw and answered. Never correlate answers from calls that share
+nothing (a within-person correlation across fresh calls is set by construction). If the paper does not say
+what stayed on screen, make the replay-memory issue `blocking` so the researcher decides; never mark memory
+"none" as a non-blocking decision when an outcome is within-person. (check_validity)
+
+**Prompts are screen text only.** No survey or Word export lines (see "Survey files", Word copies), `${...}`,
+condition names, build-written intros not declared as stand-ins, or running summaries ("Your answers so far") that a condition's screens did
+not show. A comprehension, recall or attention check is asked without the stimulus on screen unless a cited
+source says it stayed. (check_validity, on prompts captured from a stub run)
+
+**Checks have `key=`.** Every attention, comprehension, consent or screening question has a `key=`. Ask each
+question as the type materials.json declares, or record the change in `replayAdaptations`.
+
+**The analysis must run.** check_validity runs every arm with a keyed stand-in and computes every effect as the
+playground does. An effect that does not compute fails unless `capabilities.json run.excluded[].effects`
+lists it with a reason. Read the stated cause (a crash, a key mismatch, `_sessions` not returned by
+`evaluate()`) and fix the code; never fix it by excluding the effect.
+
+**One unread reply costs one answer.** Never end a group or a participant because of one unread reply. An
+answer the analysis uses is `required=True`, or the session records it as unparsed; a completed session always
+has its outcome. Aggregations over answers ("any said yes") treat an unread answer the same whichever way the
+others went.
+
+**Reading replies** (`task/replies.py` v5):
+- Store a choice's scale point for analysis with `page.number(qid)` (or `page.code(qid)`); `page.value(qid)` is
+  the label as printed, for display and label comparisons only. Never sum or average `page.value()` of a choice.
+- The reader adds "from A to B" to a numeric question only when its text does not state the range;
+  `check_replies` lists every addition. Pass `range_hint=False` when participants never saw the range,
+  otherwise record the hint in `task.json` `replayAdaptations`.
+- Put the screen's own corner wording in the question text ("Enter 10 if you choose the lottery in all nine
+  rows"); the reader reads it back. Pass `corners={"phrase": N}` only for wording the screen defines elsewhere.
+- Score free-text correct/lure answers with `replies.final_answer(reply, {"correct": [...], "lure": [...]})`,
+  citing the paper's coding rule; never "matches correct and not lure".
+- Transcribe paired options as printed ("Take the bet" / "NOT take the bet"); the reader matches label heads
+  and worded yes/no, never "X" for "NOT X".
+
+**Effects** (effects.py, effects_core):
+- A proportion or risk-difference estimate states `scale` (`"proportion"` or `"percentage_points"`, as printed).
+- On a two-group or paired contrast, phi, Cramér's V, χ², F or η² is signed: the reported value gets
+  `signBasis` (negative when the treatment arm is lower), op `contingency` gets `compute.success`, and a package
+  block returns the signed value with `"signed": true`.
+- Numbers pooled across sites, countries, designs or labs set `reported.scope: "pooled"` with `scopeNote`
+  (`"other-sample"` for another site or subgroup) and are never stored as a replayed arm's cell. A posterior,
+  mixed, multilevel or random-effects estimate sets `estimateType: "model-based"`. Such comparisons are shown
+  as not like-for-like.
+- A hypothesis is `tested` only when the replay computes every effect naming it and they cover its program
+  studies. Use `partial` with a `reason` when only some do (excluded effects, one design or site of a pooled
+  hypothesis, one side of a comparison); `untested` with `untestedBecause: "not-computable"` and a `reason` when
+none do. Give the excluded half its
+  own effect listed in `run.excluded.effects` rather than leaving it out.
+- Before writing "n / means / SDs not printed" in `missing`, check the recorded result tables.
+
+**Capabilities:** one `run.excluded` entry per part: `{"what", "reason", "arms" | "affectsArms", "effects"}`.
+`arms` = arms that cannot be run at all (blocked in task.json); tools refuse them. `affectsArms` = arms that
+still run with this part left out (pictures, timers, demographics, questionnaires). `effects` = every effect
+the replay cannot compute, including every effect on a blocked arm. Never list a runnable arm under `arms`.
+
+**Build with `PYTHONDONTWRITEBYTECODE=1`.** Packages never ship `__pycache__` (the adapter sets
+`sys.dont_write_bytecode = True` before `from replies import ...`; see Reading replies).
+
+Searches, OSF listings, not-printed claims and supplements kept in `sources/` follow "Materials the paper does
+not print" (Search completeness, "Not printed" must be true); pictures, opt-out boxes and display logic of survey
+questions follow "Survey files". They are not repeated here.
 
 ### Effects: from hypotheses to computable effects
 

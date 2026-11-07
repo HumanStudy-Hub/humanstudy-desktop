@@ -194,6 +194,7 @@ def build(root, licenses=None, evidence=None, extra=None):
         for key, values in (extra or {}).items():   # url, linkedToPaper, version of a downloaded file
             if f["path"] in values:
                 f[key] = values[f["path"]]
+    note_supplements(files, paper)
     src = program.get("source") or {}
     out = dict(old)
     out["schemaVersion"] = 1
@@ -211,13 +212,122 @@ def build(root, licenses=None, evidence=None, extra=None):
     return out
 
 
-def problems(root):
-    """What is missing or stale in sources/SOURCE.json, as (message, fix) pairs."""
+OPEN_DIR = "sources/open/"
+SUPPLEMENT_NOTE = "supplement of CC BY article, no own licence"
+
+
+def note_supplements(files, paper):
+    """A file served beside a CC BY article (its SI or ESM) that states no licence of its own keeps license unknown
+    and says so in licenseNote: the article's licence does not cover it by default, so it stays out of
+    sources/open/ and out of every export."""
+    pdf = next((f for f in files if f["path"] == paper), None)
+    if not pdf or not str(pdf.get("license") or "").upper().startswith("CC-BY"):
+        return
+    for f in files:
+        if f is pdf or f.get("license") not in (None, "", "unknown") or f.get("licenseNote") \
+                or f["path"].lower().startswith((RESEARCHER_DIR, OPEN_DIR)):
+            continue
+        f["licenseNote"] = "%s (the article is %s)" % (SUPPLEMENT_NOTE, pdf["license"])
+
+
+BATCH_LIST = "SOURCES.json"   # a batch's list of papers (stage 1): one entry per paper, keyed by slug
+ESM = re.compile(r"(?i)\b(?:esm|si|supplement(?:ary|al)?|supp|appendi(?:x|ces))\b")
+OPEN_WORDS = re.compile(r"(?i)\bcc[- ]?by\b|\bcc0\b|creative commons|open licen[cs]e")
+NONE_WORDS = re.compile(r"(?i)\bno\s+licen[cs]e|\bnot\s+licen[cs]ed|without\s+(?:a\s+)?licen[cs]e")
+OSF_CLAUSE = re.compile(r"(?i)\bOSF\s+([a-z0-9]{5})\b")
+
+
+def batch_entry(root, program=None):
+    """This project's entry in a batch SOURCES.json in its folder, its parent or grandparent; None without one."""
     root = Path(root).resolve()
+    doi = str(((program or {}).get("source") or {}).get("doi") or "").lower()
+    for folder in (root, root.parent, root.parent.parent):
+        try:
+            data = json.loads((folder / BATCH_LIST).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        entries = data if isinstance(data, list) else data.get("papers") if isinstance(data, dict) else None
+        for e in entries if isinstance(entries, list) else []:
+            if isinstance(e, dict) and (e.get("slug") == root.name or doi and str(e.get("doi") or "").lower() == doi):
+                return e
+    return None
+
+
+def _same_osf(url, lookup_urls):
+    tail = str(url or "").rstrip("/").rsplit("/", 1)[-1].lower()
+    return bool(tail) and any(u.rstrip("/").rsplit("/", 1)[-1].lower() == tail for u in lookup_urls if u)
+
+
+def batch_disagreements(root, data, program=None):
+    """[(message, fix)] where the batch list's licence for this paper's materials disagrees with SOURCE.json. A
+    file entry that records `batchLicence` (what the list says and why SOURCE.json differs) is settled."""
+    entry = batch_entry(root, program)
+    if not entry:
+        return []
+    said = str(entry.get("materialsLicence") or "")
+    files = [f for f in data.get("files") or [] if isinstance(f, dict) and isinstance(f.get("path"), str)
+             and not f.get("batchLicence")]
+    lookups = [x for x in data.get("licenceLookups") or [] if isinstance(x, dict)]
+    out = []
+    fix = ("check the licence where the file or its page states it; record it (sources.py --license), or record "
+           "batchLicence on the file entry: what the batch list says and why it does not apply")
+    for clause in (c.strip() for c in re.split(r"[;\n]", said)):
+        if not clause:
+            continue
+        says_none = bool(NONE_WORDS.search(clause))
+        says_open = bool(OPEN_WORDS.search(clause)) and not says_none
+        if ESM.search(clause) and says_open:
+            names = {str(n).lower() for n in entry.get("supplements") or []}
+            for f in files:
+                base = f["path"].rsplit("/", 1)[-1].lower()
+                if (base in names or not names and ESM.search(base)) and f.get("license") in (None, "", "unknown"):
+                    out.append(("%s records %s with license unknown, but the batch list (%s) says \"%s\""
+                                % (NAME, f["path"], BATCH_LIST, clause), fix))
+        m = OSF_CLAUSE.search(clause)
+        if not m:
+            continue
+        node = m.group(1).lower()
+        urls = [str(x.get("url") or "") for x in lookups
+                if any(isinstance(p, dict) and str(p.get("id") or "").lower() == node for p in x.get("projects") or [])]
+        for f in files:
+            if not f.get("url") or not _same_osf(f["url"], urls):
+                continue
+            lic = str(f.get("license") or "")
+            is_open = lic.upper().startswith(("CC-BY", "CC0"))
+            if (says_none and is_open) or (says_open and not is_open):
+                out.append(("%s records %s as %s, but the batch list (%s) says \"%s\""
+                            % (NAME, f["path"], lic or "unknown", BATCH_LIST, clause), fix))
+    return out
+
+
+def problems(root):
+    """What is missing or stale in sources/SOURCE.json, as (message, fix) pairs (findings() without warnings)."""
+    return findings(root)[0]
+
+
+def findings(root):
+    """(problems, warnings). The batch-list rule (batch_disagreements) came with build contract 3: below
+    study.json buildContract 3 its findings are warnings, so a project that was ready stays ready."""
+    root = Path(root).resolve()
+    out, data, program = _problems(root)
+    batch = batch_disagreements(root, data, program) if data is not None else []
+    if not batch:
+        return out, []
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import contract
+    if contract.project_strict(root):
+        return out + batch, []
+    return out, [(m + contract.OLDER_THAN_3, h) for m, h in batch]
+
+
+def _problems(root):
+    """(problems without the batch-list rule, SOURCE.json or None, program.json)."""
     fix = "run the build skill's sources.py on the project folder"
     data = load(root / NAME)
     if data is None:
-        return [("%s is missing: the paper's hash and license are not recorded" % NAME, fix)]
+        return [("%s is missing: the paper's hash and license are not recorded" % NAME, fix)], None, {}
     program = load(root / "program.json") or {}
     recorded = {f.get("path"): f for f in data.get("files") or [] if isinstance(f, dict)}
     out = []
@@ -240,7 +350,7 @@ def problems(root):
                     "put the PDF the page numbers refer to at paper.pdf"))
     elif ((data.get("pdf") or {}).get("sha256") != sha256(root / paper)):
         out.append(("%s#pdf does not hold the current SHA-256 of %s" % (NAME, paper), fix))
-    return out
+    return out, data, program
 
 
 def pairs(values, flag):
@@ -267,9 +377,11 @@ def main(argv=None):
     a = ap.parse_args(argv)
     root = Path(a.root)
     if a.check:
-        found = problems(root)
+        found, older = findings(root)
         for msg, hint in found:
             print("PROBLEM %s\n        fix: %s" % (msg, hint))
+        for msg, hint in older:
+            print("WARN    %s\n        fix: %s" % (msg, hint))
         print("FAIL %d problem(s) in %s" % (len(found), NAME) if found else "PASS %s" % NAME)
         return 1 if found else 0
     data = build(root, pairs(a.license, "--license"), pairs(a.license_evidence, "--license-evidence"),

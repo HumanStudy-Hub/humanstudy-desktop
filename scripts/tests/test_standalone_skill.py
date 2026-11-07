@@ -46,6 +46,19 @@ class StandaloneSkill(unittest.TestCase):
         overview = self.run_py(self.hs / "scripts/export/agent/study_core.py", "--root", ".", "overview", cwd=project)
         self.assertEqual(json.loads(overview.stdout)["id"], "study-5")
 
+    def test_audit_ships_with_its_book_and_runs(self):
+        for rel in ("scripts/build/audit.py", "scripts/build/audit-book.json", "scripts/export/community.py"):
+            self.assertTrue((self.hs / rel).is_file(), rel)
+        project = self.tmp / "project"
+        project.mkdir()
+        shutil.copy(REPO / "app/src/shared/sample-program.json", project / "program.json")
+        helped = self.run_py(self.hs / "scripts/build/audit.py", "--help", cwd=project)
+        self.assertEqual(helped.returncode, 0, helped.stdout + helped.stderr)
+        audit = self.run_py(self.hs / "scripts/build/audit.py", ".", "--no-run", "--out", self.tmp / "audit",
+                            cwd=project)
+        self.assertNotIn("Traceback", audit.stdout + audit.stderr)
+        self.assertTrue(list((self.tmp / "audit").rglob("audit.json")), audit.stdout + audit.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

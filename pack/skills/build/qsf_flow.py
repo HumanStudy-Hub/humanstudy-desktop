@@ -44,6 +44,15 @@ An item marked {"qsfReachability": "not-shown"} (or listed under a key such as `
 text, but neither its id nor its question id (`qsfId`/`qid`) may appear in task/adapter.py literals, task/task.json
 or the program steps. An item marked "mixed" needs state `check` and must also hold text the flow shows. A project
 without a .qsf, or whose .qsf has no survey flow, passes with no work.
+For the shown questions it also fails a program.json field or materials.json item that transcribes a question
+(its full text, a line only that question prints, or its qid/tag on the item) and
+  - drops the question's pictures (``<img>`` in its text or choices) without declaring them: an `images`/`figure`
+    key on the item or its parent, a sibling field with state missing, or a capabilities.json run.excluded /
+    task.json replayAdaptations entry naming the question, its tag, its arms or the item's path;
+  - lists a slider's opt-out box (the "NA" label, Configuration.NotApplicable) beside its anchors, as if it were a
+    point on the scale (the anchors are the numbered labels, in order);
+  - asks a question that display logic shows only after another answer in the same prompt as that question, or
+    without the controlling question at all (unless the adapter names the controlling qid).
 
 Limits: the reader reports logic; it does not evaluate it. Display logic and branch conditions are rendered from
 the export's structured fields (falling back to Qualtrics's own description) and a person or agent decides what
@@ -119,6 +128,22 @@ def html_to_text(value: Any, markers: bool = True) -> str:
         text = text.replace("<u></u>", "")
     lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+IMG_RE = re.compile(r"(?is)<img\b[^>]*>")
+
+
+def _images(value: Any) -> list[dict]:
+    """Every <img> in survey HTML: {"src", "alt"}. The picture itself is not in the export (Qualtrics hosts it)."""
+    if not isinstance(value, str):
+        return []
+    out = []
+    for tag in IMG_RE.findall(value):
+        src = re.search(r"""(?is)\bsrc\s*=\s*["']?([^"'\s>]+)""", tag)
+        alt = re.search(r"""(?is)\balt\s*=\s*(["'])(.*?)\1""", tag)
+        out.append({"src": html.unescape(src.group(1)) if src else "",
+                    "alt": html.unescape(alt.group(2)).strip() if alt else ""})
+    return out
 
 
 def _short(text: str, n: int = 90) -> str:
@@ -372,8 +397,9 @@ def _choices(q: dict, questions: dict[str, dict], key: str, order_key: str) -> l
             continue
         seen.add(cid)
         item = choices[cid] if isinstance(choices[cid], dict) else {"Display": str(choices[cid])}
-        if not html_to_text(item.get("Display"), markers=False) and str(item.get("TextEntry", "")).lower() != "true":
-            continue
+        if not html_to_text(item.get("Display"), markers=False) and str(item.get("TextEntry", "")).lower() != "true" \
+                and not _images(item.get("Display")):
+            continue   # a placeholder; an option that is only a picture is kept (its images say so)
         record: dict[str, Any] = {"id": cid, "text": html_to_text(item.get("Display")),
                                   "text_plain": html_to_text(item.get("Display"), markers=False)}
         if cid in recodes:
@@ -382,6 +408,8 @@ def _choices(q: dict, questions: dict[str, dict], key: str, order_key: str) -> l
             record["text_entry"] = True
         if str(item.get("ExclusiveAnswer", "")).lower() == "true":
             record["exclusive"] = True
+        if _images(item.get("Display")):
+            record["images"] = _images(item.get("Display"))
         logic = _logic_record(item.get("DisplayLogic"), questions)
         if logic:
             record["display_logic"] = logic
@@ -416,10 +444,21 @@ def _question(q: dict, questions: dict[str, dict], notes: list[str]) -> dict:
         config = q["Configuration"]
         record["scale"] = {k: config.get(k) for k in ("CSSliderMin", "CSSliderMax", "GridLines", "NumDecimals",
                                                       "SnapToGrid", "ShowValue") if k in config}
-        if isinstance(q.get("Labels"), dict):
-            record["scale"]["labels"] = [html_to_text(v.get("Display") if isinstance(v, dict) else v)
-                                         for _, v in sorted(q["Labels"].items(),
-                                                           key=lambda kv: int(kv[0]) if str(kv[0]).isdigit() else 0)]
+        labels = q.get("Labels") if isinstance(q.get("Labels"), dict) else {}
+        # Numbered labels are the scale's anchors, in order; "NA" is the text of the separate opt-out box
+        # (Configuration.NotApplicable), never a point on the scale.
+        numbered = sorted((kv for kv in labels.items() if str(kv[0]).isdigit()), key=lambda kv: int(kv[0]))
+        if numbered:
+            record["scale"]["labels"] = [html_to_text(v.get("Display") if isinstance(v, dict) else v) for _, v in numbered]
+        na = labels.get("NA")
+        if str(config.get("NotApplicable", "")).lower() == "true" or na:
+            text = html_to_text(na.get("Display") if isinstance(na, dict) else na) or "N/A"
+            record["scale"]["not_applicable"] = text
+            record["scale"]["not_applicable_note"] = (f"{text!r} is a separate opt-out box beside each slider; it is "
+                                                      "not an anchor and not a value on the scale")
+    images = _images(raw) + [img for c in choices for img in c.get("images", [])]
+    if images:
+        record["images"] = images
     rand = _randomisation(q)
     if rand:
         record["choice_randomisation"] = rand
@@ -723,6 +762,8 @@ def _record_texts(record: dict) -> list[str]:
     texts += [html_to_text(t, False) for t in record.get("column_labels", []) or []]
     labels = (record.get("scale") or {}).get("labels") if isinstance(record.get("scale"), dict) else None
     texts += [html_to_text(t, False) for t in labels or []]
+    if isinstance(record.get("scale"), dict) and record["scale"].get("not_applicable"):
+        texts.append(record["scale"]["not_applicable"])
     message = (record.get("validation") or {}).get("message_description")
     if message:
         texts.append(message)
@@ -779,6 +820,39 @@ class _Reach:
         # Unused copies of text the flow also shows are not evidence of anything.
         self.unreachable = [(_squash(t), qid, reason) for t, qid, reason in unreachable
                             if _words(t) >= MIN_WORDS and _squash(t) not in self.reachable]
+        shown = [q for b in report["blocks"].values() for q in b["questions"]]
+        # Screens participants saw with pictures, sliders with an opt-out box, questions shown only after an answer.
+        self.images = [q for q in shown if q.get("images")]
+        self.opt_outs = [q for q in shown if isinstance(q.get("scale"), dict) and q["scale"].get("not_applicable")]
+        self.conditional = [q for q in shown if (q.get("display_logic") or {}).get("depends_on_questions")]
+        self.tags = {q["qid"]: q.get("tag") for q in shown}
+        self.shown_questions = shown
+        # lines (8+ words) that only one shown question carries: boilerplate ("You will be able to advance the page
+        # shortly") never ties a package string to one screen
+        counts: dict[str, int] = {}
+        for q in shown:
+            for line in {_squash(x) for x in (q.get("text_plain") or "").split("\n") if _words(x) >= 8}:
+                counts[line] = counts.get(line, 0) + 1
+        self.unique_lines = {line for line, n in counts.items() if n == 1}
+        self.shown_texts = [_squash(q.get("text_plain") or "") for q in shown]
+
+    def matches(self, question: dict, text: str, ancestors: list) -> bool:
+        """The package string (or an item above it, by question id or export tag) is this question's text."""
+        for item in ancestors:
+            for key in SELECTOR_KEYS + ("tag", "qsfTag"):
+                if item.get(key) and item.get(key) in (question.get("qid"), question.get("tag")):
+                    return True
+        hay = _squash(text)
+        if not hay:
+            return False
+        whole = question.get("text_plain") or ""
+        needles = [whole] if _words(whole) >= MIN_WORDS and "${" not in whole else []
+        needles += [line for line in whole.split("\n") if _words(line) >= 8 and "${" not in line
+                    and _squash(line) in self.unique_lines]
+        if any(_squash(n) in hay for n in needles if _squash(n)):
+            return True
+        return _words(text) >= MIN_WORDS + 3 and len(hay) >= 40 and hay in _squash(whole) \
+            and sum(hay in s for s in self.shown_texts) == 1
 
     def shown(self, text: str) -> bool:
         """Text of at least MIN_WORDS words that a question participants saw carries."""
@@ -1081,15 +1155,235 @@ def problems(root: Path, package: Path | None = None) -> list[tuple[str, str]]:
     [(message, fix)]; empty when the project has no .qsf with a survey flow. A record of a shape the check
     does not expect never crashes it: the failure is one problem line, not a traceback.
     """
+    return findings(root, package)[0]
+
+
+def findings(root: Path, package: Path | None = None) -> tuple:
+    """(problems, warnings). The transcription rules (pictures, opt-out boxes, display logic) came with build
+    contract 3: below study.json buildContract 3 (the package given, else any package of the project) their
+    findings are warnings, so a project that was ready stays ready."""
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import contract
+    strict = contract.rules_level(root, package)
+    older: list = []
     try:
-        return _problems(root, package)
+        found = _problems(root, package, None if strict else older)
+        return found, [(m + contract.OLDER_THAN_3, h) for m, h in older]
     except Exception as exc:  # noqa: BLE001  a malformed project must not stop the package check
         return [("the survey-flow check could not complete (%s: %s)" % (type(exc).__name__, str(exc)[:160]),
                  "check program.json and materials/materials.json for records of the wrong shape (check_program.py "
-                 "names them); if they are fine, report this with the .qsf")]
+                 "names them); if they are fine, report this with the .qsf")], []
 
 
-def _problems(root: Path, package: Path | None) -> list[tuple[str, str]]:
+# Declaring what a transcription leaves out: a key such as "images" / "figure" with a value, a note that names the
+# picture, or a capabilities.json run.excluded / task.json replayAdaptations entry that names it (by question id or
+# export tag, or by an arm the item belongs to).
+IMAGE_KEY_RE = re.compile(r"(?i)imag|figure|picture|graphic|\bimg|photo|media|visual")
+IMAGE_WORD_RE = re.compile(r"(?i)\b(images?|pictures?|photos?|photographs?|figures?|graphics?|charts?|flags?|logos?|"
+                           r"drawings?|illustrations?|graphs?|maps?|ladder)\b")
+LOGIC_KEY_RE = re.compile(r"(?i)display.?logic|shown?.?(if|when|after)|only.?(if|when|after)|^conditions?$|condition$|"
+                          r"depends|branch|logic")
+LOGIC_WORD_RE = re.compile(r"(?i)\b(only (if|when|after)|shown (if|when|after|only)|display logic|"
+                           r"if (they|the participant|participants) (chose|answered|selected|said|ticked))\b")
+NOTE_KEYS = ("note", "notes", "what", "why", "reason", "label", "comment", "comments", "adaptation", "adaptations",
+             "missing", "dropped", "replayAdaptation", "replayAdaptations", "description")
+
+
+def _items_with_parents(value: Any, path: str = "", parents: tuple = ()) -> Iterable[tuple[str, str, list]]:
+    """(path, text, the dicts above it, nearest first) for every participant string; metadata and left-out keys
+    are skipped as in _text_strings."""
+    if isinstance(value, str):
+        yield path, value, list(reversed(parents))
+    elif isinstance(value, dict):
+        if _marked_not_shown(value):
+            return
+        for key, item in value.items():
+            if not EXCLUDED_KEY_RE.search(str(key)) and key not in METADATA_KEYS and key not in NOTE_KEYS:
+                yield from _items_with_parents(item, f"{path}.{key}" if path else str(key), parents + (value,))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _items_with_parents(item, f"{path}[{index}]", parents)
+
+
+def _truthy(value: Any) -> bool:
+    return value not in (None, False, "", [], {}, 0)
+
+
+def _declares(ancestors: list, key_re, word_re) -> bool:
+    """The item or the object right above it says so (a note at the top of a file is not about one screen)."""
+    for item in ancestors[:2]:
+        for key, value in item.items():
+            if key_re.search(str(key)) and (value is True if re.match(r"(?i)has", str(key)) else _truthy(value)):
+                return True
+            if key in NOTE_KEYS and any(word_re.search(s) for s in _strings_in(value)):
+                return True
+    return False
+
+
+def _strings_in(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _strings_in(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _strings_in(v)]
+    return []
+
+
+def _declarations(root: Path, pkg: Path | None) -> list[tuple[str, frozenset]]:
+    """(text, arms) of every run.excluded entry and replayAdaptations entry: what the build says it left out."""
+    out = []
+    caps = _load_json(Path(root) / "capabilities.json")
+    run = caps.get("run") if isinstance(caps, dict) and isinstance(caps.get("run"), dict) else {}
+    for entry in run.get("excluded") or [] if isinstance(run.get("excluded"), list) else []:
+        if isinstance(entry, dict):
+            arms = entry.get("arms") if isinstance(entry.get("arms"), list) else []
+            out.append((" ".join(_strings_in({k: v for k, v in entry.items() if k != "arms"})),
+                        frozenset(str(a) for a in arms)))
+    task = _load_json(pkg / "task/task.json") if pkg is not None else None
+    adaptations = task.get("replayAdaptations") if isinstance(task, dict) else None
+    for entry in adaptations if isinstance(adaptations, list) else []:
+        arms = entry.get("arms") if isinstance(entry, dict) and isinstance(entry.get("arms"), list) else []
+        out.append((" ".join(_strings_in(entry)), frozenset(str(a) for a in arms)))
+    return out
+
+
+def _declared_elsewhere(question: dict, where: str, declarations, word_re) -> bool:
+    segments = set(re.split(r"[.\[\]\s/]+", where))
+    names = {question.get("qid"), question.get("tag")} - {None, ""}
+    # a distinctive part of the item's path ("joint" in studies.s2.joint) named in the entry
+    words = {s for s in segments if re.fullmatch(r"[A-Za-z][\w-]{3,}", s) and not GENERIC_PATH_RE.fullmatch(s)}
+    for text, arms in declarations:
+        if not word_re.search(text):
+            continue
+        if arms & segments or any(re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(str(n)), text) for n in names | words
+                                  if n):
+            return True
+    return False
+
+
+GENERIC_PATH_RE = re.compile(r"(?i)pages?\d*|texts?|questions?|items?|studies|study|shared|conditions?|arms?|screens?|"
+                             r"materials?|values?|blocks?|options?|choices?|anchors?|labels?|instructions?|json|"
+                             r"program|package|high|low|control")
+
+
+def _transcription_problems(root: Path, reach: dict, program: dict, packages: list[Path]) -> list[tuple[str, str]]:
+    """Pictures, opt-out boxes and display logic of shown questions that a transcription drops without saying so."""
+    sources: list[tuple[str, Any, Path | None]] = []   # (label, value, package)
+    nodes = program.get("nodes") if isinstance(program.get("nodes"), list) else []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        for field in node.get("fields") if isinstance(node.get("fields"), list) else []:
+            if isinstance(field, dict) and not _marked_not_shown(field):
+                # the node's other fields count as items above the value (a sibling "figure" field declares it)
+                siblings = {f.get("id"): True for f in node["fields"] if isinstance(f, dict) and f is not field
+                            and f.get("state") == "missing"}
+                material = (field.get("extensions") or {}).get("material") if isinstance(field.get("extensions"), dict) else None
+                holder = dict({k: v for k, v in siblings.items() if isinstance(k, str)}, **({"note": material.get("what")}
+                              if isinstance(material, dict) and material.get("what") else {}))
+                sources.append((f"program.json {node.get('id')}.{field.get('id')}", {"value": field.get("value"),
+                                "_declared": holder or {}}, None))
+    for pkg in packages:
+        label = pkg.relative_to(root).as_posix() if pkg.resolve().is_relative_to(root) else pkg.name
+        materials = _load_json(pkg / "materials/materials.json")
+        if materials is not None:
+            sources.append((f"{label}/materials/materials.json", materials, pkg))
+    out: list[tuple[str, str]] = []
+    adapters = {pkg: {t for _, t in _literals(pkg / "task/adapter.py")} for pkg in packages}
+    seen: set[tuple] = set()
+    for label, value, pkg in sources:
+        declarations = _declarations(root, pkg if pkg is not None else (packages[0] if packages else None))
+        strings = list(_items_with_parents(value))
+        if isinstance(value, dict) and "_declared" in value:   # a program field: its node's missing fields count
+            strings = [(p, t, [value["_declared"]] + a) for p, t, a in strings if not p.startswith("_declared")]
+        for rel, r in reach.items():
+            for q in r.images:
+                hits = [(p, t, a) for p, t, a in strings if r.matches(q, t, a)]
+                undeclared = [(p, t, a) for p, t, a in hits if not _declares(a, IMAGE_KEY_RE, IMAGE_WORD_RE)
+                              and not _declared_elsewhere(q, f"{label} {p}", declarations, IMAGE_WORD_RE)]
+                if undeclared and (label, undeclared[0][0], "img") not in seen:
+                    seen.add((label, undeclared[0][0], "img"))
+                    srcs = ", ".join(_short(i.get("alt") or i.get("src") or "?", 60) for i in q["images"][:2])
+                    out.append((f"{label} {undeclared[0][0]} transcribes {q['qid']} ({q.get('tag')}) of {rel}, a screen "
+                                f"that also shows {len(q['images'])} picture(s) ({srcs}), but declares no picture"
+                                + (f" ({len(undeclared)} places)" if len(undeclared) > 1 else ""),
+                                "the replay shows the text without the picture: add it from an open copy, or declare "
+                                "it (an `images`/`figure` entry with state missing on the item, or a capabilities.json "
+                                "run.excluded entry naming the question or its arms) and never call the screen complete"))
+            for p, item, parent in _lists(value):
+                texts = [str(x).strip().casefold() for x in item if isinstance(x, str)]
+                candidates = [q for q in r.opt_outs if q["scale"]["not_applicable"].strip().casefold() in texts
+                              and {str(x).strip().casefold() for x in q["scale"].get("labels") or []} & set(texts)]
+                # the slider the item names (by id or tag) first; otherwise the first with these anchors
+                candidates.sort(key=lambda q: not r.matches(q, "", [parent]))
+                for q in candidates[:1]:
+                    if (label, p, "na") not in seen:
+                        seen.add((label, p, "na"))
+                        out.append((f"{label} {p} lists {q['scale']['not_applicable']!r} among the anchors of "
+                                    f"{q['qid']} ({q.get('tag')}): in the survey it is a separate opt-out box, not a "
+                                    f"point on the {q['scale'].get('CSSliderMin', 0)}-{q['scale'].get('CSSliderMax', 100)} "
+                                    f"scale (anchors: {', '.join(q['scale'].get('labels') or [])})",
+                                    "keep the anchors as the survey numbers them and give the opt-out its own key "
+                                    "(e.g. \"optOut\": \"Not Applicable\"); never put it at the low end of the scale"))
+            for q in r.conditional:
+                if _words(q.get("text_plain") or "") < MIN_WORDS:
+                    continue
+                # the adapter names the question the condition reads by its id (a tag is also how it fetches text)
+                literals = adapters.get(pkg, set()) if pkg is not None else set().union(*adapters.values()) \
+                    if adapters else set()
+                if set(q["display_logic"]["depends_on_questions"]) & literals:
+                    continue
+                hits = [(p, t, a) for p, t, a in strings if r.matches(q, t, a)
+                        and not _declares(a, LOGIC_KEY_RE, LOGIC_WORD_RE)]
+                controllers = [c for c in r.shown_questions if c["qid"] in q["display_logic"]["depends_on_questions"]]
+                ctrl_hits = [p for p, t, a in strings for c in controllers if r.matches(c, t, a)]
+                # Decidable cases only: the question it depends on is not transcribed at all, or both are asked in
+                # one prompt (items of one questions/items list, or one object), so the answer cannot gate it.
+                # Separate pages may be gated by the adapter's own loop (a chain of "continue?" screens) and are
+                # left to the reviewer.
+                if set(p for p, _, _ in hits) & set(ctrl_hits):
+                    continue   # the two questions carry the same text: the package string cannot tell them apart
+                hits = [h for h in hits if any(_same_screen(h[0], c) for c in ctrl_hits)] if ctrl_hits else hits
+                if hits and (label, rel, q["qid"], "logic") not in seen:
+                    seen.add((label, rel, q["qid"], "logic"))
+                    out.append((f"{label} {hits[0][0]} transcribes {q['qid']} ({q.get('tag')}) of {rel}, which the "
+                                f"survey shows only if {_short(q['display_logic']['condition'], 140)}; "
+                                + ("it is asked in the same prompt as that question, so the answer cannot decide it"
+                                   if ctrl_hits else "nothing on the item or in the adapter says so"),
+                                "show it only under that condition (the adapter reads the earlier answer) and record "
+                                "the condition on the item (\"shownIf\": ...); qsf_flow.py's outline prints it"))
+    return out
+
+
+SCREEN_LIST_RE = re.compile(r"(?i)(^|[._])(questions?|items?|fields?|prompts?)$")
+
+
+def _same_screen(a: str, b: str) -> bool:
+    """Two package paths are asked in one prompt: items of one questions/items list, or strings of one object.
+    One string (the same text for both questions) decides nothing."""
+    if a == b:
+        return False
+    ma, mb = re.match(r"^(.*)\[\d+\](.*)$", a), re.match(r"^(.*)\[\d+\](.*)$", b)
+    if ma and mb and ma.group(1) == mb.group(1) and SCREEN_LIST_RE.search(ma.group(1).rsplit(".", 1)[-1]):
+        return True
+    return a.rsplit(".", 1)[0] == b.rsplit(".", 1)[0] and "." in a
+
+
+def _lists(value: Any, path: str = "", parent: dict | None = None) -> Iterable[tuple[str, list, dict]]:
+    """(path, list, the dict holding it) for every list in a value."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _lists(item, f"{path}.{key}" if path else str(key), value)
+    elif isinstance(value, list):
+        yield path, value, parent or {}
+        for index, item in enumerate(value):
+            yield from _lists(item, f"{path}[{index}]", parent)
+
+
+def _problems(root: Path, package: Path | None, older: list | None = None) -> list[tuple[str, str]]:
     root = Path(root).resolve()
     reach = survey_reaches(root)
     if not reach:
@@ -1169,6 +1463,7 @@ def _problems(root: Path, package: Path | None) -> list[tuple[str, str]]:
         more = f" and {count - 1} more of its strings" if count > 1 else ""
         out.append((f"{where} uses survey text from {qid}, which participants never saw ({reason}; see qsf_flow.py's "
                     f"not_reachable list): {_short(text, 70)!r}{more}", FIX_UNREACHABLE))
+    (out if older is None else older).extend(_transcription_problems(root, reach, program, _packages(root, package)))
     return out
 
 
@@ -1234,6 +1529,17 @@ def outline(report: dict) -> str:
                                                  + " | ".join(_short(c["text_plain"], 40) for c in q[key]))
                             if q.get("column_labels"):
                                 lines.append(f"{pad}        column labels: " + " | ".join(q["column_labels"]))
+                            scale = q.get("scale") if isinstance(q.get("scale"), dict) else {}
+                            if scale.get("labels"):
+                                lines.append(f"{pad}        scale {scale.get('CSSliderMin', '')}-{scale.get('CSSliderMax', '')}"
+                                             " anchors: " + " | ".join(scale["labels"]))
+                            if scale.get("not_applicable"):
+                                lines.append(f"{pad}        opt-out box {scale['not_applicable']!r} (separate from the "
+                                             "scale, not an anchor)")
+                            if q.get("images"):
+                                lines.append(f"{pad}        IMAGES: {len(q['images'])} picture(s) on this screen "
+                                             "(not in the export): " + " | ".join(
+                                                 _short(i.get("alt") or i.get("src") or "?", 50) for i in q["images"][:3]))
                             if flags:
                                 lines.append(f"{pad}        " + "; ".join(flags))
             elif kind == "randomizer":
@@ -1277,9 +1583,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--package", type=Path, help="with --check: only this package/<slug>")
     args = parser.parse_args(argv)
     if args.check is not None:
-        found = problems(args.check, args.package)
+        found, older = findings(args.check, args.package)
         for message, fix in found:
             print(f"PROBLEM {message}" + (f"\n        fix: {fix}" if fix else ""))
+        for message, fix in older:
+            print(f"WARN    {message}" + (f"\n        fix: {fix}" if fix else ""))
         print(f"FAIL {len(found)} survey problem(s)" if found else "PASS survey files")
         return 1 if found else 0
     if args.qsf is None:

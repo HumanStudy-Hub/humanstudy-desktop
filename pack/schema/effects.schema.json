@@ -54,8 +54,10 @@
           "status": {
             "enum": [
               "tested",
+              "partial",
               "untested"
-            ]
+            ],
+            "description": "tested: the replay computes every effect naming it and they cover its studies; partial: only some of them (others in capabilities.json run.excluded[].effects or on a blocked arm), or only part of its scope (one design or site of a pooled hypothesis, one side of a comparison), with a reason; untested: none (untestedBecause and reason)"
           },
           "untestedBecause": {
             "enum": [
@@ -66,7 +68,8 @@
             ]
           },
           "reason": {
-            "type": "string"
+            "type": "string",
+            "description": "why it is untested, or which part of it a partial hypothesis leaves out"
           },
           "backgroundIds": {
             "type": "array",
@@ -82,7 +85,31 @@
             },
             "description": "named effects or phenomena this hypothesis is an instance of, e.g. 'framing effect'; free text until a vocabulary is chosen"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "partial"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "reason": {
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        ]
       }
     },
     "effects": {
@@ -557,6 +584,20 @@
                             "type": "string",
                             "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
                           }
+                        },
+                        "scale": {
+                          "enum": [
+                            "proportion",
+                            "percentage_points"
+                          ],
+                          "description": "for a proportion or risk_difference: the scale the value is printed on (0-1 proportion or 0-100 percentage points); compare() converts percentage points to the 0-1 scale the replay computes. Required from build contract 3; a value beyond -1..1 without it is never compared"
+                        },
+                        "estimateType": {
+                          "enum": [
+                            "descriptive",
+                            "model-based"
+                          ],
+                          "description": "model-based: a posterior, mixed/multilevel, random-effects or covariate-adjusted model estimate, which a replay that fits no model is not compared with like-for-like; descriptive: computed directly from the cells"
                         }
                       }
                     }
@@ -687,8 +728,47 @@
                       "type": "string",
                       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
                     }
+                  },
+                  "scope": {
+                    "enum": [
+                      "replayed-sample",
+                      "pooled",
+                      "other-sample"
+                    ],
+                    "description": "whose numbers these are relative to what the replay runs: the replayed sample, pooled across sites / countries / designs / labs, or another sample (site, country, subgroup) than the replayed one. pooled and other-sample need scopeNote, are compared as not like-for-like, and are never stored as a replayed arm's cell"
+                  },
+                  "scopeNote": {
+                    "type": "string",
+                    "description": "what the numbers pool or describe, as printed (\"63 countries, hierarchical model\", p. 8)"
                   }
-                }
+                },
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "scope": {
+                          "enum": [
+                            "pooled",
+                            "other-sample"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "scope"
+                      ]
+                    },
+                    "then": {
+                      "required": [
+                        "scopeNote"
+                      ],
+                      "properties": {
+                        "scopeNote": {
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  }
+                ]
               }
             ]
           },

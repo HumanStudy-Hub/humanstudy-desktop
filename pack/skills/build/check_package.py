@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check a replay package against the HumanStudy-Bench contract, offline.
 
-Usage: python check_package.py package/<paper-slug> [--program program.json]
+Usage: python check_package.py package/<paper-slug> [--program program.json] [--no-validity]
 
 Mirrors HumanStudy-Bench/agent_pipeline/validate_package.py: the required files exist, every JSON
 file parses, the program is the project's program.json, task/task.json.programBindings cover the
@@ -23,13 +23,22 @@ downloaded sources carry a stated licence (fetch_source.py), the authors' analys
 researcher questions are checked against them (check_source_use.py), and no survey text participants never
 saw is used (qsf_flow.py), no participant text carries Word-export markup or runs two lines of a .docx under
 sources/ together (docx_text.py), and no researcher question is about a licence, a blocked condition says what is
-missing, and the layout is recorded (design_checks.py). A package with the shared reply reader (task/replies.py) also
+missing, and the layout is recorded (design_checks.py). check_validity.py also runs the analysis: every runnable arm
+with keyed stand-in replies, then evaluate() and effect_estimates() as the replay does; an effect that does not compute
+and is not excluded in capabilities.json fails. No package ships compiled Python (__pycache__, .pyc). A package with the shared reply reader (task/replies.py) also
 runs the answer-aware smoke test (check_replies.py) and the every-answer-recorded check (recorded_answers.py; when it
 cannot judge, the reason is printed in its ok line). A package without task/replies.py (built before the shared
 reader) gets a note line instead, not a failure. For such an older package the downloaded-source, source-use, survey,
 Word-source and design findings, and check_validity.py's newer prompt rules, are printed as
 `warn  <message>  [fix: ...]` lines and the package still passes (contract.py); rebuilding under the current contract
-makes them failures.
+makes them failures. The rules added with build contract 3 (an earlier release of task/replies.py, compiled Python,
+the not-printed claims, the survey transcription rules, the batch-list licences, check_validity.py's analysis run)
+are `warn` lines below study.json buildContract 3 and failures from it (contract.strict).
+
+The structural checks (files, JSON, program, bindings, adapter smoke test) stop at the first failure; the checks
+after them (sources, replies, validity, survey, Word and design) each print their FAIL line and the run goes on, so
+one failure never hides another; the exit is 1 when any failed. --no-validity skips check_validity.py:
+check_readiness.py runs it itself, so the analysis run is not done twice.
 """
 from __future__ import annotations
 
@@ -62,17 +71,34 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
+FAILED: list = []
+
+
+def collect(msg: str) -> None:
+    """A failure of a check the later checks do not depend on: printed now, the run goes on and exits 1 at the
+    end, so one failure does not hide the others (survey, Word and design checks after a validity failure)."""
+    print(f"FAIL {msg}")
+    FAILED.append(msg)
+
+
 def warn(bad: list) -> None:
     """A newer rule's findings on a package built before the current contract: printed, never a failure."""
     for m, h in bad:
         print(f"warn  {m}" + (f"  [fix: {h}]" if h else ""))
 
 
+def compiled(root: Path) -> list:
+    """__pycache__ folders and stray .pyc/.pyo files in a package, outermost first, relative to it."""
+    found = sorted(p.relative_to(root).as_posix() for p in root.rglob("*")
+                   if p.name == "__pycache__" or p.suffix in (".pyc", ".pyo"))
+    return [c for c in found if not any(c.startswith(d + "/") for d in found)]
+
+
 def reply_checks(root: Path) -> tuple:
     """([(message, fix)], the line to print) for the shared reply reader's checks (check_replies.py,
     recorded_answers.py). A package without task/replies.py (built before the shared reader) gets a note line,
     not a failure: whether to require the reader of older packages is the owner's decision."""
-    from check_replies import problems as reply_problems, uses_replies
+    from check_replies import uses_replies
     import recorded_answers
 
     if not uses_replies(root):
@@ -83,29 +109,51 @@ def reply_checks(root: Path) -> tuple:
                      "question through replies.ask")], ""
         return [], "note replies checks skipped: no task/replies.py (packages built before the shared reader)"
     answers = recorded_answers.judge(root)
-    bad = reply_problems(root.parent.parent, root) + answers["problems"]
-    return bad, ("ok   replies: shared reader unchanged, answer-aware smoke test passes, "
-                 + (answers["note"] or "every answer recorded"))
+    from check_replies import check as reply_check
+
+    result = reply_check(root.parent.parent.resolve(), root)
+    warn(result.get("warnings") or [])
+    bad = result["problems"] + answers["problems"]
+    return bad, ("ok   replies: shared reader " + ("unchanged" if not result.get("warnings") else "of an earlier release")
+                 + ", answer-aware smoke test passes, " + (answers["note"] or "every answer recorded"))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("package", type=Path, help="package/<paper-slug>")
     parser.add_argument("--program", type=Path, default=None, help="project program.json to compare with")
+    parser.add_argument("--no-validity", action="store_true",
+                        help="skip check_validity.py (check_readiness.py runs it itself, with every problem counted)")
     args = parser.parse_args()
     if hasattr(sys.stdout, "reconfigure"):  # a console without UTF-8 (Windows cp1252) must not end the check
         sys.stdout.reconfigure(errors="replace")
+    FAILED.clear()
     root: Path = args.package.resolve()
     if not root.is_dir():
         fail(f"{root} is not a folder")
-    from contract import current_contract
+    from contract import OLDER_THAN_3, current_contract, strict
 
     current = current_contract(root)  # built with the shared reply reader: the newer rules fail, not warn
+    strict3 = strict(root)            # study.json buildContract >= 3: the rules added with contract 3 fail too
 
     missing = [name for name in REQUIRED if not (root / name).is_file()]
     if missing:
         fail("missing required files: " + ", ".join(missing))
     print("ok   required files present")
+
+    # Compiled Python is a by-product of running the package, not part of it: it goes stale against the source
+    # beside it, differs per interpreter and carries the builder's local paths.
+    cache = compiled(root)
+    if cache:
+        msg = "compiled Python in the package: " + ", ".join(cache[:6]) + (
+            f" and {len(cache) - 6} more" if len(cache) > 6 else "")
+        hint = ("delete it (rm -r " + " ".join(cache[:3]) + "); run Python with -B or PYTHONDONTWRITEBYTECODE=1 "
+                "while building")
+        if strict3:
+            fail(f"{msg}  [fix: {hint}]")
+        warn([(msg + OLDER_THAN_3, hint)])
+    else:
+        print("ok   no compiled Python (__pycache__, .pyc) in the package")
 
     for path in root.rglob("*.json"):
         try:
@@ -143,22 +191,27 @@ def main() -> None:
         fail("program has problems:\n" + "\n".join(f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
     print("ok   program passes check_program.py")
     if slim:  # inside a project: the files the program was built from are recorded with hash and license
-        from sources import problems as source_problems
+        from sources import findings as source_findings
 
-        bad = source_problems(Path(source).resolve().parent)
+        bad, older = source_findings(Path(source).resolve().parent)
+        warn(older)   # rules of build contract 3 on an older build
         if bad:
-            fail("sources/SOURCE.json:\n" + "\n".join(f"  {m}  [fix: {h}]" for m, h in bad))
-        print("ok   sources/SOURCE.json records every source file (hash, license)")
+            collect("sources/SOURCE.json:\n" + "\n".join(f"  {m}  [fix: {h}]" for m, h in bad))
+        else:
+            print("ok   sources/SOURCE.json records every source file (hash, license)")
         import fetch_source
-        from check_source_use import problems as source_use_problems
+        from check_source_use import findings as source_use_findings
 
-        bad = fetch_source.problems(Path(source).resolve().parent) + source_use_problems(Path(source).resolve().parent)
+        bad, older = source_use_findings(Path(source).resolve().parent)
+        warn(older)   # rules of build contract 3 on an older build
+        bad = fetch_source.problems(Path(source).resolve().parent) + bad
         if bad and not current:
             warn(bad)
         elif bad:
-            fail("sources used:\n" + "\n".join(f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
-        print("ok   downloaded sources licensed; analysis code, survey versions and questions checked against them"
-              + (" (older build: findings above are warnings)" if bad else ""))
+            collect("sources used:\n" + "\n".join(f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
+        if not (bad and current):
+            print("ok   downloaded sources licensed; analysis code, survey versions and questions checked against them"
+                  + (" (older build: findings above are warnings)" if bad or older else ""))
     if args.program is not None and not slim:
         canonical = json.loads(args.program.read_text(encoding="utf-8"))
         if canonical != program:
@@ -211,28 +264,37 @@ def main() -> None:
     print("ok   task/adapter.py --smoke-test")
     bad, line = reply_checks(root)
     if bad:
-        fail("reading replies (check_replies.py, recorded_answers.py):\n" + "\n".join(
+        collect("reading replies (check_replies.py, recorded_answers.py):\n" + "\n".join(
             f"  {m}  [fix: {h}]" for m, h in bad))
-    print(line)
-    if slim:  # inside a project: the package replays what participants experienced (check_validity.py)
+    else:
+        print(line)
+    if slim and args.no_validity:
+        print("note package validity skipped (--no-validity: check_readiness.py runs check_validity.py itself)")
+    elif slim:  # inside a project: the package replays what participants experienced (check_validity.py)
         from check_validity import check as check_validity
 
         report = check_validity(Path(source).resolve().parent, root)
         if report["problems"]:
-            fail("package validity (check_validity.py):\n" + "\n".join(
+            collect("package validity (check_validity.py):\n" + "\n".join(
                 f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in report["problems"]))
         warn([("validity: " + m, h) for m, h in report.get("warnings") or []])
-        print("ok   package validity: nothing participants were not told is in a prompt; memory design recorded")
-        from qsf_flow import problems as survey_problems
+        if not report["problems"]:
+            print("ok   package validity: nothing participants were not told is in a prompt; memory design recorded")
+        if report.get("analysis"):
+            print("ok   analysis run: " + report["analysis"])
+    if slim:
+        from qsf_flow import findings as survey_findings
 
-        bad = survey_problems(Path(source).resolve().parent, root)
+        bad, older = survey_findings(Path(source).resolve().parent, root)
+        warn(older)   # rules of build contract 3 on an older build
         if bad and not current:
             warn(bad)
         elif bad:
-            fail("survey files (qsf_flow.py):\n" + "\n".join(
+            collect("survey files (qsf_flow.py):\n" + "\n".join(
                 f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
-        print("ok   survey files: no text participants never saw; items marked not shown are unused"
-              + (" (older build: findings above are warnings)" if bad else ""))
+        if not (bad and current):
+            print("ok   survey files: no text participants never saw; items marked not shown are unused"
+                  + (" (older build: findings above are warnings)" if bad or older else ""))
         from docx_text import problems as word_problems
         from design_checks import problems as design_problems
 
@@ -246,10 +308,14 @@ def main() -> None:
         if bad and not current:
             warn(bad)
         elif bad:
-            fail("Word sources and design disclosures (docx_text.py, design_checks.py):\n" + "\n".join(
+            collect("Word sources and design disclosures (docx_text.py, design_checks.py):\n" + "\n".join(
                 f"  {m}" + (f"  [fix: {h}]" if h else "") for m, h in bad))
-        print("ok   Word sources: no export markup or run-together lines; no licence question; blocked conditions "
-              "and the layout recorded" + (" (older build: findings above are warnings)" if bad else ""))
+        if not (bad and current):
+            print("ok   Word sources: no export markup or run-together lines; no licence question; blocked conditions "
+                  "and the layout recorded" + (" (older build: findings above are warnings)" if bad else ""))
+    if FAILED:
+        print("FAIL %d check(s) failed" % len(FAILED))
+        sys.exit(1)
     print("PASS package checks")
 
 

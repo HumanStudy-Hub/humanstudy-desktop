@@ -19,7 +19,8 @@ from urllib.parse import urlsplit
 
 def run_unconfined(script, args):
     """Pre-relay path: exactly what `python run.py ...` in the run folder did."""
-    return subprocess.call([sys.executable, str(script), *args], cwd=str(script.parent))
+    # -B: package code imported by the run writes no __pycache__ into the package
+    return subprocess.call([sys.executable, '-B', str(script), *args], cwd=str(script.parent))
 
 
 USAGE = 'usage: run_confined.py [--final | --no-model] SCRIPT [args...]'
