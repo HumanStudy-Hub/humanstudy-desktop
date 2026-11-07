@@ -9,6 +9,25 @@ Installed apps update themselves from **published** GitHub Releases of this repo
    release.
 3. Check the draft, then publish it. Only published releases reach users.
 
+## Betas: test before everyone updates
+
+Every release goes out as a beta first. A beta is a version with a prerelease suffix, published as a
+GitHub **prerelease**:
+
+1. Set `version` to `0.7.2-beta.1` (`npm version 0.7.2-beta.1 --no-git-tag-version` in `app/`), commit,
+   tag `v0.7.2-beta.1`, push. The Release workflow builds the draft as usual; attach the notarized Mac
+   assets.
+2. Publish it **as a prerelease**: `gh release edit v0.7.2-beta.1 --draft=false --prerelease`.
+3. Testers install it from the release page. From then on their app follows betas: electron-updater
+   turns on `allowPrerelease` for a prerelease version and takes the newest beta or stable release.
+4. When the beta holds up, release the same code as `0.7.2` (not a prerelease). Testers update to it
+   and return to the stable channel; the next beta has to be installed by hand again.
+
+Stable installs never see a beta: with a stable version electron-updater reads `releases/latest`,
+which GitHub never points at a prerelease. The web `/download` page also offers only the newest
+stable release (`lib/desktop-release.ts`). Never publish a beta without `--prerelease`: it would
+become "latest" and update everyone.
+
 ## The agent kernel
 
 The app downloads its agent kernel, the HumanStudy edition of opencode, from
