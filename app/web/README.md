@@ -51,8 +51,17 @@ the research runtime (`PYTHON_ASSETS` has Linux entries for this). The image hol
 install-specific.
 
 Each user's sandbox is **persistent**: Vercel snapshots its filesystem when it stops and restores it on
-the next visit, so a new image reaches only users created after it. Existing users keep theirs until the
-launcher updates their app folder (not automated yet).
+the next visit, so a new image reaches only users created after it. To update everyone's app, attach the
+build to a desktop release and point the launcher at it:
+
+```sh
+COPYFILE_DISABLE=1 tar -czf humanstudy-web-0.7.3.tgz -C out/web .
+gh release upload v0.7.3 humanstudy-web-0.7.3.tgz            # electron-updater ignores it
+# humanstudy-hub-web env: TRY_APP_URL=<asset URL>  TRY_APP_SHA256=<sha256 of the file>
+```
+
+`start.sh` installs it (checked against the digest) the next time a user's app starts; projects, account
+and conversations are outside the app folder and stay.
 
 Limits (Hobby): 45-minute sessions, 10 at a time, 5 active-CPU hours a month. A session that ends shows
 "This online session has ended … Reopen"; nothing is lost.
