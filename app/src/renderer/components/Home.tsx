@@ -8,6 +8,7 @@ import type { KernelInstallStatus } from '../../preload/types'
 import { errorText } from './SettingsDialog'
 import { relativeTime } from '../format'
 import { t } from '../i18n'
+import { WEB_EDITION } from '../edition'
 
 type Section = 'projects' | 'studies'
 const SECTION_KEY = 'hs.homeSection'
@@ -192,9 +193,11 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
           <kbd>⌘K</kbd>
         </label>
         <div className="titlebar-actions">
-          <button className="ghost" onClick={openFolder} disabled={busy}>
-            {t('home.open_folder')}
-          </button>
+          {!WEB_EDITION && (
+            <button className="ghost" onClick={openFolder} disabled={busy}>
+              {t('home.open_folder')}
+            </button>
+          )}
           <button className="ghost" onClick={onSettings}>
             {t('home.settings')}
           </button>
@@ -432,16 +435,18 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                                 >
                                   {t('home.rename')}
                                 </button>
-                                <button
-                                  className="menu-item row"
-                                  role="menuitem"
-                                  onClick={() => {
-                                    setMenu(null)
-                                    void window.humanstudy.project.reveal(p.dir)
-                                  }}
-                                >
-                                  {t('home.reveal')}
-                                </button>
+                                {!WEB_EDITION && (
+                                  <button
+                                    className="menu-item row"
+                                    role="menuitem"
+                                    onClick={() => {
+                                      setMenu(null)
+                                      void window.humanstudy.project.reveal(p.dir)
+                                    }}
+                                  >
+                                    {t('home.reveal')}
+                                  </button>
+                                )}
                                 <button
                                   className="menu-item row danger"
                                   role="menuitem"

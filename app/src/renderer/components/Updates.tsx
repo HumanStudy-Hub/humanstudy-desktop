@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { AppInfo, UpdateStatus } from '../../preload/types'
 import './updates.css'
+import { WEB_EDITION } from '../edition'
 
 /** Live update status from the main process (electron-updater). */
 export function useUpdateStatus(): UpdateStatus | null {
@@ -84,7 +85,7 @@ export function AboutUpdates() {
           </div>
         </div>
         <div className="setting-control">
-          {status?.state === 'ready' ? (
+          {WEB_EDITION ? null : status?.state === 'ready' ? (
             <button className="primary" onClick={() => void window.humanstudy.updates.install()}>
               Restart to install
             </button>
@@ -133,8 +134,8 @@ export function VersionFooter() {
   return (
     <div className="home-version small muted">
       <span>HumanStudy Hub v{status.version}</span>
-      <span aria-hidden> · </span>
-      {ready ? (
+      {WEB_EDITION ? null : <span aria-hidden> · </span>}
+      {WEB_EDITION ? null : ready ? (
         <button className="link" onClick={() => void window.humanstudy.updates.install()}>Update ready</button>
       ) : (
         <button className="link" disabled={status.state === 'checking'} onClick={() => void window.humanstudy.updates.check()}>
