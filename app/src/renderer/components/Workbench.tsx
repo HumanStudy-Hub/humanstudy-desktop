@@ -1,6 +1,6 @@
 // The right pane: Study (the 12-section document) and Paper, plus any file the researcher or the agent
 // opens as another tab, like an artifact panel. A Files sidebar (hidden by default, ⌘B) lists the folder.
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 import StudyModel, { viewStudies, type QuoteStatus, type StudyModelProps } from '../program/StudyModel'
 import { readHumanProgram, type HumanProgram } from '../../shared/human-program'
 import { patchProgramField } from '../../shared/program-patch'
@@ -18,6 +18,7 @@ import { sourceFocus } from '../../shared/workspace-context'
 import { passageSupport } from '../../shared/program-view'
 import { quoteKey } from '../../shared/source-anchor'
 import { clearDraft, draftsIn } from '../drafts'
+import { forget, remember } from '../nav'
 
 export type MainTab = 'study' | 'paper' | 'simulation'
 type TabId = MainTab | `file:${string}`
@@ -38,7 +39,22 @@ export interface WorkbenchHandle {
   /** Open a project file in a tab by its absolute path. */
   openFile(path: string): void
   toggleFiles(): void
+  /** ⌘W: close the open file tab, or leave Compare. False when there is nothing to close. */
+  closeTab(): boolean
   getContext(): WorkspaceSnapshot
+}
+
+// Where the reader was in a project, kept across tab switches and reopening the project.
+type Position = { study: number; paper: { path: string; page: number } | null }
+const posKey = (dir: string) => `hs.wbpos:${dir}`
+function loadPosition(dir: string): Position {
+  try {
+    const raw = JSON.parse(localStorage.getItem(posKey(dir)) || '{}')
+    const paper = raw.paper && typeof raw.paper.path === 'string' && Number.isInteger(raw.paper.page) && raw.paper.page > 0 ? { path: raw.paper.path, page: raw.paper.page } : null
+    return { study: typeof raw.study === 'number' && raw.study > 0 ? raw.study : 0, paper }
+  } catch {
+    return { study: 0, paper: null }
+  }
 }
 
 export interface WorkspaceSnapshot { projectDir: string; context: WorkspaceContext }
@@ -59,6 +75,8 @@ interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSour
   ref?: Ref<WorkbenchHandle>
   project: ProjectSnapshot
   source: SourceRef | null
+  /** Back to an earlier paper place: sets the source without counting it as a citation click. */
+  onRestoreSource?(ref: SourceRef | null): void
   onClearSelection(): void
   /** Focus the composer with the current selection attached. */
   onAskSelection(): void
@@ -99,7 +117,7 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, source, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
+export function Workbench({ ref, project, source, onRestoreSource, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
   // Tolerant: one slip by the agent sets that detail aside and the document still renders.
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
@@ -130,6 +148,29 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
   const sourceFile = source ? sourceTarget(project, source) : project.pdf
   const sourcePdf = sourceFile?.ext === 'pdf' && sourceFile.url ? sourceFile as import('../../preload/types').ProjectFile : null
   const [sourcePage, setSourcePage] = useState<{ path: string; page: number } | null>(null)
+  // The Study scroll and the paper page, saved per project so a tab switch or a reopen keeps them.
+  const position = useRef<Position>(loadPosition(project.dir))
+  const positionDir = useRef(project.dir)
+  if (positionDir.current !== project.dir) {
+    // Read before anything restores from it (the Study scroll is restored in a layout effect).
+    positionDir.current = project.dir
+    position.current = loadPosition(project.dir)
+  }
+  const savePosition = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const storePosition = useCallback((patch: Partial<Position>) => {
+    position.current = { ...position.current, ...patch }
+    clearTimeout(savePosition.current)
+    const dir = project.dir, value = position.current
+    savePosition.current = setTimeout(() => {
+      try { localStorage.setItem(posKey(dir), JSON.stringify(value)) } catch { /* ignore */ }
+    }, 300)
+  }, [project.dir])
+  // With no citation open, the paper reopens on the page the reader left it at.
+  const startSource = useMemo<SourceRef>(() => {
+    const paper = loadPosition(project.dir).paper
+    return paper && paper.path === project.pdf?.path ? { page: paper.page } : DEFAULT_SOURCE
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.dir])
   // What the paper found for each citation it opened, and the passage the reader selected there.
   const [quoteStatus, setQuoteStatus] = useState<ReadonlyMap<string, QuoteStatus>>(() => new Map())
   const [passage, setPassage] = useState<PassageSelection | null>(null)
@@ -203,12 +244,39 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
     if (layout.active === 'paper' || layout.compare) setPaperSeen(true)
   }, [layout.active, layout.compare])
 
+  // Back (nav.ts) returns to the tab, Compare and paper page the reader was on before a move.
+  const sourceNow = useRef(source)
+  sourceNow.current = source
+  const layoutNow = useRef(layout)
+  layoutNow.current = layout
+  // Places belong to this workbench; once it is gone (pane folded, project closed) they lead nowhere.
+  useEffect(() => () => forget('project'), [])
+  const rememberHere = () => {
+    const was = { active: layout.active, compare: Boolean(layout.compare), source, path: sourceFile?.path ?? null, page: sourcePage }
+    remember('project', () => {
+      const now = layoutNow.current
+      // A file tab closed since then is not a place to return to.
+      if (was.active.startsWith('file:') && !now.tabs.includes(was.active as `file:${string}`)) return false
+      // Already there (e.g. Compare was left with Esc): try the place before it.
+      if (was.active === now.active && was.compare === Boolean(now.compare) && was.source === sourceNow.current) return false
+      if (was.source !== sourceNow.current) {
+        // Return to the page the reader was reading, not to the citation that brought them there.
+        const page = was.page && was.page.path === was.path ? was.page.page : null
+        onRestoreSource?.(page ? { ...(was.source ?? {}), page, quote: undefined, nodeId: undefined, verified: true } : was.source)
+      }
+      update((l) => ({ ...l, active: was.active, compare: was.compare }))
+    })
+  }
   const activate = (id: TabId) => {
-    if (id !== layout.active) onRecheck?.()
+    if (id !== layout.active) {
+      onRecheck?.()
+      rememberHere()
+    }
     update((l) => (l.active === id ? l : { ...l, active: id }))
   }
   const open = (id: `file:${string}`) => {
     track('tab.open', { target: `file.${fileByPath.get(id.slice(5))?.ext ?? ''}` })
+    if (id !== layout.active) rememberHere()
     update((l) => ({ ...l, tabs: l.tabs.includes(id) ? l.tabs : [...l.tabs, id], active: id }))
   }
   const toggleFiles = useCallback(() => {
@@ -223,6 +291,17 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
       if (fileByPath.has(path)) open(`file:${path}`)
     },
     toggleFiles,
+    closeTab() {
+      if (layout.active.startsWith('file:')) {
+        close(layout.active as `file:${string}`)
+        return true
+      }
+      if (compare) {
+        update((l) => ({ ...l, compare: false }))
+        return true
+      }
+      return false
+    },
     getContext: () => workspaceSnapshot,
   }))
   const close = (id: `file:${string}`) => {
@@ -318,11 +397,39 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
     } }
   }, [project.dir, project.name, program?.id, studies, studyId, active, activeFile, layout.tabs, fileByPath, dirty, source, sourceFile, sourcePage, compare])
   useEffect(() => { onWorkspaceChange?.(workspaceSnapshot) }, [workspaceSnapshot, onWorkspaceChange])
+  // The Study document is rebuilt when its tab is shown again; put the reader back where they were.
+  const studyHost = useRef<HTMLDivElement>(null)
+  const showingStudy = active === 'study' && Boolean(program)
+  useLayoutEffect(() => {
+    if (!showingStudy) return
+    const el = studyHost.current?.querySelector<HTMLElement>('[data-study-scroll]')
+    const top = position.current.study
+    if (el && top) el.scrollTop = top
+  }, [showingStudy, project.dir])
+  // Esc leaves Compare, as its "Back to the study" does, unless a field, menu or dialog has it.
+  useEffect(() => {
+    if (!compare) return
+    const keys = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return
+      const target = e.target as HTMLElement | null
+      if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"]')) return
+      // A dialog, menu, list or expanded citation closes first; Compare waits for the next Esc.
+      if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"], [aria-expanded="true"]')) return
+      update((l) => ({ ...l, compare: false }))
+    }
+    window.addEventListener('keydown', keys)
+    return () => window.removeEventListener('keydown', keys)
+  }, [compare, update])
   const label = (tb: `file:${string}`) => tb.split(/[\\/]/).pop()!
   const tabBtn = (id: MainTab, text: string) => (
     <div role="tab" aria-selected={active === id} className={`wb-tab main ${active === id ? 'active' : ''}`}>
       <button className="wb-tab-label" onClick={() => {
-        if (id === 'paper' && (source?.file || source?.sourceId) && sourceFile?.path !== project.pdf?.path) docProps.onSource('file:paper.pdf', { page: 1, quote: '', verified: true })
+        if (id === 'paper' && (source?.file || source?.sourceId) && sourceFile?.path !== project.pdf?.path) {
+          // Back to the paper itself, on the page it was left at; not a citation click.
+          const saved = position.current.paper
+          rememberHere()
+          onRestoreSource?.({ page: saved && saved.path === project.pdf?.path ? saved.page : 1, verified: true })
+        }
         activate(id)
       }}>
 
@@ -365,6 +472,7 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
         </div>
         <button className="wb-compare" aria-pressed={compare} disabled={!program} onClick={() => {
           track('source.compare', { metadata: { open: !compare } })
+          if (!compare) rememberHere()
           update(l => ({ ...l, active: 'study', compare: !compare }))
         }}>{t('wb.compare')}</button>
         <button className="ghost fold" aria-label={t('wb.fold')} title={t('wb.fold')} onClick={onFold}>
@@ -412,7 +520,10 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
           {active === 'simulation' && program && editError && <div className="part error edit-error">{editError}</div>}
           {active === 'study' &&
             (program ? (
-              <>
+              <div className="wb-study-host" ref={studyHost} onScrollCapture={(e) => {
+                const el = e.target as HTMLElement
+                if (el.dataset?.studyScroll !== undefined) storePosition({ study: el.scrollTop })
+              }}>
                 {building && <div className="build-status" role="status">{buildLine}</div>}
                 {buildFailed && <div className="part error edit-error" role="alert">{buildFailed} <button className="link" onClick={retryBuild}>{t('build.retry')}</button></div>}
                 <StudyView
@@ -432,11 +543,12 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
                   onEdit={onEdit}
                   {...docProps}
                   onSource={(id, ref) => {
+                    rememberHere()
                     docProps.onSource(id, ref)
                     update(l => ({ ...l, active: 'study', compare: true }))
                   }}
                 />
-              </>
+              </div>
             ) : (
               building ? <Empty title={t('build.title')} body={buildLine} />
               : buildFailed ? (
@@ -485,9 +597,13 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
             <div className="wb-paper" hidden={active !== 'paper' && !compare}>
               {sourceFile && sourceFile.ext !== 'pdf' && 'rel' in sourceFile
                 ? <FileView key={sourceFile.path} file={sourceFile} dir={project.dir} version={project.tree} onDirty={markDirty} />
-                : <SourceDrawer key={sourcePdf?.path ?? 'no-source'} pdf={sourcePdf} source={source ?? DEFAULT_SOURCE} active={active === 'paper' || compare} closeLabel={compare ? t('wb.close_source') : undefined}
+                : <SourceDrawer key={sourcePdf?.path ?? 'no-source'} pdf={sourcePdf} source={source ?? startSource} active={active === 'paper' || compare} closeLabel={compare ? t('wb.close_source') : undefined}
                     onClose={() => update(l => ({ ...l, active: 'study', compare: false }))}
-                    onPageChange={page => { if (sourceFile) setSourcePage({ path: sourceFile.path, page }) }}
+                    onPageChange={page => {
+                      if (!sourceFile) return
+                      setSourcePage({ path: sourceFile.path, page })
+                      storePosition({ paper: { path: sourceFile.path, page } })
+                    }}
                     onQuote={(ref, result) => setQuoteStatus(m => new Map(m).set(quoteKey(ref.page, ref.quote, ref.file ?? ref.sourceId), result))}
                     onSelect={setPassage}
                     supportCount={program && passage ? support?.ids.length ?? 0 : null}

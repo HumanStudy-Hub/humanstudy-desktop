@@ -242,7 +242,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
           </button>
           <VersionFooter />
         </nav>
-        <main className="home-main">
+        <main className="home-main" data-library-scroll>
           {section === 'studies' ? (
             <Studies ref={studies} query={query} onOpenProject={onOpen} />
           ) : (

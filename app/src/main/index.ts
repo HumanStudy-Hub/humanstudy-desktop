@@ -363,6 +363,9 @@ function createWindow(): void {
   const contentsId = win.webContents.id
   win.on('close', (e) => { if (!confirmDiscard(win)) e.preventDefault() })
   win.on('closed', () => unsaved.delete(contentsId))
+  // Back from the trackpad (macOS "swipe between pages") and the mouse back button (Windows).
+  win.on('swipe', (_e, direction) => { if (direction === 'left') win.webContents.send('menu:command', { command: 'back' }) })
+  win.on('app-command', (_e, command) => { if (command === 'browser-backward') win.webContents.send('menu:command', { command: 'back' }) })
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^(https?:|mailto:)/i.test(url)) void shell.openExternal(url)
     return { action: 'deny' }

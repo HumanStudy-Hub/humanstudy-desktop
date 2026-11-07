@@ -17,6 +17,7 @@ import { classifyTool, researchActivity, toolSentence } from './toolSentence'
 import { onAsk as onArtifactAsk, onOpenSource as onArtifactOpenSource } from './bridge'
 import { artifactSourceRef } from './artifact-source'
 import { SampleOnboarding } from './components/SampleOnboarding'
+import { forget, goBack, remember } from './nav'
 import { clearDraftsIn, draftCount, draftsIn, onDraftsChange } from './drafts'
 
 const PANES_KEY = 'hs.panes'
@@ -24,7 +25,7 @@ type Pane = 'agent' | 'program'
 const paneLabel = (p: Pane) => t(p === 'agent' ? 'app.agent' : 'app.workspace')
 
 /** Commands both the keyboard shortcuts and (later) the native menu run. */
-export type AppCommand = 'pane.toggle' | 'tab.show' | 'files.toggle' | 'settings.open' | 'project.fromPaper' | 'project.new' | 'project.open' | 'selection.clear' | 'thread.new'
+export type AppCommand = 'pane.toggle' | 'tab.show' | 'files.toggle' | 'settings.open' | 'project.fromPaper' | 'project.new' | 'project.open' | 'project.close' | 'selection.clear' | 'thread.new' | 'nav.back' | 'tab.close'
 let commandHandler: ((command: AppCommand, arg?: string) => void) | null = null
 export function runCommand(command: AppCommand, arg?: string): void {
   commandHandler?.(command, arg)
@@ -157,9 +158,21 @@ export default function App() {
     async (dir: string) => {
       const started = performance.now()
       const action = claimAction('project.open', true)
+      const switched = state.current.project?.dir !== dir
       await load(dir)
       await setTelemetryProject(dir)
       track('project.opened', { durationMs: performance.now() - started }, action)
+      // Back from a project, once its own places are used up, leads to the project list.
+      if (switched) {
+        forget('project')
+        forget('app')
+        forget('library')
+        remember('app', () => {
+          if (state.current.project?.dir !== dir) return false
+          // Kept unsaved edits: this place is still there for the next Back.
+          if (!closeProjectRef.current()) return 'keep'
+        })
+      }
     },
     [load]
   )
@@ -172,13 +185,21 @@ export default function App() {
     clearDraftsIn(dir)
     return true
   }
+  const closeOnboarding = useCallback(() => {
+    try { localStorage.setItem('hs.sampleOnboarding.v1', 'done') } catch { /* ignore */ }
+    setShowSampleOnboarding(false)
+  }, [])
+  const closeProjectRef = useRef<() => boolean>(() => false)
   const closeProject = (): boolean => {
     if (!confirmLeave()) return false
     track('project.closed')
     void setTelemetryProject(null)
     setProject(null)
+    forget('project')
+    forget('app')
     return true
   }
+  closeProjectRef.current = closeProject
   // Closing the window or quitting asks while any draft exists (main/index.ts shows the dialog).
   useEffect(() => {
     const sync = () => window.humanstudy.app.setUnsaved(draftCount() ? { message: t('app.quit_unsaved'), detail: t('app.quit_unsaved_detail'), discard: t('app.discard_close'), cancel: t('app.cancel') } : null)
@@ -308,7 +329,11 @@ export default function App() {
       }
       if (command === 'project.open') return void window.humanstudy.project.open().then((dir) => { if (dir && (dir === state.current.project?.dir || confirmLeave())) void openProject(dir) })
       if (command === 'thread.new') return st.project ? newThreadRef.current() : undefined
-      if (command === 'selection.clear') return setSelected([])
+      if (command === 'selection.clear') return setSelected((s) => (s.length ? [] : s))
+      // Back never acts behind a dialog (Settings, consent, the sample welcome).
+      if (command === 'nav.back') return void (st.settingsOpen || document.querySelector('[aria-modal="true"]') ? undefined : goBack())
+      if (command === 'project.close') return void (st.project && closeProject())
+      if (command === 'tab.close') return void (st.project && workbench.current?.closeTab() ? undefined : window.close())
       if (command === 'pane.toggle' && st.project && (arg === 'agent' || arg === 'program')) setPane(arg, !st.open[arg])
       if (command === 'tab.show' && st.project && (arg === 'study' || arg === 'paper')) showTab(arg)
       if (command === 'files.toggle' && st.project) workbench.current?.toggleFiles()
@@ -329,6 +354,9 @@ export default function App() {
           else runCommand('tab.show', c.arg)
         }
         else if (c.command === 'settings') runCommand('settings.open', c.arg === 'help' ? 'help' : 'general')
+        else if (c.command === 'back') runCommand('nav.back')
+        else if (c.command === 'projects') runCommand('project.close')
+        else if (c.command === 'closeTab') runCommand('tab.close')
       }),
     [],
   )
@@ -345,6 +373,10 @@ export default function App() {
         return
       }
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return
+      if (e.key === '[') {
+        e.preventDefault()
+        return runCommand('nav.back')
+      }
       const tabs: Record<string, string> = { '2': 'study', '3': 'paper' }
       if (e.key === '1') {
         e.preventDefault()
@@ -363,8 +395,18 @@ export default function App() {
         runCommand('project.fromPaper')
       }
     }
+    // The mouse back button (Chromium reports it as button 3 on every platform).
+    const mouse = (e: MouseEvent) => {
+      if (e.button !== 3) return
+      e.preventDefault()
+      runCommand('nav.back')
+    }
     window.addEventListener('keydown', keys)
-    return () => window.removeEventListener('keydown', keys)
+    window.addEventListener('mouseup', mouse)
+    return () => {
+      window.removeEventListener('keydown', keys)
+      window.removeEventListener('mouseup', mouse)
+    }
   }, [])
 
   const dialog = settingsOpen && (
@@ -412,7 +454,7 @@ export default function App() {
       <header className="titlebar">
         <div className="brand" title={update ? `v${update.version}` : undefined}>
           <span className="brand-mark" aria-hidden />
-          HumanStudy Hub
+          <button className="brand-home" onClick={closeProject} title={t('app.back_hint')}>HumanStudy Hub</button>
           <span className="crumb">/ {project.name}</span>
         </div>
         <div className="titlebar-actions">
@@ -470,6 +512,7 @@ export default function App() {
           {open.program ? (
             <Workbench
               ref={workbench}
+              onRestoreSource={setSource}
               project={project}
               source={source}
               onWorkspaceChange={cacheWorkspace}
@@ -506,10 +549,7 @@ export default function App() {
       </main>
       {dialog}
       {consent}
-      {showSampleOnboarding && <SampleOnboarding onClose={() => {
-        try { localStorage.setItem('hs.sampleOnboarding.v1', 'done') } catch { /* ignore */ }
-        setShowSampleOnboarding(false)
-      }} />}
+      {showSampleOnboarding && <SampleOnboarding onClose={closeOnboarding} />}
       <UpdateNotice />
     </div>
   )
