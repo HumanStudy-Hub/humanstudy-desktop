@@ -43,9 +43,20 @@ export const PYTHON_ASSETS: Record<string, PythonAsset> = {
     sha256: '11ed9f8a6ac64fb1b5a55e40e305a6744a3f77a70863c8f8197a6e4349abc64a',
     size: 22011208,
   },
+  // Linux: the web edition, which runs this app in a per-user cloud sandbox (app/web).
+  'linux-x64': {
+    name: `cpython-${PYTHON_VERSION}+${PBS_TAG}-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz`,
+    sha256: 'ffa8f85f1b56e88b687f08d743d817015524b86a9365fd921243132b80f1a36d',
+    size: 34304557,
+  },
+  'linux-arm64': {
+    name: `cpython-${PYTHON_VERSION}+${PBS_TAG}-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz`,
+    sha256: '2e1ba0e7f22e01c534caebf7f09e7820322bc0d055271d3434af671e8400f96f',
+    size: 29220608,
+  },
 }
 
-/** The Python build for this machine, or null (Windows ARM and Linux are not targets). */
+/** The Python build for this machine, or null (Windows ARM is not a target; Linux is the web edition). */
 export const pickPython = (platform: string, arch: string): PythonAsset | null => PYTHON_ASSETS[`${platform}-${arch}`] ?? null
 export const pythonUrl = (a: PythonAsset, base: string = PBS_BASE): string => `${base}/${a.name.replace('+', '%2B')}`
 
