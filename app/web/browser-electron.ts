@@ -13,14 +13,15 @@ const config = window.__HS_WEB__ ?? { uploads: '/uploads', sep: '/' }
 
 // ---- values: bytes are tagged, project file URLs become same-origin paths ------------------------
 const HSFILE = 'hsfile://local/'
-function decode(v: unknown): unknown {
-  if (typeof v === 'string') return v.startsWith(HSFILE) ? '/hsfile/' + v.slice(HSFILE.length) : v
-  if (Array.isArray(v)) return v.map(decode)
+// Only `url` fields carry project file URLs (ProjectFile, ProjectEntry, the paper); file text is never touched.
+function decode(v: unknown, key = ''): unknown {
+  if (typeof v === 'string') return key === 'url' && v.startsWith(HSFILE) ? '/hsfile/' + v.slice(HSFILE.length) : v
+  if (Array.isArray(v)) return v.map((x) => decode(x))
   if (v && typeof v === 'object') {
     const o = v as Record<string, unknown>
     if (typeof o.__hs_u8 === 'string') return Uint8Array.from(atob(o.__hs_u8), (c) => c.charCodeAt(0))
     const out: Record<string, unknown> = {}
-    for (const k of Object.keys(o)) out[k] = decode(o[k])
+    for (const k of Object.keys(o)) out[k] = decode(o[k], k)
     return out
   }
   return v
@@ -42,12 +43,14 @@ function encode(v: unknown): unknown {
 
 // ---- uploads: a picked or dropped file gets its sandbox path at once; calls wait for the upload ------
 const uploads = new Set<Promise<unknown>>()
+const failedUploads = new Map<string, Error>()
 function upload(file: File): string {
   const id = crypto.randomUUID()
   const name = file.name.replace(/[/\\]/g, '_') || 'file'
   const path = [config.uploads, id, name].join(config.sep)
   const p = fetch(`/upload/${id}/${encodeURIComponent(name)}`, { method: 'POST', body: file, credentials: 'same-origin' })
     .then((r) => { if (!r.ok) throw new Error(`Upload of ${name} failed (${r.status}).`) })
+    .catch((e: Error) => { failedUploads.set(path, e); throw e })
   uploads.add(p)
   void p.finally(() => uploads.delete(p)).catch(() => undefined)
   return path
@@ -80,7 +83,12 @@ function download(path: unknown): void {
 const SAVES = new Set(['project:saveCopy', 'kernel:export', 'telemetry:saveExport'])
 
 async function call(channel: string, args: unknown[]): Promise<unknown> {
-  if (uploads.size) await Promise.all([...uploads])
+  // A call that names a picked file waits for its upload; a failed upload fails only the calls that use it.
+  if (uploads.size) await Promise.allSettled([...uploads])
+  if (failedUploads.size) {
+    const named = JSON.stringify(args)
+    for (const [path, error] of failedUploads) if (named.includes(JSON.stringify(path).slice(1, -1))) throw new Error(`Error invoking remote method '${channel}': Error: ${error.message}`)
+  }
   let res: Response
   try {
     res = await fetch('/ipc/' + encodeURIComponent(channel), {

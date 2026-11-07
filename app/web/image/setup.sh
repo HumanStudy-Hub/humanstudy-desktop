@@ -25,6 +25,7 @@ for i in $(seq 1 360); do
   S=$(curl -s -XPOST -H 'Authorization: Bearer setup' localhost:3999/ipc/kernel:installStatus -d '{"args":[]}' || true)
   case "$S" in *'"state":"ready"'*) echo "runtime ready"; break;; *'"state":"error"'*) echo "install failed: $S"; kill $PID; exit 1;; esac
   sleep 5
+  [ "$i" = 360 ] && { echo "runtime install did not finish in 30 minutes"; kill $PID; exit 1; }
 done
 kill $PID; wait $PID 2>/dev/null || true
 # Nothing user- or install-specific in the image: each user gets their own ids on first start.

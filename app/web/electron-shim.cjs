@@ -133,7 +133,8 @@ const dialog = {
     mkdirSync(dir, { recursive: true })
     return { canceled: false, filePath: join(dir, basename(o.defaultPath || 'download')) }
   },
-  async showMessageBox() { return { response: 0, checkboxChecked: false } },
+  // The only question asked is "the agent is still working: keep working / stop"; stop when the server is being shut down.
+  async showMessageBox() { return { response: web.forceQuit ? 1 : 0, checkboxChecked: false } },
   // Only the unsaved-drafts prompt uses this; the browser asks on its own (beforeunload).
   showMessageBoxSync() { return 0 },
   showErrorBox(title, content) { console.error(`[dialog] ${title}: ${content}`) },
@@ -177,6 +178,7 @@ const safeStorage = {
 
 // ---- protocol + net: hsfile:// is served by server.cjs at /hsfile/ ------------------------------
 const protocols = new Map()
+const web = { forceQuit: false }
 const protocol = {
   registerSchemesAsPrivileged() {},
   handle(scheme, fn) { protocols.set(scheme, fn) },
@@ -221,5 +223,5 @@ module.exports = {
   app, BrowserWindow, ipcMain, dialog, shell, safeStorage, protocol, net, Menu, Notification, nativeTheme,
   autoUpdater, powerMonitor, session,
   // for server.cjs
-  __web: { bus, invoke, emitSend, protocols, contentType, paths, handlers },
+  __web: Object.assign(web, { bus, invoke, emitSend, protocols, contentType, paths, handlers }),
 }

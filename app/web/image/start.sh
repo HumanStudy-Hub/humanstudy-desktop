@@ -29,7 +29,11 @@ if [ "${HS_UPDATED:-}" != 1 ] && [ -n "${HS_APP_URL:-}" ] && [ -n "${HS_APP_SHA2
 fi
 export HS_APP_VERSION=$(cat "$HS/app/VERSION")
 if [ "${1:-}" = foreground ]; then exec node "$HS/app/server.cjs"; fi
-pkill -f "$HS/app/server.cjs" 2>/dev/null || true
+# Replace a running server: it saves conversations on SIGTERM; give it up to 10 s before forcing.
+if pkill -f "$HS/app/server.cjs" 2>/dev/null; then
+  for i in $(seq 1 100); do pgrep -f "$HS/app/server.cjs" >/dev/null || break; sleep 0.1; done
+  pkill -9 -f "$HS/app/server.cjs" 2>/dev/null || true
+fi
 setsid nohup node "$HS/app/server.cjs" >"$HS/server.log" 2>&1 </dev/null &
 for i in $(seq 1 100); do curl -sf "localhost:$PORT/healthz" >/dev/null && exit 0; sleep 0.1; done
 echo "server did not start"; tail -20 "$HS/server.log"; exit 1

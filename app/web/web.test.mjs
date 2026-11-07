@@ -36,7 +36,11 @@ after(() => server?.kill())
 
 test('everything but the health check needs the token', async () => {
   assert.equal((await fetch(`${B}/`)).status, 401)
-  assert.equal((await fetch(`${B}/ipc/projects:list`, { method: 'POST', body: '{}' })).status, 401)
+  assert.equal((await fetch(`${B}/ipc/projects:list`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401)
+  // Not JSON, or another site's page: refused before anything else.
+  assert.equal((await fetch(`${B}/ipc/projects:list`, { method: 'POST', headers: { ...auth, 'Content-Type': 'text/plain' }, body: '{}' })).status, 403)
+  assert.equal((await fetch(`${B}/ipc/projects:list`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json', Origin: 'https://evil.vercel.run' }, body: '{}' })).status, 403)
+  assert.equal((await fetch(`${B}/`, { headers: { cookie: 'hs_web=%E0' } })).status, 401)
   const first = await fetch(`${B}/?t=${TOKEN}`, { redirect: 'manual' })
   assert.equal(first.status, 302)
   assert.match(first.headers.get('set-cookie') ?? '', /hs_web=.*HttpOnly/)
@@ -67,6 +71,8 @@ test('an uploaded paper becomes a project whose files are served at /hsfile/', a
   assert.equal(served.status, 200)
   assert.equal(served.headers.get('content-type'), 'application/pdf')
   assert.deepEqual(Buffer.from(await served.arrayBuffer()), pdf)
+  assert.equal(served.headers.get('x-content-type-options'), 'nosniff')
+  assert.match(served.headers.get('content-security-policy') ?? '', /sandbox/)
   const outside = await fetch(`${B}/hsfile/${encodeURIComponent('/etc/passwd')}`, { headers: auth })
   assert.equal(outside.status, 403)
 })
@@ -111,7 +117,7 @@ test('events stream to the browser and resume after a dropped connection', async
 })
 
 test('the launcher can sign the app in (seed), and only with the token', async () => {
-  const denied = await fetch(`${B}/__seed`, { method: 'POST', body: '{}' })
+  const denied = await fetch(`${B}/__seed`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
   assert.equal(denied.status, 401)
   const session = { accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() + 3_600_000, email: 'test@example.org' }
   const ok = await fetch(`${B}/__seed`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ session }) })

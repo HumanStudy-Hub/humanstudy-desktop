@@ -40,7 +40,10 @@ const UPLOADS = join(paths.userData, 'uploads')
 mkdirSync(UPLOADS, { recursive: true })
 
 // ---- events: a replay buffer so a dropped connection resumes where it left off -------------------
+// Bounded by count and size: streamed agent text and project snapshots can be large.
 const RING = 5000
+const RING_BYTES = 32 << 20
+let ringBytes = 0
 const ring = []
 let seq = 0
 const clients = new Set()
@@ -49,7 +52,8 @@ bus.on('send', (channel, payload) => {
   try { data = JSON.stringify({ c: channel, p: encode(payload) }) } catch (e) { console.error('event not serialisable', channel, e); return }
   const ev = { id: ++seq, data }
   ring.push(ev)
-  if (ring.length > RING) ring.shift()
+  ringBytes += data.length
+  while (ring.length > RING || (ringBytes > RING_BYTES && ring.length > 1)) ringBytes -= ring.shift().data.length
   for (const res of clients) write(res, ev)
 })
 const write = (res, ev) => res.write(`id: ${ev.id}\ndata: ${ev.data}\n\n`)
@@ -88,7 +92,7 @@ function same(a, b) {
 function authorised(req) {
   if (!TOKEN) return true
   const m = /(?:^|;\s*)hs_web=([^;]+)/.exec(req.headers.cookie || '')
-  if (m && same(decodeURIComponent(m[1]), TOKEN)) return true
+  if (m && same(dec(m[1]) ?? '', TOKEN)) return true
   const h = req.headers.authorization
   return Boolean(h && h.startsWith('Bearer ') && same(h.slice(7), TOKEN))
 }
@@ -126,6 +130,7 @@ async function body(req, limit) {
   }
   return Buffer.concat(chunks)
 }
+const dec = (s) => { try { return decodeURIComponent(s) } catch { return null } }
 const inside = (root, p) => { const r = resolve(root) + sep; return resolve(p).startsWith(r) }
 
 const ready = { main: false }
@@ -143,6 +148,15 @@ const server = http.createServer(async (req, res) => {
         Location: url.pathname + (url.search || ''),
       })
       return res.end()
+    }
+    // Calls come from this page only: JSON bodies (no simple cross-site form posts) and, when the browser
+    // names one, this origin.
+    if (req.method === 'POST' && !path.startsWith('/upload/')) {
+      const type = req.headers['content-type'] || ''
+      const origin = req.headers.origin
+      if (!/^application\/json\b/i.test(type) || (origin && origin !== `https://${req.headers.host}` && origin !== `http://${req.headers.host}`)) {
+        return json(res, 403, { ok: false, error: { message: 'refused' } })
+      }
     }
     if (!authorised(req)) { res.writeHead(401, { 'Content-Type': 'text/plain' }); return res.end('This session has ended. Open HumanStudy Hub again from humanstudy-hub.com.') }
 
@@ -163,7 +177,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true })
     }
     if (req.method === 'POST' && path.startsWith('/ipc/')) {
-      const channel = decodeURIComponent(path.slice(5))
+      const channel = dec(path.slice(5)) ?? ''
       const { args } = JSON.parse((await body(req, 16 << 20)).toString('utf8') || '{}')
       try {
         const value = await invoke(channel, decode(Array.isArray(args) ? args : []))
@@ -174,7 +188,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && path.startsWith('/send/')) {
       const { args } = JSON.parse((await body(req, 1 << 20)).toString('utf8') || '{}')
-      emitSend(decodeURIComponent(path.slice(6)), decode(Array.isArray(args) ? args : []))
+      emitSend(dec(path.slice(6)) ?? '', decode(Array.isArray(args) ? args : []))
       return json(res, 200, { ok: true })
     }
     if (path === '/events') {
@@ -185,7 +199,8 @@ const server = http.createServer(async (req, res) => {
       const last = Number(raw)
       if (raw != null && Number.isFinite(last) && last >= 0) {
         // Gap larger than the buffer: tell the page to re-read everything.
-        if (ring.length && ring[0].id > last + 1) res.write(`event: reset\ndata: {}\n\n`)
+        // The buffer no longer reaches back that far, or the server restarted (ids began again): re-read all.
+        if (last > seq || (ring.length && ring[0].id > last + 1)) res.write(`event: reset\ndata: {}\n\n`)
         for (const ev of ring) if (ev.id > last) write(res, ev)
       }
       clients.add(res)
@@ -198,7 +213,15 @@ const server = http.createServer(async (req, res) => {
       if (!handler) return notFound(res)
       const r = await handler(new Request('hsfile://local/' + path.slice(8) + url.search))
       const headers = Object.fromEntries(r.headers)
-      if (/^text\/html/i.test(headers['content-type'] || '')) headers['content-security-policy'] = `${headers['content-security-policy'] || ''}; sandbox allow-scripts`
+      // Project files are agent-written and same-origin here (on desktop hsfile: was an origin of its own):
+      // every one is served sandboxed, so opening one in a tab (an SVG or HTML with script) cannot reach /ipc.
+      // The artifact CSP names hsfile: for project images; here those are this server's /hsfile/ URLs.
+      const self = `https://${req.headers.host}`
+      const csp = headers['content-security-policy']
+      headers['content-security-policy'] = csp
+        ? `${csp.replace(/hsfile:/g, `hsfile: ${self}`)}; sandbox allow-scripts`
+        : "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox"
+      headers['x-content-type-options'] = 'nosniff'
       headers['cache-control'] = 'no-store'
       res.writeHead(r.status, headers)
       if (!r.body) return res.end()
@@ -206,7 +229,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && path.startsWith('/upload/')) {
       const [, , id, ...rest] = path.split('/')
-      const name = basename(decodeURIComponent(rest.join('/')))
+      const name = basename(dec(rest.join('/')) ?? '')
       if (!/^[0-9a-f-]{36}$/.test(id) || !name || name.startsWith('.')) return json(res, 400, { ok: false })
       const dir = join(UPLOADS, id)
       mkdirSync(dir, { recursive: true })
@@ -218,7 +241,9 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, path: target })
     }
     if (path.startsWith('/download/')) {
-      const file = resolve(decodeURIComponent(path.slice(10)))
+      const raw = dec(path.slice(10))
+      if (raw === null) return notFound(res)
+      const file = resolve(raw)
       if (!inside(paths.downloads, file)) return notFound(res)
       return sendFile(res, file, { 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(basename(file))}`, 'Cache-Control': 'no-store' })
     }
@@ -230,7 +255,9 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
       return res.end(renderIndex())
     }
-    const file = resolve(RENDERER, '.' + decodeURIComponent(path))
+    const rel = dec(path)
+    if (rel === null) return notFound(res)
+    const file = resolve(RENDERER, '.' + rel)
     if (!inside(RENDERER, file)) return notFound(res)
     return sendFile(res, file, { 'Cache-Control': /\/assets\//.test(path) ? 'public, max-age=31536000, immutable' : 'no-store' })
   } catch (e) {
@@ -243,7 +270,13 @@ server.requestTimeout = 0 // uploads and event streams are long
 server.headersTimeout = 60_000
 
 process.on('unhandledRejection', (e) => console.error('unhandled rejection', e))
-process.on('SIGTERM', () => electron.app.quit())
+// Stopping the sandbox (or start.sh replacing the server): save conversations and stop the agent without
+// asking; a turn in progress is interrupted, as a desktop "Stop and quit" would.
+process.on('SIGTERM', () => {
+  electron.__web.forceQuit = true
+  electron.app.quit()
+  setTimeout(() => process.exit(0), 8000).unref()
+})
 
 require(process.env.HS_MAIN || join(HERE, 'main', 'index.js'))
 ready.main = true
