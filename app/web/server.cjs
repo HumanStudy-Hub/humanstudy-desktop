@@ -180,8 +180,10 @@ const server = http.createServer(async (req, res) => {
     if (path === '/events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' })
       res.write('retry: 1000\n\n')
-      const last = Number(req.headers['last-event-id'] || url.searchParams.get('since') || 0)
-      if (last > 0) {
+      // A reconnect names the last event it saw (EventSource sends Last-Event-ID); replay what came after.
+      const raw = req.headers['last-event-id'] ?? url.searchParams.get('since')
+      const last = Number(raw)
+      if (raw != null && Number.isFinite(last) && last >= 0) {
         // Gap larger than the buffer: tell the page to re-read everything.
         if (ring.length && ring[0].id > last + 1) res.write(`event: reset\ndata: {}\n\n`)
         for (const ev of ring) if (ev.id > last) write(res, ev)

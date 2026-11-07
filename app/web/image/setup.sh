@@ -27,5 +27,6 @@ for i in $(seq 1 360); do
   sleep 5
 done
 kill $PID; wait $PID 2>/dev/null || true
-rm -rf "$HS/userData/account.json" "$HS/userData/uploads" "$HS/home/HumanStudy Hub"
+# Nothing user- or install-specific in the image: each user gets their own ids on first start.
+rm -rf "$HS/userData/account.json" "$HS/userData/telemetry.json" "$HS/userData/uploads" "$HS/home/HumanStudy Hub" "$HS/home/.humanstudy-web"
 echo "image ready"

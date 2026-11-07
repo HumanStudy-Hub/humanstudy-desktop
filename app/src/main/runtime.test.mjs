@@ -26,14 +26,13 @@ const libDir = join(repo, 'pack/runtime/lib')
 const lib = Object.fromEntries(readdirSync(libDir).filter((n) => n.endsWith('.py')).map((n) => [n, readFileSync(join(libDir, n), 'utf8')]))
 
 test('pins: every target has a python build with a 64-hex digest and a release URL', () => {
-  for (const [p, a] of [['darwin', 'arm64'], ['darwin', 'x64'], ['win32', 'x64']]) {
+  for (const [p, a] of [['darwin', 'arm64'], ['darwin', 'x64'], ['win32', 'x64'], ['linux', 'x64'], ['linux', 'arm64']]) {
     const asset = core.pickPython(p, a)
     assert.match(asset.sha256, /^[0-9a-f]{64}$/, `${p}-${a}`)
     assert.ok(asset.size > 15e6 && asset.size < 40e6)
     assert.match(asset.name, /^cpython-3\.12\.\d+\+\d{8}-.*-install_only_stripped\.tar\.gz$/)
     assert.match(core.pythonUrl(asset), /^https:\/\/github\.com\/astral-sh\/python-build-standalone\/releases\/download\/\d{8}\/cpython-3\.12\.\d+%2B\d{8}-/)
   }
-  assert.equal(core.pickPython('linux', 'x64'), null)
   assert.equal(core.pickPython('win32', 'arm64'), null)
 })
 
