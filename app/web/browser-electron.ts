@@ -102,11 +102,37 @@ async function call(channel: string, args: unknown[]): Promise<unknown> {
   return decode(out.value)
 }
 
+// ---- the online session ended (stopped after its time limit, or replaced): say so, keep nothing hidden --
+const TRY_URL = 'https://humanstudy-hub.com/try'
+let notice: HTMLElement | null = null
+function showEnded(): void {
+  if (notice) return
+  notice = document.createElement('div')
+  notice.setAttribute('role', 'alert')
+  notice.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483647;max-width:min(560px,calc(100vw - 32px));padding:14px 18px;border-radius:10px;background:#132019;color:#e5ede2;font:14px/1.45 system-ui,sans-serif;box-shadow:0 8px 30px #0004'
+  const zh = (navigator.language || '').toLowerCase().startsWith('zh')
+  notice.textContent = zh ? '在线会话已结束，你的项目和对话都已保存。' : 'This online session has ended. Your projects and conversations are saved.'
+  const a = document.createElement('a')
+  a.href = TRY_URL
+  a.textContent = zh ? ' 重新打开' : ' Reopen'
+  a.style.cssText = 'color:#a9c4b4;font-weight:600;margin-left:6px'
+  notice.appendChild(a)
+  document.body.appendChild(notice)
+}
+let failures = 0
+async function checkAlive(): Promise<void> {
+  try {
+    const r = await fetch('/healthz', { cache: 'no-store', credentials: 'same-origin' })
+    if (r.ok) { failures = 0; return }
+  } catch { /* unreachable */ }
+  if (++failures >= 3) showEnded()
+}
+
 // ---- events -------------------------------------------------------------------------------------
 const handlers = new Map<string, Set<Handler>>()
 const connection = {
   source: null as EventSource | null,
-  ended() { this.source?.close(); this.source = null; window.dispatchEvent(new CustomEvent('hs-web:ended')) },
+  ended() { this.source?.close(); this.source = null; showEnded() },
 }
 function connect(): void {
   if (connection.source) return
@@ -123,13 +149,15 @@ function connect(): void {
   }
   // The replay buffer could not cover the gap: everything is re-read on focus (the app does this).
   es.addEventListener('reset', () => window.dispatchEvent(new Event('focus')))
-  es.onerror = () => {
-    // EventSource reconnects by itself and resumes from the last event id.
-    window.dispatchEvent(new CustomEvent('hs-web:offline'))
-  }
-  es.onopen = () => window.dispatchEvent(new CustomEvent('hs-web:online'))
+  // EventSource reconnects by itself and resumes from the last event id; a server that stays gone means
+  // the sandbox stopped.
+  es.onerror = () => { void checkAlive() }
+  es.onopen = () => { failures = 0 }
 }
 connect()
+
+let unsaved = false
+window.addEventListener('beforeunload', (e) => { if (unsaved) { e.preventDefault(); e.returnValue = '' } })
 
 export const ipcRenderer = {
   invoke(channel: string, ...args: unknown[]): Promise<unknown> {
@@ -142,6 +170,8 @@ export const ipcRenderer = {
     return p
   },
   send(channel: string, ...args: unknown[]): void {
+    // Unsaved edits: the browser asks before the tab closes (the desktop asks before the window closes).
+    if (channel === 'app:unsaved') unsaved = Boolean(args[0])
     void fetch('/send/' + encodeURIComponent(channel), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

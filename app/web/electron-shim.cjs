@@ -187,7 +187,9 @@ const TYPES = {
   '.pdf': 'application/pdf', '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
   '.json': 'application/json', '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8',
   '.csv': 'text/csv; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.js': 'text/javascript', '.css': 'text/css',
+  '.gif': 'image/gif', '.svg': 'image/svg+xml', '.webp': 'image/webp', '.js': 'text/javascript', '.mjs': 'text/javascript',
+  '.css': 'text/css', '.wasm': 'application/wasm', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf',
+  '.otf': 'font/otf', '.ico': 'image/x-icon', '.map': 'application/json', '.bcmap': 'application/octet-stream',
   '.py': 'text/plain; charset=utf-8',
 }
 const contentType = (p) => TYPES[extname(p).toLowerCase()] || 'application/octet-stream'
