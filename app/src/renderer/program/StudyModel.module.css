@@ -28,6 +28,15 @@
   --arm3: #dcc08b; --arm3-bg: #3a3122;
   --cite: #e7b955;
 }
+@media (prefers-color-scheme: dark) {
+  :global(:root:not([data-theme="light"])) .model {
+    --arm0: #8cc3e0; --arm0-bg: #1f3442;
+    --arm1: #d9a6cf; --arm1-bg: #3a2737;
+    --arm2: #9fd09d; --arm2-bg: #23362a;
+    --arm3: #dcc08b; --arm3-bg: #3a3122;
+    --cite: #e7b955;
+  }
+}
 .model [data-tone="0"] { --tone: var(--arm0); --tone-bg: var(--arm0-bg); }
 .model [data-tone="1"] { --tone: var(--arm1); --tone-bg: var(--arm1-bg); }
 .model [data-tone="2"] { --tone: var(--arm2); --tone-bg: var(--arm2-bg); }
@@ -53,7 +62,7 @@ span.supportOther { margin-left: 8px; font-style: italic; }
 
 /* ---- heading and at a glance ---- */
 .heading { padding: 18px 20px 6px; }
-.heading h1 { font-family: var(--font-serif); font-size: var(--lg); font-weight: 700; line-height: 1.4; max-width: 70ch; }
+.heading h1 { font-family: var(--font-serif); font-size: var(--lg); font-weight: 500; line-height: 1.4; max-width: 70ch; }
 .heading > p { margin-top: 3px; font-size: var(--xs); color: var(--muted); }
 .glance { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 10px; font-size: var(--xs); color: var(--muted); }
 .glance > span { white-space: nowrap; }

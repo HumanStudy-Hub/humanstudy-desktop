@@ -11,7 +11,7 @@ export function NativeTerminal({ id, run }: { id: string; run(request: NativeReq
         convertEol: false,
         fontSize: 13,
         scrollback: 10000,
-        theme: { background: '#172328', foreground: '#e5eff1' },
+        theme: { background: '#132019', foreground: '#e5ede2' },
       }),
       fit = new FitAddon()
     terminal.loadAddon(fit)
