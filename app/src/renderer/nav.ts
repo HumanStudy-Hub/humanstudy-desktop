@@ -1,9 +1,10 @@
 // Back: the places the reader left, newest last. A handler records the place before it moves the
 // reader (switching a tab, following a citation, opening a project or a library study); ⌘[, the
 // mouse back button, a trackpad swipe and Go > Back return to it. Restoring never records a place.
-// An undo that finds nothing left to do returns false, and Back moves on to the next place.
+// An undo that finds nothing left to do returns false, and Back moves on to the next place; one the
+// reader declined (kept unsaved edits) returns 'keep' and stays for the next Back.
 
-type Undo = () => boolean | void
+type Undo = () => boolean | void | 'keep'
 const stack: { scope: string; undo: Undo }[] = []
 const LIMIT = 50
 let restoring = false
@@ -22,14 +23,15 @@ export function goBack(): boolean {
   if (now - last < 120) return true
   last = now
   while (stack.length) {
-    const { undo } = stack.pop()!
+    const place = stack.pop()!
     restoring = true
-    let moved: boolean | void
+    let moved: ReturnType<Undo>
     try {
-      moved = undo()
+      moved = place.undo()
     } finally {
       restoring = false
     }
+    if (moved === 'keep') stack.push(place)
     if (moved !== false) return true
   }
   return false

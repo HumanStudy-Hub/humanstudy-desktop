@@ -18,7 +18,7 @@ import { sourceFocus } from '../../shared/workspace-context'
 import { passageSupport } from '../../shared/program-view'
 import { quoteKey } from '../../shared/source-anchor'
 import { clearDraft, draftsIn } from '../drafts'
-import { remember } from '../nav'
+import { forget, remember } from '../nav'
 
 export type MainTab = 'study' | 'paper' | 'simulation'
 type TabId = MainTab | `file:${string}`
@@ -150,6 +150,12 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const [sourcePage, setSourcePage] = useState<{ path: string; page: number } | null>(null)
   // The Study scroll and the paper page, saved per project so a tab switch or a reopen keeps them.
   const position = useRef<Position>(loadPosition(project.dir))
+  const positionDir = useRef(project.dir)
+  if (positionDir.current !== project.dir) {
+    // Read before anything restores from it (the Study scroll is restored in a layout effect).
+    positionDir.current = project.dir
+    position.current = loadPosition(project.dir)
+  }
   const savePosition = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const storePosition = useCallback((patch: Partial<Position>) => {
     position.current = { ...position.current, ...patch }
@@ -188,7 +194,6 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
 
   // Project switch: restore its tabs.
   useEffect(() => {
-    position.current = loadPosition(project.dir)
     setLayout(loadLayout(project.dir))
     setDirty(new Set(draftsIn(project.dir).map((d) => d.path)))
     setChanged(new Set())
@@ -242,9 +247,18 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   // Back (nav.ts) returns to the tab, Compare and paper page the reader was on before a move.
   const sourceNow = useRef(source)
   sourceNow.current = source
+  const layoutNow = useRef(layout)
+  layoutNow.current = layout
+  // Places belong to this workbench; once it is gone (pane folded, project closed) they lead nowhere.
+  useEffect(() => () => forget('project'), [])
   const rememberHere = () => {
     const was = { active: layout.active, compare: Boolean(layout.compare), source, path: sourceFile?.path ?? null, page: sourcePage }
     remember('project', () => {
+      const now = layoutNow.current
+      // A file tab closed since then is not a place to return to.
+      if (was.active.startsWith('file:') && !now.tabs.includes(was.active as `file:${string}`)) return false
+      // Already there (e.g. Compare was left with Esc): try the place before it.
+      if (was.active === now.active && was.compare === Boolean(now.compare) && was.source === sourceNow.current) return false
       if (was.source !== sourceNow.current) {
         // Return to the page the reader was reading, not to the citation that brought them there.
         const page = was.page && was.page.path === was.path ? was.page.page : null
@@ -398,7 +412,9 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
     const keys = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return
       const target = e.target as HTMLElement | null
-      if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"]') || document.querySelector('[role="dialog"]')) return
+      if (target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"]')) return
+      // A dialog, menu, list or expanded citation closes first; Compare waits for the next Esc.
+      if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"], [aria-expanded="true"]')) return
       update((l) => ({ ...l, compare: false }))
     }
     window.addEventListener('keydown', keys)
@@ -408,7 +424,12 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const tabBtn = (id: MainTab, text: string) => (
     <div role="tab" aria-selected={active === id} className={`wb-tab main ${active === id ? 'active' : ''}`}>
       <button className="wb-tab-label" onClick={() => {
-        if (id === 'paper' && (source?.file || source?.sourceId) && sourceFile?.path !== project.pdf?.path) docProps.onSource('file:paper.pdf', { page: 1, quote: '', verified: true })
+        if (id === 'paper' && (source?.file || source?.sourceId) && sourceFile?.path !== project.pdf?.path) {
+          // Back to the paper itself, on the page it was left at; not a citation click.
+          const saved = position.current.paper
+          rememberHere()
+          onRestoreSource?.({ page: saved && saved.path === project.pdf?.path ? saved.page : 1, verified: true })
+        }
         activate(id)
       }}>
 

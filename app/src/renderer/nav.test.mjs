@@ -50,13 +50,27 @@ test('restoring a place records nothing, and forget drops one scope', () => {
   assert.deepEqual(seen, ['projects', 'tab'])
 })
 
+test('a declined place stays for the next Back', () => {
+  nav.resetNav()
+  let tries = 0
+  nav.remember('app', () => (++tries === 1 ? 'keep' : true))
+  assert.equal(nav.goBack(), true)
+  assert.equal(nav.goBack(), true)
+  assert.equal(nav.goBack(), false)
+  assert.equal(tries, 2)
+})
+
 test('one ⌘[ seen by both the menu and the page moves back once', () => {
   nav.resetNav()
-  Date.now = realNow
+  let t = 0
+  Date.now = () => t
   const seen = []
   nav.remember('project', () => seen.push('a'))
   nav.remember('project', () => seen.push('b'))
-  nav.goBack()
-  nav.goBack()
-  assert.deepEqual(seen, ['b'])
+  t = 1000; nav.goBack()
+  t = 1050; nav.goBack()
+  assert.deepEqual(seen, ['b'], 'within 120 ms: one Back')
+  t = 1300; nav.goBack()
+  assert.deepEqual(seen, ['b', 'a'], 'a quick second press still moves back')
+  Date.now = realNow
 })

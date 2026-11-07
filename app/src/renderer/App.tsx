@@ -166,9 +166,11 @@ export default function App() {
       if (switched) {
         forget('project')
         forget('app')
+        forget('library')
         remember('app', () => {
           if (state.current.project?.dir !== dir) return false
-          runCommand('project.close')
+          // Kept unsaved edits: this place is still there for the next Back.
+          if (!closeProjectRef.current()) return 'keep'
         })
       }
     },
@@ -187,6 +189,7 @@ export default function App() {
     try { localStorage.setItem('hs.sampleOnboarding.v1', 'done') } catch { /* ignore */ }
     setShowSampleOnboarding(false)
   }, [])
+  const closeProjectRef = useRef<() => boolean>(() => false)
   const closeProject = (): boolean => {
     if (!confirmLeave()) return false
     track('project.closed')
@@ -196,6 +199,7 @@ export default function App() {
     forget('app')
     return true
   }
+  closeProjectRef.current = closeProject
   // Closing the window or quitting asks while any draft exists (main/index.ts shows the dialog).
   useEffect(() => {
     const sync = () => window.humanstudy.app.setUnsaved(draftCount() ? { message: t('app.quit_unsaved'), detail: t('app.quit_unsaved_detail'), discard: t('app.discard_close'), cancel: t('app.cancel') } : null)
@@ -326,7 +330,8 @@ export default function App() {
       if (command === 'project.open') return void window.humanstudy.project.open().then((dir) => { if (dir && (dir === state.current.project?.dir || confirmLeave())) void openProject(dir) })
       if (command === 'thread.new') return st.project ? newThreadRef.current() : undefined
       if (command === 'selection.clear') return setSelected((s) => (s.length ? [] : s))
-      if (command === 'nav.back') return void goBack()
+      // Back never acts behind a dialog (Settings, consent, the sample welcome).
+      if (command === 'nav.back') return void (st.settingsOpen || document.querySelector('[aria-modal="true"]') ? undefined : goBack())
       if (command === 'project.close') return void (st.project && closeProject())
       if (command === 'tab.close') return void (st.project && workbench.current?.closeTab() ? undefined : window.close())
       if (command === 'pane.toggle' && st.project && (arg === 'agent' || arg === 'program')) setPane(arg, !st.open[arg])
