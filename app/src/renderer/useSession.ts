@@ -3,7 +3,7 @@ import { createTextBatcher } from './text-batcher'
 import { updateQuestion, type QuestionPart } from '../shared/question'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { claimAction, lap, track } from './telemetry'
-import type { ActionRef, KernelEvent, KernelUsage, PermissionReply, Thread, ThreadMessage, ThreadSummary, WorkspaceContext } from '../preload/types'
+import type { ActionRef, KernelEvent, KernelSubagent, KernelUsage, PermissionReply, Thread, ThreadMessage, ThreadSummary, WorkspaceContext } from '../preload/types'
 
 export interface PermissionPart {
   automatic?: boolean
@@ -12,6 +12,10 @@ export interface PermissionPart {
   type: string
   title?: string
   metadata?: Record<string, unknown>
+  /** Asked by a subagent of this conversation: its agent name. */
+  subagent?: string
+  /** Why the app's autonomy policy left it to the researcher (or denied it). */
+  reason?: string
   /** Absent while the agent is waiting for an answer. */
   resolved?: PermissionReply
   /** The turn ended (or the thread was reopened) before an answer: the request is gone. */
@@ -67,6 +71,8 @@ export interface Session {
   /** True while a permission card waits for an answer. */
   waitingForPermission: boolean
   waitingForQuestion: boolean
+  /** Subagents (OpenCode task tool) this conversation started in the current turn, newest last. */
+  subagents: KernelSubagent[]
   answerQuestion(id: string, answers: string[][]): Promise<void>
   rejectQuestion(id: string): Promise<void>
   threadId: string | null
@@ -104,6 +110,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const [threads, setThreads] = useState<ThreadSummary[]>([])
   const [usage, setUsage] = useState<SessionUsage>(ZERO)
   const [resumed, setResumed] = useState(false)
+  const [subagents, setSubagents] = useState<KernelSubagent[]>([])
   const textBatch = useRef<ReturnType<typeof createTextBatcher> | null>(null)
   const messagesRef = useRef<Message[]>([])
   messagesRef.current = messages
@@ -263,6 +270,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
         return
       }
       if (e.type === 'title') return void refreshThreads()
+      if (e.type === 'subagent') return setSubagents(list => mergeSubagent(list, e))
       setMessages((ms) => appendEvent(ms, e))
       if (e.type === 'error') {
         questionEpoch.current++
@@ -283,6 +291,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     if (!sid || !text.trim()) return
     const ref = action ?? claimAction('composer.send')
     setMessages((ms) => [...ms, { id: nextId++, role: 'user', parts: [{ kind: 'text', text }], at: Date.now() }])
+    setSubagents([])
     setBusyBoth(true)
     setStatus('Thinking…')
     window.humanstudy.kernel.send(sid, text, workspace, ref).catch((e: unknown) => {
@@ -418,7 +427,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
 
   return {
     id, startPaperBuild, messages, busy, status, error, queue, send, enqueue, editQueued, removeQueued, interruptAndSend, abort,
-    reply, waitingForPermission, answerQuestion, rejectQuestion, waitingForQuestion, threadId, threads, usage, resumedWithContext: resumed, native, adoptThread: activate, newThread, openThread, renameThread, deleteThread,
+    reply, waitingForPermission, subagents, answerQuestion, rejectQuestion, waitingForQuestion, threadId, threads, usage, resumedWithContext: resumed, native, adoptThread: activate, newThread, openThread, renameThread, deleteThread,
   }
 }
 const ZERO: SessionUsage = { input: 0, output: 0, reasoning: 0, cost: 0 }
@@ -430,7 +439,7 @@ function fromStored(m: ThreadMessage): Message {
     workspace:m.workspace,
     role: m.role,
     parts: m.parts.map((p): Part =>
-      p.kind === 'question' ? { ...p, expired: !p.resolved } : p.kind === 'permission' ? { kind: 'permission', automatic: p.automatic, id: p.id, type: p.type, title: p.title, resolved: p.resolved, expired: !p.resolved } : p,
+      p.kind === 'question' ? { ...p, expired: !p.resolved } : p.kind === 'permission' ? { kind: 'permission', automatic: p.automatic, id: p.id, type: p.type, title: p.title, subagent: p.subagent, reason: p.reason, resolved: p.resolved, expired: !p.resolved } : p,
     ),
     at: Date.parse(m.at) || undefined,
   }
@@ -447,6 +456,16 @@ const resolvePermission = (ms: Message[], id: string, resolved: PermissionReply)
 const expirePermissions = (ms: Message[]): Message[] => ms.map(m => ({ ...m, parts: m.parts.map(p =>
   (p.kind === 'permission' || p.kind === 'question') && !p.resolved ? { ...p, expired: true } : p
 ) }))
+
+/** Latest state and step of each subagent, in the order they started. */
+export function mergeSubagent(list: KernelSubagent[], e: KernelEvent): KernelSubagent[] {
+  const next = e.subagent
+  if (!next?.id) return list
+  const at = list.findIndex(x => x.id === next.id)
+  if (at < 0) return [...list, next].slice(-20)
+  const merged = { ...list[at], ...next, step: next.step ?? list[at].step }
+  return list.map((x, i) => (i === at ? merged : x))
+}
 
 function appendEvent(ms: Message[], e: KernelEvent): Message[] {
   if (e.type === 'question') {
@@ -488,6 +507,8 @@ function appendEvent(ms: Message[], e: KernelEvent): Message[] {
       id: pe.id,
       type: prev?.type || pe.type,
       title: pe.title ?? prev?.title,
+      subagent: pe.subagent ?? prev?.subagent,
+      reason: pe.reason ?? prev?.reason,
       metadata: pe.metadata ?? prev?.metadata,
       resolved: pe.resolved ?? prev?.resolved,
     }

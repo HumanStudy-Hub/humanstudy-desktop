@@ -48,6 +48,7 @@ export function QuestionCard({ part, onAnswer, onReject }: {
   return (
     <form className="agent-question" aria-label={q.question} onSubmit={e => { e.preventDefault(); next() }}
       onKeyDown={e => { if (!e.nativeEvent.isComposing && e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); next() } }}>
+      {part.subagent && <div className="question-subagent muted small">{t('perm.subagent', { name: part.subagent })}</div>}
       {part.questions.length > 1 && <div className="question-progress">{step + 1} / {part.questions.length}</div>}
       <fieldset disabled={sending}>
         <legend>{q.question}</legend>

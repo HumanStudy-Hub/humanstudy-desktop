@@ -10,6 +10,8 @@ export interface KernelQuestion {
   questions: QuestionInfo[]
   answers?: string[][]
   resolved?: 'answered' | 'rejected'
+  /** Asked by a subagent of this conversation: its agent name. */
+  subagent?: string
 }
 export type QuestionPart = KernelQuestion & { kind: 'question'; expired?: boolean }
 

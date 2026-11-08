@@ -1,7 +1,7 @@
 import type { NativeRequest } from '../shared/native'
 import type { KernelQuestion } from '../shared/question'
 // Contract for the kernel bridge implemented in ./kernel (owned by another agent).
-export type KernelEventType = 'identity' | 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title' | 'question'
+export type KernelEventType = 'identity' | 'text' | 'tool' | 'status' | 'done' | 'error' | 'permission' | 'usage' | 'title' | 'question' | 'subagent'
 
 export type PermissionReply = 'once' | 'always' | 'reject'
 
@@ -18,6 +18,23 @@ export interface KernelPermission {
   metadata?: Record<string, unknown>
   /** Set on the follow-up event once the request was answered (by the user, auto-approval or elsewhere). */
   resolved?: PermissionReply
+  /** Asked by a subagent (OpenCode task tool) of this conversation: its agent name. */
+  subagent?: string
+  /** Why the autonomy policy did not answer it by itself (sensitive material, outside the project, ...). */
+  reason?: string
+}
+
+/** A subagent session started by this conversation (OpenCode `task` tool), for build progress. */
+export interface KernelSubagent {
+  /** OpenCode session id of the subagent. */
+  id: string
+  /** Agent name (general, explore, or a pack agent). */
+  name: string
+  /** The task description the parent gave it. */
+  title?: string
+  state: 'running' | 'waiting' | 'done' | 'error'
+  /** Its latest tool step, one line. */
+  step?: string
 }
 
 /** Tokens and cost of one finished assistant message. */
@@ -42,6 +59,8 @@ export interface KernelEvent {
   /** type 'permission' */
   permission?: KernelPermission
   question?: KernelQuestion
+  /** type 'subagent': a subagent's state; with `tool`/`text`/`detail`/`input`/`output` when it is a tool step. */
+  subagent?: KernelSubagent
   /** type 'usage' */
   usage?: KernelUsage
   /** type 'tool': the complete tool input, without a size-based clipping fallback. */

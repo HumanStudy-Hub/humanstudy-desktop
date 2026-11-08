@@ -4,7 +4,7 @@ import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, 
 import StudyModel, { viewStudies, type QuoteStatus, type StudyModelProps } from '../program/StudyModel'
 import { readHumanProgram, type HumanProgram } from '../../shared/human-program'
 import { patchProgramField } from '../../shared/program-patch'
-import type { ProjectEntry, ProjectSnapshot, WorkspaceContext } from '../../preload/types'
+import type { KernelSubagent, ProjectEntry, ProjectSnapshot, WorkspaceContext } from '../../preload/types'
 import { claimAction, lap, track } from '../telemetry'
 import { FileView } from './FileView'
 import { Explorer, flatten } from './Explorer'
@@ -97,6 +97,8 @@ interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSour
   agentBusy?: boolean
   /** The agent stopped to ask the researcher (a question or a permission). */
   agentWaiting?: boolean
+  /** Subagents of the build conversation (OpenCode task tool), for the build progress. */
+  agentSubagents?: KernelSubagent[]
   agentThreadId?: string
   agentTurnKey?: string | null
   agentActivity?: string
@@ -124,7 +126,7 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, source, onRestoreSource, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentWaiting = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
+export function Workbench({ ref, project, source, onRestoreSource, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentWaiting = false, agentSubagents, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
   // Tolerant: one slip by the agent sets that detail aside and the document still renders.
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
@@ -538,7 +540,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
                 const el = e.target as HTMLElement
                 if (el.dataset?.studyScroll !== undefined) storePosition({ study: el.scrollTop })
               }}>
-                {building && build && <BuildProgress build={build} waiting={agentWaiting} />}
+                {building && build && <BuildProgress build={build} waiting={agentWaiting} subagents={agentSubagents} />}
                 {buildFailed && <div className="part error edit-error" role="alert">{buildFailed} <button className="link" onClick={retryBuild}>{t('build.retry')}</button></div>}
                 <StudyView
                   view="study"
@@ -567,7 +569,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
               building && build ? (
                 <div className="empty-state">
                   <h2>{t('build.title')}</h2>
-                  <BuildProgress build={build} full waiting={agentWaiting} />
+                  <BuildProgress build={build} full waiting={agentWaiting} subagents={agentSubagents} />
                 </div>
               )
               : buildFailed ? (

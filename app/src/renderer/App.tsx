@@ -524,6 +524,7 @@ export default function App() {
               agentBusy={session.busy}
               // Only the conversation that runs the build can make it wait (another open thread may have its own question).
               agentWaiting={Boolean(session.id && session.id === project?.build?.sessionId && (session.waitingForQuestion || session.waitingForPermission))}
+              agentSubagents={session.id && session.id === project?.build?.sessionId ? session.subagents : undefined}
               agentThreadId={session.threadId ?? session.id ?? ''}
               agentTurnKey={agentTurnKey}
               agentActivity={agentActivity}

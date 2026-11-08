@@ -148,6 +148,8 @@ export function appendEvent(
       ...(perm.automatic ? { automatic: true } : {}),
       title: perm.title,
       patterns: perm.patterns,
+      ...(perm.subagent ? { subagent: perm.subagent } : {}),
+      ...(perm.reason ? { reason: perm.reason } : {}),
       ...(perm.resolved ? { resolved: perm.resolved } : {}),
     }
     parts.push(part)

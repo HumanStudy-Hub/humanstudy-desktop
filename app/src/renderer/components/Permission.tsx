@@ -36,8 +36,11 @@ const verbKeys: Record<string, string> = {
 
 export function PermissionCard({ part, onReply }: { part: PermissionPart; onReply(id: string, response: PermissionReply): void }) {
   const [showDiff, setShowDiff] = useState(true)
-  if (part.automatic) return null
+  // Automatic approvals stay out of the way; an automatic policy denial is shown, so the researcher can see
+  // what the agent was not allowed to do.
+  if (part.automatic && part.resolved !== 'reject') return null
   const target = permissionTarget(part)
+  const who = part.subagent ? <span className="perm-subagent">{t('perm.subagent', { name: part.subagent })}</span> : null
   const diff = str(part.metadata?.diff)
 
   if (part.resolved || part.expired) {
@@ -47,9 +50,10 @@ export function PermissionCard({ part, onReply }: { part: PermissionPart; onRepl
         <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden className="perm-icon">
           {part.resolved === 'reject' ? <path d="M4 4l8 8M12 4l-8 8" /> : part.expired ? <path d="M3 8h10" /> : <path d="M3 8.5l3.2 3.2L13 4.5" />}
         </svg>
-        <span className="perm-label">{label}</span>
+        {who}
+        <span className="perm-label">{part.automatic ? t('perm.policy_denied') : label}</span>
         <span className="perm-dot" aria-hidden>·</span>
-        <span className="perm-target" title={target}>{target}</span>
+        <span className="perm-target" title={part.reason ? `${target}\n${part.reason}` : target}>{target}</span>
       </div>
     )
   }
@@ -79,8 +83,9 @@ export function PermissionCard({ part, onReply }: { part: PermissionPart; onRepl
           {ICONS[iconFor(part.type)]}
         </svg>
         <div className="perm-what">
-          <div className="perm-verb">{verbKeys[part.type] ? t(verbKeys[part.type]) : t('perm.other', { type: part.type })}</div>
+          <div className="perm-verb">{who}{verbKeys[part.type] ? t(verbKeys[part.type]) : t('perm.other', { type: part.type })}</div>
           <code className="perm-title" title={target}>{target}</code>
+          {part.reason && <div className="perm-reason muted small">{t('perm.reason', { reason: part.reason })}</div>}
         </div>
       </div>
       {diff && (

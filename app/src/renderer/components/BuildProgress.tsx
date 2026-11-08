@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { PaperBuildState } from '../../preload/types'
+import type { KernelSubagent, PaperBuildState } from '../../preload/types'
 import { t } from '../i18n'
 import { WEB_EDITION } from '../edition'
 
@@ -8,7 +8,7 @@ const LONG_MIN = 25
 
 /** Where a paper build is and how long it has run: the stages as a line of steps, the minutes so far
  *  against the usual time, and (in the full view) that the researcher need not watch it. */
-export function BuildProgress({ build, full, waiting }: { build: PaperBuildState; full?: boolean; waiting?: boolean }) {
+export function BuildProgress({ build, full, waiting, subagents = [] }: { build: PaperBuildState; full?: boolean; waiting?: boolean; subagents?: KernelSubagent[] }) {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 30_000)
@@ -27,6 +27,17 @@ export function BuildProgress({ build, full, waiting }: { build: PaperBuildState
           </li>
         ))}
       </ol>
+      {build.status === 'running' && subagents.length > 0 && (
+        <ul className="build-subagents small" aria-label={t('build.subagents')}>
+          {subagents.slice(-6).map((a) => (
+            <li key={a.id} className={`subagent ${a.state}`}>
+              <span className="subagent-name">{a.title || a.name}</span>
+              <span className="muted"> · {t(`build.subagent_${a.state}`)}</span>
+              {a.step && a.state !== 'done' && <span className="muted subagent-step" title={a.step}> · {a.step}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
       {/* Always mounted, so screen readers announce the text when it appears. */}
       <p className="small build-waiting" role="status">{waiting && build.status === 'running' ? t('build.waiting') : ''}</p>
       <p className="muted small" aria-live="off">

@@ -173,7 +173,10 @@ export function createPaperBuilds(changed: (dir: string) => void) {
       const state = dir ? readPaperBuild(dir) : undefined
       if (dir && state?.status === 'running' && state.sessionId === sessionId) fail(dir, state, tooLarge(String(error)) ? 'too_large' : 'failed')
     },
-    event(e: KernelEvent): void {
+    event(event: KernelEvent): void {
+      // A subagent's tool step counts for the build it works on: a subagent may write program.json or
+      // run the program check for its parent conversation.
+      const e: KernelEvent = event.type === 'subagent' && event.tool ? { ...event, type: 'tool' } : event
       if (e.type !== 'error' && e.type !== 'tool' && e.type !== 'done') return // text deltas: no file read
       const dir = projects.get(e.sessionId)
       if (!dir) return

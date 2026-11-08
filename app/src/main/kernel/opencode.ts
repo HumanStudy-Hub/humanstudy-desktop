@@ -53,21 +53,31 @@ import { tmpdir } from 'node:os'
 import { join, relative, isAbsolute, resolve, sep } from 'node:path'
 import { kernelRuntimeEnv } from '../runtime-core'
 import { Emitter } from './types'
-import type { Kernel, KernelEvent, KernelPermission, PermissionReply } from './types'
+import type { Kernel, KernelEvent, KernelPermission, KernelSubagent, PermissionReply } from './types'
+import { classifyPermission, defaultPolicyContext, READ_ONLY_COMMANDS, READ_PERMISSION, type PolicyContext, type PolicyVerdict } from './permission-policy'
 
-/** Per-command bash rules (opencode: last matching pattern wins, compound commands are checked per
- *  command). Read-only commands run without a prompt; anything unlisted, and the risky forms of the
- *  listed ones (find -delete/-exec, rg --pre, output redirection), still asks. */
-const READ_ONLY_BASH = ['ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'find', 'pdftotext', 'pdfinfo', 'hs-pdf', 'file', 'pwd', 'echo']
-export const BASH_PERMISSION: Record<string, 'ask' | 'allow'> = {
-  '*': 'ask',
-  ...Object.fromEntries(READ_ONLY_BASH.flatMap((c) => [[c, 'allow'], [`${c} *`, 'allow']])),
-  'find *-delete*': 'ask',
-  'find *-exec*': 'ask',
-  'find *-ok*': 'ask',
-  'find *-fprint*': 'ask',
-  'rg *--pre*': 'ask',
-  '*>*': 'ask',
+/** What OpenCode itself asks the app about (every edit, every shell command, every path outside the
+ *  project, and reads of sensitive folders). The app answers each one through classifyPermission
+ *  (permission-policy.ts): automatically unless the action involves sensitive material. Subagents
+ *  (the task tool) get the same rules: their ruleset is OpenCode's defaults plus this config. */
+export const PERMISSION_CONFIG = {
+  edit: 'ask',
+  bash: 'ask',
+  external_directory: 'ask',
+  read: READ_PERMISSION,
+  webfetch: 'allow',
+  websearch: 'allow',
+  task: 'allow',
+} as const
+
+/** A subagent session (OpenCode `task` tool) under a session this app started. */
+interface ChildState {
+  parent: string
+  name: string
+  title: string
+  state: KernelSubagent['state']
+  roles: Map<string, string>
+  toolStatus: Map<string, string>
 }
 
 export const DEFAULT_PROVIDER = 'humanstudy'
@@ -149,8 +159,9 @@ export interface OpencodeOptions {
   home?: string
   provider?: string
   model?: string
-  /** 'ask': every edit/bash call goes to the renderer. 'project': those inside the project folder are
-   *  approved automatically. Default: HUMANSTUDY_PERMISSION env (set from Settings), else 'project'. */
+  /** 'project' (Auto): the autonomy policy (permission-policy.ts) answers every request except sensitive
+   *  ones. 'ask': everything but read-only project commands goes to the renderer; policy denials apply in
+   *  both. Default: HUMANSTUDY_PERMISSION env (set from Settings), else 'project'. */
   permission?: 'ask' | 'project'
   readyTimeoutMs?: number
   /** Simulations through the per-run model relay (default: relaySupported(), i.e. macOS with
@@ -261,12 +272,12 @@ export class OpencodeKernel implements Kernel {
 
   async reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void> {
     const s = this.session(sessionId)
-    await this.replyTo(s.server, sessionId, permissionId, response)
+    await this.replyTo(s.server, this.permissionSession.get(permissionId) ?? sessionId, permissionId, response)
     s.pendingPermissions.delete(permissionId)
     if (response === 'reject') { s.recovery.cancelled = true; s.recovery.pending = false }
   }
 
-  private async replyTo(server: Server, sessionId: string, permissionId: string, response: PermissionReply): Promise<void> {
+  private async replyTo(server: Server, sessionId: string, permissionId: string, response: PermissionReply, message?: string): Promise<void> {
     const post = (path: string, body: unknown): Promise<Response> =>
       fetch(server.base + path, {
         method: 'POST',
@@ -274,7 +285,7 @@ export class OpencodeKernel implements Kernel {
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(15_000),
       })
-    let res = await post(`/permission/${encodeURIComponent(permissionId)}/reply`, { reply: response })
+    let res = await post(`/permission/${encodeURIComponent(permissionId)}/reply`, { reply: response, ...(message ? { message } : {}) })
     if (res.status === 404 || res.status === 405) {
       const text = await res.clone().text()
       // Older servers only have the (now deprecated) per-session route.
@@ -295,7 +306,8 @@ export class OpencodeKernel implements Kernel {
   private async listQuestions(sessionId: string): Promise<KernelQuestion[]> {
     const res = await this.request(this.session(sessionId).server, 'GET', '/question')
     const requests = await res.json() as { id: string; sessionID: string; questions: KernelQuestion['questions'] }[]
-    const pending = requests.filter(q => q.sessionID === sessionId).map(q => ({ id: q.id, questions: q.questions }))
+    // A subagent's question belongs to the conversation that started it, labelled with the subagent.
+    const pending = requests.filter(q => this.rootOf(q.sessionID) === sessionId).map(q => ({ id: q.id, questions: q.questions, ...(q.sessionID !== sessionId ? { subagent: this.children.get(q.sessionID)?.name ?? 'subagent' } : {}) }))
     return pending
   }
 
@@ -534,19 +546,53 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     this.permission = mode
     if (mode !== 'project') return
     for (const [sid, s] of this.sessions) for (const p of s.pendingPermissions.values()) {
-      if (isInsideProject(s.server.dir, p)) this.autoApprove(sid, s, p)
+      if (this.verdict(s.server.dir, p).decision === 'allow') this.autoApprove(sid, s, p)
     }
   }
+  /** Policy context per project (see permission-policy.ts); tests may replace it. */
+  policyContext = (dir: string): PolicyContext => defaultPolicyContext(dir, this.home)
+  private verdict(dir: string, perm: KernelPermission): PolicyVerdict {
+    try { return classifyPermission(this.policyContext(dir), perm) } catch { return { decision: 'ask', reason: 'could not be checked' } }
+  }
+  /** Permission ids the policy rejected (their `permission.replied` is not a researcher's stop). */
+  private policyDenied = new Set<string>()
+  /** Permission id -> the subagent session that asked (for the per-session reply fallback). */
+  private permissionSession = new Map<string, string>()
   private autoApprove(sessionId: string, s: SessionState, perm: KernelPermission): void {
     if (this.autoReplies.has(perm.id)) return
     this.autoReplies.add(perm.id)
     // One call only: an Auto approval must not become a permanent native permission
     // grant that would silently survive switching Auto off.
-    this.replyTo(s.server, sessionId, perm.id, 'once').then(() => {
+    this.replyTo(s.server, this.permissionSession.get(perm.id) ?? sessionId, perm.id, 'once').then(() => {
       s.pendingPermissions.delete(perm.id)
       if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'once' } })
     }, () => this.emitter.emit({ sessionId, type: 'permission', permission: perm }))
       .finally(() => this.autoReplies.delete(perm.id))
+  }
+  /** Policy denial: rejected with a message, so OpenCode reports it to the model and the turn goes on
+   *  (a plain reject would stop the whole agent loop). Shown in the transcript as an automatic decision. */
+  private autoDeny(sessionId: string, s: SessionState, perm: KernelPermission): void {
+    if (this.autoReplies.has(perm.id)) return
+    this.autoReplies.add(perm.id)
+    this.policyDenied.add(perm.id)
+    if (this.policyDenied.size > 1024) this.policyDenied.delete(this.policyDenied.values().next().value as string)
+    const message = `HumanStudy policy: this action is not allowed (${perm.reason ?? 'sensitive'}). Continue without it; if it is essential, ask the researcher.`
+    this.replyTo(s.server, this.permissionSession.get(perm.id) ?? sessionId, perm.id, 'reject', message).then(() => {
+      s.pendingPermissions.delete(perm.id)
+      if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'reject' } })
+    }, () => this.emitter.emit({ sessionId, type: 'permission', permission: perm }))
+      .finally(() => this.autoReplies.delete(perm.id))
+  }
+  /** One decision for a parent's or a subagent's request; `sessionId`/`s` are the parent conversation's. */
+  private decide(sessionId: string, s: SessionState, perm: KernelPermission, emit: (e: Omit<KernelEvent, 'sessionId'>) => void): void {
+    s.pendingPermissions.set(perm.id, perm)
+    const v = this.verdict(s.server.dir, perm)
+    if (v.reason) perm.reason = v.reason
+    if (v.decision === 'deny') return this.autoDeny(sessionId, s, perm)
+    const readOnly = perm.type === 'bash' && (perm.patterns?.length ? perm.patterns : [String(perm.metadata?.command ?? '')])
+      .every(c => READ_ONLY_COMMANDS.has(c.trim().split(/\s+/)[0] ?? '') && !/[>`]|\$\(/.test(c))
+    if (v.decision === 'allow' && (this.permissionMode() === 'project' || readOnly)) return this.autoApprove(sessionId, s, perm)
+    emit({ type: 'permission', permission: perm })
   }
 
   private permissionMode(): 'ask' | 'project' {
@@ -578,7 +624,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     const cfg: Record<string, unknown> = {
       $schema: 'https://opencode.ai/config.json',
       ...(model ? { model, small_model: model } : {}), // small_model: otherwise titles go to opencode's own default
-      permission: { edit: 'ask', bash: BASH_PERMISSION, external_directory: 'ask' },
+      permission: PERMISSION_CONFIG,
     }
     if (this.provider === HOSTED_PROVIDER) {
       cfg.provider = { [HOSTED_PROVIDER]: { ...(transport ? { options: { baseURL: transport.baseURL, apiKey: transport.token } } : {}), models: { [this.model]: {
@@ -853,9 +899,9 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         this.handle({ type: 'message.updated', properties: { info: { ...info, sessionID: sessionId } } })
         if (info.error && !s.failed) this.handle({ type: 'session.error', properties: { sessionID: sessionId, error: info.error } })
       }
-      const pendingPermissions = permissions.filter(p => p.sessionID === sessionId)
+      const pendingPermissions = permissions.filter(p => this.rootOf(p.sessionID) === sessionId)
       for (const p of pendingPermissions) if (!s.pendingPermissions.has(String(p.id))) this.handle({ type: 'permission.asked', properties: p })
-      const pendingQuestions = questions.filter(q => q.sessionID === sessionId)
+      const pendingQuestions = questions.filter(q => this.rootOf(q.sessionID) === sessionId)
       for (const q of pendingQuestions) this.handle({ type: 'question.asked', properties: q })
       const latest = current.filter(m => m.info.role === 'assistant').at(-1)?.info
       if ((!status || status.type === 'idle') && !pendingPermissions.length && !pendingQuestions.length && !s.awaitingAssistant && (latest?.time?.completed || s.failed)) {
@@ -889,7 +935,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
               // Once a stream has a gap, use absolute saved parts for the rest of
               // this turn. Replaying relative deltas over a snapshot duplicates text.
               if (this.catchingUp.has(server) && /^(message\.|session\.(idle|status)$)/.test(data.type)) return
-              this.handle(data)
+              this.handle(data, server)
             })
           } catch (err) {
             if (server.sse.signal.aborted) break
@@ -937,20 +983,151 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     }
   }
 
+  /** Emit for a conversation; activity (its own or a subagent's) keeps the liveness check quiet. */
+  private emitFor(sessionId: string, s: SessionState, e: Omit<KernelEvent, 'sessionId'>): void {
+    if (e.type === 'text' || e.type === 'tool' || e.type === 'usage' || e.type === 'question' || e.type === 'permission' || e.type === 'subagent') {
+      s.lastActivity = this.clock(); s.idleSince = undefined
+      if (s.stalled) { s.stalled = false; this.emitter.emit({ sessionId, type: 'status', text: 'busy' }) }
+    }
+    this.emitter.emit({ sessionId, ...e })
+  }
+
+  // ---- subagents (OpenCode `task` tool child sessions) ------------------------------------
+
+  private children = new Map<string, ChildState>()
+  /** The conversation this app started that a (possibly nested) subagent session belongs to. */
+  rootOf(id: string | undefined): string | undefined {
+    for (let cur = id, depth = 0; cur && depth < 16; depth++) {
+      if (this.sessions.has(cur)) return cur
+      cur = this.children.get(cur)?.parent
+    }
+    return undefined
+  }
+  private adoptChild(id: string, parent: string, info: { title?: unknown; agent?: unknown }): ChildState | undefined {
+    if (this.sessions.has(id) || !this.rootOf(parent)) return undefined
+    const known = this.children.get(id)
+    const title = typeof info.title === 'string' ? info.title : known?.title ?? ''
+    const name = (typeof info.agent === 'string' && info.agent) || /\(@([\w-]+) subagent\)\s*$/.exec(title)?.[1] || known?.name || 'subagent'
+    const child: ChildState = known ?? { parent, name, title, state: 'running', roles: new Map(), toolStatus: new Map() }
+    child.name = name; child.title = title.replace(/\s*\(@[\w-]+ subagent\)\s*$/, '') || child.title
+    if (!known) {
+      this.children.set(id, child)
+      if (this.children.size > 512) this.children.delete(this.children.keys().next().value as string)
+      this.reportChild(id, child)
+    }
+    return child
+  }
+  private reportChild(id: string, c: ChildState, step?: Partial<KernelEvent>): void {
+    const root = this.rootOf(id)
+    const s = root ? this.sessions.get(root) : undefined
+    if (!root || !s) return
+    const subagent: KernelSubagent = { id, name: c.name, title: c.title || undefined, state: c.state, ...(step?.detail !== undefined || step?.tool ? { step: [step.tool, step.detail].filter(Boolean).join(': ').slice(0, 300) } : {}) }
+    this.emitFor(root, s, { type: 'subagent', subagent, ...step })
+  }
+  /** A permission or question from a session we never saw created (missed during a reconnect). */
+  private lookups = new Set<string>()
+  private async lookupChild(server: Server, id: string): Promise<boolean> {
+    if (this.lookups.has(id)) return false
+    this.lookups.add(id)
+    try {
+      for (let cur: string | undefined = id, depth = 0; cur && depth < 16 && !this.rootOf(cur); depth++) {
+        const info = await (await this.request(server, 'GET', '/session/' + encodeURIComponent(cur), undefined, 5000)).json() as { id?: string; parentID?: string; title?: string; agent?: string }
+        if (!info?.parentID) return false
+        if (this.rootOf(info.parentID)) { this.adoptChild(cur, info.parentID, info); break }
+        // Nested: adopt the chain from the top once the ancestor is known.
+        cur = info.parentID
+      }
+      return Boolean(this.rootOf(id))
+    } catch { return false } finally { this.lookups.delete(id) }
+  }
+
+  private handleChild(ev: OcEvent, childId: string, server?: Server): void {
+    const p = ev.properties ?? {}
+    if ((ev.type === 'session.created' || ev.type === 'session.updated') && p.info?.parentID) {
+      this.adoptChild(childId, p.info.parentID, p.info)
+      return
+    }
+    const c = this.children.get(childId)
+    const root = this.rootOf(childId)
+    const s = root ? this.sessions.get(root) : undefined
+    if (!c || !root || !s) {
+      if ((ev.type === 'permission.asked' || ev.type === 'question.asked') && server && !server.exited)
+        void this.lookupChild(server, childId).then(ok => { if (ok) this.handle(ev, server) })
+      return
+    }
+    const emit = (e: Omit<KernelEvent, 'sessionId'>): void => this.emitFor(root, s, e)
+    const setState = (state: KernelSubagent['state']): void => { if (c.state !== state) { c.state = state; this.reportChild(childId, c) } }
+    switch (ev.type) {
+      case 'permission.asked': {
+        const perm = toKernelPermission(p)
+        if (!perm) return
+        perm.subagent = c.name
+        this.permissionSession.set(perm.id, childId)
+        if (this.permissionSession.size > 4096) this.permissionSession.delete(this.permissionSession.keys().next().value as string)
+        this.decide(root, s, perm, e => { emit(e); setState('waiting') })
+        return
+      }
+      case 'permission.replied': {
+        if (p.requestID) s.pendingPermissions.delete(p.requestID)
+        const reply = p.reply ?? p.response
+        if (p.requestID && (reply === 'once' || reply === 'always' || reply === 'reject') && this.reportResolved(p.requestID))
+          emit({ type: 'permission', permission: { id: p.requestID, type: '', resolved: reply, subagent: c.name, ...(this.autoReplies.has(p.requestID) ? { automatic: true } : {}) } })
+        if (c.state === 'waiting') setState('running')
+        return
+      }
+      case 'question.asked':
+        s.pendingQuestions.add(p.id)
+        s.inFlight = true
+        emit({ type: 'question', question: { id: p.id, questions: p.questions ?? [], subagent: c.name } })
+        setState('waiting')
+        return
+      case 'question.replied': case 'question.rejected':
+        s.pendingQuestions.delete(p.requestID)
+        if (this.reportResolved('q:' + p.requestID)) emit({ type: 'question', question: { id: p.requestID, questions: [], subagent: c.name, ...(ev.type === 'question.replied' ? { answers: p.answers, resolved: 'answered' as const } : { resolved: 'rejected' as const }) } })
+        if (c.state === 'waiting') setState('running')
+        return
+      case 'message.updated':
+        if (p.info?.id && p.info.role) c.roles.set(p.info.id, p.info.role)
+        return
+      case 'message.part.updated': {
+        const part = p.part
+        if (part?.type !== 'tool' || !part.id) return
+        const st = part.state ?? {}
+        const status: string = st.status ?? 'pending'
+        const detail = status === 'error' ? String(st.error ?? '') : toolDetail(part.tool, st.title, st.input)
+        const key = `${status}\n${detail}`
+        if (c.toolStatus.get(part.id) === key) return
+        c.toolStatus.set(part.id, key)
+        if (c.state !== 'waiting') c.state = 'running'
+        const done = status === 'completed' || status === 'error'
+        const out = status === 'error' ? st.error : st.output
+        // The step travels with the subagent event (not as a parent `tool`), so the parent transcript stays
+        // the parent's, while build progress still sees what the subagent ran and wrote.
+        this.reportChild(childId, c, { tool: part.tool, text: status, detail, input: st.input, output: done && out != null ? (typeof out === 'string' ? out : JSON.stringify(out)) : undefined })
+        return
+      }
+      case 'session.status':
+        if (p.status?.type && p.status.type !== 'idle' && c.state !== 'waiting') setState('running')
+        return
+      case 'session.idle':
+        setState('done')
+        return
+      case 'session.error':
+        if (p.error?.name !== 'MessageAbortedError') setState('error')
+        else setState('done')
+        return
+    }
+  }
+
   /** Map one opencode bus event onto zero or more KernelEvents. */
-  private handle(ev: OcEvent): void {
+  private handle(ev: OcEvent, server?: Server): void {
     const p = ev.properties ?? {}
     const sessionId: string | undefined = p.sessionID ?? p.part?.sessionID ?? p.info?.sessionID
     if (!sessionId) return
     const s = this.sessions.get(sessionId)
-    if (!s) return // child/sub-agent sessions and sessions we did not start
-    const emit = (e: Omit<KernelEvent, 'sessionId'>): void => {
-      if (e.type === 'text' || e.type === 'tool' || e.type === 'usage' || e.type === 'question' || e.type === 'permission') {
-        s.lastActivity = this.clock(); s.idleSince = undefined
-        if (s.stalled) { s.stalled = false; this.emitter.emit({ sessionId, type: 'status', text: 'busy' }) }
-      }
-      this.emitter.emit({ sessionId, ...e })
-    }
+    // Subagent sessions are routed to the conversation that started them; others are not ours.
+    if (!s) return this.handleChild(ev, sessionId, server)
+    const emit = (e: Omit<KernelEvent, 'sessionId'>): void => this.emitFor(sessionId, s, e)
 
     switch (ev.type) {
       case 'question.asked':
@@ -1071,6 +1248,11 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
             if (s.recovery.reason === 'invalid_tool_call') s.recovery.pending = false
           }
           const out = status === 'error' ? st.error : st.output
+          const childId = part.tool === 'task' ? st.metadata?.sessionId : undefined
+          if (typeof childId === 'string' && childId) {
+            const child = this.adoptChild(childId, sessionId, { agent: st.input?.subagent_type, title: st.input?.description })
+            if (child && done && child.state !== 'done' && child.state !== 'error') { child.state = status === 'error' ? 'error' : 'done'; this.reportChild(childId, child) }
+          }
           emit({
             type: 'tool',
             toolCallId: part.callID ?? part.id,
@@ -1115,6 +1297,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         }
         s.inFlight = false
         s.pendingPermissions.clear()
+        for (const [id, c] of this.children) if (this.rootOf(id) === sessionId && (c.state === 'running' || c.state === 'waiting')) { c.state = 'done'; this.reportChild(id, c) }
         // Retain offsets/status IDs: late full snapshots must not repeat a finished turn.
         emit({ type: 'done' })
         return
@@ -1133,18 +1316,14 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       case 'permission.asked': {
         const perm = toKernelPermission(p)
         if (!perm) return
-        s.pendingPermissions.set(perm.id, perm)
-        if (this.permissionMode() === 'project' && isInsideProject(s.server.dir, perm)) {
-          this.autoApprove(sessionId, s, perm)
-          return
-        }
-        emit({ type: 'permission', permission: perm })
+        this.decide(sessionId, s, perm, emit)
         return
       }
 
       case 'permission.replied': {
         if (p.requestID) s.pendingPermissions.delete(p.requestID)
-        if ((p.reply ?? p.response) === 'reject') { s.recovery.cancelled = true; s.recovery.pending = false }
+        // A policy denial carries a message and does not stop the turn; only a researcher's reject does.
+        if ((p.reply ?? p.response) === 'reject' && !this.policyDenied.has(p.requestID)) { s.recovery.cancelled = true; s.recovery.pending = false }
         const reply = p.reply ?? p.response
         if (p.requestID && (reply === 'once' || reply === 'always' || reply === 'reject') && this.reportResolved(p.requestID))
           emit({ type: 'permission', permission: { id: p.requestID, type: '', resolved: reply, ...(this.autoReplies.has(p.requestID) ? { automatic: true } : {}) } })
