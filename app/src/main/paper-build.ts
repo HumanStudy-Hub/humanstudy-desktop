@@ -9,7 +9,9 @@
 //
 // State lives in <project>/.humanstudy/paper-build.json so it survives restarts. A `running` build whose
 // conversation is not live in this app process was interrupted (crash, forced quit) and reads as `error`,
-// so the researcher gets a retry instead of a spinner that never ends; it is never resumed silently.
+// so the researcher gets a retry instead of a spinner that never ends. Desktop never resumes it silently; the
+// web edition continues a build its session limit stopped once, when the project is opened again
+// (renderer Workbench, WEB_EDITION).
 import { createHash } from 'node:crypto'
 import { buildCoverageProblems } from '../shared/build-completion'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -216,10 +218,12 @@ export function createPaperBuilds(changed: (dir: string) => void) {
 export function checkResult(e: Pick<KernelEvent, 'tool' | 'input' | 'detail' | 'output'>): boolean | null {
   const text = toolAction(e.tool, e.input ?? e.detail)
   if (text === null) return null
-  if (/check_program|check_package/.test(text)) {
-    if (e.output === undefined) return null
+  // A check is a command whose output has the checker's verdict line; `grep check_program` or reading the
+  // script mentions it without running it.
+  if (/check_program|check_package/.test(text) && e.output !== undefined && /^(PASS|FAIL)\b/m.test(e.output)) {
     return /^PASS\b/m.test(e.output) && !/^FAIL\b/m.test(e.output)
   }
+  if (/check_program|check_package/.test(text) && !/program_io/.test(text)) return null
   if (/program_io/.test(text) || (WRITE_TOOLS.test(e.tool ?? '') && /program\.json/.test(text))) return false
   return null
 }

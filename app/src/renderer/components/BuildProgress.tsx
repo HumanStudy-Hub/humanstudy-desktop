@@ -18,15 +18,16 @@ export function BuildProgress({ build, full }: { build: PaperBuildState; full?: 
   const at = build.status === 'pending' ? -1 : steps.indexOf(build.phase)
   const minutes = build.startedAt && build.status === 'running' ? Math.max(0, Math.floor((now - build.startedAt) / 60_000)) : null
   return (
-    <div className={`build-progress${full ? ' full' : ''}`} role="status">
-      <ol className="build-steps">
+    <div className={`build-progress${full ? ' full' : ''}`}>
+      {/* Stage changes are announced; the minute counter is not. */}
+      <ol className="build-steps" role="status" aria-live="polite">
         {steps.map((s, i) => (
           <li key={s} className={i < at ? 'done' : i === at ? 'current' : ''} aria-current={i === at ? 'step' : undefined}>
             {t(`build.step_${s}`)}
           </li>
         ))}
       </ol>
-      <p className="muted small">
+      <p className="muted small" aria-live="off">
         {build.status === 'pending'
           ? t('build.pending')
           : minutes

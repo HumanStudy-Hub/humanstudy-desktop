@@ -78,6 +78,8 @@ test('writing program.json or package files by tool counts; the shell command is
   assert.equal(P.checkResult({ tool: 'write', input: { filePath: '/p/program.json', content: 'check_program PASS' } }), false)
   assert.equal(P.checkResult({ tool: 'edit', input: { filePath: '/p/program.json' } }), false)
   assert.equal(P.checkResult({ tool: 'todowrite', input: { todos: [{ content: 'check_program' }] }, output: 'x' }), null)
+  assert.equal(P.checkResult({ tool: 'bash', input: { command: 'grep -n PASS .opencode/skills/build/check_program.py' }, output: '41:    print(f"PASS {path}")' }), null, 'reading the checker is not a check')
+  assert.equal(P.checkResult({ tool: 'bash', input: { command: 'python check_program.py program.json' }, output: 'PROBLEM x\nFAIL 1 problem(s)' }), false)
   assert.equal(P.buildPhase('write', { filePath: '/p/package/study/task/adapter.py' }), 'packaging')
   assert.equal(P.buildPhase('todowrite', { todos: [{ content: 'package/' }] }), null)
   assert.equal(P.buildPhase('bash', { command: 'python check_package.py package/x' }), 'packaging')

@@ -22,6 +22,9 @@ import { quoteKey } from '../../shared/source-anchor'
 import { clearDraft, draftsIn } from '../drafts'
 import { forget, remember } from '../nav'
 
+/** Projects whose stopped build the web edition already continued in this page load. */
+const resumedBuilds = new Set<string>()
+
 export type MainTab = 'study' | 'paper' | 'simulation'
 type TabId = MainTab | `file:${string}`
 interface Layout {
@@ -139,11 +142,10 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const retryBuild = () => void window.humanstudy.project.retryBuild(project.dir, claimAction('build.retry')).catch((e: unknown) => setEditError(String(e)))
   // Web edition: an online session that ended (its time limit) or was cut off stopped the build, not the
   // researcher, so opening the project again continues it once. On desktop a stopped build waits for Retry.
-  const resumedBuild = useRef<string | null>(null)
   useEffect(() => {
     if (!WEB_EDITION || build?.status !== 'error' || (build.error !== 'closed' && build.error !== 'interrupted')) return
-    if (resumedBuild.current === project.dir) return
-    resumedBuild.current = project.dir
+    if (resumedBuilds.has(project.dir)) return // once per project per page load; after that, Retry
+    resumedBuilds.add(project.dir)
     void window.humanstudy.project.retryBuild(project.dir, claimAction('build.resume')).catch(() => undefined)
   }, [build?.status, build?.error, project.dir])
   const studies = useMemo(() => (program ? viewStudies(program) : []), [program])

@@ -241,7 +241,6 @@ code, pre { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 1
 .file-editor { flex: 1; min-height: 0; width: 100%; resize: none; border: 0; outline: 0; padding: 16px 20px 40px; background: var(--bg); color: var(--text); font: 12.5px/1.6 ui-monospace, 'SF Mono', Menlo, monospace; tab-size: 2; white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden; overflow-y: auto; }
 .study-scroll { padding: 0 0 64px; }
 .edit-error { margin: 8px 20px 0; font-size: 12px; flex: none; }
-.build-status { margin: 8px 20px 0; font-size: 12px; flex: none; color: var(--muted); }
 /* Paper build: the stages as a line of steps (text and dots), then the time so far. */
 .build-progress { margin: 8px 20px 0; flex: none; display: flex; flex-direction: column; gap: 2px; }
 .build-progress.full { margin: 12px 0 0; align-items: center; gap: 6px; }
