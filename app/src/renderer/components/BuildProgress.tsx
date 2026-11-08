@@ -27,7 +27,8 @@ export function BuildProgress({ build, full, waiting }: { build: PaperBuildState
           </li>
         ))}
       </ol>
-      {waiting && build.status === 'running' && <p className="small build-waiting" role="status">{t('build.waiting')}</p>}
+      {/* Always mounted, so screen readers announce the text when it appears. */}
+      <p className="small build-waiting" role="status">{waiting && build.status === 'running' ? t('build.waiting') : ''}</p>
       <p className="muted small" aria-live="off">
         {build.status === 'pending'
           ? t('build.pending')
