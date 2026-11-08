@@ -242,6 +242,20 @@ code, pre { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 1
 .study-scroll { padding: 0 0 64px; }
 .edit-error { margin: 8px 20px 0; font-size: 12px; flex: none; }
 .build-status { margin: 8px 20px 0; font-size: 12px; flex: none; color: var(--muted); }
+/* Paper build: the stages as a line of steps (text and dots), then the time so far. */
+.build-progress { margin: 8px 20px 0; flex: none; display: flex; flex-direction: column; gap: 2px; }
+.build-progress.full { margin: 12px 0 0; align-items: center; gap: 6px; }
+.build-progress p { margin: 0; }
+.build-steps { display: flex; flex-wrap: wrap; gap: 4px 16px; list-style: none; padding: 0; margin: 0 0 2px; font-size: 12px; color: var(--muted); }
+.build-progress.full .build-steps { justify-content: center; margin-bottom: 6px; }
+.build-steps li { display: inline-flex; align-items: center; gap: 6px; }
+.build-steps li::before { content: ''; width: 6px; height: 6px; border-radius: 50%; border: 1px solid currentColor; }
+.build-steps li.done { color: var(--ok); }
+.build-steps li.done::before { background: currentColor; }
+.build-steps li.current { color: var(--text); font-weight: 500; }
+.build-steps li.current::before { background: currentColor; animation: build-pulse 1.6s ease-in-out infinite; }
+@keyframes build-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .build-steps li.current::before { animation: none; } }
 .menu-sep { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
 
 /* sign-in */

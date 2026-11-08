@@ -183,6 +183,8 @@ export interface PaperBuildState {
   checked?: boolean
   /** SHA-256 of the independently validated program bytes; any later write invalidates it. */
   validationHash?: string
+  /** When the build started (epoch ms), so the Study view can say how long it has run. */
+  startedAt?: number
 }
 
 export interface ProjectSnapshot {
