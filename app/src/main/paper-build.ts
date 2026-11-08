@@ -9,7 +9,9 @@
 //
 // State lives in <project>/.humanstudy/paper-build.json so it survives restarts. A `running` build whose
 // conversation is not live in this app process was interrupted (crash, forced quit) and reads as `error`,
-// so the researcher gets a retry instead of a spinner that never ends; it is never resumed silently.
+// so the researcher gets a retry instead of a spinner that never ends. Desktop never resumes it silently; the
+// web edition continues a build its session limit stopped once, when the project is opened again
+// (renderer Workbench, WEB_EDITION).
 import { createHash } from 'node:crypto'
 import { buildCoverageProblems } from '../shared/build-completion'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -63,10 +65,28 @@ const currentCertificate = (dir: string, state: PaperBuildState): boolean => {
   return current !== null && current.hash === state.validationHash && !current.problems.length
 }
 
-/** Which part of the build a tool call belongs to, from its input (the build skill's own commands). */
-export function buildPhase(input: unknown): PaperBuildState['phase'] | null {
-  let text: string
-  try { text = typeof input === 'string' ? input : JSON.stringify(input ?? '') } catch { return null }
+const WRITE_TOOLS = /^(write|edit|patch|multiedit|apply_patch)$/i
+
+/** What a tool call actually did, as text: the shell command it ran, or the file it wrote. Null for
+ *  everything else (to-do lists, reads, searches), whose text can mention check_program or package/
+ *  without running or writing anything: a to-do item "run check_program" is not a failed check. */
+export function toolAction(tool: string | undefined, input: unknown): string | null {
+  if (typeof input === 'string') return input // a bare command (older events)
+  if (!input || typeof input !== 'object') return null
+  const o = input as Record<string, unknown>
+  if (typeof o.command === 'string' && (!tool || /^(bash|shell|sh)$/i.test(tool))) return o.command
+  if (tool && WRITE_TOOLS.test(tool)) {
+    const path = o.filePath ?? o.path ?? o.file_path
+    if (typeof path === 'string') return path
+    if (typeof o.patchText === 'string') return o.patchText
+  }
+  return null
+}
+
+/** Which part of the build a tool call belongs to, from what it ran or wrote (the build skill's commands). */
+export function buildPhase(tool: string | undefined, input: unknown): PaperBuildState['phase'] | null {
+  const text = toolAction(tool, input)
+  if (text === null) return null
   if (/check_package|package[\\/]/.test(text)) return 'packaging'
   if (/check_program/.test(text)) return 'checking'
   if (/program_io|program\.json/.test(text)) return 'writing'
@@ -128,7 +148,7 @@ export function createPaperBuilds(changed: (dir: string) => void) {
       if (read(dir)?.status !== 'pending') return false
       live.add(sessionId)
       lastError.delete(sessionId)
-      save(dir, { status: 'running', phase: 'reading', sessionId })
+      save(dir, { status: 'running', phase: 'reading', sessionId, startedAt: Date.now() })
       return true
     },
     /** The caller could not send after start() (project or conversation changed): back to pending. */
@@ -177,7 +197,7 @@ export function createPaperBuilds(changed: (dir: string) => void) {
       if (state.status !== 'running' || state.sessionId !== e.sessionId) return
       if (e.type === 'error') lastError.set(e.sessionId, e.text ?? '')
       else if (e.type === 'tool') {
-        const phase = buildPhase(e.input ?? e.detail)
+        const phase = buildPhase(e.tool, e.input ?? e.detail)
         if (phase && phase !== state.phase) save(dir, { ...certificate, checked, phase })
       } else if (e.type === 'done') {
         const error = lastError.get(e.sessionId)
@@ -196,13 +216,15 @@ export function createPaperBuilds(changed: (dir: string) => void) {
 /** A finished program or package check: true when it printed PASS, false when it failed; a write to
  *  program.json is false too (it needs checking again). null: says nothing about the check. */
 export function checkResult(e: Pick<KernelEvent, 'tool' | 'input' | 'detail' | 'output'>): boolean | null {
-  let text: string
-  try { text = typeof e.input === 'string' ? e.input : JSON.stringify(e.input ?? e.detail ?? '') } catch { return null }
-  if (/check_program|check_package/.test(text)) {
-    if (e.output === undefined) return null
+  const text = toolAction(e.tool, e.input ?? e.detail)
+  if (text === null) return null
+  // A check is a command whose output has the checker's verdict line; `grep check_program` or reading the
+  // script mentions it without running it.
+  if (/check_program|check_package/.test(text) && e.output !== undefined && /^(PASS|FAIL)\b/m.test(e.output)) {
     return /^PASS\b/m.test(e.output) && !/^FAIL\b/m.test(e.output)
   }
-  if (/program_io/.test(text) || (/^(write|edit|patch|multiedit)$/i.test(e.tool ?? '') && /program\.json/.test(text))) return false
+  if (/check_program|check_package/.test(text) && !/program_io/.test(text)) return null
+  if (/program_io/.test(text) || (WRITE_TOOLS.test(e.tool ?? '') && /program\.json/.test(text))) return false
   return null
 }
 

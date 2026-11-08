@@ -10,6 +10,8 @@ import { FileView } from './FileView'
 import { Explorer, flatten } from './Explorer'
 import { SourceDrawer, type PassageSelection, type SourceRef } from './SourceDrawer'
 import { t } from '../i18n'
+import { BuildProgress } from './BuildProgress'
+import { WEB_EDITION } from '../edition'
 import { sourceTarget } from '../../shared/source-target'
 import { simulationScope } from '../../shared/simulation-scope'
 import { simulationPlan } from '../../shared/simulation-run'
@@ -19,6 +21,9 @@ import { passageSupport } from '../../shared/program-view'
 import { quoteKey } from '../../shared/source-anchor'
 import { clearDraft, draftsIn } from '../drafts'
 import { forget, remember } from '../nav'
+
+/** Projects whose stopped build the web edition already continued in this page load. */
+const resumedBuilds = new Set<string>()
 
 export type MainTab = 'study' | 'paper' | 'simulation'
 type TabId = MainTab | `file:${string}`
@@ -131,11 +136,18 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   // The automatic build after a paper import: one status line while it runs, one retry when it stops.
   const build = project.build
   const building = build?.status === 'pending' || build?.status === 'running'
-  const buildLine = !build ? '' : build.status === 'pending' ? t('build.pending') : t(`build.${build.phase}`)
   const buildFailed = build?.status === 'error' ? `${t(`build.error.${build.error ?? 'failed'}`)} ${t('build.kept')}` : ''
   // A project from before automatic builds: a paper, no study, never built. Offer it; never start it unasked.
   const paperOnly = !build && Boolean(project.pdf) && !project.program && !error
   const retryBuild = () => void window.humanstudy.project.retryBuild(project.dir, claimAction('build.retry')).catch((e: unknown) => setEditError(String(e)))
+  // Web edition: an online session that ended (its time limit) or was cut off stopped the build, not the
+  // researcher, so opening the project again continues it once. On desktop a stopped build waits for Retry.
+  useEffect(() => {
+    if (!WEB_EDITION || build?.status !== 'error' || (build.error !== 'closed' && build.error !== 'interrupted')) return
+    if (resumedBuilds.has(project.dir)) return // once per project per page load; after that, Retry
+    resumedBuilds.add(project.dir)
+    void window.humanstudy.project.retryBuild(project.dir, claimAction('build.resume')).catch(() => undefined)
+  }, [build?.status, build?.error, project.dir])
   const studies = useMemo(() => (program ? viewStudies(program) : []), [program])
   const files = useMemo(() => flatten(project.tree), [project.tree])
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
@@ -524,7 +536,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
                 const el = e.target as HTMLElement
                 if (el.dataset?.studyScroll !== undefined) storePosition({ study: el.scrollTop })
               }}>
-                {building && <div className="build-status" role="status">{buildLine}</div>}
+                {building && build && <BuildProgress build={build} />}
                 {buildFailed && <div className="part error edit-error" role="alert">{buildFailed} <button className="link" onClick={retryBuild}>{t('build.retry')}</button></div>}
                 <StudyView
                   view="study"
@@ -550,7 +562,12 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
                 />
               </div>
             ) : (
-              building ? <Empty title={t('build.title')} body={buildLine} />
+              building && build ? (
+                <div className="empty-state">
+                  <h2>{t('build.title')}</h2>
+                  <BuildProgress build={build} full />
+                </div>
+              )
               : buildFailed ? (
                 <Empty title={t('build.failed_title')} body={buildFailed}>
                   <button className="link" onClick={retryBuild}>{t('build.retry')}</button>
