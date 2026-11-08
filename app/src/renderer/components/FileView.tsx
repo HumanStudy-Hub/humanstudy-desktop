@@ -14,6 +14,7 @@ import { resultTitle } from '../results'
 import { listenToArtifact, withArtifactCsp } from '../bridge'
 import { getDraft, isDirty, setDraft, toDisk } from '../drafts'
 import { versionedUrl } from '../../shared/file-version'
+import { WEB_EDITION } from '../edition'
 
 const TEXT = new Set(['md', 'txt', 'json', 'py', 'html', 'htm', 'css', 'js', 'ts', 'mjs', 'csv', 'tsv', 'yaml', 'yml', 'r', 'sh', 'tex', 'bib', 'xml', 'toml', ''])
 const IMAGE = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'])
@@ -140,9 +141,11 @@ export function FileView({ file, version, onDirty }: Props) {
         <p className="muted">
           {t('file.outside', { ext: file.ext.toUpperCase() })}{file.size !== undefined ? ` · ${size(file.size)}` : ''}
         </p>
-        <button className="ghost" onClick={() => void window.humanstudy.project.reveal(file.path)}>
-          {t('file.reveal')}
-        </button>
+        {!WEB_EDITION && (
+          <button className="ghost" onClick={() => void window.humanstudy.project.reveal(file.path)}>
+            {t('file.reveal')}
+          </button>
+        )}
       </div>
     )
 
