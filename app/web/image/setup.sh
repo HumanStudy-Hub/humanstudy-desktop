@@ -22,7 +22,7 @@ chmod 755 opencode && rm -f "$ASSET"
 HS_WEB_TOKEN=setup PORT=3999 "$HS/app/start.sh" foreground &
 PID=$!
 for i in $(seq 1 360); do
-  S=$(curl -s -XPOST -H 'Authorization: Bearer setup' localhost:3999/ipc/kernel:installStatus -d '{"args":[]}' || true)
+  S=$(curl -s -XPOST -H 'Authorization: Bearer setup' -H 'Content-Type: application/json' localhost:3999/ipc/kernel:installStatus -d '{"args":[]}' || true)
   case "$S" in *'"state":"ready"'*) echo "runtime ready"; break;; *'"state":"error"'*) echo "install failed: $S"; kill $PID; exit 1;; esac
   sleep 5
   [ "$i" = 360 ] && { echo "runtime install did not finish in 30 minutes"; kill $PID; exit 1; }
