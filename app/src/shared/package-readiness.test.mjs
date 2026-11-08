@@ -274,18 +274,26 @@ test('run confirmation: Linux/Windows say the study code can read the key; macOS
     assert.equal(c.note, 'sim.note_key', JSON.stringify(readiness))
     assert.ok(EN[c.note].includes(KEY)); assert.ok(ZH[c.note].includes('API 密钥'))
     assert.equal(c.notice, null)
+    assert.equal(c.detail, null, 'the key notice is never folded away behind Details')
   }
   assert.equal(S.runConfirmation({ modelAccess: 'key', runNotice: 'x' }).notice, 'sim.run_notice')
   assert.equal(EN['sim.run_notice'], "This study's code will run on your computer with access to your model key.")
   const relay = S.runConfirmation({ modelAccess: 'relay', runNotice: 'x' })
   assert.equal(relay.note, 'sim.note'); assert.equal(relay.notice, 'sim.run_notice_relay')
-  assert.ok(!EN[relay.note].includes('API key')); assert.match(EN[relay.note], /\{tokens\} tokens and \{minutes\} minutes/)
-  assert.match(EN['sim.run_notice_relay'], /\{tokens\} tokens and \{minutes\} minutes/); assert.match(ZH['sim.run_notice_relay'], /\{tokens\}.*\{minutes\}/)
-  assert.match(EN['sim.run_notice_relay'], /limited model relay/)
+  assert.ok(!EN[relay.note].includes('API key'))
+  // Visible wording states only the time limit; tokens and the relay sit behind Details.
+  assert.match(EN[relay.note], /at most \{minutes\} minutes/); assert.match(ZH[relay.note], /最多运行 \{minutes\} 分钟/)
+  for (const k of [relay.note, relay.notice]) {
+    assert.ok(!/token|relay/i.test(EN[k]), k); assert.ok(!/词元|中转/.test(ZH[k]), k)
+  }
+  assert.equal(relay.detail, 'sim.relay_detail')
+  assert.match(EN['sim.relay_detail'], /\{tokens\} tokens .*\{minutes\} minutes/); assert.match(ZH['sim.relay_detail'], /\{tokens\}.*\{minutes\}/)
+  assert.match(EN['sim.relay_detail'], /limited model relay/)
   // The panel renders exactly these keys next to Run simulation (no other confirmation surface).
   const panel = readFileSync(join(here, '../renderer/components/SimulationPanel.tsx'), 'utf8')
   assert.match(panel, /runConfirmation\(readiness\)/)
   assert.match(panel, /t\(confirmation\.note, accessVars\)/); assert.match(panel, /t\(confirmation\.notice, accessVars\)/)
+  assert.match(panel, /<details[^>]*>\s*<summary>\{t\('sim\.details'\)\}<\/summary>\s*<p>\{t\(confirmation\.detail, accessVars\)\}/)
   assert.match(panel, /runLimits\(\{ conditions: plan\.conditions, perCondition \}\)/, 'the wording states the limits the relay will enforce')
   assert.ok(!panel.includes("t('sim.note')") && !panel.includes("t('sim.run_notice')"), 'no hard-coded wording bypasses the platform choice')
 })

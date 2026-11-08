@@ -207,4 +207,6 @@ Create `artifacts/simulations/<YYYY-MM-DD-HHMM>/` (the run folder) and work insi
 
 Reply with the one-sentence outcome (replicated / not replicated / not ready, with the key numbers),
 the number of model calls (from the usage log above; on macOS the run folder's `llm-usage.jsonl`), and that the result is in the
-Simulation tab. Reply in the researcher's language.
+Simulation tab. End with the lettered next steps of AGENTS.md ("Offer the next step"), for example: read a few
+AI participants' answers, compare one condition with the paper in detail, or run again with more AI participants
+(each new run still needs Run simulation). Reply in the researcher's language.

@@ -48,6 +48,9 @@ export interface Session {
   id: string | null
   /** Sends `prompt` when the project has a pending paper build that this conversation could claim. */
   startPaperBuild(prompt: string): Promise<void>
+  /** The app's first message in a fresh project (the example): sends `prompt` once this conversation belongs to
+   *  `dir` and is idle, only when it has no messages yet. Returns false while not decided (try again later). */
+  startIntro(dir: string, prompt: string, workspace?: WorkspaceContext): boolean
   messages: Message[]
   busy: boolean
   status: string
@@ -178,6 +181,12 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     if (!(await window.humanstudy.project.startBuild(dir, sid, action))) return
     if (dirRef.current !== dir || idRef.current !== sid || busyRef.current) return void window.humanstudy.project.releaseBuild(dir, sid)
     sendRef.current(prompt, undefined, action)
+  }, [])
+
+  const startIntro = useCallback((dir: string, prompt: string, workspace?: WorkspaceContext): boolean => {
+    if (dirRef.current !== dir || !idRef.current || busyRef.current) return false
+    if (messagesRef.current.length === 0) sendRef.current(prompt, workspace, claimAction('sample.intro'))
+    return true
   }, [])
 
   const refreshThreads = useCallback(async () => {
@@ -417,7 +426,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const waitingForQuestion = messages.some(m => m.parts.some(p => p.kind === 'question' && !p.resolved && !p.expired))
 
   return {
-    id, startPaperBuild, messages, busy, status, error, queue, send, enqueue, editQueued, removeQueued, interruptAndSend, abort,
+    id, startPaperBuild, startIntro, messages, busy, status, error, queue, send, enqueue, editQueued, removeQueued, interruptAndSend, abort,
     reply, waitingForPermission, answerQuestion, rejectQuestion, waitingForQuestion, threadId, threads, usage, resumedWithContext: resumed, native, adoptThread: activate, newThread, openThread, renameThread, deleteThread,
   }
 }

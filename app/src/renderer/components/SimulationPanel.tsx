@@ -305,6 +305,12 @@ export function SimulationPanel(props: Props) {
                 <button className="ghost" onClick={() => props.onAsk(scope.ready ? t('sim.ask_prompt', { study: studyTitle }) : t('sim.resolve_prompt', { study: studyTitle }))}>{t('sim.ask')}</button>
               </div>
               <p className="muted small sim-note">{t(confirmation.note, accessVars)}</p>
+              {confirmation.detail && (
+                <details className="muted small sim-detail">
+                  <summary>{t('sim.details')}</summary>
+                  <p>{t(confirmation.detail, accessVars)}</p>
+                </details>
+              )}
             </section>
           )}
         </>

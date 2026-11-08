@@ -1122,6 +1122,13 @@ Then:
    lost minus sign"). Say that the package stays ready as it is and that rebuilding it with the current build
    turns these into problems to fix first.
 
+6. **Next**: one last line offering two or three lettered next steps the researcher can take by replying
+   with the letter (AGENTS.md, "Offer the next step"); letters, so a reply never reads as an answer to a
+   numbered question. For example `Next: A · see what participants see in <condition> · B · go through
+   question 1 together · C · run a small simulation`. Offer the simulation only when the study is ready to
+   run; when the questions above block it, offer to settle them first. Write it as options, not a question
+   (the questions rule above still holds).
+
 Avoid internal vocabulary in the reply: no survey question ids, "arm", "Trash block", "stub", "smoke test",
 "not_ready", hashes, issue ids, function names, "JSON", "QSF"; say "condition", "the survey's unused
 questions", "not computed yet" (paths in item 4 are fine). Never overclaim: no "nothing missing" or "every

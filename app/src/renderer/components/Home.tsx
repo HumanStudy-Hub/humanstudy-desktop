@@ -27,7 +27,7 @@ export { relativeTime }
 const baseName = (path: string) => (path.split(/[\\/]/).pop() ?? '').replace(/\.pdf$/i, '').trim() || t('home.untitled')
 
 export interface HomeHandle {
-  /** Same as the "From a paper" card: pick a PDF and start a project. */
+  /** Same as the "From a paper" entry: pick a PDF and start a project. */
   fromPaper(): void
 }
 
@@ -262,59 +262,53 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
               {!query && (
                 <section className="home-section">
                   <h2 className="home-label">{t('home.start_new')}</h2>
-                  <div className="tiles">
-                    <button className="tile" onClick={fromPaper} disabled={busy}>
+                  {/* One large way in (a paper); a blank project is secondary and the example a small link. */}
+                  <div className="start">
+                    <button className="tile tile-hero" onClick={fromPaper} disabled={busy}>
                       <span className="tile-art paper" aria-hidden>
                         <i />
                         <i />
                         <i />
                       </span>
-                      <strong>{t('home.from_paper')}</strong>
-                      <span className="muted small">{t('home.from_paper_hint')}</span>
+                      <span className="tile-text">
+                        <strong>{t('home.from_paper')}</strong>
+                        <span className="muted">{t('home.from_paper_hint')}</span>
+                      </span>
                     </button>
-                    {blank === null ? (
-                      <button className="tile" onClick={() => setBlank('')} disabled={busy}>
-                        <span className="tile-art blank" aria-hidden>
-                          +
-                        </span>
-                        <strong>{t('home.blank')}</strong>
-                        <span className="muted small">{t('home.blank_hint')}</span>
-                      </button>
-                    ) : (
-                      <form
-                        className="tile tile-form"
-                        onSubmit={(e) => {
-                          e.preventDefault()
-                          createBlank()
-                        }}
-                      >
-                        <strong>{t('home.blank')}</strong>
-                        <input
-                          autoFocus
-                          className="field"
-                          value={blank}
-                          placeholder={t('home.project_name')}
-                          onChange={(e) => setBlank(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Escape' && setBlank(null)}
-                        />
-                        <div className="row-end">
+                    <div className="start-more">
+                      {blank === null ? (
+                        <button className="ghost start-blank" onClick={() => setBlank('')} disabled={busy} title={t('home.blank_hint')}>
+                          <span aria-hidden>+</span> {t('home.blank')}
+                        </button>
+                      ) : (
+                        <form
+                          className="start-blank-form"
+                          onSubmit={(e) => {
+                            e.preventDefault()
+                            createBlank()
+                          }}
+                        >
+                          <input
+                            autoFocus
+                            className="field"
+                            value={blank}
+                            placeholder={t('home.project_name')}
+                            aria-label={t('home.blank')}
+                            onChange={(e) => setBlank(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Escape' && setBlank(null)}
+                          />
                           <button type="button" className="ghost" onClick={() => setBlank(null)}>
                             {t('home.cancel')}
                           </button>
                           <button type="submit" className="primary" disabled={busy || !blank.trim()}>
                             {t('home.create')}
                           </button>
-                        </div>
-                      </form>
-                    )}
-                    <button className="tile" onClick={sample} disabled={busy}>
-                      <span className="tile-art sample" aria-hidden>
-                        <i />
-                        <i />
-                      </span>
-                      <strong>{t('home.sample')}</strong>
-                      <span className="muted small">{t('home.sample_hint')}</span>
-                    </button>
+                        </form>
+                      )}
+                      <button className="link start-sample" onClick={sample} disabled={busy} title={t('home.sample_hint')}>
+                        {t('home.sample_link')}
+                      </button>
+                    </div>
                   </div>
                 </section>
               )}

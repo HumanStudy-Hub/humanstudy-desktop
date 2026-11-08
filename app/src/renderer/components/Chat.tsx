@@ -313,6 +313,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
         <textarea
           ref={input}
           rows={3}
+          aria-describedby="composer-hint"
           value={draft}
           placeholder={session.id ? t('chat.placeholder') : settingUp ? t('chat.setting_up') : t('chat.starting')}
           onChange={(e) => {
@@ -385,7 +386,9 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
               }}
             />
           </div>
-          <span className="muted small composer-hint">
+          {/* Expert details (auto mode, what Enter does, the usage line) stay hidden until the pointer or
+              keyboard focus reaches them (styles.css, docs/onboarding-polish.md). */}
+          <span id="composer-hint" className="muted small composer-hint">
             {session.busy ? t(busyEnter === 'queue' ? 'chat.enter_queues' : 'chat.enter_interrupts') : t('chat.enter_send')}
           </span>
           {session.busy && !canSend ? (
@@ -401,6 +404,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
       {u.input + u.output > 0 && (
         <div
           className="usage-line small muted"
+          tabIndex={0}
           title={`Input ${u.input.toLocaleString()} tokens\nOutput ${u.output.toLocaleString()} tokens\nReasoning ${u.reasoning.toLocaleString()} tokens${u.cost > 0 ? `\nCost ${money(u.cost)}` : ''}`}
         >
           {native.selection?.agent&&<>{native.selection.agent} · </>}{shortModelName(native.selection?.model?.modelID??model)} · {compact(u.input)} in · {compact(u.output)} out{u.cost > 0 ? ` · ${money(u.cost)} this thread` : ''}

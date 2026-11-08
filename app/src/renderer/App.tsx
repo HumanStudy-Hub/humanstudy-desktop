@@ -74,11 +74,11 @@ export default function App() {
   const workbench = useRef<WorkbenchHandle>(null)
   const workspaceCache = useRef<WorkspaceSnapshot | null>(null)
   const cacheWorkspace = useCallback((snapshot: WorkspaceSnapshot) => { workspaceCache.current = snapshot }, [])
-  const sendInWorkspace = (text: string, send: (text: string, workspace?: WorkspaceContext) => void) => {
+  const workspaceContext = (): WorkspaceContext | undefined => {
     const snapshot = workbench.current?.getContext() ?? workspaceCache.current
-    const context = snapshot && project && snapshot.projectDir === project.dir ? { ...snapshot.context, panels: { agent: open.agent, workspace: open.program } } : undefined
-    send(text, context)
+    return snapshot && project && snapshot.projectDir === project.dir ? { ...snapshot.context, panels: { agent: open.agent, workspace: open.program } } : undefined
   }
+  const sendInWorkspace = (text: string, send: (text: string, workspace?: WorkspaceContext) => void) => send(text, workspaceContext())
   // Research data agreement: asked the moment the account is signed in (also over Settings, where sign-in
   // happens), per account and agreement version. The agent
   // only starts with hosted access (or the hidden developer key path) and an accepted agreement.
@@ -100,6 +100,16 @@ export default function App() {
   useEffect(() => {
     if (agentReady && session.id && !session.busy && buildPending) void startPaperBuild(t('build.prompt')).catch(() => undefined)
   }, [agentReady, session.id, session.busy, buildPending, startPaperBuild])
+  // Opening the example: the app's first message asks the agent to introduce it and offer next steps, so the
+  // researcher finds a reply to answer instead of an empty chat. Once per created example, never in a used chat.
+  const introFor = useRef<string | null>(null)
+  const { startIntro } = session
+  useEffect(() => {
+    const dir = introFor.current
+    if (!dir || project?.dir !== dir || !agentReady || !session.id || session.busy) return
+    if (startIntro(dir, t('sample.intro_prompt'), workspaceContext())) introFor.current = null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentReady, session.id, session.busy, project?.dir, startIntro])
   useEffect(() => { setSource(null) }, [project?.dir])
   // What the agent is doing, in the chat's own words, for the Simulation tab's live line.
   const agentActivity = useMemo(() => {
@@ -431,6 +441,7 @@ export default function App() {
         <Home
           ref={home}
           onOpen={(dir, sample) => {
+            introFor.current = sample ? dir : null
             if (sample) {
               let seen = false
               try { seen = localStorage.getItem('hs.sampleOnboarding.v1') === 'done' } catch { /* ignore */ }
