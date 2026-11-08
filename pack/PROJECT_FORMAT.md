@@ -21,8 +21,23 @@ shows the whole folder as the **Program** explorer and `program.json` as the **S
                             with program.json it forms one typed graph (schema/graph-types.json)
   capabilities.json         what the study can do (read, run, human data, author code, reproduction),
                             each with its reason; written by build/capabilities.py
-  package/<paper-slug>/     runnable replay package (build): study.json (refers to program.json),
-                            source/paper_metadata.json, materials/, task/, evaluation/
+  protocol.json             the runnable study (protocol route, v0.8): arms, stages, flow, exclusions, units and
+                            analysis, run by the bundled engine (.opencode/runtime/hsenv); every served text cites
+                            its source. Written by the build, checked by `python -m hsenv.checks`
+  study.json                identity of the project beside protocol.json: id, title, paper, which protocol (and
+                            variant) is current. Not the package's study.json
+  sourcetext/               the text of each source the protocol quotes, for the verbatim check: <name>.txt (text
+                            layer), <name>#second[-k].txt and <name>#third[-k].txt (blind readings of images).
+                            Never overwritten; a new reading gets the next free name
+  review/                   checks-<date>.json (hsenv.checks reports), fidelity-review-<n>.md, resolutions-<n>.md:
+                            the review trail of protocol.json. Never participant data
+  runs/<stamp>/             one engine run of protocol.json: run settings, sessions.jsonl, effects/evaluation,
+                            report.md; each record carries the protocol's version hash
+  variants/<name>/          researcher variants of the study (protocol.json + a note of what differs); a variant
+                            runs only when chosen and never replaces protocol.json silently
+  package/<paper-slug>/     runnable replay package (older route, kept read-only for the community library):
+                            study.json (refers to program.json), source/paper_metadata.json, materials/, task/,
+                            evaluation/
   artifacts/                agent outputs; every file appears in the app
     failures.json           where the template does not fit this paper, and the fallback used
     *.html                  self-contained interactive views (visualize; kit inlined by
@@ -32,8 +47,16 @@ shows the whole folder as the **Program** explorer and `program.json` as the **S
   exports/                  files for leaving the app: *.docx, *.pdf, *.zip (export)
   AGENTS.md, schema/        the pack, installed by the app (do not edit)
   .opencode/skills/         the pack's skills, installed by the app
+  .opencode/runtime/hsenv/  the protocol engine (engine, expr, checks, effects_core; VERSION holds the SHA-256 of
+                            each file), installed by the app and kept at the shipped version
   .humanstudy/              app state; the agent does not edit it
 ```
+
+Runnable forms: a project runs when EITHER `protocol.json` passes the engine's checks (refs, random-answer
+sessions reach every stage and compute every effect, keyed answers, verbatim texts against `sourcetext/`, coding
+cases) OR `package/<slug>/` passes the package contract and the build checks. The app runs both gates itself,
+from its own copy of the checkers, never the project's. New studies take the protocol route; the package route is
+kept so community studies built before v0.8 still run.
 
 Rules:
 

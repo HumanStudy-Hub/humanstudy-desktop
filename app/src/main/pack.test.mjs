@@ -23,7 +23,7 @@ const globPlugin = {
     b.onLoad({ filter: /pack\.ts$/ }, (args) => {
       let src = readFileSync(args.path, 'utf8')
       const included = walk(packDir).map((f) => relative(packDir, f).split('\\').join('/')).filter((r) =>
-        (r === 'AGENTS.md' || r === 'PROJECT_FORMAT.md' || r.startsWith('schema/') || r.startsWith('skills/') || /^artifact-kit\/[^/]+$/.test(r))
+        (r === 'AGENTS.md' || r === 'PROJECT_FORMAT.md' || r.startsWith('schema/') || r.startsWith('skills/') || /^artifact-kit\/[^/]+$/.test(r) || r.startsWith('runtime/hsenv/'))
         && !r.split('/').includes('__pycache__') && !r.endsWith('.pyc'))
       const obj = Object.fromEntries(included.map((r) => ['../../../pack/' + r, readFileSync(join(packDir, r), 'utf8')]))
       src = src.replace(/import\.meta\.glob\([\s\S]*?\)\s*as Record<string, string>/, () => JSON.stringify(obj)) // no $ patterns
@@ -53,6 +53,21 @@ test('refreshPack installs a missing kit and restores a changed kit file', async
   writeFileSync(join(proj, '.opencode/artifact-kit/hs-kit.js'), '// stale')
   await P.refreshPack(proj)
   assert.equal(readFileSync(join(proj, '.opencode/artifact-kit/hs-kit.js'), 'utf8'), readFileSync(join(packDir, 'artifact-kit/hs-kit.js'), 'utf8'))
+})
+
+test('the protocol engine is vendored as listed in VERSION and installed, app-owned, in .opencode/runtime/hsenv', async () => {
+  const version = readFileSync(join(packDir, 'runtime/hsenv/VERSION'), 'utf8')
+  const listed = [...version.matchAll(/^([0-9a-f]{64}) {2}(\S+)$/gm)].map((m) => [m[2], m[1]])
+  assert.deepEqual(listed.map(([f]) => f).sort(), ['hsenv/__init__.py', 'hsenv/checks.py', 'hsenv/effects_core.py', 'hsenv/engine.py', 'hsenv/expr.py'])
+  for (const [f, hash] of listed) assert.equal(sha(join(packDir, 'runtime/hsenv', f)), hash, f + ' matches VERSION (run scripts/sync_hsenv.sh)')
+  assert.deepEqual(P.trustedEngineFiles().map(([rel]) => rel).sort(), ['VERSION', ...listed.map(([f]) => f)].sort())
+  const proj = mkdtempSync(join(tmpdir(), 'proj-'))
+  await P.installPack(proj)
+  const checks = join(proj, '.opencode/runtime/hsenv/hsenv/checks.py')
+  assert.equal(sha(checks), Object.fromEntries(listed)['hsenv/checks.py'])
+  writeFileSync(checks, '# edited in the project')
+  await P.refreshPack(proj)
+  assert.equal(sha(checks), Object.fromEntries(listed)['hsenv/checks.py'], 'refreshPack restores the shipped engine')
 })
 
 test('refreshPack upgrades an untouched previous visualize skill but keeps a customised one', async () => {

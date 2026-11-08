@@ -6,6 +6,8 @@
 //   skills/<name>/**               -> <project>/.opencode/skills/<name>/**  (opencode skill discovery)
 //   artifact-kit/*                 -> <project>/.opencode/artifact-kit/*    (offline HTML kit; inline.py embeds it
 //                                     into each artifact, so artifacts stay self-contained)
+//   runtime/hsenv/**               -> <project>/.opencode/runtime/hsenv/**  (the protocol engine that runs protocol.json;
+//                                     vendored by scripts/sync_hsenv.sh, app-owned)
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import previousHashes from './previous-pack-hashes.json'
@@ -14,7 +16,7 @@ import { dirname, join } from 'node:path'
 const PREFIX = '../../../pack/'
 const files = import.meta.glob(
   ['../../../pack/AGENTS.md', '../../../pack/PROJECT_FORMAT.md', '../../../pack/schema/**/*', '../../../pack/skills/**/*', '../../../pack/artifact-kit/*',
-    '!**/__pycache__/**', '!**/*.pyc'],
+    '../../../pack/runtime/hsenv/**/*', '!**/__pycache__/**', '!**/*.pyc'],
   { query: '?raw', import: 'default', eager: true }
 ) as Record<string, string>
 
@@ -24,8 +26,13 @@ function target(rel: string): string | null {
   if (rel.startsWith('schema/')) return rel
   if (rel.startsWith('skills/')) return join('.opencode', rel)
   if (rel.startsWith('artifact-kit/')) return join('.opencode', rel)
+  if (rel.startsWith('runtime/hsenv/')) return join('.opencode', rel)
   return null
 }
+
+/** Pack-relative paths of the vendored protocol engine (pack/runtime/hsenv: VERSION + the hsenv package). */
+export const engineFiles = (): string[] =>
+  Object.keys(files).filter((k) => k.startsWith(PREFIX + 'runtime/hsenv/')).map((k) => k.slice(PREFIX.length)).sort()
 
 /** Pack-relative paths of the artifact kit (app-owned: always kept at the shipped version). */
 export const kitFiles = (): string[] =>
@@ -53,6 +60,9 @@ const HELPERS = ['skills/build/program_io.py', 'skills/build/program_lock.py', '
   'skills/build/estimate_run.py', 'skills/build/paper_tables.py', 'skills/build/check_source_use.py', 'skills/build/contract.py',
   'skills/build/docx_text.py', 'skills/build/design_checks.py', 'skills/build/prompt_context.py']
 
+/** Every app-owned file refreshPack keeps at the shipped version: the helpers and the protocol engine. */
+const appOwned = (): string[] => [...HELPERS, ...engineFiles()]
+
 export const packFileCount = (): number => Object.keys(files).length
 
 /** Upgrade untouched default prompts in existing projects; never overwrite custom instructions. */
@@ -79,7 +89,7 @@ export async function refreshPack(projectDir: string): Promise<void> {
     }
   }
   // App-owned helper scripts the skills call: kept at the shipped version, also in projects made before them.
-  for (const rel of HELPERS) {
+  for (const rel of appOwned()) {
     const abs = join(projectDir, target(rel)!)
     const content = files[PREFIX + rel]
     if (content === undefined || (await readFile(abs, 'utf8').catch(() => null)) === content) continue
@@ -104,4 +114,10 @@ export function trustedCheckFiles(): [string, string][] {
   return Object.entries(files)
     .filter(([key]) => key.startsWith(PREFIX + 'skills/build/') || key.startsWith(PREFIX + 'schema/') || key === PREFIX + 'skills/export/agent/effects_core.py')
     .map(([key, content]) => [key.slice(PREFIX.length), content])
+}
+
+/** The protocol engine the app runs itself (protocol-readiness.ts), keyed by its path inside the engine folder
+ *  (`hsenv/checks.py`, `VERSION`): the shipped copy, never the project's editable .opencode copy. */
+export function trustedEngineFiles(): [string, string][] {
+  return engineFiles().map((rel) => [rel.slice('runtime/hsenv/'.length), files[PREFIX + rel]])
 }

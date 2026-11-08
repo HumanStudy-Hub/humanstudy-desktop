@@ -1,0 +1,9 @@
+# Vendored hsenv engine. Refresh with scripts/sync_hsenv.sh; never edit by hand.
+source: /Users/assassin808/humanstudy/new-studies-1027/sandbox/hsenv/hsenv
+commit: unknown
+synced: 2026-11-08
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  hsenv/__init__.py
+a90e48c20804bb1772be6dc32f46c0fe71e4f22726ded3b096afc51577dc03c9  hsenv/engine.py
+9a116b176ced46d2750dbe311978a46f3e85eccb1a9e00d3bd411f990b922ea6  hsenv/expr.py
+6a8deb32c3cc0c3ad0974cf6d97703060a8e91fd7a2bd2ac0c3dcba7e46f27a0  hsenv/checks.py
+25a08cce5b231fa79a180c014d335c024fe77613bcb1818f75645303ff40687a  hsenv/effects_core.py
