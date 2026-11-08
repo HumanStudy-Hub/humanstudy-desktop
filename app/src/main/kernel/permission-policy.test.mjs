@@ -2,13 +2,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 const out = mkdtempSync(join(tmpdir(), 'permission-policy-'))
 await build({ entryPoints: [join(dirname(fileURLToPath(import.meta.url)), 'permission-policy.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'p.mjs'), logLevel: 'error' })
-const { classifyPermission, classifyCommand, classifyPath, defaultPolicyContext, READ_PERMISSION } = await import(pathToFileURL(join(out, 'p.mjs')).href)
+const { classifyPermission, classifyCommand, classifyPath, defaultPolicyContext } = await import(pathToFileURL(join(out, 'p.mjs')).href)
+await build({ entryPoints: [join(dirname(fileURLToPath(import.meta.url)), 'agent-sandbox.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'a.mjs'), logLevel: 'error' })
+const { ensureSearchIgnore } = await import(pathToFileURL(join(out, 'a.mjs')).href)
 process.on('exit', () => rmSync(out, { recursive: true, force: true }))
 
 const proj = '/Users/r/Documents/HumanStudy Projects/stroop'
@@ -89,17 +91,12 @@ test('paths: quotes, ~, $HOME, `=` and system binaries', () => {
   assert.equal(bash('/bin/ls; /usr/bin/python3 x.py > /dev/null'), 'allow')
 })
 
-test('OpenCode read rules keep its .env defaults and send sensitive folders to the app', () => {
-  assert.equal(READ_PERMISSION['*'], 'allow')
-  assert.equal(READ_PERMISSION['*.env'], 'ask')
-  assert.equal(READ_PERMISSION['*.env.example'], 'allow')
-  assert.equal(READ_PERMISSION['*/sources/private/*'], undefined, "the researcher's own materials are read freely")
-  assert.equal(READ_PERMISSION['*/human-data/*'], 'ask')
-  assert.equal(READ_PERMISSION['*/?????-????/*'], 'ask', 'any letter case')
-  assert.equal(READ_PERMISSION['*/QUARANTINE/*'], 'ask')
-  // Last matching rule wins in OpenCode: `*.env.example` must come after `*.env.*`.
-  const keys = Object.keys(READ_PERMISSION)
-  assert.ok(keys.indexOf('*.env.example') > keys.indexOf('*.env.*'))
+test('read tool: participant folders in any spelling ask; key files ask; ordinary files do not', () => {
+  for (const rel of ['human-data/a.csv', 'qUARANTINE/x', 'WithHeld/x', 'Participant_Data/x', 'ｈｕｍａｎ-ｄａｔａ/a.csv', 'human_data/a.csv'])
+    assert.equal(classifyPermission(ctx, P('read', [`Users/r/Documents/HumanStudy Projects/stroop/${rel}`])).decision, 'ask', rel)
+  assert.equal(classifyPermission(ctx, P('read', ['x'], { filepath: join(proj, '.env') })).decision, 'ask')
+  assert.equal(classifyPermission(ctx, P('read', ['x'], { filepath: join(proj, '.env.example') })).decision, 'allow')
+  assert.equal(classifyPermission(ctx, P('read', ['x'], { filepath: join(proj, 'sources/private/si.pdf') })).decision, 'allow', "the researcher's own materials")
 })
 
 // Review docs/review-agent-autonomy-1.md: forms that used to slip through as "allow".
@@ -160,14 +157,52 @@ test("review should-fix: the kernel's data is narrowed to tool output; the agent
   assert.equal(bash('python .opencode/skills/build/check_program.py program.json'), 'allow')
 })
 
-test('without an OS sandbox, running code from a file or inline asks; the app helpers and plain commands do not', () => {
+test('without an OS sandbox only an allowlist runs (review 2 M4)', () => {
   for (const c of ['python3 x.py', 'python3 -c "print(1)"', 'python3 - <<EOF\nprint(1)\nEOF', 'bash .humanstudy/tmp/x.sh', 'sh x.sh', './run.sh', 'node x.js', 'Rscript a.R',
     'source env.sh', 'pip install foo', 'npm run build', 'npx foo', 'env PYTHONPATH=. python3 package/stroop/task/adapter.py', 'python3 .opencode/skills/build/../../../x.py',
-    'cp x.py .opencode/skills/build/sandbox_run.py', 'echo x > opencode.json'])
+    'cp x.py .opencode/skills/build/sandbox_run.py', 'echo x > opencode.json',
+    // review 2: forms a denylist missed
+    'py x.py', 'find . -exec python3 {} ;', "awk 'BEGIN{system(\"id\")}'", "sed '1e id' program.json", "vim -c '!id'", 'pytest', 'ipython x.py', 'jupyter nbconvert --execute x.ipynb',
+    'x.bat', 'cscript x.vbs', 'tclsh x.tcl', 'swift x.swift', 'uvx foo', 'tox', 'cmake -P x.cmake', 'pip3 wheel .', 'mkdir x', 'rm program.json', 'ln -s .opencode cfg',
+    'python3 .opencode/skills/simulate/run_confined.py artifacts/simulations/r1/run.py --trial', 'python3 .opencode/skills/build/check_readiness.py .',
+    'python .opencode/skills/build/docx_text.py sources/open/a.docx --json .opencode/plugin/x.ts', 'cat human-data/a.csv', 'cat ../other/x', 'grep -r x /etc', 'git -c core.pager=x log',
+    'git diff --ext-diff', 'find . -delete', 'cat $X'])
     assert.equal(bash(c, bare), 'ask', c)
-  for (const c of ['python .opencode/skills/build/check_program.py program.json', 'python3 .opencode/skills/simulate/run_confined.py artifacts/simulations/r1/run.py --trial',
-    'python .opencode/artifact-kit/inline.py artifacts/r.html', 'ls -la', 'git status', 'cat .opencode/skills/build/SKILL.md', 'hs-pdf text paper.pdf', 'python3 -m json.tool program.json', 'pip list'])
+  for (const c of ['python .opencode/skills/build/check_program.py program.json', 'python3 .opencode/skills/build/docx_text.py sources/open/a.docx --json .humanstudy/tmp/a.json',
+    'ls -la', 'git status', 'git diff program.json', 'git log --oneline', 'cat .opencode/skills/build/SKILL.md', 'hs-pdf text paper.pdf', 'head -n 5 program.json | wc -l', 'grep -rn foo sources', 'find . -name "*.json"'])
     assert.equal(bash(c, bare), 'allow', c)
   // With the OS sandbox the same scripts run without asking.
   for (const c of ['python3 x.py', 'bash .humanstudy/tmp/x.sh', `python3 -c "print(open('hum'+'an-data/a.csv').read())"`]) assert.equal(bash(c), 'allow', c)
+})
+
+test('review 2 M2: symlinks are resolved before deciding; writes into config or out of the project ask', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'policy-links-')))
+  try {
+    const p = join(root, 'study')
+    mkdirSync(join(p, '.opencode/plugin'), { recursive: true }); mkdirSync(join(p, 'human-data')); mkdirSync(join(p, '.git/hooks'), { recursive: true }); mkdirSync(join(root, 'elsewhere'))
+    writeFileSync(join(p, 'human-data/a.csv'), 'x')
+    symlinkSync(join(p, '.opencode'), join(p, 'cfg')); symlinkSync(join(p, '.git/hooks'), join(p, 'h')); symlinkSync(join(p, 'human-data'), join(p, 'hd')); symlinkSync('/Users/r-not-here/elsewhere', join(p, 'out'))
+    const c = { ...defaultPolicyContext(p, undefined, {}, true), home: '/Users/r' }
+    const d = (type, filepath) => classifyPermission(c, P(type, ['x'], { filepath })).decision
+    assert.equal(d('edit', join(p, 'cfg/plugin/x.ts')), 'ask')
+    assert.equal(d('edit', join(p, 'h/pre-commit')), 'ask')
+    assert.equal(d('read', join(p, 'hd/a.csv')), 'ask')
+    assert.equal(d('edit', join(p, 'out/new.txt')), 'ask', 'a new file under a link that leaves the project')
+    assert.equal(d('edit', join(p, '.git/config')), 'ask')
+    assert.equal(d('edit', join(p, '.ignore')), 'ask')
+    assert.equal(d('edit', join(p, 'program.json')), 'allow')
+    // The read tool's worktree-relative pattern (the project has a .git, so it is the worktree).
+    assert.equal(classifyPermission(c, P('read', ['hd/a.csv'])).decision, 'ask')
+    assert.equal(classifyPermission(c, P('read', ['cfg/plugin/x.ts'])).decision, 'allow', 'reading config is fine')
+    assert.equal(classifyPermission(c, P('list', ['x'], { path: join(p, 'hd') })).decision, 'ask')
+    assert.equal(classifyPermission(c, P('lsp', ['*'], { operation: 'hover', filePath: join(p, 'hd/a.csv') })).decision, 'ask')
+    // grep/glob (review 2 M3): a path into participant data asks; a project-wide search needs the .ignore block.
+    assert.equal(classifyPermission(c, P('grep', ['.'], { pattern: '.', path: join(p, 'hd') })).decision, 'ask')
+    assert.equal(classifyPermission(c, P('grep', ['.'], { pattern: '.', path: 'HUMAN-DATA' })).decision, 'ask')
+    assert.equal(classifyPermission(c, P('glob', ['**/human-data/**'], { pattern: '**/human-data/**' })).decision, 'ask')
+    assert.equal(classifyPermission(c, P('grep', ['.'], { pattern: '.' })).decision, 'ask', 'no .ignore block yet')
+    ensureSearchIgnore(p)
+    assert.equal(classifyPermission(c, P('grep', ['.'], { pattern: 'foo' })).decision, 'allow')
+    assert.equal(classifyPermission(c, P('glob', ['**/*.json'], { pattern: '**/*.json', path: p })).decision, 'allow')
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })

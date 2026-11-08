@@ -20,6 +20,7 @@ await new Promise(r => api.listen(0,'127.0.0.1',r))
 try {
   const k = new OpencodeKernel({ binary:'/bin/true', permission:'ask' })
   k.register('s',{dir:out,base:`http://127.0.0.1:${api.address().port}`,auth:'Basic fixture',exited:false})
+  k.sandboxedDirs.set(out, true) // as on macOS: the agent's shell runs in the OS sandbox (agent-sandbox.ts)
   const events=[]; k.onEvent(e=>events.push(e))
   const approved = id => new Promise((resolve, reject) => {
     const timer = setTimeout(() => { off(); reject(new Error('Automatic permission reply timed out')) }, 5000)

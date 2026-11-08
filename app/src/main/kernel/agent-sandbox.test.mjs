@@ -66,6 +66,8 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
     writeFileSync(join(project, 'Participant-Data', 'p.csv'), 'secret-row\n')
     writeFileSync(join(project, 'sources', 'private', 'si.txt'), 'private-ok\n')
     writeFileSync(join(project, 'program.json'), '{}\n')
+    spawnSync('git', ['init', '-q', project])
+    mkdirSync(join(project, 'sources', 'open'), { recursive: true })
     writeFileSync(join(kernelHome, 'data', 'opencode', 'tool-output', 't1'), 'tool-output-ok\n')
     writeFileSync(join(kernelHome, 'data', 'opencode', 'auth.json'), '{"k":"v"}\n')
     const helper = join(project, '.opencode', 'skills', 'simulate', 'run_confined.py')
@@ -73,7 +75,10 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
     const py = spawnSync('/bin/sh', ['-c', 'command -v python3']).stdout.toString().trim()
     const helperSrc = 'import ctypes, os\nc = ctypes.CDLL("/usr/lib/libSystem.dylib").sandbox_check\nprint("sandboxed" if c(os.getpid(), None, 0) else "outside")\n'
     writeFileSync(helper, helperSrc)
-    A.setTrustedHelperFiles([['.opencode/skills/simulate/run_confined.py', createHash('sha256').update(helperSrc).digest('hex')]])
+    // The probe prints whether it runs inside a sandbox; installed under each helper name it is checked as.
+    const helpers = ['simulate/run_confined.py', 'build/recorded_answers.py', 'build/check_validity.py', 'build/audit.py', 'build/check_replies.py', 'build/check_readiness.py', 'export/agent/study_core.py']
+    for (const h of helpers) { mkdirSync(dirname(join(project, '.opencode/skills', h)), { recursive: true }); writeFileSync(join(project, '.opencode/skills', h), helperSrc) }
+    A.setTrustedHelperFiles(helpers.map(h => ['.opencode/skills/' + h, createHash('sha256').update(helperSrc).digest('hex')]))
     const s = A.prepareAgentShell({ project, kernelHome, kind: 'sandbox-exec', realShell: '/bin/bash', runtimeBin: py ? dirname(py) : undefined })
     assert.ok(A.isAgentShell(s.shell))
     const env = { PATH: process.env.PATH, HOME: homedir(), TMPDIR: process.env.TMPDIR ?? '/tmp', OPENCODE_SERVER_PASSWORD: 'pw-should-vanish', OPENCODE_CONFIG_CONTENT: '{"token":"x"}', SOME_API_KEY: 'k-should-vanish', HUMANSTUDY_RELAY_REQUIRED: '1' }
@@ -116,9 +121,31 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
     // Expired approvals do not count.
     A.approveCommandOnce(s.dir, 'cat human-data/a.csv', Date.now() - (A.APPROVAL_TTL_S + 5) * 1000)
     assert.notEqual((await run('cat human-data/a.csv')).code, 0)
+    // Review 2: no new symlinks (OpenCode's tools would follow them), .git cannot be replaced or written,
+    // the search-ignore file cannot be changed; pip's cache and git's safety settings are in place.
+    for (const c of ['ln -s .opencode cfg', 'ln -s human-data hd', 'mv .git g2', 'rm -rf .git', 'echo "gitdir: g2" > .git', 'mkdir -p sub/.git', 'echo x > .ignore', 'echo "!human-data" > sources/.ignore'])
+      assert.notEqual((await run(c)).code, 0, c)
+    assert.ok(!existsSync(join(project, 'cfg')) && existsSync(join(project, '.git', 'config')))
+    assert.equal((await run('echo "$PIP_CACHE_DIR" | grep -c humanstudy-agent-pip; git config core.fsmonitor; git config core.hooksPath')).out.trim(), '1\nfalse\n/dev/null')
     if (py) {
       // The app's confining helper starts outside the sandbox as one plain command, while unmodified ...
-      assert.equal((await run('python3 .opencode/skills/simulate/run_confined.py')).out.trim(), 'outside')
+      assert.equal((await run('python3 .opencode/skills/build/check_readiness.py .')).out.trim(), 'outside')
+      assert.equal((await run('python3 .opencode/skills/build/recorded_answers.py package/p')).out.trim(), 'outside')
+      assert.equal((await run('python3 .opencode/skills/simulate/run_confined.py --no-model .opencode/skills/export/agent/study_core.py --root . reproduce')).out.trim(), 'outside')
+      assert.equal((await run('python3 .opencode/skills/simulate/run_confined.py artifacts/simulations/r1/run.py --trial')).out.trim(), 'outside', 'relay run')
+      // ... never in a child/probe/capture/smoke mode, with another script, toward participant data or
+      // the agent's configuration, or without the relay (review 2 M1).
+      for (const c of ['python3 .opencode/skills/build/recorded_answers.py --child package/p', 'python3 .opencode/skills/build/check_validity.py --capture package/p',
+        'python3 .opencode/skills/build/check_validity.py --probe package/p', 'python3 .opencode/skills/build/audit.py --probe package/p', 'python3 .opencode/skills/build/audit.py --workdir x .',
+        'python3 .opencode/skills/build/check_replies.py --smoke-child package/p', 'python3 .opencode/skills/simulate/run_confined.py --no-model artifacts/x.py',
+        'python3 .opencode/skills/simulate/run_confined.py --no-model .opencode/skills/export/agent/study_core.py --root . human-data',
+        'python3 .opencode/skills/simulate/run_confined.py --no-model .opencode/skills/export/agent/study_core.py --root . run --cli x',
+        'python3 .opencode/skills/build/check_readiness.py ../other', 'python3 .opencode/skills/build/check_readiness.py /tmp', 'python3 .opencode/skills/build/recorded_answers.py human-data',
+        'python3 .opencode/skills/build/recorded_answers.py .opencode/plugin', 'python3 .opencode/skills/build/check_readiness.py --no-validity=x/HUMAN-DATA'])
+        assert.equal((await run(c)).out.trim(), 'sandboxed', c)
+      const noRelay = { ...env }; delete noRelay.HUMANSTUDY_RELAY_REQUIRED
+      const r = await new Promise(resolve => { const c = spawn(s.shell, ['-c', 'python3 .opencode/skills/simulate/run_confined.py artifacts/simulations/r1/run.py'], { cwd: project, env: noRelay }); let o = ''; c.stdout.on('data', d => { o += d }); c.on('close', () => resolve(o)) })
+      assert.equal(r.trim(), 'sandboxed', 'without the relay run_confined would run the script unconfined')
       // ... but not inside a compound command, and not after a change (here made outside the agent).
       assert.equal((await run('true && python3 .opencode/skills/simulate/run_confined.py')).out.trim(), 'sandboxed')
       writeFileSync(helper, helperSrc + '# changed\n')

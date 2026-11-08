@@ -130,17 +130,13 @@ assert.equal(content.model, 'humanstudy/anthropic/claude-haiku-5.5')
 assert.equal(content.small_model, content.model)
 assert.deepEqual(content.provider, { humanstudy: { models: { 'anthropic/claude-haiku-5.5': { variants: { 'humanstudy-recovery': { reasoningEffort: 'low' } } } } } })
 assert.equal(JSON.stringify(content).includes('apiKey'), false, 'recovery configuration contains no credential')
-assert.equal(content.permission.edit, 'ask')
-// Every command comes to the app, whose autonomy policy (permission-policy.ts) answers it.
-assert.equal(content.permission.bash, 'ask')
-assert.equal(content.permission.external_directory, 'ask')
-assert.equal(content.permission.read['*/human-data/*'], 'ask')
-assert.equal(content.permission.read['*/sources/private/*'], undefined) // the researcher's own materials
+// Every request (edits, commands, paths outside) comes to the app, whose autonomy policy answers it.
+for (const k of ['edit', 'bash', 'external_directory', 'read', 'list', 'grep', 'glob', 'lsp']) assert.equal(content.permission[k] ?? content.permission['*'], 'ask', k)
+// Every tool's requests (read, list, grep, glob, lsp, ...) come to the app, which resolves symlinks first.
+assert.equal(content.permission['*'], 'ask')
+assert.equal(Object.keys(content.permission)[0], '*', 'the catch-all comes first (last match wins)')
 assert.equal(content.shell, undefined, 'no agent shell until a project server starts')
 assert.equal(content.permission.webfetch, 'allow')
-// last match wins, so the .env exception must come after the .env rules
-const keys = Object.keys(content.permission.read)
-assert.ok(keys.indexOf('*.env.example') > keys.indexOf('*.env.*'))
 await k.dispose()
 assert.equal(oc.toolDetail('bash', 'List files', { command: 'ls -la', description: 'List files' }), 'ls -la')
 assert.equal(oc.toolDetail('bash', '', {}), '')

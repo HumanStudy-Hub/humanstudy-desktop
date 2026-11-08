@@ -23,7 +23,7 @@
 // The wrapper, its profile, the hash list and the approval tokens live in <kernelHome>/agent-shell/, which
 // the sandbox cannot write and permission-policy treats as the app's own credentials.
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -31,7 +31,7 @@ import { spawnSync } from 'node:child_process'
 export type AgentSandboxKind = 'sandbox-exec' | 'bwrap' | 'none'
 
 /** Folder names that hold participant data. Matched as a whole path segment, in any letter case. */
-export const PARTICIPANT_DATA_DIRS = ['human-data', 'quarantine', 'quarantined', 'withheld', 'participant-data', 'participant_data']
+export const PARTICIPANT_DATA_DIRS = ['human-data', 'human_data', 'quarantine', 'quarantined', 'withheld', 'participant-data', 'participant_data']
 /** Credential folders and files under the home folder (read and write denied in the sandbox). */
 export const HOME_SECRETS = ['.ssh', '.aws', '.gnupg', '.config/gcloud', '.azure', '.kube', '.docker', 'Library/Keychains',
   '.password-store', '.config/gh', '.claude', '.netrc', '.git-credentials', '.npmrc', '.pypirc', '.humanstudy/credentials']
@@ -39,6 +39,28 @@ export const HOME_SECRETS = ['.ssh', '.aws', '.gnupg', '.config/gcloud', '.azure
 export const CONFINING_HELPERS = ['skills/simulate/run_confined.py', 'skills/build/check_readiness.py', 'skills/build/check_package.py',
   'skills/build/check_replies.py', 'skills/build/check_validity.py', 'skills/build/audit.py', 'skills/build/effects.py',
   'skills/build/recorded_answers.py', 'skills/build/prompt_context.py', 'skills/export/agent_package.py']
+/** Per helper: the flags allowed on the unsandboxed path (agent-sandbox wrapper) and the help text for
+ *  docs. Internal child modes that import or run project code in-process are never allowed there:
+ *  recorded_answers.py --child, check_validity.py --capture/--probe, audit.py --probe/--n,
+ *  check_replies.py --smoke-child, check_package.py/agent_package.py --smoke-test, audit.py --workdir.
+ *  run_confined.py runs a simulation only through the relay (HUMANSTUDY_RELAY_REQUIRED=1, which needs the
+ *  researcher's Run approval), and `--no-model` only with the shipped study_core.py `reproduce`. */
+export const HELPER_FLAGS: Record<string, string[]> = {
+  'check_readiness.py': ['--no-validity'],
+  'check_package.py': ['--no-validity', '--program'],
+  'check_replies.py': ['--package'],
+  'check_validity.py': ['--package', '--json'],
+  'audit.py': ['--out', '--book', '--online', '--no-run', '--no-export', '--keep', '--only', '--timeout'],
+  'effects.py': [],
+  'recorded_answers.py': [],
+  'prompt_context.py': [],
+  'agent_package.py': ['--output', '--root', '--mcp', '--include-paper', '--include-sources'],
+  'study_core.py': ['--root', '--method'],
+}
+/** Words an argument of an unsandboxed helper may never contain (lower case): the agent's configuration,
+ *  git, search-ignore files and participant data. */
+export const HELPER_FORBIDDEN = ['.opencode', '.git', 'opencode.json', '.ignore', '.rgignore', 'human-data', 'human_data', 'quarantine', 'withheld', 'participant']
+
 /** Environment variables never passed to the agent's commands (the local server password, the inline
  *  config that carries the transport token, the hosted bypass). Key-shaped names go too, see wrapper. */
 export const STRIPPED_ENV = ['OPENCODE_SERVER_PASSWORD', 'OPENCODE_CONFIG_CONTENT', 'HUMANSTUDY_SERVER_BYPASS', 'HUMANSTUDY_RELAY_DIR',
@@ -129,16 +151,23 @@ export function macosAgentProfile(o: { project: string; kernelHome: string; secr
     // Writes: the project and temp folders only ...
     '(deny file-write*)',
     `(allow file-write* (subpath ${sb(project)}) ${temps.map(t => `(subpath ${sb(t)})`).join(' ')} (literal "/dev/null") (literal "/dev/zero") (literal "/dev/tty") (literal "/dev/ptmx") (literal "/dev/dtracehelper") (subpath "/dev/fd") (regex #"^/dev/ttys[0-9]+$"))`,
-    // ... except participant data, the agent's own configuration and git hooks (both run code later,
-    // outside this sandbox), and the app's files.
-    `(deny file-write* (regex #"${PARTICIPANT_REGEX}") (subpath ${sb(join(project, '.opencode'))}) (literal ${sb(join(project, 'opencode.json'))}) (literal ${sb(join(project, 'opencode.jsonc'))}) (subpath ${sb(join(project, '.git', 'hooks'))}) (literal ${sb(join(project, '.git', 'config'))}) ${secrets.map(p => `(subpath ${sb(p)})`).join(' ')})`,
+    // ... except participant data, the agent's own configuration, any .git (its config and hooks run code
+    // later, outside this sandbox; replacing .git with a `gitdir:` file is a write to that path too), the
+    // search-ignore files that keep participant data out of OpenCode's grep/glob, and the app's files.
+    `(deny file-write* (regex #"${PARTICIPANT_REGEX}") (regex #"/\\.[gG][iI][tT](/|$)") (regex #"/\\.([rR][gG])?[iI][gG][nN][oO][rR][eE]$") (subpath ${sb(join(project, '.opencode'))}) (literal ${sb(join(project, 'opencode.json'))}) (literal ${sb(join(project, 'opencode.jsonc'))}) ${secrets.map(p => `(subpath ${sb(p)})`).join(' ')})`,
+    // No new symbolic links: OpenCode's own tools compare paths as text, so a link would carry them into
+    // .opencode/ or participant data. (Hard links to denied files fail: the source is not writable.)
+    '(deny file-write-create (vnode-type SYMLINK))',
     '',
   ].join('\n')
 }
 
 /** Shell code shared by both wrappers: environment, approved commands, app helpers. */
-function wrapperHead(o: { dir: string; project: string; realShell: string; runtimeBin?: string; sha: string }): string {
-  const entries = CONFINING_HELPERS.map(h => '.opencode/' + h).join(' ')
+function wrapperHead(o: { dir: string; project: string; realShell: string; runtimeBin?: string; sha: string; helpers: boolean }): string {
+  // Only macOS needs helpers outside the sandbox (sandbox-exec cannot nest); under bubblewrap they run inside.
+  const entries = o.helpers ? CONFINING_HELPERS.map(h => '.opencode/' + h).join(' ') : ''
+  const flagCases = Object.entries(HELPER_FLAGS).map(([h, fl]) => fl.length ? `      ${fl.map(f => `${h}:${f}`).join('|')}) ;;` : '').filter(Boolean).join('\n')
+  const forbidden = HELPER_FORBIDDEN.map(w => `*${w}*`).join('|')
   return `#!/bin/sh
 # HumanStudy agent shell (generated by the app, agent-sandbox.ts; rewritten on every kernel start).
 HS_DIR=${sq(o.dir)}
@@ -152,12 +181,48 @@ for hs_v in $(env | sed -n 's/^\\([A-Za-z_][A-Za-z0-9_]*\\)=.*/\\1/p' | grep -iE
     # Pre-relay simulations (Linux, Windows) read the model key from the environment; the run
     # confirmation tells the researcher. With the relay the kernel never has it.
     HUMANSTUDY_DESKTOP_KEY|OPENROUTER_API_KEY) [ "$HUMANSTUDY_RELAY_REQUIRED" = 1 ] && unset "$hs_v" ;;
+    GIT_CONFIG_KEY_*) ;;
     *) unset "$hs_v" ;;
   esac
 done
 unset hs_v
 XDG_CACHE_HOME="\${TMPDIR:-/tmp}/humanstudy-agent-cache"; export XDG_CACHE_HOME
 MPLCONFIGDIR="\${TMPDIR:-/tmp}/humanstudy-agent-mpl"; export MPLCONFIGDIR
+PIP_CACHE_DIR="\${TMPDIR:-/tmp}/humanstudy-agent-pip"; export PIP_CACHE_DIR
+# git never runs a project's fsmonitor or hooks (they would run later outside this sandbox, too).
+GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=false GIT_CONFIG_KEY_1=core.hooksPath GIT_CONFIG_VALUE_1=/dev/null
+export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1
+
+# Arguments of a helper on the unsandboxed path: relative paths inside the project that avoid the agent's
+# configuration, git and participant data, and only the flags listed per helper (HELPER_FLAGS): no
+# child/probe/capture/smoke modes that import project code in-process.
+hs_args_ok() {
+  hs_n=$1; shift
+  if [ "$hs_n" = run_confined.py ]; then
+    if [ "$1" = --no-model ]; then
+      [ "$2" = .opencode/skills/export/agent/study_core.py ] || return 1
+      shift 2; hs_n=study_core.py; hs_sub=''
+      for hs_a in "$@"; do case "$hs_a" in -*|.) ;; *) [ -z "$hs_sub" ] && hs_sub=$hs_a ;; esac; done
+      [ "$hs_sub" = reproduce ] || return 1
+    else
+      [ "$HUMANSTUDY_RELAY_REQUIRED" = 1 ] || return 1  # without the relay run_confined runs unconfined
+      [ "$1" = --final ] && shift
+      hs_n=run_script
+    fi
+  fi
+  for hs_a in "$@"; do
+    case "$hs_a" in /*|*..*|*:*|*@*) return 1 ;; esac
+    hs_l=$(printf '%s' "$hs_a" | tr 'A-Z' 'a-z')
+    case "$hs_l" in ${forbidden}) return 1 ;; esac
+    case "$hs_a" in
+      -*) [ "$hs_n" = run_script ] && continue
+          case "$hs_n:\${hs_a%%=*}" in
+${flagCases}
+            *) return 1 ;;
+          esac ;;
+    esac
+  done
+}
 
 hs_trusted() {
   hs_c=$1
@@ -172,6 +237,8 @@ hs_trusted() {
   while [ "$#" -gt 0 ]; do case "$1" in -B|-u|-I) shift ;; *) break ;; esac; done
   hs_s=\${1#./}
   case " $HS_ENTRIES " in *" $hs_s "*) ;; *) return 1 ;; esac
+  shift
+  hs_args_ok "\${hs_s##*/}" "$@" || return 1
   [ -s "$HS_DIR/trusted.sha256" ] || return 1
   ${o.sha} -c --status "$HS_DIR/trusted.sha256" >/dev/null 2>&1
 }
@@ -190,7 +257,7 @@ HUMANSTUDY_AGENT_SANDBOX=1; export HUMANSTUDY_AGENT_SANDBOX
 }
 
 function macosWrapper(o: { dir: string; project: string; realShell: string; runtimeBin?: string }): string {
-  return wrapperHead({ ...o, sha: 'shasum -a 256' }) + `exec /usr/bin/sandbox-exec -f "$HS_DIR/profile.sb" "$HS_REAL" "$@"\n`
+  return wrapperHead({ ...o, sha: 'shasum -a 256', helpers: true }) + `exec /usr/bin/sandbox-exec -f "$HS_DIR/profile.sb" "$HS_REAL" "$@"\n`
 }
 
 /** Linux: bubblewrap. The root is read-only; the project and temp folders are writable; participant-data
@@ -201,7 +268,7 @@ function linuxWrapper(o: { dir: string; project: string; realShell: string; runt
   const bw = ['/usr/bin/bwrap', '/bin/bwrap', '/usr/local/bin/bwrap'].find(existsSync) ?? 'bwrap'
   const names = PARTICIPANT_DATA_DIRS.map(n => `-iname ${sq(n)}`).join(' -o ')
   const toolOutput = join(o.kernelHome, 'data', 'opencode', 'tool-output')
-  return wrapperHead({ ...o, sha: 'sha256sum' }) + `HS_NL='
+  return wrapperHead({ ...o, sha: 'sha256sum', helpers: false }) + `HS_NL='
 '
 hs_hide=''
 for hs_p in ${[o.kernelHome, ...o.secrets].map(sq).join(' ')}; do
@@ -212,7 +279,7 @@ hs_data=$(find "$HS_PROJECT" -xdev -type d \\( ${names} \\) -prune -print 2>/dev
 IFS=$HS_NL; set -f
 hs_args="--ro-bind$HS_NL/$HS_NL/$HS_NL--dev$HS_NL/dev$HS_NL--proc$HS_NL/proc$HS_NL--unshare-pid$HS_NL--die-with-parent$HS_NL--bind$HS_NL$HS_PROJECT$HS_NL$HS_PROJECT$HS_NL"
 for hs_p in ${o.temps.map(sq).join(' ')}; do [ -d "$hs_p" ] && hs_args="$hs_args--bind$HS_NL$hs_p$HS_NL$hs_p$HS_NL"; done
-for hs_p in .opencode opencode.json opencode.jsonc .git/hooks .git/config; do [ -e "$HS_PROJECT/$hs_p" ] && hs_args="$hs_args--ro-bind$HS_NL$HS_PROJECT/$hs_p$HS_NL$HS_PROJECT/$hs_p$HS_NL"; done
+for hs_p in .opencode opencode.json opencode.jsonc .git .ignore .rgignore; do [ -e "$HS_PROJECT/$hs_p" ] && hs_args="$hs_args--ro-bind$HS_NL$HS_PROJECT/$hs_p$HS_NL$HS_PROJECT/$hs_p$HS_NL"; done
 for hs_p in $hs_data; do hs_args="$hs_args--tmpfs$HS_NL$hs_p$HS_NL"; done
 exec ${sq(bw)} $hs_args$hs_hide "$HS_REAL" "$@"
 `
@@ -242,6 +309,32 @@ export function prepareAgentShell(o: AgentShellOptions): AgentShell {
     writeFileSync(shell, linuxWrapper({ dir, project, realShell, runtimeBin, kernelHome: o.kernelHome, secrets, temps }), { mode: 0o700 })
   }
   return { kind, shell, dir }
+}
+
+const IGNORE_START = '# >>> HumanStudy: participant data stays out of the agent\'s search tools (kept by the app)'
+const IGNORE_END = '# <<< HumanStudy'
+/** The block the app keeps in <project>/.ignore. OpenCode's grep and glob tools run ripgrep, which honours
+ *  .ignore files (also with --glob, and from parent folders), so a search without a path never returns
+ *  participant data; a search *in* such a folder still reaches the policy and asks. */
+export const SEARCH_IGNORE_BLOCK = [IGNORE_START, ...PARTICIPANT_DATA_DIRS.map(d => anyCase(d).replace(/\\/g, '')), IGNORE_END].join('\n')
+
+/** Install or repair the block in <project>/.ignore, keeping the researcher's own lines. */
+export function ensureSearchIgnore(project: string): void {
+  const file = join(project, '.ignore')
+  let text = ''
+  try {
+    if (lstatSync(file).isSymbolicLink()) rmSync(file, { force: true })
+    else text = readFileSync(file, 'utf8')
+  } catch { /* missing */ }
+  if (searchIgnoreText(text)) return
+  const start = text.indexOf(IGNORE_START), end = text.indexOf(IGNORE_END)
+  const kept = start >= 0 && end > start ? text.slice(0, start) + text.slice(end + IGNORE_END.length) : text
+  writeFileSync(file, (kept.trim() ? kept.trimEnd() + '\n\n' : '') + SEARCH_IGNORE_BLOCK + '\n')
+}
+const searchIgnoreText = (text: string): boolean => text.includes(SEARCH_IGNORE_BLOCK)
+/** Whether the project's .ignore still holds the block (permission-policy asks for path-less searches otherwise). */
+export function searchIgnoreInstalled(project: string): boolean {
+  try { return !lstatSync(join(project, '.ignore')).isSymbolicLink() && searchIgnoreText(readFileSync(join(project, '.ignore'), 'utf8')) } catch { return false }
 }
 
 /** Let one exact command the researcher approved run outside the sandbox (once, within APPROVAL_TTL_S). */

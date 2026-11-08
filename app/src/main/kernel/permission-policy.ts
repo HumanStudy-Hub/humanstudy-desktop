@@ -15,10 +15,11 @@
 //
 // Pattern matching is done here, not in OpenCode's wildcard rules, because a command line needs real
 // parsing (quotes, `=`, `~`, `${HOME}`, `cd` chains, globs) that a last-match-wins glob list cannot express.
+import { lstatSync, readlinkSync, realpathSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { KernelPermission } from './types'
-import { PARTICIPANT_DATA_DIRS } from './agent-sandbox'
+import { HELPER_FORBIDDEN, PARTICIPANT_DATA_DIRS, searchIgnoreInstalled } from './agent-sandbox'
 
 export type PolicyDecision = 'allow' | 'ask' | 'deny'
 export interface PolicyVerdict { decision: PolicyDecision; reason?: string }
@@ -35,19 +36,47 @@ export interface PolicyContext {
   /** True when the agent's shell runs in an OS sandbox (agent-sandbox.ts). False: ask before running
    *  project scripts or inline code, and before shell paths the text cannot resolve. */
   osSandbox?: boolean
+  /** Real path of `p`, or of its nearest existing parent with the rest appended (tests replace it).
+   *  OpenCode's own tools compare paths as text, so a symlink would otherwise carry them anywhere. */
+  realpath?: (p: string) => string
+  /** Whether the project's .ignore keeps participant data out of grep/glob (agent-sandbox.ts). */
+  searchIgnore?: () => boolean
+}
+
+/** Real path of `p`, resolving its nearest existing ancestor (for files about to be created). */
+export function realNearest(p: string, depth = 0): string {
+  let cur = resolve(p)
+  const rest: string[] = []
+  for (let i = 0; i < 256; i++) {
+    let st
+    try { st = lstatSync(cur) } catch { st = undefined }
+    if (st) {
+      try { return join(realpathSync(cur), ...rest) } catch {
+        // A dangling link (its target does not exist yet): follow it by hand.
+        if (st.isSymbolicLink() && depth < 32) return join(realNearest(resolve(dirname(cur), readlinkSync(cur)), depth + 1), ...rest)
+        return join(cur, ...rest)
+      }
+    }
+    const up = dirname(cur)
+    if (up === cur) break
+    rest.unshift(basename(cur)); cur = up
+  }
+  return resolve(p)
 }
 
 /** Project folders whose contents are participant data (PROJECT_FORMAT.md). Matched as a path segment in
  *  any letter case (APFS and NTFS are case-insensitive). sources/private/ and sources/researcher/ are the
  *  researcher's own materials the build needs, and are not asked about. */
 export const SENSITIVE_PROJECT_DIRS = PARTICIPANT_DATA_DIRS
-const SENSITIVE_NAMES = new Set(PARTICIPANT_DATA_DIRS.map(d => d.toLowerCase()))
+/** A path segment as the file system compares it: NFKC-normalised, lower case. */
+const norm = (seg: string): string => seg.normalize('NFKC').toLowerCase()
+const SENSITIVE_NAMES = new Set(PARTICIPANT_DATA_DIRS.map(norm))
 /** Credential files anywhere (home or project). */
 const SECRET_FILE = /(^|[\\/])(\.env(\.(?!example$)[^\\/]*)?|\.netrc|\.npmrc|\.pypirc|\.git-credentials|id_(rsa|dsa|ecdsa|ed25519)|[^\\/]*\.(pem|p12|pfx))$/i
 /** Credential folders under the home folder. */
 const SECRET_HOME_DIRS = ['.ssh', '.aws', '.gnupg', '.config/gcloud', '.azure', '.kube', '.docker', 'Library/Keychains', '.password-store', '.config/gh', '.claude']
 /** In-project files that configure the agent itself, or run code later outside any sandbox. */
-const AGENT_CONFIG = /^(\.opencode([\\/]|$)|opencode\.jsonc?$|\.git[\\/](hooks([\\/]|$)|config$))/i
+const AGENT_CONFIG = /^(\.opencode([\\/]|$)|opencode\.jsonc?$|\.git([\\/]|$))|(^|[\\/])(\.git([\\/]|$)|\.(rg)?ignore$)/i
 
 /** Read-only commands; in "ask" mode these still run without a prompt (the previous allowlist). */
 export const READ_ONLY_COMMANDS = new Set(['ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'find', 'pdftotext', 'pdfinfo', 'hs-pdf', 'file', 'pwd', 'echo'])
@@ -71,7 +100,7 @@ export function defaultPolicyContext(dir: string, kernelHome?: string, env: Node
   const runtime = env.HUMANSTUDY_RUNTIME_BIN?.trim()
   if (runtime) allowedRoots.push(dirname(runtime))
   if (env.HUMANSTUDY_RELAY_DIR) secretPaths.push(env.HUMANSTUDY_RELAY_DIR)
-  return { dir, allowedRoots, secretPaths, osSandbox }
+  return { dir, allowedRoots, secretPaths, osSandbox, searchIgnore: () => searchIgnoreInstalled(dir) }
 }
 
 /** Case-insensitive containment (macOS and Windows file systems ignore case). */
@@ -92,23 +121,39 @@ function expandHome(p: string, home: string): string {
   return m ? join(home, p.slice(m[0].length)) : p
 }
 
-/** Where an absolute (or `base`-relative, default project-relative) path falls under the policy. */
+const RANK: Record<Where, number> = { project: 0, allowed: 1, config: 2, outside: 3, sensitive: 4, credential: 5, secret: 6 }
+
+function classifyAbs(ctx: PolicyContext, abs: string, real: (p: string) => string): Where {
+  const home = ctx.home ?? homedir()
+  const roots = (r: string): string[] => { const x = real(r); return x === r ? [r] : [r, x] }
+  const inside = (r: string): boolean => roots(r).some(x => within(x, abs))
+  if ((ctx.secretPaths ?? []).some(inside)) return 'secret'
+  if (SECRET_HOME_DIRS.some(d => inside(join(home, d)))) return 'credential'
+  if (SECRET_FILE.test(abs)) return 'credential'
+  if (isSensitiveRelative(abs)) return 'sensitive' // participant data anywhere (other projects too)
+  const dir = roots(ctx.dir).find(x => within(x, abs))
+  if (dir !== undefined) return AGENT_CONFIG.test(relTo(dir, abs)) ? 'config' : 'project'
+  if ((ctx.allowedRoots ?? []).some(inside)) return 'allowed'
+  return 'outside'
+}
+
+/** Where an absolute (or `base`-relative, default project-relative) path falls under the policy: the
+ *  stricter of the path as written and its real path (symlinks resolved, nearest existing parent for a
+ *  file about to be created). */
 export function classifyPath(ctx: PolicyContext, raw: string, base?: string): Where {
   const home = ctx.home ?? homedir()
   const p = expandHome(raw.trim().replace(/^["']|["']$/g, ''), home)
   const abs = isAbsolute(p) ? resolve(p) : resolve(base ?? ctx.dir, p)
-  if ((ctx.secretPaths ?? []).some(s => within(s, abs))) return 'secret'
-  if (SECRET_HOME_DIRS.some(d => within(join(home, d), abs))) return 'credential'
-  if (SECRET_FILE.test(abs)) return 'credential'
-  if (isSensitiveRelative(abs)) return 'sensitive' // participant data anywhere (other projects too)
-  if (within(ctx.dir, abs)) return AGENT_CONFIG.test(relTo(ctx.dir, abs)) ? 'config' : 'project'
-  if ((ctx.allowedRoots ?? []).some(r => within(r, abs))) return 'allowed'
-  return 'outside'
+  const real = ctx.realpath ?? realNearest
+  const a = classifyAbs(ctx, abs, real)
+  let r: Where = a
+  try { const ra = real(abs); if (ra !== abs) r = classifyAbs(ctx, ra, real) } catch { /* keep the text verdict */ }
+  return RANK[r] > RANK[a] ? r : a
 }
 
 /** A path (or one of OpenCode's worktree-relative patterns) with a participant-data folder segment. */
 export function isSensitiveRelative(rel: string): boolean {
-  return rel.split(/[\\/]+/).some(seg => SENSITIVE_NAMES.has(seg.toLowerCase()))
+  return rel.split(/[\\/]+/).some(seg => SENSITIVE_NAMES.has(norm(seg)))
 }
 
 const pathVerdict = (where: Where, what: string, writing = false): PolicyVerdict =>
@@ -219,7 +264,6 @@ function globHitsSensitive(pattern: string, strict: boolean): boolean {
   })
 }
 
-const INTERPRETERS = /^(python[\d.]*|pypy[\d.]*|node|nodejs|deno|bun|ruby|perl|php|lua|julia|Rscript|R|sh|bash|zsh|dash|ksh|fish|pwsh|powershell|tsx|ts-node|java|osascript|make|source|\.)$/
 /** Prefixes that run the command that follows them. */
 const WRAPPERS = new Set(['env', 'command', 'exec', 'nohup', 'time', 'nice', 'timeout', 'xargs', 'caffeinate', 'stdbuf'])
 const GIT_SENSITIVE_KEY = /^(alias|remote|url|credential|include|includeif|core\.(sshcommand|hookspath|fsmonitor|askpass|gitproxy|editor|pager))(\.|=|$)/i
@@ -241,6 +285,53 @@ function programOf(words: ShellWord[]): number {
     return i
   }
   return -1
+}
+
+/** App helpers that only read the project (and PDFs) and never run project code: allowed without an OS
+ *  sandbox, with arguments that stay relative, inside the project and away from participant data and the
+ *  agent's configuration. The helpers that run package code (agent-sandbox CONFINING_HELPERS) are not here:
+ *  without an OS sandbox sandbox_run.py cannot confine that code. */
+export const READ_ONLY_HELPERS = ['skills/build/check_program.py', 'skills/build/check_quotes.py', 'skills/build/check_results.py',
+  'skills/build/check_verbatim.py', 'skills/build/sources.py', 'skills/build/qsf_flow.py', 'skills/build/check_materials.py',
+  'skills/build/estimate_run.py', 'skills/build/paper_tables.py', 'skills/build/check_source_use.py', 'skills/build/docx_text.py',
+  'skills/build/capabilities.py', 'skills/build/program_io.py']
+
+/** One argument of an allowlisted command: plain text, relative, inside the project, not participant data
+ *  or a key file; `writes`: the command may write there, so not the agent's configuration either. */
+function plainArg(w: ShellWord, writes = false): boolean {
+  const a = w.text
+  if (w.expands || w.redirect || /^[/~\\]|^[A-Za-z]:|(^|[\\/])\.\.([\\/]|$)/.test(a)) return false
+  if (w.glob && globHitsSensitive(a, true)) return false
+  const v = a.includes('=') ? a.slice(a.indexOf('=') + 1) : a
+  if (isSensitiveRelative(v) || SECRET_FILE.test(v)) return false
+  return !writes || (!AGENT_CONFIG.test(v.replace(/^\.\//, '')) && !HELPER_FORBIDDEN.some(f => norm(a).includes(f)))
+}
+
+/** The allowlist for computers without an OS sandbox: ls, cat/head/tail/wc/file/pwd/echo, grep, find without
+ *  actions, pdf text, git status/diff/log/show, and the read-only app helpers; every argument plain. */
+function strictAllowed(words: ShellWord[]): boolean {
+  const t = words.map(w => w.text)
+  if (!t.length) return true
+  if (words.some(w => w.redirect && !/^\/dev\/null$|^\d$/.test(w.text))) return false
+  const prog = t[0]
+  const args = words.slice(1)
+  const plain = (ws: ShellWord[]): boolean => ws.every(w => plainArg(w))
+  switch (prog) {
+    case 'ls': case 'cat': case 'head': case 'tail': case 'wc': case 'file': case 'pwd': case 'echo': case 'pdfinfo': case 'sort': case 'uniq': case 'cut': case 'true':
+      return plain(args)
+    case 'pdftotext': case 'hs-pdf': return args.every(w => plainArg(w, true))
+    case 'grep': return plain(args) && !args.some(w => /^--(include|exclude)-from|^-f$|^--file/.test(w.text))
+    case 'find': return plain(args) && !args.some(w => /^-(exec|execdir|ok|okdir|delete|fprint\w*|fls)$/.test(w.text))
+    case 'git': {
+      const sub = args[0]?.text ?? ''
+      return ['status', 'diff', 'log', 'show'].includes(sub) && plain(args) && !args.some(w => /^--(ext-diff|output|textconv)|^-c$|^-C$/.test(w.text))
+    }
+    case 'python': case 'python3': {
+      const script = (args[0]?.text ?? '').replace(/^\.\//, '')
+      return READ_ONLY_HELPERS.some(h => script === '.opencode/' + h) && args.slice(1).every(w => plainArg(w, true))
+    }
+    default: return false
+  }
 }
 
 /** Rules that need the words of one simple command (publishing, uploads, environment dumps, scripts). */
@@ -300,22 +391,8 @@ function commandVerdicts(ctx: PolicyContext, words: ShellWord[], cmd: string): P
     }
     case 'wget': if (args.some(a => /^--(post|body)-file/.test(a))) ask('uploads a local file'); break
   }
-  // Without an OS sandbox a script or inline code could read anything; ask before running it. The app's
-  // own helpers (.opencode/skills, .opencode/artifact-kit) are exempt: editing them asks.
-  if (!ctx.osSandbox) {
-    const runsProjectFile = t[p0].includes('/') && !SYSTEM_PATH.test(t[p0]) && !/^\/(usr|bin)\//.test(t[p0])
-    if (runsProjectFile) ask('runs a script (no OS sandbox on this computer)')
-    else if (INTERPRETERS.test(prog)) {
-      const firstArg = args.find(a => !a.startsWith('-')) ?? ''
-      const appHelper = /^python[\d.]*$/.test(prog) && !args.some(a => /^-[a-zA-Z]*c/.test(a) || a === '-m') && /^(\.\/)?\.opencode\/(skills|artifact-kit)\/[\w./-]+\.py$/.test(firstArg) && !firstArg.includes('..')
-      const harmless = /^python[\d.]*$/.test(prog) && (args[0] === '--version' || (args[0] === '-m' && args[1] === 'json.tool'))
-      if (!appHelper && !harmless) ask('runs code (no OS sandbox on this computer)')
-    } else if (['pip', 'pip3', 'uv', 'conda'].includes(prog) && has('install', 'run')) ask('installs and runs package code (no OS sandbox on this computer)')
-    else if (['npm', 'pnpm', 'yarn', 'npx', 'bunx'].includes(prog) && (prog === 'npx' || prog === 'bunx' || has('run', 'exec', 'test', 'start', 'install', 'ci', 'i'))) ask('runs package scripts (no OS sandbox on this computer)')
-    // Writing into the agent's configuration from the shell (the OS sandbox blocks this elsewhere).
-    if (words.some(w => w.redirect && AGENT_CONFIG.test(w.text.replace(/^\.\//, ''))) ||
-      (!READ_ONLY_COMMANDS.has(prog) && !INTERPRETERS.test(prog) && t.slice(p0 + 1).some(a => !a.startsWith('-') && AGENT_CONFIG.test(a.replace(/^\.\//, ''))))) ask("may change the agent's own configuration")
-  }
+  // Without an OS sandbox only an allowlist of read-only commands runs without asking (strictAllowed).
+  if (!ctx.osSandbox && !strictAllowed(words)) ask('only read-only commands run without asking on a computer without an OS sandbox')
   return out
 }
 
@@ -327,7 +404,6 @@ export function classifyCommand(ctx: PolicyContext, cmd: string): PolicyVerdict 
   const vars = new Map<string, string>()
   let base = ctx.dir
   for (const words of parseShell(cmd)) {
-    verdicts.push(...commandVerdicts(ctx, words, cmd))
     const p0 = programOf(words)
     const prog = p0 >= 0 ? words[p0].text : ''
     for (const w of words) {
@@ -347,7 +423,7 @@ export function classifyCommand(ctx: PolicyContext, cmd: string): PolicyVerdict 
         }
         if (w.glob && globHitsSensitive(piece, strict)) { verdicts.push({ decision: 'ask', reason: `a pattern that can match participant data (${piece})` }); continue }
         const pathLike = home || piece.startsWith('/') || piece.startsWith('~') || piece === '..' || piece.startsWith('../') || piece.includes('/') ||
-          SECRET_FILE.test(piece) || SENSITIVE_NAMES.has(piece.toLowerCase())
+          SECRET_FILE.test(piece) || SENSITIVE_NAMES.has(norm(piece))
         if (!pathLike) continue
         if (piece.startsWith('/') && SYSTEM_PATH.test(piece)) continue
         const target = piece.replace(/[*?[].*$/, '') || '.'
@@ -355,6 +431,7 @@ export function classifyCommand(ctx: PolicyContext, cmd: string): PolicyVerdict 
         verdicts.push(pathVerdict(where === 'config' ? 'project' : where, piece))
       }
     }
+    verdicts.push(...commandVerdicts(ctx, words, cmd)) // after the paths: their reasons are more specific
     // `cd X` moves later relative paths: `cd sources && cat ../human-data/a.csv`.
     if (prog === 'cd' || prog === 'pushd') {
       const target = words.slice(p0 + 1).find(w => !w.text.startsWith('-'))
@@ -370,63 +447,66 @@ export function classifyCommand(ctx: PolicyContext, cmd: string): PolicyVerdict 
   return worst(verdicts)
 }
 
-/** Paths of an edit/read/external_directory request: the absolute metadata path first, since OpenCode's
- *  `patterns` are relative to its worktree root ("/" outside git). */
+/** Paths of an edit/read/list/lsp/external_directory request: the absolute metadata path first, since
+ *  OpenCode's `patterns` are relative to its worktree root ("/" outside git, else the repository root). */
 function requestPaths(perm: KernelPermission): string[] {
   const md = perm.metadata ?? {}
   const list: string[] = []
-  for (const k of ['filepath', 'filePath', 'parentDir']) if (typeof md[k] === 'string' && md[k]) list.push(md[k] as string)
+  for (const k of ['filepath', 'filePath', 'parentDir', 'path']) if (typeof md[k] === 'string' && md[k]) list.push(md[k] as string)
   if (Array.isArray(md.directories)) for (const d of md.directories) if (typeof d === 'string') list.push(d)
   if (list.length) return list
-  return (perm.patterns ?? []).map(p => p.replace(/[\\/]?\*.*$/, '') || '/')
+  return (perm.patterns ?? []).filter(p => !/^mcp:/.test(p)).map(p => p.replace(/[\\/]?\*.*$/, '') || '/')
 }
 
-/** The single decision point for an OpenCode permission request. */
+/** A worktree-relative pattern names "/<p>" outside git, or <repository root>/<p> inside one: classify every
+ *  reading that exists on disk (through symlinks); when none does, the text alone. */
+function relativeVerdict(ctx: PolicyContext, p: string, writing: boolean): PolicyVerdict {
+  if (isSensitiveRelative(p)) return pathVerdict('sensitive', p)
+  const exists = (x: string): boolean => { try { lstatSync(x); return true } catch { return false } }
+  // OpenCode's worktree: the nearest folder with a .git, else "/".
+  let root = '/'
+  for (let up = resolve(ctx.dir), i = 0; i < 128; i++) {
+    if (exists(join(up, '.git'))) { root = up; break }
+    if (dirname(up) === up) break
+    up = dirname(up)
+  }
+  const found = [join(root, p)].filter(exists)
+  if (found.length) return worst(found.map(c => pathVerdict(classifyPath(ctx, c), p, writing)))
+  const where = classifyPath(ctx, p)
+  return pathVerdict(where === 'outside' ? 'project' : where, p, writing)
+}
+
+/** The single decision point for an OpenCode permission request. Every request type reaches the app
+ *  (PERMISSION_CONFIG `"*": "ask"` in opencode.ts); unknown types without a path are allowed. */
 export function classifyPermission(ctx: PolicyContext, perm: KernelPermission): PolicyVerdict {
+  const md = perm.metadata ?? {}
   switch (perm.type) {
     case 'bash': {
-      const md = perm.metadata ?? {}
       const cmds = typeof md.command === 'string' && md.command ? [md.command] : perm.patterns ?? []
       if (!cmds.length) return { decision: 'ask', reason: 'unknown command' }
       return worst(cmds.map(c => classifyCommand(ctx, c)))
     }
-    case 'edit': case 'write': case 'read': case 'external_directory': case 'list': case 'glob': case 'grep': {
+    case 'glob': case 'grep': {
+      // Where it searches: metadata.path (absolute or project-relative), else the project. Participant data
+      // under it is skipped by ripgrep through the project's .ignore (agent-sandbox.ts); if that block is
+      // missing, a search over the project asks.
+      const where = typeof md.path === 'string' && md.path ? md.path : ctx.dir
+      const v = pathVerdict(classifyPath(ctx, where), where)
+      if (v.decision !== 'allow') return v
+      for (const k of ['pattern', 'include']) if (typeof md[k] === 'string' && (isSensitiveRelative(md[k] as string) || globHitsSensitive(md[k] as string, false)))
+        return { decision: 'ask', reason: `a search pattern aimed at participant data (${md[k]})` }
+      const searchesProject = classifyPath(ctx, where) === 'project'
+      if (searchesProject && !(ctx.searchIgnore?.() ?? false)) return { decision: 'ask', reason: `a search that can reach participant data (the project's .ignore is missing its HumanStudy block)` }
+      return { decision: 'allow' }
+    }
+    case 'edit': case 'write': case 'read': case 'external_directory': case 'list': case 'lsp': {
       const writing = perm.type === 'edit' || perm.type === 'write'
-      if (perm.type === 'glob' || perm.type === 'grep') {
-        // Patterns are search patterns, not paths; only a path in metadata says where it looks.
-        const md = perm.metadata ?? {}
-        const where = typeof md.path === 'string' ? md.path : undefined
-        return where ? pathVerdict(classifyPath(ctx, where), where) : { decision: 'allow' }
-      }
       const paths = requestPaths(perm)
-      if (!paths.length) return { decision: 'ask', reason: 'unknown path' }
-      return worst(paths.map(p => {
-        if (isAbsolute(p)) return pathVerdict(classifyPath(ctx, p), p, writing)
-        // A worktree-relative pattern: its root is "/" outside git, the repository root inside one. Reads
-        // outside the project arrive as external_directory with absolute paths, so here only sensitivity
-        // (anywhere in the path) and credential files matter.
-        if (isSensitiveRelative(p)) return pathVerdict('sensitive', p)
-        const where = classifyPath(ctx, p)
-        return pathVerdict(where === 'outside' ? 'project' : where, p, writing)
-      }))
+      if (!paths.length) return perm.type === 'lsp' ? { decision: 'allow' } : { decision: 'ask', reason: 'unknown path' }
+      return worst(paths.map(p => isAbsolute(p) ? pathVerdict(classifyPath(ctx, p), p, writing) : relativeVerdict(ctx, p, writing)))
     }
     // Public network fetches, subagents, to-do lists, skills: allowed. (doom_loop: opencode.ts caps it.)
     default:
       return { decision: 'allow' }
   }
-}
-
-/** A name in OpenCode's case-sensitive wildcard syntax that matches it in any letter case: each letter
- *  becomes `?`, so a few same-shaped names ("sales-data") also reach the app, which decides exactly. */
-const anyCaseWildcard = (name: string): string => name.replace(/[A-Za-z]/g, '?')
-
-/** OpenCode `read` rules: reads run without asking except credential files and participant-data folders,
- *  which come to the app (and so to classifyPermission). Last matching rule wins. */
-export const READ_PERMISSION: Record<string, 'allow' | 'ask'> = {
-  '*': 'allow',
-  '*.env': 'ask',
-  '*.env.*': 'ask',
-  '*.env.example': 'allow',
-  ...Object.fromEntries(['human-data', 'participant-data', 'participant_data'].flatMap(d => [d, anyCaseWildcard(d)]).flatMap(d => [[`${d}/*`, 'ask'], [`*/${d}/*`, 'ask']])),
-  ...Object.fromEntries(['quarantine', 'quarantined', 'withheld'].flatMap(d => [d, d[0].toUpperCase() + d.slice(1), d.toUpperCase()]).flatMap(d => [[`${d}/*`, 'ask'], [`*/${d}/*`, 'ask']])),
 }

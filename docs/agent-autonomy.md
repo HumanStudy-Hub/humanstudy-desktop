@@ -21,45 +21,116 @@ named like the real shell so OpenCode's shell handling is unchanged). The wrappe
    approval of a bash request the policy had sent to the researcher, the app writes a token for that
    exact command (sha256, valid 10 minutes, consumed atomically) into a folder the sandbox cannot write.
    Commands the policy would have allowed stay confined even when "Ask before changes" shows them;
-3. runs the app's helpers that confine package code themselves (`run_confined.py`,
-   `check_readiness.py`, `check_package.py`, `check_replies.py`, `check_validity.py`, `audit.py`,
-   `effects.py`, `recorded_answers.py`, `prompt_context.py`, `agent_package.py`) outside the sandbox,
-   because a macOS sandbox cannot be nested (`sandbox_apply: Operation not permitted`). Only as one
-   plain command (`python .opencode/skills/...py args`: no quotes, `$`, `;`, `&`, `|`, redirection or
-   globs), from the project folder, with the managed runtime's python, and only while every shipped
-   helper script in the project matches the hashes of the app's own copy (`trustedHelperHashes()` in
-   pack.ts; refreshPack restores them). Otherwise the helper runs confined and `sandbox_run.py` refuses
-   with a message telling the agent how to run it;
+3. runs the app's helpers that confine package code themselves outside the sandbox, because a macOS
+   sandbox cannot be nested (`sandbox_apply: Operation not permitted`). This happens only on macOS, and
+   only when all of these hold:
+   - it is one plain command (`python .opencode/skills/...py args`: no quotes, `$`, `;`, `&`, `|`,
+     redirection or globs), run from the project folder, with the managed runtime's python;
+   - every shipped helper script in the project matches the hashes of the app's own copy
+     (`trustedHelperHashes()` in pack.ts; refreshPack restores them);
+   - it uses only the arguments in `HELPER_FLAGS` (agent-sandbox.ts): relative paths inside the project
+     that do not name `.opencode`, `.git`, `.ignore`, `opencode.json` or participant data, and only the
+     listed flags.
+
+   `run_confined.py` qualifies only in two forms: with the relay (`HUMANSTUDY_RELAY_REQUIRED=1`; a relay
+   run needs the researcher's Run approval), or as
+   `--no-model .opencode/skills/export/agent/study_core.py --root . reproduce`. In every other case the
+   helper runs confined, and `sandbox_run.py` refuses with a message telling the agent how to run it;
 4. runs everything else confined.
 
-| Platform | What a command the app approved by itself cannot do |
-|---|---|
-| macOS (`sandbox-exec`) | read file contents in, list, or write a folder named `human-data`, `quarantine(d)`, `withheld`, `participant-data`/`_data`, in any letter case, anywhere (other projects, `~/.humanstudy/human-data` too); read or write `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/Library/Keychains`, `~/.config/gh`, `~/.claude`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials` and similar, the app's `account.json`/`credentials.json`/`settings.json`/`run-relays`, the relay folder, the kernel's own folder (other projects' conversations, its config, the wrapper and approval tokens) except OpenCode's tool-output files; write anywhere outside the project and the temp folders, or in the project's `.opencode/`, `opencode.json(c)`, `.git/hooks`, `.git/config` (these run code later, outside the sandbox); see other processes (`ps`, their environment holds keys) or talk to the keychain service. The network stays open: public source search needs it. A folder's existence (`stat`) stays visible. |
-| Linux with bubblewrap | the same file rules where bubblewrap can express them: read-only root, writable project and temp folders, `.opencode/`/`opencode.json`/`.git/hooks`/`.git/config` read-only, participant-data folders **inside the project** (found per command, any case) and the key folders and app files hidden behind empty mounts, own process namespace. Participant data outside the project (other projects) is not hidden. Not tested on a Linux machine in this round; the generated script is checked for syntax only. |
-| Linux without bubblewrap, Windows | no sandbox. The classifier (`osSandbox: false`) also asks before any command that runs code from a file or inline (`python x.py`, `python -c`, heredocs, `bash x.sh`, `./x`, `node`, `pip install`, `npm run`, ...), except the app's helpers under `.opencode/skills/` and `.opencode/artifact-kit/`, before shell writes into the agent's configuration, and before paths built from shell variables or bare `*` globs. Reads of participant data ask as on macOS. This protection depends on reading the command text and is weaker: a helper or command that is allowed can still be steered by its arguments. |
+### What each helper may do outside the sandbox (audit of `HELPERS`, 2026-11-08)
 
-Not covered by the OS sandbox: OpenCode's own tools (read, edit, write, grep, glob, webfetch) run
-in the kernel process, not in the shell, so for them the classifier is the only layer (reads of
-participant-data folders ask; `grep`/`glob` tool searches without a path do not). A path named by
-`$HUMANSTUDY_HUMAN_DATA` outside a participant-data folder name is not recognised. On macOS the
-managed runtime is read-only for the agent's shell (otherwise a planted `.pth` file would run in
-the helpers that start outside the sandbox); `pip install --target` into the project still works.
-`HUMANSTUDY_AGENT_SANDBOX_OFF=1` switches the sandbox off for development (the classifier then
-runs in its no-sandbox mode). The researcher's own terminal (the Terminal view) runs their login
-shell, not the wrapper.
+| Helper | Runs project code? | Prints project data? | Refused here |
+|---|---|---|---|
+| `simulate/run_confined.py` | the run script, through sandbox_run and the relay. It has no network except the relay and writes only in a scratch folder. It can read the project, including `human-data/`. | what the run script prints | anything but a relay run or `--no-model study_core.py --root . reproduce` |
+| `export/agent/study_core.py` (through run_confined `--no-model`) | package analysis code, confined as above | `reproduce` prints the recomputed results. Agent-written package code could also print rows. | every subcommand but `reproduce` (`human-data`, `run --cli`, ...) |
+| `build/check_readiness.py`, `check_package.py`, `check_validity.py`, `check_replies.py`, `recorded_answers.py`, `audit.py`, `effects.py`, `prompt_context.py`, `export/agent_package.py` | package code, only through sandbox_run (a copy of the package, no network, no home folder) | check results. `check_readiness`, `effects` and `audit` read `human-data/` for their checks. | the in-process child modes: `recorded_answers.py --child`, `check_validity.py --capture/--probe`, `audit.py --probe/--n/--workdir`, `check_replies.py --smoke-child`, `check_package.py`/`agent_package.py --smoke-test`. Any other flag not listed is refused too. |
+
+Helpers that do not run project code only call `pdftotext`/`pdftoppm`: `check_program.py`,
+`check_quotes.py`, `check_results.py`, `check_verbatim.py`, `sources.py`, `qsf_flow.py`,
+`check_materials.py`, `estimate_run.py`, `paper_tables.py`, `check_source_use.py`, `docx_text.py`,
+`program_io.py` and `capabilities.py`. `docx_text.py` prints the text of the file it is given, so it
+runs confined like any other command. The other `HELPERS` scripts:
+
+- `fetch_source.py` fetches public URLs into `sources/`.
+- `simkit.py` and `package_files/replies.py` are libraries used inside confined runs.
+- The agent's build steps do not run `mcp_server.py` or `community.py`.
+
+What a command the app approves by itself cannot do, by platform:
+
+**macOS (`sandbox-exec`).** The network stays open, because public source search needs it. A folder's
+existence (`stat`) stays visible. Otherwise, such a command cannot:
+
+- read file contents in, list, or write a folder named `human-data`, `human_data`, `quarantine(d)`,
+  `withheld` or `participant-data`/`_data`. This holds in any letter case and anywhere, including other
+  projects and `~/.humanstudy/human-data`;
+- read or write key folders: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/Library/Keychains`, `~/.config/gh`,
+  `~/.claude`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials` and similar;
+- read or write the app's `account.json`, `credentials.json`, `settings.json` and `run-relays`, or the
+  relay folder;
+- read or write the kernel's own folder (other projects' conversations, its config, the wrapper and
+  approval tokens), except OpenCode's tool-output files;
+- write anywhere outside the project and the temp folders;
+- write the managed runtime (a planted `.pth` file would run in the helpers that start outside);
+  `pip install --target` into the project still works;
+- write the project's `.opencode/` or `opencode.json(c)`;
+- write any `.git`. So there are no commits, and `.git` cannot be replaced by a `gitdir:` file;
+- write any `.ignore`/`.rgignore`;
+- create symbolic links at all, so `python -m venv` fails;
+- hard-link a file it may not write;
+- see other processes (`ps`), whose environment holds keys, or talk to the keychain service.
+
+**Linux with bubblewrap.** This is not tested on a Linux machine; the generated script is only checked
+for syntax.
+
+- The root is read-only. The project and temp folders are writable.
+- `.opencode/`, `opencode.json`, `.git` and `.ignore` are read-only when they exist.
+- Participant-data folders **inside the project** (found per command, in any case), the key folders and
+  the app files are hidden behind empty mounts.
+- Commands run in their own process namespace.
+- Not covered: participant data outside the project is not hidden, and symbolic links can be created.
+- The app's helpers run inside the sandbox, so any participant data they need asks.
+
+**Linux without bubblewrap, Windows.** There is no sandbox, so only an allowlist runs without asking:
+
+- `ls`, `cat`/`head`/`tail`/`wc`/`file`/`sort`/`uniq`/`cut`/`echo`/`pwd`, `grep`, `find` without
+  `-exec`/`-delete`, `pdftotext`/`pdfinfo`/`hs-pdf`, `git status/diff/log/show`, and the read-only
+  helpers above;
+- every argument must be relative, inside the project, and not participant data or a key file;
+- no variables, substitutions or redirections (except to `/dev/null`).
+
+Everything else asks, including every helper that runs package code.
+
+Git: the kernel's environment (and the wrapper) sets `GIT_CONFIG_COUNT`, so every git the kernel starts
+runs with `core.fsmonitor=false` and `core.hooksPath=/dev/null`. A project's `.git/config` therefore
+cannot make OpenCode's own `git status` run code. The researcher's own terminal (the Terminal view) runs
+their login shell, not the wrapper, and their own git is not covered.
+
+OpenCode's own tools (read, list, edit, write, grep, glob, lsp) run in the kernel process, not in the
+shell, so the OS sandbox does not cover them. Instead, every one of their requests comes to the app.
+`PERMISSION_CONFIG` is `"*": "ask"`, with only `webfetch`, `websearch`, `task` and `todowrite` allowed
+directly. The app resolves symlinks first: the real path, or the nearest existing parent for a new
+file. It then takes the stricter verdict of the written path and the real path.
+
+For grep and glob, the app keeps a block in the project's `.ignore` that names the participant-data
+folders in any case. ripgrep honours it, also with `--glob` and from parent folders, and a nested
+`.gitignore` cannot re-include them. So a search over the project never returns participant data.
+A search whose path or pattern points at participant data asks. If the block is missing, a
+project-wide search asks.
+
+`HUMANSTUDY_AGENT_SANDBOX_OFF=1` switches the sandbox off for development; the classifier then uses the
+allowlist.
 
 ## Layer 2: the command classifier
 
-OpenCode sends the app a `permission.asked` for every edit, every shell command, every path outside
-the project and every read of a participant-data folder (inline config `PERMISSION_CONFIG` in
-`app/src/main/kernel/opencode.ts`; the read rules list each name in its usual spellings and as
-`?`-wildcards, because OpenCode's wildcard match is case-sensitive). The app answers each one with
+OpenCode sends the app a `permission.asked` for every request (inline config `PERMISSION_CONFIG` in
+`app/src/main/kernel/opencode.ts`: every request of every tool). The app answers each one with
 `classifyPermission` in `app/src/main/kernel/permission-policy.ts`:
 
 | Verdict | What the app does | Examples |
 |---|---|---|
 | allow | answers `once` itself (never `always`, so switching Auto off takes effect at once) | edits and commands inside the project, including `sources/private/` and `sources/researcher/` (the researcher's own materials the build needs); temp dirs; OpenCode's tool-output files; the managed runtime; `webfetch`, `curl https://… -o sources/open/…`; subagents |
-| ask | shows the permission card in the conversation, with the reason | participant data in any spelling the text shows (`cd human-data && cat a.csv`, `cat h*/a.csv`, `HUMAN-DATA/`, `D=human-data; cat $D/a.csv`, `find -path "*human*"`, `cd sources && cat ../human-data/x`, `$(...)` inner commands); paths outside the project, including `~`, `$HOME`, `${HOME}`; key files; `printenv`, `env`/`env -0`, `set`, `export`/`declare -p`, `ps eww`/`ps -E`, `$…KEY`/`TOKEN`/`$OPENCODE_*`, `os.environ[...]`/`getenv`; `git push` in every spelling (`git -C . push`, `git -c k=v push`), `git config alias.*`/`remote.*`/`credential.*`/`core.sshCommand`/`core.hooksPath`, `git remote add`; `npm --registry x publish`, `gh release`/`api`; `ssh`/`scp`/`rsync host:`/`nc`/`socat`; uploads (`curl -T/-F @/-d @/--json @/-K`, `wget --post-file`); `sudo`; edits of `opencode.json`, `.opencode/**`, `.git/hooks`, `.git/config`; OpenCode's `doom_loop` prompt after 3 automatic answers in one turn |
+| ask | shows the permission card in the conversation, with the reason | participant data in any spelling the text shows (`cd human-data && cat a.csv`, `cat h*/a.csv`, `HUMAN-DATA/`, `D=human-data; cat $D/a.csv`, `find -path "*human*"`, `cd sources && cat ../human-data/x`, `$(...)` inner commands); paths outside the project, including `~`, `$HOME`, `${HOME}`; key files; `printenv`, `env`/`env -0`, `set`, `export`/`declare -p`, `ps eww`/`ps -E`, `$…KEY`/`TOKEN`/`$OPENCODE_*`, `os.environ[...]`/`getenv`; `git push` in every spelling (`git -C . push`, `git -c k=v push`), `git config alias.*`/`remote.*`/`credential.*`/`core.sshCommand`/`core.hooksPath`, `git remote add`; `npm --registry x publish`, `gh release`/`api`; `ssh`/`scp`/`rsync host:`/`nc`/`socat`; uploads (`curl -T/-F @/-d @/--json @/-K`, `wget --post-file`); `sudo`; edits (also through a symlink) of `opencode.json`, `.opencode/**`, `.git/**`, `.ignore`; reads, lists, lsp, grep and glob into participant data (symlinks resolved); without an OS sandbox, everything outside the allowlist; OpenCode's `doom_loop` prompt after 3 automatic answers in one turn |
 | deny | rejects with a message (OpenCode continues the turn and tells the model why) | the app's `account.json`, `credentials.json`, `settings.json`, `run-relays/`, the kernel's `auth.json` and `config/`, the agent-shell folder; `security find-*-password` (keychain) |
 
 Compound commands take the most restrictive verdict of their parts. With an OS sandbox, a path the
@@ -86,14 +157,25 @@ without keys or network (on macOS).
 
 ## Known limits
 
-- The classifier reads command text; on platforms without an OS sandbox, it is the only protection
-  for shell commands, and it holds against a cooperative model, not a determined prompt-injected
-  one (an allowed helper can still be steered by its arguments, and OpenCode's own tools are not
-  sandboxed anywhere).
-- On macOS the OS sandbox protects the folder names above, key folders and the app's files. It does
-  not know other sensitive content stored under ordinary names, and the network stays open, so
-  anything readable in the project can be sent out by an allowed command.
-- The confining helpers start outside the sandbox and can read participant data on the app's
-  behalf; what they print is what the agent sees.
-- `grep`/`glob` tool searches without a path are allowed; a content search inside a participant-data
-  folder through those tools is not asked.
+What is protected, exactly:
+
+- the folder names above, in any letter case;
+- the listed key folders and app files;
+- the agent's own configuration and git.
+
+On macOS this holds against any command the app approves by itself. On every platform it holds
+against OpenCode's own tools, through path checks after symlinks are resolved.
+
+What is not protected:
+
+- Sensitive content under ordinary names. The network stays open, so an allowed command or `webfetch`
+  can send out anything readable in the project. That includes `sources/private/`, which the owner rule
+  lets the agent read.
+- What the helpers that start outside the sandbox read. They read participant data on the app's behalf,
+  and the agent-written package code they run (confined, no network) can print what it reads; that
+  output reaches the agent.
+- A path named only by `$HUMANSTUDY_HUMAN_DATA` that is not under a participant-data folder name.
+- On Linux with bubblewrap: participant data in other projects, and symbolic links.
+- Without any OS sandbox (Windows, Linux without bubblewrap): everything outside the allowlist asks,
+  but the protection for an allowed command still rests on reading its text.
+- The researcher's terminal, and any command the researcher approves. These run unconfined by design.

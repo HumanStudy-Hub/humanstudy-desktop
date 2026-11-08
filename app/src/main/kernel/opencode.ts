@@ -54,21 +54,22 @@ import { join, relative, isAbsolute, resolve, sep } from 'node:path'
 import { kernelRuntimeEnv } from '../runtime-core'
 import { Emitter } from './types'
 import type { Kernel, KernelEvent, KernelPermission, KernelSubagent, PermissionReply } from './types'
-import { classifyPermission, defaultPolicyContext, READ_ONLY_COMMANDS, READ_PERMISSION, type PolicyContext, type PolicyVerdict } from './permission-policy'
-import { agentSandboxKind, approveCommandOnce, prepareAgentShell, type AgentShell } from './agent-sandbox'
+import { classifyPermission, defaultPolicyContext, READ_ONLY_COMMANDS, type PolicyContext, type PolicyVerdict } from './permission-policy'
+import { agentSandboxKind, approveCommandOnce, ensureSearchIgnore, prepareAgentShell, type AgentShell } from './agent-sandbox'
 
 /** What OpenCode itself asks the app about (every edit, every shell command, every path outside the
  *  project, and reads of sensitive folders). The app answers each one through classifyPermission
  *  (permission-policy.ts): automatically unless the action involves sensitive material. Subagents
  *  (the task tool) get the same rules: their ruleset is OpenCode's defaults plus this config. */
 export const PERMISSION_CONFIG = {
-  edit: 'ask',
-  bash: 'ask',
-  external_directory: 'ask',
-  read: READ_PERMISSION,
+  // Everything comes to the app: read, edit, list, glob, grep, lsp, bash, external_directory, skill,
+  // doom_loop and any tool OpenCode adds later. OpenCode's own tools compare paths as text, so the app
+  // resolves symlinks before deciding (permission-policy.ts). Only these need no decision:
+  '*': 'ask',
   webfetch: 'allow',
   websearch: 'allow',
   task: 'allow',
+  todowrite: 'allow',
 } as const
 
 /** A subagent session (OpenCode `task` tool) under a session this app started. */
@@ -624,7 +625,10 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     if (v.decision === 'deny') return this.autoDeny(sessionId, s, perm)
     const readOnly = perm.type === 'bash' && (perm.patterns?.length ? perm.patterns : [String(perm.metadata?.command ?? '')])
       .every(c => READ_ONLY_COMMANDS.has(c.trim().split(/\s+/)[0] ?? '') && !/[>`]|\$\(/.test(c))
-    if (v.decision === 'allow' && (this.permissionMode() === 'project' || readOnly)) return this.autoApprove(sessionId, s, perm)
+    // "Ask before changes" asks about changes only: reads, searches and other tools the policy allows (which
+    // OpenCode used to allow by itself) are still answered here.
+    const change = ['edit', 'write', 'bash', 'external_directory'].includes(perm.type)
+    if (v.decision === 'allow' && (this.permissionMode() === 'project' || readOnly || !change)) return this.autoApprove(sessionId, s, perm)
     emit({ type: 'permission', permission: perm })
   }
 
@@ -694,6 +698,9 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       OPENCODE_CONFIG_CONTENT: this.configContent(transport, shell),
       OPENCODE_DISABLE_AUTOUPDATE: '1',
       OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: '1', // no ~/.claude/CLAUDE.md from the user's own Claude Code
+      // Every git the kernel runs (its /vcs status, the agent's shell) ignores fsmonitor and hooks a project's
+      // .git/config could name: they would run outside the agent's sandbox. Same precedence as `git -c`.
+      GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'core.fsmonitor', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'core.hooksPath', GIT_CONFIG_VALUE_1: '/dev/null',
       // humanstudy_llm (simulations) defaults to the model the researcher selected.
       ...(this.provider === HOSTED_PROVIDER ? { HUMANSTUDY_MODEL: this.model } : {}),
     })
@@ -732,6 +739,8 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     if (this.disposed) { transport?.close(); throw new Error('kernel disposed') }
     // The OS sandbox for the agent's shell. If it cannot be set up the policy falls back to asking before
     // scripts (osSandbox false), never to running them unconfined without asking.
+    // Participant data stays out of OpenCode's grep/glob (ripgrep honours the project's .ignore).
+    try { ensureSearchIgnore(dir) } catch { /* the policy then asks before path-less searches */ }
     let agentShell: AgentShell = { kind: 'none' }
     if (this.agentSandbox) {
       try {

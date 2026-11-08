@@ -20,6 +20,7 @@ await new Promise(r => api.listen(0, '127.0.0.1', r))
 try {
   const k = new OpencodeKernel({ binary: '/bin/true', permission: 'project' })
   k.register('s', { dir: out, base: `http://127.0.0.1:${api.address().port}`, auth: 'Basic fixture', exited: false })
+  k.sandboxedDirs.set(out, true) // as on macOS: the agent's shell runs in the OS sandbox (agent-sandbox.ts)
   const events = []; k.onEvent(e => events.push(e))
   const resolved = id => events.filter(e => e.type === 'permission' && e.permission.id === id && e.permission.resolved)
   // Auto approval inside the project, then OpenCode's own replied event (observed order).
