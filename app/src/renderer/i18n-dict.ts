@@ -197,6 +197,7 @@ const ROWS: Row[] = [
   ['build.step_writing', 'Write the study', '撰写研究'],
   ['build.step_checking', 'Check against the paper', '对照论文核对'],
   ['build.step_packaging', 'Make it runnable', '做成可运行的'],
+  ['build.waiting', 'The agent is waiting for your answer in the conversation.', '助手在等你回答，请看左侧对话。'],
   ['build.usual', 'Usually 5–20 minutes, longer for long papers', '通常需要 5–20 分钟，论文越长越久'],
   ['build.elapsed', '{n} min so far · usually 5–20 min, longer for long papers', '已用 {n} 分钟 · 通常 5–20 分钟，论文越长越久'],
   ['build.elapsed_long', '{n} min so far · longer than usual; the agent is still working', '已用 {n} 分钟 · 比平时久，助手仍在工作'],

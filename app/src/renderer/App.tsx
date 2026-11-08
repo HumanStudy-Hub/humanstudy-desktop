@@ -522,6 +522,7 @@ export default function App() {
               onStopAgent={() => void session.abort()}
               model={settings?.model ?? ''}
               agentBusy={session.busy}
+              agentWaiting={Boolean(session.waitingForQuestion || session.waitingForPermission)}
               agentThreadId={session.threadId ?? session.id ?? ''}
               agentTurnKey={agentTurnKey}
               agentActivity={agentActivity}

@@ -95,6 +95,8 @@ interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSour
   /** The model selected in the app, whether the agent is working, and what it is doing. */
   model?: string
   agentBusy?: boolean
+  /** The agent stopped to ask the researcher (a question or a permission). */
+  agentWaiting?: boolean
   agentThreadId?: string
   agentTurnKey?: string | null
   agentActivity?: string
@@ -122,7 +124,7 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, source, onRestoreSource, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
+export function Workbench({ ref, project, source, onRestoreSource, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentWaiting = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
   // Tolerant: one slip by the agent sets that detail aside and the document still renders.
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
@@ -536,7 +538,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
                 const el = e.target as HTMLElement
                 if (el.dataset?.studyScroll !== undefined) storePosition({ study: el.scrollTop })
               }}>
-                {building && build && <BuildProgress build={build} />}
+                {building && build && <BuildProgress build={build} waiting={agentWaiting} />}
                 {buildFailed && <div className="part error edit-error" role="alert">{buildFailed} <button className="link" onClick={retryBuild}>{t('build.retry')}</button></div>}
                 <StudyView
                   view="study"
@@ -565,7 +567,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
               building && build ? (
                 <div className="empty-state">
                   <h2>{t('build.title')}</h2>
-                  <BuildProgress build={build} full />
+                  <BuildProgress build={build} full waiting={agentWaiting} />
                 </div>
               )
               : buildFailed ? (
