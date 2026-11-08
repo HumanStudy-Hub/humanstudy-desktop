@@ -11,6 +11,7 @@ import { Explorer, flatten } from './Explorer'
 import { SourceDrawer, type PassageSelection, type SourceRef } from './SourceDrawer'
 import { t } from '../i18n'
 import { BuildProgress } from './BuildProgress'
+import { WEB_EDITION } from '../edition'
 import { sourceTarget } from '../../shared/source-target'
 import { simulationScope } from '../../shared/simulation-scope'
 import { simulationPlan } from '../../shared/simulation-run'
@@ -136,6 +137,15 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   // A project from before automatic builds: a paper, no study, never built. Offer it; never start it unasked.
   const paperOnly = !build && Boolean(project.pdf) && !project.program && !error
   const retryBuild = () => void window.humanstudy.project.retryBuild(project.dir, claimAction('build.retry')).catch((e: unknown) => setEditError(String(e)))
+  // Web edition: an online session that ended (its time limit) or was cut off stopped the build, not the
+  // researcher, so opening the project again continues it once. On desktop a stopped build waits for Retry.
+  const resumedBuild = useRef<string | null>(null)
+  useEffect(() => {
+    if (!WEB_EDITION || build?.status !== 'error' || (build.error !== 'closed' && build.error !== 'interrupted')) return
+    if (resumedBuild.current === project.dir) return
+    resumedBuild.current = project.dir
+    void window.humanstudy.project.retryBuild(project.dir, claimAction('build.resume')).catch(() => undefined)
+  }, [build?.status, build?.error, project.dir])
   const studies = useMemo(() => (program ? viewStudies(program) : []), [program])
   const files = useMemo(() => flatten(project.tree), [project.tree])
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
