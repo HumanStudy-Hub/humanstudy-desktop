@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const out = mkdtempSync(join(tmpdir(), 'notify-test-'))
 await build({ entryPoints: [join(dirname(fileURLToPath(import.meta.url)), 'notify-core.ts')], bundle: true, platform: 'node', format: 'esm', outdir: out, logLevel: 'error' })
-const { shouldNotify, notifyTitle } = await import(pathToFileURL(join(out, 'notify-core.js')).href)
+const { shouldNotify, notifyTitle, notifyKind } = await import(pathToFileURL(join(out, 'notify-core.js')).href)
 rmSync(out, { recursive: true, force: true })
 
 test('only a finished turn in the background notifies', () => {
@@ -19,3 +19,11 @@ test('only a finished turn in the background notifies', () => {
   assert.equal(shouldNotify({ enabled: true, anyWindowFocused: false, eventType: 'text' }), false)
 })
 test('title', () => assert.equal(notifyTitle('Study A'), 'Agent finished · Study A'))
+
+test('a question or permission the agent waits on notifies too, once answered it does not', () => {
+  assert.equal(notifyKind({ enabled: true, anyWindowFocused: false, eventType: 'question' }), 'waiting')
+  assert.equal(notifyKind({ enabled: true, anyWindowFocused: false, eventType: 'permission' }), 'waiting')
+  assert.equal(notifyKind({ enabled: true, anyWindowFocused: false, eventType: 'question', resolved: true }), null)
+  assert.equal(notifyKind({ enabled: true, anyWindowFocused: true, eventType: 'question' }), null)
+  assert.equal(notifyTitle('Study A', 'waiting'), 'Agent needs your answer · Study A')
+})

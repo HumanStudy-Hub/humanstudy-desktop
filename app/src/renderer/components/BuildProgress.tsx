@@ -8,7 +8,7 @@ const LONG_MIN = 25
 
 /** Where a paper build is and how long it has run: the stages as a line of steps, the minutes so far
  *  against the usual time, and (in the full view) that the researcher need not watch it. */
-export function BuildProgress({ build, full }: { build: PaperBuildState; full?: boolean }) {
+export function BuildProgress({ build, full, waiting }: { build: PaperBuildState; full?: boolean; waiting?: boolean }) {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 30_000)
@@ -27,6 +27,8 @@ export function BuildProgress({ build, full }: { build: PaperBuildState; full?: 
           </li>
         ))}
       </ol>
+      {/* Always mounted, so screen readers announce the text when it appears. */}
+      <p className="small build-waiting" role="status">{waiting && build.status === 'running' ? t('build.waiting') : ''}</p>
       <p className="muted small" aria-live="off">
         {build.status === 'pending'
           ? t('build.pending')
@@ -34,7 +36,7 @@ export function BuildProgress({ build, full }: { build: PaperBuildState; full?: 
             ? t(minutes >= LONG_MIN ? 'build.elapsed_long' : 'build.elapsed', { n: minutes })
             : t('build.usual')}
       </p>
-      {full && <p className="muted small">{t(WEB_EDITION ? 'build.leave_web' : 'build.leave')}</p>}
+      {full && !waiting && <p className="muted small">{t(WEB_EDITION ? 'build.leave_web' : 'build.leave')}</p>}
     </div>
   )
 }
