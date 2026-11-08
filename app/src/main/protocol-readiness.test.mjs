@@ -88,3 +88,23 @@ test('the bundled engine passes a sound protocol and blocks a broken one, confin
     assert.notEqual(crash[0].check, 'runtime')
   } finally { delete process.env.OPENROUTER_API_KEY }
 })
+
+test('review 1 S1: an expression too large to check stops at the CPU or memory bound and blocks', { skip: !python || process.platform === 'win32' }, async () => {
+  const bomb = (expr) => {
+    const dir = fixture()
+    const p = JSON.parse(readFileSync(join(dir, 'protocol.json'), 'utf8'))
+    p.units.s.fields.bomb = expr
+    writeFileSync(join(dir, 'protocol.json'), JSON.stringify(p))
+    return dir
+  }
+  const started = Date.now()
+  const cpu = await R.protocolReadiness(python, ENGINE, bomb('10**10**8 > 0'), '', 60_000, { cpuSeconds: 2 })
+  assert.deepEqual(cpu, [R.ENGINE_LIMIT])
+  assert.ok(Date.now() - started < 30_000, 'stopped by the CPU bound, not the wall clock')
+  const memStart = Date.now()
+  const mem = await R.protocolReadiness(python, ENGINE, bomb('len([0]*(4*10**8))'), '', 60_000, { memoryBytes: 512 * 1024 ** 2 })
+  assert.deepEqual(mem, [R.ENGINE_LIMIT], 'a memory bound is a property of the protocol, not a broken runtime')
+  assert.ok(Date.now() - memStart < 30_000, 'stopped by the memory bound (rlimit, or the RSS watch on macOS), not the wall clock')
+  assert.deepEqual(await R.protocolReadiness(python, ENGINE, fixture(), '', 60_000, { cpuSeconds: 30, memoryBytes: 1024 ** 3 }), [], 'a sound protocol passes under the bounds')
+  assert.match(R.runner(), /RLIMIT_CPU", 120\).*RLIMIT_AS", 2147483648\)/s)
+})

@@ -1,6 +1,5 @@
 # Vendored hsenv engine. Refresh with scripts/sync_hsenv.sh; never edit by hand.
-source: /Users/assassin808/humanstudy/new-studies-1027/sandbox/hsenv/hsenv
-commit: unknown
+source: hsenv sandbox engine, 2026-11-08 snapshot
 synced: 2026-11-08
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  hsenv/__init__.py
 a90e48c20804bb1772be6dc32f46c0fe71e4f22726ded3b096afc51577dc03c9  hsenv/engine.py

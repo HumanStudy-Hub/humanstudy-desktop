@@ -52,11 +52,12 @@ shows the whole folder as the **Program** explorer and `program.json` as the **S
   .humanstudy/              app state; the agent does not edit it
 ```
 
-Runnable forms: a project runs when EITHER `protocol.json` passes the engine's checks (refs, random-answer
-sessions reach every stage and compute every effect, keyed answers, verbatim texts against `sourcetext/`, coding
-cases) OR `package/<slug>/` passes the package contract and the build checks. The app runs both gates itself,
-from its own copy of the checkers, never the project's. New studies take the protocol route; the package route is
-kept so community studies built before v0.8 still run.
+Runnable forms: the app checks both forms itself, from its own copy of the checkers, never the project's, and
+keeps the two results apart. `package/<slug>/` runs when it passes the package contract and the build checks.
+`protocol.json` is checked by the engine: refs; random-answer sessions that reach every stage and compute every
+effect; keyed answers; verbatim texts against `sourcetext/`; coding cases. A passing protocol.json never makes a
+package runnable. Protocol runs start once the engine runner ships. New studies take the protocol route; the
+package route is kept so community studies built before v0.8 still run.
 
 Rules:
 

@@ -57,6 +57,7 @@ test('refreshPack installs a missing kit and restores a changed kit file', async
 
 test('the protocol engine is vendored as listed in VERSION and installed, app-owned, in .opencode/runtime/hsenv', async () => {
   const version = readFileSync(join(packDir, 'runtime/hsenv/VERSION'), 'utf8')
+  assert.ok(!/(^|\s)\/(Users|home)\/|[A-Z]:\\/m.test(version), 'VERSION records hashes and a label, no local paths')
   const listed = [...version.matchAll(/^([0-9a-f]{64}) {2}(\S+)$/gm)].map((m) => [m[2], m[1]])
   assert.deepEqual(listed.map(([f]) => f).sort(), ['hsenv/__init__.py', 'hsenv/checks.py', 'hsenv/effects_core.py', 'hsenv/engine.py', 'hsenv/expr.py'])
   for (const [f, hash] of listed) assert.equal(sha(join(packDir, 'runtime/hsenv', f)), hash, f + ' matches VERSION (run scripts/sync_hsenv.sh)')

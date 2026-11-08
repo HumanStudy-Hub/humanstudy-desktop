@@ -38,11 +38,11 @@ export interface PackageReadiness {
    *  'relay' (macOS sandbox + per-run relay; package code never holds the key) or 'key' (Linux,
    *  Windows: the pre-relay path, package code can read the key). Absent counts as 'key'. */
   modelAccess?: 'relay' | 'key'
-  /** At least one folder under package/, or a protocol.json. */
+  /** At least one folder under package/. */
   exists: boolean
-  /** Which runnable form was checked: package/<slug>/ (read-only community route) or protocol.json (the
-   *  protocol engine, v0.8). Absent from the renderer's own static check, which only knows packages. */
-  route?: 'package' | 'protocol'
+  /** The protocol route, reported separately when protocol.json exists (v0.8): protocol.json against the
+   *  bundled engine's checks. It never makes the package ready; `ready` above is the package route alone. */
+  protocol?: { ready: boolean; problems: PackageProblem[] }
   ready: boolean
   /** The package checked (the ready one, else the most complete one). */
   slug: string | null

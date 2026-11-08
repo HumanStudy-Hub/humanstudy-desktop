@@ -12,14 +12,35 @@ export interface ProtocolProblem { check: string; reason: string }
 
 /** Random-answer sessions the gate plays (the converter's own gate plays 1,000). */
 export const PROTOCOL_SESSIONS = 50
-/** checks.py doubles the sessions up to five times when screening ends most of them early. */
-export const PROTOCOL_TIMEOUT_MS = 10 * 60_000
+/** Wall clock for one check (a 50-session check takes about a second; checks.py doubles the sessions up to
+ *  five times when screening ends most of them early). */
+export const PROTOCOL_TIMEOUT_MS = 3 * 60_000
+/** Resource bounds set inside the engine process (POSIX): the protocol's expressions are data written by an
+ *  agent, and `[0]*10**10` or `10**10**9` must stop the check, not the computer (review 1, S1). */
+export const PROTOCOL_CPU_SECONDS = 120
+export const PROTOCOL_MEMORY_BYTES = 2 * 1024 ** 3
 
 export const ENGINE_MISSING: ProtocolProblem = { check: 'runtime', reason: 'The research runtime is not installed, so the protocol checks cannot run yet.' }
+/** The check stopped at its CPU, memory or time bound: a property of this protocol, so it blocks and is cached. */
+export const ENGINE_LIMIT: ProtocolProblem = { check: 'limits', reason: 'The protocol checks stopped at their time or memory limit. An expression or a loop in protocol.json is too large to check.' }
 export const ENGINE_FAILED: ProtocolProblem = { check: 'runtime', reason: 'The protocol checks could not complete. Retry; if it persists, reinstall the research runtime.' }
 
 // `-I` leaves the script folder and the working folder off sys.path, so the engine folder is added explicitly.
-const RUNNER = 'import sys; sys.path.insert(0, sys.argv.pop(1)); from hsenv import checks; sys.exit(checks.main())'
+// The limits are set before the engine is imported: CPU time always; address space (Linux) and data size (macOS,
+// where RLIMIT_AS cannot be lowered) where the platform accepts them. No resource module (Windows): the wall
+// clock timeout alone.
+export const runner = (cpuSeconds = PROTOCOL_CPU_SECONDS, memoryBytes = PROTOCOL_MEMORY_BYTES): string => [
+  'import sys',
+  'try:',
+  ' import resource',
+  ` for name, n in (("RLIMIT_CPU", ${cpuSeconds}), ("RLIMIT_AS", ${memoryBytes}), ("RLIMIT_DATA", ${memoryBytes})):`,
+  '  try: resource.setrlimit(getattr(resource, name), (n, n))',
+  '  except (AttributeError, ValueError, OSError): pass',
+  'except ImportError: pass',
+  'sys.path.insert(0, sys.argv.pop(1))',
+  'from hsenv import checks',
+  'sys.exit(checks.main())',
+].join('\n')
 
 type Report = Record<string, unknown>
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : [])
@@ -99,7 +120,7 @@ export async function sourceTextArgs(project: string): Promise<string[]> {
 }
 
 export async function protocolReadiness(python: string | null, engine: [string, string][], project: string, bin: string,
-  timeout = PROTOCOL_TIMEOUT_MS): Promise<ProtocolProblem[]> {
+  timeout = PROTOCOL_TIMEOUT_MS, limits: { cpuSeconds?: number; memoryBytes?: number } = {}): Promise<ProtocolProblem[]> {
   if (!python) return [ENGINE_MISSING]
   if (!engine.some(([rel]) => rel === 'hsenv/checks.py')) return [ENGINE_FAILED]
   const work = await mkdtemp(join(tmpdir(), 'hs-protocol-'))
@@ -110,11 +131,13 @@ export async function protocolReadiness(python: string | null, engine: [string, 
       await mkdir(dirname(path), { recursive: true })
       await writeFile(path, content, 'utf8')
     }
-    const args = ['-I', '-B', '-X', 'utf8', '-c', RUNNER, work, await realpath(project), '--sessions', String(PROTOCOL_SESSIONS), ...await sourceTextArgs(project)]
+    const args = ['-I', '-B', '-X', 'utf8', '-c', runner(limits.cpuSeconds, limits.memoryBytes), work, await realpath(project), '--sessions', String(PROTOCOL_SESSIONS), ...await sourceTextArgs(project)]
     const win = process.platform === 'win32'
     const system = win ? `${process.env.SystemRoot || 'C:\\Windows'}\\System32` : '/usr/bin:/bin:/usr/sbin:/sbin'
-    const run = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-      execFile(python, args, {
+    const memoryBytes = limits.memoryBytes ?? PROTOCOL_MEMORY_BYTES
+    const run = await new Promise<{ stdout: string; stderr: string; limit?: boolean }>((resolve, reject) => {
+      let overMemory = false
+      const child = execFile(python, args, {
         cwd: home, timeout, maxBuffer: 16 * 1024 * 1024, windowsHide: true,
         // No keys or tokens: only a path, a home and a temp folder in the scratch space.
         env: {
@@ -124,11 +147,23 @@ export async function protocolReadiness(python: string | null, engine: [string, 
         },
       }, (error, stdout, stderr) => {
         // checks.py exits 1 when the protocol fails (its report is still the answer) and Python exits 1 on an
-        // uncaught error in the engine. Anything else (not started, killed, timed out) is a failed run.
-        if (error && !(typeof error.code === 'number' && error.code === 1 && !error.killed)) return reject(error)
+        // uncaught error in the engine. Stopped at a bound (CPU, memory watch, wall clock): the limits problem.
+        // Anything else (not started, crashed) is a failed run.
+        clearInterval(watch)
+        if (overMemory || (error && (error.signal === 'SIGXCPU' || error.signal === 'SIGKILL' || error.killed))) return resolve({ stdout: '', stderr: '', limit: true })
+        if (error && !(typeof error.code === 'number' && error.code === 1)) return reject(error)
         resolve({ stdout: String(stdout), stderr: String(stderr) })
       })
+      // macOS does not enforce RLIMIT_AS/RLIMIT_DATA: watch the resident size and stop the check above the bound.
+      const watch = setInterval(() => {
+        if (win || !child.pid) return
+        execFile('/bin/ps', ['-o', 'rss=', '-p', String(child.pid)], { timeout: 2000 }, (e, out) => {
+          if (!e && Number(String(out).trim()) * 1024 > memoryBytes) { overMemory = true; child.kill('SIGKILL') }
+        })
+      }, 250)
     })
+    if (run.limit) return [ENGINE_LIMIT]
+    if (/\bMemoryError\b/.test(run.stderr) && !run.stdout.includes('{')) return [ENGINE_LIMIT]
     return protocolOutcome(run.stdout, run.stderr)
   } catch { return [ENGINE_FAILED] }
   finally {

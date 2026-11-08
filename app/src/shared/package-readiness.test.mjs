@@ -302,43 +302,66 @@ const withProtocol = (dir) => {
   writeFileSync(join(dir, 'sourcetext/survey.txt'), 'Please read the question below.')
   return dir
 }
-const protocolApproval = (bytes = PROTOCOL) => '[Simulation scope approved]\n' + JSON.stringify({ protocolHash: createHash('sha256').update(bytes).digest('hex'), plan: { perCondition: 5 } }) + '\nRun it'
+const protocolApproval = (bytes = PROTOCOL) => '[Simulation scope approved]\n' + JSON.stringify({ route: 'protocol', protocolHash: createHash('sha256').update(bytes).digest('hex'), plan: { perCondition: 5 } }) + '\nRun it'
 
-test('v0.8: a project with only protocol.json is runnable when the protocol checks pass', async () => {
-  const dir = withProtocol(mkdtempSync(join(tmpdir(), 'protocol-only-')))
-  const r = await M.projectPackageReadiness(dir)
-  assert.deepEqual([r.exists, r.ready, r.route, r.problems], [true, true, 'protocol', []])
-  await M.assertRunnablePackage(dir, protocolApproval())
-  await assert.rejects(M.assertRunnablePackage(dir, protocolApproval(Buffer.from('{}'))), /changed after approval/)
-  await assert.rejects(M.assertRunnablePackage(mkdtempSync(join(tmpdir(), 'empty-')), protocolApproval()), /no protocol\.json/)
+test('review 1 M2: a passing protocol.json reports beside the package and never makes the package ready', async () => {
+  const only = withProtocol(mkdtempSync(join(tmpdir(), 'protocol-only-')))
+  const r = await M.projectPackageReadiness(only)
+  assert.deepEqual([r.exists, r.ready, r.protocol], [false, false, { ready: true, problems: [] }])
+  const broken = withProtocol(project({ k: COMMENT_ONLY }))
+  const b = await M.projectPackageReadiness(broken, 's1')
+  assert.equal(b.ready, false, 'an incomplete package stays not ready whatever protocol.json says')
+  assert.ok(b.problems.some((p) => p.kind === 'missing'))
+  assert.equal(b.protocol.ready, true)
+  await assert.rejects(M.assertRunnablePackage(broken, APPROVAL), /package is not complete/, 'a program approval cannot run an unchecked package')
+  await assert.rejects(M.assertRunnablePackage(only, APPROVAL), 'no program, no package: a program approval cannot run')
+  await assert.rejects(M.assertRunnablePackage(withProtocol(project({})), APPROVAL), /no package under package\//)
 })
 
-test('v0.8: failing protocol checks block the run, one line per check; a ready package still runs', async () => {
-  const dir = withProtocol(project({ k: COMMENT_ONLY }))
+test('review 1 M2: a program approval still needs check_readiness, even with a passing protocol', async () => {
+  const dir = withProtocol(project({ k: COMPLETE }))
+  science = async () => [{ check: 'effects', reason: 'effect e1 does not compute' }]
+  try {
+    const r = await M.projectPackageReadiness(dir, 's1')
+    assert.deepEqual([r.ready, r.protocol.ready], [false, true])
+    await assert.rejects(M.assertRunnablePackage(dir, APPROVAL), /package is not complete.*effects: effect e1/s)
+  } finally { science = async () => [] }
+  writeFileSync(join(dir, 'effects.json'), '{"fixed": true}')
+  await M.assertRunnablePackage(dir, APPROVAL)
+})
+
+test('review 1 M2: protocol approvals name their route and are refused until protocol runs exist', async () => {
+  const dir = withProtocol(project({ k: COMPLETE }))
+  assert.equal(M.protocolRunsEnabled(), false, 'off by default')
+  await assert.rejects(M.assertRunnablePackage(dir, protocolApproval()), /Protocol runs are not available yet/)
+  const routed = (route, extra = {}) => '[Simulation scope approved]\n' + JSON.stringify({ ...JSON.parse(APPROVAL.split('\n')[1]), route, ...extra }) + '\nRun it'
+  await M.assertRunnablePackage(dir, routed('package'))
+  await assert.rejects(M.assertRunnablePackage(dir, routed('engine')), /names no runnable form/)
+  await assert.rejects(M.assertRunnablePackage(dir, routed('package', { protocolHash: 'x' })), /names no runnable form/)
+  await assert.rejects(M.assertRunnablePackage(dir, routed('protocol')), /not available yet/)
+  M.enableProtocolRuns(true)
+  try {
+    await M.assertRunnablePackage(dir, protocolApproval())
+    await assert.rejects(M.assertRunnablePackage(dir, protocolApproval(Buffer.from('{}'))), /changed after approval/)
+    protocolCheck = async () => [{ check: 'refs', reason: 'flow names stage nowhere' }]
+    writeFileSync(join(dir, 'sourcetext/survey.txt'), 'a new input state')
+    await assert.rejects(M.assertRunnablePackage(dir, protocolApproval()), /protocol did not pass.*refs: flow names stage nowhere/s,
+      'a ready package does not run a protocol approval')
+    await assert.rejects(M.assertRunnablePackage(mkdtempSync(join(tmpdir(), 'empty-')), protocolApproval()), /no protocol\.json/)
+  } finally { M.enableProtocolRuns(false); protocolCheck = async () => [] }
+})
+
+test('v0.8: failing protocol checks are listed one line per check under protocol', async () => {
+  const dir = withProtocol(project({ k: COMPLETE }))
   protocolCheck = async () => [{ check: 'refs', reason: 'flow names stage nowhere' }, { check: 'verbatim', reason: '2 texts not found' }]
   try {
     const r = await M.projectPackageReadiness(dir, 's1')
-    assert.equal(r.ready, false)
-    assert.equal(r.route, 'protocol')
-    assert.deepEqual(r.problems.map((p) => [p.file, p.kind, p.check]), [['protocol.json', 'scientific', 'refs'], ['protocol.json', 'scientific', 'verbatim']])
-    await assert.rejects(M.assertRunnablePackage(dir, protocolApproval()), /protocol did not pass.*refs: flow names stage nowhere.*verbatim: 2 texts not found/s)
-    await assert.rejects(M.assertRunnablePackage(dir, APPROVAL), /protocol did not pass/)
-    const both = withProtocol(project({ k: COMPLETE }))
-    const p = await M.projectPackageReadiness(both, 's1')
-    assert.deepEqual([p.ready, p.route, p.slug], [true, 'package', 'k'], 'the package route is kept')
-    await M.assertRunnablePackage(both, APPROVAL)
-    await assert.rejects(M.assertRunnablePackage(both, protocolApproval()), /protocol did not pass/, 'a protocol approval needs the protocol route')
+    assert.equal(r.ready, true, 'the package route is kept')
+    assert.deepEqual(r.protocol.problems.map((p) => [p.file, p.kind, p.check]), [['protocol.json', 'scientific', 'refs'], ['protocol.json', 'scientific', 'verbatim']])
+    const before = protocolCalls
+    assert.equal((await M.projectPackageReadiness(project({ k: COMPLETE }), 's1')).protocol, undefined)
+    assert.equal(protocolCalls, before, 'no protocol.json: the engine is not asked')
   } finally { protocolCheck = async () => [] }
-})
-
-test('v0.8: a program approval runs on the protocol route; packages without protocol.json are unchanged', async () => {
-  const dir = withProtocol(project({}))
-  await M.assertRunnablePackage(dir, APPROVAL)
-  const before = protocolCalls
-  const r = await M.projectPackageReadiness(project({ k: COMPLETE }), 's1')
-  assert.deepEqual([r.ready, r.route], [true, 'package'])
-  assert.equal(protocolCalls, before, 'no protocol.json: the engine is not asked')
-  await assert.rejects(M.assertRunnablePackage(project({}), APPROVAL), /no package under package\/ and no protocol\.json/)
 })
 
 test('v0.8: protocol results are reused for unchanged inputs and rerun when the protocol, a source text or an asset changes', async () => {
@@ -371,14 +394,15 @@ test('v0.8: the protocol route fails closed and never caches a runtime problem',
   const F = await import(pathToFileURL(join(fresh, 'main.mjs')).href)
   const dir = withProtocol(mkdtempSync(join(tmpdir(), 'protocol-closed-')))
   const r = await F.projectPackageReadiness(dir)
-  assert.deepEqual([r.ready, r.route, r.problems[0].check], [false, 'protocol', 'runtime'])
+  assert.deepEqual([r.ready, r.protocol.ready, r.protocol.problems[0].check], [false, false, 'runtime'])
+  F.enableProtocolRuns(true)
   await assert.rejects(F.assertRunnablePackage(dir, protocolApproval()), /protocol did not pass/)
   let calls = 0
   F.configureProtocolChecks(async () => (calls++ ? [] : [{ check: 'runtime', reason: 'not installed' }]), 'x')
-  assert.equal((await F.projectPackageReadiness(dir)).ready, false)
-  assert.equal((await F.projectPackageReadiness(dir)).ready, true, 'the runtime installed later: checked again')
+  assert.equal((await F.projectPackageReadiness(dir)).protocol.ready, false)
+  assert.equal((await F.projectPackageReadiness(dir)).protocol.ready, true, 'the runtime installed later: checked again')
   F.configureProtocolChecks(async () => { throw Error('boom') }, 'y')
-  assert.equal((await F.projectPackageReadiness(dir)).ready, false)
+  assert.equal((await F.projectPackageReadiness(dir)).protocol.ready, false)
 })
 
 test('v0.8: the Simulation tab rechecks when a protocol input changes', () => {

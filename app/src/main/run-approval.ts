@@ -5,17 +5,20 @@
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
+import { approvalRoute, protocolRunsEnabled, PROTOCOL_RUNS_UNAVAILABLE } from './package-readiness'
 import { simulationPlan } from '../shared/simulation-run'
 import { MAX_PER_CONDITION, runLimits, type RunLimits } from '../shared/run-limits'
 
 export async function approvedRunLimits(projectDir: string, approvalText: string): Promise<RunLimits> {
-  let approved: { studyId?: unknown; programHash?: unknown; protocolHash?: unknown; plan?: { perCondition?: unknown } }
+  let approved: { route?: unknown; studyId?: unknown; programHash?: unknown; protocolHash?: unknown; plan?: { perCondition?: unknown } }
   try { approved = JSON.parse(approvalText.split('\n')[1] ?? '') } catch { throw Error('Simulation approval is unreadable. Review the simulation scope again.') }
   const per = approved?.plan?.perCondition
   if (!Number.isSafeInteger(per) || (per as number) < 1 || (per as number) > MAX_PER_CONDITION)
     throw Error(`Participants per condition must be a whole number from 1 to ${MAX_PER_CONDITION}. Review the simulation scope again.`)
-  // A protocol approval (protocol route, v0.8): the conditions are the arms of the hashed protocol.json.
-  if (approved.protocolHash !== undefined) {
+  // A protocol approval (protocol route, v0.8): refused until protocol runs exist; then the conditions are the
+  // arms of the hashed protocol.json.
+  if (approvalRoute(approved ?? {}) === 'protocol') {
+    if (!protocolRunsEnabled()) throw Error(PROTOCOL_RUNS_UNAVAILABLE)
     const bytes = await readFile(join(projectDir, 'protocol.json')).catch(() => null)
     if (!bytes || typeof approved.protocolHash !== 'string' || approved.protocolHash !== createHash('sha256').update(bytes).digest('hex'))
       throw Error('The study changed after approval. Review the simulation scope again.')
@@ -33,3 +36,5 @@ export async function approvedRunLimits(projectDir: string, approvalText: string
   const conditions = [...new Set(simulationPlan(program, approved.studyId).conditions.map((c) => c.id))]
   return runLimits({ conditions, perCondition: per })
 }
+
+export { enableProtocolRuns } from './package-readiness'

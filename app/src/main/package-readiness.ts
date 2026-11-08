@@ -165,23 +165,30 @@ const hasProtocol = (project: string): Promise<boolean> => lstat(join(project, '
 
 export const SIMULATION_APPROVAL = '[Simulation scope approved]'
 
-/** Runnable = EITHER the protocol route (protocol.json passes the bundled engine's checks, hsenv.checks) OR the
- *  package route: the static package contract (shared/package-readiness) AND every build check
- *  (check_readiness.py), which run only for a package that already passes the static part. The protocol checks
- *  take seconds, so they go first; when neither route is ready, a project with protocol.json reports the
- *  protocol's problems (the route new studies take). */
+/** Two separate results, never merged (review 1, M2):
+ *  - the package route decides `ready`: the static package contract (shared/package-readiness) AND every build
+ *    check (check_readiness.py), which run only for a package that already passes the static part. This is the
+ *    only form the agent can run today, so nothing else may make it ready;
+ *  - the protocol route (protocol.json + the bundled engine's checks, hsenv.checks) is reported beside it as
+ *    `protocol`, when protocol.json exists. It runs nothing until the engine runner lands (protocolRunsEnabled). */
 export async function projectPackageReadiness(projectDir: string, studyId?: string): Promise<PackageReadiness> {
-  if (!(await hasProtocol(projectDir))) return packageRouteReadiness(projectDir, studyId)
+  const pkg = await packageRouteReadiness(projectDir, studyId)
+  if (!(await hasProtocol(projectDir))) return pkg
   const protocol = await protocolRouteReadiness(projectDir)
-  if (protocol.ready) return protocol
-  const pkg = await packageRouteReadiness(projectDir, studyId).catch(() => null)
-  return pkg?.ready ? pkg : protocol
+  return { ...pkg, protocol: { ready: protocol.ready, problems: protocol.problems } }
 }
+
+// Protocol runs start the relay only once a protocol runner exists. Off by default; tests switch it on.
+let protocolRuns = false
+/** Whether a protocol approval may start a run (false until the engine runner ships). */
+export const protocolRunsEnabled = (): boolean => protocolRuns
+export function enableProtocolRuns(on: boolean): void { protocolRuns = on }
+export const PROTOCOL_RUNS_UNAVAILABLE = 'Protocol runs are not available yet: this version of the app can check protocol.json but cannot run it. Run the study from its package, or wait for the protocol runner.'
 
 /** The protocol route alone: protocol.json and the bundled engine's checks. */
 async function protocolRouteReadiness(projectDir: string): Promise<PackageReadiness> {
   const problems = await protocolProblems(projectDir)
-  return { exists: true, ready: !problems.length, route: 'protocol', slug: null, runNotice: await communityRunNotice(projectDir),
+  return { exists: true, ready: !problems.length, slug: null, runNotice: await communityRunNotice(projectDir),
     problems: problems.map((p) => ({ file: 'protocol.json' as const, kind: 'scientific' as const, check: p.check, reason: p.reason })) }
 }
 
@@ -207,33 +214,37 @@ async function packageRouteReadiness(projectDir: string, studyId?: string): Prom
       const science = await scientificProblems(projectDir, slug)
       if (science.length) r.problems = science.map((p) => ({ file: 'study.json' as const, kind: 'scientific' as const, check: p.check, reason: p.reason }))
       r.ready = r.problems.length === 0
-      if (r.ready) return { ...r, route: 'package', runNotice }
+      if (r.ready) return { ...r, runNotice }
     }
     checked.push(r)
   }
   // None is ready: report the one closest to it, preferring a package that passed the static part.
   const rank = (r: PackageReadiness) => (r.problems.some((p) => p.kind !== 'scientific') ? 1000 : 0) + r.problems.length
   const best = checked.reduce((a, b) => (rank(b) < rank(a) ? b : a))
-  return { ...best, route: 'package', runNotice }
+  return { ...best, runNotice }
 }
 
-/** Throws when `text` approves a simulation and the project cannot run it. A program approval (studyId,
- *  programId, programHash of program.json) is runnable by either route; a protocol approval (protocolHash of
- *  protocol.json, for a project without a program) only by the protocol route. */
+/** Throws when `text` approves a simulation and the project cannot run it. The approval names its route: a
+ *  package approval (studyId, programId, programHash of program.json; the Simulation tab's, route absent or
+ *  'package') needs the package route; a protocol approval (route 'protocol', protocolHash of protocol.json) is
+ *  refused until protocol runs exist (protocolRunsEnabled), then needs the protocol route. */
 export async function assertRunnablePackage(projectDir: string | undefined, text: string): Promise<void> {
   if (!text.startsWith(SIMULATION_APPROVAL)) return
   if (!projectDir) throw new Error('The conversation has no project. Reopen the project before starting a simulation.')
-  let approved: { studyId?: string; programId?: string; programHash?: string; protocolHash?: unknown }
+  let approved: { route?: unknown; studyId?: string; programId?: string; programHash?: string; protocolHash?: unknown }
   try { approved = JSON.parse(text.split('\n')[1] ?? '') } catch { throw new Error('Simulation approval is unreadable. Review the simulation scope again.') }
   if (!approved || typeof approved !== 'object') throw new Error('Simulation approval is unreadable. Review the simulation scope again.')
-  if (approved.protocolHash !== undefined) return assertRunnableProtocol(projectDir, approved.protocolHash)
+  // The approval names the form it runs: 'package' (absent in approvals from the Simulation tab) or 'protocol'.
+  const route = approvalRoute(approved)
+  if (route === 'protocol') return assertRunnableProtocol(projectDir, approved.protocolHash)
   const bytes = await readFile(join(projectDir, 'program.json'))
   const program = JSON.parse(bytes.toString('utf8'))
   if (typeof approved.studyId !== 'string' || !program.studies?.some((s: { id: string }) => s.id === approved.studyId))
     throw new Error('The selected study is unavailable. Review the simulation scope again.')
   if (approved.programId !== program.id || approved.programHash !== createHash('sha256').update(bytes).digest('hex'))
     throw new Error('The study changed after approval. Review the simulation scope again.')
-  const r = await projectPackageReadiness(projectDir, approved.studyId)
+  // A program approval runs package/: only the package route (with check_readiness) can make it runnable.
+  const r = await packageRouteReadiness(projectDir, approved.studyId)
   if (r.ready) {
     const latest = await readFile(join(projectDir, 'program.json'))
     if (approved.programHash !== createHash('sha256').update(latest).digest('hex'))
@@ -243,9 +254,19 @@ export async function assertRunnablePackage(projectDir: string | undefined, text
   throw notRunnable(r)
 }
 
+/** The route an approval names; an unknown route, or a package approval carrying a protocol hash, is refused. */
+export function approvalRoute(approved: { route?: unknown; protocolHash?: unknown }): 'package' | 'protocol' {
+  const route = approved.route ?? (approved.protocolHash !== undefined ? 'protocol' : 'package')
+  if (route === 'protocol') return 'protocol'
+  if (route === 'package' && approved.protocolHash === undefined) return 'package'
+  throw new Error('Simulation approval names no runnable form. Review the simulation scope again.')
+}
+
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex')
 
 async function assertRunnableProtocol(projectDir: string, protocolHash: unknown): Promise<void> {
+  const notRunnable = (r: PackageReadiness) => new Error(`The study protocol did not pass its checks, so the simulation was not started: ${problemsText(r)}. Ask the agent to fix protocol.json first.`)
+  if (!protocolRunsEnabled()) throw new Error(PROTOCOL_RUNS_UNAVAILABLE)
   const bytes = await readFile(join(projectDir, 'protocol.json')).catch(() => null)
   if (!bytes) throw new Error('The study has no protocol.json. Review the simulation scope again.')
   if (typeof protocolHash !== 'string' || protocolHash !== sha256(bytes))
@@ -256,11 +277,10 @@ async function assertRunnableProtocol(projectDir: string, protocolHash: unknown)
     throw new Error('The study changed during protocol validation. Review the simulation scope again.')
 }
 
+const problemsText = (r: PackageReadiness): string =>
+  r.problems.map((p) => (p.kind === 'scientific' ? `${p.check}: ${p.reason}` : p.kind === 'missing' ? `${p.file} is missing` : p.kind === 'invalid-json' ? `${p.file} is not valid JSON` : p.kind === 'no-entry' ? `${p.file} does not define ${p.entry}()` : `${p.file}: ${p.kind}`)).join('; ')
+
 function notRunnable(r: PackageReadiness): Error {
-  const what = r.exists
-    ? r.problems.map((p) => (p.kind === 'scientific' ? `${p.check}: ${p.reason}` : p.kind === 'missing' ? `${p.file} is missing` : p.kind === 'invalid-json' ? `${p.file} is not valid JSON` : p.kind === 'no-entry' ? `${p.file} does not define ${p.entry}()` : `${p.file}: ${p.kind}`)).join('; ')
-    : 'there is no package under package/ and no protocol.json'
-  return r.route === 'protocol'
-    ? new Error(`The study protocol did not pass its checks, so the simulation was not started: ${what}. Ask the agent to fix protocol.json first.`)
-    : new Error(`The study package is not complete, so the simulation was not started: ${what}. Ask the agent to complete the package first.`)
+  const what = r.exists ? problemsText(r) : 'there is no package under package/'
+  return new Error(`The study package is not complete, so the simulation was not started: ${what}. Ask the agent to complete the package first.`)
 }
