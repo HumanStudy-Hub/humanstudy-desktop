@@ -134,7 +134,9 @@ assert.equal(content.permission.edit, 'ask')
 // Every command comes to the app, whose autonomy policy (permission-policy.ts) answers it.
 assert.equal(content.permission.bash, 'ask')
 assert.equal(content.permission.external_directory, 'ask')
-assert.equal(content.permission.read['*/sources/private/*'], 'ask')
+assert.equal(content.permission.read['*/human-data/*'], 'ask')
+assert.equal(content.permission.read['*/sources/private/*'], undefined) // the researcher's own materials
+assert.equal(content.shell, undefined, 'no agent shell until a project server starts')
 assert.equal(content.permission.webfetch, 'allow')
 // last match wins, so the .env exception must come after the .env rules
 const keys = Object.keys(content.permission.read)

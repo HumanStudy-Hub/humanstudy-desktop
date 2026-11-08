@@ -55,6 +55,7 @@ import { kernelRuntimeEnv } from '../runtime-core'
 import { Emitter } from './types'
 import type { Kernel, KernelEvent, KernelPermission, KernelSubagent, PermissionReply } from './types'
 import { classifyPermission, defaultPolicyContext, READ_ONLY_COMMANDS, READ_PERMISSION, type PolicyContext, type PolicyVerdict } from './permission-policy'
+import { agentSandboxKind, approveCommandOnce, prepareAgentShell, type AgentShell } from './agent-sandbox'
 
 /** What OpenCode itself asks the app about (every edit, every shell command, every path outside the
  *  project, and reads of sensitive folders). The app answers each one through classifyPermission
@@ -124,6 +125,8 @@ interface Server {
   stderrTail: string
   eventsOnline: boolean
   transport?: Awaited<ReturnType<typeof startRequestTransport>>
+  /** The OS sandbox around the agent's shell for this project (agent-sandbox.ts). */
+  agentShell?: AgentShell
 }
 
 interface SessionState {
@@ -167,6 +170,9 @@ export interface OpencodeOptions {
   /** Simulations through the per-run model relay (default: relaySupported(), i.e. macOS with
    *  /usr/bin/sandbox-exec). Off: the pre-relay path, where simulation code can read the key. */
   relay?: boolean
+  /** Run the agent's shell commands in the OS sandbox (agent-sandbox.ts). Default: whenever this computer
+   *  offers one (macOS sandbox-exec, Linux bubblewrap). */
+  agentSandbox?: boolean
 }
 
 export class OpencodeKernel implements Kernel {
@@ -187,6 +193,11 @@ export class OpencodeKernel implements Kernel {
   private permission: 'ask' | 'project' | undefined
   /** Fixed at construction: whether simulations use the per-run relay (see OpencodeOptions.relay). */
   readonly relay: boolean
+  private agentSandbox: boolean
+  /** Project folder -> whether its agent shell runs in the OS sandbox (the policy asks more without). */
+  private sandboxedDirs = new Map<string, boolean>()
+  /** Automatic answers to OpenCode's doom_loop prompt (same call three times) per conversation and turn. */
+  private doomLoops = new Map<string, number>()
   private clock = (): number => Date.now()
   private livenessQuietMs = 60_000
   private livenessIdleGraceMs = 30_000
@@ -207,6 +218,7 @@ export class OpencodeKernel implements Kernel {
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 30_000
     this.permission = opts.permission
     this.relay = opts.relay ?? relaySupported()
+    this.agentSandbox = opts.agentSandbox ?? true
     this.livenessTimer = setInterval(() => { void this.checkLiveness() }, 30_000)
     this.livenessTimer.unref()
     process.once('exit', this.exitHook)
@@ -272,6 +284,15 @@ export class OpencodeKernel implements Kernel {
 
   async reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void> {
     const s = this.session(sessionId)
+    // A shell command the policy sent to the researcher runs, once approved, outside the OS sandbox: that
+    // is what the approval is for (participant data, keys, publishing). Commands the policy would have
+    // allowed stay confined even when "Ask before changes" shows them.
+    const perm = s.pendingPermissions.get(permissionId)
+    const shellDir = s.server.agentShell?.dir
+    if (response !== 'reject' && perm?.type === 'bash' && shellDir && this.verdict(s.server.dir, perm).decision !== 'allow') {
+      const md = perm.metadata ?? {}
+      for (const c of typeof md.command === 'string' && md.command ? [md.command] : perm.patterns ?? []) approveCommandOnce(shellDir, c)
+    }
     await this.replyTo(s.server, this.permissionSession.get(permissionId) ?? sessionId, permissionId, response)
     s.pendingPermissions.delete(permissionId)
     if (response === 'reject') { s.recovery.cancelled = true; s.recovery.pending = false }
@@ -339,6 +360,7 @@ export class OpencodeKernel implements Kernel {
     s.lastActivity = this.clock(); s.lastProbe = 0; s.idleSince = undefined; s.stalled = false
     s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, pending: false, running: false, cancelled: false, progress: false }
     s.inFlight = true
+    this.doomLoops.delete(sessionId)
     try {
       await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
         parts: [{ type: 'text', text }],
@@ -550,7 +572,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     }
   }
   /** Policy context per project (see permission-policy.ts); tests may replace it. */
-  policyContext = (dir: string): PolicyContext => defaultPolicyContext(dir, this.home)
+  policyContext = (dir: string): PolicyContext => defaultPolicyContext(dir, this.home, process.env, this.sandboxedDirs.get(dir) ?? false)
   private verdict(dir: string, perm: KernelPermission): PolicyVerdict {
     try { return classifyPermission(this.policyContext(dir), perm) } catch { return { decision: 'ask', reason: 'could not be checked' } }
   }
@@ -588,6 +610,17 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     s.pendingPermissions.set(perm.id, perm)
     const v = this.verdict(s.server.dir, perm)
     if (v.reason) perm.reason = v.reason
+    // OpenCode's loop breaker: answered automatically a few times per turn, then the researcher decides.
+    if (perm.type === 'doom_loop') {
+      const n = (this.doomLoops.get(sessionId) ?? 0) + 1
+      this.doomLoops.set(sessionId, n)
+      if (this.doomLoops.size > 1024) this.doomLoops.delete(this.doomLoops.keys().next().value as string)
+      if (n > OpencodeKernel.DOOM_LOOP_AUTO) {
+        perm.reason = 'the agent keeps repeating the same call in this turn'
+        emit({ type: 'permission', permission: perm })
+        return
+      }
+    }
     if (v.decision === 'deny') return this.autoDeny(sessionId, s, perm)
     const readOnly = perm.type === 'bash' && (perm.patterns?.length ? perm.patterns : [String(perm.metadata?.command ?? '')])
       .every(c => READ_ONLY_COMMANDS.has(c.trim().split(/\s+/)[0] ?? '') && !/[>`]|\$\(/.test(c))
@@ -616,7 +649,10 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     return p
   }
 
-  private configContent(transport?: { baseURL: string; token: string }): string {
+  /** Automatic doom_loop answers per turn before the researcher is asked. */
+  static readonly DOOM_LOOP_AUTO = 3
+
+  private configContent(transport?: { baseURL: string; token: string }, shell?: string): string {
     const model = this.provider ? `${this.provider}/${this.model}` : undefined
     // The fork bakes in the humanstudy provider, its models and the share/autoupdate/telemetry defaults.
     // Here only what the app decides per run: the chosen model (inline config outranks any config file)
@@ -625,6 +661,8 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       $schema: 'https://opencode.ai/config.json',
       ...(model ? { model, small_model: model } : {}), // small_model: otherwise titles go to opencode's own default
       permission: PERMISSION_CONFIG,
+      // The agent's shell: the OS-sandbox wrapper (agent-sandbox.ts) when this computer has one.
+      ...(shell ? { shell } : {}),
     }
     if (this.provider === HOSTED_PROVIDER) {
       cfg.provider = { [HOSTED_PROVIDER]: { ...(transport ? { options: { baseURL: transport.baseURL, apiKey: transport.token } } : {}), models: { [this.model]: {
@@ -639,7 +677,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
   /** Env for the kernel process: its own XDG dirs, so ~/.config/opencode and ~/.local/share/opencode of
    *  a personal install are never read, and sessions persist under <home>/data per project. */
-  private kernelEnv(password: string, transport?: { baseURL: string; token: string }): NodeJS.ProcessEnv {
+  private kernelEnv(password: string, transport?: { baseURL: string; token: string }, shell?: string): NodeJS.ProcessEnv {
     const xdg = {
       XDG_CONFIG_HOME: join(this.home, 'config'),
       XDG_DATA_HOME: join(this.home, 'data'),
@@ -653,7 +691,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       ...process.env,
       ...xdg,
       OPENCODE_SERVER_PASSWORD: password,
-      OPENCODE_CONFIG_CONTENT: this.configContent(transport),
+      OPENCODE_CONFIG_CONTENT: this.configContent(transport, shell),
       OPENCODE_DISABLE_AUTOUPDATE: '1',
       OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: '1', // no ~/.claude/CLAUDE.md from the user's own Claude Code
       // humanstudy_llm (simulations) defaults to the model the researcher selected.
@@ -692,11 +730,21 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       },
     }) : undefined
     if (this.disposed) { transport?.close(); throw new Error('kernel disposed') }
+    // The OS sandbox for the agent's shell. If it cannot be set up the policy falls back to asking before
+    // scripts (osSandbox false), never to running them unconfined without asking.
+    let agentShell: AgentShell = { kind: 'none' }
+    if (this.agentSandbox) {
+      try {
+        const ctx = defaultPolicyContext(dir, this.home)
+        agentShell = prepareAgentShell({ project: dir, kernelHome: this.home, secretPaths: ctx.secretPaths, runtimeBin: process.env.HUMANSTUDY_RUNTIME_BIN?.trim() || undefined, kind: agentSandboxKind() })
+      } catch { agentShell = { kind: 'none' } }
+    }
+    this.sandboxedDirs.set(dir, agentShell.kind !== 'none')
     // Packaged Electron pages send file:// as their WebSocket origin. PTY access still
     // requires a single-use ticket issued through the authenticated main process.
     const proc = spawn(this.binary, ['serve', '--port', String(port), '--hostname', '127.0.0.1', '--cors', 'file://'], {
       cwd: dir,
-      env: { ...this.kernelEnv(password, transport), ...(this.relay && process.env.HUMANSTUDY_RELAY_DIR ? { HUMANSTUDY_RELAY_DESCRIPTOR: relayDescriptor(process.env.HUMANSTUDY_RELAY_DIR, dir) } : {}) },
+      env: { ...this.kernelEnv(password, transport, agentShell.shell), ...(this.relay && process.env.HUMANSTUDY_RELAY_DIR ? { HUMANSTUDY_RELAY_DESCRIPTOR: relayDescriptor(process.env.HUMANSTUDY_RELAY_DIR, dir) } : {}) },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const server: Server = {
@@ -710,6 +758,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       stderrTail: '',
       eventsOnline: false,
       transport,
+      agentShell,
     }
     this.live.add(server)
     const keep = (chunk: Buffer): void => {

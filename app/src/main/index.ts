@@ -32,7 +32,8 @@ import { createThreads, threads } from './threads'
 import { saveProjectText } from './program-save'
 import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
-import { refreshPack, trustedCheckFiles } from './pack'
+import { refreshPack, trustedCheckFiles, trustedHelperHashes } from './pack'
+import { setTrustedHelperFiles } from './kernel/agent-sandbox'
 import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks } from './package-readiness'
@@ -45,6 +46,8 @@ import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPromp
 // macOS with /usr/bin/sandbox-exec: simulations go through a per-run relay. Elsewhere they use the
 // pre-relay path and the run confirmation says that the study's code can read the key.
 const RELAY = relaySupported()
+// The agent shell runs the app's own confining helpers outside its OS sandbox only while they match these.
+setTrustedHelperFiles(trustedHelperHashes())
 const relayProjects = new Set<string>()
 const runRelays = new Map<string, { project: string; close(): Promise<void> }>()
 async function closeRunRelay(id: string) {

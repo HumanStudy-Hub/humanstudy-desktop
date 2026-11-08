@@ -142,7 +142,9 @@ export function nativeRoute(
       return del('/mcp/' + segment(i.name) + '/auth')
     case 'terminalCreate':
       return post('/pty', {
-        ...(i.command ? { command: i.command } : {}),
+        // The researcher's own terminal runs their login shell, not the agent's sandboxed shell (the
+        // kernel's `shell` setting, which a terminal without a command would otherwise use).
+        ...(i.command ? { command: i.command } : process.platform !== 'win32' && process.env.SHELL ? { command: process.env.SHELL } : {}),
         ...(i.args ? { args: i.args } : {}),
         title: 'HumanStudy terminal',
       })

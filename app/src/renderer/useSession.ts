@@ -138,6 +138,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     threadRef.current = t.id
     setId(t.kernelSessionId)
     setThreadId(t.id)
+    setSubagents([]) // a subagent list belongs to the conversation that started it
     setMessages(t.messages.map(fromStored))
     setUsage({ input: t.usage.input, output: t.usage.output, reasoning: 0, cost: t.usage.cost })
     setResumed(Boolean(t.resumedWithContext))
@@ -207,6 +208,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     idRef.current = null
     threadRef.current = null
     setMessages([])
+    setSubagents([])
     setUsage(ZERO)
     setResumed(false)
     setBusyBoth(false)

@@ -4,7 +4,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { createServer } from 'node:http'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -70,7 +71,7 @@ test('a subagent is reported to its parent with its latest step; it is never dro
 test('subagent permissions: routine work is approved, sensitive work asks the researcher, app credentials are denied', () => fixture(async ({ k, events, replies, settle }) => {
   k.handle(created())
   k.handle(asked('per_ls', 'ls sources/open'))
-  k.handle(asked('per_private', 'cat sources/private/si.txt'))
+  k.handle(asked('per_private', 'cat human-data/responses.csv'))
   k.handle(asked('per_key', 'security find-generic-password -s x -w'))
   await settle(2)
   for (let i = 0; i < 300 && !events.some(e => e.permission?.id === 'per_key' && e.permission.resolved); i++) await new Promise(r => setTimeout(r, 10))
@@ -82,7 +83,7 @@ test('subagent permissions: routine work is approved, sensitive work asks the re
   const ask = events.find(e => e.type === 'permission' && e.permission.id === 'per_private' && !e.permission.resolved)
   assert.equal(ask.sessionId, 's', 'shown in the parent conversation')
   assert.equal(ask.permission.subagent, 'general')
-  assert.match(ask.permission.reason, /sensitive material/)
+  assert.match(ask.permission.reason, /participant data/)
   assert.equal(events.filter(e => e.type === 'subagent').at(-1).subagent.state, 'waiting')
   assert.ok(events.some(e => e.permission?.id === 'per_key' && e.permission.automatic && e.permission.resolved === 'reject'))
   // The build's "waiting" and the background notification both key off this parent event.
@@ -167,3 +168,35 @@ test('a subagent check that passes counts for the build', () => {
     assert.equal(readPaperBuild(dir).phase, 'writing', 'a subagent writing program.json moves the build phase')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+test("OpenCode's doom_loop prompt is answered automatically three times per turn, then the researcher decides", () => fixture(async ({ k, events, replies, settle }) => {
+  const loop = id => ({ type: 'permission.asked', properties: { id, sessionID: 's', permission: 'doom_loop', patterns: ['bash'], metadata: {}, always: [] } })
+  for (const id of ['d1', 'd2', 'd3', 'd4']) k.handle(loop(id))
+  await settle(3)
+  assert.deepEqual(['d1', 'd2', 'd3'].map(id => replies.find(r => r.path === `/permission/${id}/reply`)?.body.reply), ['once', 'once', 'once'])
+  assert.ok(!replies.some(r => r.path.includes('d4')), 'the fourth repeat waits for the researcher')
+  assert.match(events.find(e => e.permission?.id === 'd4' && !e.permission.resolved).permission.reason, /repeating/)
+  // A new message starts a new turn with a fresh allowance.
+  await k.send('s', 'go on').catch(() => {})
+  k.handle(loop('d5'))
+  await settle(4)
+  assert.equal(replies.find(r => r.path === '/permission/d5/reply')?.body.reply, 'once')
+}))
+
+test('a shell command the researcher approves after an ask runs once outside the OS sandbox; routine ones stay confined', () => fixture(async ({ k, server }) => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-shell-'))
+  try {
+    server.agentShell = { kind: 'sandbox-exec', shell: join(dir, 'zsh'), dir }
+    const tokens = () => (existsSync(join(dir, 'approved')) ? readdirSync(join(dir, 'approved')) : [])
+    k.handle(asked('per_data', 'cat human-data/a.csv', 's'))
+    await k.reply('s', 'per_data', 'once')
+    assert.deepEqual(tokens(), [createHash('sha256').update('cat human-data/a.csv').digest('hex')])
+    // In "Ask before changes" the researcher also approves routine commands: those stay in the sandbox.
+    k.setPermissionMode('ask')
+    k.handle(asked('per_ls', 'ls artifacts', 's'))
+    await k.reply('s', 'per_ls', 'once')
+    k.handle(asked('per_no', 'cat human-data/b.csv', 's'))
+    await k.reply('s', 'per_no', 'reject')
+    assert.equal(tokens().length, 1)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+}, 'ask'))

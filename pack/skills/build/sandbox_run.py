@@ -347,6 +347,14 @@ def run_python(script, args=(), cwd=None, work=None, timeout=600, read=(), env=N
     reads = [script.parent] + ([cwd] if cwd else []) + list(read)
     pre, label = wrapper(work, reads, relay_port, system_sandbox)
     if pre is None:
+        if os.environ.get("HUMANSTUDY_AGENT_SANDBOX") == "1":
+            # The desktop agent's shell sandbox (app/src/main/kernel/agent-sandbox.ts) cannot be nested into;
+            # it lets the app's own helpers start outside it only as one plain command in the project.
+            return Result(126, "", "refused: this helper ran inside the agent's shell sandbox, where package code "
+                                   "cannot be confined. Run it as one plain command from the project folder, e.g. "
+                                   "`python .opencode/skills/build/check_readiness.py .` (no cd, &&, pipes, quotes or "
+                                   "variables). If it still fails, the app's helper files were changed: ask the "
+                                   "researcher.\n", False, label)
         return Result(126, "", "refused: this process runs inside a sandbox that is not HumanStudy's, so package "
                                "code cannot be confined here; run the check from a normal terminal or the app\n",
                       False, label)
