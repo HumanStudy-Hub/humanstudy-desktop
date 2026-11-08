@@ -1,0 +1,12 @@
+{
+  "id": "fixture-mini",
+  "data": {},
+  "arms": [{"id": "control", "n_paper": 10}, {"id": "treatment", "n_paper": 10}],
+  "stages": {
+    "intro": {"content": [{"id": "t", "value": "Please read the question below.", "cite": {"source": "survey", "page": 1}}]},
+    "q": {"responses": [{"id": "pick", "kind": "choice", "prompt": "Which do you prefer?",
+                         "options": [{"code": "a", "label": "Option A"}, {"code": "b", "label": "Option B"}]}]}
+  },
+  "flow": {"seq": [{"stage": "intro"}, {"stage": "q"}]},
+  "units": {"s": {"per": "session", "fields": {"pick": "answer('q.pick')"}}}
+}

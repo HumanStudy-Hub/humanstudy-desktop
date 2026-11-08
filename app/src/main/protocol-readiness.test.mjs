@@ -1,0 +1,90 @@
+// node --test src/main/protocol-readiness.test.mjs — the protocol route's gate (v0.8): hsenv.checks from the
+// app's bundled engine, run confined, on a project's protocol.json. Fail-closed: no report, no pass.
+import { build } from 'esbuild'
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { cpSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { test } from 'node:test'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const out = mkdtempSync(join(tmpdir(), 'protocol-readiness-'))
+await build({ entryPoints: [join(here, 'protocol-readiness.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'p.mjs'), logLevel: 'error' })
+const R = await import(pathToFileURL(join(out, 'p.mjs')).href)
+
+const engineDir = join(here, '../../../pack/runtime/hsenv')
+const ENGINE = ['VERSION', 'hsenv/__init__.py', 'hsenv/engine.py', 'hsenv/expr.py', 'hsenv/checks.py', 'hsenv/effects_core.py']
+  .map((rel) => [rel, readFileSync(join(engineDir, rel), 'utf8')])
+// hsenv.checks needs Python 3.11+ (the app bundles 3.12).
+// An absolute path, as the app passes it (the confined PATH holds only system folders).
+const python = ['python3.12', 'python3.13', 'python3.11', 'python3'].map((p) =>
+  spawnSync(p, ['-c', 'import sys; print(sys.executable) if sys.version_info >= (3, 11) else sys.exit(1)'], { encoding: 'utf8' }))
+  .find((r) => r.status === 0)?.stdout.trim()
+const fixture = () => {
+  const dir = mkdtempSync(join(tmpdir(), 'protocol-project-'))
+  cpSync(join(here, 'fixtures/protocol-mini'), dir, { recursive: true })
+  return dir
+}
+
+test('a passing report has no problems; a failing one lists each blocking finding, one line each', () => {
+  assert.deepEqual(R.parseProtocolReport('{\n "refs": [],\n "fuzz": {"problems": []},\n "PASS": true\n}'), [])
+  const failed = R.parseProtocolReport(JSON.stringify({
+    refs: ['flow -> nowhere'], fuzz: { problems: [], unreached_stages: ['orphan'], n_unanswerable: 0, leaks: [], effects_not_computed: ['e1'] },
+    verbatim: { not_found: [], image_unconfirmed: [], bad_source: [], unchecked: 3 }, coding: { c1: { mismatches: [1, 2] } },
+    keyed: { problems: [], excluded_share: 0, signs: [{ effect: 'e2', same_sign: false }] }, PASS: false,
+  }))
+  assert.deepEqual(failed.map((p) => p.check), ['refs', 'fuzz', 'effects', 'keyed', 'verbatim', 'coding'])
+  assert.match(failed.find((p) => p.check === 'verbatim').reason, /3 served text.*sourcetext/)
+})
+
+test('anything but a report with PASS: true never passes', () => {
+  assert.throws(() => R.parseProtocolReport('no json'))
+  assert.throws(() => R.parseProtocolReport('{"refs": []}'), /Invalid/)
+  assert.deepEqual(R.parseProtocolReport('{"PASS": false}').map((p) => p.check), ['protocol'])
+  assert.equal(R.parseProtocolReport('{"refs": ["x"], "PASS": true}').length, 1, 'a report that contradicts itself is not a pass')
+  assert.throws(() => R.protocolOutcome('', ''))
+  assert.deepEqual(R.protocolOutcome('', 'Traceback (most recent call last):\n  ...\nKeyError: \'nowhere\'').map((p) => [p.check, p.reason]),
+    [['protocol', "The engine stopped on this protocol: KeyError: 'nowhere'"]])
+})
+
+test('no runtime or no engine: fail closed', async () => {
+  assert.deepEqual(await R.protocolReadiness(null, ENGINE, fixture(), ''), [R.ENGINE_MISSING])
+  assert.deepEqual(await R.protocolReadiness(python ?? 'python3', [], fixture(), ''), [R.ENGINE_FAILED])
+  assert.deepEqual(await R.protocolReadiness('/nonexistent/python', ENGINE, fixture(), ''), [R.ENGINE_FAILED])
+})
+
+test('source texts inside the project are passed to the verbatim check; links out of it are not', async () => {
+  const dir = fixture()
+  const outside = join(mkdtempSync(join(tmpdir(), 'outside-')), 'secret.txt')
+  writeFileSync(outside, 'x')
+  symlinkSync(outside, join(dir, 'sourcetext/linked.txt'))
+  writeFileSync(join(dir, 'sourcetext/notes.md'), 'not a source text')
+  const args = await R.sourceTextArgs(dir)
+  assert.equal(args.length, 2)
+  assert.equal(args[0], '--source-text')
+  assert.match(args[1], /^survey=.*sourcetext[/\\]survey\.txt$/)
+})
+
+test('the bundled engine passes a sound protocol and blocks a broken one, confined and without keys', { skip: !python }, async () => {
+  process.env.OPENROUTER_API_KEY = 'must-not-reach-the-engine'
+  try {
+    const ok = fixture()
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, ok, ''), [])
+    const orphan = fixture()
+    const p = JSON.parse(readFileSync(join(orphan, 'protocol.json'), 'utf8'))
+    p.stages.orphan = { responses: [{ id: 'z', kind: 'number', range: [0, 10] }] }
+    writeFileSync(join(orphan, 'protocol.json'), JSON.stringify(p))
+    const problems = await R.protocolReadiness(python, ENGINE, orphan, '')
+    assert.ok(problems.length && problems.every((x) => x.check !== 'runtime'), JSON.stringify(problems))
+    assert.ok(problems.some((x) => /orphan/.test(x.reason)))
+    const broken = fixture()
+    p.flow.seq.push({ stage: 'nowhere' })
+    delete p.stages.orphan
+    writeFileSync(join(broken, 'protocol.json'), JSON.stringify(p))
+    const crash = await R.protocolReadiness(python, ENGINE, broken, '')
+    assert.equal(crash.length, 1)
+    assert.notEqual(crash[0].check, 'runtime')
+  } finally { delete process.env.OPENROUTER_API_KEY }
+})

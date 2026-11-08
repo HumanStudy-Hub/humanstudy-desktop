@@ -25,7 +25,7 @@ export const PACKAGE_ENTRY_POINTS: Partial<Record<PackageFile, string>> = {
 }
 
 export type PackageProblem =
-  | { file: 'study.json'; kind: 'scientific'; check: string; reason: string }
+  | { file: 'study.json' | 'protocol.json'; kind: 'scientific'; check: string; reason: string }
   | { file: PackageFile; kind: 'missing' }
   | { file: PackageFile; kind: 'invalid-json' }
   | { file: PackageFile; kind: 'unvalidated' | 'wrong-study' | 'stale-program' | 'bindings' }
@@ -38,8 +38,11 @@ export interface PackageReadiness {
    *  'relay' (macOS sandbox + per-run relay; package code never holds the key) or 'key' (Linux,
    *  Windows: the pre-relay path, package code can read the key). Absent counts as 'key'. */
   modelAccess?: 'relay' | 'key'
-  /** At least one folder under package/. */
+  /** At least one folder under package/, or a protocol.json. */
   exists: boolean
+  /** Which runnable form was checked: package/<slug>/ (read-only community route) or protocol.json (the
+   *  protocol engine, v0.8). Absent from the renderer's own static check, which only knows packages. */
+  route?: 'package' | 'protocol'
   ready: boolean
   /** The package checked (the ready one, else the most complete one). */
   slug: string | null
@@ -123,11 +126,13 @@ export function packageStamp(entries: { rel: string; size?: number; mtime?: numb
   return entries.filter((e) => e.rel === 'package' || e.rel.startsWith('package/')).map((e) => `${e.rel}:${e.size ?? ''}:${e.mtime ?? ''}`).sort().join('|')
 }
 
-/** The same for everything else the build checks read (check_readiness.py), except program.json, which
- *  callers compare by content: sources/, human-data/, the files beside program.json and root-level PDFs. */
+/** The same for everything else the build checks read (check_readiness.py, and hsenv.checks for the protocol
+ *  route), except program.json, which callers compare by content: sources/, human-data/, the files beside
+ *  program.json, root-level PDFs, protocol.json, study.json, sourcetext/ and assets/. */
 export function readinessStamp(entries: { rel: string; size?: number; mtime?: number }[]): string {
-  const read = (rel: string) => rel === 'package' || rel.startsWith('package/') || rel === 'sources' || rel.startsWith('sources/') ||
-    rel === 'human-data' || rel.startsWith('human-data/') || ['effects.json', 'capabilities.json', 'README.md'].includes(rel) || /^[^/]+[.]pdf$/i.test(rel)
+  const under = (rel: string, dir: string) => rel === dir || rel.startsWith(dir + '/')
+  const read = (rel: string) => ['package', 'sources', 'human-data', 'sourcetext', 'assets'].some((dir) => under(rel, dir)) ||
+    ['effects.json', 'capabilities.json', 'README.md', 'protocol.json', 'study.json'].includes(rel) || /^[^/]+[.]pdf$/i.test(rel)
   return entries.filter((e) => read(e.rel)).map((e) => `${e.rel}:${e.size ?? ''}:${e.mtime ?? ''}`).sort().join('|')
 }
 

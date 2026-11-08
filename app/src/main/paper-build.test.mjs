@@ -83,6 +83,15 @@ test('writing program.json or package files by tool counts; the shell command is
   assert.equal(P.buildPhase('write', { filePath: '/p/package/study/task/adapter.py' }), 'packaging')
   assert.equal(P.buildPhase('todowrite', { todos: [{ content: 'package/' }] }), null)
   assert.equal(P.buildPhase('bash', { command: 'python check_package.py package/x' }), 'packaging')
+  // The protocol route (v0.8): protocol.json is the runnable form, hsenv.checks its check.
+  assert.equal(P.buildPhase('write', { filePath: '/p/protocol.json' }), 'packaging')
+  assert.equal(P.buildPhase('bash', { command: 'python -m hsenv.checks . --sessions 50' }), 'packaging')
+  assert.equal(P.buildPhase('write', { filePath: '/p/variants/v1/protocol.json' }), 'packaging')
+  assert.equal(P.buildPhase('write', { filePath: '/p/my-protocol.json.md' }), null)
+  assert.equal(P.checkResult({ tool: 'bash', input: { command: 'python -m hsenv.checks .' }, output: '{\n "refs": [],\n "PASS": true\n}' }), true)
+  assert.equal(P.checkResult({ tool: 'bash', input: { command: 'python -m hsenv.checks .' }, output: '{\n "refs": ["x"],\n "PASS": false\n}' }), false)
+  assert.equal(P.checkResult({ tool: 'bash', input: { command: 'python -m hsenv.checks .' }, output: 'Traceback (most recent call last):' }), null, 'a crash is not a verdict')
+  assert.equal(P.checkResult({ tool: 'bash', input: { command: 'grep -n PASS .opencode/runtime/hsenv/hsenv/checks.py' }, output: '1102:    report["PASS"] = not fail' }), null)
 })
 
 test('failures are named and can be retried; finishing by hand clears them', () => {

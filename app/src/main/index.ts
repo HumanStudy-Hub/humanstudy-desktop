@@ -32,10 +32,11 @@ import { createThreads, threads } from './threads'
 import { saveProjectText } from './program-save'
 import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
-import { refreshPack, trustedCheckFiles } from './pack'
+import { refreshPack, trustedCheckFiles, trustedEngineFiles } from './pack'
 import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
-import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks } from './package-readiness'
+import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks } from './package-readiness'
+import { protocolReadiness } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
 import type { Kernel, KernelEvent } from './kernel-types'
@@ -391,6 +392,10 @@ app.whenReady().then(() => {
   const checkFiles = trustedCheckFiles()
   configureScientificChecks(async (project, slug) => scientificReadiness(await readyPython(), checkFiles, project, slug, process.env.HUMANSTUDY_RUNTIME_BIN || ''),
     app.getVersion() + ':' + createHash('sha256').update(JSON.stringify(checkFiles)).digest('hex').slice(0, 16))
+  // The protocol route: protocol.json checked by the bundled engine (pack/runtime/hsenv), never the project's copy.
+  const engine = trustedEngineFiles()
+  configureProtocolChecks(async (project) => protocolReadiness(await readyPython(), engine, project, process.env.HUMANSTUDY_RUNTIME_BIN || ''),
+    app.getVersion() + ':' + createHash('sha256').update(JSON.stringify(engine)).digest('hex').slice(0, 16))
   if (!primaryInstance) return
   applyCredentials()
   try {

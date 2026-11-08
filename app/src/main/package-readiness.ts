@@ -42,6 +42,23 @@ export function configureScientificChecks(check: ScientificCheck, version: strin
  *  the paper (`source.filename`) and every evidence `path`. ctime and inode are included, so restoring a size and mtime cannot bring
  *  back an earlier pass. Throws when the inputs cannot be listed. */
 export async function scientificStamp(project: string): Promise<string> {
+  const paths = ['package', 'sources', 'human-data'].map((dir) => join(project, dir))
+  for (const name of (await readdir(project)).sort())
+    if (STAMPED_BESIDE.includes(name) || /[.]pdf$/i.test(name)) paths.push(join(project, name))
+  try {
+    const program = JSON.parse(await readFile(join(project, 'program.json'), 'utf8'))
+    const root = resolve(project)
+    const refs = [program?.source?.filename, ...(Array.isArray(program?.evidence) ? program.evidence.map((e: { path?: unknown }) => e?.path) : [])]
+    for (const rel of refs) {
+      const p = typeof rel === 'string' ? resolve(root, rel) : null
+      if (p && p.startsWith(root + sep)) paths.push(p)
+    }
+  } catch { /* no readable program: the checks report it */ }
+  return stampOf(paths)
+}
+
+/** Metadata rows of every path, walked into folders (and through links, once each). */
+async function stampOf(paths: string[]): Promise<string> {
   const rows: unknown[] = []
   const seen = new Set<string>()
   const walk = async (path: string): Promise<void> => {
@@ -64,43 +81,31 @@ export async function scientificStamp(project: string): Promise<string> {
       rows.push([path, 'missing'])
     }
   }
-  for (const dir of ['package', 'sources', 'human-data']) await walk(join(project, dir))
-  for (const name of (await readdir(project)).sort())
-    if (STAMPED_BESIDE.includes(name) || /[.]pdf$/i.test(name)) await walk(join(project, name))
-  try {
-    const program = JSON.parse(await readFile(join(project, 'program.json'), 'utf8'))
-    const root = resolve(project)
-    const paths = [program?.source?.filename, ...(Array.isArray(program?.evidence) ? program.evidence.map((e: { path?: unknown }) => e?.path) : [])]
-    for (const rel of paths) {
-      const p = typeof rel === 'string' ? resolve(root, rel) : null
-      if (p && p.startsWith(root + sep)) await walk(p)
-    }
-  } catch { /* no readable program: the checks report it */ }
+  for (const path of paths) await walk(path)
   return JSON.stringify(rows)
 }
 /** Files beside program.json that the checks read or copy next to the package (check_package BESIDE_PROGRAM). */
 const STAMPED_BESIDE = ['program.json', 'effects.json', 'capabilities.json', 'README.md']
 
-/** The build checks for one package, run once per input state. */
-export async function scientificProblems(project: string, slug: string): Promise<ScientificProblem[]> {
-  const lane = JSON.stringify([project, slug])
+/** One check run once per input state: `stamp` lists its inputs, `version` names the checker, `run` checks. */
+function cachedCheck(lane: string, stamp: () => Promise<string>, version: () => string, run: () => Promise<ScientificProblem[]>): Promise<ScientificProblem[]> {
   const previous = lanes.get(lane) ?? Promise.resolve()
   const mine = previous.catch(() => undefined).then(async (): Promise<ScientificProblem[]> => {
     // An agent may still be writing: a check whose inputs changed under it is repeated, a few times at most.
     for (let attempt = 0; attempt < 3; attempt++) {
       let before: string
-      try { before = await scientificStamp(project) } catch { return [UNREADABLE] }
-      const key = JSON.stringify([project, slug, checkVersion, before])
+      try { before = await stamp() } catch { return [UNREADABLE] }
+      const checker = version()
+      const key = JSON.stringify([lane, checker, before])
       const known = results.get(key)
       if (known) return known
-      const version = checkVersion
       let problems: ScientificProblem[]
-      try { problems = await scientificCheck(project, slug) } catch { problems = [{ check: 'runtime', reason: 'The build checks could not complete. Retry.' }] }
+      try { problems = await run() } catch { problems = [{ check: 'runtime', reason: 'The build checks could not complete. Retry.' }] }
       let after: string | null = null
-      try { after = await scientificStamp(project) } catch { /* treated as changed */ }
+      try { after = await stamp() } catch { /* treated as changed */ }
       if (after !== before) continue
       // A runtime that was missing may be installed later without any study file changing: never keep that.
-      if (version === checkVersion && !problems.some((p) => p.check === 'runtime')) {
+      if (checker === version() && !problems.some((p) => p.check === 'runtime')) {
         if (results.size > 200) results.clear()
         results.set(key, problems)
       }
@@ -113,11 +118,74 @@ export async function scientificProblems(project: string, slug: string): Promise
   return mine
 }
 
+/** The build checks for one package, run once per input state. */
+export function scientificProblems(project: string, slug: string): Promise<ScientificProblem[]> {
+  return cachedCheck(JSON.stringify(['package', project, slug]), () => scientificStamp(project), () => checkVersion, () => scientificCheck(project, slug))
+}
+
+// The protocol route (v0.8): protocol.json run by the bundled engine (protocol-readiness.ts, hsenv.checks).
+type ProtocolCheck = (project: string) => Promise<ScientificProblem[]>
+const PROTOCOL_NOT_CONFIGURED: ScientificProblem = { check: 'runtime', reason: 'The protocol checks are not available yet, so the protocol cannot be confirmed.' }
+// Fails closed until the app configures the real engine (index.ts).
+let protocolCheck: ProtocolCheck = async () => [PROTOCOL_NOT_CONFIGURED]
+let protocolVersion = 'unconfigured'
+
+/** Install the protocol checker the gate runs (the app's bundled hsenv.checks). Tests pass a stub. */
+export function configureProtocolChecks(check: ProtocolCheck, version: string): void {
+  protocolCheck = check; protocolVersion = version; results.clear()
+}
+
+/** What hsenv.checks reads, as metadata: protocol.json, study.json, sourcetext/ (the --source-text files),
+ *  sources/, assets/ and every local `src` the protocol serves. Throws when the inputs cannot be listed. */
+export async function protocolStamp(project: string): Promise<string> {
+  const root = resolve(project)
+  const paths = ['protocol.json', 'study.json', 'sourcetext', 'sources', 'assets'].map((rel) => join(root, rel))
+  try {
+    const srcs: string[] = []
+    const visit = (v: unknown): void => {
+      if (Array.isArray(v)) v.forEach(visit)
+      else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { if (k === 'src' && typeof x === 'string') srcs.push(x); else visit(x) }
+    }
+    visit(JSON.parse(await readFile(join(root, 'protocol.json'), 'utf8')))
+    for (const rel of srcs) {
+      if (/^https?:/i.test(rel)) continue
+      const p = resolve(root, rel)
+      if (p.startsWith(root + sep)) paths.push(p)
+    }
+  } catch { /* no readable protocol: the checks report it */ }
+  return stampOf(paths)
+}
+
+/** The protocol checks for one project, run once per input state. */
+export function protocolProblems(project: string): Promise<ScientificProblem[]> {
+  return cachedCheck(JSON.stringify(['protocol', project]), () => protocolStamp(project), () => protocolVersion, () => protocolCheck(project))
+}
+
+const hasProtocol = (project: string): Promise<boolean> => lstat(join(project, 'protocol.json')).then((s) => s.isFile(), () => false)
+
 export const SIMULATION_APPROVAL = '[Simulation scope approved]'
 
-/** Ready = the static package contract (shared/package-readiness) AND every build check (check_readiness.py).
- *  The build checks run only for a package that already passes the static part. */
+/** Runnable = EITHER the protocol route (protocol.json passes the bundled engine's checks, hsenv.checks) OR the
+ *  package route: the static package contract (shared/package-readiness) AND every build check
+ *  (check_readiness.py), which run only for a package that already passes the static part. The protocol checks
+ *  take seconds, so they go first; when neither route is ready, a project with protocol.json reports the
+ *  protocol's problems (the route new studies take). */
 export async function projectPackageReadiness(projectDir: string, studyId?: string): Promise<PackageReadiness> {
+  if (!(await hasProtocol(projectDir))) return packageRouteReadiness(projectDir, studyId)
+  const protocol = await protocolRouteReadiness(projectDir)
+  if (protocol.ready) return protocol
+  const pkg = await packageRouteReadiness(projectDir, studyId).catch(() => null)
+  return pkg?.ready ? pkg : protocol
+}
+
+/** The protocol route alone: protocol.json and the bundled engine's checks. */
+async function protocolRouteReadiness(projectDir: string): Promise<PackageReadiness> {
+  const problems = await protocolProblems(projectDir)
+  return { exists: true, ready: !problems.length, route: 'protocol', slug: null, runNotice: await communityRunNotice(projectDir),
+    problems: problems.map((p) => ({ file: 'protocol.json' as const, kind: 'scientific' as const, check: p.check, reason: p.reason })) }
+}
+
+async function packageRouteReadiness(projectDir: string, studyId?: string): Promise<PackageReadiness> {
   const root = join(projectDir, 'package')
   const slugs = await readdir(root, { withFileTypes: true })
     .then((ds) => ds.filter((d) => d.isDirectory() && !d.name.startsWith('.') && d.name !== '__pycache__').map((d) => d.name))
@@ -139,25 +207,29 @@ export async function projectPackageReadiness(projectDir: string, studyId?: stri
       const science = await scientificProblems(projectDir, slug)
       if (science.length) r.problems = science.map((p) => ({ file: 'study.json' as const, kind: 'scientific' as const, check: p.check, reason: p.reason }))
       r.ready = r.problems.length === 0
-      if (r.ready) return { ...r, runNotice }
+      if (r.ready) return { ...r, route: 'package', runNotice }
     }
     checked.push(r)
   }
   // None is ready: report the one closest to it, preferring a package that passed the static part.
   const rank = (r: PackageReadiness) => (r.problems.some((p) => p.kind !== 'scientific') ? 1000 : 0) + r.problems.length
   const best = checked.reduce((a, b) => (rank(b) < rank(a) ? b : a))
-  return { ...best, runNotice }
+  return { ...best, route: 'package', runNotice }
 }
 
-/** Throws when `text` approves a simulation and the project's package cannot run. */
+/** Throws when `text` approves a simulation and the project cannot run it. A program approval (studyId,
+ *  programId, programHash of program.json) is runnable by either route; a protocol approval (protocolHash of
+ *  protocol.json, for a project without a program) only by the protocol route. */
 export async function assertRunnablePackage(projectDir: string | undefined, text: string): Promise<void> {
   if (!text.startsWith(SIMULATION_APPROVAL)) return
   if (!projectDir) throw new Error('The conversation has no project. Reopen the project before starting a simulation.')
-  let approved: { studyId?: string; programId?: string; programHash?: string }
+  let approved: { studyId?: string; programId?: string; programHash?: string; protocolHash?: unknown }
   try { approved = JSON.parse(text.split('\n')[1] ?? '') } catch { throw new Error('Simulation approval is unreadable. Review the simulation scope again.') }
+  if (!approved || typeof approved !== 'object') throw new Error('Simulation approval is unreadable. Review the simulation scope again.')
+  if (approved.protocolHash !== undefined) return assertRunnableProtocol(projectDir, approved.protocolHash)
   const bytes = await readFile(join(projectDir, 'program.json'))
   const program = JSON.parse(bytes.toString('utf8'))
-  if (!approved || typeof approved.studyId !== 'string' || !program.studies?.some((s: { id: string }) => s.id === approved.studyId))
+  if (typeof approved.studyId !== 'string' || !program.studies?.some((s: { id: string }) => s.id === approved.studyId))
     throw new Error('The selected study is unavailable. Review the simulation scope again.')
   if (approved.programId !== program.id || approved.programHash !== createHash('sha256').update(bytes).digest('hex'))
     throw new Error('The study changed after approval. Review the simulation scope again.')
@@ -168,8 +240,27 @@ export async function assertRunnablePackage(projectDir: string | undefined, text
       throw new Error('The study changed during package validation. Review the simulation scope again.')
     return
   }
+  throw notRunnable(r)
+}
+
+const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex')
+
+async function assertRunnableProtocol(projectDir: string, protocolHash: unknown): Promise<void> {
+  const bytes = await readFile(join(projectDir, 'protocol.json')).catch(() => null)
+  if (!bytes) throw new Error('The study has no protocol.json. Review the simulation scope again.')
+  if (typeof protocolHash !== 'string' || protocolHash !== sha256(bytes))
+    throw new Error('The study changed after approval. Review the simulation scope again.')
+  const r = await protocolRouteReadiness(projectDir)
+  if (!r.ready) throw notRunnable(r)
+  if (protocolHash !== sha256(await readFile(join(projectDir, 'protocol.json'))))
+    throw new Error('The study changed during protocol validation. Review the simulation scope again.')
+}
+
+function notRunnable(r: PackageReadiness): Error {
   const what = r.exists
     ? r.problems.map((p) => (p.kind === 'scientific' ? `${p.check}: ${p.reason}` : p.kind === 'missing' ? `${p.file} is missing` : p.kind === 'invalid-json' ? `${p.file} is not valid JSON` : p.kind === 'no-entry' ? `${p.file} does not define ${p.entry}()` : `${p.file}: ${p.kind}`)).join('; ')
-    : 'there is no package under package/'
-  throw new Error(`The study package is not complete, so the simulation was not started: ${what}. Ask the agent to complete the package first.`)
+    : 'there is no package under package/ and no protocol.json'
+  return r.route === 'protocol'
+    ? new Error(`The study protocol did not pass its checks, so the simulation was not started: ${what}. Ask the agent to fix protocol.json first.`)
+    : new Error(`The study package is not complete, so the simulation was not started: ${what}. Ask the agent to complete the package first.`)
 }

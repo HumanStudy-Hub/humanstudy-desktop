@@ -16,7 +16,8 @@ export function resultKind(rel: string): ResultKind {
   const r = fwd(rel)
   const name = baseName(r).toLowerCase()
   const ext = extOf(r)
-  if (/simulat|replay|evaluation|sessions/.test(r.toLowerCase()) || r.startsWith('package/')) return 'simulation'
+  // The runnable form and its runs: package/ (read-only community route) or protocol.json with runs/ and variants/.
+  if (/simulat|replay|evaluation|sessions/.test(r.toLowerCase()) || /^(package|runs|variants)\//.test(r) || name === 'protocol.json') return 'simulation'
   if (/prereg|pre-reg|registration|draft|proposal|manuscript/.test(name)) return 'draft'
   if (IMAGE.has(ext)) return 'figure'
   if (ext === 'html' || ext === 'htm') return 'chart'

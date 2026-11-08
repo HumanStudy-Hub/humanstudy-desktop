@@ -34,3 +34,22 @@ test('a forged plan cannot raise the cap', async () => {
   await assert.rejects(approvedRunLimits(temp, approval({ perCondition: 10 }, { studyId: 'nope' })), /unavailable/)
   await assert.rejects(approvedRunLimits(temp, '[Simulation scope approved]\nnot json'), /unreadable/)
 })
+
+test('v0.8: a protocol approval is capped by the arms of the hashed protocol.json', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'run-approval-protocol-'))
+  try {
+    const proto = await readFile(join(here, 'fixtures/protocol-mini/protocol.json')) // two arms
+    await writeFile(join(dir, 'protocol.json'), proto)
+    const protocolHash = createHash('sha256').update(proto).digest('hex')
+    const text = (plan, extra = {}) => `[Simulation scope approved]\n${JSON.stringify({ protocolHash, plan, ...extra })}\nRun it`
+    const honest = await approvedRunLimits(dir, text({ perCondition: 60 }))
+    assert.equal(honest.participants, 120)
+    assert.deepEqual(await approvedRunLimits(dir, text({ perCondition: 60, conditions: Array.from({ length: 50 }, (_, i) => `f${i}`) })), honest)
+    await assert.rejects(approvedRunLimits(dir, text({ perCondition: 61 })), /whole number from 1 to 60/)
+    await assert.rejects(approvedRunLimits(dir, text({ perCondition: 10 }, { protocolHash: 'f'.repeat(64) })), /changed after approval/)
+    await assert.rejects(approvedRunLimits(dir, text({ perCondition: 10 }, { protocolHash: 7 })), /changed after approval/)
+    await writeFile(join(dir, 'protocol.json'), '{"arms": []}')
+    const empty = createHash('sha256').update('{"arms": []}').digest('hex')
+    await assert.rejects(approvedRunLimits(dir, text({ perCondition: 10 }, { protocolHash: empty })), /no arms/)
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
