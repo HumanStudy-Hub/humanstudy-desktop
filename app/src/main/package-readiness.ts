@@ -4,6 +4,7 @@ import { readdir, readFile, realpath, lstat, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { join, resolve, sep } from 'node:path'
 import { packageReadiness, type PackageReadiness, type PackageFile } from '../shared/package-readiness'
+import { formatTokens, MAX_PER_CONDITION, MAX_RUN_TOKENS, protocolRunLimits, type ProtocolBudget, type RunLimits } from '../shared/run-limits'
 
 export const COMMUNITY_RUN_NOTICE = "This study's code will run on your computer with access to your model key."
 import { looksLikeRevision } from './run-notice' // run-notice.ts imports nothing from here; kept next to its only use
@@ -29,7 +30,7 @@ const UNREADABLE: ScientificProblem = { check: 'runtime', reason: 'The study fil
 let scientificCheck: ScientificCheck = async () => [NOT_CONFIGURED]
 let checkVersion = 'unconfigured'
 /** Finished results by [project, slug, checker version, input stamp]; a changed input is a new key. */
-const results = new Map<string, ScientificProblem[]>()
+const results = new Map<string, Outcome>()
 /** One check at a time per package; later requests wait and then usually find the result above. */
 const lanes = new Map<string, Promise<unknown>>()
 
@@ -87,29 +88,32 @@ async function stampOf(paths: string[]): Promise<string> {
 /** Files beside program.json that the checks read or copy next to the package (check_package BESIDE_PROGRAM). */
 const STAMPED_BESIDE = ['program.json', 'effects.json', 'capabilities.json', 'README.md']
 
+type Outcome = ScientificProblem[] | ProtocolBudget
+const isRuntime = (o: Outcome): boolean => Array.isArray(o) && o.some((p) => p.check === 'runtime')
+
 /** One check run once per input state: `stamp` lists its inputs, `version` names the checker, `run` checks. */
-function cachedCheck(lane: string, stamp: () => Promise<string>, version: () => string, run: () => Promise<ScientificProblem[]>): Promise<ScientificProblem[]> {
+function cachedCheck<T extends Outcome>(lane: string, stamp: () => Promise<string>, version: () => string, run: () => Promise<T>): Promise<T | ScientificProblem[]> {
   const previous = lanes.get(lane) ?? Promise.resolve()
-  const mine = previous.catch(() => undefined).then(async (): Promise<ScientificProblem[]> => {
+  const mine = previous.catch(() => undefined).then(async (): Promise<T | ScientificProblem[]> => {
     // An agent may still be writing: a check whose inputs changed under it is repeated, a few times at most.
     for (let attempt = 0; attempt < 3; attempt++) {
       let before: string
       try { before = await stamp() } catch { return [UNREADABLE] }
       const checker = version()
       const key = JSON.stringify([lane, checker, before])
-      const known = results.get(key)
+      const known = results.get(key) as T | ScientificProblem[] | undefined
       if (known) return known
-      let problems: ScientificProblem[]
-      try { problems = await run() } catch { problems = [{ check: 'runtime', reason: 'The build checks could not complete. Retry.' }] }
+      let outcome: T | ScientificProblem[]
+      try { outcome = await run() } catch { outcome = [{ check: 'runtime', reason: 'The build checks could not complete. Retry.' }] }
       let after: string | null = null
       try { after = await stamp() } catch { /* treated as changed */ }
       if (after !== before) continue
       // A runtime that was missing may be installed later without any study file changing: never keep that.
-      if (checker === version() && !problems.some((p) => p.check === 'runtime')) {
+      if (checker === version() && !isRuntime(outcome)) {
         if (results.size > 200) results.clear()
-        results.set(key, problems)
+        results.set(key, outcome)
       }
-      return problems
+      return outcome
     }
     return [CHANGED]
   })
@@ -120,19 +124,22 @@ function cachedCheck(lane: string, stamp: () => Promise<string>, version: () => 
 
 /** The build checks for one package, run once per input state. */
 export function scientificProblems(project: string, slug: string): Promise<ScientificProblem[]> {
-  return cachedCheck(JSON.stringify(['package', project, slug]), () => scientificStamp(project), () => checkVersion, () => scientificCheck(project, slug))
+  return cachedCheck<ScientificProblem[]>(JSON.stringify(['package', project, slug]), () => scientificStamp(project), () => checkVersion, () => scientificCheck(project, slug))
 }
 
 // The protocol route (v0.8): protocol.json run by the bundled engine (protocol-readiness.ts, hsenv.checks).
 type ProtocolCheck = (project: string) => Promise<ScientificProblem[]>
+type BudgetCheck = (project: string) => Promise<ProtocolBudget | ScientificProblem[]>
 const PROTOCOL_NOT_CONFIGURED: ScientificProblem = { check: 'runtime', reason: 'The protocol checks are not available yet, so the protocol cannot be confirmed.' }
 // Fails closed until the app configures the real engine (index.ts).
 let protocolCheck: ProtocolCheck = async () => [PROTOCOL_NOT_CONFIGURED]
+let budgetCheck: BudgetCheck = async () => [PROTOCOL_NOT_CONFIGURED]
 let protocolVersion = 'unconfigured'
 
-/** Install the protocol checker the gate runs (the app's bundled hsenv.checks). Tests pass a stub. */
-export function configureProtocolChecks(check: ProtocolCheck, version: string): void {
-  protocolCheck = check; protocolVersion = version; results.clear()
+/** Install the protocol checker the gate runs (the app's bundled hsenv.checks) and the budget measurement a run is
+ *  sized with (skills/run/budget.py). Tests pass stubs. */
+export function configureProtocolChecks(check: ProtocolCheck, version: string, budget: BudgetCheck = async () => [PROTOCOL_NOT_CONFIGURED]): void {
+  protocolCheck = check; budgetCheck = budget; protocolVersion = version; results.clear()
 }
 
 /** What hsenv.checks reads, as metadata: protocol.json, study.json, sourcetext/ (the --source-text files),
@@ -158,7 +165,12 @@ export async function protocolStamp(project: string): Promise<string> {
 
 /** The protocol checks for one project, run once per input state. */
 export function protocolProblems(project: string): Promise<ScientificProblem[]> {
-  return cachedCheck(JSON.stringify(['protocol', project]), () => protocolStamp(project), () => protocolVersion, () => protocolCheck(project))
+  return cachedCheck<ScientificProblem[]>(JSON.stringify(['protocol', project]), () => protocolStamp(project), () => protocolVersion, () => protocolCheck(project))
+}
+
+/** The measured model budget of a protocol run, once per input state (problems when it cannot be measured). */
+export function protocolBudgetOf(project: string): Promise<ProtocolBudget | ScientificProblem[]> {
+  return cachedCheck<ProtocolBudget | ScientificProblem[]>(JSON.stringify(['budget', project]), () => protocolStamp(project), () => protocolVersion, () => budgetCheck(project))
 }
 
 const hasProtocol = (project: string): Promise<boolean> => lstat(join(project, 'protocol.json')).then((s) => s.isFile(), () => false)
@@ -176,7 +188,7 @@ export async function projectPackageReadiness(projectDir: string, studyId?: stri
   const pkg = await packageRouteReadiness(projectDir, studyId)
   if (!(await hasProtocol(projectDir))) return pkg
   const protocol = await protocolRouteReadiness(projectDir)
-  return { ...pkg, protocol: { ready: protocol.ready, problems: protocol.problems, arms: await protocolArms(projectDir) } }
+  return { ...pkg, protocol: { ready: protocol.ready, problems: protocol.problems, arms: await protocolArms(projectDir), budget: protocol.budget } }
 }
 
 /** The runnable arms of protocol.json (the conditions of a protocol run); [] when it cannot be read. */
@@ -189,9 +201,16 @@ export async function protocolArms(projectDir: string): Promise<string[]> {
 }
 
 /** The protocol route alone: protocol.json and the bundled engine's checks. */
-async function protocolRouteReadiness(projectDir: string): Promise<PackageReadiness> {
-  const problems = await protocolProblems(projectDir)
-  return { exists: true, ready: !problems.length, slug: null, runNotice: await communityRunNotice(projectDir),
+async function protocolRouteReadiness(projectDir: string): Promise<PackageReadiness & { budget?: ProtocolBudget }> {
+  let problems = await protocolProblems(projectDir)
+  let budget: ProtocolBudget | undefined
+  // A run is sized from what it will send the model (review 2, M3): no measured budget, no protocol run.
+  if (!problems.length) {
+    const b = await protocolBudgetOf(projectDir)
+    if (Array.isArray(b)) problems = b
+    else budget = b
+  }
+  return { exists: true, ready: !problems.length, slug: null, runNotice: await communityRunNotice(projectDir), budget,
     problems: problems.map((p) => ({ file: 'protocol.json' as const, kind: 'scientific' as const, check: p.check, reason: p.reason })) }
 }
 
@@ -239,7 +258,7 @@ export async function assertRunnablePackage(projectDir: string | undefined, text
   if (!approved || typeof approved !== 'object') throw new Error('Simulation approval is unreadable. Review the simulation scope again.')
   // The approval names the form it runs: 'package' (absent in approvals from the Simulation tab) or 'protocol'.
   const route = approvalRoute(approved)
-  if (route === 'protocol') return assertRunnableProtocol(projectDir, approved.protocolHash)
+  if (route === 'protocol') return assertRunnableProtocol(projectDir, approved as Parameters<typeof assertRunnableProtocol>[1])
   const bytes = await readFile(join(projectDir, 'program.json'))
   const program = JSON.parse(bytes.toString('utf8'))
   if (typeof approved.studyId !== 'string' || !program.studies?.some((s: { id: string }) => s.id === approved.studyId))
@@ -267,16 +286,37 @@ export function approvalRoute(approved: { route?: unknown; protocolHash?: unknow
 
 const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex')
 
-async function assertRunnableProtocol(projectDir: string, protocolHash: unknown): Promise<void> {
+async function assertRunnableProtocol(projectDir: string, approved: { protocolHash?: unknown; plan?: { perCondition?: unknown; tokenBudget?: unknown } }): Promise<void> {
   const notRunnable = (r: PackageReadiness) => new Error(`The study protocol did not pass its checks, so the simulation was not started: ${problemsText(r)}. Ask the agent to fix protocol.json first.`)
   const bytes = await readFile(join(projectDir, 'protocol.json')).catch(() => null)
   if (!bytes) throw new Error('The study has no protocol.json. Review the simulation scope again.')
-  if (typeof protocolHash !== 'string' || protocolHash !== sha256(bytes))
+  if (typeof approved.protocolHash !== 'string' || approved.protocolHash !== sha256(bytes))
     throw new Error('The study changed after approval. Review the simulation scope again.')
   const r = await protocolRouteReadiness(projectDir)
   if (!r.ready) throw notRunnable(r)
-  if (protocolHash !== sha256(await readFile(join(projectDir, 'protocol.json'))))
+  approvedProtocolLimits(r.budget, approved.plan)
+  if (approved.protocolHash !== sha256(await readFile(join(projectDir, 'protocol.json'))))
     throw new Error('The study changed during protocol validation. Review the simulation scope again.')
+}
+
+/** The relay limits of an approved protocol run: computed from the measured budget, and only when the researcher
+ *  approved exactly that token figure (`plan.tokenBudget`) and it is under the hard ceiling (review 2, M3). */
+export function approvedProtocolLimits(budget: ProtocolBudget | undefined, plan: { perCondition?: unknown; tokenBudget?: unknown } | undefined): RunLimits {
+  const per = plan?.perCondition
+  if (!Number.isSafeInteger(per) || (per as number) < 1 || (per as number) > MAX_PER_CONDITION)
+    throw new Error(`Participants per condition must be a whole number from 1 to ${MAX_PER_CONDITION}. Review the simulation scope again.`)
+  if (!budget) throw new Error('The model budget of this protocol is not measured yet. Review the simulation scope again.')
+  const limits = protocolRunLimits(budget, per)
+  if (!limits.fits)
+    throw new Error(`This run would need ${formatTokens(limits.needed)} tokens, more than the limit of ${formatTokens(MAX_RUN_TOKENS)}. Choose fewer participants per condition.`)
+  if (plan?.tokenBudget !== limits.tokens)
+    throw new Error(`The approved token budget is not this run's (${formatTokens(limits.tokens)} tokens). Review the simulation scope again.`)
+  return { participants: limits.participants, tokens: limits.tokens, minutes: limits.minutes }
+}
+
+/** The measured budget of the project's protocol (cached), or undefined when it does not pass. */
+export async function protocolBudgetFor(projectDir: string): Promise<ProtocolBudget | undefined> {
+  return (await protocolRouteReadiness(projectDir)).budget
 }
 
 const problemsText = (r: PackageReadiness): string =>

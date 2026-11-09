@@ -1,3 +1,4 @@
+import type { ProtocolBudget } from './run-limits'
 // Is the replay package under package/<slug>/ complete enough to run? The static part of
 // pack/skills/build/check_package.py (the agent's full check): the required files exist, every
 // required JSON file parses, task/adapter.py defines run_sessions() and evaluation/evaluation.py defines
@@ -41,9 +42,10 @@ export interface PackageReadiness {
   /** At least one folder under package/. */
   exists: boolean
   /** The protocol route, reported separately when protocol.json exists (v0.8): protocol.json against the
-   *  bundled engine's checks, and its runnable arms (the conditions of a protocol run). It never makes the
+   *  bundled engine's checks, its runnable arms (the conditions of a protocol run) and the measured model
+   *  budget a run is sized with (shared/run-limits protocolRunLimits). It never makes the
    *  package ready; `ready` above is the package route alone. */
-  protocol?: { ready: boolean; problems: PackageProblem[]; arms?: string[] }
+  protocol?: { ready: boolean; problems: PackageProblem[]; arms?: string[]; budget?: ProtocolBudget }
   ready: boolean
   /** The package checked (the ready one, else the most complete one). */
   slug: string | null

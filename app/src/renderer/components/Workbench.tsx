@@ -66,13 +66,13 @@ export interface WorkspaceSnapshot { projectDir: string; context: WorkspaceConte
 
 /** The researcher's confirmation, sent as the agent message: the program's hash at the moment of the
  *  click, the study, the five section-12 fields and the plan the Simulation tab showed. */
-async function approveSimulation(dir: string, program: HumanProgram, studyId: string, request: string, plan: { perCondition: number; model: string; route: 'protocol' | 'package'; conditions: string[] }): Promise<string> {
+async function approveSimulation(dir: string, program: HumanProgram, studyId: string, request: string, plan: { perCondition: number; model: string; route: 'protocol' | 'package'; conditions: string[]; tokenBudget?: number }): Promise<string> {
   const scope = simulationScope(program, studyId)
   const sha = async (raw: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw))), b => b.toString(16).padStart(2, '0')).join('')
   if (plan.route === 'protocol') {
     // The protocol route (v0.8): the approval names protocol.json by the hash of its bytes; the engine runs it.
     const raw = await window.humanstudy.project.readText(`${dir}/protocol.json`)
-    return `[Simulation scope approved]\n${JSON.stringify({ route: 'protocol', protocolHash: await sha(raw), hashFormat: 'protocol.json UTF-8 file bytes', programId: program.id, studyId, scope: scope.fields, plan: { perCondition: plan.perCondition, conditions: plan.conditions, model: plan.model } })}\n${request}`
+    return `[Simulation scope approved]\n${JSON.stringify({ route: 'protocol', protocolHash: await sha(raw), hashFormat: 'protocol.json UTF-8 file bytes', programId: program.id, studyId, scope: scope.fields, plan: { perCondition: plan.perCondition, conditions: plan.conditions, model: plan.model, tokenBudget: plan.tokenBudget } })}\n${request}`
   }
   const raw = await window.humanstudy.project.readText(`${dir}/program.json`)
   if (JSON.stringify(JSON.parse(raw)) !== JSON.stringify(program)) throw new Error(t('simulation.changed'))
@@ -514,11 +514,11 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
               agentThreadId={agentThreadId}
               agentTurnKey={agentTurnKey}
               agentActivity={agentActivity}
-              onRun={async (perCondition, route, conditions) => {
+              onRun={async (perCondition, route, conditions, tokenBudget) => {
                 const study = studies.find(st => st.id === studyId)?.title ?? studyId
                 const request = t('sim.request', { study, n: perCondition, model: model || 'selected in the app' })
                 try {
-                  onRunSimulation?.(await approveSimulation(project.dir, program, studyId, request, { perCondition, model, route, conditions }))
+                  onRunSimulation?.(await approveSimulation(project.dir, program, studyId, request, { perCondition, model, route, conditions, tokenBudget }))
                 } catch (e) {
                   setEditError(e instanceof Error ? e.message : String(e))
                   throw e

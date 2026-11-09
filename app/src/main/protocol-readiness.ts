@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, sep } from 'node:path'
+import type { ProtocolBudget } from '../shared/run-limits'
 
 export interface ProtocolProblem { check: string; reason: string }
 
@@ -119,55 +120,109 @@ export async function sourceTextArgs(project: string): Promise<string[]> {
   return args
 }
 
-export async function protocolReadiness(python: string | null, engine: [string, string][], project: string, bin: string,
-  timeout = PROTOCOL_TIMEOUT_MS, limits: { cpuSeconds?: number; memoryBytes?: number } = {}): Promise<ProtocolProblem[]> {
-  if (!python) return [ENGINE_MISSING]
-  if (!engine.some(([rel]) => rel === 'hsenv/checks.py')) return [ENGINE_FAILED]
+interface Limits { cpuSeconds?: number; memoryBytes?: number }
+type Ran = { stdout: string; stderr: string; limit?: boolean }
+
+/** Run Python confined: -I -B, an empty home as working folder and temp, no keys in the environment, the CPU and
+ *  memory bounds set before any engine code runs, an RSS watch where the OS ignores them, a wall clock. Exit 0/1
+ *  resolve with the output; a stop at a bound resolves with `limit`; anything else rejects. */
+async function confinedPython(python: string, code: string, args: string[], home: string, bin: string, timeout: number, limits: Limits): Promise<Ran> {
+  const win = process.platform === 'win32'
+  const system = win ? `${process.env.SystemRoot || 'C:\\Windows'}\\System32` : '/usr/bin:/bin:/usr/sbin:/sbin'
+  const memoryBytes = limits.memoryBytes ?? PROTOCOL_MEMORY_BYTES
+  return new Promise<Ran>((resolve, reject) => {
+    let overMemory = false
+    const child = execFile(python, ['-I', '-B', '-X', 'utf8', '-c', code, ...args], {
+      cwd: home, timeout, maxBuffer: 16 * 1024 * 1024, windowsHide: true,
+      // No keys or tokens: only a path, a home and a temp folder in the scratch space.
+      env: {
+        PATH: (bin ? bin + (win ? ';' : ':') : '') + system,
+        HOME: home, USERPROFILE: home, TMPDIR: home, TEMP: home, TMP: home, LANG: 'C.UTF-8',
+        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+      },
+    }, (error, stdout, stderr) => {
+      // checks.py exits 1 when the protocol fails (its report is still the answer) and Python exits 1 on an
+      // uncaught error in the engine. Stopped at a bound (CPU, memory watch, wall clock): the limits problem.
+      // Anything else (not started, crashed) is a failed run.
+      clearInterval(watch)
+      if (overMemory || (error && (error.signal === 'SIGXCPU' || error.signal === 'SIGKILL' || error.killed))) return resolve({ stdout: '', stderr: '', limit: true })
+      if (error && !(typeof error.code === 'number' && error.code === 1)) return reject(error)
+      resolve({ stdout: String(stdout), stderr: String(stderr) })
+    })
+    // macOS does not enforce RLIMIT_AS/RLIMIT_DATA: watch the resident size and stop the check above the bound.
+    const watch = setInterval(() => {
+      if (win || !child.pid) return
+      execFile('/bin/ps', ['-o', 'rss=', '-p', String(child.pid)], { timeout: 2000 }, (e, out) => {
+        if (!e && Number(String(out).trim()) * 1024 > memoryBytes) { overMemory = true; child.kill('SIGKILL') }
+      })
+    }, 250)
+  })
+}
+
+async function withScratch<T>(files: [string, string][], body: (work: string, home: string) => Promise<T>): Promise<T> {
   const work = await mkdtemp(join(tmpdir(), 'hs-protocol-'))
   const home = await mkdtemp(join(tmpdir(), 'hs-protocol-home-'))
   try {
-    for (const [rel, content] of engine) {
+    for (const [rel, content] of files) {
       const path = join(work, ...rel.split('/'))
       await mkdir(dirname(path), { recursive: true })
       await writeFile(path, content, 'utf8')
     }
-    const args = ['-I', '-B', '-X', 'utf8', '-c', runner(limits.cpuSeconds, limits.memoryBytes), work, await realpath(project), '--sessions', String(PROTOCOL_SESSIONS), ...await sourceTextArgs(project)]
-    const win = process.platform === 'win32'
-    const system = win ? `${process.env.SystemRoot || 'C:\\Windows'}\\System32` : '/usr/bin:/bin:/usr/sbin:/sbin'
-    const memoryBytes = limits.memoryBytes ?? PROTOCOL_MEMORY_BYTES
-    const run = await new Promise<{ stdout: string; stderr: string; limit?: boolean }>((resolve, reject) => {
-      let overMemory = false
-      const child = execFile(python, args, {
-        cwd: home, timeout, maxBuffer: 16 * 1024 * 1024, windowsHide: true,
-        // No keys or tokens: only a path, a home and a temp folder in the scratch space.
-        env: {
-          PATH: (bin ? bin + (win ? ';' : ':') : '') + system,
-          HOME: home, USERPROFILE: home, TMPDIR: home, TEMP: home, TMP: home, LANG: 'C.UTF-8',
-          ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
-        },
-      }, (error, stdout, stderr) => {
-        // checks.py exits 1 when the protocol fails (its report is still the answer) and Python exits 1 on an
-        // uncaught error in the engine. Stopped at a bound (CPU, memory watch, wall clock): the limits problem.
-        // Anything else (not started, crashed) is a failed run.
-        clearInterval(watch)
-        if (overMemory || (error && (error.signal === 'SIGXCPU' || error.signal === 'SIGKILL' || error.killed))) return resolve({ stdout: '', stderr: '', limit: true })
-        if (error && !(typeof error.code === 'number' && error.code === 1)) return reject(error)
-        resolve({ stdout: String(stdout), stderr: String(stderr) })
-      })
-      // macOS does not enforce RLIMIT_AS/RLIMIT_DATA: watch the resident size and stop the check above the bound.
-      const watch = setInterval(() => {
-        if (win || !child.pid) return
-        execFile('/bin/ps', ['-o', 'rss=', '-p', String(child.pid)], { timeout: 2000 }, (e, out) => {
-          if (!e && Number(String(out).trim()) * 1024 > memoryBytes) { overMemory = true; child.kill('SIGKILL') }
-        })
-      }, 250)
-    })
-    if (run.limit) return [ENGINE_LIMIT]
-    if (/\bMemoryError\b/.test(run.stderr) && !run.stdout.includes('{')) return [ENGINE_LIMIT]
-    return protocolOutcome(run.stdout, run.stderr)
-  } catch { return [ENGINE_FAILED] }
-  finally {
+    return await body(work, home)
+  } finally {
     await rm(work, { recursive: true, force: true }).catch(() => undefined)
     await rm(home, { recursive: true, force: true }).catch(() => undefined)
   }
+}
+
+export async function protocolReadiness(python: string | null, engine: [string, string][], project: string, bin: string,
+  timeout = PROTOCOL_TIMEOUT_MS, limits: Limits = {}): Promise<ProtocolProblem[]> {
+  if (!python) return [ENGINE_MISSING]
+  if (!engine.some(([rel]) => rel === 'hsenv/checks.py')) return [ENGINE_FAILED]
+  try {
+    return await withScratch(engine, async (work, home) => {
+      const run = await confinedPython(python, runner(limits.cpuSeconds, limits.memoryBytes),
+        [work, await realpath(project), '--sessions', String(PROTOCOL_SESSIONS), ...await sourceTextArgs(project)], home, bin, timeout, limits)
+      if (run.limit) return [ENGINE_LIMIT]
+      if (/\bMemoryError\b/.test(run.stderr) && !run.stdout.includes('{')) return [ENGINE_LIMIT]
+      return protocolOutcome(run.stdout, run.stderr)
+    })
+  } catch { return [ENGINE_FAILED] }
+}
+
+
+/** Parse budget.py's line; anything malformed is an error, never a small budget. */
+export function parseBudget(stdout: string): ProtocolBudget {
+  const raw = JSON.parse(stdout.trim().split('\n').at(-1) ?? '')
+  const arms = raw?.arms
+  if (!arms || typeof arms !== 'object' || Array.isArray(arms) || !Object.keys(arms).length) throw Error('Invalid budget')
+  const ok = (n: unknown, max: number) => Number.isSafeInteger(n) && (n as number) >= 1 && (n as number) <= max
+  const out: ProtocolBudget = { arms: {}, output_tokens: ok(raw.output_tokens, 4096) ? raw.output_tokens : 512 }
+  for (const [id, a] of Object.entries(arms as Record<string, { group_size?: unknown; calls?: unknown; tokens_per_member?: unknown }>)) {
+    if (!id || !ok(a?.group_size, 1000) || !ok(a?.calls, 1_000_000) || !ok(a?.tokens_per_member, 1e12)) throw Error('Invalid budget')
+    out.arms[id] = { group_size: a.group_size as number, calls: a.calls as number, tokens_per_member: a.tokens_per_member as number }
+  }
+  return out
+}
+
+export const BUDGET_FAILED: ProtocolProblem = { check: 'budget', reason: 'The model budget of a run could not be measured from protocol.json, so a run cannot be sized.' }
+
+/** Measure what a run sends the model (skills/run/budget.py: a few oracle participants per arm, the default
+ *  renderer's prompts), confined like the checks. `files`: the engine under hsenv/ and skills/run/*.py. */
+export async function protocolBudget(python: string | null, files: [string, string][], project: string, bin: string,
+  timeout = PROTOCOL_TIMEOUT_MS, limits: Limits = {}): Promise<ProtocolBudget | ProtocolProblem[]> {
+  if (!python) return [ENGINE_MISSING]
+  if (!files.some(([rel]) => rel === 'skills/run/budget.py') || !files.some(([rel]) => rel === 'hsenv/hsenv/engine.py')) return [ENGINE_FAILED]
+  try {
+    return await withScratch(files, async (work, home) => {
+      const code = runner(limits.cpuSeconds, limits.memoryBytes).replace(/sys\.path\.insert[\s\S]*$/,
+        'import runpy\nscript = sys.argv.pop(1)\nsys.argv = [script] + sys.argv[1:]\nrunpy.run_path(script, run_name="__main__")')
+      const run = await confinedPython(python, code, [join(work, 'skills', 'run', 'budget.py'), await realpath(project), home], home, bin, timeout, limits)
+      if (run.limit) return [{ ...ENGINE_LIMIT, check: 'budget' }]
+      try { return parseBudget(run.stdout) } catch {
+        const last = run.stderr.trim().split('\n').at(-1)?.trim()
+        return [{ check: 'budget', reason: (BUDGET_FAILED.reason + (last ? ` ${last}` : '')).slice(0, 400) }]
+      }
+    })
+  } catch { return [ENGINE_FAILED] }
 }

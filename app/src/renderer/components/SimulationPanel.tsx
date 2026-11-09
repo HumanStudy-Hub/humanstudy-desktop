@@ -9,7 +9,7 @@ import { simulationScope, simulationLimits } from '../../shared/simulation-scope
 import { estimateRun, hasParticipantData, isResult, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
 import { packageStamp, readinessStamp, runConfirmation, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
 import { shortModelName } from './ModelPicker'
-import { formatTokens, MAX_PER_CONDITION, runLimits } from '../../shared/run-limits'
+import { formatTokens, MAX_PER_CONDITION, MAX_RUN_TOKENS, protocolRunLimits, runLimits } from '../../shared/run-limits'
 import { listenToArtifact } from '../bridge'
 import { getLang, t } from '../i18n'
 import { holdAction, track } from '../telemetry'
@@ -29,7 +29,7 @@ interface Props {
   /** What the agent is doing right now, in plain words (from the chat's activity line). */
   agentActivity?: string
   /** route: which runnable form the approval names (protocol.json through the engine, or package/). */
-  onRun(perCondition: number, route: 'protocol' | 'package', conditions: string[]): Promise<void>
+  onRun(perCondition: number, route: 'protocol' | 'package', conditions: string[], tokenBudget?: number): Promise<void>
   onBuild(): void
   /** Stop the agent and ask these run folders (absolute paths) to stop. */
   /** Stop: write STOP into these run folders; `ownTurn` when the agent's current turn is this tab's request. */
@@ -103,9 +103,16 @@ export function SimulationPanel(props: Props) {
   const confirmation = runConfirmation(readiness)
   const [perCondition, setPerCondition] = useState(plan.defaultPerCondition)
   useEffect(() => setPerCondition(plan.defaultPerCondition), [plan.defaultPerCondition])
-  const estimate = estimateRun({ conditions: runConditions.length || plan.conditions.length, perCondition, model, needsBuild: !built })
+  // A protocol run: one call per page for every member of every group (the measured budget), not the package's few calls.
+  const budgetArms = route === 'protocol' ? Object.values(readiness?.protocol?.budget?.arms ?? {}) : []
+  const members = budgetArms.reduce((n, a) => n + a.group_size, 0)
+  const estimate = estimateRun({ conditions: members || runConditions.length || plan.conditions.length, perCondition, model, needsBuild: !built,
+    ...(members ? { callsPerParticipant: Math.max(1, Math.round(budgetArms.reduce((n, a) => n + a.group_size * a.calls, 0) / members)) } : {}) })
   // The relay's cap and lifetime for this plan, computed exactly as the main process will (macOS wording).
-  const access = runLimits({ conditions: runConditions, perCondition })
+  // A protocol run is sized from its measured budget (pages per participant, growing prompts, group size), the
+  // same figure the main process recomputes; the approval carries it and is refused for any other number.
+  const protocolLimits = route === 'protocol' ? protocolRunLimits(readiness?.protocol?.budget, perCondition) : null
+  const access = protocolLimits ?? runLimits({ conditions: runConditions, perCondition })
   const accessVars = { tokens: formatTokens(access.tokens), minutes: access.minutes }
 
   // Run folders and the two small files each one writes while and after it runs.
@@ -197,7 +204,7 @@ export function SimulationPanel(props: Props) {
     track('simulation.run', { metadata: { perCondition, conditions: plan.conditions.length, model, built } })
     // The approval is checked before it is sent; the resulting agent turn belongs to this run operation.
     holdAction()
-    try { await props.onRun(perCondition, route ?? 'package', route === 'protocol' ? readiness?.protocol?.arms ?? [] : plan.conditions.map((c) => c.id)) } catch { setPending(null) }
+    try { await props.onRun(perCondition, route ?? 'package', route === 'protocol' ? readiness?.protocol?.arms ?? [] : plan.conditions.map((c) => c.id), protocolLimits?.tokens) } catch { setPending(null) }
   }
   const build = () => {
     setBuildProblem(false); setNow(Date.now()); setPending({ at: Date.now(), kind: 'build', owner, before: agentTurnKey })
@@ -295,6 +302,10 @@ export function SimulationPanel(props: Props) {
                 </dd>
                 <dt>{t('sim.model')}</dt>
                 <dd>{modelName}</dd>
+                {protocolLimits && (<>
+                  <dt>{t('sim.budget')}</dt>
+                  <dd>{protocolLimits.fits ? t('sim.budget_value', { tokens: formatTokens(protocolLimits.tokens) }) : t('sim.budget_too_large', { tokens: formatTokens(protocolLimits.needed), limit: formatTokens(MAX_RUN_TOKENS) })}</dd>
+                </>)}
                 <dt>{t('sim.estimate')}</dt>
                 <dd>{t('sim.estimate_value', { lo: estimate.minutes[0], hi: estimate.minutes[1], cost: costText(estimate.cost) })}</dd>
               </dl>
@@ -310,7 +321,7 @@ export function SimulationPanel(props: Props) {
               {!scope.ready && <p className="sim-blocked">{t('sim.blocked', { what: [...scope.missing.map((m) => t(`sim.need.${m}`)), ...scope.blocking.map((b) => b.title)].join(t('sim.list_sep')) })}</p>}
               {confirmation.notice && <p className="sim-note">{t(confirmation.notice, accessVars)}</p>}
               <div className="sim-actions">
-                <button className="primary" disabled={!scope.ready || agentBusy} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
+                <button className="primary" disabled={!scope.ready || agentBusy || protocolLimits?.fits === false} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
                 <button className="ghost" onClick={() => props.onAsk(scope.ready ? t('sim.ask_prompt', { study: studyTitle }) : t('sim.resolve_prompt', { study: studyTitle }))}>{t('sim.ask')}</button>
               </div>
               <p className="muted small sim-note">{t(confirmation.note, accessVars)}</p>

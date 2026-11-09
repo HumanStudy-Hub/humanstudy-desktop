@@ -295,7 +295,11 @@ test('run confirmation: Linux/Windows say the study code can read the key; macOS
 // main/protocol-readiness.test.mjs). Runnable when EITHER route passes; fail-closed and cached like T11.
 let protocolCalls = 0
 let protocolCheck = async () => []
-M.configureProtocolChecks(async (...a) => { protocolCalls++; return protocolCheck(...a) }, 'test')
+// The measured model budget of a run (skills/run/budget.py; real in main/protocol-readiness.test.mjs).
+const BUDGET = { arms: { control: { group_size: 1, calls: 3, tokens_per_member: 5000 }, treatment: { group_size: 1, calls: 3, tokens_per_member: 5000 } }, output_tokens: 512 }
+let budgetCheck = async () => BUDGET
+let budgetCalls = 0
+M.configureProtocolChecks(async (...a) => { protocolCalls++; return protocolCheck(...a) }, 'test', async (...a) => { budgetCalls++; return budgetCheck(...a) })
 const PROTOCOL = readFileSync(join(here, '../main/fixtures/protocol-mini/protocol.json'))
 const withProtocol = (dir) => {
   writeFileSync(join(dir, 'protocol.json'), PROTOCOL)
@@ -303,12 +307,13 @@ const withProtocol = (dir) => {
   writeFileSync(join(dir, 'sourcetext/survey.txt'), 'Please read the question below.')
   return dir
 }
-const protocolApproval = (bytes = PROTOCOL) => '[Simulation scope approved]\n' + JSON.stringify({ route: 'protocol', protocolHash: createHash('sha256').update(bytes).digest('hex'), plan: { perCondition: 5 } }) + '\nRun it'
+// per 5, two arms of one member at 5,000 tokens: 50,000 + a 10,000 trial, under the 200,000 floor.
+const protocolApproval = (bytes = PROTOCOL, plan = { perCondition: 5, tokenBudget: 200_000 }) => '[Simulation scope approved]\n' + JSON.stringify({ route: 'protocol', protocolHash: createHash('sha256').update(bytes).digest('hex'), plan }) + '\nRun it'
 
 test('review 1 M2: a passing protocol.json reports beside the package and never makes the package ready', async () => {
   const only = withProtocol(mkdtempSync(join(tmpdir(), 'protocol-only-')))
   const r = await M.projectPackageReadiness(only)
-  assert.deepEqual([r.exists, r.ready, r.protocol], [false, false, { ready: true, problems: [], arms: ['control', 'treatment'] }])
+  assert.deepEqual([r.exists, r.ready, r.protocol], [false, false, { ready: true, problems: [], arms: ['control', 'treatment'], budget: BUDGET }])
   const broken = withProtocol(project({ k: COMMENT_ONLY }))
   const b = await M.projectPackageReadiness(broken, 's1')
   assert.equal(b.ready, false, 'an incomplete package stays not ready whatever protocol.json says')
@@ -397,10 +402,13 @@ test('v0.8: the protocol route fails closed and never caches a runtime problem',
   assert.deepEqual([r.ready, r.protocol.ready, r.protocol.problems[0].check], [false, false, 'runtime'])
   await assert.rejects(F.assertRunnablePackage(dir, protocolApproval()), /protocol did not pass/)
   let calls = 0
-  F.configureProtocolChecks(async () => (calls++ ? [] : [{ check: 'runtime', reason: 'not installed' }]), 'x')
+  F.configureProtocolChecks(async () => (calls++ ? [] : [{ check: 'runtime', reason: 'not installed' }]), 'x', async () => BUDGET)
   assert.equal((await F.projectPackageReadiness(dir)).protocol.ready, false)
   assert.equal((await F.projectPackageReadiness(dir)).protocol.ready, true, 'the runtime installed later: checked again')
-  F.configureProtocolChecks(async () => { throw Error('boom') }, 'y')
+  F.configureProtocolChecks(async () => { throw Error('boom') }, 'y', async () => BUDGET)
+  assert.equal((await F.projectPackageReadiness(dir)).protocol.ready, false)
+  F.configureProtocolChecks(async () => [], 'z')
+  assert.equal((await F.projectPackageReadiness(dir)).protocol.ready, false, 'checks pass but no budget measurement configured: not ready')
   assert.equal((await F.projectPackageReadiness(dir)).protocol.ready, false)
 })
 
@@ -410,4 +418,51 @@ test('v0.8: the Simulation tab rechecks when a protocol input changes', () => {
   assert.notEqual(S.readinessStamp([{ ...base[0], mtime: 2 }, base[1], base[2]]), s)
   assert.notEqual(S.readinessStamp([base[0], { ...base[1], size: 2 }, base[2]]), s)
   assert.equal(S.readinessStamp([base[0], base[1], { ...base[2], size: 9 }]), s)
+})
+
+test('review 2 M3: a protocol run is sized from its measured budget, and the approval must name that figure', async () => {
+  const dir = withProtocol(mkdtempSync(join(tmpdir(), 'protocol-budget-')))
+  await M.assertRunnablePackage(dir, protocolApproval())
+  await assert.rejects(M.assertRunnablePackage(dir, protocolApproval(PROTOCOL, { perCondition: 5 })), /approved token budget is not this run's \(200,000 tokens\)/)
+  await assert.rejects(M.assertRunnablePackage(dir, protocolApproval(PROTOCOL, { perCondition: 5, tokenBudget: 16_000_000 })), /not this run's/, 'a larger number is not approved either')
+  await assert.rejects(M.assertRunnablePackage(dir, protocolApproval(PROTOCOL, { perCondition: 61, tokenBudget: 200_000 })), /whole number from 1 to 60/)
+  // A long survey with groups: 4 members x 2,000,000 tokens; 2 groups per arm need 2 x 2 x 4 x 2M + trial > 16M.
+  budgetCheck = async () => ({ arms: { a: { group_size: 4, calls: 110, tokens_per_member: 2_000_000 }, b: { group_size: 4, calls: 110, tokens_per_member: 2_000_000 } }, output_tokens: 512 })
+  writeFileSync(join(dir, 'sourcetext/survey.txt'), 'new input state: budget measured again')
+  try {
+    await assert.rejects(M.assertRunnablePackage(dir, protocolApproval(PROTOCOL, { perCondition: 2, tokenBudget: 16_000_000 })), /would need 48,000,000 tokens, more than the limit of 16,000,000/)
+  } finally { budgetCheck = async () => BUDGET }
+})
+
+test('review 2 M3: no measured budget, no protocol run (fail closed, runtime problems are not cached)', async () => {
+  const dir = withProtocol(mkdtempSync(join(tmpdir(), 'protocol-nobudget-')))
+  budgetCheck = async () => [{ check: 'budget', reason: 'The model budget of a run could not be measured' }]
+  try {
+    const r = await M.projectPackageReadiness(dir)
+    assert.deepEqual([r.protocol.ready, r.protocol.problems[0].check, r.protocol.budget], [false, 'budget', undefined])
+    await assert.rejects(M.assertRunnablePackage(dir, protocolApproval()), /protocol did not pass.*budget/s)
+    budgetCheck = async () => [{ check: 'runtime', reason: 'not installed' }]
+    writeFileSync(join(dir, 'sourcetext/survey.txt'), 'another state')
+    assert.equal((await M.projectPackageReadiness(dir)).protocol.ready, false)
+    budgetCheck = async () => BUDGET
+    assert.equal((await M.projectPackageReadiness(dir)).protocol.ready, true, 'a runtime problem is checked again')
+  } finally { budgetCheck = async () => BUDGET }
+})
+
+test('review 2 M3: the Simulation tab shows and sends the same budget the main process recomputes', async () => {
+  const outL = mkdtempSync(join(tmpdir(), 'run-limits-'))
+  await build({ entryPoints: [join(here, 'run-limits.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(outL, 'l.mjs'), logLevel: 'error' })
+  const L = await import(pathToFileURL(join(outL, 'l.mjs')).href)
+  const big = { arms: { a: { group_size: 4, calls: 110, tokens_per_member: 2_000_000 } }, output_tokens: 512 }
+  const one = L.protocolRunLimits(big, 1)
+  assert.deepEqual([one.participants, one.needed, one.fits, one.tokens], [4, 16_000_000, true, 16_000_000])
+  assert.deepEqual([L.protocolRunLimits(big, 2).fits, L.protocolRunLimits(big, 2).needed], [false, 24_000_000])
+  assert.equal(L.protocolRunLimits(null, 5).fits, false)
+  assert.equal(L.protocolRunLimits(BUDGET, 5).tokens, 200_000)
+  const panel = readFileSync(join(here, '../renderer/components/SimulationPanel.tsx'), 'utf8')
+  assert.match(panel, /protocolRunLimits\(readiness\?\.protocol\?\.budget, perCondition\)/)
+  assert.match(panel, /protocolLimits\?\.tokens\) \} catch/, 'the approval carries the figure shown')
+  assert.match(panel, /protocolLimits\?\.fits === false/, 'a plan over the ceiling cannot be run')
+  const bench = readFileSync(join(here, '../renderer/components/Workbench.tsx'), 'utf8')
+  assert.match(bench, /tokenBudget: plan\.tokenBudget/)
 })

@@ -63,7 +63,7 @@ const HELPERS = ['skills/build/program_io.py', 'skills/build/program_lock.py', '
   // The protocol route (v0.8): skills/run (vendored run_study/fspec/render + the app's launcher and results page)
   // and skills/preview (vendored build_preview + the app's wrapper), kept at the shipped version.
   'skills/run/run_study.py', 'skills/run/fspec.py', 'skills/run/render.py', 'skills/run/VENDORED',
-  'skills/run/app_run.py', 'skills/run/protocol_report.py',
+  'skills/run/app_run.py', 'skills/run/protocol_report.py', 'skills/run/budget.py',
   'skills/preview/build_preview.py', 'skills/preview/preview.css', 'skills/preview/preview.js', 'skills/preview/VENDORED',
   'skills/preview/make_preview.py']
 
@@ -127,4 +127,12 @@ export function trustedCheckFiles(): [string, string][] {
  *  (`hsenv/checks.py`, `VERSION`): the shipped copy, never the project's editable .opencode copy. */
 export function trustedEngineFiles(): [string, string][] {
   return engineFiles().map((rel) => [rel.slice('runtime/hsenv/'.length), files[PREFIX + rel]])
+}
+
+/** What the app runs to measure a protocol run's model budget (protocol-readiness.ts protocolBudget), in the
+ *  sandbox layout run_study.py expects: the engine under hsenv/, the runner and budget.py under skills/run/. */
+export function trustedBudgetFiles(): [string, string][] {
+  const run = ['run_study.py', 'fspec.py', 'render.py', 'budget.py'].map((f) => 'skills/run/' + f)
+  return [...engineFiles().map((rel): [string, string] => ['hsenv/' + rel.slice('runtime/hsenv/'.length), files[PREFIX + rel]]),
+    ...run.filter((rel) => files[PREFIX + rel] !== undefined).map((rel): [string, string] => [rel, files[PREFIX + rel]])]
 }

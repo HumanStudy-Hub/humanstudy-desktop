@@ -1,6 +1,6 @@
 import { NATIVE_TURNS, NATIVE_MUTATIONS, type NativeRequest, type NativeSelection } from '../shared/native'
 import { nativeMessages } from './native-history'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron'
 import { applyCredentials, providers, setKey } from './credentials'
 import { applyAccount, getAccount } from './account'
@@ -32,11 +32,11 @@ import { createThreads, threads } from './threads'
 import { saveProjectText } from './program-save'
 import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
-import { refreshPack, trustedCheckFiles, trustedEngineFiles } from './pack'
+import { refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles } from './pack'
 import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks } from './package-readiness'
-import { protocolReadiness } from './protocol-readiness'
+import { protocolBudget, protocolReadiness } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
 import type { Kernel, KernelEvent } from './kernel-types'
@@ -394,8 +394,10 @@ app.whenReady().then(() => {
     app.getVersion() + ':' + createHash('sha256').update(JSON.stringify(checkFiles)).digest('hex').slice(0, 16))
   // The protocol route: protocol.json checked by the bundled engine (pack/runtime/hsenv), never the project's copy.
   const engine = trustedEngineFiles()
+  const budgetFiles = trustedBudgetFiles()
   configureProtocolChecks(async (project) => protocolReadiness(await readyPython(), engine, project, process.env.HUMANSTUDY_RUNTIME_BIN || ''),
-    app.getVersion() + ':' + createHash('sha256').update(JSON.stringify(engine)).digest('hex').slice(0, 16))
+    app.getVersion() + ':' + createHash('sha256').update(JSON.stringify([engine, budgetFiles])).digest('hex').slice(0, 16),
+    async (project) => protocolBudget(await readyPython(), budgetFiles, project, process.env.HUMANSTUDY_RUNTIME_BIN || ''))
   if (!primaryInstance) return
   applyCredentials()
   try {
@@ -710,7 +712,14 @@ app.whenReady().then(() => {
         // The cap and lifetime follow the approved plan (the same figures the run confirmation showed),
         // rebuilt from the hashed program.json; a forged participant count is refused.
         const limits = await approvedRunLimits(projectDir, text)
-        const relay = await startModelRelay({ project: projectDir, model, key, storage: process.env.HUMANSTUDY_RELAY_DIR!, tokenCap: limits.tokens, expiryMinutes: limits.minutes, onClose: () => { runRelays.delete(id); relayProjects.delete(projectDir!) },
+        // The run capability names what it may run (review 2, S6): the route the approval names, the SHA-256 of
+        // protocol.json as the app reads it now (never a hash typed by the agent), a fresh run id and when it was
+        // approved (a stopped run restarts only under a later approval). run_confined.py
+        // hands them to the run, and skills/run refuses anything else.
+        const route: 'protocol' | 'package' = approved.route === 'protocol' || (approved.route === undefined && approved.protocolHash !== undefined) ? 'protocol' : 'package'
+        const binding = { route, runId: randomUUID(), approvedAt: Date.now(), ...(route === 'protocol' ? { protocolSha256: createHash('sha256').update(await readFile(join(projectDir, 'protocol.json'))).digest('hex') } : {}) }
+        if (route === 'protocol' && binding.protocolSha256 !== approved.protocolHash) throw Error('The study changed after approval. Review the simulation scope again.')
+        const relay = await startModelRelay({ project: projectDir, model, key, storage: process.env.HUMANSTUDY_RELAY_DIR!, tokenCap: limits.tokens, expiryMinutes: limits.minutes, binding, onClose: () => { runRelays.delete(id); relayProjects.delete(projectDir!) },
         upstream: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_HOSTED_BASEURL || 'https://humanstudy-hub.com/api/desktop/v1' : 'https://openrouter.ai/api/v1',
         bypass: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_SERVER_BYPASS : undefined })
         runRelays.set(id, { project: projectDir, close: relay.close })

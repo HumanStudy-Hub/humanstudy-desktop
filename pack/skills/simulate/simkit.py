@@ -188,6 +188,8 @@ class SimRun:
     def participants(self, one: Callable[[str, int, random.Random], dict], trial: int = 0) -> list[dict]:
         if os.environ.get("HUMANSTUDY_RELAY_REQUIRED") == "1":
             raise RuntimeError("Launch the complete run script with run_confined.py.")
+        if os.environ.get("HUMANSTUDY_RUN_ROUTE") == "protocol":
+            raise RuntimeError("This run was approved for protocol.json (the run skill), not for the package.")
         """Run every planned participant (or `trial` per condition), in parallel; returns all sessions.
 
         Each participant gets its own random generator seeded by (seed, condition, index), so a

@@ -81,29 +81,148 @@ def relay_complete(temperature: float):
     return complete
 
 
+class Refused(SystemExit):
+    pass
+
+
+def binding() -> dict:
+    """What the app's run capability allows (run_confined.py sets it from the relay descriptor the app wrote):
+    route, run id and the SHA-256 of protocol.json the app read at approval. Empty without a relay (Linux,
+    Windows): only plan.json's hash is checked there."""
+    import os
+    out = {k: os.environ[v] for k, v in (("route", "HUMANSTUDY_RUN_ROUTE"), ("runId", "HUMANSTUDY_RUN_ID"),
+                                         ("protocolSha256", "HUMANSTUDY_RUN_PROTOCOL_SHA256")) if os.environ.get(v)}
+    if os.environ.get("HUMANSTUDY_RUN_APPROVED_AT", "").isdigit():
+        out["approvedAt"] = int(os.environ["HUMANSTUDY_RUN_APPROVED_AT"]) / 1000   # epoch seconds
+    return out
+
+
+def check_approval(run_dir: Path, project: Path, plan: dict, bound: dict) -> str:
+    """-> the protocol's SHA-256, after checking the plan, the file and the app's binding agree (review 2, S6)."""
+    actual = sha256(project / "protocol.json")
+    if actual != plan.get("protocolSha256"):
+        raise Refused("protocol.json changed after approval: ask the researcher to press Run simulation again")
+    if bound:
+        if bound.get("route") != "protocol":
+            raise Refused("this run was approved for the package, not for protocol.json")
+        if bound.get("protocolSha256") != actual:
+            raise Refused("this run's approval is for another version of protocol.json: ask the researcher to press "
+                          "Run simulation again")
+    return actual
+
+
+def check_not_stopped(run_dir: Path, plan: dict, bound: dict) -> None:
+    """A stopped run starts again only under an approval given after the stop (the app records when it approved),
+    and the restart is recorded in plan.json, never silent (review 2, S7)."""
+    import calendar
+    import time
+    stop = run_dir / "STOP"
+    stopped_at = None
+    if stop.exists():
+        stopped_at = stop.stat().st_mtime
+    try:
+        progress = json.loads((run_dir / "progress.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        progress = {}
+    if progress.get("stage") == "stopped":
+        try:
+            at = calendar.timegm(time.strptime(str(progress.get("updatedAt"))[:19], "%Y-%m-%dT%H:%M:%S"))
+        except ValueError:
+            at = time.time()   # unknown: as if just now, so only a later approval counts
+        stopped_at = max(stopped_at or 0, at)
+    if stopped_at is None:
+        return
+    fresh = bound.get("runId") and bound["runId"] not in (plan.get("runIds") or []) and \
+        isinstance(bound.get("approvedAt"), float) and bound["approvedAt"] > stopped_at
+    if not fresh:
+        raise Refused("the researcher stopped this run: it starts again only after a new Run simulation approval")
+    plan.setdefault("resumedAfterStop", []).append({"runId": bound["runId"], "at": run_study_now(),
+                                                    "stopFile": stop.exists(), "stage": progress.get("stage")})
+    stop.unlink(missing_ok=True)
+    print("resuming a stopped run under a new approval (%s)" % bound["runId"])
+
+
+def run_study_now() -> str:
+    import time
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z"
+
+
+def outcome(run_dir: Path, meta: dict) -> dict:
+    """Valid participants (finished by the protocol, no failed model call) against the plan."""
+    planned = int(meta.get("participants_planned") or 0)
+    valid, failed_calls, cap = 0, 0, False
+    path = run_dir / "operator.jsonl"
+    for line in path.read_text(encoding="utf-8").splitlines() if path.exists() else []:
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        errs = r.get("f_errors") or []
+        failed_calls += len(errs)
+        text = json.dumps(errs) + str(r.get("error") or "")
+        cap = cap or "token cap" in text.lower() or "402" in text
+        if r.get("status") not in (None, "incomplete") and not r.get("error") and not errs:
+            valid += 1
+    return {"planned": planned, "valid": valid, "failed_calls": failed_calls, "token_cap": cap,
+            "complete": planned > 0 and valid >= planned and failed_calls == 0}
+
+
+def write_progress(run_dir: Path, stage: str, message: str) -> None:
+    path = run_dir / "progress.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {"done": 0, "total": 0, "failed": 0, "conditions": []}
+    data.update(stage=stage, message=message[:400], updatedAt=run_study_now(), runner="exited")
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    tmp.replace(path)
+
+
 def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, model: str | None = None) -> dict:
-    """Play the approved plan. `complete` (messages -> text) and `model` replace the app's model client in tests."""
+    """Play the approved plan. `complete` (messages -> text) and `model` replace the app's model client in tests.
+    A run is `done`, with a results page, only when every planned participant finished without a failed model
+    call; otherwise it ends `failed` and any page it writes is labelled partial (review 2, M3)."""
     import run_study
     from render import make_chat_f, render_state
     plan = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
-    if sha256(project / "protocol.json") != plan["protocolSha256"]:
-        raise SystemExit("protocol.json changed after approval: ask the researcher to press Run simulation again")
+    bound = binding()
+    check_approval(run_dir, project, plan, bound)
+    out = run_dir / "trial" if trial else run_dir
+    if not trial:
+        check_not_stopped(run_dir, plan, bound)
+        if bound.get("runId") and bound["runId"] not in (plan.get("runIds") or []):
+            plan.setdefault("runIds", []).append(bound["runId"])
+        (run_dir / "plan.json").write_text(json.dumps(plan, indent=1) + "\n", encoding="utf-8")
     if complete is None:
         from humanstudy_llm import model_name
         complete, model = relay_complete(plan.get("temperature", 1.0)), model_name()
     f = make_chat_f(complete, render=render_state)
+    # retries 0: humanstudy_llm already retries 429/5xx; a call that still fails (a refusal, the token cap) ends
+    # that participant as incomplete instead of being asked again.
     spec = {"kind": "llm", "name": "desktop model", "model": model or "unknown", "renderer": "default",
-            "temperature": plan.get("temperature", 1.0), "retries": 2,
+            "temperature": plan.get("temperature", 1.0), "retries": 0,
             "host": "the desktop app's model relay (humanstudy_llm), passed in-process"}
-    out = run_dir / "trial" if trial else run_dir
     meta = run_study.run(project, spec, n=1 if trial else int(plan["perArm"]), seeds=[1] if trial else plan["seeds"],
                          out=out, host_f=f, arms=plan.get("arms"), quiet=True, baseline=not trial)
-    if trial or meta.get("status") != "done":
-        print(json.dumps({"status": meta.get("status"), "participants": meta.get("participants"),
-                          "calls": meta.get("calls")}, default=str))
+    if meta.get("status") != "done":
+        print(json.dumps({"status": meta.get("status"), "participants": meta.get("participants")}, default=str))
+        return meta
+    result = outcome(out, meta)
+    meta["app"] = {"route": "protocol", "runId": bound.get("runId"), **result}
+    if not result["complete"]:
+        meta["status"] = "partial"
+    (out / "run.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    if trial:
+        print(json.dumps({"status": meta["status"], **result}))
         return meta
     import protocol_report
-    protocol_report.build(run_dir, project)
+    protocol_report.build(run_dir, project, partial=not result["complete"])
+    if not result["complete"]:
+        why = ("the run reached its approved token budget" if result["token_cap"] else
+               "%d model call(s) failed" % result["failed_calls"] if result["failed_calls"] else
+               "some participants did not finish")
+        write_progress(run_dir, "failed", "Partial run: %d of %d planned participants finished; %s. The results page "
+                       "is labelled partial." % (result["valid"], result["planned"], why))
     return meta
 
 

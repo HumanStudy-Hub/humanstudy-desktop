@@ -23,6 +23,18 @@ so in two plain sentences and ask the researcher to press Run simulation again. 
 participants per arm. Model access, sandbox and limits are the simulate skill's "Model access" section: always
 launch through `run_confined.py`, never import the run in an unconfined process, never handle a key.
 
+The app enforces the rest itself:
+- The relay's token budget is `plan.tokenBudget`. The app measured it from protocol.json (one call per page,
+  prompts that grow with every page, every group member) and the researcher approved that figure. Do not try to
+  stretch it.
+- On macOS the run capability is bound to this approval's route, protocol.json version and run id. `run.py`
+  refuses to run under any other approval, or after protocol.json changed.
+- A model call that fails (a refusal, the token budget) ends that participant as incomplete. A run that does not
+  reach every planned participant ends `failed`, with a results page and summary labelled PARTIAL. Report it as
+  partial; never present it as the planned comparison.
+- A stopped run (STOP, or progress `stopped`) starts again only under a new Run simulation approval given after
+  the stop. Never delete STOP yourself.
+
 ## Procedure
 
 ```bash
@@ -35,8 +47,10 @@ python .opencode/skills/simulate/simkit.py start artifacts/simulations/<run>    
    page and the model's raw reply (`note.reply`). A reply that does not parse, or a page the model cannot pass,
    is a finding for the researcher: report it; never change protocol.json or the renderer to steer answers.
 2. **Full run**: check `progress.json` every 20–60 seconds (`sleep 30; cat artifacts/simulations/<run>/progress.json`)
-   until its stage is `done`, `failed` or `stopped`. A failed run resumes when started again (logged answers are
-   replayed, no model call is repeated). `stopped` means the researcher pressed Stop: do not restart.
+   until its stage is `done`, `failed` or `stopped`. `failed` with "Partial run" means some participants did not
+   finish: report the partial page as partial. A run that failed for another reason resumes when started again
+   (logged answers are replayed, no model call is repeated). `stopped` means the researcher pressed Stop: do not
+   restart.
 3. When it is `done`, run.py has written `results.html` (human vs AI per effect, an offline report, not a
    leaderboard; checked by the artifact kit) and `summary.json`. If either is missing, run
    `python .opencode/skills/run/protocol_report.py artifacts/simulations/<run>`.

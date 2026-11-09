@@ -332,3 +332,117 @@ test('skills/preview builds the participant view of the fixture and it passes th
   const again = spawnSync(python311, ['.opencode/artifact-kit/inline.py', 'artifacts/preview.html'], { cwd: proj, encoding: 'utf8' })
   assert.equal(again.status, 0, again.stdout)
 })
+
+// Review 2 (S10): app_run.py, protocol_report.py and the relay binding, on the made-up fixture with a fake model.
+const runFixture = async (perArm = 3) => {
+  const proj = await protocolProject()
+  const run = 'artifacts/simulations/2026-11-09-0200'
+  const r = spawnSync(python311, ['-B', '.opencode/skills/run/app_run.py', 'new', run, '--per-arm', String(perArm), '--protocol-hash', sha(join(proj, 'protocol.json'))], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  return { proj, run }
+}
+// A fake model: answers the question; `fail` makes the n-th call raise (a relay refusal) from then on.
+const play = (proj, run, { env = {}, fail = 0, trial = false } = {}) => spawnSync(python311, ['-B', '-c', `import sys, json; from pathlib import Path
+sys.path.insert(0, '.opencode/skills/run'); import app_run
+calls = [0]
+def complete(messages):
+    calls[0] += 1
+    if ${fail} and calls[0] >= ${fail}:
+        raise RuntimeError('model call failed: HTTP 402 Run token cap reached.')
+    return '{"r1": "o1"}' if 'r1' in messages[-1]['content'] else '{}'
+try:
+    meta = app_run.main_run(Path(sys.argv[1]).resolve(), Path('.').resolve(), trial=${trial ? 'True' : 'False'}, complete=complete, model='stub')
+    print(json.dumps({'status': meta.get('status'), 'app': meta.get('app')}))
+except SystemExit as e:
+    print(json.dumps({'refused': str(e)}))`, run], { cwd: proj, encoding: 'utf8', env: { PATH: process.env.PATH, ...env } })
+const last = (r) => JSON.parse(r.stdout.trim().split('\n').at(-1))
+
+test('review 2 M3: a failed model call makes the run partial: stage failed, page and summary labelled, never done', { skip: !python311 }, async () => {
+  const { proj, run } = await runFixture(3)
+  const r = play(proj, run, { fail: 7 })
+  assert.equal(r.status, 0, r.stderr)
+  const out = last(r)
+  assert.equal(out.status, 'partial')
+  assert.ok(out.app.valid < out.app.planned && out.app.failed_calls > 0 && out.app.token_cap, JSON.stringify(out.app))
+  const progress = JSON.parse(readFileSync(join(proj, run, 'progress.json'), 'utf8'))
+  assert.equal(progress.stage, 'failed')
+  assert.match(progress.message, /Partial run: \d of 6 planned participants finished; the run reached its approved token budget/)
+  const summary = JSON.parse(readFileSync(join(proj, run, 'summary.json'), 'utf8'))
+  assert.deepEqual([summary.outcome, summary.partial], ['not_ready', true])
+  assert.match(summary.paragraph, /^PARTIAL RUN/)
+  const page = readFileSync(join(proj, run, 'results.html'), 'utf8')
+  assert.match(page, /PARTIAL RUN — not the planned n/)
+  assert.equal(JSON.parse(readFileSync(join(proj, run, 'run.json'), 'utf8')).status, 'partial')
+})
+
+test('review 2 S6/S7: the run follows the app binding, and a stopped run needs a fresh approval', { skip: !python311 }, async () => {
+  const { proj, run } = await runFixture(2)
+  const hash = sha(join(proj, 'protocol.json'))
+  const bound = (runId, extra = {}, at = Date.now()) => ({ HUMANSTUDY_RUN_ROUTE: 'protocol', HUMANSTUDY_RUN_ID: runId, HUMANSTUDY_RUN_PROTOCOL_SHA256: hash, HUMANSTUDY_RUN_APPROVED_AT: String(at), ...extra })
+  assert.match(last(play(proj, run, { env: bound('a', { HUMANSTUDY_RUN_ROUTE: 'package' }) })).refused, /approved for the package/)
+  assert.match(last(play(proj, run, { env: bound('a', { HUMANSTUDY_RUN_PROTOCOL_SHA256: 'f'.repeat(64) }) })).refused, /another version of protocol\.json/)
+  writeFileSync(join(proj, run, 'STOP'), 'Stopped by the researcher\n')
+  assert.match(last(play(proj, run, { env: bound('a', {}, Date.now() - 60_000) })).refused, /stopped this run/, 'an approval given before the stop')
+  assert.match(last(play(proj, run)).refused, /stopped this run/, 'no relay binding: never resumed')
+  assert.ok(existsSync(join(proj, run, 'STOP')), 'STOP is never deleted silently')
+  const resumed = last(play(proj, run, { env: bound('b', {}, Date.now() + 1000) }))
+  assert.equal(resumed.status, 'done', JSON.stringify(resumed))
+  const plan = JSON.parse(readFileSync(join(proj, run, 'plan.json'), 'utf8'))
+  assert.deepEqual(plan.runIds, ['b'])
+  assert.equal(plan.resumedAfterStop[0].runId, 'b')
+  writeFileSync(join(proj, run, 'STOP'), 'Stopped by the researcher\n')
+  assert.match(last(play(proj, run, { env: bound('b', {}, Date.now() + 5000) })).refused, /stopped this run/, 'the same approval cannot restart it')
+  // A changed protocol.json is refused whatever the binding says.
+  writeFileSync(join(proj, 'protocol.json'), readFileSync(join(proj, 'protocol.json'), 'utf8') + '\n')
+  assert.match(last(play(proj, run, { env: bound('c') })).refused, /changed after approval/)
+})
+
+test('review 2 S10: run outputs carry no key-like strings; a planted key in the environment appears nowhere', { skip: !python311 }, async () => {
+  const { proj, run } = await runFixture(2)
+  const planted = 'sk-or-v1-' + 'a'.repeat(48)
+  assert.equal(last(play(proj, run, { env: { OPENROUTER_API_KEY: planted } })).status, 'done')
+  const walk = (d) => readdirSync(d).flatMap((n) => (statSync(join(d, n)).isDirectory() ? walk(join(d, n)) : [join(d, n)]))
+  for (const f of walk(join(proj, run))) {
+    const text = readFileSync(f, 'utf8')
+    assert.ok(!text.includes(planted), f)
+    assert.ok(!/\b(sk-[A-Za-z0-9-]{20,}|AIza[0-9A-Za-z_-]{20,}|ghp_[A-Za-z0-9]{20,}|Bearer [A-Za-z0-9._-]{20,})/.test(text), f)
+  }
+})
+
+test('review 2 S8: the direction is compared for like metrics only; otherwise "not compared (different metric)"', { skip: !python311 }, async () => {
+  const proj = await protocolProject()
+  const r = spawnSync(python311, ['-B', '-c', `import sys, json; sys.path.insert(0, '.opencode/skills/run'); import protocol_report as P
+e = {"id": "e", "contrast": {"treatment": "t", "reference": "r"}}
+ai = {"effects": [], "per_seed": {"1": [{"effectId": "e", "status": "computed", "metric": "risk_difference", "value": -0.2, "cells": {}}]}, "pooled": None}
+out = {}
+for name, rep in [("cells", {"cells": {"t": {"k": 7, "n": 10}, "r": {"k": 3, "n": 10}}}),
+                  ("odds_ratio", {"value": 2.5, "metric": "odds_ratio"}),
+                  ("no_metric", {"value": 0.3}),
+                  ("estimate", {"estimates": [{"metric": "risk_difference", "value": 0.1}]})]:
+    row = P.rows({"analysis": {"effects": [dict(e, reported=rep)]}}, ai)[0]
+    out[name] = [row["same_direction"], row["not_compared"], row["human_metric"]]
+cramer = P.rows({"analysis": {"effects": [dict(e, reported={"value": 0.3, "metric": "cramers_v"})]}}, {"per_seed": {"1": [{"effectId": "e", "status": "computed", "metric": "cramers_v", "value": 0.2}]}})[0]
+out["unsigned"] = [cramer["same_direction"], cramer["not_compared"], cramer["human_metric"]]
+print(json.dumps(out))`], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  assert.deepEqual(JSON.parse(r.stdout), {
+    cells: [false, null, 'risk_difference'], odds_ratio: [null, 'different metric', 'odds_ratio'],
+    no_metric: [null, 'different metric', null], estimate: [false, null, 'risk_difference'], unsigned: [null, 'different metric', 'cramers_v'],
+  })
+})
+
+test('review 2: sync_hsenv.sh refuses a file naming an upstream study folder (any case), and refuses without that folder', () => {
+  const up = mkdtempSync(join(tmpdir(), 'sandbox-'))
+  mkdirSync(join(up, 'skills/run'), { recursive: true })
+  mkdirSync(join(up, 'hsenv/studies/manylabs9'), { recursive: true })
+  for (const f of ['run_study.py', 'fspec.py', 'render.py']) writeFileSync(join(up, 'skills/run', f), '# clean\n')
+  writeFileSync(join(up, 'skills/run/fspec.py'), '# legacy exemption for ManyLabs9\n')
+  const script = join(packDir, '../scripts/sync_hsenv.sh')
+  let r = spawnSync('bash', [script, 'run', join(up, 'skills')], { encoding: 'utf8' })
+  assert.notEqual(r.status, 0)
+  assert.match(r.stderr, /fspec\.py:1: study folder name ManyLabs9/)
+  r = spawnSync('bash', [script, 'run', join(up, 'skills')], { encoding: 'utf8', env: { ...process.env, STUDIES_DIR: join(up, 'nowhere') } })
+  assert.notEqual(r.status, 0)
+  assert.match(r.stderr, /no upstream studies folder/)
+  assert.equal(readFileSync(join(packDir, 'skills/run/fspec.py'), 'utf8').includes('ManyLabs9'), false, 'nothing was copied')
+})

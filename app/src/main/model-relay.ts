@@ -36,6 +36,9 @@ export interface RelayOptions {
   tokenCap?: number
   /** Lifetime of the run capability in minutes; default 30. */
   expiryMinutes?: number
+  /** What this capability may run (review 2, S6), written into the descriptor: the approval's route, the
+   *  SHA-256 of protocol.json the app read at approval (protocol route) and a fresh run id. */
+  binding?: { route: 'protocol' | 'package'; runId: string; approvedAt: number; protocolSha256?: string }
 }
 export const relayDescriptor = (storage: string, project: string) => join(storage, createHash('sha256').update(project).digest('hex') + '.json')
 
@@ -115,7 +118,8 @@ export async function startModelRelay(options: RelayOptions) {
   const address = server.address()
   if (!address || typeof address === 'string') throw Error('Run relay unavailable.')
   // expiresAt (ms since epoch) lets the launcher give the run script exactly the capability's remaining lifetime.
-  const config = { baseURL: `http://127.0.0.1:${address.port}/v1`, token, model: options.model, tokenCap: cap, expiresAt: Date.now() + minutes * 60_000 }
+  const config = { baseURL: `http://127.0.0.1:${address.port}/v1`, token, model: options.model, tokenCap: cap, expiresAt: Date.now() + minutes * 60_000,
+    ...(options.binding ? { route: options.binding.route, runId: options.binding.runId, approvedAt: options.binding.approvedAt, ...(options.binding.protocolSha256 ? { protocolSha256: options.binding.protocolSha256 } : {}) } : {}) }
   try { await unlink(path).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error }); await writeFile(path, JSON.stringify(config), { mode: 0o600, flag: 'wx' }) }
   catch (error) { server.close(); throw error }
   const expiry = setTimeout(() => void finish(), minutes * 60_000)

@@ -27,19 +27,28 @@ def _num(v) -> str:
     return f"{v:.3f}".rstrip("0").rstrip(".") if isinstance(v, float) else str(v)
 
 
-def human_side(e: dict) -> tuple[float | None, str]:
-    """(the paper's treatment-minus-reference value, how it was read) from the effect's printed numbers."""
+UNSIGNED = {"phi", "cramers_v"}   # no direction to compare
+
+
+def human_side(e: dict, metric: str | None = None) -> tuple[float | None, str, str | None]:
+    """(the paper's value, how it was read, its metric) from the effect's printed numbers: printed cells give a
+    risk or mean difference (treatment minus reference); else a printed estimate in the AI side's metric; else
+    the printed value with its stated metric (None when it states none)."""
     rep = e.get("reported") or {}
     cells = rep.get("cells") or {}
     t, r = (e.get("contrast") or {}).get("treatment"), (e.get("contrast") or {}).get("reference")
     ct, cr = (cells.get(t) or {}) if t else {}, (cells.get(r) or {}) if r else {}
     if all(isinstance(c.get(k), (int, float)) for c in (ct, cr) for k in ("k", "n")) and ct["n"] and cr["n"]:
-        return ct["k"] / ct["n"] - cr["k"] / cr["n"], f"{t} {ct['k']}/{ct['n']} vs {r} {cr['k']}/{cr['n']}"
+        return ct["k"] / ct["n"] - cr["k"] / cr["n"], f"{t} {ct['k']}/{ct['n']} vs {r} {cr['k']}/{cr['n']}", "risk_difference"
     if all(isinstance(c.get("mean"), (int, float)) for c in (ct, cr)):
-        return ct["mean"] - cr["mean"], f"{t} mean {_num(ct['mean'])} vs {r} mean {_num(cr['mean'])}"
+        return ct["mean"] - cr["mean"], f"{t} mean {_num(ct['mean'])} vs {r} mean {_num(cr['mean'])}", "mean_difference"
+    for est in rep.get("estimates") or []:
+        if isinstance(est, dict) and est.get("metric") == metric and isinstance(est.get("value"), (int, float)):
+            return float(est["value"]), f"printed {metric}", metric
     if isinstance(rep.get("value"), (int, float)):
-        return float(rep["value"]), "printed value"
-    return None, "the paper prints no comparable number"
+        m = rep.get("metric") if isinstance(rep.get("metric"), str) else None
+        return float(rep["value"]), f"printed {m or 'value (metric not stated)'}", m
+    return None, "the paper prints no comparable number", None
 
 
 def ai_side(block: dict | None) -> tuple[float | None, str]:
@@ -65,13 +74,18 @@ def rows(protocol: dict, effects: dict) -> list[dict]:
     blocks = {b.get("effectId"): b for b in pooled or []}
     out = []
     for e in defs:
-        h, hwhy = human_side(e)
-        a, awhy = ai_side(blocks.get(e.get("id")))
+        block = blocks.get(e.get("id")) or {}
+        a, awhy = ai_side(block)
+        h, hwhy, hmetric = human_side(e, block.get("metric"))
         directional = e.get("direction_claimed") is not False and not e.get("suspect") and not e.get("direction_unresolved")
-        same = None if h is None or a is None or not directional or h == 0 else (a > 0) == (h > 0) and a != 0
-        out.append({"effect": e.get("id"), "metric": (blocks.get(e.get("id")) or {}).get("metric") or
-                    (e.get("compute") or {}).get("op"), "human": h, "human_from": hwhy, "ai": a, "ai_from": awhy,
-                    "same_direction": same, "page": ((e.get("reported") or {}).get("cite") or {}).get("page")})
+        # Like with like only (review 2, S8): an odds ratio or a d is never read by sign against a difference.
+        comparable = hmetric is not None and hmetric == block.get("metric") and hmetric not in UNSIGNED
+        same = None if h is None or a is None or not directional or not comparable or h == 0 else (a > 0) == (h > 0) and a != 0
+        why = None if same is not None else ("different metric" if h is not None and a is not None and not comparable else None)
+        out.append({"effect": e.get("id"), "metric": block.get("metric") or (e.get("compute") or {}).get("op"),
+                    "human_metric": hmetric, "human": h, "human_from": hwhy, "ai": a, "ai_from": awhy,
+                    "same_direction": same, "not_compared": why,
+                    "page": ((e.get("reported") or {}).get("cite") or {}).get("page")})
     return out
 
 
@@ -82,7 +96,7 @@ def outcome(table: list[dict]) -> str:
     return "replicated" if all(judged) else "partly" if any(judged) else "not_replicated"
 
 
-def paragraph(table: list[dict], run: dict) -> str:
+def paragraph(table: list[dict], run: dict, partial: bool = False) -> str:
     p = run.get("participants") or {}
     judged = [r for r in table if r["same_direction"] is not None]
     same = sum(1 for r in judged if r["same_direction"])
@@ -94,14 +108,19 @@ def paragraph(table: list[dict], run: dict) -> str:
         s += "No effect could be compared in direction with the paper. "
     s += ("This is a simulation with AI participants, not human data, and an offline comparison with the paper's "
           "printed numbers, not a leaderboard.")
+    if partial:
+        app = run.get("app") or {}
+        s = (f"PARTIAL RUN: only {app.get('valid', p.get('completed', 0))} of {app.get('planned', '?')} planned AI "
+             f"participants finished without a failed model call, so these numbers are not the planned comparison. ") + s
     return s
 
 
-def page(protocol: dict, run: dict, table: list[dict], rewards: dict | None) -> str:
+def page(protocol: dict, run: dict, table: list[dict], rewards: dict | None, partial: bool = False) -> str:
     title = (protocol.get("meta") or {}).get("title") or protocol.get("id") or "Protocol run"
     trs = []
     for r in table:
-        mark = ("not compared" if r["same_direction"] is None else "same direction" if r["same_direction"]
+        mark = (("not compared (%s)" % r["not_compared"] if r["not_compared"] else "not compared")
+                if r["same_direction"] is None else "same direction" if r["same_direction"]
                 else "no difference" if r["ai"] == 0 else "opposite direction")
         page_ = f' data-page="{r["page"]}"' if isinstance(r["page"], int) else ""
         trs.append(
@@ -134,9 +153,9 @@ def page(protocol: dict, run: dict, table: list[dict], rewards: dict | None) -> 
 </head>
 <body>
 <div class="hs-page">
-<div class="hs-banner">Simulation — not human data · {html.escape(REPORT_SCOPE)}</div>
+<div class="hs-banner">Simulation — not human data · {html.escape(REPORT_SCOPE)}{' · PARTIAL RUN — not the planned n' if partial else ''}</div>
 <h1>{html.escape(title)}</h1>
-<p class="hs-sub">{html.escape(paragraph(table, run))}</p>
+<p class="hs-sub">{html.escape(paragraph(table, run, partial))}</p>
 <div class="hs-card">
 <table>
 <thead><tr><th>Effect</th><th>People (paper, printed)</th><th>AI participants (this run)</th><th>Direction</th></tr></thead>
@@ -155,7 +174,8 @@ it). The people column is the paper's printed numbers; the AI column is computed
 """
 
 
-def build(run_dir: Path, project: Path) -> dict:
+def build(run_dir: Path, project: Path, partial: bool | None = None) -> dict:
+    """partial: None reads run.json (status "partial" from app_run.py)."""
     run_dir, project = Path(run_dir), Path(project)
     run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
     raw = (project / "protocol.json").read_bytes()
@@ -166,15 +186,18 @@ def build(run_dir: Path, project: Path) -> dict:
     effects = json.loads((run_dir / "effects.json").read_text(encoding="utf-8"))
     rewards = json.loads((run_dir / "rewards.json").read_text(encoding="utf-8")) if (run_dir / "rewards.json").is_file() else None
     table = rows(protocol, effects)
+    if partial is None:
+        partial = run.get("status") == "partial"
     kit = project / ".opencode" / "artifact-kit"
     sys.path.insert(0, str(kit))
     import inline as kit_inline
-    out = kit_inline.inline(page(protocol, run, table, rewards), None, (protocol, sha))
+    out = kit_inline.inline(page(protocol, run, table, rewards, partial), None, (protocol, sha))
     problems, _ = kit_inline.check(out, None, protocol)
     if problems:
         raise SystemExit("results page failed the artifact checks: " + "; ".join(problems))
     (run_dir / "results.html").write_text(out, encoding="utf-8")
-    summary = {"outcome": outcome(table), "paragraph": paragraph(table, run), "model": (run.get("f") or {}).get("model"),
+    summary = {"outcome": "not_ready" if partial else outcome(table), "paragraph": paragraph(table, run, partial),
+               "partial": partial, "model": (run.get("f") or {}).get("model"),
                "perCondition": max((run.get("n_per_arm") or {0: 0}).values()), "calls": run.get("calls", 0),
                "route": "protocol", "scope": REPORT_SCOPE}
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")

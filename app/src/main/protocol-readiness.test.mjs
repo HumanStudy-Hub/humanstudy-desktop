@@ -108,3 +108,38 @@ test('review 1 S1: an expression too large to check stops at the CPU or memory b
   assert.deepEqual(await R.protocolReadiness(python, ENGINE, fixture(), '', 60_000, { cpuSeconds: 30, memoryBytes: 1024 ** 3 }), [], 'a sound protocol passes under the bounds')
   assert.match(R.runner(), /RLIMIT_CPU", 120\).*RLIMIT_AS", 2147483648\)/s)
 })
+
+const packRoot = join(here, '../../../pack')
+const BUDGET_FILES = [
+  ...ENGINE.map(([rel, text]) => ['hsenv/' + rel, text]),
+  ...['run_study.py', 'fspec.py', 'render.py', 'budget.py'].map((f) => ['skills/run/' + f, readFileSync(join(packRoot, 'skills/run', f), 'utf8')]),
+]
+
+test('review 2 M3: the budget line is parsed strictly; anything malformed is an error, never a small budget', () => {
+  const b = R.parseBudget('noise\n{"arms": {"a": {"group_size": 4, "calls": 30, "tokens_per_member": 90000}}, "output_tokens": 512}')
+  assert.deepEqual(b, { arms: { a: { group_size: 4, calls: 30, tokens_per_member: 90000 } }, output_tokens: 512 })
+  for (const bad of ['', '{}', '{"arms": {}}', '{"arms": {"a": {"group_size": 0, "calls": 1, "tokens_per_member": 1}}}',
+    '{"arms": {"a": {"group_size": 1, "calls": 1.5, "tokens_per_member": 1}}}', '{"arms": {"a": {"group_size": 1, "calls": 1}}}'])
+    assert.throws(() => R.parseBudget(bad), bad)
+})
+
+test('review 2 M3: the budget is measured from the protocol with the bundled runner, confined', { skip: !python }, async () => {
+  assert.deepEqual(await R.protocolBudget(null, BUDGET_FILES, fixture(), ''), [R.ENGINE_MISSING])
+  assert.deepEqual(await R.protocolBudget(python, ENGINE, fixture(), ''), [R.ENGINE_FAILED], 'no runner, no budget')
+  const b = await R.protocolBudget(python, BUDGET_FILES, fixture(), '')
+  assert.ok(!Array.isArray(b), JSON.stringify(b))
+  assert.deepEqual(Object.keys(b.arms).sort(), ['control', 'treatment'])
+  for (const a of Object.values(b.arms)) {
+    assert.equal(a.group_size, 1)
+    assert.ok(a.calls >= 2, 'two pages, with the margin')
+    assert.ok(a.tokens_per_member > 2 * (512 + 512), 'every call reserves the output and message overhead')
+  }
+  // More pages, more tokens: a third page that shows the earlier ones again grows every later prompt.
+  const longer = fixture()
+  const p = JSON.parse(readFileSync(join(longer, 'protocol.json'), 'utf8'))
+  p.stages.q2 = { responses: [{ id: 'again', kind: 'choice', prompt: 'And now?', options: [{ code: 'a', label: 'Option A' }, { code: 'b', label: 'Option B' }] }] }
+  p.flow.seq.push({ stage: 'q2' })
+  writeFileSync(join(longer, 'protocol.json'), JSON.stringify(p))
+  const b2 = await R.protocolBudget(python, BUDGET_FILES, longer, '')
+  assert.ok(b2.arms.control.tokens_per_member > b.arms.control.tokens_per_member)
+})

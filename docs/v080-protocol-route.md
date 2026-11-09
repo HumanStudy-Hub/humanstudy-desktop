@@ -8,7 +8,9 @@ One protocol across all platforms. A study's runnable form is now `protocol.json
 **Vendored engine.** `pack/runtime/hsenv/hsenv/{__init__,engine,expr,checks,effects_core}.py` are exact copies of
 the sandbox engine. `pack/runtime/hsenv/VERSION` records a source label (no local paths), the date and the SHA-256
 of each file. Refresh them with `scripts/sync_hsenv.sh <path to hsenv/hsenv> [label]` and never edit them by hand.
-The script refuses an engine that carries study-specific data (non-empty `LEGACY_*` tables or study ids). The copy
+The script refuses study-specific data (protocols are private): non-empty `LEGACY_*` tables, ids shaped like
+author2024topic, the name of any folder in the upstream `studies/` (read at sync time, case-insensitive; no folder,
+no sync) and local home paths. The copy
 vendored here still has such data (review 1, M1); it is being removed upstream, and a re-sync will replace it. `pack.ts` installs the engine into `<project>/.opencode/hsenv/` and keeps it at the
 shipped version on refresh, like the other app-owned helpers. The engine is stdlib-only; `checks.py` needs Python
 3.11+, and the app bundles CPython 3.12. `rewards.py`, `score.py` and `evaldata.py` are not vendored yet, because
@@ -72,7 +74,41 @@ The app adds two files of its own:
 f is `make_chat_f` over the app's model client (`humanstudy_llm.chat`, so keys stay in the relay), with the
 default renderer: one fresh call per page, JSON answers, text only. `run.json` records the model, the renderer and
 the protocol's SHA-256. `progress.json` follows the simkit conventions, so the Simulation tab shows a protocol run
-like a package run. Runs resume and STOP works. `records.jsonl` stands in for `sessions.jsonl`.
+like a package run. `records.jsonl` stands in for `sessions.jsonl`.
+
+**Budget (review 2, M3).** The package allowance (40,000 tokens per participant) does not fit a protocol: there is
+one call per page, and each prompt carries every earlier page and answer.
+- When protocol.json passes its checks, the app measures the run's budget with `skills/run/budget.py`. It runs
+  confined, from the app's own copy, like the checks. It plays three random+gates participants per arm through
+  run_study and counts what the default renderer would send: bytes + 256 per message + 512 output per call. It
+  keeps the largest member per arm, adds a 1.5x margin and records group sizes.
+  - The fixture needs about 4,700 tokens per participant, a 33-page survey about 180,000, and a 4-person game
+    about 2,000,000 per member.
+- `protocolRunLimits` (shared) turns the budget into the relay's cap: per arm × group size × tokens per member,
+  plus a one-per-arm trial. It is capped by the hard ceiling of 16,000,000. Minutes come from the calls.
+- The Simulation tab shows the figure ("Model budget") and sends it as `plan.tokenBudget`. The main process
+  recomputes it and refuses any other number, or a plan over the ceiling.
+- The run uses `retries` 0 (humanstudy_llm already retries 429/5xx), so a call that still fails ends that
+  participant as incomplete.
+- `app_run` marks the run `partial` unless every planned participant finished without a failed call. Progress
+  becomes `failed` with "Partial run: k of n …". The page carries "PARTIAL RUN — not the planned n" and
+  summary.json says `not_ready`.
+
+**Binding and stop (S6, S7).** The relay descriptor the app writes carries the approval's `route`, the SHA-256 of
+protocol.json as the app read it at approval, a fresh `runId` and `approvedAt`. run_confined.py hands them to the
+run:
+- `app_run` refuses a package-route capability or another protocol version;
+- simkit refuses a protocol-route capability;
+- a stopped run (STOP or progress `stopped`) restarts only under an approval given after the stop, recorded in
+  `plan.json.resumedAfterStop`. STOP is never deleted otherwise.
+
+On Linux and Windows there is no relay. There, only plan.json's hash and STOP are checked: a stopped run is never
+resumed.
+
+**Like with like (S8).** The results page compares directions only when the paper's metric is the engine's metric:
+cells give a risk or mean difference, then an estimate in the same metric, then a printed value with its stated
+metric. Unsigned metrics (phi, Cramér's V) are not compared by direction. Anything else shows
+"not compared (different metric)".
 
 When `hsenv.evaldata`/`rewards`/`score` are vendored (the next engine re-sync), run_study also writes
 `rewards.json`, and the page lists it.
