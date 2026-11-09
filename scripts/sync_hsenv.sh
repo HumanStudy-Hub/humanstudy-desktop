@@ -47,7 +47,7 @@ short_rx = re.compile(r"(?<![A-Za-z])(" + "|".join(map(re.escape, [x for x in su
 #   getZorbel, ZorbelItems, IDZorbel   the capitalised surname not followed by a lowercase letter
 #   zorbelScore                        the lowercase surname followed by an uppercase letter
 #   ZORBELItems, ID_ZORBEL             the uppercase surname on a word start, not followed by a lowercase letter
-#                                      (so a surname inside an upper word, HALL in SHALL, is not one)
+#                                      (so a surname inside a longer upper-case word is not one)
 _long = [x for x in surnames if len(x) >= 4]
 camel_rx = re.compile("|".join([r"(" + "|".join(map(re.escape, [x.capitalize() for x in _long])) + r")(?![a-z])",
                                  r"(?<![A-Za-z])(" + "|".join(map(re.escape, _long)) + r")(?=[A-Z])",
