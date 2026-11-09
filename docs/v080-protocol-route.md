@@ -92,9 +92,9 @@ or with `--protocol`:
 - a participant preview keeps its own styles and script, so the kit is not injected;
 - the offline rules are unchanged.
 
-`build_preview.py` is not vendored yet. Upstream line 497 hard-codes an absolute local path to the kit, and the
-sync refuses local paths. Its test is skipped until a re-sync. With the upstream files copied in by hand, that test
-passes locally.
+`build_preview.py` finishes the page through the same step on both paths, the sandbox CLI and `make_preview.py`:
+`finish()` embeds the protocol block and runs the kit's protocol-mode check. It finds the kit via
+`HS_ARTIFACT_KIT` or a sibling `artifact-kit/`, and falls back to the kit's offline check with an older kit.
 
 **Build progress / results.** `buildPhase` maps writes to `protocol.json`, runs of `build_protocol.py` and runs of
 `hsenv.checks` to the "Make it runnable" phase. `checkResult` reads the top-level `"PASS": true|false` line of an
@@ -113,7 +113,7 @@ passes locally.
   - a protocol run with a stub f end to end in an installed project (trial, full run, records, effects, results
     page passing the kit checks, summary, no arm in records);
   - inline.py's protocol mode;
-  - the preview build (skipped until vendored).
+  - the preview build of the fixture, checked in protocol mode.
 - `shared/simulation-run.test.mjs`: records.jsonl counts as a run's participant data.
 - `paper-build` and `ux` tests: the new regexes.
 
@@ -122,7 +122,7 @@ passes locally.
 1. **Protocol-only projects in the UI.** The Simulation tab still needs `program.json` (study, scope). A project
    with only protocol.json + study.json cannot open the tab. The main process and skills/run already handle it.
 2. **Engine re-sync.** Vendor `evaldata`/`rewards`/`score` with the next engine round (rewards on the results
-   page). Re-sync `skills/preview` once its local path is relative.
+   page).
 3. **MCP export.** Expose `protocol.json` + engine through the agent-package MCP server (`skills/export/agent`), so
    other platforms run the same protocol.
 4. **Build skill.** Teach `skills/build` to write `protocol.json` and `sourcetext/` and run `hsenv.checks`. The

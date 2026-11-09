@@ -235,9 +235,16 @@ test('skills/run and the engine are installed where run_study.py looks for them 
   for (const rel of ['.opencode/skills/run/run_study.py', '.opencode/skills/run/app_run.py', '.opencode/skills/run/protocol_report.py',
     '.opencode/skills/run/SKILL.md', '.opencode/hsenv/hsenv/engine.py', '.opencode/skills/preview/make_preview.py'])
     assert.ok(existsSync(join(proj, rel)), rel)
-  const vendored = readFileSync(join(packDir, 'skills/run/VENDORED'), 'utf8')
-  assert.ok(!/\/Users\/|\/home\//.test(vendored))
-  for (const [, hash, f] of vendored.matchAll(/^([0-9a-f]{64}) {2}(\S+)$/gm)) assert.equal(sha(join(packDir, 'skills/run', f)), hash, f)
+  for (const skill of ['run', 'preview']) {
+    const vendored = readFileSync(join(packDir, 'skills', skill, 'VENDORED'), 'utf8')
+    assert.ok(!/\/Users\/|\/home\//.test(vendored))
+    const listed = [...vendored.matchAll(/^([0-9a-f]{64}) {2}(\S+)$/gm)]
+    assert.ok(listed.length >= 3, skill)
+    for (const [, hash, f] of listed) {
+      assert.equal(sha(join(packDir, 'skills', skill, f)), hash, `${skill}/${f} matches VENDORED (run scripts/sync_hsenv.sh)`)
+      assert.ok(!/\/Users\/|\/home\//.test(readFileSync(join(packDir, 'skills', skill, f), 'utf8')), `${skill}/${f}: no local paths`)
+    }
+  }
 })
 
 test('a protocol run with a stub f ends to end: records, effects, a results page that passes the kit checks, summary', { skip: !python311 }, async () => {
@@ -316,11 +323,12 @@ test('inline.py checks a protocol artifact against protocol.json: a participant 
 })
 
 const previewVendored = existsSync(join(packDir, 'skills/preview/build_preview.py'))
-test('skills/preview builds the participant view of the fixture and it passes the kit checks', { skip: !python311 ? 'needs Python 3.11+' : !previewVendored ? 'build_preview.py is not vendored yet (sync_hsenv.sh refuses its local path)' : false }, async () => {
+test('skills/preview builds the participant view of the fixture and it passes the kit checks', { skip: !python311 ? 'needs Python 3.11+' : !previewVendored }, async () => {
   const proj = await protocolProject()
   const r = spawnSync(python311, ['-B', '.opencode/skills/preview/make_preview.py', '--out', 'artifacts/preview.html'], { cwd: proj, encoding: 'utf8' })
   assert.equal(r.status, 0, r.stdout + r.stderr)
   assert.match(r.stdout, /^PASS /m)
+  assert.match(readFileSync(join(proj, 'artifacts/preview.html'), 'utf8'), /id="hs-protocol" data-hs-kit="protocol">\{"id": "fixture-mini"/)
   const again = spawnSync(python311, ['.opencode/artifact-kit/inline.py', 'artifacts/preview.html'], { cwd: proj, encoding: 'utf8' })
   assert.equal(again.status, 0, again.stdout)
 })

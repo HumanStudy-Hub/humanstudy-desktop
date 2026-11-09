@@ -12,8 +12,6 @@ holds the protocol's screen text: it stays in the project (never published or at
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import sys
 from pathlib import Path
 
@@ -22,14 +20,11 @@ HERE = Path(__file__).resolve().parent
 
 def make(project: Path, out: Path, arms=None, seed: int = 1, tries=None, max_image_kb: int = 1500) -> list[str]:
     sys.path.insert(0, str(HERE))
-    import build_preview   # vendored; finds the engine in .opencode/hsenv
-    raw = (project / "protocol.json").read_bytes()
-    protocol = (json.loads(raw.decode("utf-8")), hashlib.sha256(raw).hexdigest())
+    import build_preview   # vendored; finds the engine in .opencode/hsenv and the kit in .opencode/artifact-kit
     data = build_preview.build(str(project.resolve()), arms, seed, tries, max_image_kb)
-    sys.path.insert(0, str(project / ".opencode" / "artifact-kit"))
-    import inline as kit_inline
-    text = kit_inline.inline(build_preview.page(data), None, protocol)
-    problems, _ = kit_inline.check(text, None, protocol[0])
+    # The same finishing step as the sandbox CLI: the protocol's identity block, then the kit's protocol-mode check.
+    text, problems = build_preview.finish(build_preview.page(data), project / "protocol.json",
+                                          build_preview.kit_module() or _project_kit(project))
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     for arm in data["arms"]:
@@ -38,6 +33,12 @@ def make(project: Path, out: Path, arms=None, seed: int = 1, tries=None, max_ima
     for x in data.get("engine_problems") or []:
         print("  engine problem: " + x)
     return problems
+
+
+def _project_kit(project: Path):
+    sys.path.insert(0, str(project / ".opencode" / "artifact-kit"))
+    import inline
+    return inline
 
 
 def main(argv=None) -> int:
