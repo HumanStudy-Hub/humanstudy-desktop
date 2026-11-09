@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { realpath, stat } from 'node:fs/promises'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, sep } from 'node:path'
 
 export interface ProtocolRunPlan { perArm: number; arms: string[] | null; seeds: number[]; temperature: number }
@@ -76,6 +76,7 @@ export async function launchProtocolRun(o: {
     await mkdir(dirname(path), { recursive: true })
     await writeFile(path, content, 'utf8')
   }
+  await writeFile(join(o.codeDir, '.run.json'), JSON.stringify({ runDir: o.runDir, startedAt: Date.now() }))   // for the sweep
   await mkdir(dirname(o.runDir), { recursive: true })
   await checkInside(o.project, o.runDir)
   await mkdir(o.runDir)
@@ -106,4 +107,24 @@ export async function launchProtocolRun(o: {
   child.once('exit', (code) => void end(code))
   child.once('error', () => void end(null))
   return child
+}
+
+/** Remove per-run code copies a quit or a crash left behind (review 6, S6): a copy whose run has a final stage, whose
+ *  run folder is gone, or that is older than two days. A run still going (a detached run that outlived the app on
+ *  Linux) keeps its copy until it ends. */
+export async function sweepRunCopies(root: string, now = Date.now()): Promise<string[]> {
+  const removed: string[] = []
+  for (const name of await readdir(root).catch(() => [] as string[])) {
+    const dir = join(root, name)
+    let stale = true
+    try {
+      const marker = JSON.parse(await readFile(join(dir, '.run.json'), 'utf8'))
+      const fresh = typeof marker.startedAt === 'number' && now - marker.startedAt < 2 * 24 * 3600_000
+      const progress = await readFile(join(String(marker.runDir), 'progress.json'), 'utf8').then((t) => JSON.parse(t), () => null)
+      const gone = !existsSync(String(marker.runDir))
+      stale = !fresh || gone || TERMINAL.has(String(progress?.stage))
+    } catch { /* no marker: an interrupted copy */ }
+    if (stale) { await rm(dir, { recursive: true, force: true }).catch(() => undefined); removed.push(name) }
+  }
+  return removed
 }

@@ -41,7 +41,7 @@ import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
 import { closeProjectRelays, isRunStop } from './run-stop'
 import { RunRegistry } from './run-registry'
-import { launchProtocolRun, newRunFolder, type Binding as ProtocolBinding } from './protocol-run'
+import { launchProtocolRun, newRunFolder, sweepRunCopies, type Binding as ProtocolBinding } from './protocol-run'
 import type { Kernel, KernelEvent } from './kernel-types'
 import { actionRef } from '../shared/research-operations'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
@@ -389,6 +389,8 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(() => {
+  // Per-run code copies of protocol runs that a quit or a crash left behind.
+  void sweepRunCopies(join(app.getPath('userData'), 'protocol-runs'))
   process.env.HUMANSTUDY_RELAY_DIR = join(app.getPath('userData'), 'run-relays')
   // `ready` needs every build check (pack/skills/build/check_readiness.py), run from the app's own copy.
   const checkFiles = trustedCheckFiles()

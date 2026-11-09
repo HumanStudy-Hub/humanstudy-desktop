@@ -364,10 +364,12 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
         run_study.baseline_cached, run_study.Progress.stage = original_cache, original_stage
     # The protocol the engine actually loaded must be the approved one: run_study reads protocol.json again after
     # check_approval hashed it (review 5, S3).
-    if meta.get("protocol_sha256") != plan.get("protocolSha256"):
-        write_progress(out, "failed", "protocol.json changed while the run started; nothing from this run is "
-                       "reported. Press Run simulation again.")
-        raise Refused("protocol.json changed while the run started")
+    if meta.get("protocol_sha256") != plan.get("protocolSha256") or (bound and meta.get("variant") is not None):
+        # a variant.json that appeared after check_approval leaves protocol.json's hash unchanged (review 6, S2)
+        write_progress(out, "failed", "protocol.json changed, or a variant appeared, while the run started; nothing "
+                       "from this run is reported. Press Run simulation again.")
+        raise Refused("protocol.json changed while the run started" if meta.get("protocol_sha256") != plan.get("protocolSha256")
+                      else "a variant (variant.json) appeared while the run started")
     if meta.get("status") == "stopped" and not trial:
         return stopped(run_dir, meta, bound)
     if meta.get("status") != "done":

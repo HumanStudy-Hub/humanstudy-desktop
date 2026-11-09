@@ -679,6 +679,10 @@ test('review 4 S3: the sync guard refuses study surnames and id shapes anywhere 
     ['{"description": "after Zorbel et al."}\n', /study surname Zorbel/],             // JSON text
     ['def getZorbel(): pass\n', /study surname Zorbel/],                              // CamelCase, after
     ['ZorbelItems = []\n', /study surname Zorbel/],                                   // CamelCase, before
+    ['zorbelScore = 0\n', /study surname zorbel/],                                    // lowerCamel (review 6 S1)
+    ['zorbelData = {}\n', /study surname zorbel/],
+    ['IDZorbel = 1\n', /study surname Zorbel/],                                       // ID<Surname>
+    ['ZORBELItems = []\n', /study surname ZORBEL/],                                   // <SURNAME>Items
   ]) {
     const r = guard(text)
     assert.notEqual(r.status, 0, text)
@@ -761,4 +765,24 @@ except SystemExit as e:
   const { proj: p2, run: r2 } = { proj, run: 'artifacts/simulations/other' }
   mkdirSync(join(p2, r2), { recursive: true }); writeFileSync(join(p2, r2, 'plan.json'), JSON.stringify(plan))
   assert.match(last(play(p2, r2, { env: bound })).refused, /variant/)
+})
+
+test('review 6 S2: a variant that appears after the approval check ends the run failed, unreported', { skip: !python311 }, async () => {
+  const { proj, run } = await runFixture(2)
+  const hash = sha(join(proj, 'protocol.json'))
+  const bound = { HUMANSTUDY_RUN_ROUTE: 'protocol', HUMANSTUDY_RUN_ID: 'v', HUMANSTUDY_RUN_PROTOCOL_SHA256: hash, HUMANSTUDY_RUN_APPROVED_AT: String(Date.now()) }
+  const r = spawnSync(python311, ['-B', '-c', `import sys, json; from pathlib import Path
+sys.path.insert(0, '.opencode/skills/run'); import app_run, run_study
+orig = run_study.load_protocol
+def with_variant(arg):
+    p, sha, d, v = orig(arg)
+    return p, sha, d, {"variant_of": {"study_dir": "/elsewhere"}}
+run_study.load_protocol = with_variant
+try:
+    app_run.main_run(Path(sys.argv[1]).resolve(), Path('.').resolve(), complete=lambda m: '{"r1": "o1"}' if 'r1' in m[-1]['content'] else '{}', model='stub')
+except SystemExit as e:
+    print(json.dumps({'refused': str(e)}))`, run], { cwd: proj, encoding: 'utf8', env: { PATH: process.env.PATH, ...bound } })
+  assert.match(last(r).refused, /a variant \(variant\.json\) appeared while the run started/)
+  assert.equal(JSON.parse(readFileSync(join(proj, run, 'progress.json'), 'utf8')).stage, 'failed')
+  assert.ok(!existsSync(join(proj, run, 'results.html')))
 })

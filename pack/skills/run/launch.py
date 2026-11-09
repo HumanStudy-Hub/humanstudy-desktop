@@ -27,6 +27,10 @@ from urllib.parse import urlsplit
 
 def main():
     run_dir, project, code = (Path(a).resolve() for a in sys.argv[1:4])
+    # The app checked the run folder's real path; check it again now that it is resolved, since it becomes the
+    # sandbox's only write root (review 6, S4).
+    if not run_dir.is_relative_to(project) or run_dir.parent.name != "simulations":
+        raise SystemExit("the run folder leads outside the project; the run was not started")
     sys.path.insert(0, str(code / "skills" / "build"))
     from sandbox_run import run_python
     entry = code / "skills" / "run" / "app_run.py"

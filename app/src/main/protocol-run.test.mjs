@@ -179,3 +179,39 @@ test('review 5 S2: a launcher that fails before the run writes progress leaves t
   assert.equal(progress.stage, 'failed')
   assert.match(progress.message, /invalid model relay/)
 })
+
+test('review 6 S6: stale per-run code copies are swept; a run still going keeps its copy', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'protocol-runs-'))
+  const runs = mkdtempSync(join(tmpdir(), 'runs-'))
+  const copy = (name, marker) => { mkdirSync(join(root, name)); if (marker) writeFileSync(join(root, name, '.run.json'), JSON.stringify(marker)) }
+  const runDir = (name, stage) => { mkdirSync(join(runs, name)); if (stage) writeFileSync(join(runs, name, 'progress.json'), JSON.stringify({ stage })); return join(runs, name) }
+  copy('done', { runDir: runDir('a', 'done'), startedAt: Date.now() })
+  copy('live', { runDir: runDir('b', 'running'), startedAt: Date.now() })
+  copy('gone', { runDir: join(runs, 'missing'), startedAt: Date.now() })
+  copy('old', { runDir: runDir('c', 'running'), startedAt: Date.now() - 3 * 24 * 3600_000 })
+  copy('broken', null)
+  const removed = await R.sweepRunCopies(root)
+  assert.deepEqual(removed.sort(), ['broken', 'done', 'gone', 'old'])
+  assert.deepEqual(readdirSync(root), ['live'])
+  assert.deepEqual(await R.sweepRunCopies(join(root, 'nowhere')), [])
+})
+
+test('review 6 S4: launch.py refuses a run folder whose real path is outside the project', { skip: !python }, async () => {
+  const dir = project()
+  const code = join(out, 'code-s4')
+  for (const [rel, text] of FILES) { mkdirSync(dirname(join(code, rel)), { recursive: true }); writeFileSync(join(code, rel), text) }
+  const outside = mkdtempSync(join(tmpdir(), 'outside-run-'))
+  const r = spawnSync(python, ['-I', '-B', join(code, 'skills/run/launch.py'), outside, dir, code], { encoding: 'utf8' })
+  assert.notEqual(r.status, 0)
+  assert.match(r.stderr + readFileSync(join(outside, 'run.log'), 'utf8'), /leads outside the project/)
+})
+
+test('review 6 S5: on Linux/Windows the budget row is an estimate, not an approved, enforced figure', async () => {
+  const panel = readFileSync(join(here, '../renderer/components/SimulationPanel.tsx'), 'utf8')
+  assert.match(panel, /t\(readiness\?\.modelAccess === 'relay' \? 'sim\.budget_value' : 'sim\.budget_estimate'/)
+  const dictOut = mkdtempSync(join(tmpdir(), 'dict-'))
+  await build({ entryPoints: [join(here, '../renderer/i18n-dict.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(dictOut, 'd.mjs'), logLevel: 'error' })
+  const { EN, ZH } = await import(pathToFileURL(join(dictOut, 'd.mjs')).href)
+  assert.match(EN['sim.budget_estimate'], /nothing enforces it: the run is bounded by the participants per arm/)
+  assert.ok(!/approves/.test(EN['sim.budget_estimate'])); assert.ok(ZH['sim.budget_estimate'])
+})

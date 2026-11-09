@@ -307,7 +307,7 @@ export function SimulationPanel(props: Props) {
                 <dd>{modelName}</dd>
                 {protocolLimits && (<>
                   <dt>{t('sim.budget')}</dt>
-                  <dd>{protocolLimits.fits ? t('sim.budget_value', { tokens: formatTokens(protocolLimits.tokens) }) : t('sim.budget_too_large', { tokens: formatTokens(protocolLimits.needed), limit: formatTokens(MAX_RUN_TOKENS) })}</dd>
+                  <dd>{protocolLimits.fits ? t(readiness?.modelAccess === 'relay' ? 'sim.budget_value' : 'sim.budget_estimate', { tokens: formatTokens(protocolLimits.tokens) }) : t('sim.budget_too_large', { tokens: formatTokens(protocolLimits.needed), limit: formatTokens(MAX_RUN_TOKENS) })}</dd>
                 </>)}
                 <dt>{t('sim.estimate')}</dt>
                 <dd>{t('sim.estimate_value', { lo: estimate.minutes[0], hi: estimate.minutes[1], cost: costText(estimate.cost) })}</dd>

@@ -43,9 +43,15 @@ long_rx = re.compile(r"(?<![A-Za-z])(" + "|".join(map(re.escape, [x for x in sur
     if any(len(x) >= 4 for x in surnames) else None
 short_rx = re.compile(r"(?<![A-Za-z])(" + "|".join(map(re.escape, [x for x in surnames if len(x) < 4])) +
                       r")(?:[\s_,(]*(?:19|20)\d\d|\s+et\s+al)", re.I) if any(len(x) < 4 for x in surnames) else None
-# CamelCase compounds (getZorbel, ZorbelItems): the capitalised surname on a case boundary (review 5)
-camel_rx = re.compile(r"(?<![A-Z])(" + "|".join(map(re.escape, [x.capitalize() for x in surnames if len(x) >= 4])) + r")(?![a-z])") \
-    if any(len(x) >= 4 for x in surnames) else None
+# CamelCase compounds (review 5, review 6 S1), case-sensitive, 4+ letter surnames:
+#   getZorbel, ZorbelItems, IDZorbel   the capitalised surname not followed by a lowercase letter
+#   zorbelScore                        the lowercase surname followed by an uppercase letter
+#   ZORBELItems, ID_ZORBEL             the uppercase surname not followed by a lowercase letter
+_long = [x for x in surnames if len(x) >= 4]
+camel_rx = re.compile("|".join([r"(" + "|".join(map(re.escape, [x.capitalize() for x in _long])) + r")(?![a-z])",
+                                 r"(?<![A-Za-z])(" + "|".join(map(re.escape, _long)) + r")(?=[A-Z])",
+                                 r"(?<![a-z])(" + "|".join(map(re.escape, [x.upper() for x in _long])) + r")(?![a-z])"])) \
+    if _long else None
 # an id shaped like a study folder: letters + a year, with or without a topic, any case
 id_rx = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]{2,}(?:19|20)\d\d[A-Za-z]*(?![A-Za-z0-9])")
 

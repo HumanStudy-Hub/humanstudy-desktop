@@ -74,6 +74,7 @@ const ROWS: Row[] = [
   ['sim.estimate_value', '{lo}–{hi} min, {cost}', '{lo}–{hi} 分钟，{cost}'],
   ['sim.budget', 'Model budget', '模型额度'],
   ['sim.budget_value', 'up to {tokens} tokens, measured from the study\'s pages; Run approves this figure', '最多 {tokens} 个词元，按研究的页面测算；点击运行即批准这个数'],
+  ['sim.budget_estimate', 'about {tokens} tokens, estimated from the study\'s pages. On this computer nothing enforces it: the run is bounded by the participants per arm', '约 {tokens} 个词元，按研究的页面估算。在这台电脑上没有强制上限：运行只受每组参与者人数限制'],
   ['sim.budget_too_large', 'Needs {tokens} tokens, more than the limit of {limit}. Choose fewer participants.', '需要 {tokens} 个词元，超过上限 {limit}。请减少参与者人数。'],
   ['sim.cost_under', 'under {a}', '低于 {a}'],
   ['sim.cost_about', 'about {a}', '约 {a}'],

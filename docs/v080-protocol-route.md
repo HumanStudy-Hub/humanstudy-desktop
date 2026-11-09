@@ -102,15 +102,23 @@ Run simulation and the approval passes, `kernel:send` does three things:
 - The plan is bound (review 5, M1). The main process hands the approved plan to the run in its environment
   (`HUMANSTUDY_RUN_PLAN`): route, protocol hash, n per arm, arms, seeds, temperature. That is what plays. A
   plan.json that differs from it is refused, because any process of the user can rewrite that file.
-- After the engine has loaded protocol.json, app_run checks again that its hash is the approved one. A swap in
-  between ends the run `failed`, and nothing is reported from it (review 5, S3).
+- After the engine has loaded protocol.json, app_run checks again that its hash is the approved one and that no
+  variant was loaded. A swap in between, or a `variant.json` that appeared, ends the run `failed`, and nothing is
+  reported from it (review 5, S3; review 6, S2).
+- `launch.py` checks the run folder's real path again before making it the sandbox's write root (review 6, S4).
+- The per-run code copy is deleted when the run ends. Copies left by a quit or a crash are swept at the next start,
+  except for a run that is still going (review 6, S6).
+- A test plants agent code in `.opencode/skills/run/`, `.opencode/hsenv/` and `artifacts/simulations/`. None of
+  it runs.
+
+**What the approval binds (review 6, S3).** The approval binds protocol.json, its exact bytes, and the plan. It
+does not bind the image and asset files that protocol.json points to. Those are read when a screen shows them, and
+an image swapped after approval is what the AI participants see. Their hashes are not part of the approval.
 
 **Trust boundary (review 5, S6).** The boundary is the project: the files the agent edits without asking. The
 code copy in app storage and the runtime's site-packages are outside it. They are still the same user's files, and
 an approved shell command could change them while a run is going. The app does not defend against the user's own
 approved commands.
-- A test plants agent code in `.opencode/skills/run/`, `.opencode/hsenv/` and `artifacts/simulations/`. None of
-  it runs.
 
 The agent only follows `progress.json` and reports. `app_run.py new` remains only as a manual tool, and the
 agent's skill tells it never to start a protocol run.
@@ -163,7 +171,10 @@ back at the shipped version before every approved run. That keeps the agent's ow
 binds the run: an agent could edit that copy again afterwards.
 
 On macOS the relay's token cap is the hard bound on spend. On Linux and Windows there is no relay and no cap: the
-run uses the signed-in key, as package runs do there. The run confirmation says so. The app allows one protocol run
+run uses the signed-in key, as package runs do there. The run confirmation says the study code can read the key.
+Its "Model budget" row reads as an estimate there ("nothing enforces it: the run is bounded by the participants per
+arm") rather than as a figure the researcher approves (review 6, S5). Spend there is bounded by the exact n: no
+top-up and no f retries. The app allows one protocol run
 per project at a time, and holds that claim until the run's process exits (review 5, S5).
 
 **One runner per run folder (review 3, S2).** `app_run` takes an OS lock on `<run>/run.lock` for the life of its
