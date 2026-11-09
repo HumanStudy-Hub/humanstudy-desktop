@@ -135,10 +135,9 @@ export function VersionFooter() {
   return (
     <div className="home-version small muted">
       <span>HumanStudy Hub v{status.version}</span>
-      {/* The separator travels with the link, so a narrow sidebar never leaves a lone "·" at a line end. */}
+      {/* The link sits on its own line under the version: no separator that could start a line. */}
       {WEB_EDITION ? null : (
-        <span>
-          <span aria-hidden>· </span>
+        <span className="home-version-link">
           {ready ? (
             <button className="link" onClick={() => void window.humanstudy.updates.install()}>{t('updates.ready')}</button>
           ) : (

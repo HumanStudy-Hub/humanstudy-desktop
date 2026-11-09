@@ -213,8 +213,14 @@ not the sign table, and never says more than the text:
 - a run that is not official by the strict definition (official plan, verified human n and a complete run) shows
   the neutral "Finished" / "已完成". That covers a different n from the paper, the usual case, and also the paper's
   printed n when it is not verified;
-- only a strictly official run takes the engine's `direction_match` verdict, worded as direction agreement
-  ("Directions agreed / did not agree with the paper"), never as "showed the effect".
+- a strictly official run takes its headline from the same per-comparison direction count as the paragraph
+  (UX round 3). It is never worded as "showed the effect":
+  - every comparison in the paper's direction, with the engine's direction check passed: "Same direction as the
+    paper";
+  - every comparison in the paper's direction, with the check failed (it fails only on significance): "Same
+    direction as the paper, but not significant in this run". This one is neutral, not red;
+  - some comparisons in the paper's direction and some not: "Mixed: k of n comparisons in the paper's direction";
+  - none in the paper's direction: "Direction differs from the paper".
 
 The same rule (`headline()` in `shared/simulation-run.ts`) applies to any summary with structured facts in the tab.
 
@@ -251,8 +257,8 @@ hidden by default, zh and en.
     Otherwise it says "unofficial" (zh: 非正式), and a partial run is never official.
 - **The card and the headline.**
   - The card builds its paragraph from the summary's structured `facts` with i18n keys.
-  - The headline is "Directions agreed / did not agree with the paper" only on the strict official comparison;
-    otherwise it is "Finished".
+  - A direction headline appears only on the strict official comparison (see Headline); otherwise it is
+    "Finished".
   - A partial run says why ("10 model calls failed", "used up its approved model limit") and what to do next
     ("press Run simulation to run it again").
   - The technical section is translated too, and it never says "official" outside the strict definition.

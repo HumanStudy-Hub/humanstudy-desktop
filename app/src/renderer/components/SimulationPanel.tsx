@@ -101,6 +101,7 @@ export function SimulationPanel(props: Props) {
   // Two runnable forms, checked separately by the main process: protocol.json (the engine) wins when it passes.
   const route: 'protocol' | 'package' | null = readiness?.protocol?.ready ? 'protocol' : readiness?.ready ? 'package' : null
   const built = route !== null
+  const hasProtocolFile = project.tree.some((e) => e.rel === 'protocol.json')
   const runConditions = route === 'protocol' ? readiness?.protocol?.arms ?? [] : plan.conditions
   // The program's section-12 scope gates a package run; a protocol run is gated by the protocol's own checks and
   // its measured budget (a protocol-only project has no section 12).
@@ -243,7 +244,7 @@ export function SimulationPanel(props: Props) {
   const result = current ? (
     <Result run={current} tree={project.tree} summary={texts[current.id]?.summary ?? null} progress={texts[current.id]?.progress ?? null}
       onOpen={() => { track('simulation.result_open', { metadata: { how: 'tab', example: isExample } }); props.onOpenFile(current.results!) }}
-      onAsk={() => props.onAsk(t('sim.discuss_prompt', { run: current.rel }))} />
+      onAsk={() => props.onAsk(t('sim.discuss_prompt', { run: current.rel }))} canAsk={canRun} />
   ) : null
   return (
     <div className="sim">
@@ -285,6 +286,10 @@ export function SimulationPanel(props: Props) {
                 </>)
               })() : <p className="muted small">{t('sim.checking')}</p>}
             </section>
+          ) : !built && hasProtocolFile ? (
+            // A protocol project whose checks have not answered yet (the app or the assistant is still starting):
+            // never offer "Build the study first" for a study that is already runnable.
+            <section className="sim-card" aria-live="polite"><p className="muted small">{t('sim.checking')}</p></section>
           ) : !built ? (
             <section className="sim-card">
               <p>{t('sim.not_built')}</p>
@@ -363,7 +368,7 @@ export function SimulationPanel(props: Props) {
                     <span>{new Date(when).toLocaleString(getLang(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}{s?.example ? ` · ${t('sim.example')}` : ''}</span>
                     <span className="muted">{shortModelName(s?.model ?? p?.model ?? '') || '—'}</span>
                     <span className="muted">{s?.perCondition ? t('sim.n_each', { n: s.perCondition }) : p?.total ? t('sim.n_total', { n: p.total }) : ''}</span>
-                    <span className={`sim-outcome o-${st === 'done' ? (s ? headline(s) : 'unknown') : st}`}>{st === 'done' ? (s ? t(`sim.outcome.${headline(s)}`) : t('sim.state.done')) : t(`sim.state.${st}`)}</span>
+                    <span className={`sim-outcome o-${st === 'done' ? (s ? headline(s) : 'unknown') : st}`}>{st === 'done' ? (s ? t(`sim.outcome.${headline(s)}`, { k: s.facts?.same ?? 0, n: s.facts?.compared ?? 0 }) : t('sim.state.done')) : t(`sim.state.${st}`)}</span>
                   </button>
                 </li>
               )
@@ -430,7 +435,7 @@ function Progress({ progress, startedAt, now, plan, built, activity, model, onSt
   )
 }
 
-function Result({ run, tree, summary, progress, onOpen, onAsk }: { run: SimRunFiles; tree: ProjectEntry[]; summary: SimSummary | null; progress: SimProgress | null; onOpen(): void; onAsk(): void }) {
+function Result({ run, tree, summary, progress, onOpen, onAsk, canAsk = true }: { run: SimRunFiles; tree: ProjectEntry[]; summary: SimSummary | null; progress: SimProgress | null; onOpen(): void; onAsk(): void; canAsk?: boolean }) {
   const frame = useRef<HTMLIFrameElement>(null)
   useEffect(() => listenToArtifact(() => frame.current), [])
   const url = fileUrl(tree, run.results)
@@ -446,7 +451,7 @@ function Result({ run, tree, summary, progress, onOpen, onAsk }: { run: SimRunFi
       {summary?.example && <p className="sim-example-note">{t('sim.example_note')}</p>}
       {summary ? (
         <div className={`sim-summary o-${headline(summary)}`}>
-          <p className="sim-verdict">{t(`sim.outcome.${headline(summary)}`)}</p>
+          <p className="sim-verdict">{t(`sim.outcome.${headline(summary)}`, { k: summary.facts?.same ?? 0, n: summary.facts?.compared ?? 0 })}</p>
           <p>{summary.facts ? factsParagraph(summary.facts) : summary.paragraph}</p>
         </div>
       ) : (
@@ -455,7 +460,7 @@ function Result({ run, tree, summary, progress, onOpen, onAsk }: { run: SimRunFi
       {url && <iframe ref={frame} key={url} className="sim-frame" src={url} sandbox="allow-scripts" title={t('sim.result_title')} />}
       <div className="sim-actions">
         <button className="ghost small-btn" onClick={onOpen}>{t('sim.open_tab')}</button>
-        <button className="ghost small-btn" onClick={onAsk}>{t('sim.discuss')}</button>
+        <button className="ghost small-btn" disabled={!canAsk} title={canAsk ? undefined : t('sim.sign_in_to_run')} onClick={onAsk}>{t('sim.discuss')}</button>
       </div>
     </section>
   )
@@ -472,5 +477,5 @@ export function factsParagraph(f: NonNullable<SimSummary['facts']>): string {
     f.partial ? '' : f.official ? t('sim.p.official') : t('sim.p.unofficial'),
     f.unverified ? t('sim.p.unverified') : '',
     t('sim.p.caveat'),
-  ].filter(Boolean).join(' ')
+  ].filter(Boolean).join(getLang() === 'zh-CN' ? '' : ' ')   // Chinese sentences run on without spaces
 }

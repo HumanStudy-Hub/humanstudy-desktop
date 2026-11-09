@@ -120,8 +120,19 @@ def outcome(table: list[dict], run: dict | None = None, partial: bool = False) -
     # otherwise the neutral "Finished": the headline never says more than the text (UX re-check).
     if not official(run) or unverified_n(run):
         return "unknown"
-    passed = (direction_reward(run) or {}).get("passed")
-    return "unknown" if passed is None else "agree" if passed else "disagree"
+    # The headline follows the same per-comparison direction count as the paragraph (UX round 3):
+    #   every comparison in the paper's direction, engine check passed  -> same
+    #   every comparison in the paper's direction, engine check failed  -> same_ns (failed on significance only)
+    #   some in the paper's direction, some not                         -> mixed (k of n)
+    #   none in the paper's direction                                   -> differs
+    judged = [r["same_direction"] for r in table if r["same_direction"] is not None]
+    if not judged:
+        return "unknown"
+    same = sum(1 for x in judged if x)
+    if same == len(judged):
+        passed = (direction_reward(run) or {}).get("passed")
+        return "same" if passed else "same_ns"
+    return "differs" if same == 0 else "mixed"
 
 
 # Plain words for the page, in the app's language (review: researchers read this first; code strings stay under
@@ -192,7 +203,8 @@ def facts(table: list[dict], run: dict, partial: bool) -> dict:
             "same": sum(1 for r in judged if r["same_direction"]), "compared": len(judged),
             # "official" only when the engine's plan is official, the paper's n is verified and the run is complete
             "official": bool(official(run) and not unverified and not partial), "unverified": unverified, "partial": bool(partial),
-            "failedCalls": int(app.get("failed_calls") or 0), "tokenCap": bool(app.get("token_cap"))}
+            "failedCalls": int(app.get("failed_calls") or 0), "tokenCap": bool(app.get("token_cap")),
+            "engineDirection": (direction_reward(run) or {}).get("passed")}
 
 
 def paragraph(table: list[dict], run: dict, partial: bool = False, lang: str = "en") -> str:
@@ -210,7 +222,7 @@ def _esc(v) -> str:
 
 
 TECH = {
-    "en": {"scores": "Scores (hsenv.score)", "none": "the engine did not score this run",
+    "en": {"scores": "Scores", "none": "the engine did not score this run",
            "official": "official comparison (official plan, verified human n, complete run)",
            "unofficial": "unofficial comparison: values only, no pass or fail",
            "unverified": "human n unverified in %s (printed n, no analysed n)", "basis": "human n basis: ",
@@ -218,8 +230,9 @@ TECH = {
            "no_verdict_partial": "no verdict (partial run)", "no_verdict": "no verdict", "passed": "passed",
            "not_passed": "not passed", "scored": "{a} scored, {b} not computable", "text": "The engine's text report",
            "unofficial_flag": "unofficial", "official_flag": "official", "itt_unchecked": "intention-to-treat not checked",
-           "itt_na": "intention-to-treat not applicable", "view": "view: "},
-    "zh": {"scores": "评分（hsenv.score）", "none": "引擎没有为本次运行评分",
+           "itt_na": "intention-to-treat not applicable", "view": "view: ", "code": "engine code",
+           "reason": "engine reason", "scope": "offline report, not a leaderboard"},
+    "zh": {"scores": "评分", "none": "引擎没有为本次运行评分",
            "official": "正式比较（正式计划、样本量已核对、运行完整）",
            "unofficial": "非正式比较：只给出数值，不判定通过与否",
            "unverified": "以下条件的人类样本量未核对：%s（论文印出的数字，没有分析样本量）", "basis": "人类样本量来源：",
@@ -227,8 +240,22 @@ TECH = {
            "no_verdict_partial": "不判定（部分运行）", "no_verdict": "不判定", "passed": "通过",
            "not_passed": "未通过", "scored": "已计分 {a} 项，{b} 项无法计算", "text": "引擎的文字报告",
            "unofficial_flag": "非正式", "official_flag": "正式", "itt_unchecked": "未检查意向治疗分析",
-           "itt_na": "不适用意向治疗分析", "view": "视角："},
+           "itt_na": "不适用意向治疗分析", "view": "视角：", "code": "引擎代码",
+           "reason": "引擎说明", "scope": "离线报告，不是排行榜"},
 }
+
+
+REWARD_NAMES = {
+    "en": {"significance_match": "Significance agreement", "direction_match": "Direction agreement",
+           "effect_gap": "Size of the difference", "within_human_range": "Within the human range",
+           "human_noise_score": "Closeness given human variation", "spread_check": "Spread of answers",
+           "validity": "Valid answers", "loglik": "Fit to individual human answers"},
+    "zh": {"significance_match": "显著性一致", "direction_match": "方向一致", "effect_gap": "差异大小",
+           "within_human_range": "在人类范围内", "human_noise_score": "考虑人类波动的接近程度",
+           "spread_check": "回答的离散程度", "validity": "有效回答", "loglik": "与个体人类回答的拟合"},
+}
+STATUS = {"en": {"scored": "scored", "not_computable": "not computable", "agent_side_failed": "not computable on the AI side"},
+          "zh": {"scored": "已计分", "not_computable": "无法计算", "agent_side_failed": "AI 一侧无法计算"}}
 
 
 def scores_card(run: dict, rewards: dict | None, partial: bool = False, lang: str = "en") -> str:
@@ -248,8 +275,8 @@ def scores_card(run: dict, rewards: dict | None, partial: bool = False, lang: st
     head = [X["official"] if strict else X["unofficial"]]
     if plan.get("n_unverified_arms"):
         head.append(X["unverified"] % ", ".join(map(str, plan["n_unverified_arms"])))
-    if basis:
-        head.append(X["basis"] + ", ".join(f"{k} {v}" for k, v in sorted(basis.items())))
+    basis_line = (f'<p><code class="hs-code">{_esc(X["code"])}: {_esc(X["basis"] + ", ".join(f"{k} {v}" for k, v in sorted(basis.items())))}</code></p>'
+                  if basis else "")
     trs = []
     for rid, r in summary.items():
         if not isinstance(r, dict):
@@ -258,23 +285,28 @@ def scores_card(run: dict, rewards: dict | None, partial: bool = False, lang: st
         verdict = (X["no_verdict_partial"] if partial else X["no_verdict"] if r.get("passed") is None or not strict
                    else X["passed"] if r.get("passed") else X["not_passed"])
         flags = [x for x in (
-            r.get("report_scope"), X["official_flag"] if strict else X["unofficial_flag"],
+            X["scope"], X["official_flag"] if strict else X["unofficial_flag"],
             X["itt_unchecked"] if r.get("itt_unchecked") else None,
             X["itt_na"] if r.get("itt_not_applicable") else None,
-            X["view"] + str(r["view"]) if r.get("view") else None) if x]
+            ) if x]
         reasons = r.get("reasons") or {}
         nc = r.get("not_computable") or 0
         why = "; ".join(f"{k} ({n})" for k, n in reasons.items()) if reasons else ""
-        trs.append(f'<tr><td><b>{_esc(rid)}</b><br><span class="hs-sub">{_esc(r.get("status") or "")}</span></td>'
+        L = lang_of(lang)
+        base = rid.rsplit("-", 1)[0]
+        name = REWARD_NAMES[L].get(base, base.replace("_", " "))
+        status = STATUS[L].get(str(r.get("status") or ""), str(r.get("status") or ""))
+        trs.append(f'<tr><td><b>{_esc(name)}</b><br><span class="hs-sub">{_esc(status)}</span>'
+                   f'<br><code class="hs-code">{_esc(X["code"])}: {_esc(rid)}</code></td>'
                    f'<td>{value}<br><span class="hs-sub">{verdict}</span></td>'
                    f'<td>{_esc(X["scored"].format(a=r.get("n_scored") if r.get("n_scored") is not None else "—", b=nc))}'
-                   f'{"<br><span class=hs-sub>" + _esc(why) + "</span>" if why else ""}</td>'
+                   f'{"<br><code class=hs-code>" + _esc(X["reason"]) + ": " + _esc(why) + "</code>" if why else ""}</td>'
                    f'<td><span class="hs-sub">{_esc(" · ".join(flags))}</span></td></tr>')
     text = ev.get("text_report")
     pre = (f'<details><summary class="hs-sub">{X["text"]}</summary><pre>{_esc(chr(10).join(map(str, text)))}</pre></details>'
            if isinstance(text, list) and text and strict else "")   # its lines carry passed=…: only on a strict official run
-    return (f'<div class="hs-card"><h2 class="hs-h2">{X["scores"]} — {_esc(REPORT_SCOPE)}</h2>'
-            f'<p class="hs-sub">{_esc("; ".join(head))}</p>'
+    return (f'<div class="hs-card"><h2 class="hs-h2">{X["scores"]} — {_esc(X["scope"])}</h2>'
+            f'<p class="hs-sub">{_esc("; ".join(head))}</p>{basis_line}'
             f'<table class="hs-results"><thead><tr><th>{X["reward"]}</th><th>{X["value"]}</th><th>{X["items"]}</th><th>{X["labels"]}</th></tr></thead><tbody>'
             + "".join(trs) + f'</tbody></table>{pre}</div>')
 
@@ -314,10 +346,12 @@ def page(protocol: dict, run: dict, table: list[dict], rewards: dict | None, par
          "Seeds": "随机种子", "Completed": "完成", "Model calls": "模型调用", "Images shown to the model": "是否给模型看图片",
          "Finished": "结束时间", "How many ran": "运行人数", "Baseline": "基线"} if L == "zh" else {}
     manifest = [("Protocol", f'{protocol.get("id")} (SHA-256 {str(run.get("protocol_sha256", ""))[:16]}…)'),
-                ("Model", str(f.get("model") or "")), ("Renderer", "default (skills/run render.render_state)"),
+                ("Model", str(f.get("model") or "")), ("Renderer", ("默认" if L == "zh" else "default") + " (render.render_state)"),
                 ("AI participants per arm", json.dumps(run.get("n_per_arm"))), ("Seeds", json.dumps(run.get("seeds"))),
-                ("Completed", f'{p.get("completed", 0)} of {p.get("records", 0)}'), ("Model calls", str(run.get("calls", 0))),
-                ("Images shown to the model", str(f.get("images") or "")), ("Finished", str(run.get("finishedAt", ""))),
+                ("Completed", (f'{p.get("records", 0)} 名中 {p.get("completed", 0)} 名' if L == "zh" else f'{p.get("completed", 0)} of {p.get("records", 0)}')),
+                ("Model calls", str(run.get("calls", 0))),
+                ("Images shown to the model", ("不展示：只给文字，图片以编号和其中核实过的文字出现" if L == "zh" else "not shown: text only; images appear as ids with their verified text lines")
+                 if str(f.get("images") or "").startswith("NOT shown") else str(f.get("images") or "")), ("Finished", str(run.get("finishedAt", ""))),
                 ("How many ran", T["how_many"]), ("Baseline", T["baseline"] + " (.baseline-cache)")]
     man = "".join(f"<tr><td>{html.escape(M.get(k, k))}</td><td>{html.escape(v)}</td></tr>" for k, v in manifest)
     return f"""<!doctype html>
@@ -333,6 +367,9 @@ def page(protocol: dict, run: dict, table: list[dict], rewards: dict | None, par
 .hs-results th, .hs-results td {{ text-align: left; vertical-align: top; padding: 6px 10px 6px 0; overflow-wrap: anywhere; }}
 .hs-results thead th {{ border-bottom: 1px solid var(--hs-line, #cdd7c6); }}
 details.hs-card > summary {{ cursor: pointer; }}
+.hs-what td:first-child {{ width: 32%; color: var(--hs-muted, #5e6e60); }}
+details pre {{ white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }}
+.hs-code {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--hs-muted, #5e6e60); }}
 </style>
 </head>
 <body>
@@ -351,7 +388,7 @@ details.hs-card > summary {{ cursor: pointer; }}
 </div>
 <details class="hs-card"><summary>{html.escape(T["tech"])}</summary>
 {rew}
-<div class="hs-card"><h2 class="hs-h2">{html.escape(T["what_ran"])}</h2><table>{man}</table></div>
+<div class="hs-card"><h2 class="hs-h2">{html.escape(T["what_ran"])}</h2><table class="hs-results hs-what">{man}</table></div>
 </details>
 </div>
 </body>

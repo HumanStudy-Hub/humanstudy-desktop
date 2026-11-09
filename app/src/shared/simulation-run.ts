@@ -74,7 +74,8 @@ export function parseProgress(text: string | null | undefined): SimProgress | nu
 /** summary.json, written by the agent when a run finishes: the plain-language comparison. */
 export interface SimSummary {
   /** agree / disagree: a protocol run's engine direction check on an official n (skills/run protocol_report). */
-  outcome: 'replicated' | 'partly' | 'not_replicated' | 'not_ready' | 'unknown' | 'agree' | 'disagree'
+  /** same / same_ns / mixed / differs: a protocol run's direction headline on the strict official comparison. */
+  outcome: 'replicated' | 'partly' | 'not_replicated' | 'not_ready' | 'unknown' | 'same' | 'same_ns' | 'mixed' | 'differs'
   paragraph: string
   model?: string
   perCondition?: number
@@ -82,7 +83,7 @@ export interface SimSummary {
   example?: boolean
   /** A protocol run's structured summary (skills/run protocol_report.py): the card builds its paragraph from these
    *  with i18n keys, in the app's language. */
-  facts?: { done: number; planned: number; same: number; compared: number; official: boolean; unverified: boolean; partial: boolean; failedCalls: number; tokenCap: boolean }
+  facts?: { done: number; planned: number; same: number; compared: number; official: boolean; unverified: boolean; partial: boolean; failedCalls: number; tokenCap: boolean; engineDirection: boolean | null }
 }
 /** `lang` 'zh-CN' prefers `paragraph_zh` when the file carries one (the shipped example does). */
 export function parseSummary(text: string | null | undefined, lang = 'en'): SimSummary | null {
@@ -92,14 +93,15 @@ export function parseSummary(text: string | null | undefined, lang = 'en'): SimS
   if (!r || typeof r !== 'object') return null
   const o = String(r.outcome ?? r.verdict ?? '').toLowerCase()
   // A direction verdict only on the strict official comparison; an older summary's *_unverified verdict is neutral.
-  const outcome: SimSummary['outcome'] = o === 'agree' || o === 'disagree' ? o : /_unverified$/.test(o) ? 'unknown' : /not[_ -]?ready/.test(o) ? 'not_ready' : /not|fail/.test(o) ? 'not_replicated' : /part|mixed|weak/.test(o) ? 'partly' : /replicat|yes|shown/.test(o) ? 'replicated' : 'unknown'
+  const outcome: SimSummary['outcome'] = ['same', 'same_ns', 'mixed', 'differs'].includes(o) ? o as SimSummary['outcome']
+    : o === 'agree' ? 'same' : o === 'disagree' ? 'differs' : /_unverified$/.test(o) ? 'unknown' : /not[_ -]?ready/.test(o) ? 'not_ready' : /not|fail/.test(o) ? 'not_replicated' : /part|mixed|weak/.test(o) ? 'partly' : /replicat|yes|shown/.test(o) ? 'replicated' : 'unknown'
   const zh = lang.startsWith('zh') && typeof r.paragraph_zh === 'string' && r.paragraph_zh.trim() ? r.paragraph_zh : null
   const raw = zh ?? r.paragraph ?? r.summary ?? r.text
   if (!str(raw)) return null
   const per = r.perCondition ?? r.n_per_condition
   const f = r.facts && typeof r.facts === 'object' ? r.facts as Record<string, unknown> : null
   const int = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0)
-  const facts = f ? { done: int(f.done), planned: int(f.planned), same: int(f.same), compared: int(f.compared), official: f.official === true, unverified: f.unverified === true, partial: f.partial === true, failedCalls: int(f.failedCalls), tokenCap: f.tokenCap === true } : undefined
+  const facts = f ? { done: int(f.done), planned: int(f.planned), same: int(f.same), compared: int(f.compared), official: f.official === true, unverified: f.unverified === true, partial: f.partial === true, failedCalls: int(f.failedCalls), tokenCap: f.tokenCap === true, engineDirection: typeof f.engineDirection === 'boolean' ? f.engineDirection : null } : undefined
   return { outcome, paragraph: String(raw).trim().slice(0, 2000), model: str(r.model), perCondition: typeof per === 'number' ? per : undefined, calls: typeof r.calls === 'number' ? r.calls : undefined, example: r.example === true, ...(facts ? { facts } : {}) }
 }
 
@@ -296,7 +298,11 @@ export function costRange([lo, hi]: [number, number]): { kind: 'under' | 'about'
  *  (official plan, verified human n, complete run); otherwise the neutral "Finished", or "could not be made" for a
  *  partial run. Summaries without structured facts (package runs) keep their own outcome. */
 export function headline(s: Pick<SimSummary, 'outcome' | 'facts'>): SimSummary['outcome'] {
+  // The same per-comparison direction count as the paragraph (UX round 3), on the strict official comparison only.
   if (!s.facts) return s.outcome
-  if (s.facts.partial) return 'not_ready'
-  return s.facts.official && !s.facts.unverified && (s.outcome === 'agree' || s.outcome === 'disagree') ? s.outcome : 'unknown'
+  const f = s.facts
+  if (f.partial) return 'not_ready'
+  if (!f.official || f.unverified || !f.compared) return 'unknown'
+  if (f.same === f.compared) return f.engineDirection ? 'same' : 'same_ns'
+  return f.same === 0 ? 'differs' : 'mixed'
 }
