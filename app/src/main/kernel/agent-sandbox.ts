@@ -14,7 +14,7 @@
 //   4. runs everything else confined:
 //        macOS  sandbox-exec: no reading or writing participant data (human-data, quarantine, withheld,
 //               participant-data folders, any case, anywhere), key folders (~/.ssh, ~/.aws, keychains, ...),
-//               the app's account/credential files and the kernel's own data (except its tool-output files);
+//               the app's account/credential files and the kernel's own data (tool output included);
 //               no writes outside the project and temp folders, nor to the project's .opencode/,
 //               opencode.json or .git/hooks; no access to other processes (their environment holds keys)
 //               or to the keychain service. Network stays open (public source search needs it).
@@ -115,6 +115,8 @@ export interface AgentShellOptions {
   /** The app's shell broker socket (shell-broker.ts): OpenCode's shell becomes a client of it, so commands
    *  start outside the kernel's own sandbox and inside the agent profile. Without it the wrapper is the shell. */
   socket?: string
+  /** Per-launch secret the broker requires (written only into this project's client.pl). */
+  secret?: string
 }
 
 export interface AgentShell { kind: AgentSandboxKind; shell?: string; dir?: string; /** the wrapper the broker runs */ inner?: string }
@@ -169,9 +171,10 @@ export function macosAgentProfile(o: { project: string; kernelHome: string; secr
     `(allow file-read-data ${homeReads.map(p => `(subpath ${sb(p)})`).join(' ')})`,
     // Participant data and credentials: contents unreadable (a folder's existence still shows).
     `(deny file-read-data (regex #"${PARTICIPANT_REGEX}") ${secrets.map(p => `(subpath ${sb(p)})`).join(' ')})`,
-    `(allow file-read-data (subpath ${sb(join(kernel, 'data', 'opencode', 'tool-output'))}))`,
-    // The app's shell broker serves the kernel, never the commands it starts.
-    ...(o.socket ? [`(deny network-outbound (remote unix-socket (path-literal ${sb(o.socket)})))`] : []),
+    // (No exception for OpenCode's tool-output folder: it is shared by all projects and can hold the output
+    // of a command the researcher approved. The read tool reaches this project's files through the policy.)
+    // The app's shell brokers (every project's) serve their kernels, never the commands they start.
+    ...(o.socket ? [`(deny network-outbound (remote unix-socket (subpath ${sb(dirname(o.socket))})))`] : []),
     // Writes: the project and temp folders only ...
     '(deny file-write*)',
     `(allow file-write* (subpath ${sb(project)}) ${temps.map(t => `(subpath ${sb(t)})`).join(' ')} (literal "/dev/null") (literal "/dev/zero") (literal "/dev/tty") (literal "/dev/ptmx") (literal "/dev/dtracehelper") (subpath "/dev/fd") (regex #"^/dev/ttys[0-9]+$"))`,
@@ -198,7 +201,7 @@ export function runtimeRoot(bin: string): string {
  *  root whatever its path checks miss: participant data, key folders, the app's credential files, other
  *  projects, preference writes, LaunchServices. Its shell commands run outside it, through the app's
  *  broker (shell-broker.ts), in the stricter agent profile. */
-export function macosKernelProfile(o: { project: string; kernelHome?: string; home?: string; secretPaths?: string[]; projectsRoots?: string[] }): string {
+export function macosKernelProfile(o: { project: string; kernelHome?: string; home?: string; secretPaths?: string[]; projectsRoots?: string[]; socket?: string; agentShellDir?: string }): string {
   const project = real(o.project)
   const home = real(o.home ?? homedir())
   // Projects folders (other projects live there); never the home folder itself or the project's own folder.
@@ -214,9 +217,18 @@ export function macosKernelProfile(o: { project: string; kernelHome?: string; ho
     ...(roots.length ? [`(deny file-read-data ${roots.map(r => `(subpath ${sb(r)})`).join(' ')})`] : []),
     `(allow file-read-data (subpath ${sb(project)})${o.kernelHome ? ` (subpath ${sb(real(o.kernelHome))})` : ''})`,
     `(deny file-read-data (regex #"${PARTICIPANT_REGEX}") ${secrets.map(p => `(subpath ${sb(p)})`).join(' ')})`,
+    // Only its own broker: another project's broker would run commands in that project.
+    ...(o.socket ? [`(deny network-outbound (remote unix-socket (subpath ${sb(dirname(o.socket))})))`, `(allow network-outbound (remote unix-socket (path-literal ${sb(o.socket)})))`] : []),
+    // Code running in the kernel must not rewrite what runs outside it later: the agent-shell folder (the
+    // wrapper, profiles, approval tokens, guard), shell start-up files, launch agents, the brokers' folder.
+    `(deny file-write* ${[...(o.agentShellDir ? [real(o.agentShellDir)] : []), ...HOME_STARTUP.map(f => join(home, f)), ...(o.socket ? [dirname(o.socket)] : [])].map(p => `(subpath ${sb(p)})`).join(' ')})`,
     '',
   ].join('\n')
 }
+
+/** Files in the home folder that start code later, outside any sandbox. */
+export const HOME_STARTUP = ['.zshrc', '.zshenv', '.zprofile', '.zlogin', '.bashrc', '.bash_profile', '.profile', '.bash_login',
+  '.config/fish', 'Library/LaunchAgents', '.ssh/rc', '.gitconfig', '.config/git']
 
 const within = (root: string, p: string): boolean => p === root || p.startsWith(root.endsWith('/') ? root : root + '/')
 
@@ -294,7 +306,7 @@ hs_trusted() {
   if [ -n "$HS_RUNTIME" ]; then case "$hs_py" in "$HS_RUNTIME"/*) ;; *) return 1 ;; esac
   else case "$hs_py" in /usr/bin/*|/usr/local/bin/*|/opt/homebrew/bin/*|/Library/Frameworks/*) ;; *) return 1 ;; esac; fi
   shift
-  while [ "$#" -gt 0 ]; do case "$1" in -B|-u|-I) shift ;; *) break ;; esac; done
+  # No interpreter flags: -I/-E/-s/-S would drop the in-process guard (it loads through PYTHONPATH).
   hs_s=\${1#./}
   case " $HS_ENTRIES " in *" $hs_s "*) ;; *) return 1 ;; esac
   shift
@@ -336,14 +348,12 @@ function macosWrapper(o: { dir: string; project: string; realShell: string; runt
 function linuxWrapper(o: { dir: string; project: string; realShell: string; runtimeBin?: string; kernelHome: string; secrets: string[]; temps: string[] }): string {
   const bw = ['/usr/bin/bwrap', '/bin/bwrap', '/usr/local/bin/bwrap'].find(existsSync) ?? 'bwrap'
   const names = PARTICIPANT_DATA_DIRS.map(n => `-iname ${sq(n)}`).join(' -o ')
-  const toolOutput = join(o.kernelHome, 'data', 'opencode', 'tool-output')
   return wrapperHead({ ...o, sha: 'sha256sum', helpers: false }) + `HS_NL='
 '
 hs_hide=''
 for hs_p in ${[o.kernelHome, ...o.secrets].map(sq).join(' ')}; do
   if [ -d "$hs_p" ]; then hs_hide="$hs_hide--tmpfs$HS_NL$hs_p$HS_NL"; elif [ -e "$hs_p" ]; then hs_hide="$hs_hide--ro-bind$HS_NL/dev/null$HS_NL$hs_p$HS_NL"; fi
 done
-[ -d ${sq(toolOutput)} ] && hs_hide="$hs_hide--ro-bind$HS_NL"${sq(toolOutput)}"$HS_NL"${sq(toolOutput)}"$HS_NL"
 hs_data=$(find "$HS_PROJECT" -xdev -type d \\( ${names} \\) -prune -print 2>/dev/null)
 IFS=$HS_NL; set -f
 hs_args="--ro-bind$HS_NL/$HS_NL/$HS_NL--dev$HS_NL/dev$HS_NL--proc$HS_NL/proc$HS_NL--unshare-pid$HS_NL--die-with-parent$HS_NL--bind$HS_NL$HS_PROJECT$HS_NL$HS_PROJECT$HS_NL"
@@ -376,7 +386,8 @@ export function prepareAgentShell(o: AgentShellOptions): AgentShell {
     if (o.socket) {
       const inner = join(dir, 'inner.sh')
       writeFileSync(inner, macosWrapper({ dir, project, realShell, runtimeBin }), { mode: 0o700 })
-      writeFileSync(join(dir, 'client.pl'), BROKER_CLIENT, { mode: 0o600 })
+      if (!o.secret || !/^[A-Za-z0-9_-]+$/.test(o.secret)) throw new Error('the shell broker needs a secret')
+      writeFileSync(join(dir, 'client.pl'), brokerClient(o.secret), { mode: 0o600 })
       writeFileSync(shell, `#!/bin/sh\n# HumanStudy agent shell: the kernel's commands start through the app (shell-broker.ts).\nexec /usr/bin/perl ${sq(join(dir, 'client.pl'))} ${sq(o.socket)} "$@"\n`, { mode: 0o700 })
       return { kind, shell, dir, inner }
     }
@@ -468,19 +479,29 @@ if _P and os.environ.get("HUMANSTUDY_AGENT_RUN") == "1":
  *  arguments and working folder, then relays the command's output (frames: 1 byte o/e/x, 4 byte length)
  *  and exits with its status. When it is killed (OpenCode's timeout, abort), the connection closes and the
  *  broker kills the command. No environment is sent: the broker uses the kernel's, minus secrets. */
-export const BROKER_CLIENT = `use strict; use warnings; use IO::Socket::UNIX; use Socket qw(SOCK_STREAM); use Cwd qw(getcwd); use JSON::PP;
+export const brokerClient = (secret: string): string => `use strict; use warnings; use IO::Socket::UNIX; use IO::Select; use Socket qw(SOCK_STREAM); use Cwd qw(getcwd); use JSON::PP;
 my $path = shift @ARGV;
 my $s = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $path) or do { print STDERR "HumanStudy: the app's shell service is not reachable ($!)\\n"; exit 125 };
-binmode $s; binmode STDOUT; binmode STDERR; $| = 1;
-print $s JSON::PP->new->utf8->encode({ args => [@ARGV], cwd => getcwd() }) . "\\n";
-sub readn { my ($n) = @_; my $buf = ''; while (length($buf) < $n) { my $r = sysread($s, my $chunk, $n - length($buf)); return undef unless $r; $buf .= $chunk } return $buf }
-while (defined(my $h = readn(5))) {
-  my ($t, $len) = unpack('a1 N', $h);
-  my $data = $len ? readn($len) : '';
-  last unless defined $data;
-  if ($t eq 'o') { syswrite(STDOUT, $data) } elsif ($t eq 'e') { syswrite(STDERR, $data) } elsif ($t eq 'x') { exit(int($data)) }
+binmode $s; binmode STDOUT; binmode STDERR; binmode STDIN; $| = 1;
+my $secret = '${secret}';
+my $terminal = (@ARGV >= 2 && $ARGV[0] eq '--terminal') ? $ARGV[1] : undef;
+my ($rows, $cols) = (24, 80);
+if (defined $terminal) { my $sz = \`stty size 2>/dev/null\`; ($rows, $cols) = ($1, $2) if $sz =~ /^(\\d+) (\\d+)/; system('stty raw -echo 2>/dev/null') }
+END { system('stty sane 2>/dev/null') if defined $terminal }
+print $s JSON::PP->new->utf8->encode(defined $terminal ? { secret => $secret, terminal => $terminal, rows => $rows + 0, cols => $cols + 0 } : { secret => $secret, args => [@ARGV], cwd => getcwd() }) . "\\n";
+my $sel = IO::Select->new($s); $sel->add(\\*STDIN) if defined $terminal;
+my $buf = '';
+while (1) {
+  for my $fh ($sel->can_read) {
+    if ($fh == \\*STDIN) { my $n = sysread(STDIN, my $in, 4096); if (!$n) { $sel->remove(\\*STDIN); next } print $s pack('a1 N', 'i', length $in) . $in; next }
+    my $n = sysread($s, my $chunk, 65536); exit 125 unless $n; $buf .= $chunk;
+    while (length($buf) >= 5) {
+      my ($t, $len) = unpack('a1 N', $buf); last if length($buf) < 5 + $len;
+      my $data = substr($buf, 5, $len); $buf = substr($buf, 5 + $len);
+      if ($t eq 'o') { syswrite(STDOUT, $data) } elsif ($t eq 'e') { syswrite(STDERR, $data) } elsif ($t eq 'x') { exit(int($data)) }
+    }
+  }
 }
-exit 125;
 `
 
 /** For tests and diagnostics: is this file the generated wrapper? */

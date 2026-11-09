@@ -7,7 +7,8 @@ import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { connect } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -47,31 +48,72 @@ test('the kernel runs sandboxed: tools cannot read participant data or other pro
     assert.match(await get('/file/content?path=program.json'), /findme/)
     assert.ok(!(await get('/find?pattern=TOPSECRET')).includes('TOPSECRET'))
     assert.ok(!(await get('/file/content?path=' + encodeURIComponent(join(other, 'o.txt')))).includes('OTHERPROJECT'))
-    // The shell: started by the app outside the kernel's sandbox, in the agent profile.
-    const shell = async command => {
-      const r = await k.request(s, 'POST', `/session/${sid}/shell`, { command, agent: 'build', model: { providerID: 'humanstudy', modelID: 'anthropic/claude-haiku-5.5' } })
-      const msg = await r.json()
-      return msg.parts.find(p => p.type === 'tool')?.state?.output ?? ''
-    }
-    const o1 = await shell(`echo shell-ok; echo $HUMANSTUDY_AGENT_SANDBOX; cat human-data/a.csv; cat program.json; curl -s http://127.0.0.1:${net.address().port}/`)
-    assert.match(o1, /shell-ok\n1\n/)
-    assert.match(o1, /Operation not permitted/)
-    assert.ok(!o1.includes('TOPSECRET'))
-    assert.match(o1, /findme/)
-    assert.match(o1, /net-ok/)
-    // The bash tool's form (`<shell> -c <command>`) through the shim and broker: a researcher-approved
-    // command runs once outside the sandbox; exit status and stderr come back. (The /shell route above is
-    // the researcher's own `!` command, which uses OpenCode's login form and stays confined.)
-    const viaShim = cmd => new Promise(resolve => {
-      const c = spawn(s.agentShell.shell, ['-c', cmd], { cwd: project })
+    // The bash tool's form (`<shell> -c <command>`, which the kernel runs) through the shim and the
+    // broker: outside the kernel's sandbox, in the agent profile.
+    const viaShim = (cmd, shell = s.agentShell.shell, cwd = project) => new Promise(resolve => {
+      const c = spawn(shell, ['-c', cmd], { cwd })
       let o = '', e = ''; c.stdout.on('data', d => { o += d }); c.stderr.on('data', d => { e += d })
       c.on('close', code => resolve({ code, o, e }))
     })
+    const o1 = await viaShim(`echo shell-ok; echo $HUMANSTUDY_AGENT_SANDBOX; cat human-data/a.csv; cat program.json; curl -s http://127.0.0.1:${net.address().port}/`)
+    assert.match(o1.o, /shell-ok\n1\n/)
+    assert.match(o1.e, /Operation not permitted/)
+    assert.ok(!o1.o.includes('TOPSECRET'))
+    assert.match(o1.o, /findme/)
+    assert.match(o1.o, /net-ok/)
+    // A researcher-approved command runs once outside the sandbox; exit status and stderr come back.
     A.approveCommandOnce(s.agentShell.dir, 'cat human-data/a.csv', project)
     assert.match((await viaShim('cat human-data/a.csv')).o, /TOPSECRET/)
     const again = await viaShim('cat human-data/a.csv')
     assert.ok(!again.o.includes('TOPSECRET') && again.code !== 0 && /not permitted/.test(again.e), 'once')
     assert.equal((await viaShim('exit 7')).code, 7)
+
+    // Review 5 regression: the researcher's own `!` command runs as the researcher (unconfined), through
+    // the app, like before the kernel was sandboxed.
+    const bang = await k.native(sid, { operation: 'shell', input: { command: 'cat human-data/a.csv; echo ${HUMANSTUDY_AGENT_SANDBOX:-researcher}' } })
+    const bangOut = bang.parts?.find(p => p.type === 'tool')?.state?.output ?? JSON.stringify(bang)
+    assert.match(bangOut, /TOPSECRET/)
+    assert.match(bangOut, /researcher/)
+    // The same login-form call without the app having sent it is refused.
+    const forged = await k.request(s, 'POST', `/session/${sid}/shell`, { command: 'cat human-data/a.csv', agent: 'build', model: { providerID: 'humanstudy', modelID: 'anthropic/claude-haiku-5.5' } }).then(r => r.json())
+    assert.ok(!JSON.stringify(forged).includes('TOPSECRET'))
+    assert.match(JSON.stringify(forged), /not allowed/)
+
+    // Review 5 regression: the Terminal view's shell is the researcher's, through a one-use ticket.
+    const terminal = (ticket, input) => new Promise(resolve => {
+      const c = spawn('/usr/bin/perl', [join(s.agentShell.dir, 'client.pl'), s.broker.socket, '--terminal', ticket], { cwd: project })
+      let o = ''; c.stdout.on('data', d => { o += d }); c.stderr.on('data', d => { o += d })
+      c.on('close', code => resolve({ code, o }))
+      c.stdin.end(input)
+    })
+    const ticket = s.broker.terminalTicket()
+    const t1 = await terminal(ticket, 'cat human-data/a.csv; echo $((6*7)); exit\n')
+    assert.match(t1.o, /TOPSECRET/)
+    assert.match(t1.o, /42/)
+    assert.match((await terminal(ticket, 'echo again; exit\n')).o, /ticket is not valid/)
+
+    // Review 5 M1: another project's broker. B is a second open project.
+    const sidB = await k.startSession(other)
+    const b = k.sessions.get(sidB).server
+    writeFileSync(join(other, 'private.txt'), 'OTHER-PROJECT-CONTENT\n')
+    const probe = `perl -MIO::Socket::UNIX -e '$s = IO::Socket::UNIX->new(Peer => shift) or die "connect: $!\\n"; print $s "{}\\n"; print <$s>' ${b.broker.socket}`
+    const cross = await viaShim(probe)
+    assert.ok(!cross.o.includes('OTHER-PROJECT') && /connect: Operation not permitted/.test(cross.e), cross.o + cross.e)
+    // Even a peer that reaches a broker needs that project's secret, a `-c` call and a folder in it.
+    const ask = (sock, req) => new Promise(resolve => {
+      const c = connect(sock); let buf = Buffer.alloc(0)
+      c.on('data', d => { buf = Buffer.concat([buf, d]) }); c.on('close', () => resolve(buf.toString('latin1'))); c.on('error', () => resolve(buf.toString('latin1')))
+      c.write(JSON.stringify(req) + '\n')
+    })
+    const secretB = /my \$secret = '([^']+)'/.exec(readFileSync(join(b.agentShell.dir, 'client.pl'), 'utf8'))[1]
+    assert.match(await ask(b.broker.socket, { secret: 'wrong', args: ['-c', 'cat private.txt'], cwd: other }), /not authorised/)
+    assert.match(await ask(b.broker.socket, { secret: secretB, args: ['-c', 'cat private.txt'], cwd: project }), /inside the project only/)
+    assert.match(await ask(b.broker.socket, { secret: secretB, args: ['-x', 'cat private.txt'], cwd: other }), /not allowed/)
+    assert.match(await ask(b.broker.socket, { secret: secretB, args: ['-c', 'cat private.txt'], cwd: other }), /OTHER-PROJECT-CONTENT/)
+    // The kernel profile: only its own socket, and no writes to what runs outside it later.
+    const profile = readFileSync(join(s.agentShell.dir, 'kernel.sb'), 'utf8')
+    assert.match(profile, /\(allow network-outbound \(remote unix-socket \(path-literal/)
+    assert.match(profile, /\(deny file-write\* \(subpath "[^"]*agent-shell[^"]*"\)/)
   } finally {
     await k.dispose()
     net.close()

@@ -41,6 +41,9 @@ export interface PolicyContext {
   realpath?: (p: string) => string
   /** Whether the project's .ignore keeps participant data out of grep/glob (agent-sandbox.ts). */
   searchIgnore?: () => boolean
+  /** OpenCode's truncated tool output files this project's own calls produced (opencode.ts); any other
+   *  file in the shared tool-output folder is another project's, or an approved command's (deleted). */
+  toolOutputs?: () => ReadonlySet<string>
   /** Participant-data folders under a search root (tests replace it). */
   findSensitive?: (root: string) => string[]
 }
@@ -91,7 +94,8 @@ export function defaultPolicyContext(dir: string, kernelHome?: string, env: Node
   const secretPaths: string[] = []
   if (kernelHome) {
     // Only OpenCode's truncated tool output: the rest of its data holds other projects' conversations.
-    allowedRoots.push(join(kernelHome, 'data', 'opencode', 'tool-output'))
+    // (OpenCode's tool-output folder is shared by every project: only this project's files are allowed,
+    // see toolOutputs.)
     secretPaths.push(join(kernelHome, 'data', 'opencode', 'auth.json'), join(kernelHome, 'config'), join(kernelHome, 'agent-shell'))
     // The app sets HUMANSTUDY_KERNEL_HOME to <userData>/kernel.
     if (/[\\/]kernel[\\/]?$/.test(kernelHome)) {
@@ -136,6 +140,7 @@ function classifyAbs(ctx: PolicyContext, abs: string, real: (p: string) => strin
   const dir = roots(ctx.dir).find(x => within(x, abs))
   if (dir !== undefined) return AGENT_CONFIG.test(relTo(dir, abs)) ? 'config' : 'project'
   if ((ctx.allowedRoots ?? []).some(inside)) return 'allowed'
+  if (ctx.toolOutputs?.().has(abs)) return 'allowed'
   return 'outside'
 }
 
@@ -540,7 +545,9 @@ function requestPaths(perm: KernelPermission): string[] {
     return [...list, ...(perm.patterns ?? [])]
   }
   if ((perm.patterns?.length ?? 0) > 1) return [...perm.patterns!]
-  for (const k of ['filepath', 'filePath', 'parentDir', 'path']) if (typeof md[k] === 'string' && md[k]) list.push(md[k] as string)
+  for (const k of ['filepath', 'filePath', 'path']) if (typeof md[k] === 'string' && md[k]) list.push(md[k] as string)
+  // parentDir only when no file is named (it is the file's folder, e.g. the shared tool-output folder).
+  if (!list.length && typeof md.parentDir === 'string' && md.parentDir) list.push(md.parentDir)
   if (Array.isArray(md.directories)) for (const d of md.directories) if (typeof d === 'string') list.push(d)
   if (list.length) return list
   return (perm.patterns ?? []).filter(p => !/^mcp:/.test(p)).map(p => p.replace(/[\\/]?\*.*$/, '') || '/')
@@ -587,7 +594,7 @@ export function classifyPermission(ctx: PolicyContext, perm: KernelPermission): 
       const at = classifyPath(ctx, where)
       const v = pathVerdict(at, where)
       if (v.decision !== 'allow') return v
-      const toolOutput = (ctx.allowedRoots ?? []).filter(r => /[\\/]tool-output$/.test(r)).some(r => classifyPath({ ...ctx, dir: r }, where) === 'project')
+      const toolOutput = ctx.toolOutputs?.().has(resolve(where)) ?? false
       if (at === 'allowed' && !toolOutput) return { decision: 'ask', reason: `a search outside the project (${where})` }
       // ripgrep gets `include` (grep) or `pattern` (glob) as --glob, and a matching --glob overrides .ignore:
       // ask when it could match a participant-data folder that exists under the search root.

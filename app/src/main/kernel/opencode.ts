@@ -447,6 +447,12 @@ export class OpencodeKernel implements Kernel {
       const hash=createHash('sha256').update(JSON.stringify(history)).digest('hex')
       if(request.input?.previewHash!==hash)throw Error('Review the current conversation before sharing. It may have changed since the preview opened.')
     }
+    // With the kernel sandboxed, the researcher's own `!` commands and Terminal run through the app's
+    // broker as the researcher (shell-broker.ts), not inside the kernel's profile.
+    const broker = s.server.broker, shellDir = s.server.agentShell?.dir
+    if (request.operation === 'shell' && broker) broker.expectResearcherCommand(String(request.input?.command ?? ''))
+    if (request.operation === 'terminalCreate' && broker && shellDir && !request.input?.command)
+      request = { ...request, input: { ...request.input, command: '/usr/bin/perl', args: [join(shellDir, 'client.pl'), broker.socket, '--terminal', broker.terminalTicket()] } }
     const defaults = { providerID: this.provider, modelID: this.model }
     const route = nativeRoute(sessionId, request, s.selection ?? {}, defaults)
     const turn = NATIVE_TURNS.has(request.operation)
@@ -587,7 +593,9 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     }
   }
   /** Policy context per project (see permission-policy.ts); tests may replace it. */
-  policyContext = (dir: string): PolicyContext => defaultPolicyContext(dir, this.home, process.env, this.sandboxedDirs.get(dir) ?? false)
+  policyContext = (dir: string): PolicyContext => ({ ...defaultPolicyContext(dir, this.home, process.env, this.sandboxedDirs.get(dir) ?? false), toolOutputs: () => this.toolOutputs.get(dir) ?? new Set() })
+  /** Per project: OpenCode's truncated tool-output files its own calls wrote (the folder is shared). */
+  private toolOutputs = new Map<string, Set<string>>()
   private verdict(dir: string, perm: KernelPermission): PolicyVerdict {
     try { return classifyPermission(this.policyContext(dir), perm) } catch { return { decision: 'ask', reason: 'could not be checked' } }
   }
@@ -772,12 +780,16 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         // macOS: the kernel runs under its own minimal profile; its shell commands reach the app's broker,
         // which starts them outside that sandbox in the agent profile (a sandbox cannot be nested).
         const socket = kind === 'sandbox-exec' && this.kernelSandbox ? brokerSocketPath(dir) : undefined
-        agentShell = prepareAgentShell({ project: dir, kernelHome: this.home, secretPaths: ctx.secretPaths, runtimeBin, kind, socket })
+        const secret = randomBytes(24).toString('base64url') // per launch; only this project's client.pl has it
+        agentShell = prepareAgentShell({ project: dir, kernelHome: this.home, secretPaths: ctx.secretPaths, runtimeBin, kind, socket, secret })
         if (socket && agentShell.inner && agentShell.dir) {
           const env = this.kernelEnv(password, transport, agentShell.shell)
-          broker = await startShellBroker({ socket, inner: agentShell.inner, env: { ...env, ...this.relayEnv(dir) } })
+          broker = await startShellBroker({
+            socket, inner: agentShell.inner, env: { ...env, ...this.relayEnv(dir) }, secret, project: dir,
+            realShell: researcherShell(), researcherEnv: researcherEnv(),
+          })
           kernelProfile = join(agentShell.dir, 'kernel.sb')
-          writeFileSync(kernelProfile, macosKernelProfile({ project: dir, kernelHome: this.home, secretPaths: kernelSecretPaths(ctx.secretPaths ?? [], this.home), projectsRoots: projectsRoots() }), { mode: 0o600 })
+          writeFileSync(kernelProfile, macosKernelProfile({ project: dir, kernelHome: this.home, secretPaths: kernelSecretPaths(ctx.secretPaths ?? [], this.home), projectsRoots: projectsRoots(), socket, agentShellDir: agentShell.dir }), { mode: 0o600 })
         }
       } catch {
         await broker?.close()
@@ -1225,13 +1237,25 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   private toolInputs = new Map<string, Record<string, unknown>>()
   /** Approval tokens by the tool call they were granted for (removed when that call ends). */
   private approvalTokens = new Map<string, string[]>()
-  private rememberToolInput(ev: OcEvent): void {
+  private rememberToolInput(ev: OcEvent, dir?: string): void {
     const part = ev.properties?.part
     if (ev.type !== 'message.part.updated' || part?.type !== 'tool' || typeof part.callID !== 'string') return
     const status = part.state?.status
     if (status === 'completed' || status === 'error') {
+      const approved = this.approvalTokens.has(part.callID)
       for (const t of this.approvalTokens.get(part.callID) ?? []) rmSync(t, { force: true })
       this.approvalTokens.delete(part.callID)
+      // Truncated output lands in OpenCode's shared tool-output folder. An approved command's output (it
+      // may hold participant data) is deleted at once; other output is readable by this project only.
+      const out = part.state?.metadata?.outputPath
+      if (typeof out === 'string' && out) {
+        if (approved) rmSync(out, { force: true })
+        else if (dir) {
+          const set = this.toolOutputs.get(dir) ?? new Set<string>()
+          set.add(resolve(out)); if (set.size > 2048) set.delete(set.values().next().value as string)
+          this.toolOutputs.set(dir, set)
+        }
+      }
     }
     const input = part.state?.input
     if (!input || typeof input !== 'object') return
@@ -1240,7 +1264,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   }
 
   private handle(ev: OcEvent, server?: Server): void {
-    this.rememberToolInput(ev)
+    this.rememberToolInput(ev, server?.dir)
     const p = ev.properties ?? {}
     const sessionId: string | undefined = p.sessionID ?? p.part?.sessionID ?? p.info?.sessionID
     if (!sessionId) return
@@ -1459,6 +1483,19 @@ type OcEvent = { type: string; properties?: any }
 const isDefaultTitle = (t: string): boolean => /^(new session|child session)\b/i.test(t) || t === 'HumanStudy'
 
 /** opencode `permission.asked` properties -> KernelPermission. */
+/** The researcher's own login shell (for `!` commands and the Terminal view, which run as the researcher). */
+function researcherShell(): string {
+  const s = process.env.SHELL?.trim()
+  return s && /^\/.*\/(bash|zsh|sh|dash|ksh|fish)$/.test(s) ? s : '/bin/zsh'
+}
+
+/** The researcher's environment for their own commands: the app's, without its keys and tokens. */
+function researcherEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  for (const k of Object.keys(env)) if (/KEY|TOKEN|SECRET|PASSW|CREDENTIAL|BYPASS/i.test(k) || /^(OPENCODE_|HUMANSTUDY_RELAY|ELECTRON_)/.test(k)) delete env[k]
+  return env
+}
+
 /** The app's credential files the kernel never reads (its own config and auth.json it does need). */
 function kernelSecretPaths(secrets: string[], kernelHome: string): string[] {
   return secrets.filter(p => !p.startsWith(join(kernelHome, 'config')) && !p.startsWith(join(kernelHome, 'data')) && !p.startsWith(join(kernelHome, 'agent-shell')))

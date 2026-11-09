@@ -19,10 +19,10 @@ process.on('exit', () => rmSync(out, { recursive: true, force: true }))
 
 const mac = process.platform === 'darwin' && A.agentSandboxKind() === 'sandbox-exec'
 
-test('the macOS profile denies participant data in any case and keeps the tool-output exception last', () => {
+test('the macOS profile denies participant data in any case; the shared tool-output folder has no exception', () => {
   const p = A.macosAgentProfile({ project: '/p', kernelHome: '/k', home: '/h', temps: ['/private/tmp'], secretPaths: ['/u/account.json'] })
   assert.match(p, /\(deny file-read-data \(regex #"\/\(\[hH\]\[uU\]\[mM\]\[aA\]\[nN\]-\[dD\]\[aA\]\[tT\]\[aA\]\|/)
-  assert.ok(p.indexOf('(allow file-read-data (subpath "/k/data/opencode/tool-output"))') > p.indexOf('(deny file-read-data'))
+  assert.ok(!p.includes('tool-output'))
   assert.match(p, /\(subpath "\/h\/\.ssh"\)/)
   assert.match(p, /\(subpath "\/u\/account\.json"\)/)
   assert.match(p, /\(deny process-info\*\)/)
@@ -111,7 +111,8 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
     // Ordinary work is untouched: project files, the researcher's private sources, tool output, temp.
     assert.equal((await run('cat program.json')).out.trim(), '{}')
     assert.equal((await run('cat sources/private/si.txt')).out.trim(), 'private-ok')
-    assert.equal((await run(`cat "${kernelHome}/data/opencode/tool-output/t1"`)).out.trim(), 'tool-output-ok')
+    // Review 5: OpenCode's tool-output folder is shared by every project, so the shell cannot read it.
+    assert.ok(!(await run(`cat "${kernelHome}/data/opencode/tool-output/t1"`)).out.includes('tool-output-ok'))
     assert.equal((await run('mkdir -p artifacts && echo ok > artifacts/x.txt && cat artifacts/x.txt')).out.trim(), 'ok')
     assert.equal((await run('f=$(mktemp) && echo tmp-ok > "$f" && cat "$f" && rm "$f"')).out.trim(), 'tmp-ok')
     // Writes outside the project, into the agent's configuration, into participant data: refused.
@@ -172,7 +173,10 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
       // the agent's configuration, or without the relay (review 2 M1).
       for (const c of ['python3 .opencode/skills/simulate/run_confined.py --no-model .opencode/skills/export/agent/study_core.py --root reproduce overview',
         'python3 .opencode/skills/simulate/run_confined.py --no-model .opencode/skills/export/agent/study_core.py --root . reproduce overview',
-        'python3 .opencode/skills/build/recorded_answers.py --child package/p', 'python3 .opencode/skills/build/check_validity.py --capture package/p',
+        'python3 .opencode/skills/build/recorded_answers.py --child package/p',
+        // Review 5 M3: interpreter flags that would drop the in-process guard.
+        'python3 -I .opencode/skills/build/check_readiness.py .', 'python3 -E .opencode/skills/build/check_readiness.py .',
+        'python3 -s .opencode/skills/build/check_readiness.py .', 'python3 -S .opencode/skills/build/check_readiness.py .', 'python3 -B .opencode/skills/build/check_readiness.py .', 'python3 .opencode/skills/build/check_validity.py --capture package/p',
         'python3 .opencode/skills/build/check_validity.py --probe package/p', 'python3 .opencode/skills/build/audit.py --probe package/p', 'python3 .opencode/skills/build/audit.py --workdir x .',
         'python3 .opencode/skills/build/check_replies.py --smoke-child package/p', 'python3 .opencode/skills/simulate/run_confined.py --no-model artifacts/x.py',
         'python3 .opencode/skills/simulate/run_confined.py --no-model .opencode/skills/export/agent/study_core.py --root . human-data',

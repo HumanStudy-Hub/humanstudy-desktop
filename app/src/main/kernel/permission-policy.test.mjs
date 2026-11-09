@@ -17,7 +17,8 @@ const proj = '/Users/r/Documents/HumanStudy Projects/stroop'
 const kernelHome = '/Users/r/Library/Application Support/HumanStudy/kernel'
 const runtimeEnv = { HUMANSTUDY_RUNTIME_BIN: '/Users/r/Library/Application Support/HumanStudy/runtime/v3/bin' }
 // macOS / Linux with bubblewrap: the agent's shell runs in the OS sandbox.
-const ctx = { ...defaultPolicyContext(proj, kernelHome, runtimeEnv, true), home: '/Users/r' }
+const ownOutput = join(kernelHome, 'data/opencode/tool-output/tool_1')
+const ctx = { ...defaultPolicyContext(proj, kernelHome, runtimeEnv, true), home: '/Users/r', toolOutputs: () => new Set([ownOutput]) }
 // Windows / Linux without bubblewrap.
 const bare = { ...defaultPolicyContext(proj, kernelHome, runtimeEnv, false), home: '/Users/r' }
 const P = (type, patterns, metadata = {}) => ({ id: 'per_1', type, patterns, metadata })
@@ -146,6 +147,9 @@ test('review should-fix: environment dumps ask', () => {
 
 test("review should-fix: the kernel's data is narrowed to tool output; the agent's configuration asks before edits", () => {
   assert.equal(classifyPath(ctx, join(kernelHome, 'data/opencode/tool-output/tool_1')), 'allowed')
+  // Review 5: the tool-output folder is shared by every project; another project's file asks.
+  assert.equal(classifyPath(ctx, join(kernelHome, 'data/opencode/tool-output/tool_2')), 'outside')
+  assert.equal(classifyPermission(ctx, P('external_directory', ['x'], { filepath: join(kernelHome, 'data/opencode/tool-output/tool_2'), parentDir: join(kernelHome, 'data/opencode/tool-output') })).decision, 'ask')
   assert.equal(classifyPath(ctx, join(kernelHome, 'data/opencode/storage/session/other.json')), 'outside')
   assert.equal(bash(`cat "${kernelHome}/data/opencode/storage/message/x.json"`), 'ask')
   assert.equal(bash(`cat "${kernelHome}/agent-shell/abc/approved/x"`), 'deny')
@@ -222,7 +226,7 @@ test('review 3: grep/glob filters that would override .ignore, apply_patch file 
     assert.equal(grep('*', join(p, 'src')), 'allow', 'no participant folder under that root')
     // Temp folders can hold study copies (audit.py): only OpenCode's tool output is searched freely.
     assert.equal(grep(undefined, tmpdir()), 'ask')
-    const k = { ...defaultPolicyContext(p, '/Users/r/Library/Application Support/HumanStudy/kernel', {}, true), home: '/Users/r' }
+    const k = { ...defaultPolicyContext(p, '/Users/r/Library/Application Support/HumanStudy/kernel', {}, true), home: '/Users/r', toolOutputs: () => new Set(['/Users/r/Library/Application Support/HumanStudy/kernel/data/opencode/tool-output/tool_1']) }
     assert.equal(classifyPermission(k, P('grep', ['x'], { pattern: 'x', path: '/Users/r/Library/Application Support/HumanStudy/kernel/data/opencode/tool-output/tool_1' })).decision, 'allow')
     // apply_patch: one request, several files; every one is checked (review 3 item 3).
     const patch = (...rels) => classifyPermission(c, P('edit', rels, { filepath: rels.join(', '), files: rels.map(r => ({ filePath: join(p, r), relativePath: r, type: 'update' })) })).decision

@@ -18,23 +18,43 @@ The OpenCode kernel process runs under `sandbox-exec` with a minimal profile (`m
   `HUMANSTUDY_PROJECTS_ROOT`, plus the default and earlier default roots), except this project;
 - preference writes, LaunchServices (`open`), Apple events and the clipboard.
 
-Everything else stays as before: the network, the kernel's own data folder, its tool-output files and
-writes. So every OpenCode tool is confined at the root, whatever its path checks miss. That covers read,
+It also denies writes to what later runs outside it:
+- the agent-shell folder (wrapper, profiles, approval tokens, guard);
+- the brokers' folder;
+- shell start-up files and launch agents.
+
+It may connect only to its own broker socket. Everything else stays as before: the network, the
+kernel's own data folder and its other writes. So every OpenCode tool is confined at the root, whatever its path checks miss. That covers read,
 list, grep and glob (including any `include` filter), apply_patch, lsp and plugins.
 
 A macOS sandbox is inherited by every child and cannot be nested. The kernel's shell is therefore a
-small client (`BROKER_CLIENT`, system perl). It sends the arguments and folder over a unix socket in
-`~/.humanstudy/run/` to the app's shell broker (`shell-broker.ts`):
+small client (`brokerClient`, system perl). It sends the arguments and folder over a unix socket in
+`~/.humanstudy/run/` to the app's shell broker (`shell-broker.ts`). The broker serves exactly three
+kinds of request, and refuses anything else:
 
-- The broker starts the agent-shell wrapper outside the kernel's sandbox, with the kernel's
-  environment minus its secrets, and relays output and exit status.
-- Closing the connection (timeout, abort) kills the command.
-- The agent profile denies connecting to that socket, so a confined command cannot reach the broker.
+- **The bash tool** (`-c <command>`, nothing else): the agent-shell wrapper, outside the kernel's
+  sandbox, with the kernel's environment minus its secrets.
+- **The researcher's `!` command**: OpenCode's login form, but only for a command the app itself has
+  just sent (`expectResearcherCommand`, one use). It runs in the researcher's own shell, unconfined,
+  as before the kernel was sandboxed.
+- **The Terminal view**: the app replaces the terminal's command with the client in terminal mode and a
+  one-use ticket. The broker starts the researcher's login shell under a pseudo-terminal of its own
+  (`PTY_HELPER`, macOS `/dev/ptmx` ioctls), unconfined, and relays input. The window size is set once
+  when the terminal opens; later resizes do not reach the shell.
+
+Every request carries a per-launch secret that only that project's `client.pl` holds. The agent profile
+cannot read the kernel folder, and the broker compares the secret in constant time. The folder must be
+inside the project. Neither profile may connect to the brokers' folder `~/.humanstudy/run`; the kernel
+profile makes one exception, its own socket. Closing a connection (timeout, abort) kills the command.
 
 A participant-data read by an OpenCode tool fails even after the researcher approves it, because the
 kernel cannot read the folder. The agent uses a shell command for such a read. Once approved, that
-command runs outside both sandboxes. The researcher's own `!` commands use OpenCode's login form and
-stay in the agent profile.
+command runs outside both sandboxes.
+
+OpenCode keeps truncated tool output (over 2000 lines or 50 KB) in one folder for all projects
+(`<kernel>/data/opencode/tool-output`, kept 7 days). The agent's shell cannot read it. The read tool
+reaches only files this project's own calls produced: the app records each `outputPath`. The output of
+a command the researcher approved is deleted as soon as that call ends.
 
 Linux keeps the kernel unconfined (bubblewrap nesting under user namespaces was not available to test).
 `HUMANSTUDY_KERNEL_SANDBOX_OFF=1` switches the kernel profile off for development.
@@ -63,8 +83,9 @@ named like the real shell so OpenCode's shell handling is unchanged). The wrappe
 3. runs the app's helpers that confine package code themselves outside the sandbox, because a macOS
    sandbox cannot be nested (`sandbox_apply: Operation not permitted`). This happens only on macOS, and
    only when all of these hold:
-   - it is one plain command (`python .opencode/skills/...py args`: no quotes, `$`, `;`, `&`, `|`,
-     redirection or globs), run from the project folder, with the managed runtime's python;
+   - it is one plain command (`python .opencode/skills/...py args`: no interpreter flags such as `-I`,
+     `-E`, `-s` or `-S`, which would drop the guard below; no quotes, `$`, `;`, `&`, `|`, redirection or
+     globs), run from the project folder, with the managed runtime's python;
    - every shipped helper script in the project matches the hashes of the app's own copy
      (`trustedHelperHashes()` in pack.ts; refreshPack restores them);
    - it uses only the arguments in `HELPER_FLAGS` (agent-sandbox.ts): relative paths inside the project
@@ -130,7 +151,7 @@ existence (`stat`) stays visible. Otherwise, such a command cannot:
   `~/.config/git`. That covers shell history, other projects, and other apps' tokens and data. It also
   means a python or node installed under the home folder (pyenv, nvm) cannot run;
 - read or write the kernel's own folder (other projects' conversations, its config, the wrapper and
-  approval tokens), except OpenCode's tool-output files;
+  approval tokens), tool output included;
 - write any app's preferences (`defaults write`, CFPreferences: cfprefsd would write them on its
   behalf, for example a Terminal start command), or read the clipboard;
 - connect to the app's shell broker;
@@ -175,8 +196,9 @@ Everything else asks, including every helper that runs package code.
 
 Git: the kernel's environment (and the wrapper) sets `GIT_CONFIG_COUNT`, so every git the kernel starts
 runs with `core.fsmonitor=false` and `core.hooksPath=/dev/null`. A project's `.git/config` therefore
-cannot make OpenCode's own `git status` run code. The researcher's own terminal (the Terminal view) runs
-their login shell, not the wrapper, and their own git is not covered.
+cannot make OpenCode's own `git status` run code. The researcher's own terminal (the Terminal view) and
+`!` commands run their login shell as the researcher, through the broker, not in either profile. Their
+own git is not covered.
 
 OpenCode's own tools (read, list, edit, write, grep, glob, lsp) run in the kernel process, not in the
 shell, so the OS sandbox does not cover them. Instead, every one of their requests comes to the app.
@@ -196,9 +218,8 @@ participant-data folders under the search root, and asks when the filter could m
 
 The match over-approximates: every `[...]` class counts as any one character, an unbalanced `[` counts
 as matching, `{a,b}` is expanded, and `**` is honoured. So `*`, `**`, `**/*`, `{*}`, `?*`, `[!]]*` or
-`sub/**` ask, and `*.csv`, `**/*.py` or `src/**` do not. Outside the project
-only OpenCode's tool-output files are searched without asking, because temp folders can hold study
-copies.
+`sub/**` ask, and `*.csv`, `**/*.py` or `src/**` do not. Outside the project, only this project's own
+tool-output files are searched without asking, because temp folders can hold study copies.
 
 apply_patch asks once for several files, with their names joined by ", " in `filepath`. The app checks
 every `files[].filePath` and `movePath` and every pattern, and never the joined string.
@@ -220,7 +241,7 @@ OpenCode sends the app a `permission.asked` for every request (inline config `PE
 
 | Verdict | What the app does | Examples |
 |---|---|---|
-| allow | answers `once` itself (never `always`, so switching Auto off takes effect at once) | edits and commands inside the project, including `sources/private/` and `sources/researcher/` (the researcher's own materials the build needs); temp dirs; OpenCode's tool-output files; the managed runtime; `webfetch`, `curl https://… -o sources/open/…`; subagents |
+| allow | answers `once` itself (never `always`, so switching Auto off takes effect at once) | edits and commands inside the project, including `sources/private/` and `sources/researcher/` (the researcher's own materials the build needs); temp dirs; this project's own tool-output files; the managed runtime; `webfetch`, `curl https://… -o sources/open/…`; subagents |
 | ask | shows the permission card in the conversation, with the reason | participant data in any spelling the text shows (`cd human-data && cat a.csv`, `cat h*/a.csv`, `HUMAN-DATA/`, `D=human-data; cat $D/a.csv`, `find -path "*human*"`, `cd sources && cat ../human-data/x`, `$(...)` inner commands); paths outside the project, including `~`, `$HOME`, `${HOME}`; key files; `printenv`, `env`/`env -0`, `set`, `export`/`declare -p`, `ps eww`/`ps -E`, `$…KEY`/`TOKEN`/`$OPENCODE_*`, `os.environ[...]`/`getenv`; `git push` in every spelling (`git -C . push`, `git -c k=v push`), `git config alias.*`/`remote.*`/`credential.*`/`core.sshCommand`/`core.hooksPath`, `git remote add`; `npm --registry x publish`, `gh release`/`api`; `ssh`/`scp`/`rsync host:`/`nc`/`socat`; uploads (`curl -T/-F @/-d @/--json @/-K`, `wget --post-file`); `sudo`; edits (also through a symlink) of `opencode.json`, `.opencode/**`, `.git/**`, `.ignore`; reads, lists, lsp, grep and glob into participant data (symlinks resolved); without an OS sandbox, everything outside the allowlist; OpenCode's `doom_loop` prompt after 3 automatic answers in one turn |
 | deny | rejects with a message (OpenCode continues the turn and tells the model why) | the app's `account.json`, `credentials.json`, `settings.json`, `run-relays/`, the kernel's `auth.json` and `config/`, the agent-shell folder; `security find-*-password` (keychain) |
 
@@ -275,4 +296,9 @@ What is not protected:
   consent.
 - Without any OS sandbox (Windows, Linux without bubblewrap): everything outside the allowlist asks,
   but the protection for an allowed command still rests on reading its text.
-- The researcher's terminal, and any command the researcher approves. These run unconfined by design.
+- The researcher's terminal, their `!` commands, and any command the researcher approves. These run
+  unconfined by design.
+- The kernel process can still read its own data folder. That folder holds other projects' snapshot
+  repositories and `opencode.db` with every project's conversations. It cannot be split per project
+  without moving session storage. OpenCode's tools reach it only through the policy, which asks for a
+  path outside the project.
