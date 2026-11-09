@@ -3,7 +3,7 @@
 //   node --test src/main/pack.test.mjs
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -299,7 +299,8 @@ print(json.dumps({'status': meta['status'], 'completed': meta['participants']['c
   assert.equal(r.status, 0, r.stdout)
   assert.match(r.stdout, /^PASS .*protocol embedded/m)
   const summary = JSON.parse(readFileSync(join(proj, run, 'summary.json'), 'utf8'))
-  assert.deepEqual([summary.route, summary.outcome, summary.perCondition, summary.calls], ['protocol', 'not_replicated', 5, 20])
+  // 5 per arm against the paper's 10: non_official, so the tab's headline is the neutral "Finished" (review 3, M1).
+  assert.deepEqual([summary.route, summary.outcome, summary.official, summary.perCondition, summary.calls], ['protocol', 'unknown', false, 5, 20])
   // A record holds only what f saw and did; the arm stays on the operator side.
   const record = JSON.parse(readFileSync(join(proj, run, 'records.jsonl'), 'utf8').split('\n')[0])
   assert.ok(!JSON.stringify(record).includes('treatment') && !JSON.stringify(record).includes('"arm"'))
@@ -494,4 +495,165 @@ print(json.dumps({'status': meta['status'], 'app': meta.get('app')}))`, run], { 
   assert.ok(!existsSync(join(proj, run, 'results.html')), 'no comparison is drawn from a stopped run')
   assert.ok(existsSync(join(proj, run, 'STOP')), 'STOP stays')
   assert.match(last(play(proj, run)).refused, /stopped this run/, 'and the run does not restart without a new approval')
+})
+
+// Review 3.
+test('review 3 M2: the budget counts the exact JSON body humanstudy_llm sends (CJK escaped), as the relay charges it', { skip: !python311 }, async () => {
+  const proj = await protocolProject()
+  const r = spawnSync(python311, ['-B', '-c', `import sys, json; sys.path.insert(0, '.opencode/skills/run'); sys.path.insert(0, '.opencode/../' + sys.argv[1])
+import budget
+page_en, page_zh = 'Which do you prefer?' * 10, '你更喜欢哪一个？' * 10
+body = lambda page: json.dumps({"model": budget.MODEL_PLACEHOLDER, "messages": [{"role": "system", "content": "S"}, {"role": "user", "content": page}], "temperature": 1.0, "max_tokens": 512}).encode("utf-8")
+print(json.dumps({"zh": budget.call_charge("S", page_zh), "zh_body": len(body(page_zh)), "zh_utf8": len(page_zh.encode("utf-8")), "en": budget.call_charge("S", page_en), "en_body": len(body(page_en))}))`, ''], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  const b = JSON.parse(r.stdout)
+  assert.equal(b.zh, b.zh_body + 2 * 256 + 512, 'exactly the body the relay sees, + messages + output')
+  assert.equal(b.en, b.en_body + 2 * 256 + 512)
+  assert.ok(b.zh_body - b.en_body > b.zh_utf8, 'a CJK page costs its \\uXXXX escapes (6 bytes a character), not its 3 UTF-8 bytes')
+  // The same serialisation as the runtime's client: humanstudy_llm.chat sends json.dumps(body) with ensure_ascii on.
+  assert.match(readFileSync(join(packDir, 'runtime/lib/humanstudy_llm.py'), 'utf8'), /data = json\.dumps\(body\)\.encode\("utf-8"\)/)
+  // A CJK protocol measures larger than the same protocol in English.
+  const zh = await protocolProject()
+  const p = JSON.parse(readFileSync(join(zh, 'protocol.json'), 'utf8'))
+  p.stages.q.responses[0].prompt = '你更喜欢哪一个？'.repeat(20)
+  writeFileSync(join(zh, 'protocol.json'), JSON.stringify(p))
+  const measure = (dir) => {
+    const scratch = mkdtempSync(join(tmpdir(), 'budget-'))
+    const m = spawnSync(python311, ['-B', '.opencode/skills/run/budget.py', dir, scratch], { cwd: dir, encoding: 'utf8' })
+    assert.equal(m.status, 0, m.stderr)
+    return JSON.parse(m.stdout.trim().split('\n').at(-1)).arms.control.tokens_per_member
+  }
+  const en = await protocolProject()
+  const pe = JSON.parse(readFileSync(join(en, 'protocol.json'), 'utf8'))
+  pe.stages.q.responses[0].prompt = 'Which do you prefer?'.repeat(20)
+  writeFileSync(join(en, 'protocol.json'), JSON.stringify(pe))
+  assert.ok(measure(zh) > measure(en) + 20 * 8 * 2, 'each of 160 CJK characters costs 6 bytes on every page that shows it')
+})
+
+test('review 3 M1/S7: the headline follows hsenv.score: Finished unless official; official = direction agreement; partial shows no verdicts', { skip: !python311 }, async () => {
+  const proj = await protocolProject()
+  const r = spawnSync(python311, ['-B', '-c', `import sys, json; sys.path.insert(0, '.opencode/skills/run'); import protocol_report as P
+table = [{"same_direction": True}]
+reward = lambda passed: {"evaluation": {"plan": {"official": True}, "rewards": {"direction_match-v2": {"passed": passed, "value": 1.0}}}}
+out = {"non_official": P.outcome(table, {"evaluation": {"plan": {"official": False}}}),
+       "no_plan": P.outcome(table, {}),
+       "official_pass": P.outcome(table, reward(True)), "official_fail": P.outcome(table, reward(False)),
+       "official_none": P.outcome(table, reward(None)), "partial": P.outcome(table, reward(True), partial=True),
+       "para_non_official": P.paragraph([], {"evaluation": {"plan": {"official": False}}}),
+       "card_partial": P.scores_card({"evaluation": {"plan": {"official": True}, "rewards": {"direction_match-v2": {"passed": True, "value": 1.0}}, "text_report": ["passed=True"]}}, None, partial=True)}
+print(json.dumps(out))`], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  const o = JSON.parse(r.stdout)
+  assert.deepEqual([o.non_official, o.no_plan, o.official_pass, o.official_fail, o.official_none, o.partial], ['unknown', 'unknown', 'agree', 'disagree', 'unknown', 'not_ready'])
+  assert.match(o.para_non_official, /Offline report · non_official/)
+  assert.match(o.card_partial, /no verdict \(partial run\)/)
+  assert.ok(!/>passed</.test(o.card_partial) && !o.card_partial.includes('passed=True'), 'no pass/fail on a partial run')
+  // The tab words agree/disagree as direction agreement, never as "showed the effect".
+  const dictOut = mkdtempSync(join(tmpdir(), 'dict-'))
+  await build({ entryPoints: [join(here, '../renderer/i18n-dict.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(dictOut, 'dict.mjs'), logLevel: 'error' })
+  await build({ entryPoints: [join(here, '../shared/simulation-run.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(dictOut, 'sim.mjs'), logLevel: 'error' })
+  const { EN } = await import(pathToFileURL(join(dictOut, 'dict.mjs')).href)
+  const SR = await import(pathToFileURL(join(dictOut, 'sim.mjs')).href)
+  assert.match(EN['sim.outcome.agree'], /^Directions agreed with the paper \(official n/)
+  assert.ok(!/effect/.test(EN['sim.outcome.agree'] + EN['sim.outcome.disagree']))
+  assert.equal(SR.parseSummary(JSON.stringify({ outcome: 'agree', paragraph: 'x' })).outcome, 'agree')
+  assert.equal(SR.parseSummary(JSON.stringify({ outcome: 'disagree', paragraph: 'x' })).outcome, 'disagree')
+})
+
+test('review 3 S6/S8: a partial run is never "done" (even when its page fails); the cap is HTTP 402, not any 402', { skip: !python311 }, async () => {
+  const { proj, run } = await runFixture(2)
+  const r = spawnSync(python311, ['-B', '-c', `import sys, json; from pathlib import Path
+sys.path.insert(0, '.opencode/skills/run'); import app_run, protocol_report
+run = Path(sys.argv[1]).resolve(); seen = []
+orig = app_run.write_progress
+app_run.write_progress = lambda d, stage, msg: (seen.append(stage), orig(d, stage, msg))
+def boom(*a, **k): raise RuntimeError('page failed')
+protocol_report.build = boom
+calls = [0]
+def complete(messages):
+    calls[0] += 1
+    if calls[0] == 3: raise RuntimeError('LLMError: model call failed after 1 attempt(s): HTTP 402: Run token cap reached.')
+    return '{"r1": "o1"}' if 'r1' in messages[-1]['content'] else '{}'
+try:
+    app_run.main_run(run, Path('.').resolve(), complete=complete, model='stub')
+except RuntimeError:
+    pass
+p = json.loads((run / 'progress.json').read_text())
+print(json.dumps({'seen': seen, 'stage': p['stage'], 'message': p['message'],
+  'cap': [bool(app_run.TOKEN_CAP.search(t)) for t in ('HTTP 402: Run token cap reached.', 'item 1402 failed', 'HTTP 4020', 'token cap')]}))`, run], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  const o = JSON.parse(r.stdout.trim().split('\n').at(-1))
+  assert.ok(!o.seen.includes('done'))
+  assert.equal(o.stage, 'failed')
+  assert.match(o.message, /Partial run: .*approved token budget.*The results page could not be written: page failed/)
+  assert.deepEqual(o.cap, [true, false, false, true])
+  const progress = readFileSync(join(proj, run, 'progress.json'), 'utf8')
+  assert.ok(!/"stage": "done"/.test(progress))
+})
+
+test('review 3 S2: one runner per run folder; a second start refuses while the first lives, a resume waits for it', { skip: !python311 || process.platform === 'win32' }, async () => {
+  const { proj, run } = await runFixture(2)
+  const hash = sha(join(proj, 'protocol.json'))
+  // Hold the run's lock in a first process, as a live run does.
+  const holder = spawn(python311, ['-B', '-c', `import sys, time; from pathlib import Path
+sys.path.insert(0, '.opencode/skills/run'); import app_run
+with app_run.RunLock(Path(sys.argv[1]).resolve()):
+    print('held', flush=True); time.sleep(float(sys.argv[2]))`, run, '6'], { cwd: proj })
+  await new Promise((res) => holder.stdout.once('data', res))
+  const lockText = readFileSync(join(proj, run, 'run.lock'), 'utf8')
+  assert.match(lockText, /"pid": \d+, "startedAt": "\d{4}-/)
+  const bound = (runId, at = Date.now()) => ({ HUMANSTUDY_RUN_ROUTE: 'protocol', HUMANSTUDY_RUN_ID: runId, HUMANSTUDY_RUN_PROTOCOL_SHA256: hash, HUMANSTUDY_RUN_APPROVED_AT: String(at) })
+  assert.match(last(play(proj, run, { env: bound('a') })).refused, /still running in another process \(\{"pid": \d+/, 'same approval')
+  assert.match(last(play(proj, run, { env: bound('b') })).refused, /still running in another process/, 'a new approval')
+  // After Stop, a fresh approval's resume waits for the old process to end, then runs.
+  writeFileSync(join(proj, run, 'STOP'), 'Stopped by the researcher\n')
+  const started = Date.now()
+  const resumed = last(play(proj, run, { env: bound('c', Date.now() + 1000) }))
+  assert.equal(resumed.status, 'done', JSON.stringify(resumed))
+  assert.ok(Date.now() - started >= 2000, 'it waited for the first process')
+  holder.kill()
+})
+
+test('review 3 S4: every desktop path sets HSENV_PRIVATE_CONFIG empty', { skip: !python311 }, async () => {
+  const proj = await protocolProject()
+  for (const mod of ['run/app_run', 'run/budget', 'preview/make_preview']) {
+    const [dir, name] = mod.split('/')
+    const r = spawnSync(python311, ['-B', '-c', `import os, sys; sys.path.insert(0, '.opencode/skills/${dir}'); import ${name}; print(repr(os.environ['HSENV_PRIVATE_CONFIG']))`],
+      { cwd: proj, encoding: 'utf8', env: { ...process.env, HSENV_PRIVATE_CONFIG: '/planted/engine-private.json' } })
+    assert.equal(r.stdout.trim(), "''", mod + ': ' + r.stderr)
+  }
+  for (const [file, pattern] of [['skills/simulate/run_confined.py', /'HSENV_PRIVATE_CONFIG': ''\}\)/], ['skills/simulate/simkit.py', /'HSENV_PRIVATE_CONFIG': ''\}\)/]])
+    assert.match(readFileSync(join(packDir, file), 'utf8'), pattern, file)
+  assert.match(readFileSync(join(here, 'kernel/opencode.ts'), 'utf8'), /HSENV_PRIVATE_CONFIG: '',/)
+  assert.match(readFileSync(join(here, 'protocol-readiness.ts'), 'utf8'), /HSENV_PRIVATE_CONFIG: '',/)
+})
+
+test('review 3 S3: app-owned files are put back before a run; the approval path calls it before the relay', async () => {
+  const proj = mkdtempSync(join(tmpdir(), 'proj-'))
+  await P.installPack(proj)
+  const app = join(proj, '.opencode/skills/run/app_run.py')
+  writeFileSync(app, 'def check_approval(*a): return "anything"\n')
+  writeFileSync(join(proj, '.opencode/hsenv/hsenv/score.py'), '# edited')
+  const own = join(proj, '.opencode/skills/visualize/SKILL.md')
+  writeFileSync(own, 'my own rules')
+  await P.refreshAppOwned(proj)
+  assert.equal(readFileSync(app, 'utf8'), readFileSync(join(packDir, 'skills/run/app_run.py'), 'utf8'))
+  assert.equal(readFileSync(join(proj, '.opencode/hsenv/hsenv/score.py'), 'utf8'), readFileSync(join(packDir, 'runtime/hsenv/hsenv/score.py'), 'utf8'))
+  assert.equal(readFileSync(own, 'utf8'), 'my own rules', 'researcher instructions are not touched')
+  const index = readFileSync(join(here, 'index.ts'), 'utf8')
+  const send = index.slice(index.indexOf("ipcMain.handle('kernel:send'"))
+  assert.ok(send.indexOf('await refreshAppOwned(projectDir)') > 0 && send.indexOf('await refreshAppOwned(projectDir)') < send.indexOf('startModelRelay('))
+})
+
+test('review 3 S1: the sync guard refuses a study surname in a comment, not in code', () => {
+  const up = mkdtempSync(join(tmpdir(), 'sandbox-'))
+  mkdirSync(join(up, 'skills/run'), { recursive: true })
+  mkdirSync(join(up, 'hsenv/studies/zorbel2019widgets'), { recursive: true })
+  mkdirSync(join(up, 'hsenv/studies/li2020x'), { recursive: true })
+  for (const f of ['run_study.py', 'fspec.py', 'render.py']) writeFileSync(join(up, 'skills/run', f), '# clean, li\nzorbel_count = 1\n')
+  writeFileSync(join(up, 'skills/run/render.py'), 'x = 1  # as in Zorbel S2b\n')
+  const r = spawnSync('bash', [join(packDir, '../scripts/sync_hsenv.sh'), 'run', join(up, 'skills')], { encoding: 'utf8' })
+  assert.notEqual(r.status, 0)
+  assert.match(r.stderr, /render\.py:1: study surname in a comment: Zorbel/)
+  assert.ok(!/fspec\.py|run_study\.py/.test(r.stderr), 'an identifier and a short surname (li) are not flagged')
 })

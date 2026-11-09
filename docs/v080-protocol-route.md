@@ -88,6 +88,8 @@ one call per page, and each prompt carries every earlier page and answer.
   keeps the largest member per arm, adds a 1.5x margin and records group sizes.
   - The fixture needs about 4,700 tokens per participant, a 33-page survey about 180,000, and a 4-person game
     about 2,000,000 per member.
+- The measurement counts each call's exact request body as `humanstudy_llm.chat` serialises it: JSON with
+  `ensure_ascii` on, so a CJK character costs 6 bytes, not 3. Newlines and quotes are escaped too (review 3, M2).
 - `protocolRunLimits` (shared) turns the budget into the relay's cap: per arm × group size × tokens per member,
   plus a one-per-arm trial. It is capped by the hard ceiling of 16,000,000. Minutes come from the calls.
 - The Simulation tab shows the figure ("Model budget") and sends it as `plan.tokenBudget`. The main process
@@ -106,8 +108,23 @@ run:
 - a stopped run (STOP or progress `stopped`) restarts only under an approval given after the stop, recorded in
   `plan.json.resumedAfterStop`. STOP is never deleted otherwise.
 
+The agent cannot forge the descriptor. The checks that read it, and the scores, run from the project's
+`.opencode` copy of the app's code, which the agent can edit. So before every approved run, the main process puts
+every app-owned file back at the shipped version (`refreshAppOwned`) before any model access exists. The token cap
+in the relay stays the hard bound in any case (review 3, S3).
+
+**One runner per run folder (review 3, S2).** `app_run` takes an OS lock on `<run>/run.lock` for the life of its
+process (fcntl, or msvcrt on Windows), with its pid and start time written in.
+- A second start under the same approval or a new one refuses while the first process lives.
+- A resume after Stop waits up to 120 s for the stopped process to exit, then refuses.
+- The lock is released however the process ends.
+
+**Private engine config (review 3, S4).** `HSENV_PRIVATE_CONFIG=''` is set on every desktop path: the readiness
+gate, the agent's environment (kernel), run_confined (relay and unconfined), simkit `start`, and `app_run.py`,
+`budget.py` and `make_preview.py` before any engine import.
+
 **Stop.** The researcher's Stop writes STOP into the run folder through `project:writeText`, and the main process
-then closes every run relay of that project at once (`run-stop.ts`), so no further model call can succeed. The run
+then closes every run relay of that project at once (`run-stop.ts`, which matches projects by real path), so no further model call can succeed. The run
 ends after the pages in flight, with stage `stopped`:
 - `run.json` `app` records what finished;
 - `partial.jsonl` records each participant that was still in progress, with status `partial`;
@@ -121,6 +138,19 @@ protocol's checks and its budget, not by the program's section 12.
 
 On Linux and Windows there is no relay. There, only plan.json's hash and STOP are checked: a stopped run is never
 resumed.
+
+**Headline (review 3, M1).** The Simulation tab's headline for a protocol run follows `hsenv.score`, not the sign
+table:
+- a partial run shows "The comparison could not be made";
+- a non_official run (the AI n differs from the paper's analysed n, the usual case) shows the neutral "Finished",
+  and its paragraph says "Offline report · non_official … no pass/fail";
+- an official run takes the engine's `direction_match` verdict, worded as direction agreement ("Directions agreed /
+  did not agree with the paper (official n, engine check)"), never as "showed the effect".
+
+A partial run never shows `done`. The app holds run_study's own `done` back, writes `failed` before it builds the
+page, and keeps `failed` if the page cannot be written. A partial page shows no pass/fail: each reward reads "no
+verdict (partial run)" and the text report is left out. The token cap is detected by `HTTP 402` or "token cap", not
+by any "402".
 
 **Like with like (S8).** The results page compares directions only when the paper's metric is the engine's metric:
 cells give a risk or mean difference, then an estimate in the same metric, then a printed value with its stated
@@ -193,5 +223,8 @@ or with `--protocol`:
    paper-build certificate is still `program.json`-based, so a protocol-only build does not count as complete.
 4. **Images.** The gate does not pass `--fetch-images` (no network in the gate). A protocol that serves remote images
    is not image-checked by the app; the converter's own 1,000-session gate must have done it.
-5. **Two `effects_core.py` copies.** One is in `skills/export/agent/` (Bench copy rule) and one in the engine. They
-   can drift; decide which one is canonical.
+5. **Two `effects_core.py` copies.** Left unchanged on purpose. The desktop copy (`skills/export/agent`) is the
+   source of Bench's copy. The engine's copy is a strict superset: it adds the ops `spearman`,
+   `proportion_vs_chance`, `smd`, `interaction` and `rank_sum` (with `_ranks`), extends `OPS` and `OP_FUNCS` to
+   match, and `compute()` also catches `OverflowError`. Every other function is identical. The owner decides which
+   is canonical.

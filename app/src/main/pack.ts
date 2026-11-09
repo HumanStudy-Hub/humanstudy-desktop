@@ -136,3 +136,18 @@ export function trustedBudgetFiles(): [string, string][] {
   return [...engineFiles().map((rel): [string, string] => ['hsenv/' + rel.slice('runtime/hsenv/'.length), files[PREFIX + rel]]),
     ...run.filter((rel) => files[PREFIX + rel] !== undefined).map((rel): [string, string] => [rel, files[PREFIX + rel]])]
 }
+
+/** Put every app-owned file of the pack back at the shipped version (helpers, the run and preview skills, the
+ *  engine, the artifact kit), and nothing else. Run before a simulation starts (review 3, S3): the run imports
+ *  the approval-binding and scoring code from the project's .opencode copy, which the agent can edit. */
+export async function refreshAppOwned(projectDir: string): Promise<void> {
+  for (const rel of [...appOwned(), ...kitFiles()]) {
+    const content = files[PREFIX + rel]
+    const dest = target(rel)
+    if (content === undefined || !dest) continue
+    const abs = join(projectDir, dest)
+    if ((await readFile(abs, 'utf8').catch(() => null)) === content) continue
+    await mkdir(dirname(abs), { recursive: true })
+    await writeFile(abs, content, 'utf8')
+  }
+}

@@ -23,9 +23,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import re
 import sys
+import time
 from pathlib import Path
 
+# Never the engine's private sidecar in a desktop run, on any platform or path (before any hsenv import).
+os.environ["HSENV_PRIVATE_CONFIG"] = ""
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
@@ -111,40 +116,102 @@ def check_approval(run_dir: Path, project: Path, plan: dict, bound: dict) -> str
     return actual
 
 
-def check_not_stopped(run_dir: Path, plan: dict, bound: dict) -> None:
-    """A stopped run starts again only under an approval given after the stop (the app records when it approved),
-    and the restart is recorded in plan.json, never silent (review 2, S7)."""
+def stopped_at(run_dir: Path) -> float | None:
+    """When the researcher stopped this run (STOP, or progress `stopped`), in epoch seconds; None if not stopped."""
     import calendar
-    import time
     stop = run_dir / "STOP"
-    stopped_at = None
-    if stop.exists():
-        stopped_at = stop.stat().st_mtime
+    at = stop.stat().st_mtime if stop.exists() else None
     try:
         progress = json.loads((run_dir / "progress.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         progress = {}
     if progress.get("stage") == "stopped":
         try:
-            at = calendar.timegm(time.strptime(str(progress.get("updatedAt"))[:19], "%Y-%m-%dT%H:%M:%S"))
+            p_at = calendar.timegm(time.strptime(str(progress.get("updatedAt"))[:19], "%Y-%m-%dT%H:%M:%S"))
         except ValueError:
-            at = time.time()   # unknown: as if just now, so only a later approval counts
-        stopped_at = max(stopped_at or 0, at)
-    if stopped_at is None:
+            p_at = time.time()   # unknown: as if just now, so only a later approval counts
+        at = max(at or 0, p_at)
+    return at
+
+
+def fresh_after_stop(plan: dict, bound: dict, at: float) -> bool:
+    return bool(bound.get("runId")) and bound["runId"] not in (plan.get("runIds") or []) and \
+        isinstance(bound.get("approvedAt"), float) and bound["approvedAt"] > at
+
+
+def check_not_stopped(run_dir: Path, plan: dict, bound: dict) -> None:
+    """A stopped run starts again only under an approval given after the stop (the app records when it approved),
+    and the restart is recorded in plan.json, never silent (review 2, S7). Call it holding the run lock."""
+    at = stopped_at(run_dir)
+    if at is None:
         return
-    fresh = bound.get("runId") and bound["runId"] not in (plan.get("runIds") or []) and \
-        isinstance(bound.get("approvedAt"), float) and bound["approvedAt"] > stopped_at
-    if not fresh:
+    if not fresh_after_stop(plan, bound, at):
         raise Refused("the researcher stopped this run: it starts again only after a new Run simulation approval")
+    stop = run_dir / "STOP"
     plan.setdefault("resumedAfterStop", []).append({"runId": bound["runId"], "at": run_study_now(),
-                                                    "stopFile": stop.exists(), "stage": progress.get("stage")})
+                                                    "stopFile": stop.exists()})
     stop.unlink(missing_ok=True)
     print("resuming a stopped run under a new approval (%s)" % bound["runId"])
+
+
+class RunLock:
+    """One runner per run folder (review 3, S2): an OS lock on <run>/run.lock, held for the life of the process
+    (released when it exits, however it exits), with its pid and start time written in for people. A second
+    start refuses while the first lives; `wait` seconds lets a resume wait for a stopped run's process to end."""
+
+    def __init__(self, run_dir: Path, wait: float = 0):
+        self.path, self.wait, self.fh = run_dir / "run.lock", wait, None
+
+    def _try(self) -> bool:
+        try:
+            import fcntl
+            try:
+                fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except OSError:
+                return False
+        except ImportError:   # Windows
+            import msvcrt
+            try:
+                self.fh.seek(0)
+                msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
+                return True
+            except OSError:
+                return False
+
+    def __enter__(self):
+        self.fh = open(self.path, "a+", encoding="utf-8")
+        deadline = time.time() + self.wait
+        while not self._try():
+            if time.time() >= deadline:
+                self.fh.seek(0)
+                holder = self.fh.read().strip()[:200]
+                self.fh.close()
+                raise Refused("this run is still running in another process (%s): it was not started again"
+                              % (holder or "lock held"))
+            time.sleep(0.5)
+        self.fh.seek(0)
+        self.fh.truncate()
+        self.fh.write(json.dumps({"pid": os.getpid(), "startedAt": run_study_now()}))
+        self.fh.flush()
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            self.fh.seek(0)
+            self.fh.truncate()
+        finally:
+            self.fh.close()   # closing releases the lock
+        return False
 
 
 def run_study_now() -> str:
     import time
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z"
+
+
+# The relay refuses a call over the cap with HTTP 402 "Run token cap reached."; humanstudy_llm reports "HTTP 402: …".
+TOKEN_CAP = re.compile(r"\bHTTP 402\b|\btoken cap\b", re.I)
 
 
 def outcome(run_dir: Path, meta: dict) -> dict:
@@ -159,7 +226,7 @@ def outcome(run_dir: Path, meta: dict) -> dict:
         errs = r.get("f_errors") or []
         failed_calls += len(errs)
         text = json.dumps(errs) + str(r.get("error") or "")
-        cap = cap or "token cap" in text.lower() or "402" in text
+        cap = cap or bool(TOKEN_CAP.search(text))
         if r.get("status") not in (None, "incomplete") and not r.get("error") and not errs:
             valid += 1
     return {"planned": planned, "valid": valid, "failed_calls": failed_calls, "token_cap": cap,
@@ -213,11 +280,20 @@ def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, m
     """Play the approved plan. `complete` (messages -> text) and `model` replace the app's model client in tests.
     A run is `done`, with a results page, only when every planned participant finished without a failed model
     call; otherwise it ends `failed` and any page it writes is labelled partial (review 2, M3)."""
-    import run_study
-    from render import make_chat_f, render_state
     plan = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
     bound = binding()
     check_approval(run_dir, project, plan, bound)
+    at = None if trial else stopped_at(run_dir)
+    if at is not None and not fresh_after_stop(plan, bound, at):
+        raise Refused("the researcher stopped this run: it starts again only after a new Run simulation approval")
+    # A resume after Stop waits for the stopped process to end (it stops after the pages in flight).
+    with RunLock(run_dir, wait=120 if at is not None else 0):
+        return _main_run(run_dir, project, plan, bound, trial, complete, model)
+
+
+def _main_run(run_dir, project, plan, bound, trial, complete, model):
+    import run_study
+    from render import make_chat_f, render_state
     out = run_dir / "trial" if trial else run_dir
     if not trial:
         check_not_stopped(run_dir, plan, bound)
@@ -235,14 +311,17 @@ def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, m
             "host": "the desktop app's model relay (humanstudy_llm), passed in-process"}
     # The floor baseline's cache stays inside this run folder (run_study keeps it beside the run folders, which the
     # macOS sandbox does not let the run write, and which the Simulation tab would list as a run).
-    original_cache = run_study.baseline_cached
+    original_cache, original_stage = run_study.baseline_cached, run_study.Progress.stage
     run_study.baseline_cached = lambda E, protocol, plan_, run_dir_, mf: original_cache(E, protocol, plan_, Path(run_dir_) / "baseline", mf)
+    # The app, not run_study, says when a run is done: only after it is judged complete and its page is written
+    # (review 3, S6), so a partial run is never shown as done, not even for a moment.
+    run_study.Progress.stage = lambda self, name, message=None: original_stage(self, "writing" if name == "done" else name, message)
     try:
         meta = run_study.run(project, spec, n=1 if trial else int(plan["perArm"]), seeds=[1] if trial else plan["seeds"],
                              out=out, host_f=f, arms=plan.get("arms"), quiet=True, baseline=not trial,
                              top_up=False)   # exactly the approved n: no extra sessions beyond the measured budget
     finally:
-        run_study.baseline_cached = original_cache
+        run_study.baseline_cached, run_study.Progress.stage = original_cache, original_stage
     if meta.get("status") == "stopped" and not trial:
         return stopped(run_dir, meta, bound)
     if meta.get("status") != "done":
@@ -253,17 +332,26 @@ def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, m
     if not result["complete"]:
         meta["status"] = "partial"
     (out / "run.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    finished = "%d of %d planned participants finished" % (result["valid"], result["planned"])
     if trial:
+        write_progress(out, "done" if result["complete"] else "failed", "Trial: " + finished)
         print(json.dumps({"status": meta["status"], **result}))
         return meta
-    import protocol_report
-    protocol_report.build(run_dir, project, partial=not result["complete"])
     if not result["complete"]:
         why = ("the run reached its approved token budget" if result["token_cap"] else
                "%d model call(s) failed" % result["failed_calls"] if result["failed_calls"] else
                "some participants did not finish")
-        write_progress(run_dir, "failed", "Partial run: %d of %d planned participants finished; %s. The results page "
-                       "is labelled partial." % (result["valid"], result["planned"], why))
+        message = "Partial run: %s; %s. The results page is labelled partial." % (finished, why)
+        write_progress(run_dir, "failed", message)   # before the page: never `done`, whatever happens next
+    import protocol_report
+    try:
+        protocol_report.build(run_dir, project, partial=not result["complete"])
+    except BaseException as e:   # noqa: BLE001 — the run's data is kept; the stage says what is missing
+        write_progress(run_dir, "failed", ("%s The results page could not be written: %s" % (
+            message if not result["complete"] else "The run finished (%s)." % finished, str(e)[:200])))
+        raise
+    if result["complete"]:
+        write_progress(run_dir, "done", "%s; %d model calls." % (finished, meta.get("calls", 0)))
     return meta
 
 

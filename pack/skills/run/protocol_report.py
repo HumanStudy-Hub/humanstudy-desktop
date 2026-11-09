@@ -89,11 +89,31 @@ def rows(protocol: dict, effects: dict) -> list[dict]:
     return out
 
 
-def outcome(table: list[dict]) -> str:
-    judged = [r["same_direction"] for r in table if r["same_direction"] is not None]
-    if not judged:
+def official(run: dict) -> bool:
+    """hsenv.score's rule: pass/fail only when the AI n equals the human analysed n in every arm."""
+    return ((run.get("evaluation") or {}).get("plan") or {}).get("official") is True
+
+
+def direction_reward(run: dict) -> dict | None:
+    rewards = (run.get("evaluation") or {}).get("rewards")
+    if not isinstance(rewards, dict):
+        return None
+    return next((v for k, v in sorted(rewards.items()) if k.startswith("direction_match") and isinstance(v, dict)), None)
+
+
+def outcome(table: list[dict], run: dict | None = None, partial: bool = False) -> str:
+    """The Simulation tab's headline, following hsenv.score (review 3, M1): a partial run is not_ready; a
+    non_official run has values only, so a neutral "unknown" (Finished); an official run takes the verdict of the
+    engine's direction reward, worded in the tab as direction agreement (agree / disagree), never as "showed the
+    effect". The sign table on the page is a reading aid and never sets the headline."""
+    if partial:
+        return "not_ready"
+    run = run or {}
+    if not official(run):
         return "unknown"
-    return "replicated" if all(judged) else "partly" if any(judged) else "not_replicated"
+    reward = direction_reward(run)
+    passed = (reward or {}).get("passed")
+    return "unknown" if passed is None else "agree" if passed else "disagree"
 
 
 def paragraph(table: list[dict], run: dict, partial: bool = False) -> str:
@@ -109,6 +129,15 @@ def paragraph(table: list[dict], run: dict, partial: bool = False) -> str:
     s += ("This is a simulation with AI participants, not human data, and an offline comparison with the paper's "
           "printed numbers, not a leaderboard.")
     if partial:
+        pass
+    elif official(run):
+        reward = direction_reward(run) or {}
+        if reward.get("passed") is not None:
+            s += (" Official n (the paper's analysed n in every arm): the engine's direction check "
+                  f"{'agreed' if reward['passed'] else 'did not agree'} with the paper.")
+    else:
+        s += " Offline report · non_official: the AI n differs from the paper's analysed n, so there is no pass/fail."
+    if partial:
         app = run.get("app") or {}
         s = (f"PARTIAL RUN: only {app.get('valid', p.get('completed', 0))} of {app.get('planned', '?')} planned AI "
              f"participants finished without a failed model call, so these numbers are not the planned comparison. ") + s
@@ -119,7 +148,7 @@ def _esc(v) -> str:
     return html.escape(str(v))
 
 
-def scores_card(run: dict, rewards: dict | None) -> str:
+def scores_card(run: dict, rewards: dict | None, partial: bool = False) -> str:
     """The engine's scores (hsenv.score.summarize, as run_study writes them in run.json evaluation.rewards): each
     reward's value and verdict with its labels (offline_report, official or not, a verdict on an unverified human
     n, the intention-to-treat flags, the view) and why items were not computable. Nothing is recomputed here."""
@@ -143,7 +172,8 @@ def scores_card(run: dict, rewards: dict | None) -> str:
         if not isinstance(r, dict):
             continue
         value = "not computable" if r.get("value") is None else _num(r.get("value"))
-        verdict = ("no verdict" if r.get("passed") is None else "passed" if r.get("passed") else "not passed")
+        verdict = ("no verdict (partial run)" if partial else
+                   "no verdict" if r.get("passed") is None else "passed" if r.get("passed") else "not passed")
         flags = [x for x in (
             r.get("report_scope"), "official" if r.get("official") else "non_official" if r.get("official") is False else None,
             "verdict on an unverified human n" if r.get("verdict_on_unverified_n") else None,
@@ -160,7 +190,7 @@ def scores_card(run: dict, rewards: dict | None) -> str:
                    f'<td><span class="hs-sub">{_esc(" · ".join(flags))}</span></td></tr>')
     text = ev.get("text_report")
     pre = (f'<details><summary class="hs-sub">The engine\'s text report</summary><pre>{_esc(chr(10).join(map(str, text)))}</pre></details>'
-           if isinstance(text, list) and text else "")
+           if isinstance(text, list) and text and not partial else "")   # its lines carry passed=…: none for a partial run
     return (f'<div class="hs-card"><h2 class="hs-h2">Scores (hsenv.score) — {_esc(REPORT_SCOPE)}</h2>'
             f'<p class="hs-sub">{_esc("; ".join(head))}</p>'
             '<table><thead><tr><th>Reward</th><th>Value</th><th>Items</th><th>Labels</th></tr></thead><tbody>'
@@ -181,7 +211,7 @@ def page(protocol: dict, run: dict, table: list[dict], rewards: dict | None, par
             f'<td>{_num(r["human"])}<br><span class="hs-sub">{html.escape(r["human_from"])}</span></td>'
             f'<td>{_num(r["ai"])}<br><span class="hs-sub">{html.escape(r["ai_from"])}</span></td>'
             f'<td>{mark}</td></tr>')
-    rew = scores_card(run, rewards)
+    rew = scores_card(run, rewards, partial)
     p = run.get("participants") or {}
     f = run.get("f") or {}
     manifest = [("Protocol", f'{protocol.get("id")} (SHA-256 {str(run.get("protocol_sha256", ""))[:16]}…)'),
@@ -248,7 +278,7 @@ def build(run_dir: Path, project: Path, partial: bool | None = None) -> dict:
     if problems:
         raise SystemExit("results page failed the artifact checks: " + "; ".join(problems))
     (run_dir / "results.html").write_text(out, encoding="utf-8")
-    summary = {"outcome": "not_ready" if partial else outcome(table), "paragraph": paragraph(table, run, partial),
+    summary = {"outcome": outcome(table, run, partial), "official": official(run), "paragraph": paragraph(table, run, partial),
                "partial": partial, "model": (run.get("f") or {}).get("model"),
                "perCondition": max((run.get("n_per_arm") or {0: 0}).values()), "calls": run.get("calls", 0),
                "route": "protocol", "scope": REPORT_SCOPE}

@@ -610,6 +610,9 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       OPENCODE_CONFIG_CONTENT: this.configContent(transport),
       OPENCODE_DISABLE_AUTOUPDATE: '1',
       OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: '1', // no ~/.claude/CLAUDE.md from the user's own Claude Code
+      // The protocol engine never reads its private sidecar (study pins) in anything the agent runs (checks,
+      // preview, runs): an empty value means none (pack/runtime/hsenv checks.py).
+      HSENV_PRIVATE_CONFIG: '',
       // humanstudy_llm (simulations) defaults to the model the researcher selected.
       ...(this.provider === HOSTED_PROVIDER ? { HUMANSTUDY_MODEL: this.model } : {}),
     })

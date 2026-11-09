@@ -31,12 +31,33 @@ names = sorted({n for n in os.listdir(studies) if os.path.isdir(os.path.join(stu
 if not names:
     sys.exit(f"refusing to vendor: {studies} lists no study folders")
 names_rx = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(map(re.escape, names)) + r")(?![A-Za-z0-9])", re.I)
+# Study surnames: the author part of every folder named like author2024topic (4 letters or more, so short names
+# such as "li" do not match ordinary words), refused in comments and docstrings, where code has no reason to name
+# a study (review 3, S1).
+surnames = sorted({m.group(1) for n in names for m in [re.match(r"([a-z]{4,})\d{4}", n)] if m}, key=len, reverse=True)
+surname_rx = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(map(re.escape, surnames)) + r")(?![A-Za-z0-9_])", re.I) if surnames else None
+
+
+def comments(f, text):
+    """(offset, comment text) of every comment and docstring: # and \"\"\"…\"\"\" in Python, // and /* */ in JS and CSS."""
+    if f.endswith(".py"):
+        for m in re.finditer(r'#[^\n]*|"""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\'', text):
+            yield m.start(), m.group(0)
+    elif f.endswith((".js", ".css", ".ts")):
+        for m in re.finditer(r"//[^\n]*|/\*[\s\S]*?\*/", text):
+            yield m.start(), m.group(0)
+
+
 bad = []
 for f in files:
     text = open(f"{src}/{f}", encoding="utf-8").read()
     line = lambda m: text.count(chr(10), 0, m.start()) + 1
     for m in names_rx.finditer(text):
         bad.append(f"{f}:{line(m)}: study folder name {m.group(0)}")
+    if surname_rx:
+        for at, c in comments(f, text):
+            for m in surname_rx.finditer(c):
+                bad.append(f"{f}:{text.count(chr(10), 0, at + m.start()) + 1}: study surname in a comment: {m.group(0)}")
     # a LEGACY_* table written out as data (a literal opening with a string or number); a table built from the
     # private sidecar (a comprehension or dict(...) over PRIVATE) holds nothing in the code
     for m in re.finditer(r"^(LEGACY_\w+)\s*=\s*[\[{(]\s*(\S)", text, re.M):

@@ -1,10 +1,10 @@
 # Vendored hsenv engine. Refresh with scripts/sync_hsenv.sh; never edit by hand.
-source: hsenv engine pass 2, 2026-11-09
+source: hsenv engine pass 2 (scrubbed), 2026-11-09
 synced: 2026-11-09
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  hsenv/__init__.py
 1caf69b34a584e3002d6a28abaab7b32c97c537b1a5f1f84598e8609c2acaaad  hsenv/engine.py
 1ab2b19da24a40c17c4a9e32b9c95f59e0f76e883bc9991bad6738ca0f55150b  hsenv/expr.py
-7a8111eede178564213a05437f3ce9eca4c507c04dbefd1d15930e18c07f69ac  hsenv/checks.py
+6e34cb8e1353a1b60e192314e44be0549ac6a0d819f6d7f3ae4b592185228581  hsenv/checks.py
 25a08cce5b231fa79a180c014d335c024fe77613bcb1818f75645303ff40687a  hsenv/effects_core.py
 1d6a9751d4796c9ddf7027aacf8b2bd8962ff498fbd085149251ef764521b98e  hsenv/evaldata.py
 1fba0a0b4b2e864eefbcc8ce6d3e8327617736550c8a62af4ba129cf8c749dac  hsenv/rewards.py

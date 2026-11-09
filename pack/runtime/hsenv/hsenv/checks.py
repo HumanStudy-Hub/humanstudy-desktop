@@ -1053,7 +1053,7 @@ def _reading_lines_c(reading, pages, annots=()):
             fields.append(_clean_field(f))
             if " / " in f:   # a reader listing several elements of one line ("Yes / No"): each piece is a field
                 fields += [_clean_field(x) for x in f.split(" / ")]
-                if two_line:   # a label printed on two lines, written 'line 1 / line 2' (berg S2b): space-joined
+                if two_line:   # a label printed on two lines, written 'line 1 / line 2': space-joined
                     fields.append(_clean_field(" ".join(f.split(" / "))))
             if _IMAGE_MARK.search(f):
                 frags |= {_clean_field(x) for x in _IMAGE_MARK.split(f)}

@@ -12,8 +12,11 @@ holds the protocol's screen text: it stays in the project (never published or at
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
+
+os.environ["HSENV_PRIVATE_CONFIG"] = ""   # never the engine's private sidecar in the app (before any hsenv import)
 
 HERE = Path(__file__).resolve().parent
 

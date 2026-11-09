@@ -156,6 +156,8 @@ const ROWS: Row[] = [
   ['sim.outcome.not_replicated', 'The simulated participants did not show the paper’s effect', '模拟参与者没有表现出论文中的效应'],
   ['sim.outcome.not_ready', 'The comparison could not be made', '无法进行比较'],
   ['sim.outcome.unknown', 'Finished', '已完成'],
+  ['sim.outcome.agree', 'Directions agreed with the paper (official n, engine check)', '方向与论文一致（正式样本量，引擎检查）'],
+  ['sim.outcome.disagree', 'Directions did not agree with the paper (official n, engine check)', '方向与论文不一致（正式样本量，引擎检查）'],
   ['sim.state.running', 'Running', '运行中'],
   ['sim.state.done', 'Finished', '已完成'],
   ['sim.state.failed', 'Error', '出错'],

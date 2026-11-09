@@ -1,7 +1,7 @@
 // node --test src/main/run-stop.test.mjs — the researcher's Stop closes the run's model access at once (v0.8).
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
@@ -36,4 +36,12 @@ test('the Stop path of project:writeText closes the relays (wiring)', async () =
   assert.match(handler, /if \(stopRoot && isRunStop\(stopRoot, q\)\) await closeProjectRelays\(stopRoot, runRelays, closeRunRelay\)/)
   const panel = readFileSync(join(here, '../renderer/components/Workbench.tsx'), 'utf8')
   assert.match(panel, /window\.humanstudy\.project\.writeText\(`\$\{dir\}\/STOP`/, 'the Stop button writes STOP through that handler')
+})
+
+test('Stop matches projects by real path: a symlinked projects folder still closes the relay', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'run-stop-real-'))
+  mkdirSync(join(base, 'real/proj'), { recursive: true })
+  symlinkSync(join(base, 'real'), join(base, 'link'))
+  const relays = new Map([['a', { project: join(base, 'link/proj') }], ['b', { project: join(base, 'real/other') }]])
+  assert.deepEqual(await S.closeProjectRelays(join(base, 'real/proj'), relays, async (id) => { relays.delete(id) }), ['a'])
 })

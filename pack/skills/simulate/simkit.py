@@ -263,7 +263,7 @@ def _start(run_dir: Path) -> None:
         sys.exit(f"no run.py in {run_dir}")
     log = open(run_dir / "run.log", "a", encoding="utf-8")
     proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name('run_confined.py')), '--final', str(script)] if os.environ.get('HUMANSTUDY_RELAY_REQUIRED') == '1' else [sys.executable, str(script)], cwd=str(run_dir), stdout=log, stderr=subprocess.STDOUT,
-                            stdin=subprocess.DEVNULL, start_new_session=True, env=os.environ.copy())
+                            stdin=subprocess.DEVNULL, start_new_session=True, env={**os.environ, 'HSENV_PRIVATE_CONFIG': ''})
     print(f"started run.py (pid {proc.pid}); follow progress.json and run.log")
 
 

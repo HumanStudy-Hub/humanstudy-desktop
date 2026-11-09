@@ -18,8 +18,10 @@ whitespace, light/dark, minimal chrome. Look it up for cues; do not copy assets 
   Study document view ported from humanstudy-hub-web; **Program** explorer shows the project files.
 
 ## Project folder format
-~/Documents/HumanStudy Projects/<project>/ — paper.pdf, sources/, program.json (Human Program v2), package/<slug>/, artifacts/*.html|png|md,
-exports/, .humanstudy/session.json
+~/Documents/HumanStudy Projects/<project>/ — paper.pdf, sources/, program.json (Human Program v2), protocol.json (the runnable
+study, run by the bundled engine .opencode/hsenv), study.json, sourcetext/ (source texts for the verbatim check), review/,
+runs/<stamp>/, variants/<name>/, package/<slug>/ (older route, read-only for the community library), artifacts/*.html|png|md
+(simulations/<stamp>/ for both routes), exports/, .humanstudy/session.json. Full layout: pack/PROJECT_FORMAT.md.
 
 ## Scientific contract
 Verbatim text is never rewritten; missing items are labelled missing; every claim cites evidence

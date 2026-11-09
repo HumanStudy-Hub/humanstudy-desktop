@@ -20,7 +20,9 @@ from urllib.parse import urlsplit
 def run_unconfined(script, args):
     """Pre-relay path: exactly what `python run.py ...` in the run folder did."""
     # -B: package code imported by the run writes no __pycache__ into the package
-    return subprocess.call([sys.executable, '-B', str(script), *args], cwd=str(script.parent))
+    # The engine's private sidecar (study pins outside the public code) is never read in a desktop run.
+    return subprocess.call([sys.executable, '-B', str(script), *args], cwd=str(script.parent),
+                           env={**os.environ, 'HSENV_PRIVATE_CONFIG': ''})
 
 
 USAGE = 'usage: run_confined.py [--final | --no-model] SCRIPT [args...]'
@@ -71,7 +73,7 @@ def main():
            'HUMANSTUDY_DESKTOP_KEY': config['token'], 'HUMANSTUDY_HOSTED_BASEURL': config['baseURL'],
            'HUMANSTUDY_SIM_MODEL': config['model'], 'HUMANSTUDY_PROJECT_DIR': str(project),
            'HSENV_PRIVATE_CONFIG': ''}   # the engine's private sidecar is never read in a desktop run
-    # What the approval lets this capability run (the app wrote it; the agent cannot change it): the route, the
+    # What the approval lets this capability run (the app wrote the descriptor; the agent cannot forge it): the route, the
     # SHA-256 of protocol.json the app read at approval, and the run id. skills/run and simkit check them.
     for key, name in (('route', 'HUMANSTUDY_RUN_ROUTE'), ('runId', 'HUMANSTUDY_RUN_ID'), ('protocolSha256', 'HUMANSTUDY_RUN_PROTOCOL_SHA256')):
         if isinstance(config.get(key), str):

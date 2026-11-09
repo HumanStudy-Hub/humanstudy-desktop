@@ -32,7 +32,7 @@ import { createThreads, threads } from './threads'
 import { saveProjectText } from './program-save'
 import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
-import { refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles } from './pack'
+import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles } from './pack'
 import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks } from './package-readiness'
@@ -703,6 +703,9 @@ app.whenReady().then(() => {
     let projectDir = sessionProject.get(id)
     try { projectDir ??= k.directory?.(id) } catch { /* unknown to the kernel; it will refuse the send itself */ }
     await assertRunnablePackage(projectDir, text)
+    // The run checks its approval binding and computes its scores with the project's .opencode copy of the app's
+    // code; put that copy back at the shipped version before any model access exists (review 3, S3).
+    if (projectDir && text.startsWith('[Simulation scope approved]')) await refreshAppOwned(projectDir)
     let startedRelay = false
     if (RELAY && text.startsWith('[Simulation scope approved]')) {
       if (!projectDir || relayProjects.has(projectDir)) throw Error('A simulation is already active in this project.')
