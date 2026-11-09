@@ -66,6 +66,8 @@ export function protocolProblems(report: unknown): ProtocolProblem[] {
   if (Number(fuzz.n_unanswerable) > 0) add('fuzz', `${fuzz.n_unanswerable} screen(s) could not be answered`)
   const leaks = list(fuzz.leaks)
   if (leaks.length) add('leaks', `${leaks.length} screen(s) show text meant to stay hidden: ${some(leaks)}`)
+  const exprLeaks = list(fuzz.state_expr_leaks)
+  if (exprLeaks.length) add('leaks', `${exprLeaks.length} screen(s) show an unresolved expression: ${some(exprLeaks)}`)
   const notComputed = list(fuzz.effects_not_computed)
   if (notComputed.length) add('effects', `effects not computed from the sessions: ${some(notComputed, 5)}`)
   if (list(fuzz.blocked_effects_not_computed).length || (fuzz.blocked_effects_not_computed && !Array.isArray(fuzz.blocked_effects_not_computed)))
@@ -76,12 +78,20 @@ export function protocolProblems(report: unknown): ProtocolProblem[] {
     if (Number(keyed.excluded_share) > 0) add('keyed', `keyed answers excluded ${keyed.excluded_share} of the sessions`)
     const wrong = list(keyed.signs).filter((s) => !obj(s).same_sign).map((s) => obj(s).effect)
     if (wrong.length) add('keyed', `keyed answers do not reproduce the paper's sign: ${some(wrong, 5)}`)
+    if (list(keyed.state_expr_leaks).length) add('keyed', `keyed sessions show an unresolved expression: ${some(list(keyed.state_expr_leaks))}`)
   }
   const v = obj(r.verbatim)
   if (list(v.not_found).length) add('verbatim', `texts not found in the source: ${some(list(v.not_found))}`)
   if (list(v.image_unconfirmed).length) add('verbatim', `image-read texts without an agreeing blind reading: ${some(list(v.image_unconfirmed))}`)
   if (list(v.bad_source).length) add('verbatim', `texts cite an unknown source: ${some(list(v.bad_source))}`)
   if (Number(v.unchecked) > 0) add('verbatim', `${v.unchecked} served text(s) have no source text under sourcetext/ to check against`)
+  const annotations = list(r.reading_annotations).filter((a) => obj(a).error !== undefined)
+  if (annotations.length) add('verbatim', `printed-annotation rules with errors: ${some(annotations)}`)
+  if (r.images !== undefined) {
+    const imgs = list(r.images).filter((x) => !(typeof x === 'string' && x.startsWith('note:')))
+    if (imgs.length) add('images', `images that do not match their source: ${some(imgs)}`)
+  }
+  if (r.public === true && list(r.release_hold).length) add('release', `arms on release hold: ${some(list(r.release_hold))}`)
   for (const [id, c] of Object.entries(obj(r.coding)))
     if (list(obj(c).mismatches).length) add('coding', `coding ${id}: ${list(obj(c).mismatches).length} test case(s) coded differently`)
   if (r.PASS === false && !out.length) add('protocol', 'The protocol checks did not pass.')
@@ -138,6 +148,9 @@ async function confinedPython(python: string, code: string, args: string[], home
       env: {
         PATH: (bin ? bin + (win ? ';' : ':') : '') + system,
         HOME: home, USERPROFILE: home, TMPDIR: home, TEMP: home, TMP: home, LANG: 'C.UTF-8',
+        // The engine's private sidecar (study pins outside the public code) is never read by the app's gate: it
+        // would otherwise be looked for next to the scratch folder, where anything could plant it.
+        HSENV_PRIVATE_CONFIG: '',
         ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
       },
     }, (error, stdout, stderr) => {

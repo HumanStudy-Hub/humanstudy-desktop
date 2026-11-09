@@ -5,15 +5,19 @@ One protocol across all platforms. A study's runnable form is now `protocol.json
 
 ## What changed
 
-**Vendored engine.** `pack/runtime/hsenv/hsenv/{__init__,engine,expr,checks,effects_core}.py` are exact copies of
-the sandbox engine. `pack/runtime/hsenv/VERSION` records a source label (no local paths), the date and the SHA-256
+**Vendored engine.** `pack/runtime/hsenv/hsenv/{__init__,engine,expr,checks,effects_core,evaldata,rewards,score,
+serve,schema_check}.py`, `schema/{protocol,study,run}.v1.json` and `LICENSE` (MIT) are exact copies of the sandbox
+engine as of engine pass 2. Study pins are no longer in the code: they live in a private sidecar, and
+`HSENV_PRIVATE_CONFIG=''` keeps both the app's gate and desktop runs from ever reading one. Upstream `tests/` name
+real studies and are never vendored. `serve.py` is vendored only because `evaldata.code_hash()` hashes it. `pack/runtime/hsenv/VERSION` records a source label (no local paths), the date and the SHA-256
 of each file. Refresh them with `scripts/sync_hsenv.sh <path to hsenv/hsenv> [label]` and never edit them by hand.
-The script refuses study-specific data (protocols are private): non-empty `LEGACY_*` tables, ids shaped like
+The script refuses study-specific data (protocols are private): `LEGACY_*` tables written out as data, ids shaped like
 author2024topic, the name of any folder in the upstream `studies/` (read at sync time, case-insensitive; no folder,
-no sync) and local home paths. The copy
-vendored here still has such data (review 1, M1); it is being removed upstream, and a re-sync will replace it. `pack.ts` installs the engine into `<project>/.opencode/hsenv/` and keeps it at the
+no sync) and local home paths. The
+re-synced copy passes it (review 1, M1 closed). The earlier commits of this branch still carry the old copy, so
+squash the branch before it is pushed. `pack.ts` installs the engine into `<project>/.opencode/hsenv/` and keeps it at the
 shipped version on refresh, like the other app-owned helpers. The engine is stdlib-only; `checks.py` needs Python
-3.11+, and the app bundles CPython 3.12. `rewards.py`, `score.py` and `evaldata.py` are not vendored yet, because
+3.11+, and the app bundles CPython 3.12. Formerly `rewards.py`, `score.py` and `evaldata.py` were not vendored, because
 nothing in the app calls them.
 
 **Project format.** `pack/PROJECT_FORMAT.md` documents `protocol.json`, `study.json` (the project's identity
@@ -110,8 +114,21 @@ cells give a risk or mean difference, then an estimate in the same metric, then 
 metric. Unsigned metrics (phi, Cramér's V) are not compared by direction. Anything else shows
 "not compared (different metric)".
 
-When `hsenv.evaldata`/`rewards`/`score` are vendored (the next engine re-sync), run_study also writes
-`rewards.json`, and the page lists it.
+**Scores (S9).** With `evaldata`/`rewards`/`score` vendored, run_study scores every run through
+`hsenv.score.summarize` and writes `evaldata.json`, `rewards.json` and `run.json` `evaluation.rewards`. The results
+page shows these values and does not recompute them:
+- each reward's value and verdict;
+- its labels: offline_report, official or non_official, a verdict on an unverified human n, intention-to-treat
+  unchecked or not applicable, the view;
+- the counts of not-computable items with their reasons;
+- the plan's human n basis;
+- the engine's text report.
+
+The people-vs-AI direction table stays as a reading aid. Two choices in `app_run`:
+- the floor baseline's cache is kept inside the run folder (run_study puts it beside the run folders, where the
+  macOS sandbox cannot write and the Simulation tab would list it as a run);
+- `top_up` is off, so a run plays exactly the approved n that the budget was measured for. Excluded sessions are
+  scored by the engine's rules and not replaced.
 
 The Simulation tab prefers the protocol route when protocol.json passes. It sends a protocol approval, shows the
 arms as the conditions and caps the confirmation by them. When protocol.json does not pass, it lists the protocol's
@@ -157,8 +174,8 @@ or with `--protocol`:
 
 1. **Protocol-only projects in the UI.** The Simulation tab still needs `program.json` (study, scope). A project
    with only protocol.json + study.json cannot open the tab. The main process and skills/run already handle it.
-2. **Engine re-sync.** Vendor `evaldata`/`rewards`/`score` with the next engine round (rewards on the results
-   page).
+2. **History.** Squash this branch before pushing: commits before the engine re-sync carry the old engine
+   copy with study ids.
 3. **MCP export.** Expose `protocol.json` + engine through the agent-package MCP server (`skills/export/agent`), so
    other platforms run the same protocol.
 4. **Build skill.** Teach `skills/build` to write `protocol.json` and `sourcetext/` and run `hsenv.checks`. The

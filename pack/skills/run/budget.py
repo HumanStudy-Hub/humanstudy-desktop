@@ -52,7 +52,7 @@ def measure(project: Path, scratch: Path, per_arm: int = 3) -> dict:
     try:
         out = scratch / "budget-run"
         run_study.run(str(project), {"kind": "random+gates"}, n=per_arm, seeds=[1], out=out, workers=1,
-                      do_eval=False, baseline=False, quiet=True)
+                      do_eval=False, baseline=False, quiet=True, top_up=False)
     finally:
         fspec.random_f = original
     protocol, _, _, _ = run_study.load_protocol(str(project))

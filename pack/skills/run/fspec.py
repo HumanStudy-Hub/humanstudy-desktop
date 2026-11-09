@@ -4,15 +4,18 @@ We own the state and the step (the engine); f is the user's: a model + persona +
 + memory + retries. An f-spec is a JSON object that describes f; run_study.py records it in run.json.
 
     {"kind": "random"}                                           # checks.random_answers on the State only
-    {"kind": "random+gates"}                                     # random + answers that pass the page's gates
-                                                                 # (an ORACLE: reads protocol internals)
+    {"kind": "random+gates"}                                     # random + answers that pass the page's gates:
+                                                                 # an ORACLE (reads protocol internals); NOT the
+                                                                 # scoring baseline (that is evaldata's State-only
+                                                                 # `floor`, which `random` mirrors)
     {"kind": "keyed",  "name": "keyed"}                          # the protocol's keyed answers (an ORACLE)
     {"kind": "script", "callable": "my_f.py:answer"}             # a Python f(state[, ctx]) -> answers (tests)
     {"kind": "llm", "host": "host.py:make_f", "model": "…", "persona": "…", "renderer": "default",
      "retries": 2}                                               # host supplies the model call
 
 Common fields: "name" (label), "retries" (re-calls of f when it raises; default 2 for llm, 0 otherwise),
-"max_refusals" (a page that refuses this many answer sets in a row ends the participant as stuck; default 20).
+"max_refusals" (a page that refuses this many answer sets in a row ends the participant as stuck; default 200
+for random — the same 200 redraws as evaldata's floor baseline — and 20 otherwise).
 
 f is called as f(state, ctx) (or f(state) if it takes one argument). ctx carries: rng (seeded per participant,
 step and attempt, so a resumed run draws the same numbers), participant (an opaque id; never the condition),
@@ -201,6 +204,24 @@ def _assist(p, s, page, state, ans, rng, pool):
     return ans
 
 
+class _OwnRng:
+    """An oracle evaluates protocol expressions (keyed answers, accepted values) in the session's context. Those
+    may draw random numbers (bernoulli, choice); with the session's own rng they would shift the engine's later
+    draws (e.g. balanced counterbalancing) and make a replayed run differ from the logged one. So the session's
+    rng is swapped for one derived from ctx.rng for the duration of the oracle call."""
+
+    def __init__(self, s, rng):
+        self.s, self.rng = s, random.Random(rng.getrandbits(64))
+
+    def __enter__(self):
+        self.saved, self.s.rng = self.s.rng, self.rng
+        return self.s
+
+    def __exit__(self, *a):
+        self.s.rng = self.saved
+        return False
+
+
 def _redraw_skip(attempt, skip):
     # first sight: the usual skip rate; after a refusal, redraw as checks.play does, sometimes leaving optional
     # answers empty so page rules such as "exactly one of these" can be met
@@ -210,9 +231,10 @@ def _redraw_skip(attempt, skip):
 def random_f(protocol, spec, assist=False):
     """random: checks.random_answers on the State only — the random floor; a page it cannot satisfy by redrawing
     (a comprehension quiz, a typed agreement) ends the participant as stuck, and the completion rate says so.
-    random+gates (assist): plus the operator-side help checks.play gives its random policy (the evaldata
-    baseline): it writes the accepted answers to the page's gates. That reads protocol internals, so it is an
-    oracle like keyed — "random conditional on passing every gate", never the random floor."""
+    It mirrors evaldata's scoring baseline (policy `floor`: State only, 200 redraws).
+    random+gates (assist): plus the operator-side help checks.play gives its `random` policy: it writes the
+    accepted answers to the page's gates. That reads protocol internals, so it is an oracle like keyed — "random
+    conditional on passing every gate" — never the random floor and not the scoring baseline."""
     from hsenv import checks
     skip = float(spec.get("skip", 0.05))
     pool = checks.text_pool(protocol) if assist else ()
@@ -220,13 +242,14 @@ def random_f(protocol, spec, assist=False):
     def f(state, ctx):
         ans = checks.random_answers(state, ctx.rng, skip=_redraw_skip(ctx.attempt, skip), pool=pool)
         if assist:
-            s = ctx.operator()
-            ans = _assist(protocol, s, s._page, state, ans, ctx.rng, pool)
+            with _OwnRng(ctx.operator(), ctx.rng) as s:
+                ans = _assist(protocol, s, s._page, state, ans, ctx.rng, pool)
         return ans
     f.needs_operator = bool(assist)
     return f, {"what": "checks.random_answers" + (" + checks.play's operator-side help with the page's gates "
-                                                  "(as the evaldata random baseline): an ORACLE, not the random "
-                                                  "floor" if assist else " on the State only: the random floor"),
+                                                  "(as checks.play's old random policy): an ORACLE, not the random "
+                                                  "floor and not the scoring baseline" if assist else " on the State only: the random floor (mirrors evaldata's floor "
+                                                  "baseline policy)"),
                "skip": skip, "oracle": bool(assist)}
 
 
@@ -241,7 +264,10 @@ def keyed_f(protocol, spec):
     pool = checks.text_pool(protocol)
 
     def f(state, ctx):
-        s = ctx.operator()
+        with _OwnRng(ctx.operator(), ctx.rng) as s:
+            return _keyed(s, state, ctx)
+
+    def _keyed(s, state, ctx):
         page = s._page
         rng = ctx.rng
         ans = checks.random_answers(state, rng, skip=_redraw_skip(ctx.attempt, 0.05), pool=pool)
@@ -311,7 +337,7 @@ def build(spec, protocol, spec_dir=".", host_f=None):
              "f_description": getattr(f, "description", None)}
     desc.update(d)
     desc["retries"] = int(spec.get("retries", 2 if kind == "llm" else 0))
-    desc["max_refusals"] = int(spec.get("max_refusals", 20))
+    desc["max_refusals"] = int(spec.get("max_refusals", 200 if kind == "random" else 20))
     desc["operator_access"] = kind in ORACLES and bool(getattr(f, "needs_operator", False))
     desc["oracle"] = kind in ORACLES
     if arity(f) == 1:

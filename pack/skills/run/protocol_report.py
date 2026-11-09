@@ -3,7 +3,7 @@
 
     python .opencode/skills/run/protocol_report.py artifacts/simulations/<stamp>
 
-Reads the run folder (run.json, effects.json, rewards.json when hsenv.rewards scored the run) and the project's
+Reads the run folder (run.json with the engine's scores from hsenv.score, effects.json) and the project's
 protocol.json (its SHA-256 must be the one the run recorded). The human side is the paper's printed numbers in
 protocol.json (analysis effects `reported`); the AI side is effects.json, computed on the AI participants by the
 engine. Writes results.html (the artifact kit inlined, protocol embedded, checked offline) and summary.json (the
@@ -115,6 +115,58 @@ def paragraph(table: list[dict], run: dict, partial: bool = False) -> str:
     return s
 
 
+def _esc(v) -> str:
+    return html.escape(str(v))
+
+
+def scores_card(run: dict, rewards: dict | None) -> str:
+    """The engine's scores (hsenv.score.summarize, as run_study writes them in run.json evaluation.rewards): each
+    reward's value and verdict with its labels (offline_report, official or not, a verdict on an unverified human
+    n, the intention-to-treat flags, the view) and why items were not computable. Nothing is recomputed here."""
+    ev = (run.get("evaluation") or {})
+    summary = ev.get("rewards")
+    if not isinstance(summary, dict):
+        why = summary if isinstance(summary, str) else "the engine did not score this run"
+        return f'<div class="hs-card"><h2 class="hs-h2">Scores (hsenv.score)</h2><p class="hs-sub">{_esc(why)}</p></div>'
+    plan = ev.get("plan") or {}
+    basis = plan.get("human_n_basis") or {}
+    head = []
+    if plan:
+        head.append("official n (the human analysed n in every arm)" if plan.get("official") else
+                    "non_official: the AI n differs from the human analysed n, so there is no pass/fail")
+        if plan.get("n_unverified_arms"):
+            head.append("human n unverified in %s (n_paper, no structured n_analysed)" % ", ".join(map(str, plan["n_unverified_arms"])))
+        if basis:
+            head.append("human n basis: " + ", ".join(f"{k} {v}" for k, v in sorted(basis.items())))
+    trs = []
+    for rid, r in summary.items():
+        if not isinstance(r, dict):
+            continue
+        value = "not computable" if r.get("value") is None else _num(r.get("value"))
+        verdict = ("no verdict" if r.get("passed") is None else "passed" if r.get("passed") else "not passed")
+        flags = [x for x in (
+            r.get("report_scope"), "official" if r.get("official") else "non_official" if r.get("official") is False else None,
+            "verdict on an unverified human n" if r.get("verdict_on_unverified_n") else None,
+            "intention-to-treat not checked (human exclusion rate unknown)" if r.get("itt_unchecked") else None,
+            "intention-to-treat not applicable" if r.get("itt_not_applicable") else None,
+            f"view: {r['view']}" if r.get("view") else None, r.get("label")) if x]
+        reasons = r.get("reasons") or {}
+        nc = r.get("not_computable") or 0
+        why = "; ".join(f"{k} ({n})" for k, n in reasons.items()) if reasons else ""
+        trs.append(f'<tr><td><b>{_esc(rid)}</b><br><span class="hs-sub">{_esc(r.get("status") or "")}</span></td>'
+                   f'<td>{value}<br><span class="hs-sub">{verdict}</span></td>'
+                   f'<td>{_esc(r.get("n_scored") if r.get("n_scored") is not None else "—")} scored, {_esc(nc)} not computable'
+                   f'{"<br><span class=hs-sub>" + _esc(why) + "</span>" if why else ""}</td>'
+                   f'<td><span class="hs-sub">{_esc(" · ".join(flags))}</span></td></tr>')
+    text = ev.get("text_report")
+    pre = (f'<details><summary class="hs-sub">The engine\'s text report</summary><pre>{_esc(chr(10).join(map(str, text)))}</pre></details>'
+           if isinstance(text, list) and text else "")
+    return (f'<div class="hs-card"><h2 class="hs-h2">Scores (hsenv.score) — {_esc(REPORT_SCOPE)}</h2>'
+            f'<p class="hs-sub">{_esc("; ".join(head))}</p>'
+            '<table><thead><tr><th>Reward</th><th>Value</th><th>Items</th><th>Labels</th></tr></thead><tbody>'
+            + "".join(trs) + f'</tbody></table>{pre}</div>')
+
+
 def page(protocol: dict, run: dict, table: list[dict], rewards: dict | None, partial: bool = False) -> str:
     title = (protocol.get("meta") or {}).get("title") or protocol.get("id") or "Protocol run"
     trs = []
@@ -129,11 +181,7 @@ def page(protocol: dict, run: dict, table: list[dict], rewards: dict | None, par
             f'<td>{_num(r["human"])}<br><span class="hs-sub">{html.escape(r["human_from"])}</span></td>'
             f'<td>{_num(r["ai"])}<br><span class="hs-sub">{html.escape(r["ai_from"])}</span></td>'
             f'<td>{mark}</td></tr>')
-    rew = ""
-    if rewards:
-        items = "".join(f"<li>{html.escape(str(k))}: {html.escape(json.dumps(v, default=str)[:200])}</li>"
-                        for k, v in rewards.items())
-        rew = f'<div class="hs-card"><h2 class="hs-h2">Rewards</h2><ul>{items}</ul></div>'
+    rew = scores_card(run, rewards)
     p = run.get("participants") or {}
     f = run.get("f") or {}
     manifest = [("Protocol", f'{protocol.get("id")} (SHA-256 {str(run.get("protocol_sha256", ""))[:16]}…)'),

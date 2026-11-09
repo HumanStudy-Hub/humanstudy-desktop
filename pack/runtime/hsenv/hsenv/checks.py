@@ -1,6 +1,6 @@
 """Mechanical checks for a protocol (DESIGN.md v3.1 §5). No model calls.
 
-    python -m hsenv.checks studies/hall2024gettier [--sessions 1000] [--source-text survey=path.txt ...]
+    python -m hsenv.checks studies/<id> [--sessions 1000] [--source-text survey=path.txt ...]
 """
 import argparse
 import hashlib
@@ -251,6 +251,21 @@ def check_refs(p):
     for key in (p.raw.get("keyed") or {}).get("answers", {}):
         if key not in responses:
             problems.append("keyed answer for unknown response %r" % key)
+
+    def srcs(o):   # local image files: regular files inside the study folder only (engine Protocol.local_path)
+        if isinstance(o, dict):
+            if isinstance(o.get("src"), str) and not o["src"].startswith(("http://", "https://")):
+                yield o["src"]
+            for v in o.values():
+                yield from srcs(v)
+        elif isinstance(o, list):
+            for v in o:
+                yield from srcs(v)
+    for src in sorted(set(srcs([p.data, p.stages]))):
+        try:
+            p.local_path(src)
+        except ProtocolError as e:
+            problems.append(str(e))
     return problems
 
 
@@ -304,6 +319,35 @@ def screen_strings(p):
     return out
 
 
+_EXPR_TEXT = re.compile(r"data\[|\banswers?\(\s*['\"]")
+
+
+def state_expr_leaks(state, where="state"):
+    """Unresolved protocol expressions in a served State, at any depth (fidelity review R1-M1, 2026-11-08): a dict key 'expr', or a
+    string containing 'data[' or answer('…') / answers('…'). The participant's own replies (answered[].value/text)
+    are not scanned. `seen` and `answered` are copies of earlier screens, which the fuzz already scanned when they were
+    served, so they are skipped (scanning them on every step made long sessions quadratic). Returns 'path: snippet'."""
+    out = []
+    if isinstance(state, dict) and ("seen" in state or "answered" in state):
+        state = {k: v for k, v in state.items() if k not in ("seen", "answered")}
+
+    def walk(o, path):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if k == "expr":
+                    out.append("%s.expr: %s" % (path, str(v)[:60]))
+                if path.endswith("answered]") and k in ("value", "text"):
+                    continue
+                walk(v, "%s.%s" % (path, k))
+        elif isinstance(o, list):
+            for i, v in enumerate(o):
+                walk(v, "%s[%s]" % (path, "answered" if path.endswith(".answered") else i))
+        elif isinstance(o, str) and _EXPR_TEXT.search(o):
+            out.append("%s: %s" % (path, o[:60]))
+    walk(state, where)
+    return out
+
+
 class _GroupTurns:
     """Presents a GroupSession to the fuzz loop as one session: each step answers the next pending member."""
 
@@ -342,15 +386,18 @@ class _GroupTurns:
 
 
 def play(p, n, seed, policy="random", explore=None):
-    """Run n sessions; returns (env, problems, stats). policy: random | keyed."""
+    """Run n sessions; returns (env, problems, stats). policy: random | keyed | floor.
+    floor = the §8.2 baseline: checks.random_answers on the State alone, redrawn when the State returns an error (as
+    a person would), never helped by protocol internals (keys, coding cases, hidden limits, validation targets)."""
     env = Env(p)
     rng = random.Random(seed)
     keyed = (p.raw.get("keyed") or {}).get("answers", {})
     problems, reached, unanswerable = [], set(), []
-    pool = text_pool(p)
+    pool = text_pool(p) if policy != "floor" else ()
     secret = operator_strings(p)
     visible_texts = screen_strings(p)
     leaks = set()
+    expr_leaks = set()
     foreign = set()
     lang = (p.raw.get("meta") or {}).get("language")
     lang_ok = {w.lower() for w in (p.raw.get("meta") or {}).get("foreign_text_allowed", [])}
@@ -365,6 +412,7 @@ def play(p, n, seed, policy="random", explore=None):
             state = s.reset()
             guard = 0
             while not state.get("done"):
+                expr_leaks.update(state_expr_leaks(state))
                 guard += 1
                 if guard > 10000:
                     problems.append("session %s did not end after 10,000 steps" % spec["index"])
@@ -403,61 +451,63 @@ def play(p, n, seed, policy="random", explore=None):
                     if x in blob and not any(x in v for v in visible_texts):
                         leaks.add(x[:80])
                 ans = random_answers(state, rng, pool=pool)
-                if explore is not None:   # coverage: pick the option chosen least often at this question so far
-                    for r in page["responses"]:
-                        if r["def"]["kind"] == "choice" and r["view"].get("options"):
-                            key = "%s.%s" % (r["stage"], r["def"]["id"])
-                            cnt = explore.setdefault(key, {})
-                            opts = [o["code"] for o in r["view"]["options"]]
-                            low = min(cnt.get(r["codes"][c], 0) for c in opts)
-                            pick = rng.choice([c for c in opts if cnt.get(r["codes"][c], 0) == low])
-                            cnt[r["codes"][pick]] = cnt.get(r["codes"][pick], 0) + 1
-                            ans[r["view"]["id"]] = pick
-                for n in page["names"]:   # single-switch pages (price lists): a random valid switch point
-                    ss = p.stages[n].get("single_switch")
-                    if ss and (ss.get("enforce", True) or rng.random() < 0.5):   # unenforced: some multi-switchers too
-                        rs = [r for r in page["responses"] if r["stage"] == n and r["def"]["id"] in ss["responses"]]
-                        k = rng.randint(0, len(rs))
-                        for i, r in enumerate(rs):
-                            want = ss["from"] if i < k else ss["to"]
-                            inv = {c: code for code, c in r["codes"].items()}
-                            if want in inv:
-                                ans[r["view"]["id"]] = inv[want]
-                for n in page["names"]:   # constant-sum pages: random parts that add up to the total
-                    st_ = p.stages[n].get("sum_to")
-                    if st_:
-                        rs = [r for r in page["responses"] if r["stage"] == n and r["def"]["id"] in st_["responses"]]
-                        cuts = sorted(rng.randint(0, int(st_["total"])) for _ in range(len(rs) - 1))
-                        parts = [b - a for a, b in zip([0] + cuts, cuts + [int(st_["total"])])]
-                        for r, v in zip(rs, parts):
-                            ans[r["view"]["id"]] = v
-                for r in page["responses"]:   # free text: draw from this item's own coding cases when declared
-                    ref = r["def"].get("coding_ref") or r["def"].get("coding")
-                    if r["def"]["kind"] == "text" and isinstance(ref, dict) and r["view"]["id"] in ans:
-                        block = (p.raw.get("coding") or {}).get(ref.get("block"), {})
-                        own = [c["text"] for c in block.get("cases", []) if isinstance(c.get("text"), str)
-                               and str(c.get("item")) == str(ref.get("item"))]
-                        if own and rng.random() < 0.85:
-                            t = rng.choice(own)
-                            ans[r["view"]["id"]] = t + "x" * max(0, int(r["view"].get("min_chars", 1)) - len(t))
-                for r in page["responses"]:   # satisfy the survey's own content validation (operator-side knowledge)
-                    v = r["def"].get("validate") or {}
-                    if r["view"]["id"] in ans and "equals" in v and not r["codes"]:   # numeric: the accepted number
-                        ans[r["view"]["id"]] = s.ev(v["equals"], r["bindings"]) if isinstance(v["equals"], dict) else v["equals"]
-                    elif r["view"]["id"] in ans and "equals" in v:
-                        inv = {c: k for k, c in r["codes"].items()}
-                        want = s.ev(v["equals"], r["bindings"]) if isinstance(v["equals"], dict) else v["equals"]
-                        ans[r["view"]["id"]] = [inv[w] for w in want] if isinstance(want, list) else inv[want]
-                    if r["view"]["id"] in ans and ("min" in v or "max" in v) and \
-                            isinstance(ans[r["view"]["id"]], (int, float)):
-                        lo, hi = v.get("min", float("-inf")), v.get("max", float("inf"))
-                        x = ans[r["view"]["id"]]
-                        if not lo <= x <= hi:   # hidden limits: answer inside them most of the time
-                            x = rng.uniform(max(lo, 0), min(hi, max(lo, 0) + 100))
-                            ans[r["view"]["id"]] = int(round(x)) if (r["view"].get("integer") or
-                                                                    r["def"]["kind"] == "scale") else round(x, 2)
-                    if r["view"]["id"] in ans and "contains" in v:
-                        ans[r["view"]["id"]] = (ans[r["view"]["id"]] + " " + v["contains"]).strip()
+                if policy != "floor":   # the floor policy answers from the State only: no coding cases, no hidden limits,
+                    # no validation targets, no constructed switch points or sums (coordinator 2026-11-08)
+                    if explore is not None:   # coverage: pick the option chosen least often at this question so far
+                        for r in page["responses"]:
+                            if r["def"]["kind"] == "choice" and r["view"].get("options"):
+                                key = "%s.%s" % (r["stage"], r["def"]["id"])
+                                cnt = explore.setdefault(key, {})
+                                opts = [o["code"] for o in r["view"]["options"]]
+                                low = min(cnt.get(r["codes"][c], 0) for c in opts)
+                                pick = rng.choice([c for c in opts if cnt.get(r["codes"][c], 0) == low])
+                                cnt[r["codes"][pick]] = cnt.get(r["codes"][pick], 0) + 1
+                                ans[r["view"]["id"]] = pick
+                    for n in page["names"]:   # single-switch pages (price lists): a random valid switch point
+                        ss = p.stages[n].get("single_switch")
+                        if ss and (ss.get("enforce", True) or rng.random() < 0.5):   # unenforced: some multi-switchers too
+                            rs = [r for r in page["responses"] if r["stage"] == n and r["def"]["id"] in ss["responses"]]
+                            k = rng.randint(0, len(rs))
+                            for i, r in enumerate(rs):
+                                want = ss["from"] if i < k else ss["to"]
+                                inv = {c: code for code, c in r["codes"].items()}
+                                if want in inv:
+                                    ans[r["view"]["id"]] = inv[want]
+                    for n in page["names"]:   # constant-sum pages: random parts that add up to the total
+                        st_ = p.stages[n].get("sum_to")
+                        if st_:
+                            rs = [r for r in page["responses"] if r["stage"] == n and r["def"]["id"] in st_["responses"]]
+                            cuts = sorted(rng.randint(0, int(st_["total"])) for _ in range(len(rs) - 1))
+                            parts = [b - a for a, b in zip([0] + cuts, cuts + [int(st_["total"])])]
+                            for r, v in zip(rs, parts):
+                                ans[r["view"]["id"]] = v
+                    for r in page["responses"]:   # free text: draw from this item's own coding cases when declared
+                        ref = r["def"].get("coding_ref") or r["def"].get("coding")
+                        if r["def"]["kind"] == "text" and isinstance(ref, dict) and r["view"]["id"] in ans:
+                            block = (p.raw.get("coding") or {}).get(ref.get("block"), {})
+                            own = [c["text"] for c in block.get("cases", []) if isinstance(c.get("text"), str)
+                                   and str(c.get("item")) == str(ref.get("item"))]
+                            if own and rng.random() < 0.85:
+                                t = rng.choice(own)
+                                ans[r["view"]["id"]] = t + "x" * max(0, int(r["view"].get("min_chars", 1)) - len(t))
+                    for r in page["responses"]:   # satisfy the survey's own content validation (operator-side knowledge)
+                        v = r["def"].get("validate") or {}
+                        if r["view"]["id"] in ans and "equals" in v and not r["codes"]:   # numeric: the accepted number
+                            ans[r["view"]["id"]] = s.ev(v["equals"], r["bindings"]) if isinstance(v["equals"], dict) else v["equals"]
+                        elif r["view"]["id"] in ans and "equals" in v:
+                            inv = {c: k for k, c in r["codes"].items()}
+                            want = s.ev(v["equals"], r["bindings"]) if isinstance(v["equals"], dict) else v["equals"]
+                            ans[r["view"]["id"]] = [inv[w] for w in want] if isinstance(want, list) else inv[want]
+                        if r["view"]["id"] in ans and ("min" in v or "max" in v) and \
+                                isinstance(ans[r["view"]["id"]], (int, float)):
+                            lo, hi = v.get("min", float("-inf")), v.get("max", float("inf"))
+                            x = ans[r["view"]["id"]]
+                            if not lo <= x <= hi:   # hidden limits: answer inside them most of the time
+                                x = rng.uniform(max(lo, 0), min(hi, max(lo, 0) + 100))
+                                ans[r["view"]["id"]] = int(round(x)) if (r["view"].get("integer") or
+                                                                        r["def"]["kind"] == "scale") else round(x, 2)
+                        if r["view"]["id"] in ans and "contains" in v:
+                            ans[r["view"]["id"]] = (ans[r["view"]["id"]] + " " + v["contains"]).strip()
                 keyed_ids = set()
                 visible = s.visible_refs()
                 for r in page["responses"]:
@@ -481,7 +531,8 @@ def play(p, n, seed, policy="random", explore=None):
                 kept = dict(ans)
                 state2 = s.step(ans)
                 tries = 0
-                while state2.get("error") and set(state2["error"]) == {"page"} and tries < 5000:
+                while state2.get("error") and (set(state2["error"]) == {"page"} or policy == "floor") \
+                        and tries < (5000 if policy != "floor" else 200):
                     # a page-level rule (e.g. a single switching point) refused random rows: redraw, as a person would
                     tries += 1
                     # redraw as a person would; optional answers are sometimes left empty, so page rules such as
@@ -492,22 +543,31 @@ def play(p, n, seed, policy="random", explore=None):
                         ans.pop("_elapsed_ms", None)
                     state2 = s.step(ans)
                 if state2.get("error"):
+                    if policy == "floor":   # the State's own errors could not be met by chance: session not completed
+                        break
                     problems.append("valid answers refused: %s" % state2["error"])
                     break
                 state = state2
         except (ProtocolError, ExprError) as e:
             problems.append("session %s: %s" % (spec["index"], e))
     only_blocked = set()
-    blocked = [a for a in p.arms if a.get("runnable") is False]
+    blocked_problems = []
+    blocked = [a for a in p.arms if a.get("runnable") is False] if policy != "floor" else []
     if blocked:
         benv = Env(p)
         n_blocked = 40 if (p.raw.get("analysis") or {}).get("blocked_arm_effects") else 10
         for a in blocked:
             for i in range(n_blocked):
-                bs = benv.open({"study": p.id, "arm": a["id"], "index": i, "seed": seed * 1000 + i}, allow_blocked=True)
+                bspec = {"study": p.id, "arm": a["id"], "index": i, "seed": seed * 1000 + i}
+                if a.get("group_size"):   # two-person / group arms run as group sessions, as runnable ones do
+                    bspec["group_size"] = int(a["group_size"])
+                bs = benv.open(bspec, allow_blocked=True)
+                if bspec.get("group_size"):
+                    bs = _GroupTurns(bs)
                 try:
                     st = bs.reset()
                     while not st.get("done"):
+                        expr_leaks.update(state_expr_leaks(st))
                         only_blocked.update(bs._page["names"])
                         ans = random_answers(st, rng, pool=pool)
                         for r in bs._page["responses"]:
@@ -523,7 +583,10 @@ def play(p, n, seed, policy="random", explore=None):
                                 ans[rid] = (str(ans[rid]) + " " + v["contains"]).strip()
                             if rid in ans and ("min" in v or "max" in v) and isinstance(ans[rid], (int, float)):
                                 lo, hi = v.get("min", 0), v.get("max", v.get("min", 0) + 100)
-                                ans[rid] = int(round((lo + hi) / 2)) if r["view"].get("integer") else (lo + hi) / 2
+                                if not lo <= ans[rid] <= hi:   # hidden limits: a random value inside them (a fixed
+                                    x_ = rng.uniform(lo, hi)   # midpoint gave blocked effects no variance)
+                                    ans[rid] = int(round(x_)) if (r["view"].get("integer") or
+                                                                  r["def"]["kind"] == "scale") else round(x_, 2)
                         st2 = bs.step(ans)
                         tries = 0
                         while st2.get("error") and tries < 2000:   # page rules: redraw as a person would
@@ -532,11 +595,15 @@ def play(p, n, seed, policy="random", explore=None):
                         if st2.get("error"):
                             break
                         st = st2
-                except (ProtocolError, ExprError):
+                except (ProtocolError, ExprError) as e:   # reported, never swallowed (the arm stays blocked)
+                    blocked_problems.append("blocked arm %s session %s: %s" % (a["id"], i, e))
                     break
     blocked_not_computed = []
     if blocked and (p.raw.get("analysis") or {}).get("blocked_arm_effects"):   # effects kept for blocked arms
         btab = benv.unit_tables()
+        rtab = env.unit_tables()   # a blocked effect may contrast a blocked arm with a runnable one
+        for k_, rows_ in rtab.items():
+            btab[k_] = list(btab.get(k_, [])) + list(rows_)
         for e in p.raw["analysis"]["blocked_arm_effects"]:
             if not e.get("compute"):   # reported-only (e.g. a model term): nothing to compute
                 continue
@@ -549,10 +616,11 @@ def play(p, n, seed, policy="random", explore=None):
                 blocked_not_computed.append(e.get("id"))
     unreached = sorted(set(p.stages) - reached - only_blocked)
     stats = {"sessions": len(env.sessions), "unreached_stages": unreached, "leaks": sorted(leaks),
+             "state_expr_leaks": sorted(expr_leaks)[:20], "n_state_expr_leaks": len(expr_leaks),
              "foreign_language_tokens": sorted(foreign)[:20],
              "stages_only_in_blocked_arms": sorted(only_blocked - reached),
              "unanswerable": sorted(set(unanswerable))[:10], "n_unanswerable": len(unanswerable),
-             "blocked_effects_not_computed": blocked_not_computed}
+             "blocked_effects_not_computed": blocked_not_computed, "blocked_arm_problems": blocked_problems[:10]}
     return env, problems, stats
 
 
@@ -582,6 +650,14 @@ def human_sign(e):
     if isinstance((rep.get("test") or {}).get("value"), (int, float)):
         return rep["test"]["value"], None   # sign of the printed statistic (treatment - reference)
     return None, NO_SIGN
+
+
+def same_sign(keyed, human):
+    """Strict sign agreement (LESSONS 301): a keyed value of exactly 0 matches neither a positive nor a negative human
+    sign (only a human 0); NaN never matches."""
+    if not all(isinstance(x, (int, float)) and not isinstance(x, bool) and x == x for x in (keyed, human)):
+        return False
+    return (keyed > 0) - (keyed < 0) == (human > 0) - (human < 0)
 
 
 def target_values(p, tables):
@@ -669,6 +745,56 @@ def paper_consistency(p):
     return out
 
 
+def statistic_vocabulary(p):
+    """Report (not a failure): reported.test.statistic values outside the effects vocabulary
+    (effects_core.TEST_STATISTICS) in effects, effects_means and blocked_arm_effects — effects.json export and Bench
+    refuse them."""
+    out = []
+    an = p.raw.get("analysis") or {}
+    for key in ("effects", "effects_means", "blocked_arm_effects"):
+        for e in an.get(key) or []:
+            t = (e.get("reported") or {}).get("test") if isinstance(e, dict) else None
+            if isinstance(t, dict) and t.get("statistic") not in effects_core.TEST_STATISTICS:
+                out.append({"effect": e.get("id"), "statistic": t.get("statistic")})
+    return out
+
+
+def printed_item_tests(p):
+    """Report (not a failure): when the protocol ships the paper's printed item-level data
+    (analysis.printed_items = {unit: [rows]} or {unit: {"rows": [...], "cite": …}}), recompute every effect on that
+    unit with effects_core and compare with the printed test statistic (tolerance 5% or 0.1) and printed value."""
+    an = p.raw.get("analysis") or {}
+    items = an.get("printed_items")
+    if not isinstance(items, dict):
+        return []
+    out = []
+    for e in all_effects(p) + list(an.get("blocked_arm_effects") or []):
+        if not isinstance(e, dict) or not e.get("compute"):
+            continue
+        rows = items.get(e.get("unit"))
+        rows = rows.get("rows") if isinstance(rows, dict) else rows
+        if not isinstance(rows, list):
+            continue
+        try:
+            b = effects_core.compute({"effects": [e]}, [r for r in rows if isinstance(r, dict)])
+        except Exception as x:   # report the effect, never crash the checks
+            out.append({"effect": e.get("id"), "status": "error: %s" % x})
+            continue
+        b = b[0] if b else {}
+        rep = e.get("reported") or {}
+        row = {"effect": e.get("id"), "status": b.get("status")}
+        got_t = (b.get("test") or {}).get("value")
+        want_t = (rep.get("test") or {}).get("value")
+        if isinstance(got_t, (int, float)) and isinstance(want_t, (int, float)):
+            row.update(printed_test=want_t, recomputed_test=round(got_t, 4),
+                       test_ok=abs(abs(got_t) - abs(want_t)) <= max(0.05 * abs(want_t), 0.1))
+        if isinstance(b.get("value"), (int, float)) and isinstance(rep.get("value"), (int, float)):
+            row.update(printed_value=rep["value"], recomputed_value=round(b["value"], 4),
+                       value_ok=abs(b["value"] - rep["value"]) <= max(0.05 * abs(rep["value"]), 0.01))
+        out.append(row)
+    return out
+
+
 def run_coding_cases(p):
     out = {}
     for name, c in (p.raw.get("coding") or {}).items():
@@ -713,8 +839,11 @@ def fetch_images(p, env):
                             if cd:
                                 problems.append("note: %s sends Content-Disposition %r — operators must pass image "
                                                 "bytes only (headers may name the condition)" % (o["src"], cd[:80]))
-                    else:
-                        data = (p.root / o["src"]).read_bytes()
+                    else:   # only regular files inside the study folder (engine Protocol.local_path)
+                        lp = p.local_path(o["src"])
+                        if lp is None:
+                            raise OSError("no such file in the study folder")
+                        data = lp.read_bytes()
                     got = hashlib.sha256(data).hexdigest()
                     if data[:15].lower().startswith((b"<!doctype", b"<html")):
                         problems.append("%s returns HTML, not an image" % o["src"])
@@ -734,38 +863,50 @@ def fetch_images(p, env):
 
 
 def _norm(s):
+    """NFKC, curly quotes, U+2212 minus as '-', runs of underscores (printed blanks) folded to '__', whitespace,
+    case."""
     s = unicodedata.normalize("NFKC", s)
-    s = s.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+    s = s.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"').replace("\u2212", "-")
+    s = re.sub(r"_{2,}", "__", s)
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
-_UNCERTAIN = re.compile(r"\[[^\]]*\buncertain\b", re.I)
+# a line with one of these marks is not agreement (Decided 5). [partial] too: the reader did not read the whole
+# element (skills review-4 M6: "Agree [partial]" must not confirm "Agree").
+_UNCERTAIN = re.compile(r"\[[^\]]*\b(?:uncertain|unclear|illegible|unreadable|guess|partial|continued)|\[\s*\?+\s*\]",
+                        re.I)
+# [partial] / [continued] only say that the element goes on in the next line or page: a join that completes the
+# element ignores them (they still never confirm a text on their own)
+_SOFT = re.compile(r"\[\s*(?:partial|continued)\s*\]", re.I)
+def _private_config():
+    """Study-specific pins live outside the public engine (owner 2026-11-08: engine code may be public, study data may
+    not): a JSON file named by env HSENV_PRIVATE_CONFIG (empty = none), else <sandbox>/coordinator/engine-private.json
+    next to this package's project folder. Absent file = no pins (a public copy has none). Keys:
+    legacy_uncertain_readings {sha256: label}, legacy_cite_sources {protocol id: [sourcetext names]},
+    fetch_images_study_prefixes [folder-name prefixes check_all always image-checks]."""
+    import os
+    env = os.environ.get("HSENV_PRIVATE_CONFIG")
+    path = Path(env) if env else Path(__file__).resolve().parents[2] / "coordinator" / "engine-private.json"
+    if env == "" or not path.is_file():
+        return {}
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise SystemExit("private engine config %s unreadable: %s" % (path, e))
+    return cfg if isinstance(cfg, dict) else {}
+
+
+PRIVATE = _private_config()
 # Blind readings written before uncertain lines stopped counting as agreement (2026-11-08, skills review-1 S8),
 # pinned by the sha256 of the reading's text. Texts confirmed only by an [uncertain] line of one of these files
 # still count, but are reported in verbatim.image_uncertain_legacy until a third blind reader settles them. The pin
-# ends by itself when the file changes. Never add new entries: new readings follow the strict rule.
-LEGACY_UNCERTAIN_READINGS = {
-    "3670d57f27b0762bea2b51462a9d1219262e53c6dfb910867143e918c45534f6": "arechar2018online esm#second",
-    "d5de1e0ac2cc205e1400c30f139a7c8cb35d5f10c718b28f0ee944bcd79381ac": "huber2023manydesigns GFL12_ctl_print#second",
-    "cbe4bd88ba6a4fecefd9ec47af6c3e4d09b1dfa4ba6c2d719f2f7414872a8e03": "huber2023manydesigns GFL12_cmp_print#second",
-    "c91b7dca0c0fe920878dafbe83a0fa6965fcfe9e787bcca701167d73b89af711": "manylabs2 images#second",
-    "aa6356edfd129caa5c3013faf53b577ab2f167b47f0a77e5ddc09ca9e2106052": "vlasceanu2024climate master#second",
-}
+# ends by itself when the file changes. Never add new entries: new readings follow the strict rule. (Private config.)
+LEGACY_UNCERTAIN_READINGS = dict(PRIVATE.get("legacy_uncertain_readings") or {})
 
 # Studies built before cites had to name a meta.sources entry (skills review-2 S3'): they cite the names of their
 # sourcetext files. Pinned by protocol id AND the exact names; any other unknown name in these studies blocks too.
-# Never add entries: new studies cite meta.sources keys (README Decided 8).
-LEGACY_CITE_SOURCES = {
-    "burtonchellew2022pgg": {"nhb_si", "osf", "paper"},
-    "chandrashekar2021blindspot": {"docx_s1a", "docx_s1b", "docx_s2", "docx_s3", "qsf_s1a", "qsf_s1b", "qsf_s2",
-                                   "qsf_s3"},
-    "huber2023manydesigns": {"LEU04_logo", "LGT85_images", "LGT85_py", "LGT85_tpl", "MUE79_pages", "MUE79_php",
-                             "NJJ10_py", "NJJ10_tpl", "PRF65_py", "PRF65_tpl", "RDP12_cmp_js", "RDP12_ctl_js",
-                             "RPZ39_cmp_pages", "RPZ39_ctl_pages", "RPZ39_py", "TVX41_pages", "TVX41_php",
-                             "WDO94_cmp_pages", "WDO94_cmp_py", "WDO94_cmp_raw", "WDO94_ctl_pages", "WDO94_ctl_raw",
-                             "YPZ45_py", "YPZ45_tpl"},
-    "pennycook2020covid": {"images"},
-}
+# Never add entries: new studies cite meta.sources keys (README Decided 8). (Private config.)
+LEGACY_CITE_SOURCES = {k: set(v) for k, v in (PRIVATE.get("legacy_cite_sources") or {}).items()}
 
 def _strip_marks(f):
     f = re.sub(r"\[value [a-z]+: ([^\]]*)\]", r"\1", f)
@@ -774,77 +915,527 @@ def _strip_marks(f):
 
 
 def _cited_pages(page):
+    """Pages an image-read cite may match: an integer page, or two consecutive pages ("3-4", a screen across a page
+    break). Anything else (omitted, "p3", "1-40", "3, 5") is unparseable and matches NO page (skills review-3 S3)."""
+    if isinstance(page, bool):
+        return None
     if isinstance(page, int):
         return {page}
     if isinstance(page, str) and re.fullmatch(r"\d+", page.strip()):
         return {int(page)}
-    if isinstance(page, str) and re.fullmatch(r"\d+-\d+", page):
-        a, b = map(int, page.split("-"))
-        return set(range(a, b + 1))
+    if isinstance(page, str) and re.fullmatch(r"\d+-\d+", page.strip()):
+        a, b = map(int, page.strip().split("-"))
+        if 0 <= b - a <= 1:
+            return set(range(a, b + 1))
     return None
 
 
 def _covers(reading, page):
-    """True when a blind reading has at least one 'p<N> |' line on the cited page(s), i.e. its reader read that page."""
+    """True when a blind reading has at least one 'p<N> |' line on the cited page(s), i.e. its reader read that page.
+    An unparseable cite covers nothing."""
     pages = _cited_pages(page)
+    if pages is None:
+        return False
     for line in reading.splitlines():
         m = re.match(r"\s*p(\d+)\s*\|", line)
-        if m and (pages is None or int(m.group(1)) in pages):
+        if m and int(m.group(1)) in pages:
             return True
     return False
 
 
-def _image_match(text, second, page, uncertain=False):
-    """Second-reading files have lines 'p<N> | screen | kind | [style |] text'. Match on the cited page(s);
-    labels under 25 characters must equal a whole field. A line the reader marked [uncertain …] is not agreement
-    (skills README Decided 5): it is skipped unless uncertain=True (used only to report why a text failed)."""
-    pages = _cited_pages(page)
-    want = _norm(text)
-    prev = None   # (screen field, content field) of the previous line on the cited page(s)
-    for line in second.splitlines():
+# Reader annotations stripped before comparing (skills review-4 M6): ONLY the closed vocabulary of prompts.md §1
+# ([uncertain: …], [note: …], [partial], [non-english], widget marks [radio], [checked], [selected], [dropdown],
+# [empty], [info icon]) and forms already used by pinned readings ([callout …], [A not selected], [radio, selected],
+# [empty input], 10×10). Any other bracketed text stays part of the field and must match the served text: "I [do
+# not] agree" does not confirm "I agree", "No [smudged]" does not confirm "No". A remark is written [note: …].
+_MARK_BODY = (r"(?:uncertain|unclear|illegible|unreadable|guess|partial|continued)(?:\s*[:;,][^\]]*)?|\?+|note\s*:[^\]]*|"
+              r"non-english(?:\s*:[^\]]*)?|callout\b[^\]]*|"
+              r"(?:radio|checkbox)(?:\s*,?\s*(?:(?:[AB] )?(?:not )?selected|checked|empty))?|"
+              r"(?:[AB] )?(?:not )?selected|checked|unchecked|dropdown|info icon|"
+              r"empty(?: (?:input|text field|field|box|blank amount|blank|amount))?|10×10")
+_MARKS = re.compile(r"\s*\[\s*(?:" + _MARK_BODY + r")\s*\]", re.I)
+# element kinds that are one element each: never joined with a neighbouring line (an option, a button …)
+_SINGLE_KINDS = re.compile(r"(?i)^(option|button|dropdown|slider[- ]?(left|right)?|cell|column|row( \d+)?|number|"
+                           r"stat|domain|radio|checkbox|choice|scale|anchor|link|tab|menu)$")
+
+
+# a list bullet / number, a scale-point number printed before its label ('0 Probably average …'), or a
+# required-field asterisk ('*How many …') at the start of a field
+_BULLET = re.compile(r"^(?:(?:[•·▪◦‣∙●○■□–—-]|\(?\d{1,2}[.)]|\(?[a-z][.)]|[-+]?\d{1,2}(?=\s+[^\d\s]))\s+|\*\s*)")
+_UNITS = re.compile(r"(?<=[.!?:;])\s+")
+
+
+def _units(field):
+    """Whole units of one normalised field (reader marks already removed by _MARKS): the field, the field without a
+    list bullet, and every contiguous run of its sentences / colon-separated parts ('Block 1:' and '(Task "orange")'
+    of 'Block 1: (Task "orange")'). Never a word or phrase inside a sentence, and bracketed text is never dropped
+    (skills review-4 M6)."""
+    out = {field}
+    nob = _BULLET.sub("", field)
+    out.add(nob)
+    for f in list(out):
+        us = [u for u in _UNITS.split(f) if u]
+        if 1 < len(us) <= 60:
+            for i in range(len(us)):
+                for j in range(i + 1, len(us) + 1):
+                    out.add(_BULLET.sub("", " ".join(us[i:j])))
+    return {x for x in out if x}
+
+
+def _reading_lines(reading, pages, annots=()):
+    """[(page, screen, kind, content fields)] of the reading's lines on <pages>, uncertain lines marked. annots:
+    the protocol's declared printed-annotation regexes for this reading's source (meta.image_read
+    .reading_annotations), removed from every content field before comparing."""
+    return _reading_lines_c(reading, frozenset(pages), tuple(annots))
+
+
+import functools as _functools   # noqa: E402  (kept inside the matcher section)
+
+# a reader's mark for a picture inside a line ('outcome "[callout die image]" results in'): the text on either side
+# is a separate printed fragment for the fragment-template rule (rule h, 2026-11-08)
+_IMAGE_MARK = re.compile(r"\[\s*(?:(?:image|picture|photo|icon|logo|figure)\b[^\]]*|(?:note\s*:|callout\b)[^\]]*?"
+                         r"\b(?:image|picture|photo|icon|logo|figure|pictogram)s?\b[^\]]*)\]", re.I)
+
+
+def _clean_field(f):
+    return _norm(_MARKS.sub("", re.sub(r"\[value [a-z]+: ([^\]]*)\]", r"\1", f)))
+
+
+def _runs(field):
+    """(prefix runs, suffix runs) of a field's sentences / colon parts, bullet stripped: the first piece of a
+    multi-line served element must END its reading line, the last must START its reading line (review-5 M1)."""
+    f = _BULLET.sub("", field)
+    us = [u for u in _UNITS.split(f) if u]
+    if not us or len(us) > 60:
+        return {f}, {f}
+    return ({" ".join(us[:j]) for j in range(1, len(us) + 1)}, {_BULLET.sub("", " ".join(us[i:])) for i in range(len(us))})
+
+
+def _unquote(x):
+    """The inside of a field wholly enclosed in one pair of double quotes (an article quoting the item), else None."""
+    if len(x) > 2 and x[0] == '"' and x[-1] == '"' and '"' not in x[1:-1]:
+        return x[1:-1].strip()
+    return None
+
+
+@_functools.lru_cache(maxsize=512)
+def _reading_lines_c(reading, pages, annots=()):
+    rx_ann = [re.compile(a) for a in annots]
+    out = []
+    for line in reading.splitlines():
         m = re.match(r"\s*p(\d+)\s*\|", line)
-        if not m or (pages and int(m.group(1)) not in pages):
+        if not m or int(m.group(1)) not in pages:
             continue
-        if not uncertain and _UNCERTAIN.search(line):
+        parts = line.split("|")
+        screen = _norm(parts[1]) if len(parts) > 2 else ""
+        kind = _norm(re.sub(r"\[[^\]]*\]", "", parts[2])) if len(parts) > 3 else ""
+        style = _norm(parts[3]) if len(parts) > 4 else ""
+        # fixed fields p | screen | kind | [style |]; everything after them is content, even when it contains ' | '
+        # (rule i): content without a style field, content after a style field, and with more than one '|' after the
+        # kind, each '|'-separated piece (printed elements on one line, as with ' / ')
+        if len(parts) <= 3:
+            cands, pieces = [parts[-1]], []
+        else:
+            cands = ["|".join(parts[3:])] + (["|".join(parts[4:])] if len(parts) > 4 else [])
+            pieces = parts[3:] if len(parts) > 4 else []
+        changed = False
+        if rx_ann:   # declared printed annotations (e.g. a result share printed after an option): stripped
+            def strip(x):
+                for rx in rx_ann:
+                    x = rx.sub("", x)
+                return x
+            new = [strip(x) for x in cands], [strip(x) for x in pieces]
+            changed = (new[0], new[1]) != (cands, pieces)
+            cands, pieces = new
+        fields, frags, wholes = [], set(), set()
+        two_line = kind in ("label", "heading") or "line" in style
+        for f in cands + pieces:
+            fields.append(_clean_field(f))
+            if " / " in f:   # a reader listing several elements of one line ("Yes / No"): each piece is a field
+                fields += [_clean_field(x) for x in f.split(" / ")]
+                if two_line:   # a label printed on two lines, written 'line 1 / line 2' (berg S2b): space-joined
+                    fields.append(_clean_field(" ".join(f.split(" / "))))
+            if _IMAGE_MARK.search(f):
+                frags |= {_clean_field(x) for x in _IMAGE_MARK.split(f)}
+        fields = [x for x in fields if x]
+        units, prefixes, suffixes, qunits = set(), set(), set(), set()
+        for f in fields:
+            units |= _units(f)
+            wholes |= {f, _BULLET.sub("", f)}
+            p_, s_ = _runs(f)
+            prefixes |= p_
+            suffixes |= s_
+            q = _unquote(f)
+            if q:
+                qunits |= _units(q)
+        contents = [x for x in (_clean_field(c) for c in cands) if x]
+        hard = bool(_UNCERTAIN.search(_SOFT.sub("", line)))
+        out.append({"page": int(m.group(1)), "screen": screen, "kind": kind, "style": style,
+                    "units": frozenset(units), "qunits": frozenset(qunits), "wholes": frozenset(wholes),
+                    "prefixes": frozenset(prefixes), "suffixes": frozenset(suffixes),
+                    "frags": frozenset(x for x in frags if x),
+                    # the label/value join reads the field after a style field when there is one
+                    "content": contents[-1] if contents else "", "contents": tuple(contents),
+                    "annotated": changed, "uncertain": bool(_UNCERTAIN.search(line)), "hard_uncertain": hard})
+    return tuple(out)
+
+
+def _joins(texts):
+    """Joined forms of consecutive printed lines: ' '-joined, and 'x-' + 'y' without the space (a word hyphenated at
+    the print line end). At most 8 variants."""
+    outs = [""]
+    for k, t in enumerate(texts):
+        t = t.strip()
+        if k == 0:
+            outs = [t]
+            continue
+        nxt = []
+        for o in outs:
+            nxt.append(o + " " + t)
+            if o.endswith("-"):
+                nxt.append(o + t)
+        outs = nxt[:8]
+    return outs
+
+
+# a computed value inside a composed element is a rendered number. A currency/unit word or a percent sign may
+# precede/follow it only when the value's own expression contains that string (review-5 M2): "You will earn 5
+# points." never confirms "You will" + V + "points.", and "GBP 3" never confirms a value rendered as "3".
+_TPL_UNITS = ("gbp", "usd", "eur", "chf", "cad", "aud", "jpy", "pts", "£", "$", "€", "¥")
+_TPL_NUM = r"[-+]?\d{1,9}(?:[.,]\d{1,4})?"
+
+
+def _tpl_value_rx(consts):
+    low = {_norm(c) for c in (consts or ())}
+    units = [u for u in _TPL_UNITS if any(re.search(r"(?:^|\s)%s(?:\s|$)" % re.escape(u), c) for c in low)]
+    pre = "(?:(?:%s) ?)?" % "|".join(map(re.escape, units)) if units else ""
+    pct = " ?%?" if any("%" in c for c in low) else ""
+    return "(" + pre + _TPL_NUM + pct + ")"
+
+
+def _template_rx(parts):
+    """parts: [('s', static text) | ('v', None)] of one composed element -> regex over a normalised unit, or None."""
+    merged = []
+    for kind, t in parts:
+        if kind == "s" and merged and merged[-1][0] == "s":
+            merged[-1] = ("s", merged[-1][1] + t)
+        else:
+            merged.append((kind, t))
+    rx, nv = "", 0
+    for kind, t in merged:
+        if rx:
+            rx += " ?"
+        if kind == "s":
+            st = _norm(t)
+            if not st:
+                rx = rx[:-2] if rx.endswith(" ?") else rx
+                continue
+            rx += re.escape(st)
+        else:
+            rx += _tpl_value_rx(t)
+            nv += 1
+    return re.compile("^" + rx + "$") if rx else None
+
+
+def _template_ok(rx, unit):
+    m = rx.match(unit)
+    if not m:
+        return False
+    for v in m.groups():
+        v = v.strip()
+        if not v or len(v) > 24 or re.search(r"[.!?](?:\s|$)", v):
+            return False
+    return True
+
+
+def _group_match(group, lines):
+    """Rules of skills review-4 (image matcher) — both need WHOLE-unit equality with one reading line:
+    ('join', texts, i): lines a..b (a <= i < b, at least two) of ONE served image item, same source and page,
+      joined in order ('x-'+'y' also without a space) equal a unit of one reading line. Every joined line is
+      confirmed only as part of that join.
+    ('tpl', rx): the served element is composed by the protocol's own template from static fragments and computed
+      values ([s1, V1, s2, ...]); the whole unit must be s1 V1 s2 ... with each V a short rendered number/currency/
+      percent (<= 24 characters, no sentence end)."""
+    units = [ln["units"] for ln in lines]
+    if group[0] == "join":
+        _, texts, i = group
+        lo = i
+        while lo > 0 and texts[lo - 1] is not None and i - (lo - 1) < 40:
+            lo -= 1
+        hi = i
+        while hi + 1 < len(texts) and texts[hi + 1] is not None and hi + 1 - i < 40:
+            hi += 1
+        for a in range(lo, i + 1):
+            for b in range(max(i, a + 1), hi + 1):
+                for j in _joins(texts[a:b + 1]):
+                    jn = _norm(j)
+                    if any(jn in u for u in units):
+                        return True
+        return False
+    if group[0] == "tpl":
+        rx = group[1]
+        return any(_template_ok(rx, u_) for ln in lines for u_ in (ln["units"] | ln["frags"]))
+    return False
+
+
+def _hit(want, ln):
+    """Whole-unit equality with one reading line; a line wholly in double quotes (an article quoting the item) also
+    matches its inside, only when the served text does not itself start with a quote."""
+    return want in ln["units"] or (want[:1] != '"' and want in ln["qunits"])
+
+
+def _join_eq(want, texts):
+    """The served text equals the WHOLE join of consecutive reading lines (bullet stripped, or inside one pair of
+    outer quotes when the served text has none)."""
+    for j in _joins(texts):
+        jn = _norm(j)
+        if want in (jn, _BULLET.sub("", jn)):
+            return True
+        q = _unquote(jn)
+        if q and want[:1] != '"' and want == q:
+            return True
+    return False
+
+
+_CELL_LINE = re.compile(r",?\s*line \d+\s*$")
+
+
+def _image_match(text, second, page, uncertain=False, groups=(), annots=()):
+    """Reading lines are 'p<N> | screen | kind | [style |] text'. A served text matches a line on its cited page(s)
+    only by WHOLE-FIELD EQUALITY after normalisation (NFKC, quotes, U+2212, underscore runs, whitespace, case, reader
+    marks removed) — never as a substring or a word inside a longer field ("Agree" is not confirmed by "Strongly
+    agree"; skills review-3 M4). A line wholly in double quotes also matches its inside (served text without quotes).
+    Layout tolerances, each a whole-element equality:
+    - a label and its value on two consecutive lines (the first ends with ':' or is of kind 'label'; same page and
+      screen; neither an option/button/cell-like single element) match their join;
+    - consecutive printed lines of ONE element (same page, screen and kind; not a single-element kind, not a label;
+      note lines skipped; split by the print's line end or by a style change) match their whole join;
+    - a served element printed on several lines ('A\nB') matches consecutive reading lines of one page and screen:
+      the first piece ends the first line, the last piece starts the last line, middle pieces are whole fields
+      (review-5 M1); single-element kinds only when every line is a line of the same cell ('…, line 1', '…, line 2');
+    - groups (from _image_groups): one printed line of an image item, or one static fragment of a composed element,
+      matches when its whole join / template matches one reading unit (_group_match);
+    - cross-page join (rule e): a text whose cite spans two pages "p-q" also matches the join of the last line of p
+      and the first line of q (note lines skipped; never a label or single element).
+    A line the reader marked [uncertain …] / [partial] / [continued] is not agreement (Decided 5): skipped unless
+    uncertain=True (used only to report why a text failed); in a join, [partial] / [continued] alone do not block
+    (the join completes the element). An unparseable page cite matches nothing. annots: declared printed
+    annotations stripped (_reading_lines)."""
+    pages = _cited_pages(page)
+    if pages is None:
+        return False
+    want = _norm(text)
+    if not want:
+        return False
+    lines = _reading_lines(second, pages, annots)
+
+    def ok(ln):
+        return uncertain or not ln["uncertain"]
+
+    def okj(ln):
+        return uncertain or not ln["hard_uncertain"]
+    usable = [ln for ln in lines if ok(ln)]
+    if any(_hit(want, ln) for ln in usable):
+        return True
+    prev = None
+    for ln in lines:
+        if not ok(ln):
             prev = None
             continue
-        # layout tolerance: a reader may put a label and its value on two consecutive lines of the same screen
-        # ("Requester:" / "Studies on MTurk"); the served text matches their join (same words, same order)
-        parts_ = line.split("|")
-        cur = (_norm(parts_[1]) if len(parts_) > 1 else "", _norm(_strip_marks(parts_[-1])))
-        if prev and prev[0] == cur[0] and prev[1] and cur[1]:
-            joined = prev[1] + " " + cur[1]
-            if (len(want) < 25 and want == joined) or (len(want) >= 25 and want in joined):
+        if prev and prev["page"] == ln["page"] and prev["screen"] == ln["screen"] and prev["content"] \
+                and ln["content"] and not _SINGLE_KINDS.match(prev["kind"]) and not _SINGLE_KINDS.match(ln["kind"]) \
+                and (prev["content"].endswith(":") or prev["kind"] == "label") and ln["kind"] != "label":
+            if want in (prev["content"] + " " + ln["content"], _BULLET.sub("", prev["content"]) + " " + ln["content"]):
                 return True
-        prev = cur
-        raw_fields = []
-        for f in line.split("|")[1:]:
-            # reading notes and marks only — brackets can be real screen text ("[right/wrong]")
-            f = re.sub(r"\[value [a-z]+: ([^\]]*)\]", r"\1", f)   # "[value plain: X]" → X (reader's label/value notation)
-            f = re.sub(r"\s*\[(?:uncertain|partial|non-english|callout|radio|empty|dropdown|info icon|"
-                       r"(?:[AB] )?(?:not )?selected|checked|10×10|note:)[^\]]*\]", "", f, flags=re.I)
-            raw_fields += [f] + ([x for x in f.split(" / ")] if " / " in f else [])
-        parts = line.split("|")
-        if len(parts) > 4:   # printed text containing "|": also try everything after the kind field as one field
-            raw_fields.append("|".join(parts[3:]))
-        fields = [_norm(re.sub(r"\s*\[(?:uncertain|partial|non-english)[^\]]*\]", "", f, flags=re.I)) for f in raw_fields]
-        if len(want) < 25:
-            if want in fields:
+        prev = ln
+    printed = [ln for ln in lines if ln["kind"] != "note"]
+    # consecutive printed lines of one element
+    for i in range(len(printed)):
+        a = printed[i]
+        if _SINGLE_KINDS.match(a["kind"]) or a["kind"] == "label" or not okj(a):
+            continue
+        run = [a]
+        for b in printed[i + 1:i + 12]:
+            if (b["page"], b["screen"], b["kind"]) != (a["page"], a["screen"], a["kind"]) or not okj(b):
+                break
+            run.append(b)
+            if _join_eq(want, [x["content"] for x in run]):
                 return True
-            # line breaks differ between readings: a label of 4+ characters may match at word boundaries
-            if len(want) >= 4 and any(re.search(r"(?:^|\s)" + re.escape(want) + r"(?:\s|$)", f) for f in fields):
+    # a served element printed on several lines (review-4 rule a, reading side; review-5 M1)
+    pieces = [_norm(x) for x in str(text).split("\n") if _norm(x)]
+    if len(pieces) >= 2:
+        for j in range(len(printed) - len(pieces) + 1):
+            run = printed[j:j + len(pieces)]
+            if not all(ok(r) and r["page"] == run[0]["page"] and r["screen"] == run[0]["screen"] for r in run):
+                continue
+            cells = {_CELL_LINE.sub("", r["style"]) for r in run}
+            same_cell = all(_CELL_LINE.search(r["style"]) for r in run) and len(cells) == 1 and "" not in cells
+            if not same_cell and any(_SINGLE_KINDS.match(r["kind"]) for r in run):
+                continue
+            if pieces[0] in run[0]["suffixes"] and pieces[-1] in run[-1]["prefixes"] \
+                    and all(pc in r["wholes"] for pc, r in zip(pieces[1:-1], run[1:-1])):
                 return True
-        elif any(want in f for f in fields):
-            return True
-    return False
+    if len(pages) == 2:
+        a_, b_ = sorted(pages)
+        last = [ln for ln in printed if ln["page"] == a_][-1:]
+        first = [ln for ln in printed if ln["page"] == b_][:1]
+        if last and first and last[0]["kind"] != "label" and \
+                all(okj(ln) and not _SINGLE_KINDS.match(ln["kind"]) for ln in last + first):
+            soft = last[0]["uncertain"] or first[0]["uncertain"]
+            for x in last[0]["contents"]:
+                for y in first[0]["contents"]:
+                    if _join_eq(want, [x, y]) or (not soft and any(want in _units(_norm(j)) for j in _joins([x, y]))):
+                        return True
+    return any(_group_match(g, usable) for g in groups)
 
 
-def check_verbatim(p, source_texts):
+def _expr_parts(node, data, ids):
+    """Flatten a template expression's '+' chain: data[A][B]['text'] -> ('s', text, obj); a string constant -> ('s',
+    text, None); anything else (a computed value) -> ('v', None, None). None when a data ref does not resolve."""
+    import ast
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        l_, r_ = _expr_parts(node.left, data, ids), _expr_parts(node.right, data, ids)
+        return None if l_ is None or r_ is None else l_ + r_
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [("s", node.value, None)]
+    keys, n = [], node
+    while isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant):
+        keys.append(n.slice.value)
+        n = n.value
+    if isinstance(n, ast.Name) and n.id == "data" and len(keys) == 3 and keys[0] == "text":
+        obj = (data.get(keys[2]) or {}).get(keys[1]) if isinstance(data.get(keys[2]), dict) else None
+        if isinstance(obj, dict) and isinstance(obj.get("text"), str):
+            return [("s", obj["text"], obj)]
+        return None
+    consts = frozenset(n.value for n in ast.walk(node) if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    return [("v", consts, None)]   # a computed value; the string constants of its expression (rendered format)
+
+
+def _image_groups(p):
+    """id(served dict) -> groups for _group_match. 'join': the printed lines of one image item ({src, lines}) that
+    cite the same source and page with read 'image' (other lines are barriers). 'tpl': static data fragments that a
+    stage composes into ONE element (content value / response prompt / option label expr whose 'text' is a '+'
+    chain of data[...]['text'] refs, string constants and computed values); all its refs must cite the same source
+    and page. Composition is taken only from the protocol's own template, never from key names or neighbours."""
+    import ast
+    out = {}
+
+    def walk(o):
+        if isinstance(o, dict):
+            if o.get("src") and isinstance(o.get("lines"), list):
+                ls = o["lines"]
+                cs = [x.get("cite") if isinstance(x, dict) else None for x in ls]
+                for i, x in enumerate(ls):
+                    c = cs[i]
+                    if not (isinstance(x, dict) and isinstance(x.get("text"), str) and isinstance(c, dict)
+                            and c.get("read") == "image"):
+                        continue
+                    key = (c.get("source"), str(c.get("page")))
+                    texts = [y.get("text") if isinstance(y, dict) and isinstance(cs[k], dict)
+                             and cs[k].get("read") == "image" and (cs[k].get("source"), str(cs[k].get("page"))) == key
+                             and isinstance(y.get("text"), str) else None for k, y in enumerate(ls)]
+                    out.setdefault(id(x), []).append(("join", texts, i))
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(p.data)
+
+    def exprs(o):
+        if isinstance(o, dict):
+            if isinstance(o.get("expr"), str):
+                yield o["expr"]
+            for v in o.values():
+                yield from exprs(v)
+        elif isinstance(o, list):
+            for v in o:
+                yield from exprs(v)
+    for e in set(exprs(p.stages)):
+        if "+" not in e or "data[" not in e:
+            continue
+        try:
+            tree = ast.parse(e, mode="eval").body
+        except (SyntaxError, ValueError):
+            continue
+        if isinstance(tree, ast.Dict):
+            tree = next((v for k, v in zip(tree.keys, tree.values)
+                         if isinstance(k, ast.Constant) and k.value == "text"), None)
+        if tree is None:
+            continue
+        parts = _expr_parts(tree, p.data, None)
+        if not parts:
+            continue
+        refs = [obj for kind, _, obj in parts if obj is not None]
+        cites = {(obj.get("cite") or {}).get("source") for obj in refs} if refs else set()
+        pages_ = {str((obj.get("cite") or {}).get("page")) for obj in refs}
+        if len(refs) < 2 and not any(k == "v" for k, _, _ in parts):
+            continue
+        if len(cites) != 1 or len(pages_) != 1 or not all((o.get("cite") or {}).get("read") == "image" for o in refs):
+            continue
+        rx = _template_rx([(k, t) for k, t, _ in parts])
+        if rx is None:
+            continue
+        for obj in refs:
+            out.setdefault(id(obj), []).append(("tpl", rx))
+    return out
+
+
+_STYLE_WORDS = ("bold", "italic", "underline")
+
+
+def _style_tags(text, reading, page, annots=()):
+    """Emphasis words (bold / italic / underline) in the style field of reading lines that confirm `text` whole."""
+    pages = _cited_pages(page)
+    want = _norm(text)
+    out = set()
+    for ln in _reading_lines(reading, pages or (), annots) if pages else ():
+        if not ln["uncertain"] and _hit(want, ln):
+            out |= {w for w in _STYLE_WORDS if w in ln["style"]}
+    return out
+
+
+def reading_annotations(meta):
+    """Declared printed annotations of image sources (rule g): meta.image_read.reading_annotations, a list of
+    {"source", "pattern", "why"/"cite"} (or plain regex strings when meta.image_read names one "source"). Each regex
+    is removed from the content fields of that source's blind-reading lines only, e.g. a result share the print adds
+    after an option ('\\s*\\[\\d+ percent\\]$'). Returns ({source: (patterns)}, report list); a bad declaration is
+    reported with "error" and blocks."""
+    ir = meta.get("image_read") if isinstance(meta, dict) else None
+    decl = ir.get("reading_annotations") if isinstance(ir, dict) else None
+    by_src, rep = {}, []
+    if decl is None:
+        return by_src, rep
+    if not isinstance(decl, list):
+        return by_src, [{"source": None, "pattern": None, "error": "reading_annotations must be a list"}]
+    for d in decl:
+        src, pat = (ir.get("source"), d) if isinstance(d, str) else \
+            ((d.get("source"), d.get("pattern")) if isinstance(d, dict) else (None, None))
+        row = {"source": src, "pattern": pat}
+        if not isinstance(src, str) or not src:
+            row["error"] = "no source named"
+        elif not isinstance(pat, str) or not pat or len(pat) > 300:
+            row["error"] = "pattern must be a regex of 1-300 characters"
+        else:
+            try:
+                re.compile(pat)
+            except re.error as e:
+                row["error"] = "bad regex: %s" % e
+        if "error" not in row:
+            by_src.setdefault(src, []).append(pat)
+        rep.append(row)
+    return {k: tuple(v) for k, v in by_src.items()}, rep
+
+
+def check_verbatim(p, source_texts, public=False):
     """Every cited verbatim data string is found in its source text (when a text is available)."""
     found, missing, unchecked, image_unconfirmed, image_uncertain_only, image_uncertain_legacy = 0, [], 0, [], [], []
     image_disputed, bad_source, unchecked_sources = [], [], set()
+    style_unserved = []
+    checked_privately = set()
     texts = {k: _norm(v) for k, v in source_texts.items()}
     raw = source_texts
+    groups = _image_groups(p)
     meta = (getattr(p, "raw", None) or {}).get("meta") or {}
     known = set()
     srcs = meta.get("sources")
@@ -872,6 +1463,13 @@ def check_verbatim(p, source_texts):
     def legacy(r):
         return hashlib.sha256(r.encode("utf-8")).hexdigest() in LEGACY_UNCERTAIN_READINGS
 
+    annots, annotations = reading_annotations(meta)
+    for a in annotations:   # how many reading lines of that source each declared pattern changes (reviewed)
+        if "error" not in a:
+            rx = re.compile(a["pattern"])
+            a["lines_changed"] = sum(1 for r in readings(a["source"]) for ln in r.splitlines()
+                                     if re.match(r"\s*p\d+\s*\|", ln) and rx.sub("", ln) != ln)
+
     def walk(o):
         nonlocal found, unchecked
         if isinstance(o, dict):
@@ -887,12 +1485,25 @@ def check_verbatim(p, source_texts):
                     rs = readings(c.get("source"))
                     # readings whose reader read this page; a byte-identical copy of a reading is one reading
                     rs = list(dict.fromkeys(r for r in rs if _covers(r, c.get("page"))))
-                    agree = [r for r in rs if _image_match(o["text"], r, c.get("page"))]
-                    unsure = [r for r in rs if r not in agree and _image_match(o["text"], r, c.get("page"), uncertain=True)]
+                    if public and not rs:   # readings of non-open sources are not shipped: checked privately
+                        checked_privately.add(str(c.get("source")))
+                        return
+                    g_ = groups.get(id(o), ())   # printed-line joins / composed templates (review-4)
+                    an_ = annots.get(c.get("source"), ())
+                    agree = [r for r in rs if _image_match(o["text"], r, c.get("page"), groups=g_, annots=an_)]
+                    unsure = [r for r in rs if r not in agree
+                              and _image_match(o["text"], r, c.get("page"), uncertain=True, groups=g_, annots=an_)]
                     disagree = [r for r in rs if r not in agree and r not in unsure]
                     key = (c.get("source"), c.get("page"), o["text"][:80])
                     if disagree:
                         image_disputed.append(key)
+                    styles = set()
+                    for r in agree:
+                        styles |= _style_tags(o["text"], r, c.get("page"), an_)
+                    note = json.dumps(c, ensure_ascii=False).lower()
+                    miss = sorted(st for st in styles if not o.get("spans") and not o.get("style") and st not in note)
+                    if miss:   # the reader saw emphasis the served text does not carry or declare (report only)
+                        style_unserved.append(key + (miss,))
                     if not disagree and agree:
                         found += 1          # served + one blind reading (an [uncertain]-only reading settled)
                     elif disagree and len(agree) >= 2 and len(agree) > len(disagree):
@@ -906,7 +1517,9 @@ def check_verbatim(p, source_texts):
                             image_uncertain_only.append(key)
                     return
                 src = texts.get(c.get("source"))
-                if src is None:
+                if src is None and public:   # source text of a non-open source: checked privately, not here
+                    checked_privately.add(str(c.get("source")))
+                elif src is None:
                     unchecked += 1   # no source text to check against: blocking (skills review-2 S3')
                     unchecked_sources.add(str(c.get("source")))
                 elif _norm(o["text"]) in src:
@@ -947,12 +1560,14 @@ def check_verbatim(p, source_texts):
                     walk(dict(o["label"], cite=o["label"].get("cite", o.get("cite"))) if "text" in o["label"] else o["label"])
     return {"found": found, "not_found": missing, "unchecked": unchecked, "unchecked_sources": sorted(unchecked_sources),
             "bad_source": bad_source, "image_unconfirmed": image_unconfirmed, "image_disputed": image_disputed,
-            "image_uncertain_only": image_uncertain_only, "image_uncertain_legacy": image_uncertain_legacy}
+            "image_uncertain_only": image_uncertain_only, "image_uncertain_legacy": image_uncertain_legacy,
+            "reading_annotations": annotations, "style_unserved": style_unserved[:40],
+            "checked_privately": sorted(checked_privately)}
 
 
 def unprompted_responses(sessions):
     """Report (not a failure), from rendered pages: an answer box with no prompt on a page that shows almost no text —
-    nothing tells the person what to enter (LESSONS 226; review of Huber RDP12)."""
+    nothing tells the person what to enter (LESSONS 226)."""
     out = set()
     for s in sessions:
         for pg in getattr(s, "pages", []):
@@ -1009,9 +1624,18 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--source-text", action="append", default=[], help="name=path to a text file of that source")
     ap.add_argument("--fetch-images", action="store_true", help="fetch every image src and compare its sha256")
+    ap.add_argument("--public", action="store_true",
+                    help="public release check (Bench CI): no private config, release_hold blocks, texts whose source "
+                         "text / blind readings are not supplied are listed as checked privately instead of blocking")
     a = ap.parse_args(argv)
     p = Protocol.load(a.study)
     report, fail = {}, False
+    from .schema_check import canonical_sha256
+    report["protocol_sha256"] = canonical_sha256(p.raw)   # binds this report to the exact protocol (stale = fail)
+    report["public"] = bool(a.public)
+    if a.public:   # the private, study-specific exemptions never apply to a public check
+        global LEGACY_UNCERTAIN_READINGS, LEGACY_CITE_SOURCES
+        LEGACY_UNCERTAIN_READINGS, LEGACY_CITE_SOURCES = {}, {}
     report["refs"] = check_refs(p)
     fail |= bool(report["refs"])
     env, probs, stats = play(p, a.sessions, a.seed, "random")
@@ -1041,6 +1665,7 @@ def main(argv=None):
                                                      for ex in p.exclusions if ex.get("population")}
     fail |= bool(stats.get("blocked_effects_not_computed"))
     fail |= bool(probs) or bool(stats["unreached_stages"]) or bool(stats["n_unanswerable"]) or bool(stats["leaks"])
+    fail |= bool(stats["state_expr_leaks"])   # unresolved expressions in a served State (fidelity review R1-M1, 2026-11-08)
     blocks = effect_blocks(p, tables, only_included=False)
     report["fuzz"]["effects_not_computed"] = [b["effectId"] for b in blocks if b["status"] != "computed"]
     pend = {}   # effects whose rows wait on an undecided exclusion (e.g. replies left to a coder): never silent
@@ -1063,11 +1688,12 @@ def main(argv=None):
             if hs is None:
                 signs.append({"effect": e["id"], "human": None, "keyed": None, "same_sign": why != NO_SIGN, "why": why})
                 continue
-            ok = b["status"] == "computed" and (b["value"] > 0) == (hs > 0)
+            ok = b["status"] == "computed" and same_sign(b["value"], hs)
             signs.append({"effect": e["id"], "human": round(hs, 3), "keyed": None if b["status"] != "computed" else round(b["value"], 3), "same_sign": ok})
         ex = round(sum(1 for r in krecs if r["excluded"]) / max(1, len(krecs)), 3)
-        report["keyed"] = {"problems": kprobs[:10], "excluded_share": ex, "signs": signs}
-        fail |= bool(kprobs) or ex > 0 or not all(s["same_sign"] for s in signs)
+        report["keyed"] = {"problems": kprobs[:10], "excluded_share": ex, "signs": signs,
+                           "state_expr_leaks": kstats["state_expr_leaks"]}
+        fail |= bool(kprobs) or ex > 0 or not all(s["same_sign"] for s in signs) or bool(kstats["state_expr_leaks"])
     texts = {}
     for st in a.source_text:
         name, _, path = st.partition("=")
@@ -1075,18 +1701,25 @@ def main(argv=None):
     # control characters in a source text (e.g. ligatures stored as NUL) silently drop letters: report them
     report["source_text_control_chars"] = {n: len(re.findall(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", t))
                                            for n, t in texts.items() if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", t)}
-    report["verbatim"] = check_verbatim(p, texts)
+    report["verbatim"] = check_verbatim(p, texts, public=a.public)
+    # declared printed-annotation strips are listed in every output (reviewers check each pattern); a bad one blocks
+    report["reading_annotations"] = report["verbatim"]["reading_annotations"]
+    fail |= any("error" in a for a in report["reading_annotations"])
     fail |= bool(report["verbatim"]["not_found"]) or bool(report["verbatim"]["image_unconfirmed"])
     fail |= bool(report["verbatim"]["bad_source"]) or report["verbatim"]["unchecked"] > 0   # skills review-2 S3'
     report["coding"] = run_coding_cases(p)
     fail |= any(c["mismatches"] for c in report["coding"].values())
     report["paper_consistency_warnings"] = paper_consistency(p)
+    report["statistic_vocabulary"] = statistic_vocabulary(p)   # report only
+    report["printed_item_tests"] = printed_item_tests(p)       # report only
     report["second_readings"] = [t["id"] for t in (p.raw.get("analysis") or {}).get("targets", [])
                                  if t.get("second_reading") or t.get("readings")]
     if a.fetch_images:
         report["images"] = fetch_images(p, env)
         fail |= any(not x.startswith("note:") for x in report["images"])
-    report["release_hold"] = [{"arm": a["id"], "why": a["release_hold"]} for a in p.arms if a.get("release_hold")]
+    report["release_hold"] = [{"arm": x["id"], "why": x["release_hold"]} for x in p.arms if x.get("release_hold")]
+    if a.public:
+        fail |= bool(report["release_hold"])   # nothing on release_hold is ever published
     tv_ = target_values(p, tables)
     report["targets_random"] = tv_[:3]
     report["fuzz"]["targets_pending_share"] = {t["id"]: t["pending_share"] for t in tv_ if t.get("pending_share")}

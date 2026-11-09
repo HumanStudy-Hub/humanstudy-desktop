@@ -69,7 +69,8 @@ def main():
     env = {'OPENROUTER_API_KEY': config['token'], 'OPENROUTER_BASE_URL': config['baseURL'],
            'OPENAI_API_KEY': config['token'], 'OPENAI_BASE_URL': config['baseURL'],
            'HUMANSTUDY_DESKTOP_KEY': config['token'], 'HUMANSTUDY_HOSTED_BASEURL': config['baseURL'],
-           'HUMANSTUDY_SIM_MODEL': config['model'], 'HUMANSTUDY_PROJECT_DIR': str(project)}
+           'HUMANSTUDY_SIM_MODEL': config['model'], 'HUMANSTUDY_PROJECT_DIR': str(project),
+           'HSENV_PRIVATE_CONFIG': ''}   # the engine's private sidecar is never read in a desktop run
     # What the approval lets this capability run (the app wrote it; the agent cannot change it): the route, the
     # SHA-256 of protocol.json the app read at approval, and the run id. skills/run and simkit check them.
     for key, name in (('route', 'HUMANSTUDY_RUN_ROUTE'), ('runId', 'HUMANSTUDY_RUN_ID'), ('protocolSha256', 'HUMANSTUDY_RUN_PROTOCOL_SHA256')):

@@ -202,8 +202,16 @@ def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, m
     spec = {"kind": "llm", "name": "desktop model", "model": model or "unknown", "renderer": "default",
             "temperature": plan.get("temperature", 1.0), "retries": 0,
             "host": "the desktop app's model relay (humanstudy_llm), passed in-process"}
-    meta = run_study.run(project, spec, n=1 if trial else int(plan["perArm"]), seeds=[1] if trial else plan["seeds"],
-                         out=out, host_f=f, arms=plan.get("arms"), quiet=True, baseline=not trial)
+    # The floor baseline's cache stays inside this run folder (run_study keeps it beside the run folders, which the
+    # macOS sandbox does not let the run write, and which the Simulation tab would list as a run).
+    original_cache = run_study.baseline_cached
+    run_study.baseline_cached = lambda E, protocol, plan_, run_dir_, mf: original_cache(E, protocol, plan_, Path(run_dir_) / "baseline", mf)
+    try:
+        meta = run_study.run(project, spec, n=1 if trial else int(plan["perArm"]), seeds=[1] if trial else plan["seeds"],
+                             out=out, host_f=f, arms=plan.get("arms"), quiet=True, baseline=not trial,
+                             top_up=False)   # exactly the approved n: no extra sessions beyond the measured budget
+    finally:
+        run_study.baseline_cached = original_cache
     if meta.get("status") != "done":
         print(json.dumps({"status": meta.get("status"), "participants": meta.get("participants")}, default=str))
         return meta

@@ -14,7 +14,10 @@
 # app's paths and approval), not vendored.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
-ENGINE=(__init__.py engine.py expr.py checks.py effects_core.py)
+# serve.py: evaldata.code_hash() hashes it. Upstream tests/ name real studies and are never vendored.
+ENGINE=(__init__.py engine.py expr.py checks.py effects_core.py evaldata.py rewards.py score.py serve.py schema_check.py)
+# The frozen v1 schemas schema_check.py validates against (it looks for them in ../schema next to the package).
+SCHEMAS=(protocol.v1.json study.v1.json run.v1.json)
 RUN=(run_study.py fspec.py render.py)
 PREVIEW=(build_preview.py preview.css preview.js)
 
@@ -34,8 +37,10 @@ for f in files:
     line = lambda m: text.count(chr(10), 0, m.start()) + 1
     for m in names_rx.finditer(text):
         bad.append(f"{f}:{line(m)}: study folder name {m.group(0)}")
-    for m in re.finditer(r"^(LEGACY_\w+)\s*=\s*([\[{(])\s*(\S)", text, re.M):
-        if m.group(3) not in "]})":
+    # a LEGACY_* table written out as data (a literal opening with a string or number); a table built from the
+    # private sidecar (a comprehension or dict(...) over PRIVATE) holds nothing in the code
+    for m in re.finditer(r"^(LEGACY_\w+)\s*=\s*[\[{(]\s*(\S)", text, re.M):
+        if m.group(2) in "\"'0123456789-":
             bad.append(f"{f}: {m.group(1)} is not empty")
     for m in re.finditer(r"\b[a-z]+20\d\d[a-z]+\b", text):
         bad.append(f"{f}:{line(m)}: study id {m.group(0)}")
@@ -80,11 +85,17 @@ case "${1:?usage: scripts/sync_hsenv.sh /path/to/hsenv/hsenv [label] | skills|ru
     guard "${STUDIES_DIR:-$src/../studies}" "$src" "${ENGINE[@]}"
     mkdir -p "$dest/hsenv"
     for f in "${ENGINE[@]}"; do cp "$src/$f" "$dest/hsenv/$f"; done
+    for f in "${SCHEMAS[@]}"; do [ -f "$src/../schema/$f" ] || { echo "missing $src/../schema/$f" >&2; exit 1; }; done
+    guard "${STUDIES_DIR:-$src/../studies}" "$src/../schema" "${SCHEMAS[@]}"
+    mkdir -p "$dest/schema"
+    for f in "${SCHEMAS[@]}"; do cp "$src/../schema/$f" "$dest/schema/$f"; done
+    if [ -f "$src/../LICENSE" ]; then guard "${STUDIES_DIR:-$src/../studies}" "$src/.." LICENSE; cp "$src/../LICENSE" "$dest/LICENSE"; fi
     {
       echo "# Vendored hsenv engine. Refresh with scripts/sync_hsenv.sh; never edit by hand."
       echo "source: $(label_for "$src" hsenv "${2:-}")"
       echo "synced: $(date -u +%Y-%m-%d)"
       for f in "${ENGINE[@]}"; do printf '%s  hsenv/%s\n' "$(shasum -a 256 "$dest/hsenv/$f" | cut -d' ' -f1)" "$f"; done
+      for f in "${SCHEMAS[@]}"; do printf '%s  schema/%s\n' "$(shasum -a 256 "$dest/schema/$f" | cut -d' ' -f1)" "$f"; done
     } > "$dest/VERSION"
     echo "synced ${#ENGINE[@]} files into $dest"
     ;;

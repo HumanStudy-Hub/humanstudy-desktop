@@ -17,7 +17,9 @@ Writes into the run folder:
   assets/         copies of images f asked for, under opaque names (ctx.asset_path never exposes the study folder)
   effects.json    every analysis effect computed on the agent sessions, per seed and pooled
   evaldata.json, rewards.json   when hsenv.evaldata / hsenv.rewards are present; never for a variant (its human
-                  numbers belong to the original experiment); baseline-run.json caches the random baseline
+                  numbers belong to the original experiment). The baseline is evaldata's State-only `floor`
+                  policy at the run's plan, cached in <runs>/.baseline-cache/ and shared by runs of the same study,
+                  protocol and reward code
   STOP            create it to stop after the pages in flight; rerun the same command to resume
 
 Resume: rerunning with the same --out continues where it stopped. Every f call is logged; the engine replays the
@@ -27,7 +29,12 @@ the run that would have happened without the interruption.
 """
 import argparse
 import hashlib
+import hmac
 import json
+import math
+import secrets
+import shutil
+import tempfile
 import os
 import subprocess
 import sys
@@ -45,12 +52,86 @@ sys.path.insert(0, str(HSENV))
 sys.path.insert(0, str(HERE))
 
 from hsenv import checks  # noqa: E402
-from hsenv.engine import Env, Protocol, ProtocolError  # noqa: E402
+from hsenv.engine import Env, Protocol, ProtocolError, _seed as engine_seed  # noqa: E402
 import fspec  # noqa: E402
 
 HEARTBEAT_SECONDS = 15
-AUTO_STATES_LIMIT = 2000   # --states auto: per-step States in records.jsonl up to this many participants
+AUTO_STATES_BYTES = 100 * 1024 * 1024   # --states auto: screens in records.jsonl until it holds this many bytes
+TOP_UP_MAX_FACTOR = 3                   # top-up brake: at most this many times the planned sessions per arm
+TOP_UP_MIN_SHARE = 0.05                 # top-up brake: no top-up for an arm whose first round was < 5% valid
 STAGES = ("preparing", "trial", "running", "scoring", "writing", "done", "failed", "stopped")
+
+
+def salt_path(out):
+    """The run's secret salt lives OUTSIDE the run folder: <runs>/.operator/<run name>.salt (operator side)."""
+    out = Path(out).resolve()
+    return out.parent / ".operator" / (out.name + ".salt")
+
+
+def load_salt(out, create=True):
+    sp = salt_path(out)
+    old = Path(out) / ".operator-salt"          # earlier layout: move it out of the run folder
+    if old.exists() and not sp.exists():
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        sp.write_text(old.read_text(encoding="utf-8"), encoding="utf-8")
+        old.unlink()
+    if not sp.exists():
+        if not create:
+            return None
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        sp.write_text(secrets.token_hex(32), encoding="utf-8")
+    return bytes.fromhex(sp.read_text(encoding="utf-8").strip())
+
+
+def order_key(seed, spec):
+    """Sessions open in an order derived from the SEED (public): arms interleaved, never in arm blocks, so neither
+    the opening order nor the wall-clock time of f's calls tracks the arm for an f that uses only ctx. The order
+    is part of the design — balanced randomisers assign in opening order — so it must not depend on the secret
+    salt: the same seed gives the same sample (the salt is used only for participant ids)."""
+    return hashlib.sha256(("order|%s|%s|%s" % (seed, spec["arm"], spec["index"])).encode()).hexdigest()
+
+
+def unit_counts(env):
+    """Opened units (sessions; groups once) per arm."""
+    seen, out = set(), {}
+    for s in env.sessions:
+        u = id(s.group) if s.group else id(s)
+        if u not in seen:
+            seen.add(u)
+            out[s.spec["arm"]] = out.get(s.spec["arm"], 0) + 1
+    return out
+
+
+def valid_counts(env, plan):
+    """Valid units per arm in the kept prefix (at most the plan), by the reward layer's one rule:
+    hsenv.evaldata.valid_counts(run_from_env(env, planned=plan)) — all exclusions, population cutoffs included.
+    Without hsenv.evaldata: completed sessions with no exclusion (population cutoffs not applied; documented)."""
+    try:
+        from hsenv import evaldata as E
+    except ImportError:
+        E = None
+    if E is not None and hasattr(E, "valid_counts"):
+        return E.valid_counts(env.p, [E.run_from_env(env, 0, planned=dict(plan))])[0]
+    out, seen = {}, set()
+    for s in env.sessions:
+        u = id(s.group) if s.group else id(s)
+        if u in seen:
+            continue
+        seen.add(u)
+        ms = s.group.members if s.group else [s]
+        ok = all(m.status == "completed" and not m.record()["excluded"] for m in ms)
+        out[s.spec["arm"]] = min(out.get(s.spec["arm"], 0) + ok, plan.get(s.spec["arm"], 0))
+    return out
+
+
+def scored_env(env, plan):
+    """The scored sample: evaldata keeps the first `plan` valid units per arm (top-up overshoot dropped)."""
+    try:
+        from hsenv import evaldata as E
+        env2, _ = E._truncate(env, dict(plan))
+        return env2
+    except (ImportError, AttributeError):
+        return env
 
 
 def _now():
@@ -91,7 +172,18 @@ def load_protocol(arg):
     return Protocol(json.loads(raw), root), hashlib.sha256(raw).hexdigest(), d, variant
 
 
+def human_n(arm):
+    """(n, basis): the human ANALYSED n the reward layer plans on (hsenv.evaldata.analysed_n: arms[].n_analysed,
+    else n_paper labelled unverified); n_paper when evaldata is absent."""
+    try:
+        from hsenv.evaldata import analysed_n
+        return analysed_n(arm)
+    except ImportError:
+        return (int(arm["n_paper"]), "n_paper") if arm.get("n_paper") is not None else (None, None)
+
+
 def n_per_arm(protocol, n, arms=None):
+    """--n paper: the human analysed n of each arm (an official plan when every arm runs); --n N: N per arm."""
     out, missing = {}, []
     known = {a["id"] for a in protocol.arms if a.get("runnable") is not False}
     if arms:
@@ -102,10 +194,11 @@ def n_per_arm(protocol, n, arms=None):
         if a.get("runnable") is False or (arms and a["id"] not in arms):
             continue
         if n == "paper":
-            if a.get("n_paper") is None:
+            hn, _ = human_n(a)
+            if hn is None:
                 missing.append(a["id"])
             else:
-                out[a["id"]] = int(a["n_paper"])
+                out[a["id"]] = int(hn)
         else:
             out[a["id"]] = int(n)
     if missing:
@@ -157,6 +250,15 @@ class Progress:
                 self.p["message"] = message[:400]
             self.save()
 
+    def add(self, arm, members):
+        """Top-up sessions join the plan."""
+        with self.lock:
+            self.p["total"] += members
+            for c in self.p["conditions"]:
+                if c["id"] == arm:
+                    c["total"] += members
+            self.save()
+
     def finished(self, arm, members, failed):
         """members: participants in this session (1, or the group size); failed: how many did not complete."""
         with self.lock:
@@ -197,11 +299,13 @@ def compact(state, mode):
 
 
 class Participant:
-    def __init__(self, env, spec, seed):
+    def __init__(self, env, spec, seed, salt):
         self.spec = spec
         self.seed = seed
         self.key = "%s:%s" % (spec["arm"], spec["index"])
-        self.opaque = _sha("%s|%s|%s" % (seed, spec["arm"], spec["index"]))[:12]   # never shows the arm
+        # HMAC with the run's secret salt (operator side): f cannot invert the id to the arm
+        self.opaque = hmac.new(salt, ("%s|%s|%s" % (seed, spec["arm"], spec["index"])).encode(),
+                               hashlib.sha256).hexdigest()[:16]
         self.s = env.open(spec)
         self.group = bool(spec.get("group_size"))
         st = self.s.reset()
@@ -257,8 +361,16 @@ def _screen_sha(state):
 
 
 class Runner:
-    def __init__(self, protocol, f, fdesc, run_dir, workers=8, states="screen", asset_root=None):
+    def __init__(self, protocol, f, fdesc, run_dir, workers=8, states="screen", salt=b"", top_up=True,
+                 top_up_max=TOP_UP_MAX_FACTOR):
         self.p = protocol
+        self.top_up_max = int(top_up_max)
+        self.salt = salt
+        self.top_up = top_up
+        self.auto_states = states == "auto"
+        if self.auto_states:
+            states = "screen"
+        self.records_bytes = 0
         self.f = f
         self.fdesc = fdesc
         self.dir = Path(run_dir)
@@ -282,24 +394,45 @@ class Runner:
                 try:
                     r = json.loads(line)
                     self.written.add((r["seed"], r["opaque_id"], r["member"]))
+                    self.records_bytes += len(line) + 1
                 except ValueError:
                     continue
         self.calls = 0
         self.replayed = 0
+        self.states_dropped_after = None   # auto: participants written with screens before the size cap
+        # images f may read: copies in a private temporary folder (not under the run or the study), named by
+        # content id. f gets a closure over a {id: copied file} map only — no protocol, no runner, no run folder.
+        self.assets_dir = None
+        self.asset_files = {}
+        files = self.asset_files
 
-    def asset(self, ref):
-        """An image f may look at: a copy under runs/<stamp>/assets/<opaque id><ext>; never the study's own path
-        (the folder holds protocol.json and file names can name a condition)."""
-        h = str(ref).replace("asset:", "")
-        src = self.p._asset_paths.get(h)
-        if not src or not Path(src).is_file():
-            return None
-        dst = self.dir / "assets" / (h + Path(src).suffix.lower())
-        with self.asset_lock:
-            if not dst.exists():
-                dst.parent.mkdir(exist_ok=True)
-                dst.write_bytes(Path(src).read_bytes())
-        return str(dst)
+        def asset_path(ref):
+            return files.get(str(ref).replace("asset:", ""))
+        self.asset_path = asset_path
+
+    def _prepare_assets(self, state):
+        """Copy the images on this screen and in `seen` before f is called (operator side)."""
+        refs = [it.get("src") for it in (state.get("screen") or {}).get("items", []) + (state.get("seen") or [])]
+        for ref in refs:
+            if not (isinstance(ref, str) and ref.startswith("asset:")):
+                continue
+            h = ref[6:]
+            if h in self.asset_files:
+                continue
+            src = self.p._asset_paths.get(h)
+            if not src or not Path(src).is_file():
+                continue
+            with self.asset_lock:
+                if self.assets_dir is None:
+                    self.assets_dir = Path(tempfile.mkdtemp(prefix="hs-assets-"))
+                dst = self.assets_dir / (h + Path(src).suffix.lower())
+                if not dst.exists():
+                    dst.write_bytes(Path(src).read_bytes())
+                self.asset_files[h] = str(dst)
+
+    def close(self):
+        if self.assets_dir is not None:
+            shutil.rmtree(self.assets_dir, ignore_errors=True)
 
     def _call(self, part, pid, state):
         attempt = part.attempt[pid]
@@ -313,11 +446,14 @@ class Runner:
             self.replayed += 1
             return hit, False
         operator = (lambda: part.member(pid)) if self.fdesc.get("operator_access") else None
+        self._prepare_assets(state)
         last = None
         for k in range(1 + self.fdesc["retries"]):
-            ctx = fspec.Ctx("%s|%s|%s|%s|%s|%s" % (self.fdesc["name"], part.seed, part.key, pid,
-                                                  state.get("step"), attempt) + ("|%d" % k if k else ""),
-                            attempt, part.opaque, pid, list(part.history[pid]), self.asset, operator)
+            # f's rng follows the seed, not the salt, so the same seed reproduces the same answers; its seed is a
+            # sha256 of the session's engine seed (no arm or index in clear)
+            ctx = fspec.Ctx(_sha("rng|%s|%s|%s|%s|%s|%s" % (self.fdesc["name"], part.spec["seed"], pid,
+                                                            state.get("step"), attempt, k)),
+                            attempt, part.opaque, pid, list(part.history[pid]), self.asset_path, operator)
             t0 = time.time()
             try:
                 ans = self.f(state, ctx)
@@ -342,8 +478,15 @@ class Runner:
                 continue
             m = part.member(pid)
             status = m.status or "incomplete"
-            lines.append(json.dumps({"seed": part.seed, "opaque_id": part.opaque, "member": pid, "status": status,
-                                     "transcript": part.transcript[pid]}, ensure_ascii=False, default=str))
+            tr = part.transcript[pid]
+            if self.auto_states and self.records_bytes > AUTO_STATES_BYTES:
+                if self.states_dropped_after is None:
+                    self.states_dropped_after = len(self.written)
+                tr = [dict(x, state=compact(x["state"], "none")) for x in tr]
+            line = json.dumps({"seed": part.seed, "opaque_id": part.opaque, "member": pid, "status": status,
+                               "transcript": tr}, ensure_ascii=False, default=str)
+            self.records_bytes += len(line) + 1
+            lines.append(line)
             ops.append(json.dumps({"seed": part.seed, "opaque_id": part.opaque, "member": pid,
                                    "participant": part.key, "arm": part.spec["arm"], "index": part.spec["index"],
                                    "status": status, "error": part.error, "f_errors": part.f_errors.get(pid, []),
@@ -355,10 +498,26 @@ class Runner:
             self.operator_fh.write("\n".join(ops) + "\n")
             self.operator_fh.flush()
 
+    def _spec(self, seed, arm, i):
+        a = next(x for x in self.p.arms if x["id"] == arm)
+        spec = {"study": self.p.id, "arm": arm, "index": i, "seed": engine_seed(seed, arm, i)}   # as Env.design
+        if a.get("group_size"):
+            spec["group_size"] = int(a["group_size"])
+        return spec
+
     def run_seed(self, seed, plan, progress):
+        """The planned sessions, then top-up rounds (§8.2): while an arm has fewer valid units than planned, more
+        sessions are added (estimated from its valid share), up to TOP_UP_MAX_FACTOR x planned. Deterministic, so a
+        resumed run tops up exactly as the uninterrupted one."""
         env = Env(self.p)
-        specs = env.design(n=plan, seed=seed)
-        queue = list(specs)
+        okey = lambda sp: order_key(seed, sp)   # noqa: E731
+        queue = sorted(env.design(n=plan, seed=seed), key=okey)
+        issued = dict(plan)
+        self.top_up_notes = getattr(self, "top_up_notes", {})
+        notes = self.top_up_notes.setdefault(str(seed), {})
+        first_share = {}
+        gsize = {a["id"]: int(a.get("group_size") or 1) for a in self.p.arms}
+        self.topped_up = getattr(self, "topped_up", {})
         active = []
         pool = ThreadPoolExecutor(max_workers=self.workers)
         steps_fh = self.steps_path.open("a", encoding="utf-8")
@@ -366,52 +525,42 @@ class Runner:
         self.operator_fh = self.operator_path.open("a", encoding="utf-8")
         stopped = False
         try:
-            while queue or active:
-                while queue and len(active) < self.workers:   # opened in design order: deterministic
-                    active.append(Participant(env, queue.pop(0), seed))
-                calls = [(part, pid, st) for part in active for pid, st in part.todo()]
-                futs = [pool.submit(self._call, part, pid, st) for part, pid, st in calls]
-                results = [fu.result() for fu in futs]
-                new_rows = [row for row, fresh in results if fresh]
-                if new_rows:
-                    steps_fh.write("".join(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in new_rows))
-                    steps_fh.flush()
-                for (part, pid, st), (row, _) in zip(calls, results):   # applied in participant order
-                    if "failed" in row:
-                        part.error = "f failed after %d tries: %s" % (1 + self.fdesc["retries"], row["failed"])
-                        part.f_errors.setdefault(pid, []).append(row)   # operator side only
-                        part.transcript[pid].append({"state": compact(st, self.states_mode),
-                                                     "f_failed": True})
-                        continue
-                    if part.error:
-                        continue
-                    try:
-                        err = part.apply(pid, dict(row["answers"]), st)
-                    except (ProtocolError, RuntimeError) as e:
-                        part.error = "engine: %s" % e
-                        err = None
-                    entry = {"state": compact(st, self.states_mode), "answers": row["answers"],
-                             "timing": {k: row.get(k) for k in ("at", "f_ms", "f_tries")}}
-                    if err:
-                        entry["error"] = err
-                    if row.get("note") is not None:
-                        entry["note"] = row["note"]
-                    part.transcript[pid].append(entry)
-                    if err and part.attempt[pid] >= self.fdesc["max_refusals"]:
-                        part.error = "stuck: the page refused %d answer sets in a row (%s)" % (
-                            part.attempt[pid], json.dumps(err, ensure_ascii=False)[:200])
-                still = []
-                for part in active:
-                    if part.finished:
-                        self._write_record(part)
-                        ms = part.s.members if part.group else [part.s]
-                        progress.finished(part.spec["arm"], len(ms), sum(1 for m in ms if m.status != "completed"))
-                    else:
-                        still.append(part)
-                active = still
-                if progress.stop_requested and (queue or active):
-                    stopped = True
+            while True:
+                stopped = self._drain(env, seed, queue, active, pool, steps_fh, progress)
+                if stopped or not self.top_up:
                     break
+                vcount, opened = valid_counts(env, plan), unit_counts(env)
+                more = []
+                for arm, k in plan.items():
+                    valid, total = vcount.get(arm, 0), opened.get(arm, 0)
+                    share = valid / total if total else 0.0
+                    first_share.setdefault(arm, share)
+                    cap = k * self.top_up_max
+                    if valid >= k:
+                        continue
+                    if first_share[arm] < TOP_UP_MIN_SHARE:   # brake: f almost never yields a valid session here
+                        notes[arm] = ("no top-up: only %.1f%% of the first %d sessions were valid (< %.0f%%); the "
+                                      "run stays short (underpowered_run)" % (100 * first_share[arm], plan[arm],
+                                                                            100 * TOP_UP_MIN_SHARE))
+                        continue
+                    if issued[arm] >= cap:
+                        notes[arm] = ("top-up stopped at the cap (%dx plan = %d sessions) with %d valid of %d "
+                                      "planned (underpowered_run)" % (self.top_up_max, cap, valid, k))
+                        continue
+                    if valid + share * (cap - issued[arm]) < k:   # predictive brake: the cap cannot reach the plan
+                        notes[arm] = ("top-up not attempted: at the observed valid rate %.1f%% the remaining cap of "
+                                      "%d sessions would give about %d valid, short of %d planned "
+                                      "(underpowered_run)" % (100 * share, cap - issued[arm],
+                                                              valid + int(share * (cap - issued[arm])), k))
+                        continue
+                    add = min(int(math.ceil((k - valid) / max(share, 1e-9))), cap - issued[arm])
+                    more += [self._spec(seed, arm, i) for i in range(issued[arm], issued[arm] + add)]
+                    issued[arm] += add
+                    progress.add(arm, add * gsize[arm])
+                if not more:
+                    break
+                queue.extend(sorted(more, key=okey))
+            self.topped_up[seed] = {a: issued[a] - plan[a] for a in plan if issued[a] > plan[a]}
         finally:
             pool.shutdown(wait=True)
             steps_fh.close()
@@ -419,13 +568,87 @@ class Runner:
             self.operator_fh.close()
         return env, stopped
 
+    def _drain(self, env, seed, queue, active, pool, steps_fh, progress):
+        """Run until queue and active are empty (False) or STOP was requested (True)."""
+        while queue or active:
+            while queue and len(active) < self.workers:   # opened in design order: deterministic
+                active.append(Participant(env, queue.pop(0), seed, self.salt))
+            calls = [(part, pid, st) for part in active for pid, st in part.todo()]
+            futs = [pool.submit(self._call, part, pid, st) for part, pid, st in calls]
+            results = [fu.result() for fu in futs]
+            new_rows = [row for row, fresh in results if fresh]
+            if new_rows:
+                steps_fh.write("".join(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in new_rows))
+                steps_fh.flush()
+            for (part, pid, st), (row, _) in zip(calls, results):   # applied in participant order
+                if "failed" in row:
+                    part.error = "f failed after %d tries: %s" % (1 + self.fdesc["retries"], row["failed"])
+                    part.f_errors.setdefault(pid, []).append(row)   # operator side only
+                    part.transcript[pid].append({"state": compact(st, self.states_mode), "f_failed": True})
+                    continue
+                if part.error:
+                    continue
+                try:
+                    err = part.apply(pid, dict(row["answers"]), st)
+                except (ProtocolError, RuntimeError) as e:
+                    part.error = "engine: %s" % e
+                    err = None
+                entry = {"state": compact(st, self.states_mode), "answers": row["answers"],
+                         "timing": {k: row.get(k) for k in ("at", "f_ms", "f_tries")}}
+                if err:
+                    entry["error"] = err
+                if row.get("note") is not None:
+                    entry["note"] = row["note"]
+                part.transcript[pid].append(entry)
+                if err and part.attempt[pid] >= self.fdesc["max_refusals"]:
+                    part.error = "stuck: the page refused %d answer sets in a row (%s)" % (
+                        part.attempt[pid], json.dumps(err, ensure_ascii=False)[:200])
+            still = []
+            for part in active:
+                if part.finished:
+                    self._write_record(part)
+                    ms = part.s.members if part.group else [part.s]
+                    progress.finished(part.spec["arm"], len(ms), sum(1 for m in ms if m.status != "completed"))
+                else:
+                    still.append(part)
+            active[:] = still
+            if progress.stop_requested and (queue or active):
+                return True
+        return False
+
 
 # ----------------------------------------------------------------------------------------------- evaluation
-def evaluate(protocol, envs, plan, fdesc, run_dir, variant, baseline=True, effects_only=False):
+def baseline_cached(E, protocol, plan, run_dir, max_factor):
+    """The State-only `floor` baseline at the run's planned n (evaldata.baseline_run), shared by every run of the
+    same study + protocol + reward code: cached next to the run folders in .baseline-cache/ (tables + session
+    summaries only). Key: study, protocol sha16, code sha16, policy, planned n, seed, top-up cap."""
+    key = {"study": protocol.id, "protocol_sha16": protocol.version, "code_sha16": E.code_hash(), "policy": "floor",
+           "n": dict(sorted(plan.items())), "seed": 0, "max_factor": max_factor}
+    cdir = Path(run_dir).resolve().parent / ".baseline-cache"
+    path = cdir / ("%s-%s.json" % (protocol.id, _sha(key)[:16]))
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8"))
+        if cached.get("key") == key:
+            return cached["run"], {"cache": str(path), "reused": True, "key": key}
+    except (OSError, ValueError, KeyError):
+        pass
+    base = E.baseline_run(protocol, plan, 0, max_factor)
+    keep = {k: base[k] for k in ("seed", "policy", "tables", "sessions", "n_per_arm", "n_target_per_arm",
+                                 "truncated_sessions") if k in base}
+    cdir.mkdir(parents=True, exist_ok=True)
+    write_json(path, {"key": key, "run": keep})
+    return keep, {"cache": str(path), "reused": False, "key": key}
+
+
+def evaluate(protocol, envs, plan, fdesc, run_dir, variant, baseline=True, effects_only=False, top_up=None,
+             baseline_max_factor=10):
     """effects.json always (hsenv.checks); evaldata.json + rewards.json when those modules exist."""
-    out = {"per_seed": {}, "pooled": None}
+    out = {"per_seed": {}, "pooled": None, "kept": {}}
     tables = {}
     for seed, env in envs.items():
+        # the scored sample: the first `plan` valid units per arm (top-up overshoot dropped), as evaldata keeps
+        env = scored_env(env, plan)
+        out["kept"][str(seed)] = {"sessions": len(env.sessions)}
         t = env.unit_tables()
         tables[seed] = t
         out["per_seed"][str(seed)] = checks.effect_blocks(protocol, t)
@@ -435,8 +658,9 @@ def evaluate(protocol, envs, plan, fdesc, run_dir, variant, baseline=True, effec
             pooled.setdefault(unit, []).extend(dict(r, session="%s:%s" % (seed, r.get("session", r.get("group"))))
                                                for r in rows)
     out["pooled"] = checks.effect_blocks(protocol, pooled) if len(tables) > 1 else None
-    out["note"] = ("agent side only; for a variant the printed human numbers are those of the original experiment"
-                   if variant else "agent side only; the human side is in evaldata.json when it exists")
+    out["note"] = ("agent side only, on the scored sample (the first planned valid units per arm); "
+                   + ("for a variant the printed human numbers are those of the original experiment" if variant
+                      else "the human side is in evaldata.json when it exists"))
     write_json(Path(run_dir) / "effects.json", out)
     summary = {"effects": "effects.json"}
     if effects_only:
@@ -452,24 +676,22 @@ def evaluate(protocol, envs, plan, fdesc, run_dir, variant, baseline=True, effec
         summary["evaldata"] = "skipped: hsenv.evaldata not importable (%s)" % e
         return summary
     try:
-        runs = [E.run_from_env(env, seed, policy="f:%s" % fdesc["name"]) for seed, env in envs.items()]
-        base = None
-        if baseline:   # the random baseline at this n, cached in the run folder (reused on resume / rescoring)
-            bpath = Path(run_dir) / "baseline-run.json"
-            bkey = {"protocol_version": protocol.version, "n": plan, "seed": 0}
-            try:
-                cached = json.loads(bpath.read_text(encoding="utf-8"))
-                base = cached["run"] if cached.get("key") == bkey else None
-            except (OSError, ValueError, KeyError):
-                base = None
-            if base is None:
-                base = E.baseline_run(protocol, plan, 0)
-                write_json(bpath, {"key": bkey, "run": base})
+        # the run's own plan: evaldata keeps the first `plan` valid units per arm and judges power against it
+        runs = [E.run_from_env(env, seed, policy="f:%s" % fdesc["name"], planned=dict(plan))
+                for seed, env in envs.items()]
+        for r in runs:
+            r["n_target_per_arm"] = dict(plan)
+        base, binfo = (None, None)
+        if baseline:
+            base, binfo = baseline_cached(E, protocol, plan, run_dir, baseline_max_factor)
+            summary["baseline"] = binfo
         prov = {"policy": "f:%s" % fdesc["name"], "f": {k: fdesc[k] for k in ("kind", "name")},
                 "agent_n_per_arm": plan, "seeds": list(envs), "baseline_seed": 0 if baseline else None,
-                "top_up": "none (run_study runs exactly n per arm; excluded sessions are not replaced)",
-                "variant_of": (variant or {}).get("variant_of")}
-        ev = E.EvalData.build(protocol, runs, baseline=base, provenance=prov)
+                "baseline_cache": binfo, "top_up": top_up, "variant_of": (variant or {}).get("variant_of")}
+        ev = E.EvalData.build(protocol, runs, baseline=base, provenance=prov, planned=dict(plan))
+        summary["plan"] = {k: (ev.d.get("plan") or {}).get(k) for k in (
+            "official", "per_arm", "human_per_arm", "human_n_basis", "factor", "official_rule", "n_unverified_arms",
+            "official_n_basis", "subset_of_arms")}
         write_json(Path(run_dir) / "evaldata.json", ev.to_dict())
         summary["evaldata"] = "evaldata.json"
     except Exception as e:
@@ -484,8 +706,20 @@ def evaluate(protocol, envs, plan, fdesc, run_dir, variant, baseline=True, effec
     try:
         res = S.summarize(ev, list(R.DEFAULT))
         write_json(Path(run_dir) / "rewards.json", {k: v["reward"] for k, v in res.items()})
-        summary["rewards"] = {k: {"value": v["value"], "passed": v["passed"], "n_scored": v["n_scored"],
-                                  "not_computable": v["not_computable"]} for k, v in res.items()}
+        summary["rewards"] = {}
+        for k, v in res.items():
+            sp = (v.get("reward") or {}).get("spec") or {}
+            summary["rewards"][k] = {
+                "value": v["value"], "passed": v["passed"], "status": v.get("status") or sp.get("status"),
+                "official": sp.get("official"), "label": sp.get("label"), "report_scope": sp.get("report_scope"),
+                "n_scored": v["n_scored"], "not_computable": v["not_computable"], "reasons": v.get("reasons"),
+                "view": v.get("view") or sp.get("view"),
+                **{x: sp.get(x) for x in ("itt_unchecked", "itt_not_applicable", "value_analysed", "value_itt",
+                                          "verdict_on_unverified_n") if x in sp}}
+        try:
+            summary["text_report"] = S.text_report(ev, res)
+        except Exception as e:   # noqa: BLE001 — the report text is a convenience
+            summary["text_report"] = ["(text_report failed: %s)" % e]
     except Exception as e:
         summary["rewards"] = "failed: %s: %s" % (type(e).__name__, e)
     return summary
@@ -493,7 +727,8 @@ def evaluate(protocol, envs, plan, fdesc, run_dir, variant, baseline=True, effec
 
 # ----------------------------------------------------------------------------------------------- entry points
 def run(study, fspec_obj, n="paper", seeds=(1,), out=None, workers=8, states="auto", do_eval=True,
-        baseline=True, spec_dir=".", host_f=None, quiet=False, effects_only=False, arms=None):
+        baseline=True, spec_dir=".", host_f=None, quiet=False, effects_only=False, arms=None, top_up=True,
+        baseline_max_factor=10, top_up_max=TOP_UP_MAX_FACTOR):
     """Python entry point (hosts embed this to pass an in-process f, e.g. an llm adapter): returns run.json."""
     protocol, psha, sdir, variant = load_protocol(study)
     f, fdesc = fspec.build(fspec_obj, protocol, spec_dir, host_f=host_f)
@@ -501,14 +736,13 @@ def run(study, fspec_obj, n="paper", seeds=(1,), out=None, workers=8, states="au
     seeds = [int(s) for s in seeds]
     gsize = {a["id"]: int(a.get("group_size") or 1) for a in protocol.arms}
     members = sum(k * gsize[a] for a, k in plan.items()) * len(seeds)
-    if states == "auto":   # large runs keep no per-step States in records.jsonl unless asked (memory, disk)
-        states = "screen" if members <= AUTO_STATES_LIMIT else "none"
     if out is None:
         out = sdir / "runs" / time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     fingerprint = {"protocol_sha256": psha, "f": _sha(fdesc.get("spec")), "f_source": _sha(
-        {k: fdesc.get(k) for k in ("source", "host", "renderer")}), "n_per_arm": plan, "seeds": seeds, "arms": sorted(plan)}
+        {k: fdesc.get(k) for k in ("source", "host", "renderer")}), "n_per_arm": plan, "seeds": seeds, "arms": sorted(plan),
+        "top_up": bool(top_up), "top_up_max": int(top_up_max)}
     meta_path = out / "run.json"
     if meta_path.exists():
         old = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -518,10 +752,24 @@ def run(study, fspec_obj, n="paper", seeds=(1,), out=None, workers=8, states="au
     else:
         resumed = False
     (out / "STOP").unlink(missing_ok=True) if resumed else None
+    salt = load_salt(out)   # per-run secret, kept outside the run folder: opaque ids are HMACs under it
+    human = {a["id"]: human_n(a) for a in protocol.arms if a.get("runnable") is not False}
+    official = set(plan) == set(human) and all(plan[a] == (human[a][0] or -1) for a in plan) and not variant
+    plan_note = {"per_arm": plan, "human_analysed_per_arm": {a: v[0] for a, v in human.items()},
+                 "human_n_basis": {a: v[1] for a, v in human.items()}, "official": official,
+                 "n_unverified_arms": sorted(a for a, v in human.items() if a in plan and v[1] == "n_paper_unverified"),
+                 "why": "official only when every runnable arm runs at its human analysed n (--n paper, all arms) "
+                        "on the original protocol; --n N, --arms or a variant give a non_official report (values, "
+                        "no verdict)"}
     meta = {"schema": "hs-run-1", "principle": "answers = f(state): the study owns state and step; f is the user's",
             "study": protocol.id, "study_dir": str(sdir), "protocol_sha256": psha, "protocol_version": protocol.version,
             "variant": variant, "f": fdesc, "n": n, "n_per_arm": plan, "arms": sorted(plan), "seeds": seeds,
-            "workers": workers, "participants_planned": members,
+            "workers": workers, "participants_planned": members, "plan": plan_note,
+            "top_up": {"enabled": bool(top_up), "rule": "after the planned sessions, more sessions per arm until its "
+                       "valid units (completed; no whole-session exclusion, population cutoffs included) reach the "
+                       "plan, at most %dx plan; no top-up for an arm whose first round was < %.0f%% valid (the run "
+                       "is then reported short: underpowered_run); evaldata keeps the first planned valid units"
+                       % (int(top_up_max), 100 * TOP_UP_MIN_SHARE), "max_factor": int(top_up_max)},
             "states_kept": states, "fingerprint": fingerprint, "startedAt": _now(), "resumed": resumed,
             "engine": {"path": str(HSENV / "hsenv" / "engine.py"),
                        "sha256": hashlib.sha256((HSENV / "hsenv" / "engine.py").read_bytes()).hexdigest()},
@@ -532,7 +780,7 @@ def run(study, fspec_obj, n="paper", seeds=(1,), out=None, workers=8, states="au
     write_json(meta_path, meta)
     plan_all = {a: k * gsize[a] * len(seeds) for a, k in plan.items()}   # participants, not groups
     prog = Progress(out, plan_all, model=str(fdesc.get("model") or fdesc["name"]))
-    runner = Runner(protocol, f, fdesc, out, workers, states)
+    runner = Runner(protocol, f, fdesc, out, workers, states, salt, top_up, top_up_max)
     envs = {}
     try:
         prog.stage("running")
@@ -545,9 +793,16 @@ def run(study, fspec_obj, n="paper", seeds=(1,), out=None, workers=8, states="au
                 return meta
             envs[sd] = env
         meta.update(calls=runner.calls, replayed=runner.replayed)
+        meta["top_up"]["added_sessions_per_seed"] = {str(k): v for k, v in getattr(runner, "topped_up", {}).items()}
+        meta["top_up"]["notes"] = {k: v for k, v in getattr(runner, "top_up_notes", {}).items() if v}
+        if runner.auto_states:
+            meta["states_kept"] = ("auto: screens for every participant" if runner.states_dropped_after is None else
+                                   "auto: screens for the first %d participants, none after records.jsonl passed "
+                                   "%d MB" % (runner.states_dropped_after, AUTO_STATES_BYTES // 2 ** 20))
         if do_eval:
             prog.stage("scoring")
-            meta["evaluation"] = evaluate(protocol, envs, plan, fdesc, out, variant, baseline, effects_only)
+            meta["evaluation"] = evaluate(protocol, envs, plan, fdesc, out, variant, baseline, effects_only,
+                                          meta["top_up"], baseline_max_factor)
         done = [json.loads(x) for x in runner.operator_path.read_text(encoding="utf-8").splitlines() if x.strip()]
         by = {}
         for r in done:
@@ -565,12 +820,21 @@ def run(study, fspec_obj, n="paper", seeds=(1,), out=None, workers=8, states="au
         if not quiet:
             print("done: %s  participants=%d completed=%d (%.0f%%)  f calls=%d replayed=%d" % (
                 out, len(done), comp, 100.0 * comp / max(len(done), 1), runner.calls, runner.replayed))
+            for arm_notes in meta["top_up"]["notes"].values():
+                for arm, why in arm_notes.items():
+                    print("  top-up %s: %s" % (arm, why))
+            ev_ = meta.get("evaluation") or {}
+            for line in ev_.get("text_report") or []:
+                print(line)
+            if isinstance(ev_.get("evaldata"), str) and ev_["evaldata"] != "evaldata.json":
+                print("  evaldata: %s" % ev_["evaldata"])
         return meta
     except BaseException as e:
         if not isinstance(e, SystemExit) or "stopped" not in str(e):
             prog.stage("failed", "%s: %s" % (type(e).__name__, e))
         raise
     finally:
+        runner.close()
         prog.close()
 
 
@@ -587,7 +851,13 @@ def main(argv=None):
     ap.add_argument("--arms", help="comma-separated arm ids (default: every runnable arm)")
     ap.add_argument("--states", choices=("auto", "screen", "full", "none"), default="auto",
                     help="what of each State records.jsonl keeps: screen (seen/answered as counts), full, none; "
-                         "auto = screen up to %d participants, else none" % AUTO_STATES_LIMIT)
+                         "auto = screen until records.jsonl holds %d MB, then none" % (AUTO_STATES_BYTES // 2 ** 20))
+    ap.add_argument("--no-top-up", action="store_true", help="run exactly the planned sessions (no replacement of "
+                    "excluded ones; the run may then be unscorable: underpowered_run)")
+    ap.add_argument("--baseline-max-factor", type=int, default=10, help="top-up cap of the floor baseline")
+    ap.add_argument("--top-up-max", type=int, default=TOP_UP_MAX_FACTOR,
+                    help="top-up brake: at most this many times the planned sessions per arm (default %d)"
+                         % TOP_UP_MAX_FACTOR)
     ap.add_argument("--no-eval", action="store_true")
     ap.add_argument("--no-baseline", action="store_true", help="skip the random baseline in evaldata")
     ap.add_argument("--detach", action="store_true", help="run in the background (output in <out>/run.log)")
@@ -610,7 +880,8 @@ def main(argv=None):
     try:
         run(a.study, spec, "paper" if a.n == "paper" else int(a.n), [s for s in a.seeds.split(",") if s.strip()],
             a.out, a.workers, a.states, not a.no_eval, not a.no_baseline, spec_dir,
-            arms=[x.strip() for x in a.arms.split(",") if x.strip()] if a.arms else None)
+            arms=[x.strip() for x in a.arms.split(",") if x.strip()] if a.arms else None, top_up=not a.no_top_up,
+            baseline_max_factor=a.baseline_max_factor, top_up_max=a.top_up_max)
     except fspec.SpecError as e:
         sys.exit("f-spec: %s" % e)
     return 0

@@ -1,6 +1,6 @@
 """One engine for every study: interprets protocol.json (DESIGN.md v3.1 §3–§4).
 
-    env = make("studies/hall2024gettier")
+    env = make("studies/<id>")
     for spec in env.design(n=10, seed=7):
         s = env.open(spec); state = s.reset()
         while not state.get("done"):
@@ -54,18 +54,55 @@ class Protocol:
         f = path / "protocol.json" if path.is_dir() else path
         return cls(json.loads(f.read_text(encoding="utf-8")), f.parent)
 
+    def local_path(self, src):
+        """The study-folder file a local `src` names, or ProtocolError: only relative paths inside the protocol's
+        folder, no '..', no absolute or drive paths, no symlink that leaves the folder, and only regular files (no
+        devices, FIFOs, folders). None when the file does not exist or the protocol has no folder (nothing is read)."""
+        import ntpath
+        import posixpath
+        if not isinstance(src, str) or not src or "\x00" in src:
+            raise ProtocolError("asset src %r is not a file name" % (src,))
+        if posixpath.isabs(src) or ntpath.isabs(src) or ntpath.splitdrive(src)[0] or src.startswith("~"):
+            raise ProtocolError("asset src %r is absolute: local files must sit in the study folder" % src)
+        if ".." in re.split(r"[\\/]", src):
+            raise ProtocolError("asset src %r leaves the study folder ('..')" % src)
+        if self.root is None:
+            return None
+        root = self.root.resolve()
+        path = self.root / src
+        try:
+            real = path.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None   # missing (or a symlink loop): nothing is read
+        try:
+            real.relative_to(root)
+        except ValueError:
+            raise ProtocolError("asset src %r resolves outside the study folder" % src)
+        if not real.is_file():
+            raise ProtocolError("asset src %r is not a regular file" % src)
+        return real
+
     def asset_ref(self, src):
-        """Local files are served by opaque id ("asset:<sha16>"); operators resolve them with Env.asset_path."""
+        """Local files are served by opaque id ("asset:<sha16>"); operators resolve them with Env.asset_path.
+        Only regular files inside the study folder are read (local_path)."""
         if src.startswith(("http://", "https://")):
             return src
         if src not in self._assets:
-            path = (self.root / src) if self.root else Path(src)
-            try:
-                h = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
-            except OSError:
+            path = self.local_path(src)
+            h = None
+            if path is not None:
+                try:
+                    d = hashlib.sha256()
+                    with open(path, "rb") as fh:
+                        for chunk in iter(lambda: fh.read(1 << 20), b""):
+                            d.update(chunk)
+                    h = d.hexdigest()[:16]
+                except OSError:
+                    h = None
+            if h is None:
                 h = hashlib.sha256(src.encode()).hexdigest()[:16]
             self._assets[src] = h
-            self._asset_paths[h] = str(path)
+            self._asset_paths[h] = str(path if path is not None else (self.root / src if self.root else src))
         return "asset:" + self._assets[src]
 
     def response(self, ref):
@@ -109,6 +146,7 @@ class Session:
         self._state = None
         self._last_spans = None
         self._typed = {}
+        self._role = None   # set by _assign_role (protocol roles[].shown)
 
     # ---- expressions
     def _funcs(self, bindings):
@@ -361,11 +399,12 @@ class Session:
                     if key in r:
                         val = self.ev(r[key], b) if isinstance(r[key], dict) and "expr" in r[key] else r[key]
                         view[key] = val
+                hidden_range = None
                 if r.get("range_visible") is False:
-                    view.pop("range", None)   # a bound humans did not see never reaches the State
+                    hidden_range = view.pop("range", None)   # a bound humans did not see never reaches the State
                 if r.get("start_visible") is False:
                     view.pop("start", None)   # a hidden handle's start position (shown only once clicked)
-                responses.append({"view": view, "stage": name, "def": r, "bindings": dict(b),
+                responses.append({"view": view, "stage": name, "def": r, "bindings": dict(b), "range": hidden_range,
                                   "text_entry": {"o%d" % (k + 1) for k, o in enumerate(opts) if o.get("text_entry")},
                                   "codes": {"o%d" % (k + 1): o["code"] for k, o in enumerate(opts)},
                                   "labels": {o["code"]: o["label"] for o in opts}})
@@ -404,11 +443,12 @@ class Session:
         except _End as e:
             self._page, self.status = None, e.status
         if self._page is None:
-            self._state = {"participant": self.pid, "done": True, "step": self.step_no}
+            self._state = dict({"participant": self.pid, "done": True, "step": self.step_no}, **self._role_field())
             return self._state
         if isinstance(self._page, dict) and "_sync" in self._page:
             self._waiting, self._page = self._page, None
-            self._state = {"participant": self.pid, "done": False, "waiting": True, "step": self.step_no}
+            self._state = dict({"participant": self.pid, "done": False, "waiting": True, "step": self.step_no},
+                               **self._role_field())
             return self._state
         self.step_no += 1
         pg = self._page
@@ -417,6 +457,7 @@ class Session:
                            "items": pg["internal"], "shown": pg["items"], "resp": [r["view"] for r in pg["responses"]], "back": pres.get("back", "not_allowed")})
         self._state = {
             "participant": self.pid, "done": False, "step": self.step_no, "page": self.step_no,
+            **self._role_field(),
             "screen": dict({"items": pg["items"], "responses": [r["view"] for r in pg["responses"]]},
                            **({"order": pg["order"]} if pg.get("order") else {}),
                            **({"button": pres["button"]} if isinstance(pres.get("button"), str) else
@@ -440,8 +481,28 @@ class Session:
         self.events = []
         return self._state
 
+    def _role_field(self):
+        return {"role": self._role} if self._role is not None else {}
+
+    def _assign_role(self):
+        """Protocol `roles: [{member, id, shown: {text, cite}, arms?}]`: what a participant was told about their own
+        position (e.g. "Room A"), a fact of their situation. `member` is the 1-based seat in a group (1 for a solo
+        session); the shown text reaches every State as `role`. Labels, ids and cites stay operator-side."""
+        seat = (self.group.members.index(self) + 1) if self.group else 1
+        for r in self.p.raw.get("roles") or []:
+            if not isinstance(r, dict) or r.get("member", 1) != seat:
+                continue
+            if r.get("arms") and self.spec.get("arm") not in r["arms"]:
+                continue
+            shown = r.get("shown")
+            text = shown.get("text") if isinstance(shown, dict) else shown
+            if isinstance(text, str) and text:
+                self._role = text
+            return
+
     def reset(self):
         self._gen = self._run(self.p.flow, {})
+        self._assign_role()
         try:
             return self._advance()
         except ExprError as e:
@@ -518,7 +579,8 @@ class Session:
                 want = self.ev(acc["equals"], r["bindings"]) if isinstance(acc["equals"], dict) else acc["equals"]
                 if not isinstance(want, (int, float)) or abs(value - want) > 1e-9:
                     return None, acc.get("message") or "this answer is not accepted"
-            lo, hi = (view.get("range") or d.get("range") or [None, None])[:2]
+            rg = view.get("range") or r.get("range") or d.get("range")   # r["range"]: evaluated but not shown
+            lo, hi = (rg if isinstance(rg, (list, tuple)) else [None, None])[:2]
             if (lo is not None and value < lo) or (hi is not None and value > hi):
                 return None, (d.get("validate") or {}).get("message") or (
                     "a number of at least %s" % lo if hi is None else
@@ -773,11 +835,18 @@ class Env:
         self.warnings = []
 
     def design(self, n="paper", seed=0, arms=None):
+        """Session specs. n="paper": each arm's n_paper; n={arm: k}: exactly those; n=int: n per arm, except arms
+        named in a `conditions[].ratio` ({arm: share}): those arms share n x (their number) sessions in the declared
+        proportions (largest remainder, ties to the arm declared first), so design(n=1000) of a 2:1:1 design gives
+        1500/750/750. Only the runnable, selected arms of a ratio share its sessions."""
         specs = []
+        live = [a["id"] for a in self.p.arms if a.get("runnable") is not False and not (arms and a["id"] not in arms)]
+        by_ratio = self._ratio_counts(n, live) if isinstance(n, int) and not isinstance(n, bool) else {}
         for arm in self.p.arms:
             if arm.get("runnable") is False or (arms and arm["id"] not in arms):
                 continue
-            k = arm.get("n_paper") if n == "paper" else (n.get(arm["id"], 0) if isinstance(n, dict) else n)
+            k = arm.get("n_paper") if n == "paper" else (n.get(arm["id"], 0) if isinstance(n, dict) else
+                                                         by_ratio.get(arm["id"], n))
             if k is None:
                 raise ProtocolError("arm %s has no paper N" % arm["id"])
             gs = arm.get("group_size")
@@ -787,6 +856,33 @@ class Env:
                     spec["group_size"] = int(gs)   # k counts groups for group arms
                 specs.append(spec)
         return specs
+
+    def _ratio_counts(self, n, live):
+        out = {}
+        for c in self.p.raw.get("conditions") or []:
+            ratio = c.get("ratio") if isinstance(c, dict) else None
+            if ratio is None:
+                continue
+            if not isinstance(ratio, dict) or not ratio or not all(
+                    isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in ratio.values()):
+                raise ProtocolError("conditions %s: ratio must be {arm: positive share}" % c.get("id"))
+            unknown = set(ratio) - {a["id"] for a in self.p.arms}
+            if unknown:
+                raise ProtocolError("conditions %s: ratio names unknown arms %s" % (c.get("id"), sorted(unknown)))
+            ids = [a for a in live if a in ratio]
+            if set(ids) & set(out):
+                raise ProtocolError("arm %s is in two conditions ratios" % sorted(set(ids) & set(out)))
+            if not ids:
+                continue
+            total = n * len(ids)
+            w = sum(ratio[a] for a in ids)
+            quota = [total * ratio[a] / w for a in ids]
+            base = [int(math.floor(q + 1e-9)) for q in quota]
+            order = sorted(range(len(ids)), key=lambda i: (-(quota[i] - base[i]), i))
+            for i in order[: total - sum(base)]:
+                base[i] += 1
+            out.update(zip(ids, base))
+        return out
 
     def asset_path(self, ref):
         return self.p._asset_paths.get(str(ref).replace("asset:", ""))
@@ -817,6 +913,8 @@ class Env:
             for name, u in self.p.units.items():
                 if u.get("per") != "group":
                     continue
+                if u.get("arms") and s.spec["arm"] not in u["arms"]:
+                    continue   # a group unit scoped to some arms (as for per-session units)
                 first = s.group.members[0]
                 row = {"group": "%s:%s" % (s.spec["arm"], s.group.spec["index"]), "arm": s.spec["arm"],
                        "excluded": False, "size": len(s.group.members)}

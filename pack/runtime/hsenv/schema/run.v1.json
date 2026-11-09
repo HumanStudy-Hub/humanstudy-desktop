@@ -1,0 +1,83 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "urn:humanstudy:schema:run:v1",
+ "title": "HumanStudy run v1 (run.json)",
+ "description": "The provenance of one simulation run against a protocol: which protocol bytes, and every operator choice the protocol deliberately leaves open (DESIGN §3.3, §4): model, persona, how a State is rendered into a prompt, what memory of seen/answered is passed, how invalid answers are retried, seeds and n. Two runs with equal run.json and equal protocol sha256 are the same experiment.",
+ "type": "object",
+ "required": ["schema_version", "study", "protocol", "model", "persona", "prompt", "memory", "retries", "seeds", "n"],
+ "additionalProperties": false,
+ "properties": {
+  "schema_version": {"const": "1"},
+  "run_id": {"type": "string"},
+  "created": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}(T.*)?$"},
+  "operator": {"type": "string", "description": "who/what launched it (person, CI job, desktop build)"},
+  "engine": {
+   "type": "object", "required": ["name", "version"], "additionalProperties": true,
+   "properties": {"name": {"const": "hsenv"}, "version": {"type": "string"}}
+  },
+  "study": {
+   "type": "object", "required": ["id"], "additionalProperties": false,
+   "properties": {"id": {"type": "string"}, "version": {"type": "string", "description": "study.json version"}}
+  },
+  "protocol": {
+   "type": "object", "required": ["schema_version", "sha256"], "additionalProperties": false,
+   "properties": {
+    "schema_version": {"type": "string", "description": "'1', or 'legacy'"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "canonical-JSON sha256 of protocol.json (hsenv.schema_check.protocol_sha256)"}
+   }
+  },
+  "arms": {"type": "array", "items": {"type": "string"}, "description": "arms run; absent = every runnable arm"},
+  "n": {"anyOf": [{"type": "integer", "minimum": 1}, {"const": "paper"}], "description": "sessions (or groups) per arm; 'paper' = the paper's n"},
+  "seeds": {"type": "array", "minItems": 1, "items": {"type": "integer"}},
+  "model": {
+   "type": "object", "required": ["id", "provider"], "additionalProperties": false,
+   "properties": {
+    "id": {"type": "string", "description": "exact model id as sent to the provider"},
+    "provider": {"type": "string", "description": "openrouter, anthropic, local, human, scripted …"},
+    "params": {"type": "object", "description": "temperature, top_p, max_tokens, reasoning … as sent"},
+    "date": {"type": "string", "description": "when the endpoint was called (models change under one id)"}
+   }
+  },
+  "persona": {
+   "type": "object", "required": ["kind"], "additionalProperties": false,
+   "properties": {
+    "kind": {"enum": ["none", "preset", "custom", "sampled"]},
+    "preset": {"type": "string", "description": "e.g. v1_empty, v2_human, v3_human_plus_demo, v4_background"},
+    "template": {"type": "string", "description": "the system prompt text with {{placeholders}}"},
+    "template_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "groups": {"type": "array", "description": "persona mix (persona-groups); split by largest remainder"},
+    "seed": {"type": "integer"}
+   }
+  },
+  "prompt": {
+   "type": "object", "required": ["rendering"], "additionalProperties": false,
+   "properties": {
+    "rendering": {"type": "string", "description": "named renderer that turns a State into messages (e.g. hsenv.render.text_v1)"},
+    "renderer_version": {"type": "string"},
+    "template_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "answer_format": {"enum": ["json", "tool_call", "text"], "description": "how the model returns answers"},
+    "per": {"enum": ["page", "response", "session"], "description": "one model call per page / per response / one call for the session"}
+   }
+  },
+  "memory": {
+   "type": "object", "required": ["policy"], "additionalProperties": false,
+   "properties": {
+    "policy": {"enum": ["none", "full", "window", "summary", "seen_only", "custom"], "description": "what of State.seen / State.answered / earlier turns is passed to the model; an operator choice, not a protocol feature"},
+    "window": {"type": "integer", "minimum": 0},
+    "includes": {"type": "array", "items": {"enum": ["seen", "answered", "events", "own_messages"]}},
+    "note": {"type": "string"}
+   }
+  },
+  "retries": {
+   "type": "object", "required": ["max"], "additionalProperties": false,
+   "properties": {
+    "max": {"type": "integer", "minimum": 0, "description": "re-asks after an invalid answer (State.error); 0 = none"},
+    "on": {"type": "array", "items": {"enum": ["invalid_answer", "parse_error", "provider_error", "timeout"]}},
+    "on_exhausted": {"enum": ["skip", "null", "end_session", "abort_run"]},
+    "feedback": {"enum": ["state_error", "none", "custom"], "description": "what the model is told on a retry; state_error = the source's own message"}
+   }
+  },
+  "output": {"type": "object", "description": "where records/evaldata were written", "additionalProperties": true},
+  "note": {"type": "string"}
+ }
+}

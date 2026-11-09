@@ -15,7 +15,8 @@ await build({ entryPoints: [join(here, 'protocol-readiness.ts')], bundle: true, 
 const R = await import(pathToFileURL(join(out, 'p.mjs')).href)
 
 const engineDir = join(here, '../../../pack/runtime/hsenv')
-const ENGINE = ['VERSION', 'hsenv/__init__.py', 'hsenv/engine.py', 'hsenv/expr.py', 'hsenv/checks.py', 'hsenv/effects_core.py']
+// Every vendored engine file (VERSION lists them), as the app's trustedEngineFiles() hands them over.
+const ENGINE = ['VERSION', ...[...readFileSync(join(engineDir, 'VERSION'), 'utf8').matchAll(/^[0-9a-f]{64} {2}(\S+)$/gm)].map((m) => m[1])]
   .map((rel) => [rel, readFileSync(join(engineDir, rel), 'utf8')])
 // hsenv.checks needs Python 3.11+ (the app bundles 3.12).
 // An absolute path, as the app passes it (the confined PATH holds only system folders).
@@ -98,12 +99,15 @@ test('review 1 S1: an expression too large to check stops at the CPU or memory b
     return dir
   }
   const started = Date.now()
+  // The engine's own expression limits (pass 2) now refuse most of these first; either way it blocks as a
+  // property of the protocol, quickly, never as a broken runtime.
+  const blocked = (problems) => problems.length === 1 && (problems[0].check === 'limits' || (problems[0].check === 'protocol' && /limit/.test(problems[0].reason)))
   const cpu = await R.protocolReadiness(python, ENGINE, bomb('10**10**8 > 0'), '', 60_000, { cpuSeconds: 2 })
-  assert.deepEqual(cpu, [R.ENGINE_LIMIT])
+  assert.ok(blocked(cpu), JSON.stringify(cpu))
   assert.ok(Date.now() - started < 30_000, 'stopped by the CPU bound, not the wall clock')
   const memStart = Date.now()
   const mem = await R.protocolReadiness(python, ENGINE, bomb('len([0]*(4*10**8))'), '', 60_000, { memoryBytes: 512 * 1024 ** 2 })
-  assert.deepEqual(mem, [R.ENGINE_LIMIT], 'a memory bound is a property of the protocol, not a broken runtime')
+  assert.ok(blocked(mem), JSON.stringify(mem))
   assert.ok(Date.now() - memStart < 30_000, 'stopped by the memory bound (rlimit, or the RSS watch on macOS), not the wall clock')
   assert.deepEqual(await R.protocolReadiness(python, ENGINE, fixture(), '', 60_000, { cpuSeconds: 30, memoryBytes: 1024 ** 3 }), [], 'a sound protocol passes under the bounds')
   assert.match(R.runner(), /RLIMIT_CPU", 120\).*RLIMIT_AS", 2147483648\)/s)
