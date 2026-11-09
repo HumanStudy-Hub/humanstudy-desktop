@@ -276,7 +276,7 @@ MSG = {
            "trial": "Trial: {finished}",
            "cap": "the run reached its approved token budget", "calls": "{n} model call(s) failed",
            "unfinished": "some participants did not finish",
-           "partial": "Partial run: {finished}; {why}. The results page is labelled partial.",
+           "partial": "Partial run: {finished}; {why}. The results page is labelled partial. Press Run simulation to run it again.",
            "page_failed": "{before} The results page could not be written: {error}",
            "ran": "The run finished ({finished}).", "done": "{finished}; {calls} model calls."},
     "zh": {"stopped": "已由研究者停止：计划 {planned} 名参与者中完成了 {done} 名；{partial} 名进行中的记为部分完成"
@@ -286,7 +286,7 @@ MSG = {
            "trial": "试运行：{finished}",
            "cap": "运行用完了批准的模型用量", "calls": "{n} 次模型调用失败",
            "unfinished": "有参与者没有完成",
-           "partial": "部分运行：{finished}；{why}。结果页标为部分运行。",
+           "partial": "部分运行：{finished}；{why}。结果页标为部分运行。点击“运行模拟”可重新运行。",
            "page_failed": "{before}结果页无法生成：{error}",
            "ran": "运行已完成（{finished}）。", "done": "{finished}；{calls} 次模型调用。"},
 }

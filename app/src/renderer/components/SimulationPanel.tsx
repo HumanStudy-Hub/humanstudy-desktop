@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { HumanProgram } from '../../shared/human-program'
 import type { ProjectEntry, ProjectSnapshot } from '../../preload/types'
 import { simulationScope, simulationLimits } from '../../shared/simulation-scope'
-import { estimateRun, hasParticipantData, isResult, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
+import { estimateRun, hasParticipantData, headline, isResult, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
 import { packageStamp, readinessStamp, runConfirmation, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
 import { shortModelName } from './ModelPicker'
 import { formatTokens, MAX_PER_CONDITION, protocolRunLimits, runLimits } from '../../shared/run-limits'
@@ -334,7 +334,7 @@ export function SimulationPanel(props: Props) {
               {confirmation.notice && <p className="sim-note">{t(confirmation.notice, accessVars)}</p>}
               <div className="sim-actions">
                 <button className="primary" disabled={!canRun || !scopeReady || agentBusy || protocolLimits?.fits === false} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
-                <button className="ghost" onClick={() => props.onAsk(scopeReady ? t('sim.ask_prompt', { study: studyTitle }) : t('sim.resolve_prompt', { study: studyTitle }))}>{t('sim.ask')}</button>
+                <button className="ghost" disabled={!canRun} title={canRun ? undefined : t('sim.sign_in_to_run')} onClick={() => props.onAsk(scopeReady ? t('sim.ask_prompt', { study: studyTitle }) : t('sim.resolve_prompt', { study: studyTitle }))}>{t('sim.ask')}</button>
               </div>
               {!canRun && <p className="sim-note">{t('sim.sign_in_to_run')}</p>}
               <p className="muted small sim-note">{t(confirmation.note, accessVars)}</p>
@@ -363,7 +363,7 @@ export function SimulationPanel(props: Props) {
                     <span>{new Date(when).toLocaleString(getLang(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}{s?.example ? ` · ${t('sim.example')}` : ''}</span>
                     <span className="muted">{shortModelName(s?.model ?? p?.model ?? '') || '—'}</span>
                     <span className="muted">{s?.perCondition ? t('sim.n_each', { n: s.perCondition }) : p?.total ? t('sim.n_total', { n: p.total }) : ''}</span>
-                    <span className={`sim-outcome o-${st === 'done' ? s?.outcome ?? 'unknown' : st}`}>{st === 'done' ? (s ? t(`sim.outcome.${s.outcome}`) : t('sim.state.done')) : t(`sim.state.${st}`)}</span>
+                    <span className={`sim-outcome o-${st === 'done' ? (s ? headline(s) : 'unknown') : st}`}>{st === 'done' ? (s ? t(`sim.outcome.${headline(s)}`) : t('sim.state.done')) : t(`sim.state.${st}`)}</span>
                   </button>
                 </li>
               )
@@ -445,8 +445,8 @@ function Result({ run, tree, summary, progress, onOpen, onAsk }: { run: SimRunFi
       </div>
       {summary?.example && <p className="sim-example-note">{t('sim.example_note')}</p>}
       {summary ? (
-        <div className={`sim-summary o-${summary.outcome}`}>
-          <p className="sim-verdict">{t(`sim.outcome.${summary.outcome}`)}</p>
+        <div className={`sim-summary o-${headline(summary)}`}>
+          <p className="sim-verdict">{t(`sim.outcome.${headline(summary)}`)}</p>
           <p>{summary.facts ? factsParagraph(summary.facts) : summary.paragraph}</p>
         </div>
       ) : (
@@ -466,6 +466,8 @@ export function factsParagraph(f: NonNullable<SimSummary['facts']>): string {
   return [
     t('sim.p.finished', { done: f.done, planned: f.planned }),
     f.partial ? t('sim.p.partial') : '',
+    f.partial ? t(f.tokenCap ? 'sim.p.why_cap' : f.failedCalls ? 'sim.p.why_calls' : 'sim.p.why_unfinished', { n: f.failedCalls }) : '',
+    f.partial ? t('sim.p.run_again') : '',
     f.compared ? t('sim.p.directions', { same: f.same, compared: f.compared }) : t('sim.p.no_directions'),
     f.partial ? '' : f.official ? t('sim.p.official') : t('sim.p.unofficial'),
     f.unverified ? t('sim.p.unverified') : '',

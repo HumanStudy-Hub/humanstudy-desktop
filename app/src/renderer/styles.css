@@ -876,13 +876,11 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
 .sim-outcome.o-replicated { color: var(--ok); }
 .sim-outcome.o-not_replicated, .sim-outcome.o-failed { color: var(--danger); }
 .sim-outcome.o-partly, .sim-outcome.o-stopped { color: var(--warning); }
-/* Protocol runs (engine direction check on an official n); an unverified human n stays amber. */
+/* Protocol runs: a direction verdict appears only on the strict official comparison. */
 .sim-summary.o-agree { border-color: var(--ok); }
 .sim-summary.o-disagree { border-color: var(--danger); }
-.sim-summary.o-agree_unverified, .sim-summary.o-disagree_unverified { border-color: var(--warning); }
 .sim-outcome.o-agree { color: var(--ok); }
 .sim-outcome.o-disagree { color: var(--danger); }
-.sim-outcome.o-agree_unverified, .sim-outcome.o-disagree_unverified { color: var(--warning); }
 .wb-compare { padding: 0 10px; border-left: 1px solid var(--line); font-size: 12px; white-space: nowrap; color: var(--muted); }
 .wb-compare[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
 .wb-editors.comparing > .wb-content, .wb-editors.comparing > .wb-paper { min-width: 260px; }

@@ -207,16 +207,16 @@ protocol's checks and its budget, not by the program's section 12.
 On Linux and Windows there is no relay. There, only plan.json's hash and STOP are checked: a stopped run is never
 resumed.
 
-**Headline (review 3, M1).** The Simulation tab's headline for a protocol run follows `hsenv.score`, not the sign
-table:
+**Headline (review 3, M1; UX re-check).** The Simulation tab's headline for a protocol run follows `hsenv.score`,
+not the sign table, and never says more than the text:
 - a partial run shows "The comparison could not be made";
-- a non_official run (the AI n differs from the paper's analysed n, the usual case) shows the neutral "Finished",
-  and its paragraph says "Offline report · non_official … no pass/fail";
-- an official run takes the engine's `direction_match` verdict, worded as direction agreement ("Directions agreed /
-  did not agree with the paper (official n, engine check)"), never as "showed the effect". When the plan lists
-  `n_unverified_arms` (the paper's printed n, no analysed n), both the headline and the paragraph say so: the
-  headline reads "(paper's printed n, not verified; engine check)" and the paragraph "On the paper's printed n, not
-  verified …" (review 4, S2; review 5).
+- a run that is not official by the strict definition (official plan, verified human n and a complete run) shows
+  the neutral "Finished" / "已完成". That covers a different n from the paper, the usual case, and also the paper's
+  printed n when it is not verified;
+- only a strictly official run takes the engine's `direction_match` verdict, worded as direction agreement
+  ("Directions agreed / did not agree with the paper"), never as "showed the effect".
+
+The same rule (`headline()` in `shared/simulation-run.ts`) applies to any summary with structured facts in the tab.
 
 A partial run never shows `done`. The app holds run_study's own `done` back, writes `failed` before it builds the
 page, and keeps `failed` if the page cannot be written. A partial page shows no pass/fail: each reward reads "no
@@ -251,8 +251,11 @@ hidden by default, zh and en.
     Otherwise it says "unofficial" (zh: 非正式), and a partial run is never official.
 - **The card and the headline.**
   - The card builds its paragraph from the summary's structured `facts` with i18n keys.
-  - The headline reads "Directions agreed / did not agree with the paper", plus "(unofficial: the paper's printed
-    sample size, not yet checked)" when it is.
+  - The headline is "Directions agreed / did not agree with the paper" only on the strict official comparison;
+    otherwise it is "Finished".
+  - A partial run says why ("10 model calls failed", "used up its approved model limit") and what to do next
+    ("press Run simulation to run it again").
+  - The technical section is translated too, and it never says "official" outside the strict definition.
 - **Elsewhere.** app_run's progress messages follow the app's language, the version is 0.8.0-beta.1, and "Check for
   updates" is translated.
 

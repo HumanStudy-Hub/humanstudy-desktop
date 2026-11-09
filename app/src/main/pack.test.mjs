@@ -296,10 +296,11 @@ print(json.dumps({'status': meta['status'], 'completed': meta['participants']['c
   // S9: the engine's scores (hsenv.score via run_study), with their labels and not-computable reasons.
   assert.match(tech, /Scores \(hsenv\.score\) — offline_report — not a leaderboard/)
   assert.match(page, /significance_match-v1/)
-  assert.match(page, /non_official: the AI n differs from the human analysed n, so there is no pass\/fail/, '5 per arm, the paper had 10')
+  assert.match(tech, /unofficial comparison: values only, no pass or fail/, '5 per arm, the paper had 10')
   assert.match(page, /no printed human SD \(1\)/, 'not-computable reasons are shown')
   assert.match(page, /intention-to-treat not applicable/)
-  assert.match(page, /human n unverified in control, treatment/)
+  assert.match(tech, /human n unverified in control, treatment \(printed n, no analysed n\)/)
+  assert.ok(!/>official</.test(tech) && !/· official ·/.test(tech), 'never "official" outside the strict definition')
   assert.equal(JSON.parse(readFileSync(join(proj, run, 'run.json'), 'utf8')).evaluation.rewards['significance_match-v1'].report_scope, 'offline_report — not a leaderboard')
   assert.ok(!existsSync(join(proj, 'artifacts/simulations/.baseline-cache')), 'the baseline cache stays inside the run folder')
   assert.ok(existsSync(join(proj, run, '.baseline-cache')))
@@ -741,7 +742,8 @@ print(json.dumps({"verified": P.outcome([], run([], True)), "unverified": P.outc
   "facts_partial": P.facts([], run([], True), True)}))`], { cwd: proj, encoding: 'utf8' })
   assert.equal(r.status, 0, r.stderr)
   const o = JSON.parse(r.stdout)
-  assert.deepEqual([o.verified, o.unverified, o.unverified_no], ['agree', 'agree_unverified', 'disagree_unverified'])
+  // The headline never says more than the text: on an unverified n it is the neutral "Finished" (UX re-check).
+  assert.deepEqual([o.verified, o.unverified, o.unverified_no], ['agree', 'unknown', 'unknown'])
   // "official" only when the plan is official AND the human n is verified AND the run is complete.
   assert.match(o.para, /Unofficial comparison: values only, no pass or fail\. The paper's sample size is taken as printed and has not been checked yet\./)
   assert.match(o.para_verified, /Official comparison: the sample size matches the paper's analysed sample in every condition\./)
@@ -750,13 +752,9 @@ print(json.dumps({"verified": P.outcome([], run([], True)), "unverified": P.outc
   const dictOut = mkdtempSync(join(tmpdir(), 'dict-'))
   await build({ entryPoints: [join(here, '../renderer/i18n-dict.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(dictOut, 'dict.mjs'), logLevel: 'error' })
   const { EN, ZH } = await import(pathToFileURL(join(dictOut, 'dict.mjs')).href)
-  for (const k of ['sim.outcome.agree_unverified', 'sim.outcome.disagree_unverified']) {
-    assert.match(EN[k], /\(unofficial: the paper's printed sample size, not yet checked\)$/)
-    assert.match(ZH[k], /（非正式：样本量按论文印出的数字，尚未核对）$/)
-    assert.ok(!/引擎|未经核实/.test(ZH[k]))
-  }
+  for (const k of ['sim.outcome.agree_unverified', 'sim.outcome.disagree_unverified']) assert.equal(EN[k], undefined, k + ' is gone')
   const css = readFileSync(join(here, '../renderer/styles.css'), 'utf8')
-  for (const c of ['o-agree', 'o-disagree', 'o-agree_unverified', 'o-disagree_unverified']) assert.ok(css.includes('.sim-outcome.' + c), c)
+  for (const c of ['o-agree', 'o-disagree']) assert.ok(css.includes('.sim-outcome.' + c), c)
 })
 
 test('review 5 M1/S3: app_run plays the plan the app approved, refuses another plan.json, and refuses a protocol swapped before the engine loads it', { skip: !python311 }, async () => {
@@ -821,6 +819,62 @@ test('UX: the results page and progress messages come in the app\'s language', {
   assert.match(page, /比例之差/)
   assert.match(JSON.parse(readFileSync(join(proj, run, 'progress.json'), 'utf8')).message, /计划 4 名参与者中完成了 4 名；\d+ 次模型调用。/)
   const summary = JSON.parse(readFileSync(join(proj, run, 'summary.json'), 'utf8'))
-  assert.deepEqual(Object.keys(summary.facts).sort(), ['compared', 'done', 'official', 'partial', 'planned', 'same', 'unverified'])
+  assert.deepEqual(Object.keys(summary.facts).sort(), ['compared', 'done', 'failedCalls', 'official', 'partial', 'planned', 'same', 'tokenCap', 'unverified'])
   assert.ok(summary.paragraph_zh)
+})
+
+test('UX re-check: an unverified n and a small same-direction run that is not significant headline "Finished", never a verdict', { skip: !python311 }, async () => {
+  const { proj, run } = await runFixture(3)
+  // Same direction on every participant except one: a small run, not significant. The fixture's n is printed only.
+  let k = 0
+  const r = spawnSync(python311, ['-B', '-c', `import sys, json; from pathlib import Path
+sys.path.insert(0, '.opencode/skills/run'); import app_run
+seen = {}
+def complete(messages):
+    page = messages[-1]['content']
+    if 'r1' not in page: return '{}'
+    n = seen.setdefault('n', 0); seen['n'] = n + 1
+    return '{"r1": "o1"}' if n % 3 else '{"r1": "o2"}'
+meta = app_run.main_run(Path(sys.argv[1]).resolve(), Path('.').resolve(), complete=complete, model='stub')
+print(json.dumps({'status': meta['status']}))`, run], { cwd: proj, encoding: 'utf8' })
+  assert.equal(last(r).status, 'done', r.stderr)
+  const summary = JSON.parse(readFileSync(join(proj, run, 'summary.json'), 'utf8'))
+  assert.equal(summary.outcome, 'unknown', 'no direction verdict on an unverified n')
+  assert.equal(summary.facts.official, false)
+  assert.equal(summary.facts.unverified, true)
+  const page = readFileSync(join(proj, run, 'results.html'), 'utf8')
+  const front = page.split('<details class="hs-card">')[0]
+  assert.ok(!/Official comparison/.test(front))
+  assert.match(front, /Unofficial comparison/)
+  // The tab's headline rule is the same for any summary with facts, whatever outcome a file claims.
+  const out = mkdtempSync(join(tmpdir(), 'sim-'))
+  await build({ entryPoints: [join(here, '../shared/simulation-run.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 's.mjs'), logLevel: 'error' })
+  const SR = await import(pathToFileURL(join(out, 's.mjs')).href)
+  const base = { done: 9, planned: 9, same: 1, compared: 1, official: true, unverified: false, partial: false, failedCalls: 0, tokenCap: false }
+  assert.equal(SR.headline({ outcome: 'agree', facts: base }), 'agree')
+  assert.equal(SR.headline({ outcome: 'agree', facts: { ...base, unverified: true } }), 'unknown')
+  assert.equal(SR.headline({ outcome: 'agree', facts: { ...base, official: false } }), 'unknown')
+  assert.equal(SR.headline({ outcome: 'agree', facts: { ...base, partial: true } }), 'not_ready')
+  assert.equal(SR.headline({ outcome: 'replicated' }), 'replicated', 'package summaries keep their own outcome')
+  assert.equal(SR.parseSummary(JSON.stringify({ outcome: 'agree_unverified', paragraph: 'x' })).outcome, 'unknown')
+})
+
+test('UX re-check: a partial run says why and what to do next, in zh and en', { skip: !python311 }, async () => {
+  const { proj, run } = await runFixture(3)
+  const r = play(proj, run, { fail: 7, env: { HUMANSTUDY_LANG: 'zh-CN' } })
+  assert.equal(last(r).status, 'partial', r.stderr)
+  const progress = JSON.parse(readFileSync(join(proj, run, 'progress.json'), 'utf8'))
+  assert.match(progress.message, /部分运行：.*点击“运行模拟”可重新运行。/)
+  const summary = JSON.parse(readFileSync(join(proj, run, 'summary.json'), 'utf8'))
+  assert.ok(summary.facts.failedCalls > 0 && summary.facts.tokenCap)
+  assert.match(summary.paragraph_zh, /原因：运行用完了批准的模型用量。下一步：点击“运行模拟”重新运行。/)
+  assert.match(summary.paragraph, /Why: the run used up its approved model limit\. Next: press Run simulation to run it again\./)
+  const page = readFileSync(join(proj, run, 'results.html'), 'utf8')
+  assert.match(page, /<summary>技术细节<\/summary>/)
+  assert.match(page, /评分（hsenv\.score）/)
+  assert.match(page, /不判定（部分运行）/)
+  assert.match(page, /\.hs-results th, \.hs-results td \{ text-align: left; vertical-align: top;/, 'table columns align')
+  const panel = readFileSync(join(here, '../renderer/components/SimulationPanel.tsx'), 'utf8')
+  assert.match(panel, /t\(f\.tokenCap \? 'sim\.p\.why_cap' : f\.failedCalls \? 'sim\.p\.why_calls' : 'sim\.p\.why_unfinished', \{ n: f\.failedCalls \}\)/)
+  assert.match(panel, /className="ghost" disabled=\{!canRun\} title=\{canRun \? undefined : t\('sim\.sign_in_to_run'\)\}/, 'Ask the agent while signed out')
 })

@@ -135,13 +135,18 @@ export function VersionFooter() {
   return (
     <div className="home-version small muted">
       <span>HumanStudy Hub v{status.version}</span>
-      {WEB_EDITION ? null : <span aria-hidden> · </span>}
-      {WEB_EDITION ? null : ready ? (
-        <button className="link" onClick={() => void window.humanstudy.updates.install()}>{t('updates.ready')}</button>
-      ) : (
-        <button className="link" disabled={status.state === 'checking'} onClick={() => void window.humanstudy.updates.check()}>
-          {status.state === 'checking' ? t('updates.checking') : t('updates.check')}
-        </button>
+      {/* The separator travels with the link, so a narrow sidebar never leaves a lone "·" at a line end. */}
+      {WEB_EDITION ? null : (
+        <span>
+          <span aria-hidden>· </span>
+          {ready ? (
+            <button className="link" onClick={() => void window.humanstudy.updates.install()}>{t('updates.ready')}</button>
+          ) : (
+            <button className="link" disabled={status.state === 'checking'} onClick={() => void window.humanstudy.updates.check()}>
+              {status.state === 'checking' ? t('updates.checking') : t('updates.check')}
+            </button>
+          )}
+        </span>
       )}
     </div>
   )
