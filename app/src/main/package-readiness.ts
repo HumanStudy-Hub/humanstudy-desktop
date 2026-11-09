@@ -185,7 +185,10 @@ export const SIMULATION_APPROVAL = '[Simulation scope approved]'
  *    `protocol`, when protocol.json exists. A protocol approval runs protocol.json through the engine
  *    (skills/run), never package/, and needs this result. */
 export async function projectPackageReadiness(projectDir: string, studyId?: string): Promise<PackageReadiness> {
-  const pkg = await packageRouteReadiness(projectDir, studyId)
+  // A project with only protocol.json has no program to bind a package to: the package route is checked statically
+  // (and is not ready without a package); the protocol route decides what can run.
+  const hasProgram = await lstat(join(projectDir, 'program.json')).then((st) => st.isFile(), () => false)
+  const pkg = await packageRouteReadiness(projectDir, hasProgram ? studyId : undefined)
   if (!(await hasProtocol(projectDir))) return pkg
   const protocol = await protocolRouteReadiness(projectDir)
   return { ...pkg, protocol: { ready: protocol.ready, problems: protocol.problems, arms: await protocolArms(projectDir), budget: protocol.budget } }

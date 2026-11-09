@@ -465,3 +465,33 @@ test('review 2: sync_hsenv.sh refuses a file naming an upstream study folder (an
   assert.match(r.stderr, /no upstream studies folder/)
   assert.equal(readFileSync(join(packDir, 'skills/run/fspec.py'), 'utf8').includes('ManyLabs9'), false, 'nothing was copied')
 })
+
+test('Stop: the relay closes mid-run; the run ends stopped, records what finished and what was in progress as partial', { skip: !python311 }, async () => {
+  const { proj, run } = await runFixture(4)
+  // The fake model: at the 5th call the researcher presses Stop (STOP is written and the app closes the relay),
+  // so this and every later call fails as the closed relay refuses it.
+  const r = spawnSync(python311, ['-B', '-c', `import sys, json; from pathlib import Path
+sys.path.insert(0, '.opencode/skills/run'); import app_run
+run = Path(sys.argv[1]).resolve(); calls = [0]
+def complete(messages):
+    calls[0] += 1
+    if calls[0] >= 5:
+        (run / 'STOP').write_text('Stopped by the researcher')
+        raise RuntimeError('model call failed: the approved model access for this run has ended')
+    return '{"r1": "o1"}' if 'r1' in messages[-1]['content'] else '{}'
+meta = app_run.main_run(run, Path('.').resolve(), complete=complete, model='stub')
+print(json.dumps({'status': meta['status'], 'app': meta.get('app')}))`, run], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  const outp = JSON.parse(r.stdout.trim().split('\n').at(-1))
+  assert.equal(outp.status, 'stopped')
+  assert.ok(outp.app.stopped && outp.app.valid < outp.app.planned, JSON.stringify(outp.app))
+  const progress = JSON.parse(readFileSync(join(proj, run, 'progress.json'), 'utf8'))
+  assert.equal(progress.stage, 'stopped')
+  assert.match(progress.message, /Stopped by the researcher: \d+ of 8 planned participants finished; \d+ in progress are recorded as partial/)
+  assert.ok(existsSync(join(proj, run, 'partial.jsonl')))
+  for (const line of readFileSync(join(proj, run, 'partial.jsonl'), 'utf8').split('\n').filter(Boolean))
+    assert.equal(JSON.parse(line).status, 'partial')
+  assert.ok(!existsSync(join(proj, run, 'results.html')), 'no comparison is drawn from a stopped run')
+  assert.ok(existsSync(join(proj, run, 'STOP')), 'STOP stays')
+  assert.match(last(play(proj, run)).refused, /stopped this run/, 'and the run does not restart without a new approval')
+})

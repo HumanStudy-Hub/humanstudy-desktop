@@ -100,6 +100,9 @@ export function SimulationPanel(props: Props) {
   const route: 'protocol' | 'package' | null = readiness?.protocol?.ready ? 'protocol' : readiness?.ready ? 'package' : null
   const built = route !== null
   const runConditions = route === 'protocol' ? readiness?.protocol?.arms ?? [] : plan.conditions
+  // The program's section-12 scope gates a package run; a protocol run is gated by the protocol's own checks and
+  // its measured budget (a protocol-only project has no section 12).
+  const scopeReady = route === 'protocol' || scope.ready
   const confirmation = runConfirmation(readiness)
   const [perCondition, setPerCondition] = useState(plan.defaultPerCondition)
   useEffect(() => setPerCondition(plan.defaultPerCondition), [plan.defaultPerCondition])
@@ -318,11 +321,11 @@ export function SimulationPanel(props: Props) {
                   </ul>
                 </div>
               )}
-              {!scope.ready && <p className="sim-blocked">{t('sim.blocked', { what: [...scope.missing.map((m) => t(`sim.need.${m}`)), ...scope.blocking.map((b) => b.title)].join(t('sim.list_sep')) })}</p>}
+              {!scopeReady && <p className="sim-blocked">{t('sim.blocked', { what: [...scope.missing.map((m) => t(`sim.need.${m}`)), ...scope.blocking.map((b) => b.title)].join(t('sim.list_sep')) })}</p>}
               {confirmation.notice && <p className="sim-note">{t(confirmation.notice, accessVars)}</p>}
               <div className="sim-actions">
-                <button className="primary" disabled={!scope.ready || agentBusy || protocolLimits?.fits === false} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
-                <button className="ghost" onClick={() => props.onAsk(scope.ready ? t('sim.ask_prompt', { study: studyTitle }) : t('sim.resolve_prompt', { study: studyTitle }))}>{t('sim.ask')}</button>
+                <button className="primary" disabled={!scopeReady || agentBusy || protocolLimits?.fits === false} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
+                <button className="ghost" onClick={() => props.onAsk(scopeReady ? t('sim.ask_prompt', { study: studyTitle }) : t('sim.resolve_prompt', { study: studyTitle }))}>{t('sim.ask')}</button>
               </div>
               <p className="muted small sim-note">{t(confirmation.note, accessVars)}</p>
             </section>

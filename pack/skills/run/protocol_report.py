@@ -188,7 +188,11 @@ def page(protocol: dict, run: dict, table: list[dict], rewards: dict | None, par
                 ("Model", str(f.get("model") or "")), ("Renderer", "default (skills/run render.render_state)"),
                 ("AI participants per arm", json.dumps(run.get("n_per_arm"))), ("Seeds", json.dumps(run.get("seeds"))),
                 ("Completed", f'{p.get("completed", 0)} of {p.get("records", 0)}'), ("Model calls", str(run.get("calls", 0))),
-                ("Images shown to the model", str(f.get("images") or "")), ("Finished", str(run.get("finishedAt", "")))]
+                ("Images shown to the model", str(f.get("images") or "")), ("Finished", str(run.get("finishedAt", ""))),
+                ("How many ran", "exactly the approved number per arm: sessions the protocol excludes are scored by its "
+                                 "rules and not replaced (no top-up), so the run stays within the approved model budget"),
+                ("Baseline", "the random floor the scores compare against was played without a model and is kept "
+                             "inside this run folder (.baseline-cache)")]
     man = "".join(f"<tr><td>{html.escape(k)}</td><td>{html.escape(v)}</td></tr>" for k, v in manifest)
     return f"""<!doctype html>
 <html lang="en">

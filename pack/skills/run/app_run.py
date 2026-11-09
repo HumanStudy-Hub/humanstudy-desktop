@@ -178,6 +178,37 @@ def write_progress(run_dir: Path, stage: str, message: str) -> None:
     tmp.replace(path)
 
 
+def stopped(run_dir: Path, meta: dict, bound: dict) -> dict:
+    """The researcher stopped the run (the app closed its model access at the same moment): record what finished
+    and, as partial, every participant that was in progress, and end with stage `stopped`. No comparison is drawn
+    from a stopped run."""
+    def keys(name, who):
+        path = run_dir / name
+        out = {}
+        for line in path.read_text(encoding="utf-8").splitlines() if path.exists() else []:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue   # a line cut off by the stop
+            k = (r.get("seed"), r.get(who), r.get("member"))
+            out[k] = out.get(k, 0) + 1
+        return out
+    finished = keys("operator.jsonl", "opaque_id")
+    in_flight = {k: n for k, n in keys("steps.jsonl", "participant").items() if k not in finished}
+    with (run_dir / "partial.jsonl").open("w", encoding="utf-8") as fh:
+        for (seed, opaque, member), steps in sorted(in_flight.items(), key=str):
+            fh.write(json.dumps({"seed": seed, "opaque_id": opaque, "member": member, "status": "partial",
+                                 "steps_logged": steps, "why": "stopped by the researcher"}) + "\n")
+    result = outcome(run_dir, meta)
+    meta["app"] = {"route": "protocol", "runId": bound.get("runId"), **result, "stopped": True, "partial": len(in_flight)}
+    (run_dir / "run.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    write_progress(run_dir, "stopped", "Stopped by the researcher: %d of %d planned participants finished; %d in "
+                   "progress are recorded as partial (partial.jsonl). No comparison is drawn from a stopped run."
+                   % (result["valid"], result["planned"], len(in_flight)))
+    print(json.dumps({"status": "stopped", "app": meta["app"]}))
+    return meta
+
+
 def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, model: str | None = None) -> dict:
     """Play the approved plan. `complete` (messages -> text) and `model` replace the app's model client in tests.
     A run is `done`, with a results page, only when every planned participant finished without a failed model
@@ -212,6 +243,8 @@ def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, m
                              top_up=False)   # exactly the approved n: no extra sessions beyond the measured budget
     finally:
         run_study.baseline_cached = original_cache
+    if meta.get("status") == "stopped" and not trial:
+        return stopped(run_dir, meta, bound)
     if meta.get("status") != "done":
         print(json.dumps({"status": meta.get("status"), "participants": meta.get("participants")}, default=str))
         return meta

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 import StudyModel, { viewStudies, type QuoteStatus, type StudyModelProps } from '../program/StudyModel'
 import { readHumanProgram, type HumanProgram } from '../../shared/human-program'
+import { protocolProgram, PROTOCOL_STUDY_ID } from '../../shared/protocol-program'
 import { patchProgramField } from '../../shared/program-patch'
 import type { ProjectEntry, ProjectSnapshot, WorkspaceContext } from '../../preload/types'
 import { claimAction, lap, track } from '../telemetry'
@@ -157,6 +158,17 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   }, [build?.status, build?.error, project.dir])
   const studies = useMemo(() => (program ? viewStudies(program) : []), [program])
   const files = useMemo(() => flatten(project.tree), [project.tree])
+  // A project with only protocol.json still opens the Simulation tab: a view-only program built from the protocol
+  // (its arms as conditions) feeds the tab; the protocol's own checks decide whether it runs (v0.8).
+  const protocolEntry = files.find((f) => f.rel === 'protocol.json')
+  const [protocolText, setProtocolText] = useState<string | null>(null)
+  useEffect(() => {
+    if (program || !protocolEntry) { setProtocolText(null); return }
+    let live = true
+    window.humanstudy.project.readText(protocolEntry.path).then((text) => { if (live) setProtocolText(text) }, () => { if (live) setProtocolText(null) })
+    return () => { live = false }
+  }, [program, protocolEntry?.path, protocolEntry?.mtime, protocolEntry?.size]) // eslint-disable-line react-hooks/exhaustive-deps
+  const simProgram = useMemo(() => program ?? protocolProgram(protocolText), [program, protocolText])
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
 
   const [layout, setLayout] = useState<Layout>(() => loadLayout(project.dir))
@@ -402,6 +414,8 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const active = layout.active
   const activeFile = active.startsWith('file:') ? (fileByPath.get(active.slice(5)) ?? null) : null
   const studyId = studies.find((s) => s.id === layout.study)?.id ?? studies[0]?.id ?? ''
+  const simStudies = program ? studies : simProgram ? [{ id: PROTOCOL_STUDY_ID, title: simProgram.title }] : []
+  const simStudyId = program ? studyId : PROTOCOL_STUDY_ID
   const workspaceSnapshot = useMemo<WorkspaceSnapshot>(() => {
     const st = studies.find(s => s.id === studyId)
     return { projectDir: project.dir, context: {
@@ -410,11 +424,11 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
       ...(st ? { study: { id: st.id, title: st.title, type: st.type } } : {}),
       activeTab: active.startsWith('file:') ? 'file' : active as MainTab,
       visibleViews: compare ? ['study', 'paper'] : [active.startsWith('file:') ? 'file' : active],
-      openTabs: ['study', 'paper', ...(program ? ['simulation'] : []), ...layout.tabs.map(tab => fileByPath.get(tab.slice(5))?.rel).filter((p): p is string => Boolean(p))],
+      openTabs: ['study', 'paper', ...(simProgram ? ['simulation'] : []), ...layout.tabs.map(tab => fileByPath.get(tab.slice(5))?.rel).filter((p): p is string => Boolean(p))],
       ...(activeFile ? { file: { path: activeFile.rel, ext: activeFile.ext, unsaved: dirty.has(activeFile.path) } } : {}),
       ...(active === 'paper' || compare ? { source: sourceFocus(sourceFile, source, sourcePage) } : {}),
     } }
-  }, [project.dir, project.name, program?.id, studies, studyId, active, activeFile, layout.tabs, fileByPath, dirty, source, sourceFile, sourcePage, compare])
+  }, [project.dir, project.name, program?.id, simProgram, studies, studyId, active, activeFile, layout.tabs, fileByPath, dirty, source, sourceFile, sourcePage, compare])
   useEffect(() => { onWorkspaceChange?.(workspaceSnapshot) }, [workspaceSnapshot, onWorkspaceChange])
   // The Study document is rebuilt when its tab is shown again; put the reader back where they were.
   const studyHost = useRef<HTMLDivElement>(null)
@@ -468,7 +482,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
         <div className="wb-tablist" role="tablist">
           {tabBtn('study', t('wb.study'))}
           {tabBtn('paper', t('wb.paper'))}
-          {program && tabBtn('simulation', t('sec.simulation'))}
+          {simProgram && tabBtn('simulation', t('sec.simulation'))}
           {layout.tabs.map((tb) => {
             const isDirty = dirty.has(tb.slice(5))
             return (
@@ -502,12 +516,12 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
         {layout.files && <Explorer tree={project.tree} name={project.name} activePath={activeFile?.path ?? null} dirty={dirty} onOpen={openEntry} />}
         <div className={`wb-editors${compare ? " comparing" : ""}`} ref={editors}>
         <div className="wb-content" hidden={active === "paper"} style={compare ? { flex: `0 0 ${ratio}%` } : undefined}>
-          {active === 'simulation' && program && (
+          {active === 'simulation' && simProgram && (
             <SimulationPanel
               project={project}
-              program={program}
-              studyId={studyId}
-              studies={studies.map(st => ({ id: st.id, title: st.title }))}
+              program={simProgram}
+              studyId={simStudyId}
+              studies={simStudies.map(st => ({ id: st.id, title: st.title }))}
               onStudy={(id) => update((l) => ({ ...l, study: id }))}
               model={model}
               agentBusy={agentBusy}
@@ -515,10 +529,10 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
               agentTurnKey={agentTurnKey}
               agentActivity={agentActivity}
               onRun={async (perCondition, route, conditions, tokenBudget) => {
-                const study = studies.find(st => st.id === studyId)?.title ?? studyId
+                const study = simStudies.find(st => st.id === simStudyId)?.title ?? simStudyId
                 const request = t('sim.request', { study, n: perCondition, model: model || 'selected in the app' })
                 try {
-                  onRunSimulation?.(await approveSimulation(project.dir, program, studyId, request, { perCondition, model, route, conditions, tokenBudget }))
+                  onRunSimulation?.(await approveSimulation(project.dir, simProgram, simStudyId, request, { perCondition, model, route, conditions, tokenBudget }))
                 } catch (e) {
                   setEditError(e instanceof Error ? e.message : String(e))
                   throw e
@@ -536,7 +550,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
               onOpenFile={(path) => { const e = fileByPath.get(path); if (e) openEntry(e) }}
             />
           )}
-          {active === 'simulation' && program && editError && <div className="part error edit-error">{editError}</div>}
+          {active === 'simulation' && simProgram && editError && <div className="part error edit-error">{editError}</div>}
           {active === 'study' &&
             (program ? (
               <div className="wb-study-host" ref={studyHost} onScrollCapture={(e) => {

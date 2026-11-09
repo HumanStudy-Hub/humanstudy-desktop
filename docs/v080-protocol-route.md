@@ -106,6 +106,19 @@ run:
 - a stopped run (STOP or progress `stopped`) restarts only under an approval given after the stop, recorded in
   `plan.json.resumedAfterStop`. STOP is never deleted otherwise.
 
+**Stop.** The researcher's Stop writes STOP into the run folder through `project:writeText`, and the main process
+then closes every run relay of that project at once (`run-stop.ts`), so no further model call can succeed. The run
+ends after the pages in flight, with stage `stopped`:
+- `run.json` `app` records what finished;
+- `partial.jsonl` records each participant that was still in progress, with status `partial`;
+- no comparison or results page is drawn from a stopped run.
+
+**Protocol-only projects.** A project with protocol.json and no program.json opens the Simulation tab. The tab reads
+a view-only program built from the protocol (`shared/protocol-program.ts`): one study, the runnable arms as
+conditions and the paper's n as the sample. It is never written to disk. Readiness for such a project checks the
+package route without a program and decides runs by the protocol route alone. A protocol run is gated by the
+protocol's checks and its budget, not by the program's section 12.
+
 On Linux and Windows there is no relay. There, only plan.json's hash and STOP are checked: a stopped run is never
 resumed.
 
@@ -172,15 +185,13 @@ or with `--protocol`:
 
 ## Not done (next)
 
-1. **Protocol-only projects in the UI.** The Simulation tab still needs `program.json` (study, scope). A project
-   with only protocol.json + study.json cannot open the tab. The main process and skills/run already handle it.
-2. **History.** Squash this branch before pushing: commits before the engine re-sync carry the old engine
+1. **History.** Squash this branch before pushing: commits before the engine re-sync carry the old engine
    copy with study ids.
-3. **MCP export.** Expose `protocol.json` + engine through the agent-package MCP server (`skills/export/agent`), so
+2. **MCP export.** Expose `protocol.json` + engine through the agent-package MCP server (`skills/export/agent`), so
    other platforms run the same protocol.
-4. **Build skill.** Teach `skills/build` to write `protocol.json` and `sourcetext/` and run `hsenv.checks`. The
+3. **Build skill.** Teach `skills/build` to write `protocol.json` and `sourcetext/` and run `hsenv.checks`. The
    paper-build certificate is still `program.json`-based, so a protocol-only build does not count as complete.
-5. **Images.** The gate does not pass `--fetch-images` (no network in the gate). A protocol that serves remote images
+4. **Images.** The gate does not pass `--fetch-images` (no network in the gate). A protocol that serves remote images
    is not image-checked by the app; the converter's own 1,000-session gate must have done it.
-6. **Two `effects_core.py` copies.** One is in `skills/export/agent/` (Bench copy rule) and one in the engine. They
+5. **Two `effects_core.py` copies.** One is in `skills/export/agent/` (Bench copy rule) and one in the engine. They
    can drift; decide which one is canonical.

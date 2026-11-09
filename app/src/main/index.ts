@@ -39,6 +39,7 @@ import { assertRunnablePackage, projectPackageReadiness, configureScientificChec
 import { protocolBudget, protocolReadiness } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
+import { closeProjectRelays, isRunStop } from './run-stop'
 import type { Kernel, KernelEvent } from './kernel-types'
 import { actionRef } from '../shared/research-operations'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
@@ -495,6 +496,9 @@ app.whenReady().then(() => {
       paperBuilds.humanSaved(root)
     }
     telemetry.track('file.edited', { target: extname(q).slice(1) || 'file', ...(ref ? { action: ref } : {}) })
+    // The researcher's Stop: the run's model access ends now, not when the relay expires.
+    const stopRoot = [...openProjects].find((d) => isInside(d, q))
+    if (stopRoot && isRunStop(stopRoot, q)) await closeProjectRelays(stopRoot, runRelays, closeRunRelay)
   })
 
   ipcMain.handle('project:importFiles', async (_e, dir: string, paths: string[], action?: unknown) => {

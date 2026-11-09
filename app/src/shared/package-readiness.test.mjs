@@ -466,3 +466,30 @@ test('review 2 M3: the Simulation tab shows and sends the same budget the main p
   const bench = readFileSync(join(here, '../renderer/components/Workbench.tsx'), 'utf8')
   assert.match(bench, /tokenBudget: plan\.tokenBudget/)
 })
+
+test('a project with only protocol.json opens the Simulation tab: readiness from the protocol alone', async () => {
+  const dir = withProtocol(mkdtempSync(join(tmpdir(), 'protocol-tab-')))
+  // The tab asks with its study id; there is no program.json to bind a package to, and that must not fail.
+  const r = await M.projectPackageReadiness(dir, 'protocol')
+  assert.deepEqual([r.exists, r.ready, r.protocol.ready, r.protocol.arms], [false, false, true, ['control', 'treatment']])
+  // The view-only program the tab reads: one study, the runnable arms as conditions, the paper's n as the sample.
+  const outP = mkdtempSync(join(tmpdir(), 'protocol-program-'))
+  await build({ entryPoints: [join(here, 'protocol-program.ts'), join(here, 'simulation-run.ts'), join(here, 'simulation-scope.ts')], bundle: true, platform: 'node', format: 'esm', outdir: outP, logLevel: 'error', outExtension: { '.js': '.mjs' } })
+  const PP = await import(pathToFileURL(join(outP, 'protocol-program.mjs')).href)
+  const SR = await import(pathToFileURL(join(outP, 'simulation-run.mjs')).href)
+  const program = PP.protocolProgram(PROTOCOL.toString('utf8'))
+  assert.equal(program.studies[0].id, PP.PROTOCOL_STUDY_ID)
+  assert.deepEqual(SR.simulationPlan(program, PP.PROTOCOL_STUDY_ID).conditions.map((c) => c.id), ['control', 'treatment'])
+  assert.equal(SR.simulationPlan(program, PP.PROTOCOL_STUDY_ID).paperPerCondition, 10, 'the fixture prints n 10 per arm')
+  assert.equal(PP.protocolProgram('{"arms": []}'), null)
+  assert.equal(PP.protocolProgram('not json'), null)
+  assert.equal(PP.protocolProgram(JSON.stringify({ id: 'x', arms: [{ id: 'a', runnable: false }] })), null)
+  // The Workbench shows the tab for that program and the panel gates a protocol run by the protocol, not section 12.
+  const bench = readFileSync(join(here, '../renderer/components/Workbench.tsx'), 'utf8')
+  assert.match(bench, /const simProgram = useMemo\(\(\) => program \?\? protocolProgram\(protocolText\)/)
+  assert.match(bench, /\{simProgram && tabBtn\('simulation'/)
+  const panel = readFileSync(join(here, '../renderer/components/SimulationPanel.tsx'), 'utf8')
+  assert.match(panel, /const scopeReady = route === 'protocol' \|\| scope\.ready/)
+  // And a protocol approval from such a project runs.
+  await M.assertRunnablePackage(dir, protocolApproval())
+})
