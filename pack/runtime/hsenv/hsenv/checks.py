@@ -452,7 +452,7 @@ def play(p, n, seed, policy="random", explore=None):
                         leaks.add(x[:80])
                 ans = random_answers(state, rng, pool=pool)
                 if policy != "floor":   # the floor policy answers from the State only: no coding cases, no hidden limits,
-                    # no validation targets, no constructed switch points or sums (coordinator 2026-11-08)
+                    # no validation targets, no constructed switch points or sums (maintainers 2026-11-08)
                     if explore is not None:   # coverage: pick the option chosen least often at this question so far
                         for r in page["responses"]:
                             if r["def"]["kind"] == "choice" and r["view"].get("options"):
@@ -880,14 +880,16 @@ _UNCERTAIN = re.compile(r"\[[^\]]*\b(?:uncertain|unclear|illegible|unreadable|gu
 _SOFT = re.compile(r"\[\s*(?:partial|continued)\s*\]", re.I)
 def _private_config():
     """Study-specific pins live outside the public engine (owner 2026-11-08: engine code may be public, study data may
-    not): a JSON file named by env HSENV_PRIVATE_CONFIG (empty = none), else <sandbox>/coordinator/engine-private.json
-    next to this package's project folder. Absent file = no pins (a public copy has none). Keys:
+    not): a JSON file named by env HSENV_PRIVATE_CONFIG (unset or empty = none). Absent file = no pins (a public
+    install has none). Keys:
     legacy_uncertain_readings {sha256: label}, legacy_cite_sources {protocol id: [sourcetext names]},
     fetch_images_study_prefixes [folder-name prefixes check_all always image-checks]."""
     import os
     env = os.environ.get("HSENV_PRIVATE_CONFIG")
-    path = Path(env) if env else Path(__file__).resolve().parents[2] / "coordinator" / "engine-private.json"
-    if env == "" or not path.is_file():
+    if not env:
+        return {}
+    path = Path(env)
+    if not path.is_file():
         return {}
     try:
         cfg = json.loads(path.read_text(encoding="utf-8"))
@@ -1063,7 +1065,7 @@ def _clean_field(f, v3=False):
 
 
 # Engine pass 3 (segmentation rules; every confirmation reports its match_rule). Reader notes are read with a CLOSED
-# GRAMMAR (coordinator 2026-11-08, review round 2): a note is split into clauses on ';' and every clause must fully
+# GRAMMAR (maintainers 2026-11-08, review round 2): a note is split into clauses on ';' and every clause must fully
 # match one accepted form (_note_clause). A line whose notes hold any unrecognised clause gets no segmentation rule
 # (list_marker, multiline_k, image_gap, column_rows); a '?' or a doubt word in any note makes the line uncertain for
 # every rule. The same forms are the reader vocabulary of skills/refinery-review/prompts.md §1.
@@ -1211,7 +1213,7 @@ def _line_info(line, kind, style, screen="", contents=(), v3=False):
 _ANCHOR_FORBIDDEN = _PIC_FORBIDDEN | {"followed", "then"}
 
 
-# coordinator ruling (round 7): the narrow extra legacy forms - an optional article before the picture keyword,
+# maintainer ruling (round 7): the narrow extra legacy forms - an optional article before the picture keyword,
 # 'callout' directly followed by a picture phrase, and the die-face phrases, each optionally followed by a position
 # clause; nothing broader
 _ANCHOR_POS = r"(?:sits |placed |shown )?between the (?:two )?(?:straight |curly )?(?:double |single )?quotes"
@@ -2516,7 +2518,7 @@ def check_verbatim(p, source_texts, public=False):
                         m_ = _image_match(o["text"], r, c.get("page"), groups=g_, annots=an_, cell=cl_)
                         if m_:
                             rules[r] = m_
-                    # v3 anchor (coordinator ruling after review round 5): a legacy reading may add an agreeing vote
+                    # v3 anchor (maintainer ruling after review round 5): a legacy reading may add an agreeing vote
                     # through multiline_k (table cell) / image_gap only when a v3 reading confirms this same text by
                     # that strict rule; the legacy vote never confirms alone and never supplies a position
                     v3r = [rules[r] for r in rs if r in rules and _is_v3(r)]

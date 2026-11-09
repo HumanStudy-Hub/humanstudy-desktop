@@ -6,11 +6,18 @@ One protocol across all platforms. A study's runnable form is now `protocol.json
 ## What changed
 
 **Vendored engine.** `pack/runtime/hsenv/hsenv/{__init__,engine,expr,checks,effects_core,evaldata,rewards,score,
-serve,schema_check}.py`, `schema/{protocol,study,run}.v1.json` and `LICENSE` (MIT) are exact copies of the sandbox
-engine as of engine pass 2. Study pins are no longer in the code: they live in a private sidecar, and
-`HSENV_PRIVATE_CONFIG=''` keeps both the app's gate and desktop runs from ever reading one. Upstream `tests/` name
-real studies and are never vendored. `serve.py` is vendored only because `evaldata.code_hash()` hashes it. `pack/runtime/hsenv/VERSION` records a source label (no local paths), the date and the SHA-256
-of each file. Refresh them with `scripts/sync_hsenv.sh <path to hsenv/hsenv> [label]` and never edit them by hand.
+serve,schema_check}.py`, `schema/{protocol,study,run}.v1.json` and `LICENSE` (MIT) are exact copies of the public
+engine, github.com/HumanStudy-Hub/hsenv at tag v0.8.0 (commit fd38302574260b5876cfeaa6741540c5163ba662).
+- Study pins are not in the code. The engine reads a private sidecar only when `HSENV_PRIVATE_CONFIG` names one, and
+  the app sets it empty everywhere.
+- The engine's `tests/` are never vendored.
+- `serve.py` is vendored only because `evaldata.code_hash()` hashes it.
+- `skills/run` and `skills/preview` are still synced from the sandbox skills.
+
+`pack/runtime/hsenv/VERSION` names the tag and the commit SHA, the date and the SHA-256 of each file. To refresh,
+export the tag (`git -C <hsenv clone> archive <tag> | tar -x -C <dir>`), then run
+`scripts/sync_hsenv.sh <dir>/hsenv "github.com/HumanStudy-Hub/hsenv tag <tag>, commit <sha>"` (`STUDIES_DIR` points
+the guard at the sandbox's studies folder). Never edit the vendored files by hand.
 The script refuses study-specific data (protocols are private). The hard gate is the name of any folder in the
 upstream `studies/`, read at sync time, case-insensitive; no folder means no sync. Beyond that it refuses:
 - `LEGACY_*` tables written out as data;

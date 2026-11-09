@@ -755,7 +755,7 @@ def _agent_effect_side(e, block, scale, op):
     side["arm_sd"] = {str(a): [c["sd"], c["n"]] for a, c in (block.get("cells") or {}).items()
                       if isinstance(c, dict) and c.get("sd") is not None and c.get("n")}
     zv = zero_variance(e, block, op)
-    if zv:   # coordinator 2026-11-08: zero within-arm variance is an agent-side failure for every op, never p = 0
+    if zv:   # maintainers 2026-11-08: zero within-arm variance is an agent-side failure for every op, never p = 0
         side.update(status="zero_variance", reason="zero within-arm variance: %s" % zv, value_degenerate=v)
         return _to_scale(side, scale, op)
     test = block.get("test") or {}

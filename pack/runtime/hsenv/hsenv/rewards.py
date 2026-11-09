@@ -4,7 +4,7 @@
     r = score(ev, "significance_match", alpha=0.05)     # Reward(value, passed, per_effect, not_computable, spec)
     Verifier("human_noise_score", threshold=0.5).evaluate(ev)
 
-Rules every reward follows (v1, coordinator decisions of 2026-11-08 after review-rewards-1):
+Rules every reward follows (v1, maintainer decisions of 2026-11-08 after review-rewards-1):
 - it reads EvalData only (never sessions);
 - a missing *human* number (or baseline) makes the item `not_computable` with a reason: it leaves the denominator,
   is never scored 0 and never imputed;
@@ -33,7 +33,7 @@ SCOPES = ("step", "session", "population")
 CONST = {"ceiling_z": 0.674, "range_z": 1.96, "uninformative_z": 2.8, "s_null_draws": 4000,
          "underpowered_share": 0.9}
 FAILED = "agent_side_failed: "
-REPORT_SCOPE = "offline_report — not a leaderboard"   # v0.8 (coordinator 2026-11-08; DESIGN §8.7 leaderboard item)
+REPORT_SCOPE = "offline_report — not a leaderboard"   # v0.8 (maintainers 2026-11-08; DESIGN §8.7 leaderboard item)
 
 
 @dataclass(frozen=True)

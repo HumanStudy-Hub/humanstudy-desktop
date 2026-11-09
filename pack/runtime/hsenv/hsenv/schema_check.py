@@ -13,8 +13,8 @@ oneOf, allOf, not), so the runtime needs nothing outside the standard library; a
 draft-2020-12 validator gives the same verdict on errors (tests cross-check with jsonschema). Two annotation keywords, ignored by other validators, produce warnings:
 
     x-report-unknown: true    on a permissive object: keys not named in properties/patternProperties
-                              are accepted but listed (undocumented fields for the coordinator)
-    x-legacy-values: [...]    on an enum: values accepted for the 27 legacy studies but not part of the
+                              are accepted but listed (undocumented fields for the maintainers)
+    x-legacy-values: [...]    on an enum: values accepted for legacy protocols but not part of the
                               documented vocabulary (DESIGN.md); each use is a warning
 
 Protocols then get a cross-reference pass (cross_check) for what JSON Schema cannot say: every literal
