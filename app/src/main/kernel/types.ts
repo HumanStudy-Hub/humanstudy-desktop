@@ -90,6 +90,8 @@ export interface Kernel {
   native?(sessionId: string, request: NativeRequest): Promise<unknown>
 
   setPermissionMode?(mode: 'ask' | 'project'): void
+  /** The list of known projects changed: rewrite the running projects' sandbox profiles. */
+  refreshKnownProjects?(): void
   /** Human-readable name of the implementation ("opencode" or "mock"). */
   readonly name: string
   startSession(projectDir: string): Promise<string>

@@ -74,6 +74,18 @@ test('the kernel runs sandboxed: tools cannot read participant data or other pro
     assert.match(o1.o, /net-ok/)
     const oc = await viaShim(`cat "${projectC}/sources/private/s.txt"; python3 -c "print(open('${projectC}/sources/private/s.txt').read())"`)
     assert.ok(!oc.o.includes('PRIVATE-SOURCE-C'), 'agent shell: known project outside home')
+    // Review 8: a project opened while this kernel runs is denied from the next command on.
+    const projectE = join(shared, 'E')
+    mkdirSync(join(projectE, 'sources', 'private'), { recursive: true })
+    writeFileSync(join(projectE, 'sources', 'private', 's.txt'), 'PRIVATE-SOURCE-E\n')
+    const readE = `python3 -c "print(open('/Users/'+'${projectE.slice('/Users/'.length)}/sources/private/s.txt').read())"`
+    assert.match((await viaShim(readE)).o, /PRIVATE-SOURCE-E/, 'not known yet')
+    K.rememberProject(projectE); k.refreshKnownProjects()
+    assert.ok(!(await viaShim(readE)).o.includes('PRIVATE-SOURCE-E'), 'known now: denied without a kernel restart')
+    assert.match(readFileSync(join(s.agentShell.dir, 'kernel.sb'), 'utf8'), new RegExp(projectE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'kernel.sb rewritten for the next start')
+    // The list itself: the kernel cannot rewrite it, and the policy denies it to the tools.
+    assert.notEqual(spawnSync('/usr/bin/sandbox-exec', ['-f', join(s.agentShell.dir, 'kernel.sb'), '/bin/sh', '-c', `echo '{"projects":[]}' > "${process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE}"`]).status, 0)
+    assert.match(readFileSync(process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE, 'utf8'), /PRIVATE|E"|\/E/)
     // A researcher-approved command runs once outside the sandbox; exit status and stderr come back.
     A.approveCommandOnce(s.agentShell.dir, 'cat human-data/a.csv', project)
     assert.match((await viaShim('cat human-data/a.csv')).o, /TOPSECRET/)

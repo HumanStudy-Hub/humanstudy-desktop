@@ -3,7 +3,8 @@
 // shell) deny reads of all of them except the current project, and the policy asks about them as
 // "another project", wherever they live: under the home folder, /Users/Shared or an external drive.
 // Electron-free: main/index.ts points HUMANSTUDY_KNOWN_PROJECTS_FILE at the file and records changes.
-import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 
@@ -84,3 +85,22 @@ export function inOtherProject(project: string, p: string, roots: string[]): boo
   return roots.some(r => inside(r, p) || inside(r, real(p)))
 }
 
+
+/** First launch of this build: start the list with the projects folders and every project folder the
+ *  kernel's own session store has seen (`directory` of its sessions; macOS /usr/bin/sqlite3, read-only).
+ *  Only folders that are HumanStudy projects (`.humanstudy/`) are taken. No-op when the list exists. */
+export function seedKnownProjects(o: { file?: string; projectsRoots: string[]; kernelHome?: string }): void {
+  const file = o.file ?? knownProjectsFile()
+  if (!file || existsSync(file)) return
+  const dirs: string[] = [...o.projectsRoots]
+  const db = o.kernelHome ? join(o.kernelHome, 'data', 'opencode', 'opencode.db') : ''
+  if (db && existsSync(db) && existsSync('/usr/bin/sqlite3')) {
+    try {
+      const out = execFileSync('/usr/bin/sqlite3', ['-readonly', db, 'select distinct directory from session'], { encoding: 'utf8', timeout: 10_000 })
+      for (const line of out.split('\n')) if (line.trim() && existsSync(join(line.trim(), '.humanstudy'))) dirs.push(line.trim())
+    } catch { /* no store yet, or another schema: the roots alone */ }
+  }
+  const seen = new Map<string, string>()
+  for (const d of dirs) { const p = real(d); if (!seen.has(key(p))) seen.set(key(p), p) }
+  write(file, [...seen.values()])
+}

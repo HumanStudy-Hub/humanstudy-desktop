@@ -25,7 +25,20 @@ The OpenCode kernel process runs under `sandbox-exec` with a minimal profile (`m
 
   The retired `~/HumanStudy` default is left out: it would also match an unrelated `~/humanstudy`. The
   agent profile denies the same list (reads and writes) except this project. The policy asks about such
-  a path as "another project";
+  a path as "another project".
+
+  When the list changes, every running project's agent profile is rewritten at once, and applies from
+  its next shell command:
+  - a project is opened or created;
+  - a project is renamed or deleted;
+  - the projects folder changes. The old and the new folder both stay on the list.
+
+  A running kernel keeps the profile it started with. Its own tools are judged per call by the policy,
+  which reads the list fresh and asks. `kernel.sb` is rewritten for its next start. The list is the
+  app's own: the policy denies it to OpenCode's tools, and the kernel profile denies writing it.
+
+  At the first launch of this build the list is seeded with the projects folder, the default folder,
+  and every HumanStudy project folder the kernel's session store has seen (`opencode.db`, read-only);
 - preference writes, LaunchServices (`open`), Apple events and the clipboard.
 
 It also denies writes to what later runs outside it:
@@ -284,6 +297,9 @@ model relay are separate layers and unchanged: simulation and package code still
 without keys or network (on macOS).
 
 ## Known limits
+
+**Release note.** A project that is outside the projects folder and was never opened in this build (or
+seen by the kernel before it) is not protected from other projects' agents until it is opened once.
 
 What is protected, exactly:
 

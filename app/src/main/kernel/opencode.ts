@@ -57,7 +57,7 @@ import type { Kernel, KernelEvent, KernelPermission, KernelSubagent, PermissionR
 import { classifyPermission, defaultPolicyContext, READ_ONLY_COMMANDS, type PolicyContext, type PolicyVerdict } from './permission-policy'
 import { agentSandboxKind, approveCommandOnce, ensureSearchIgnore, macosKernelProfile, prepareAgentShell, type AgentShell } from './agent-sandbox'
 import { brokerSocketPath, startShellBroker, type ShellBroker } from './shell-broker'
-import { otherProjectRoots } from './known-projects'
+import { knownProjectsFile, otherProjectRoots } from './known-projects'
 
 /** What OpenCode itself asks the app about (every edit, every shell command, every path outside the
  *  project, and reads of sensitive folders). The app answers each one through classifyPermission
@@ -132,6 +132,8 @@ interface Server {
   agentShell?: AgentShell
   /** macOS: the app side of the kernel's shell (shell-broker.ts); the kernel itself runs sandboxed. */
   broker?: ShellBroker
+  /** Rewrites kernel.sb from the current known-projects list (it applies at the next kernel start). */
+  writeKernelProfile?: () => void
 }
 
 interface SessionState {
@@ -746,6 +748,18 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     return env
   }
 
+  /** The list of known projects changed (a project was opened, created, renamed or the projects folder
+   *  moved): every running project's agent profile is rewritten at once, so its next shell command cannot
+   *  read the new project. A running kernel keeps the profile it started with; its own tools are judged
+   *  per call by the policy, which reads the list fresh and asks ("another project"). */
+  refreshKnownProjects(): void {
+    for (const srv of this.live) {
+      if (srv.exited) continue
+      try { srv.agentShell?.refreshProfile?.() } catch { /* the previous profile stays */ }
+      try { srv.writeKernelProfile?.() } catch { /* next start rewrites it */ }
+    }
+  }
+
   private relayEnv(dir: string): NodeJS.ProcessEnv {
     return this.relay && process.env.HUMANSTUDY_RELAY_DIR ? { HUMANSTUDY_RELAY_DESCRIPTOR: relayDescriptor(process.env.HUMANSTUDY_RELAY_DIR, dir) } : {}
   }
@@ -773,6 +787,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     let agentShell: AgentShell = { kind: 'none' }
     let broker: ShellBroker | undefined
     let kernelProfile: string | undefined
+    let writeKernelProfile: (() => void) | undefined
     const ctx = defaultPolicyContext(dir, this.home)
     const runtimeBin = process.env.HUMANSTUDY_RUNTIME_BIN?.trim() || undefined
     if (this.agentSandbox) {
@@ -790,7 +805,9 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
             realShell: researcherShell(), researcherEnv: researcherEnv(),
           })
           kernelProfile = join(agentShell.dir, 'kernel.sb')
-          writeFileSync(kernelProfile, macosKernelProfile({ project: dir, kernelHome: this.home, secretPaths: kernelSecretPaths(ctx.secretPaths ?? [], this.home), projectsRoots: otherProjectRoots(dir), socket, agentShellDir: agentShell.dir }), { mode: 0o600 })
+          const profilePath = kernelProfile, shellDir = agentShell.dir
+          writeKernelProfile = () => writeFileSync(profilePath, macosKernelProfile({ project: dir, kernelHome: this.home, secretPaths: kernelSecretPaths(ctx.secretPaths ?? [], this.home), projectsRoots: otherProjectRoots(dir), socket, agentShellDir: shellDir, knownProjectsFile: knownProjectsFile() }), { mode: 0o600 })
+          writeKernelProfile()
         }
       } catch {
         await broker?.close()
@@ -820,6 +837,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       transport,
       agentShell,
       broker,
+      writeKernelProfile,
     }
     this.live.add(server)
     const keep = (chunk: Buffer): void => {

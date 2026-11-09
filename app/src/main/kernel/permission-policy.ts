@@ -20,7 +20,7 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { KernelPermission } from './types'
 import { HELPER_FORBIDDEN, PARTICIPANT_DATA_DIRS, searchIgnoreInstalled } from './agent-sandbox'
-import { otherProjectRoots } from './known-projects'
+import { knownProjectsFile, otherProjectRoots } from './known-projects'
 
 export type PolicyDecision = 'allow' | 'ask' | 'deny'
 export interface PolicyVerdict { decision: PolicyDecision; reason?: string }
@@ -111,6 +111,9 @@ export function defaultPolicyContext(dir: string, kernelHome?: string, env: Node
   const runtime = env.HUMANSTUDY_RUNTIME_BIN?.trim()
   if (runtime) allowedRoots.push(dirname(runtime))
   if (env.HUMANSTUDY_RELAY_DIR) secretPaths.push(env.HUMANSTUDY_RELAY_DIR)
+  // The list of known projects decides what every sandbox profile denies.
+  const known = knownProjectsFile()
+  if (known) secretPaths.push(known, known + '.tmp')
   return { dir, allowedRoots, secretPaths, osSandbox, searchIgnore: () => searchIgnoreInstalled(dir), otherProjects: otherProjectRoots(dir), ...(kernelHome ? { kernelData: join(kernelHome, 'data') } : {}) }
 }
 

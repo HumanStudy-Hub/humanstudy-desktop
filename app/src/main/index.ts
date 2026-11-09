@@ -25,6 +25,7 @@ import { watchFolder, type FolderWatch } from './project-watch'
 import { fileVersion } from '../shared/file-version'
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
+import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
 import { isVersioned, readVersion, relOf, snapshot, versionsOf } from './versions'
@@ -34,7 +35,7 @@ import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
 import { refreshPack, trustedCheckFiles, trustedHelperHashes } from './pack'
 import { setTrustedHelperFiles } from './kernel/agent-sandbox'
-import { forgetProject, rememberProject } from './kernel/known-projects'
+import { forgetProject, rememberProject, seedKnownProjects } from './kernel/known-projects'
 import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks } from './package-readiness'
@@ -52,7 +53,13 @@ setTrustedHelperFiles(trustedHelperHashes())
 // Every project folder the app knows (kernel/known-projects.ts): the sandbox profiles and the policy keep
 // each project's agent out of the others, wherever they live.
 process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE = join(app.getPath('userData'), 'known-projects.json')
-const knowProject = (dir: string): void => { try { rememberProject(dir) } catch { /* best effort */ } }
+// First launch of this build: seed it with the projects folders and the projects the kernel has seen.
+try { seedKnownProjects({ projectsRoots: [getSettings().projectsRoot, join(homedir(), 'HumanStudy Hub')], kernelHome: join(app.getPath('userData'), 'kernel') }) } catch { /* starts empty */ }
+/** Record a project folder (or forget one) and rewrite every running project's agent profile at once. */
+const knowProject = (dir: string, forget = false): void => {
+  try { if (forget) forgetProject(dir); else rememberProject(dir) } catch { /* best effort */ }
+  for (const k of allKernels) { try { k.refreshKnownProjects?.() } catch { /* best effort */ } }
+}
 const relayProjects = new Set<string>()
 const runRelays = new Map<string, { project: string; close(): Promise<void> }>()
 async function closeRunRelay(id: string) {
@@ -564,13 +571,13 @@ app.whenReady().then(() => {
   ipcMain.handle('projects:rename', async (_e, dir: string, name: string) => {
     const from = resolve(dir)
     const to = await renameProject(from, name)
-    if (to !== from) { unwatch(from); try { forgetProject(from) } catch { /* best effort */ } knowProject(to) }
+    if (to !== from) { unwatch(from); knowProject(from, true); knowProject(to) }
     return to
   })
   ipcMain.handle('projects:trash', async (_e, dir: string) => {
     unwatch(resolve(dir))
     await trashProject(dir)
-    try { forgetProject(dir) } catch { /* best effort */ }
+    knowProject(dir, true)
   })
 
   setCommunityCacheDir(app.getPath('userData'))
@@ -598,6 +605,7 @@ app.whenReady().then(() => {
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
     const before = getSettings()
     const next = setSettings(patch)
+    if (next.projectsRoot !== before.projectsRoot) { knowProject(before.projectsRoot); knowProject(next.projectsRoot) }
     if (next.model !== before.model) markKernelStale()
     if (next.permission !== before.permission) for (const k of allKernels) k.setPermissionMode?.(next.permission)
     syncAccess()
@@ -612,7 +620,10 @@ app.whenReady().then(() => {
     }
     const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
     if (r.canceled || !r.filePaths[0]) return null
+    const before = getSettings().projectsRoot
     const next = setSettings({ projectsRoot: r.filePaths[0] })
+    // Both folders stay known: projects in the old one remain other projects for every agent.
+    knowProject(before); knowProject(next.projectsRoot)
     syncAccess()
     return next
   })

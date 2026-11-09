@@ -23,7 +23,7 @@
 // The wrapper, its profile, the hash list and the approval tokens live in <kernelHome>/agent-shell/, which
 // the sandbox cannot write and permission-policy treats as the app's own credentials.
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -122,7 +122,11 @@ export interface AgentShellOptions {
   otherProjects?: string[]
 }
 
-export interface AgentShell { kind: AgentSandboxKind; shell?: string; dir?: string; /** the wrapper the broker runs */ inner?: string }
+export interface AgentShell {
+  kind: AgentSandboxKind; shell?: string; dir?: string; /** the wrapper the broker runs */ inner?: string
+  /** macOS: rewrite profile.sb from the current known-projects list (the wrapper reads it on every command). */
+  refreshProfile?: () => void
+}
 
 function pickRealShell(platform: string): string {
   const s = process.env.SHELL?.trim()
@@ -207,7 +211,7 @@ export function runtimeRoot(bin: string): string {
  *  root whatever its path checks miss: participant data, key folders, the app's credential files, other
  *  projects, preference writes, LaunchServices. Its shell commands run outside it, through the app's
  *  broker (shell-broker.ts), in the stricter agent profile. */
-export function macosKernelProfile(o: { project: string; kernelHome?: string; home?: string; secretPaths?: string[]; projectsRoots?: string[]; socket?: string; agentShellDir?: string }): string {
+export function macosKernelProfile(o: { project: string; kernelHome?: string; home?: string; secretPaths?: string[]; projectsRoots?: string[]; socket?: string; agentShellDir?: string; knownProjectsFile?: string }): string {
   const project = real(o.project)
   const home = real(o.home ?? homedir())
   // Projects folders and every other known project (known-projects.ts); never the home folder itself or
@@ -229,6 +233,8 @@ export function macosKernelProfile(o: { project: string; kernelHome?: string; ho
     // Code running in the kernel must not rewrite what runs outside it later: every project's agent-shell
     // folder (wrappers, profiles, approval tokens, guards), shell start-up files, launch agents, the brokers'.
     `(deny file-write* ${[...(o.agentShellDir ? [dirname(real(o.agentShellDir))] : []), ...HOME_STARTUP.map(f => join(home, f)), ...(o.socket ? [dirname(o.socket)] : [])].map(p => `(subpath ${sb(p)})`).join(' ')})`,
+    // The list of known projects decides what every profile denies: the kernel must not rewrite it.
+    ...(o.knownProjectsFile ? [`(deny file-write* (literal ${sb(o.knownProjectsFile)}) (literal ${sb(o.knownProjectsFile + '.tmp')}))`] : []),
     // Other projects' agent-shell folders hold their broker secret and approval tokens: unreadable.
     ...(o.agentShellDir ? [`(deny file-read-data (subpath ${sb(dirname(real(o.agentShellDir)))}))`, `(allow file-read-data (subpath ${sb(real(o.agentShellDir))}))`] : []),
     '',
@@ -391,16 +397,23 @@ export function prepareAgentShell(o: AgentShellOptions): AgentShell {
   const temps = tempRoots(platform)
   const shell = join(dir, basename(realShell)) // same name, so OpenCode treats it as that shell
   if (kind === 'sandbox-exec') {
-    writeFileSync(join(dir, 'profile.sb'), macosAgentProfile({ project, kernelHome: o.kernelHome, secretPaths: o.secretPaths, home: o.home, temps, runtimeBin, socket: o.socket, otherProjects: o.otherProjects ?? otherProjectRoots(project, { home: o.home }) }), { mode: 0o600 })
+    const refreshProfile = (): void => {
+      // Written to a new file and renamed: a command starting meanwhile reads the old or the new profile whole.
+      const tmp = join(dir, 'profile.sb.tmp')
+      writeFileSync(tmp, macosAgentProfile({ project, kernelHome: o.kernelHome, secretPaths: o.secretPaths, home: o.home, temps, runtimeBin, socket: o.socket, otherProjects: o.otherProjects ?? otherProjectRoots(project, { home: o.home }) }), { mode: 0o600 })
+      renameSync(tmp, join(dir, 'profile.sb'))
+    }
+    refreshProfile()
     if (o.socket) {
       const inner = join(dir, 'inner.sh')
       writeFileSync(inner, macosWrapper({ dir, project, realShell, runtimeBin }), { mode: 0o700 })
       if (!o.secret || !/^[A-Za-z0-9_-]+$/.test(o.secret)) throw new Error('the shell broker needs a secret')
       writeFileSync(join(dir, 'client.pl'), brokerClient(o.secret), { mode: 0o600 })
       writeFileSync(shell, `#!/bin/sh\n# HumanStudy agent shell: the kernel's commands start through the app (shell-broker.ts).\nexec /usr/bin/perl ${sq(join(dir, 'client.pl'))} ${sq(o.socket)} "$@"\n`, { mode: 0o700 })
-      return { kind, shell, dir, inner }
+      return { kind, shell, dir, inner, refreshProfile }
     }
     writeFileSync(shell, macosWrapper({ dir, project, realShell, runtimeBin }), { mode: 0o700 })
+    return { kind, shell, dir, refreshProfile }
   } else {
     const home = o.home ?? homedir()
     const secrets = [...HOME_SECRETS.map(d => join(home, d)), ...(o.secretPaths ?? [])]

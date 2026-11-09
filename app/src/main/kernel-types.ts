@@ -74,6 +74,8 @@ export interface Kernel {
   native?(sessionId: string, request: NativeRequest): Promise<unknown>
 
   setPermissionMode?(mode: 'ask' | 'project'): void
+  /** The list of known projects changed: rewrite the running projects' sandbox profiles. */
+  refreshKnownProjects?(): void
   startSession(projectDir: string): Promise<string>
   send(sessionId: string, text: string): Promise<void>
   abort(sessionId: string): Promise<void>

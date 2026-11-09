@@ -2,7 +2,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -300,4 +301,31 @@ test('review 7: every other known project asks as "another project", wherever it
     K.forgetProject(b, file)
     assert.ok(!K.readKnownProjects(file).includes(b))
   } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('review 8: the known-projects list is the app\'s own; seeding takes the kernel\'s project folders once', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'policy-r8-')))
+  const before = process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE
+  try {
+    const K = await import(pathToFileURL(join(out, 'kp.mjs')).href)
+    const file = join(root, 'known-projects.json')
+    process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE = file
+    const c = { ...defaultPolicyContext(join(root, 'A'), undefined, {}, true), home: '/Users/r' }
+    assert.equal(classifyPermission(c, P('edit', ['x'], { filepath: file })).decision, 'deny')
+    assert.equal(classifyPermission(c, P('read', ['x'], { filepath: file })).decision, 'deny')
+    // Seed: the kernel's session store names project folders; only HumanStudy projects are taken.
+    const kh = join(root, 'kernel'), proj = join(root, 'Opened'), plain = join(root, 'NotAProject')
+    mkdirSync(join(kh, 'data', 'opencode'), { recursive: true }); mkdirSync(join(proj, '.humanstudy'), { recursive: true }); mkdirSync(plain)
+    const db = join(kh, 'data', 'opencode', 'opencode.db')
+    spawnSync('/usr/bin/sqlite3', [db, `create table session(directory text); insert into session values ('${proj}'), ('${plain}'), ('${proj}');`])
+    K.seedKnownProjects({ file, projectsRoots: [join(root, 'Root')], kernelHome: kh })
+    const list = K.readKnownProjects(file)
+    if (existsSync('/usr/bin/sqlite3')) assert.ok(list.includes(proj), list.join(','))
+    assert.ok(!list.includes(plain) && list.includes(join(root, 'Root')))
+    K.seedKnownProjects({ file, projectsRoots: [join(root, 'Other')], kernelHome: kh })
+    assert.ok(!K.readKnownProjects(file).includes(join(root, 'Other')), 'only once')
+  } finally {
+    if (before === undefined) delete process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE; else process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE = before
+    rmSync(root, { recursive: true, force: true })
+  }
 })
