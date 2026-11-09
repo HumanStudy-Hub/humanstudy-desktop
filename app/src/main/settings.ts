@@ -75,6 +75,8 @@ export function applySettings(): void {
   nativeTheme.themeSource = s.theme
   process.env.HUMANSTUDY_MODEL = s.model
   process.env.HUMANSTUDY_PERMISSION = s.permission
+  // The kernel's sandbox keeps other projects in this folder unreadable (kernel/agent-sandbox.ts).
+  process.env.HUMANSTUDY_PROJECTS_ROOT = s.projectsRoot
   ensureProjectsRoot()
 }
 

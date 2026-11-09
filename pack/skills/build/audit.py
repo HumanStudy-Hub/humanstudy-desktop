@@ -47,6 +47,7 @@ import capabilities  # noqa: E402
 import check_program  # noqa: E402
 import check_quotes  # noqa: E402
 import check_verbatim  # noqa: E402
+from project_paths import project_file  # noqa: E402
 import sandbox_run  # noqa: E402
 
 try:
@@ -146,7 +147,7 @@ class Sources:
     def pages(self, rel):
         if rel in self.cache:
             return self.cache[rel]
-        path = (self.root / rel).resolve()
+        path = project_file(self.root, rel) or Path("/nonexistent")   # inside the project, never sensitive
         pages = None
         if path.is_file() and self.root in path.parents:
             suffix = path.suffix.lower()

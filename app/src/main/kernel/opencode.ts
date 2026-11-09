@@ -47,15 +47,16 @@ import { validateAnswers, type KernelQuestion } from '../../shared/question'
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdirSync, realpathSync } from 'node:fs'
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join, relative, isAbsolute, resolve, sep } from 'node:path'
 import { kernelRuntimeEnv } from '../runtime-core'
 import { Emitter } from './types'
 import type { Kernel, KernelEvent, KernelPermission, KernelSubagent, PermissionReply } from './types'
 import { classifyPermission, defaultPolicyContext, READ_ONLY_COMMANDS, type PolicyContext, type PolicyVerdict } from './permission-policy'
-import { agentSandboxKind, approveCommandOnce, ensureSearchIgnore, prepareAgentShell, type AgentShell } from './agent-sandbox'
+import { agentSandboxKind, approveCommandOnce, ensureSearchIgnore, macosKernelProfile, prepareAgentShell, type AgentShell } from './agent-sandbox'
+import { brokerSocketPath, startShellBroker, type ShellBroker } from './shell-broker'
 
 /** What OpenCode itself asks the app about (every edit, every shell command, every path outside the
  *  project, and reads of sensitive folders). The app answers each one through classifyPermission
@@ -128,6 +129,8 @@ interface Server {
   transport?: Awaited<ReturnType<typeof startRequestTransport>>
   /** The OS sandbox around the agent's shell for this project (agent-sandbox.ts). */
   agentShell?: AgentShell
+  /** macOS: the app side of the kernel's shell (shell-broker.ts); the kernel itself runs sandboxed. */
+  broker?: ShellBroker
 }
 
 interface SessionState {
@@ -174,6 +177,9 @@ export interface OpencodeOptions {
   /** Run the agent's shell commands in the OS sandbox (agent-sandbox.ts). Default: whenever this computer
    *  offers one (macOS sandbox-exec, Linux bubblewrap). */
   agentSandbox?: boolean
+  /** macOS: also run the kernel process under its minimal profile, with the shell broker (default: on with
+   *  the agent sandbox; HUMANSTUDY_KERNEL_SANDBOX_OFF=1 switches it off for development). */
+  kernelSandbox?: boolean
 }
 
 export class OpencodeKernel implements Kernel {
@@ -195,6 +201,7 @@ export class OpencodeKernel implements Kernel {
   /** Fixed at construction: whether simulations use the per-run relay (see OpencodeOptions.relay). */
   readonly relay: boolean
   private agentSandbox: boolean
+  private kernelSandbox: boolean
   /** Project folder -> whether its agent shell runs in the OS sandbox (the policy asks more without). */
   private sandboxedDirs = new Map<string, boolean>()
   /** Automatic answers to OpenCode's doom_loop prompt (same call three times) per conversation and turn. */
@@ -220,6 +227,7 @@ export class OpencodeKernel implements Kernel {
     this.permission = opts.permission
     this.relay = opts.relay ?? relaySupported()
     this.agentSandbox = opts.agentSandbox ?? true
+    this.kernelSandbox = opts.kernelSandbox ?? process.env.HUMANSTUDY_KERNEL_SANDBOX_OFF !== '1'
     this.livenessTimer = setInterval(() => { void this.checkLiveness() }, 30_000)
     this.livenessTimer.unref()
     process.once('exit', this.exitHook)
@@ -292,7 +300,13 @@ export class OpencodeKernel implements Kernel {
     const shellDir = s.server.agentShell?.dir
     if (response !== 'reject' && perm?.type === 'bash' && shellDir && this.verdict(s.server.dir, perm).decision !== 'allow') {
       const md = perm.metadata ?? {}
-      for (const c of typeof md.command === 'string' && md.command ? [md.command] : perm.patterns ?? []) approveCommandOnce(shellDir, c)
+      // Bound to the folder the call runs in, and removed when that call ends (rememberToolInput).
+      const cwd = resolve(s.server.dir, typeof md.workdir === 'string' && md.workdir ? md.workdir : '.')
+      const tokens = (typeof md.command === 'string' && md.command ? [md.command] : perm.patterns ?? []).map(c => approveCommandOnce(shellDir, c, cwd))
+      if (perm.callID) {
+        this.approvalTokens.set(perm.callID, tokens)
+        if (this.approvalTokens.size > 256) this.approvalTokens.delete(this.approvalTokens.keys().next().value as string)
+      }
     }
     await this.replyTo(s.server, this.permissionSession.get(permissionId) ?? sessionId, permissionId, response)
     s.pendingPermissions.delete(permissionId)
@@ -723,6 +737,10 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     return env
   }
 
+  private relayEnv(dir: string): NodeJS.ProcessEnv {
+    return this.relay && process.env.HUMANSTUDY_RELAY_DIR ? { HUMANSTUDY_RELAY_DESCRIPTOR: relayDescriptor(process.env.HUMANSTUDY_RELAY_DIR, dir) } : {}
+  }
+
   private async launch(dir: string): Promise<Server> {
     if (this.disposed) throw new Error('kernel disposed')
     const port = await freePort()
@@ -744,18 +762,36 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     // Participant data stays out of OpenCode's grep/glob (ripgrep honours the project's .ignore).
     try { ensureSearchIgnore(dir) } catch { /* the policy then asks before path-less searches */ }
     let agentShell: AgentShell = { kind: 'none' }
+    let broker: ShellBroker | undefined
+    let kernelProfile: string | undefined
+    const ctx = defaultPolicyContext(dir, this.home)
+    const runtimeBin = process.env.HUMANSTUDY_RUNTIME_BIN?.trim() || undefined
     if (this.agentSandbox) {
       try {
-        const ctx = defaultPolicyContext(dir, this.home)
-        agentShell = prepareAgentShell({ project: dir, kernelHome: this.home, secretPaths: ctx.secretPaths, runtimeBin: process.env.HUMANSTUDY_RUNTIME_BIN?.trim() || undefined, kind: agentSandboxKind() })
-      } catch { agentShell = { kind: 'none' } }
+        const kind = agentSandboxKind()
+        // macOS: the kernel runs under its own minimal profile; its shell commands reach the app's broker,
+        // which starts them outside that sandbox in the agent profile (a sandbox cannot be nested).
+        const socket = kind === 'sandbox-exec' && this.kernelSandbox ? brokerSocketPath(dir) : undefined
+        agentShell = prepareAgentShell({ project: dir, kernelHome: this.home, secretPaths: ctx.secretPaths, runtimeBin, kind, socket })
+        if (socket && agentShell.inner && agentShell.dir) {
+          const env = this.kernelEnv(password, transport, agentShell.shell)
+          broker = await startShellBroker({ socket, inner: agentShell.inner, env: { ...env, ...this.relayEnv(dir) } })
+          kernelProfile = join(agentShell.dir, 'kernel.sb')
+          writeFileSync(kernelProfile, macosKernelProfile({ project: dir, kernelHome: this.home, secretPaths: kernelSecretPaths(ctx.secretPaths ?? [], this.home), projectsRoots: projectsRoots() }), { mode: 0o600 })
+        }
+      } catch {
+        await broker?.close()
+        broker = undefined; kernelProfile = undefined
+        agentShell = { kind: 'none' }
+      }
     }
     this.sandboxedDirs.set(dir, agentShell.kind !== 'none')
     // Packaged Electron pages send file:// as their WebSocket origin. PTY access still
     // requires a single-use ticket issued through the authenticated main process.
-    const proc = spawn(this.binary, ['serve', '--port', String(port), '--hostname', '127.0.0.1', '--cors', 'file://'], {
+    const serveArgs = ['serve', '--port', String(port), '--hostname', '127.0.0.1', '--cors', 'file://']
+    const proc = spawn(kernelProfile ? '/usr/bin/sandbox-exec' : this.binary, kernelProfile ? ['-f', kernelProfile, this.binary, ...serveArgs] : serveArgs, {
       cwd: dir,
-      env: { ...this.kernelEnv(password, transport, agentShell.shell), ...(this.relay && process.env.HUMANSTUDY_RELAY_DIR ? { HUMANSTUDY_RELAY_DESCRIPTOR: relayDescriptor(process.env.HUMANSTUDY_RELAY_DIR, dir) } : {}) },
+      env: { ...this.kernelEnv(password, transport, agentShell.shell), ...this.relayEnv(dir) },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const server: Server = {
@@ -770,6 +806,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       eventsOnline: false,
       transport,
       agentShell,
+      broker,
     }
     this.live.add(server)
     const keep = (chunk: Buffer): void => {
@@ -779,6 +816,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     proc.stderr?.on('data', keep)
     proc.on('exit', (code) => {
       transport?.close()
+      void broker?.close()
       server.exited = true
       server.sse.abort()
       this.live.delete(server)
@@ -802,6 +840,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       await server.connected
     } catch (err) {
       transport?.close()
+      void broker?.close()
       proc.kill('SIGKILL')
       const tail = redact(server.stderrTail).trim().split('\n').slice(-5).join('\n')
       throw new Error(`${(err as Error).message}${tail ? `\nopencode output:\n${tail}` : ''}`)
@@ -830,6 +869,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   private killAll(sig: NodeJS.Signals): void {
     for (const srv of this.live) {
       srv.transport?.close()
+      void srv.broker?.close()
       srv.sse.abort()
       if (!srv.exited) srv.proc.kill(sig)
     }
@@ -1183,9 +1223,16 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   /** Tool inputs by call id (bounded): the bash permission request carries only the command, its
    *  `workdir` is in the tool call's input. */
   private toolInputs = new Map<string, Record<string, unknown>>()
+  /** Approval tokens by the tool call they were granted for (removed when that call ends). */
+  private approvalTokens = new Map<string, string[]>()
   private rememberToolInput(ev: OcEvent): void {
     const part = ev.properties?.part
     if (ev.type !== 'message.part.updated' || part?.type !== 'tool' || typeof part.callID !== 'string') return
+    const status = part.state?.status
+    if (status === 'completed' || status === 'error') {
+      for (const t of this.approvalTokens.get(part.callID) ?? []) rmSync(t, { force: true })
+      this.approvalTokens.delete(part.callID)
+    }
     const input = part.state?.input
     if (!input || typeof input !== 'object') return
     this.toolInputs.set(part.callID, input as Record<string, unknown>)
@@ -1412,6 +1459,19 @@ type OcEvent = { type: string; properties?: any }
 const isDefaultTitle = (t: string): boolean => /^(new session|child session)\b/i.test(t) || t === 'HumanStudy'
 
 /** opencode `permission.asked` properties -> KernelPermission. */
+/** The app's credential files the kernel never reads (its own config and auth.json it does need). */
+function kernelSecretPaths(secrets: string[], kernelHome: string): string[] {
+  return secrets.filter(p => !p.startsWith(join(kernelHome, 'config')) && !p.startsWith(join(kernelHome, 'data')) && !p.startsWith(join(kernelHome, 'agent-shell')))
+}
+
+/** Folders that hold projects (other projects stay unreadable to the kernel): the researcher's projects
+ *  root (HUMANSTUDY_PROJECTS_ROOT, set by the app) and the default and earlier default roots. */
+function projectsRoots(): string[] {
+  const home = homedir()
+  return [process.env.HUMANSTUDY_PROJECTS_ROOT?.trim(), join(home, 'HumanStudy Hub'), join(home, 'HumanStudy'), join(home, 'Documents', 'HumanStudy Projects')]
+    .filter((x): x is string => Boolean(x))
+}
+
 export function toKernelPermission(p: {
   id?: string
   permission?: string

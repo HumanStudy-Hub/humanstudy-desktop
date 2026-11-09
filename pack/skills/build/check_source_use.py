@@ -60,6 +60,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_materials as cm  # noqa: E402  file readers, data detection, folder names
 from check_quotes import normalise  # noqa: E402
+from project_paths import project_file  # noqa: E402
 
 ANALYSIS_SUFFIXES = (".r", ".rmd", ".qmd", ".py", ".ipynb", ".do", ".sps", ".sas")
 MAX_SPAN = 15   # lines one analysisCode entry may cover: one recode or exclusion, never a whole script
@@ -613,9 +614,12 @@ def source_pages(root):
     program = _program(root)
     source = program.get("source") if isinstance(program.get("source"), dict) else {}
     paper = "paper.pdf" if (root / "paper.pdf").is_file() else str(source.get("filename") or "paper.pdf")
+    paper_path = project_file(root, paper)   # program.json names it: inside the project, never sensitive
     out = {}
-    for rel in ([paper] if (root / paper).is_file() else []) + _files(root):
-        path = root / rel
+    for rel in ([paper] if paper_path and paper_path.is_file() else []) + _files(root):
+        path = project_file(root, rel)
+        if path is None:
+            continue
         suffix = path.suffix.lower()
         try:
             if suffix == ".pdf":

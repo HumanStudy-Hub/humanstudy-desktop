@@ -6,6 +6,39 @@ Because almost nothing asks, sensitive material has to be protected by more than
 command: the agent's shell runs in an OS sandbox where the computer offers one, and the command
 classifier is the second layer.
 
+## Layer 0: the kernel under its own profile (macOS)
+
+The OpenCode kernel process runs under `sandbox-exec` with a minimal profile (`macosKernelProfile` in
+`app/src/main/kernel/agent-sandbox.ts`). The profile takes away only what the kernel never needs:
+
+- reads of participant-data folders, in any letter case and anywhere;
+- reads of key folders (`~/.ssh`, `~/.aws`, `~/Library/Keychains`, ...) and of the app's account,
+  credential and settings files and relay folder;
+- reads of the projects folder (the researcher's projects root from Settings, exported as
+  `HUMANSTUDY_PROJECTS_ROOT`, plus the default and earlier default roots), except this project;
+- preference writes, LaunchServices (`open`), Apple events and the clipboard.
+
+Everything else stays as before: the network, the kernel's own data folder, its tool-output files and
+writes. So every OpenCode tool is confined at the root, whatever its path checks miss. That covers read,
+list, grep and glob (including any `include` filter), apply_patch, lsp and plugins.
+
+A macOS sandbox is inherited by every child and cannot be nested. The kernel's shell is therefore a
+small client (`BROKER_CLIENT`, system perl). It sends the arguments and folder over a unix socket in
+`~/.humanstudy/run/` to the app's shell broker (`shell-broker.ts`):
+
+- The broker starts the agent-shell wrapper outside the kernel's sandbox, with the kernel's
+  environment minus its secrets, and relays output and exit status.
+- Closing the connection (timeout, abort) kills the command.
+- The agent profile denies connecting to that socket, so a confined command cannot reach the broker.
+
+A participant-data read by an OpenCode tool fails even after the researcher approves it, because the
+kernel cannot read the folder. The agent uses a shell command for such a read. Once approved, that
+command runs outside both sandboxes. The researcher's own `!` commands use OpenCode's login form and
+stay in the agent profile.
+
+Linux keeps the kernel unconfined (bubblewrap nesting under user namespaces was not available to test).
+`HUMANSTUDY_KERNEL_SANDBOX_OFF=1` switches the kernel profile off for development.
+
 ## Layer 1: the OS sandbox around the agent's shell
 
 `app/src/main/kernel/agent-sandbox.ts`. OpenCode runs every bash command as `<shell> -c <command>`;
@@ -17,10 +50,16 @@ named like the real shell so OpenCode's shell handling is unchanged). The wrappe
    key-shaped variable (`KEY|TOKEN|SECRET|PASSW|CREDENTIAL|BYPASS|AUTH`) from the environment. The
    model key stays only on the pre-relay path (Linux, Windows), where simulations need it and the run
    confirmation says so;
-2. runs a command the researcher approved in the conversation outside the sandbox, once: on an
-   approval of a bash request the policy had sent to the researcher, the app writes a token for that
-   exact command (sha256, valid 10 minutes, consumed atomically) into a folder the sandbox cannot write.
-   Commands the policy would have allowed stay confined even when "Ask before changes" shows them;
+2. runs a command the researcher approved in the conversation outside the sandbox, once. When the
+   researcher approves a bash request the policy had sent to them, the app writes a token into a folder
+   the sandbox cannot write. The token holds:
+   - the exact command (sha256);
+   - the resolved folder of that call (`pwd -P` must match);
+   - an expiry of 10 minutes.
+
+   The token is consumed atomically, and removed as soon as that tool call completes, fails or is
+   aborted. Commands the policy would have allowed stay confined even when "Ask before changes" shows
+   them;
 3. runs the app's helpers that confine package code themselves outside the sandbox, because a macOS
    sandbox cannot be nested (`sandbox_apply: Operation not permitted`). This happens only on macOS, and
    only when all of these hold:
@@ -33,9 +72,19 @@ named like the real shell so OpenCode's shell handling is unchanged). The wrappe
      listed flags.
 
    `run_confined.py` qualifies only in two forms: with the relay (`HUMANSTUDY_RELAY_REQUIRED=1`; a relay
-   run needs the researcher's Run approval), or as
-   `--no-model .opencode/skills/export/agent/study_core.py --root . reproduce`. In every other case the
-   helper runs confined, and `sandbox_run.py` refuses with a message telling the agent how to run it;
+   run needs the researcher's Run approval), or as exactly
+   `--no-model .opencode/skills/export/agent/study_core.py --root . reproduce [--method package|author]`.
+   In every other case the helper runs confined, and `sandbox_run.py` refuses with a message telling the
+   agent how to run it.
+
+   A helper on this path runs with an in-process guard: `HELPER_GUARD`, loaded as `sitecustomize`
+   through `PYTHONPATH`. Its audit hook refuses every open, directory listing and subprocess argument
+   that names participant data or a key folder, or that is in the home folder outside the project and
+   the managed runtime. This holds whatever path a project file names. Each helper also resolves such
+   paths through one rule, `pack/skills/build/project_paths.py`: relative, no `..`, inside the project
+   after resolving links, and never participant data or keys. The helpers that use it are
+   `check_source_use.py`, `check_results.py`, `check_materials.py`, `check_verbatim.py` and `audit.py`.
+   The app's own runs (Readiness) and runs the researcher approved have no guard;
 4. runs everything else confined.
 
 ### What each helper may do outside the sandbox (audit of `HELPERS`, 2026-11-08)
@@ -77,8 +126,14 @@ existence (`stat`) stays visible. Otherwise, such a command cannot:
   `~/.claude`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials` and similar;
 - read or write the app's `account.json`, `credentials.json`, `settings.json` and `run-relays`, or the
   relay folder;
+- read anything in the home folder except the project, the managed runtime, `~/.gitconfig` and
+  `~/.config/git`. That covers shell history, other projects, and other apps' tokens and data. It also
+  means a python or node installed under the home folder (pyenv, nvm) cannot run;
 - read or write the kernel's own folder (other projects' conversations, its config, the wrapper and
   approval tokens), except OpenCode's tool-output files;
+- write any app's preferences (`defaults write`, CFPreferences: cfprefsd would write them on its
+  behalf, for example a Terminal start command), or read the clipboard;
+- connect to the app's shell broker;
 - write anywhere outside the project and the temp folders;
 - write the managed runtime (a planted `.pth` file would run in the helpers that start outside);
   `pip install --target` into the project still works;
@@ -112,6 +167,8 @@ for syntax.
   `-exec`/`-delete`, `pdftotext`/`pdfinfo`/`hs-pdf`, `git status/diff/log/show`, and the read-only
   helpers above;
 - every argument must be relative, inside the project, and not participant data or a key file;
+- `{a,b}` is expanded and checked;
+- no recursive grep (`-r`, `-R`, `--recursive`, `-d recurse`), because grep ignores `.ignore`;
 - no variables, substitutions or redirections (except to `/dev/null`).
 
 Everything else asks, including every helper that runs package code.
@@ -134,9 +191,12 @@ A search whose path or pattern points at participant data asks. If the block is 
 project-wide search asks.
 
 ripgrep lets a matching `--glob` override `.ignore`, and OpenCode passes grep's `include` and glob's
-`pattern` as `--glob`. So the app lists the participant-data folders under the search root and asks
-when the filter (gitignore syntax, `**`, classes and `{a,b}` expanded) could match one of them: `*`,
-`**`, `**/*`, `{*}`, `?*` or `sub/**` ask; `*.csv`, `**/*.py` or `src/**` do not. Outside the project
+`pattern` as `--glob`. On macOS the kernel profile denies these reads anyway. The policy also lists the
+participant-data folders under the search root, and asks when the filter could match one of them.
+
+The match over-approximates: every `[...]` class counts as any one character, an unbalanced `[` counts
+as matching, `{a,b}` is expanded, and `**` is honoured. So `*`, `**`, `**/*`, `{*}`, `?*`, `[!]]*` or
+`sub/**` ask, and `*.csv`, `**/*.py` or `src/**` do not. Outside the project
 only OpenCode's tool-output files are searched without asking, because temp folders can hold study
 copies.
 
@@ -151,21 +211,6 @@ that honour `.ignore` (VS Code does).
 
 `HUMANSTUDY_AGENT_SANDBOX_OFF=1` switches the sandbox off for development; the classifier then uses the
 allowlist.
-
-### Why the kernel itself is not sandboxed (evaluated 2026-11-08)
-
-Running the OpenCode process under the same profile would confine its own tools (read, grep, glob,
-apply_patch) at the root, and was the first option. It is not done, for these reasons:
-
-- The kernel must read and write its shared session storage, which holds other projects'
-  conversations. Its children (the agent's shell) would inherit that access.
-- The kernel's environment holds the server password and the transport token. Inside one sandbox its
-  children may inspect it (`process-info` within the same sandbox).
-- macOS cannot nest a sandbox, so every approved command, every approved read by a tool, and every
-  confining helper would need an app-side broker: a request channel, output streaming, cancellation
-  and timeouts, plus an OpenCode-side tool for approved reads.
-- That is a redesign of the kernel integration, not a fix. The targeted fixes above close each hole
-  found so far, and the policy checks every tool request after resolving symlinks.
 
 ## Layer 2: the command classifier
 
@@ -209,18 +254,25 @@ What is protected, exactly:
 - the listed key folders and app files;
 - the agent's own configuration and git.
 
-On macOS this holds against any command the app approves by itself. On every platform it holds
-against OpenCode's own tools, through path checks after symlinks are resolved.
+On macOS this holds at the OS level against OpenCode's own tools (the kernel profile) and against any
+command the app approves by itself (the agent profile). On the other platforms it rests on the policy:
+path checks after symlinks are resolved, and the allowlist.
 
 What is not protected:
 
 - Sensitive content under ordinary names. The network stays open, so an allowed command or `webfetch`
   can send out anything readable in the project. That includes `sources/private/`, which the owner rule
   lets the agent read.
-- What the helpers that start outside the sandbox compute from participant data themselves (counts,
-  hashes, field names, check messages) reaches the agent. The package code they run cannot read it.
+- macOS helpers started by the agent run outside the sandbox. Their in-process guard is a Python
+  audit hook, not a kernel rule: native code that a helper loads could open files without an `open`
+  event. Only the app's shipped, hash-checked helpers get this path.
 - A path named only by `$HUMANSTUDY_HUMAN_DATA` that is not under a participant-data folder name.
-- On Linux with bubblewrap: participant data in other projects, and symbolic links.
+- Linux: the kernel is not confined, so OpenCode's own tools rest on the policy. Under bubblewrap the
+  agent shell does not hide participant data in other projects or the home folder, and symbolic links
+  are allowed.
+- macOS: Spotlight daemons and other system services act on their own; a copied `osascript` binary
+  failed its library check when tested, and an Apple event would still need the researcher's Automation
+  consent.
 - Without any OS sandbox (Windows, Linux without bubblewrap): everything outside the allowlist asks,
   but the protection for an allowed command still rests on reading its text.
 - The researcher's terminal, and any command the researcher approves. These run unconfined by design.

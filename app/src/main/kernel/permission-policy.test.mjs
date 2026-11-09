@@ -169,7 +169,7 @@ test('without an OS sandbox only an allowlist runs (review 2 M4)', () => {
     'git diff --ext-diff', 'find . -delete', 'cat $X'])
     assert.equal(bash(c, bare), 'ask', c)
   for (const c of ['python .opencode/skills/build/check_program.py program.json', 'python3 .opencode/skills/build/docx_text.py sources/open/a.docx --json .humanstudy/tmp/a.json',
-    'ls -la', 'git status', 'git diff program.json', 'git log --oneline', 'cat .opencode/skills/build/SKILL.md', 'hs-pdf text paper.pdf', 'head -n 5 program.json | wc -l', 'grep -rn foo sources', 'find . -name "*.json"'])
+    'ls -la', 'git status', 'git diff program.json', 'git log --oneline', 'cat .opencode/skills/build/SKILL.md', 'hs-pdf text paper.pdf', 'head -n 5 program.json | wc -l', 'grep -n foo program.json', 'find . -name "*.json"'])
     assert.equal(bash(c, bare), 'allow', c)
   // With the OS sandbox the same scripts run without asking.
   for (const c of ['python3 x.py', 'bash .humanstudy/tmp/x.sh', `python3 -c "print(open('hum'+'an-data/a.csv').read())"`]) assert.equal(bash(c), 'allow', c)
@@ -237,5 +237,25 @@ test('review 3: grep/glob filters that would override .ignore, apply_patch file 
     assert.equal(sh('ls', 'src', { ...c, osSandbox: false }), 'allow')
     // `open` never runs without asking where there is no OS sandbox (the sandbox denies it elsewhere).
     assert.equal(sh('open -g Probe.app', undefined, { ...c, osSandbox: false }), 'ask')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('review 4: character classes are over-approximated; without an OS sandbox recursive grep and braces ask', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'policy-r4-')))
+  try {
+    const p = join(root, 'study')
+    mkdirSync(join(p, 'human-data'), { recursive: true }); mkdirSync(join(p, 'src'))
+    ensureSearchIgnore(p)
+    const c = { ...defaultPolicyContext(p, undefined, {}, true), home: '/Users/r' }
+    for (const g of ['[!]]*', '[^]]*', '[!]a]*', '[!]-]*', '[]-z]*', '**/[!]]*', '{[!]]*,zz}', '[', '*[']) {
+      assert.equal(classifyPermission(c, P('grep', ['x'], { pattern: 'x', include: g })).decision, 'ask', g)
+      assert.equal(classifyPermission(c, P('glob', [g], { pattern: g })).decision, 'ask', g)
+    }
+    assert.equal(classifyPermission(c, P('grep', ['x'], { pattern: 'x', include: '[a-z]*.csv' })).decision, 'allow')
+    const bareCtx = { ...c, osSandbox: false }
+    for (const cmd of ['grep -r TOPSECRET .', 'grep -R x .', 'grep -rn x src', 'grep --recursive x .', 'grep -d recurse x .', 'cat {human,x}-data/a.csv', 'cat {h,x}*/a.csv'])
+      assert.equal(classifyPermission(bareCtx, P('bash', [cmd], { command: cmd })).decision, 'ask', cmd)
+    for (const cmd of ['grep -n x program.json', 'cat {a,b}.txt'])
+      assert.equal(classifyPermission(bareCtx, P('bash', [cmd], { command: cmd })).decision, 'allow', cmd)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })

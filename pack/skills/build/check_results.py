@@ -79,6 +79,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_quotes import Pdf  # noqa: E402  same PDF reader as the quote check (printed captions)
 import contract  # noqa: E402  older packages get the newer rules as warnings
+from project_paths import project_file  # noqa: E402
 
 try:
     import paper_tables  # noqa: E402  tables without a text layer, lost minus signs
@@ -1459,7 +1460,7 @@ def check(program_path, package=None):
     labels = {label_key((f.get("value") or {}).get("table")) for _, f in tables}
     paper = _dct(p.get("source")).get("filename")
     paper = paper if isinstance(paper, str) and paper.strip() else None
-    pdf_path = root / "paper.pdf" if (root / "paper.pdf").is_file() else (root / paper if paper else None)
+    pdf_path = root / "paper.pdf" if (root / "paper.pdf").is_file() else (project_file(root, paper) if paper else None)
     if pdf_path and pdf_path.is_file() and pdf_path.suffix.lower() == ".pdf":
         pages = Pdf(pdf_path).load()
         seen, blank = {}, []

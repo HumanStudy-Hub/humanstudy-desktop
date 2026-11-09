@@ -224,7 +224,7 @@ export function parseShell(cmd: string): ShellWord[][] {
     if (/[;&|()\n]/.test(ch)) { endCommand(); continue }
     if (/[\s<>]/.test(ch)) { endWord(); if (ch === '>') nextRedirect = true; continue }
     if (ch === '$') expands = true
-    if (ch === '*' || ch === '?' || ch === '[') glob = true
+    if (ch === '*' || ch === '?' || ch === '[' || ch === '{') glob = true
     cur += ch; has = true
   }
   endCommand()
@@ -251,6 +251,29 @@ export const shellWords = (cmd: string): string[] => parseShell(cmd).flat().map(
 /** A glob segment that could expand to a participant-data folder name. A segment of wildcards only (`*`)
  *  matches anything; it counts only when `strict` (no OS sandbox), since `cat` of a bare-star glob reads like `grep -r .`. */
 function globHitsSensitive(pattern: string, strict: boolean): boolean {
+  return expandBraces(pattern).some(p => isSensitiveRelative(p) || globHitsSensitiveOne(p, strict))
+}
+
+/** `{a,b}` alternatives of a glob (nested too), at most 256; an unbalanced brace keeps the text. */
+export function expandBraces(p: string, depth = 0): string[] {
+  const open = p.indexOf('{')
+  if (open < 0 || depth > 8) return [p]
+  let level = 0, close = -1
+  const parts: string[] = []
+  let start = open + 1
+  for (let i = open; i < p.length; i++) {
+    if (p[i] === '{') level++
+    else if (p[i] === '}' && --level === 0) { close = i; break }
+    else if (p[i] === ',' && level === 1) { parts.push(p.slice(start, i)); start = i + 1 }
+  }
+  if (close < 0) return [p.replace('{', '')]
+  parts.push(p.slice(start, close))
+  const out: string[] = []
+  for (const alt of parts) for (const x of expandBraces(p.slice(0, open) + alt + p.slice(close + 1), depth + 1)) { out.push(x); if (out.length >= 256) return out }
+  return out
+}
+
+function globHitsSensitiveOne(pattern: string, strict: boolean): boolean {
   return pattern.split(/[\\/]+/).some(seg => {
     if (!/[*?[]/.test(seg)) return false
     if (/^[*?]+$/.test(seg)) return strict
@@ -259,7 +282,9 @@ function globHitsSensitive(pattern: string, strict: boolean): boolean {
       const c = seg[i]
       if (c === '*') re += '.*'
       else if (c === '?') re += '.'
-      else if (c === '[') { const j = seg.indexOf(']', i + 1); if (j < 0) { re += '\\['; continue } re += '[' + seg.slice(i + 1, j).replace(/^!/, '^').replace(/\\/g, '\\\\') + ']'; i = j }
+      // A character class only narrows a match: any one character (never copied into a JS class). The
+      // first `]` after `[` (or `[!`) is part of the class, as in globset; unbalanced counts as reaching.
+      else if (c === '[') { const j = seg.indexOf(']', i + (seg[i + 1] === '!' || seg[i + 1] === '^' ? 3 : 2)); if (j < 0) return true; re += '.'; i = j }
       else re += c.replace(/[.+^${}()|\\]/g, '\\$&')
     }
     try { const r = new RegExp('^' + re + '$', 'i'); return [...SENSITIVE_NAMES].some(n => r.test(n)) } catch { return true }
@@ -298,7 +323,8 @@ export function ripgrepGlobRegex(glob: string): RegExp | null {
       if (g[i + 2] === '/') { re += '(?:.*/)?'; i += 2 } else { re += '.*'; i += 1 }
     } else if (c === '*') re += '[^/]*'
     else if (c === '?') re += '[^/]'
-    else if (c === '[') { const j = g.indexOf(']', i + 2); if (j < 0) return null; re += '[' + g.slice(i + 1, j).replace(/^!/, '^').replace(/\\/g, '\\\\') + ']'; i = j }
+    // Any class is "any one character" (a class only narrows; globset's class syntax is not copied).
+    else if (c === '[') { const j = g.indexOf(']', i + (g[i + 1] === '!' || g[i + 1] === '^' ? 3 : 2)); if (j < 0) return null; re += '[^/]'; i = j }
     else if (c === '{') re += '(?:'
     else if (c === '}') re += ')'
     else if (c === ',') re += '|'
@@ -374,7 +400,8 @@ function strictAllowed(words: ShellWord[]): boolean {
     case 'ls': case 'cat': case 'head': case 'tail': case 'wc': case 'file': case 'pwd': case 'echo': case 'pdfinfo': case 'sort': case 'uniq': case 'cut': case 'true':
       return plain(args)
     case 'pdftotext': case 'hs-pdf': return args.every(w => plainArg(w, true))
-    case 'grep': return plain(args) && !args.some(w => /^--(include|exclude)-from|^-f$|^--file/.test(w.text))
+    // Recursive grep reads every folder (grep ignores .ignore): only file-level searches run without asking.
+    case 'grep': return plain(args) && !args.some(w => /^--(include|exclude)-from|^-f$|^--file|^--recursive|^--dereference-recursive|^-d$|^--directories/.test(w.text) || /^-[A-Za-z]*[rR]/.test(w.text))
     case 'find': return plain(args) && !args.some(w => /^-(exec|execdir|ok|okdir|delete|fprint\w*|fls)$/.test(w.text))
     case 'git': {
       const sub = args[0]?.text ?? ''

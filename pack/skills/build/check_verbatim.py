@@ -51,6 +51,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_quotes  # noqa: E402
+from project_paths import project_file  # noqa: E402
 
 
 TABLE_SHARE = 0.5   # share of a table's text cells that must match a noisy text layer
@@ -180,7 +181,7 @@ class Sources:
         """Normalised page lists of every raw reader for one file (the primary reader first)."""
         if rel not in self.layer_cache:
             primary = self.pages(rel)
-            path = (self.root / rel).resolve()
+            path = project_file(self.root, rel) or Path("/nonexistent")
             extra = raw_layers(path) if primary and path.suffix.lower() == ".pdf" else []
             self.layer_cache[rel] = ([primary] if primary else []) + [[check_quotes.normalise(t) for t in layer]
                                                                        for layer in extra if layer]
@@ -188,7 +189,8 @@ class Sources:
 
     def pages(self, rel):
         if rel not in self.cache:
-            path, pages = (self.root / rel).resolve(), None
+            # evidence names it: inside the project, never participant data or keys
+            path, pages = project_file(self.root, rel) or Path("/nonexistent"), None
             if path.is_file() and self.root in path.parents:
                 suffix = path.suffix.lower()
                 if suffix == ".pdf":

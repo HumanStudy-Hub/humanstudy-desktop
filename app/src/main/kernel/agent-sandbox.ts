@@ -25,7 +25,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 export type AgentSandboxKind = 'sandbox-exec' | 'bwrap' | 'none'
@@ -112,9 +112,12 @@ export interface AgentShellOptions {
   realShell?: string
   platform?: string
   kind?: AgentSandboxKind
+  /** The app's shell broker socket (shell-broker.ts): OpenCode's shell becomes a client of it, so commands
+   *  start outside the kernel's own sandbox and inside the agent profile. Without it the wrapper is the shell. */
+  socket?: string
 }
 
-export interface AgentShell { kind: AgentSandboxKind; shell?: string; dir?: string }
+export interface AgentShell { kind: AgentSandboxKind; shell?: string; dir?: string; /** the wrapper the broker runs */ inner?: string }
 
 function pickRealShell(platform: string): string {
   const s = process.env.SHELL?.trim()
@@ -131,12 +134,16 @@ function tempRoots(platform: string): string[] {
 }
 
 /** The macOS Seatbelt profile for one project. Later rules win, so each allow/deny list is ordered. */
-export function macosAgentProfile(o: { project: string; kernelHome: string; secretPaths?: string[]; home?: string; temps?: string[] }): string {
+export function macosAgentProfile(o: { project: string; kernelHome: string; secretPaths?: string[]; home?: string; temps?: string[]; runtimeBin?: string; socket?: string }): string {
   const project = real(o.project)
   const home = real(o.home ?? homedir())
   const kernel = real(o.kernelHome)
   const secrets = [...HOME_SECRETS.map(d => join(home, d)), kernel, ...(o.secretPaths ?? []).map(real)]
   const temps = o.temps ?? tempRoots('darwin')
+  // What the shell may read in the home folder: the project, the managed runtime, git's own settings.
+  // Never the home folder itself or one of its parents (that would undo the rule).
+  const homeReads = [project, ...(o.runtimeBin ? [runtimeRoot(o.runtimeBin)] : []), join(home, '.gitconfig'), join(home, '.config', 'git')]
+    .filter(p => p !== '/' && !within(p, home))
   return [
     '(version 1)',
     '(allow default)',
@@ -152,9 +159,19 @@ export function macosAgentProfile(o: { project: string; kernelHome: string; secr
     '(deny appleevent-send)',
     '(deny process-exec (literal "/usr/bin/open") (literal "/usr/bin/osascript") (literal "/usr/bin/osacompile") (literal "/usr/bin/automator") (literal "/usr/bin/shortcuts"))',
     '(deny mach-lookup (global-name-regex #"^com\\.apple\\.metadata\\.mds"))',
+    // No other app's preferences (cfprefsd writes them on the caller's behalf: a Terminal start command
+    // would run unconfined later), and no clipboard (it often holds passwords).
+    '(deny user-preference-write)',
+    '(deny mach-lookup (global-name "com.apple.cfprefsd.agent") (global-name "com.apple.cfprefsd.daemon") (global-name "com.apple.pasteboard.1"))',
+    // Nothing in the home folder is readable but the project, the managed runtime and git's settings:
+    // shell history, other projects, other apps' tokens stay out of reach.
+    `(deny file-read-data (subpath ${sb(home)}))`,
+    `(allow file-read-data ${homeReads.map(p => `(subpath ${sb(p)})`).join(' ')})`,
     // Participant data and credentials: contents unreadable (a folder's existence still shows).
     `(deny file-read-data (regex #"${PARTICIPANT_REGEX}") ${secrets.map(p => `(subpath ${sb(p)})`).join(' ')})`,
     `(allow file-read-data (subpath ${sb(join(kernel, 'data', 'opencode', 'tool-output'))}))`,
+    // The app's shell broker serves the kernel, never the commands it starts.
+    ...(o.socket ? [`(deny network-outbound (remote unix-socket (path-literal ${sb(o.socket)})))`] : []),
     // Writes: the project and temp folders only ...
     '(deny file-write*)',
     `(allow file-write* (subpath ${sb(project)}) ${temps.map(t => `(subpath ${sb(t)})`).join(' ')} (literal "/dev/null") (literal "/dev/zero") (literal "/dev/tty") (literal "/dev/ptmx") (literal "/dev/dtracehelper") (subpath "/dev/fd") (regex #"^/dev/ttys[0-9]+$"))`,
@@ -169,6 +186,40 @@ export function macosAgentProfile(o: { project: string; kernelHome: string; secr
   ].join('\n')
 }
 
+/** The managed runtime's root folder (…/runtime) from its bin folder. */
+export function runtimeRoot(bin: string): string {
+  let cur = real(bin)
+  for (let i = 0; i < 4; i++) { if (basename(cur) === 'runtime') return cur; cur = dirname(cur) }
+  return real(bin) // not the managed layout: just its bin folder
+}
+
+/** The minimal profile the OpenCode kernel process itself runs under (macOS). It only takes away what the
+ *  kernel never needs, so every OpenCode tool (read, grep, glob, apply_patch, lsp, ...) is confined at the
+ *  root whatever its path checks miss: participant data, key folders, the app's credential files, other
+ *  projects, preference writes, LaunchServices. Its shell commands run outside it, through the app's
+ *  broker (shell-broker.ts), in the stricter agent profile. */
+export function macosKernelProfile(o: { project: string; kernelHome?: string; home?: string; secretPaths?: string[]; projectsRoots?: string[] }): string {
+  const project = real(o.project)
+  const home = real(o.home ?? homedir())
+  // Projects folders (other projects live there); never the home folder itself or the project's own folder.
+  const roots = [...new Set((o.projectsRoots ?? []).map(real))].filter(r => r !== home && r !== '/' && !within(project, r))
+  const secrets = [...HOME_SECRETS.map(d => join(home, d)), ...(o.secretPaths ?? []).map(real)]
+  return [
+    '(version 1)',
+    '(allow default)',
+    '(deny lsopen)',
+    '(deny appleevent-send)',
+    '(deny user-preference-write)',
+    '(deny mach-lookup (global-name "com.apple.pasteboard.1"))',
+    ...(roots.length ? [`(deny file-read-data ${roots.map(r => `(subpath ${sb(r)})`).join(' ')})`] : []),
+    `(allow file-read-data (subpath ${sb(project)})${o.kernelHome ? ` (subpath ${sb(real(o.kernelHome))})` : ''})`,
+    `(deny file-read-data (regex #"${PARTICIPANT_REGEX}") ${secrets.map(p => `(subpath ${sb(p)})`).join(' ')})`,
+    '',
+  ].join('\n')
+}
+
+const within = (root: string, p: string): boolean => p === root || p.startsWith(root.endsWith('/') ? root : root + '/')
+
 /** Shell code shared by both wrappers: environment, approved commands, app helpers. */
 function wrapperHead(o: { dir: string; project: string; realShell: string; runtimeBin?: string; sha: string; helpers: boolean }): string {
   // Only macOS needs helpers outside the sandbox (sandbox-exec cannot nest); under bubblewrap they run inside.
@@ -182,6 +233,7 @@ HS_PROJECT=${sq(o.project)}
 HS_REAL=${sq(o.realShell)}
 HS_RUNTIME=${sq(o.runtimeBin ?? '')}
 HS_ENTRIES=${sq(entries)}
+HS_GUARD_ALLOW=${sq(o.runtimeBin ? runtimeRoot(o.runtimeBin) : '')}
 unset ${STRIPPED_ENV.join(' ')}
 for hs_v in $(env | sed -n 's/^\\([A-Za-z_][A-Za-z0-9_]*\\)=.*/\\1/p' | grep -iE 'KEY|TOKEN|SECRET|PASSW|CREDENTIAL|BYPASS|AUTH'); do
   case "$hs_v" in
@@ -207,10 +259,10 @@ hs_args_ok() {
   hs_n=$1; shift
   if [ "$hs_n" = run_confined.py ]; then
     if [ "$1" = --no-model ]; then
-      [ "$2" = .opencode/skills/export/agent/study_core.py ] || return 1
-      shift 2; hs_n=study_core.py; hs_sub=''
-      for hs_a in "$@"; do case "$hs_a" in -*|.) ;; *) [ -z "$hs_sub" ] && hs_sub=$hs_a ;; esac; done
-      [ "$hs_sub" = reproduce ] || return 1
+      # Exactly: study_core.py --root . reproduce [--method package or author]
+      [ "$2" = .opencode/skills/export/agent/study_core.py ] && [ "$3" = --root ] && [ "$4" = . ] && [ "$5" = reproduce ] || return 1
+      shift 5; hs_n=study_core.py
+      case "$#:$1:$2" in 0::|2:--method:package|2:--method:author) ;; *) return 1 ;; esac
     else
       [ "$HUMANSTUDY_RELAY_REQUIRED" = 1 ] || return 1  # without the relay run_confined runs unconfined
       [ "$1" = --final ] && shift
@@ -254,13 +306,20 @@ hs_trusted() {
 if [ "$#" -eq 2 ] && [ "$1" = "-c" ]; then
   hs_h=$(printf '%s' "$2" | ${o.sha} | cut -c1-64)
   hs_t="$HS_DIR/approved/$hs_h"
+  # A token: line 1 its expiry, line 2 the folder the approved call runs in. One use, in that folder.
   if [ -f "$hs_t" ] && mv "$hs_t" "$hs_t.$$" 2>/dev/null; then
-    hs_exp=$(cat "$hs_t.$$" 2>/dev/null); rm -f "$hs_t.$$"
-    case "$hs_exp" in ''|*[!0-9]*) ;; *) [ "$(date +%s)" -le "$hs_exp" ] && { unset HUMANSTUDY_AGENT_RUN; exec "$HS_REAL" -c "$2"; } ;; esac
+    hs_exp=$(sed -n 1p "$hs_t.$$" 2>/dev/null); hs_cwd=$(sed -n 2p "$hs_t.$$" 2>/dev/null); rm -f "$hs_t.$$"
+    case "$hs_exp" in ''|*[!0-9]*) ;; *) [ "$(date +%s)" -le "$hs_exp" ] && [ "$(pwd -P)" = "$hs_cwd" ] && { unset HUMANSTUDY_AGENT_RUN; exec "$HS_REAL" -c "$2"; } ;; esac
   fi
   # The helper confines package code itself; HUMANSTUDY_AGENT_RUN makes sandbox_run.py deny participant
   # data to it (the agent cannot unset it: the command is one plain python call).
-  if hs_trusted "$2"; then HUMANSTUDY_AGENT_RUN=1; export HUMANSTUDY_AGENT_RUN; exec "$HS_REAL" -c "$2"; fi
+  # Its own reads go through the in-process guard (guard/sitecustomize.py): no participant data, keys or
+  # home folder outside the project and runtime, whatever path a project file names.
+  if hs_trusted "$2"; then
+    HUMANSTUDY_AGENT_RUN=1 PYTHONPATH="$HS_DIR/guard" HUMANSTUDY_GUARD_PROJECT="$HS_PROJECT" HUMANSTUDY_GUARD_ALLOW="$HS_GUARD_ALLOW"
+    export HUMANSTUDY_AGENT_RUN PYTHONPATH HUMANSTUDY_GUARD_PROJECT HUMANSTUDY_GUARD_ALLOW
+    exec "$HS_REAL" -c "$2"
+  fi
 fi
 HUMANSTUDY_AGENT_SANDBOX=1 HUMANSTUDY_AGENT_RUN=1; export HUMANSTUDY_AGENT_SANDBOX HUMANSTUDY_AGENT_RUN
 `
@@ -306,12 +365,21 @@ export function prepareAgentShell(o: AgentShellOptions): AgentShell {
   const runtimeBin = o.runtimeBin?.replace(/\/+$/, '') // as on PATH (command -v reports it unresolved)
   mkdirSync(join(dir, 'approved'), { recursive: true, mode: 0o700 })
   for (const f of readdirSync(join(dir, 'approved'))) rmSync(join(dir, 'approved', f), { force: true }) // stale tokens
+  mkdirSync(join(dir, 'guard'), { recursive: true, mode: 0o700 })
+  writeFileSync(join(dir, 'guard', 'sitecustomize.py'), HELPER_GUARD, { mode: 0o600 })
   const trusted = trustedFiles.filter(([rel]) => !rel.includes('\n')).map(([rel, hash]) => `${hash}  ${rel}`).join('\n')
   writeFileSync(join(dir, 'trusted.sha256'), trusted ? trusted + '\n' : '', { mode: 0o600 })
   const temps = tempRoots(platform)
   const shell = join(dir, basename(realShell)) // same name, so OpenCode treats it as that shell
   if (kind === 'sandbox-exec') {
-    writeFileSync(join(dir, 'profile.sb'), macosAgentProfile({ project, kernelHome: o.kernelHome, secretPaths: o.secretPaths, home: o.home, temps }), { mode: 0o600 })
+    writeFileSync(join(dir, 'profile.sb'), macosAgentProfile({ project, kernelHome: o.kernelHome, secretPaths: o.secretPaths, home: o.home, temps, runtimeBin, socket: o.socket }), { mode: 0o600 })
+    if (o.socket) {
+      const inner = join(dir, 'inner.sh')
+      writeFileSync(inner, macosWrapper({ dir, project, realShell, runtimeBin }), { mode: 0o700 })
+      writeFileSync(join(dir, 'client.pl'), BROKER_CLIENT, { mode: 0o600 })
+      writeFileSync(shell, `#!/bin/sh\n# HumanStudy agent shell: the kernel's commands start through the app (shell-broker.ts).\nexec /usr/bin/perl ${sq(join(dir, 'client.pl'))} ${sq(o.socket)} "$@"\n`, { mode: 0o700 })
+      return { kind, shell, dir, inner }
+    }
     writeFileSync(shell, macosWrapper({ dir, project, realShell, runtimeBin }), { mode: 0o700 })
   } else {
     const home = o.home ?? homedir()
@@ -347,12 +415,73 @@ export function searchIgnoreInstalled(project: string): boolean {
   try { return !lstatSync(join(project, '.ignore')).isSymbolicLink() && searchIgnoreText(readFileSync(join(project, '.ignore'), 'utf8')) } catch { return false }
 }
 
-/** Let one exact command the researcher approved run outside the sandbox (once, within APPROVAL_TTL_S). */
-export function approveCommandOnce(dir: string, command: string, now: number = Date.now()): void {
+/** Let one exact command the researcher approved run outside the sandbox: once, in the folder it was
+ *  approved for (`cwd`, resolved), within APPROVAL_TTL_S. Returns the token's path, which the app removes
+ *  as soon as that tool call ends (completed, failed, aborted), so an approval never outlives its call. */
+export function approveCommandOnce(dir: string, command: string, cwd: string, now: number = Date.now()): string {
   const h = createHash('sha256').update(command, 'utf8').digest('hex')
   mkdirSync(join(dir, 'approved'), { recursive: true, mode: 0o700 })
-  writeFileSync(join(dir, 'approved', h), String(Math.floor(now / 1000) + APPROVAL_TTL_S), { mode: 0o600 })
+  const file = join(dir, 'approved', h)
+  writeFileSync(file, `${Math.floor(now / 1000) + APPROVAL_TTL_S}\n${real(cwd)}\n`, { mode: 0o600 })
+  return file
 }
+
+/** The in-process guard of the app's helpers when the agent starts them outside its sandbox (macOS cannot
+ *  nest the sandbox their package code needs). Loaded as sitecustomize through PYTHONPATH by the wrapper;
+ *  an audit hook refuses every open, listing and subprocess path that is participant data, a key folder,
+ *  or in the home folder outside the project and the managed runtime. sandbox_run.py's own children
+ *  (`python -I` under sandbox-exec) are confined by their profile instead. */
+export const HELPER_GUARD = `import os, sys, unicodedata
+_P = os.environ.get("HUMANSTUDY_GUARD_PROJECT")
+if _P and os.environ.get("HUMANSTUDY_AGENT_RUN") == "1":
+    _HOME = os.path.realpath(os.path.expanduser("~"))
+    _ALLOW = [os.path.realpath(x) for x in [_P] + os.environ.get("HUMANSTUDY_GUARD_ALLOW", "").split(os.pathsep) if x]
+    _NAMES = {${PARTICIPANT_DATA_DIRS.map(d => JSON.stringify(d)).join(', ')}, ${HOME_SECRETS.map(d => JSON.stringify(d.split('/').pop()!.toLowerCase())).join(', ')}}
+
+    def _denied(p):
+        try:
+            r = os.path.realpath(os.path.abspath(os.fsdecode(p)))
+        except Exception:
+            return False
+        if any(unicodedata.normalize("NFKC", s).lower() in _NAMES for s in r.split(os.sep)):
+            return True
+        inside = lambda a: r == a or r.startswith(a.rstrip(os.sep) + os.sep)
+        return inside(_HOME) and not any(inside(a) for a in _ALLOW)
+
+    def _hook(event, args):
+        if event in ("open", "os.listdir", "os.scandir", "os.chdir", "shutil.copyfile", "shutil.copytree"):
+            p = args[0] if args else None
+            if isinstance(p, (str, bytes, os.PathLike)) and _denied(p):
+                raise PermissionError("HumanStudy: %s is not readable when the agent starts this helper" % os.fsdecode(p))
+        elif event == "subprocess.Popen":
+            exe, argv = args[0], args[1]
+            if os.path.basename(os.fsdecode(exe or "")) == "sandbox-exec":
+                return
+            for a in ([argv] if isinstance(argv, (str, bytes)) else list(argv or [])):
+                if isinstance(a, (str, bytes, os.PathLike)) and os.sep in os.fsdecode(a) and os.path.exists(a) and _denied(a):
+                    raise PermissionError("HumanStudy: %s is not readable when the agent starts this helper" % os.fsdecode(a))
+
+    sys.addaudithook(_hook)
+`
+
+/** The kernel-side client of the shell broker (system perl, core modules only). It sends the shell's
+ *  arguments and working folder, then relays the command's output (frames: 1 byte o/e/x, 4 byte length)
+ *  and exits with its status. When it is killed (OpenCode's timeout, abort), the connection closes and the
+ *  broker kills the command. No environment is sent: the broker uses the kernel's, minus secrets. */
+export const BROKER_CLIENT = `use strict; use warnings; use IO::Socket::UNIX; use Socket qw(SOCK_STREAM); use Cwd qw(getcwd); use JSON::PP;
+my $path = shift @ARGV;
+my $s = IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $path) or do { print STDERR "HumanStudy: the app's shell service is not reachable ($!)\\n"; exit 125 };
+binmode $s; binmode STDOUT; binmode STDERR; $| = 1;
+print $s JSON::PP->new->utf8->encode({ args => [@ARGV], cwd => getcwd() }) . "\\n";
+sub readn { my ($n) = @_; my $buf = ''; while (length($buf) < $n) { my $r = sysread($s, my $chunk, $n - length($buf)); return undef unless $r; $buf .= $chunk } return $buf }
+while (defined(my $h = readn(5))) {
+  my ($t, $len) = unpack('a1 N', $h);
+  my $data = $len ? readn($len) : '';
+  last unless defined $data;
+  if ($t eq 'o') { syswrite(STDOUT, $data) } elsif ($t eq 'e') { syswrite(STDERR, $data) } elsif ($t eq 'x') { exit(int($data)) }
+}
+exit 125;
+`
 
 /** For tests and diagnostics: is this file the generated wrapper? */
 export const isAgentShell = (p: string): boolean => {

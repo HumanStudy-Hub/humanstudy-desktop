@@ -80,6 +80,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import contract  # noqa: E402  older projects get the newer rules as warnings
+from project_paths import project_file  # noqa: E402
 
 KINDS = ("schema-enough", "needs-original")
 STATUSES = ("pending", "found-open", "found-private", "supplied", "stand-in", "left-out")
@@ -579,8 +580,8 @@ def private_index(root):
     loose = set(unlicensed_files(root))
     open_text = None
     for rel in sorted(private_paths(root)):
-        path = root / rel
-        if path.is_file() and not path.is_symlink():
+        path = project_file(root, rel)   # SOURCE.json names it: inside the project, never sensitive
+        if path is not None and path.is_file() and not path.is_symlink():
             hashes.setdefault(sha(path), rel)
             found = shingles(text_of(path))
             if rel in loose:   # a supplement repeats the openly licensed paper's title, authors ...: that text is open
@@ -766,7 +767,7 @@ def check(root, package=None):
                 add("%s cites %s: participant data never feeds the study's materials or design" % (where, rel),
                     "cite the paper or a materials file; human data are only for comparing results (Human data)")
                 continue
-            if rel and rel != paper and (root / rel).is_file() and (m is not None or material_like):
+            if rel and rel != paper and project_file(root, rel) is not None and (root / rel).is_file() and (m is not None or material_like):
                 why = "it is in human-data/" if under(rel, "human-data") else looks_like_data(root / rel)
                 if why:
                     add("%s cites %s, which looks like participant data (%s)" % (where, rel, why),
@@ -943,7 +944,7 @@ def check(root, package=None):
                         "save the openly licensed file under %s/ and cite it" % OPEN_DIR)
                     continue
                 external.add(rel)
-                text = " ".join(words(text_of(root / rel)))
+                text = " ".join(words(text_of(project_file(root, rel)))) if project_file(root, rel) else ""
                 padded = " %s " % text
                 keys = set(_value_keys(f.get("value")))
                 missing_text = [s for s in strings(f.get("value")) if any(re.search(r"[^\W\d_]", x) for x in words(s))
@@ -989,7 +990,8 @@ def check(root, package=None):
                 % (rel, OPEN_DIR, lic or "none"),
                 "record the license and the words or page that state it (--license, --license-evidence); a file "
                 "without an open license goes to %s/ and is used only in this project" % PRIVATE_DIR)
-        why = looks_like_data(root / rel)
+        safe = project_file(root, rel)   # SOURCE.json names it: inside the project, never sensitive
+        why = looks_like_data(safe) if safe is not None else None
         if why:
             add("%s looks like participant data (%s): never download trial-level responses" % (rel, why),
                 "delete it; when the sequences participants saw exist only in data files, ask the researcher")

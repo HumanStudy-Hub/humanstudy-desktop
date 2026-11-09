@@ -47,7 +47,9 @@ from the project folder, e.g. `python .opencode/skills/build/check_readiness.py 
 `&&`, pipes, quotes or variables. The sandbox also forbids symbolic links and writes to `.git` (no
 commits, no `python -m venv`; use `pip install --target .humanstudy/pylib`). Participant data never
 appears in grep/glob results (a broad `include` such as `*` asks); package code you run cannot read it
-(the app checks human data in Readiness). `open`, `osascript` and app bundles do not run. Do not try to route around a prompt or the sandbox (another
+(the app checks human data in Readiness). `open`, `osascript` and app bundles do not run, and nothing
+in the home folder outside the project is readable. To read participant data after the researcher
+approves it, use a shell command (`cat`, `python`): the file tools cannot read it at all. Do not try to route around a prompt or the sandbox (another
 command, a script, a copy elsewhere): ask for what you need in the conversation instead.
 
 ## Non-negotiable scientific rules

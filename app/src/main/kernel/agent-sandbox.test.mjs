@@ -85,8 +85,11 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
     writeFileSync(join(project, 'leak.py'), 'try:\n    print("LEAK:" + open("human-data/a.csv").read().strip())\nexcept Exception as e:\n    print("DENIED:" + type(e).__name__)\n')
     const effectsSrc = 'import os, sys\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\nimport sandbox_run\nfrom pathlib import Path\nwith sandbox_run.work_dir() as w:\n    r = sandbox_run.run_python(Path("leak.py").resolve(), [], cwd=Path(".").resolve(), work=w, timeout=60, read=[Path("human-data").resolve()])\nprint(r.stdout.strip())\n'
     writeFileSync(join(project, '.opencode/skills/build/effects.py'), effectsSrc)
+    // prompt_context.py stands in for a helper that opens whatever path a project file names (review 4 #2).
+    const readerSrc = 'import json, sys\nfor p in json.load(open("paths.json")):\n    try:\n        print("READ:" + open(p).read().strip())\n    except Exception as e:\n        print("DENIED:" + type(e).__name__)\n'
+    writeFileSync(join(project, '.opencode/skills/build/prompt_context.py'), readerSrc)
     const sha = t => createHash('sha256').update(t).digest('hex')
-    A.setTrustedHelperFiles([...helpers.map(h => ['.opencode/skills/' + h, sha(helperSrc)]), ['.opencode/skills/build/sandbox_run.py', sha(sandboxRun)], ['.opencode/skills/build/effects.py', sha(effectsSrc)]])
+    A.setTrustedHelperFiles([...helpers.map(h => ['.opencode/skills/' + h, sha(helperSrc)]), ['.opencode/skills/build/sandbox_run.py', sha(sandboxRun)], ['.opencode/skills/build/effects.py', sha(effectsSrc)], ['.opencode/skills/build/prompt_context.py', sha(readerSrc)]])
     const s = A.prepareAgentShell({ project, kernelHome, kind: 'sandbox-exec', realShell: '/bin/bash', runtimeBin: py ? dirname(py) : undefined })
     assert.ok(A.isAgentShell(s.shell))
     const env = { PATH: process.env.PATH, HOME: homedir(), TMPDIR: process.env.TMPDIR ?? '/tmp', OPENCODE_SERVER_PASSWORD: 'pw-should-vanish', OPENCODE_CONFIG_CONTENT: '{"token":"x"}', SOME_API_KEY: 'k-should-vanish', HUMANSTUDY_RELAY_REQUIRED: '1' }
@@ -123,12 +126,27 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
     assert.equal((await run('echo "${OPENCODE_SERVER_PASSWORD:-none} ${OPENCODE_CONFIG_CONTENT:-none} ${SOME_API_KEY:-none} $HUMANSTUDY_AGENT_SANDBOX"')).out.trim(), 'none none none 1')
     assert.notEqual((await run('ps eww -p $PPID')).code, 0)
     // A command the researcher approved runs once outside the sandbox; the next run is confined again.
-    A.approveCommandOnce(s.dir, 'cat human-data/a.csv')
+    A.approveCommandOnce(s.dir, 'cat human-data/a.csv', project)
     assert.equal((await run('cat human-data/a.csv')).out.trim(), 'secret-row')
     assert.notEqual((await run('cat human-data/a.csv')).code, 0)
-    // Expired approvals do not count.
-    A.approveCommandOnce(s.dir, 'cat human-data/a.csv', Date.now() - (A.APPROVAL_TTL_S + 5) * 1000)
+    // Expired approvals do not count, nor an approval for another folder (review 4: bound to its call).
+    A.approveCommandOnce(s.dir, 'cat human-data/a.csv', project, Date.now() - (A.APPROVAL_TTL_S + 5) * 1000)
     assert.notEqual((await run('cat human-data/a.csv')).code, 0)
+    const elsewhere = A.approveCommandOnce(s.dir, 'cat */a.csv', join(project, 'sources'))
+    assert.ok(!(await run('cat */a.csv')).out.includes('secret-row'), 'approved for sources/, run in the project')
+    assert.ok(!existsSync(elsewhere), 'consumed (and refused) by the mismatched call')
+    // Review 4 #3: the home folder is unreadable except the project and the runtime; #4: no preference
+    // writes (cfprefsd would write them for us).
+    const homeFile = join(homedir(), `.hs-agent-sandbox-home-${process.pid}`)
+    writeFileSync(homeFile, 'home-secret\n')
+    try {
+      for (const c of [`cat "${homeFile}"`, `python3 -c "print(open('${homeFile}').read())"`, 'ls ~/Library/Preferences', 'cat ~/.zsh_history ~/.bash_history'])
+        assert.ok(!(await run(c)).out.includes('home-secret') && (await run(c)).code !== 0, c)
+    } finally { rmSync(homeFile, { force: true }) }
+    const domain = `com.humanstudy.sandbox-test-${process.pid}`
+    assert.notEqual((await run(`defaults write ${domain} k v`)).code, 0)
+    assert.notEqual(spawnSync('defaults', ['read', domain]).status, 0, 'the preference was not written')
+    spawnSync('defaults', ['delete', domain])
     // Review 2: no new symlinks (OpenCode's tools would follow them), .git cannot be replaced or written,
     // the search-ignore file cannot be changed; pip's cache and git's safety settings are in place.
     for (const c of ['ln -s .opencode cfg', 'ln -s human-data hd', 'mv .git g2', 'rm -rf .git', 'echo "gitdir: g2" > .git', 'mkdir -p sub/.git', 'echo x > .ignore', 'echo "!human-data" > sources/.ignore'])
@@ -152,7 +170,9 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
       assert.equal((await run('python3 .opencode/skills/simulate/run_confined.py artifacts/simulations/r1/run.py --trial')).out.trim(), 'outside', 'relay run')
       // ... never in a child/probe/capture/smoke mode, with another script, toward participant data or
       // the agent's configuration, or without the relay (review 2 M1).
-      for (const c of ['python3 .opencode/skills/build/recorded_answers.py --child package/p', 'python3 .opencode/skills/build/check_validity.py --capture package/p',
+      for (const c of ['python3 .opencode/skills/simulate/run_confined.py --no-model .opencode/skills/export/agent/study_core.py --root reproduce overview',
+        'python3 .opencode/skills/simulate/run_confined.py --no-model .opencode/skills/export/agent/study_core.py --root . reproduce overview',
+        'python3 .opencode/skills/build/recorded_answers.py --child package/p', 'python3 .opencode/skills/build/check_validity.py --capture package/p',
         'python3 .opencode/skills/build/check_validity.py --probe package/p', 'python3 .opencode/skills/build/audit.py --probe package/p', 'python3 .opencode/skills/build/audit.py --workdir x .',
         'python3 .opencode/skills/build/check_replies.py --smoke-child package/p', 'python3 .opencode/skills/simulate/run_confined.py --no-model artifacts/x.py',
         'python3 .opencode/skills/simulate/run_confined.py --no-model .opencode/skills/export/agent/study_core.py --root . human-data',
@@ -169,6 +189,17 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
         assert.equal((await run(c)).out.trim(), 'sandboxed', c)
       // Review 3 M4: package code started by the agent through a helper cannot read participant data, so
       // the helper's output cannot carry it; the same helper started by the app (no agent flag) can.
+      // Review 4 #2: a helper started by the agent cannot open participant data, keys or the home folder
+      // outside the project and runtime, whatever path a project file names; started by the app it can.
+      const homeSecret = join(homedir(), `.hs-agent-sandbox-guard-${process.pid}`)
+      writeFileSync(homeSecret, 'home-secret\n')
+      try {
+        writeFileSync(join(project, 'paths.json'), JSON.stringify(['human-data/a.csv', 'HUMAN-DATA/../human-data/a.csv', homeSecret, 'program.json']))
+        const guarded = (await run('python3 .opencode/skills/build/prompt_context.py .')).out
+        assert.equal(guarded.trim().split('\n').join('|'), 'DENIED:PermissionError|DENIED:PermissionError|DENIED:PermissionError|READ:{}', guarded)
+        const appRun = spawnSync(py, ['.opencode/skills/build/prompt_context.py', '.'], { cwd: project, env: { PATH: process.env.PATH, HOME: homedir() }, encoding: 'utf8' })
+        assert.match(appRun.stdout, /READ:secret-row/)
+      } finally { rmSync(homeSecret, { force: true }) }
       const viaAgent = (await run('python3 .opencode/skills/build/effects.py')).out
       assert.match(viaAgent, /DENIED:PermissionError/, viaAgent)
       assert.ok(!viaAgent.includes('secret-row'))
