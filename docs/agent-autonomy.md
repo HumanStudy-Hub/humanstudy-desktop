@@ -14,10 +14,18 @@ The OpenCode kernel process runs under `sandbox-exec` with a minimal profile (`m
 - reads of participant-data folders, in any letter case and anywhere;
 - reads of key folders (`~/.ssh`, `~/.aws`, `~/Library/Keychains`, ...) and of the app's account,
   credential and settings files and relay folder;
-- reads of the projects folder (the researcher's projects root from Settings, exported as
-  `HUMANSTUDY_PROJECTS_ROOT`, else the default `~/HumanStudy Hub`), except this project. The retired
-  defaults are left out: `~/HumanStudy` would also match an unrelated `~/humanstudy`, because the disk
-  ignores case;
+- reads of every other project the app knows, wherever it lives (under home, `/Users/Shared`, an
+  external drive). The app keeps that list (`kernel/known-projects.ts`, persisted as
+  `<userData>/known-projects.json`):
+  - it holds the projects root from Settings (exported as `HUMANSTUDY_PROJECTS_ROOT`, else
+    `~/HumanStudy Hub`), each created project and each folder opened with Open, as real paths;
+  - matching ignores case;
+  - it is updated on create, open, rename and delete;
+  - a removed drive keeps its last path, and a rule for a missing folder is harmless.
+
+  The retired `~/HumanStudy` default is left out: it would also match an unrelated `~/humanstudy`. The
+  agent profile denies the same list (reads and writes) except this project. The policy asks about such
+  a path as "another project";
 - preference writes, LaunchServices (`open`), Apple events and the clipboard.
 
 It also denies writes to what later runs outside it:

@@ -280,3 +280,24 @@ test('review 6: a project with an empty .git (worktree "/") cannot read another 
     assert.equal(classifyPermission(c, P('read', ['program.json'])).decision, 'allow')
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test('review 7: every other known project asks as "another project", wherever it lives', async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'policy-r7-')))
+  try {
+    await build({ entryPoints: [join(dirname(fileURLToPath(import.meta.url)), 'known-projects.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'kp.mjs'), logLevel: 'error' })
+    const K = await import(pathToFileURL(join(out, 'kp.mjs')).href)
+    const file = join(root, 'known.json'), a = join(root, 'Shared', 'A'), b = join(root, 'Shared', 'B'), gone = '/Volumes/Removed Drive/Study'
+    mkdirSync(a, { recursive: true }); mkdirSync(b, { recursive: true })
+    K.rememberProject(a, file); K.rememberProject(b, file); K.rememberProject(b.toUpperCase(), file); K.rememberProject(gone, file)
+    assert.equal(K.readKnownProjects(file).length, 3, 'case-insensitive, a removed drive kept')
+    const others = K.otherProjectRoots(a, { file, projectsRoot: join(root, 'Root'), home: '/Users/r' })
+    assert.ok(others.includes(b) && others.includes(gone) && !others.includes(a))
+    const c = { ...defaultPolicyContext(a, undefined, {}, true), home: '/Users/r', otherProjects: others }
+    const v = classifyPermission(c, P('read', ['x'], { filepath: join(b, 'sources/private/s.txt') }))
+    assert.equal(v.decision, 'ask'); assert.match(v.reason, /another project/)
+    assert.equal(bash(`cat "${b}/sources/private/s.txt"`, c), 'ask')
+    assert.equal(classifyPermission(c, P('read', ['x'], { filepath: join(a, 'program.json') })).decision, 'allow')
+    K.forgetProject(b, file)
+    assert.ok(!K.readKnownProjects(file).includes(b))
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})

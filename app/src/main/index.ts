@@ -34,6 +34,7 @@ import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
 import { refreshPack, trustedCheckFiles, trustedHelperHashes } from './pack'
 import { setTrustedHelperFiles } from './kernel/agent-sandbox'
+import { forgetProject, rememberProject } from './kernel/known-projects'
 import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks } from './package-readiness'
@@ -48,6 +49,10 @@ import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPromp
 const RELAY = relaySupported()
 // The agent shell runs the app's own confining helpers outside its OS sandbox only while they match these.
 setTrustedHelperFiles(trustedHelperHashes())
+// Every project folder the app knows (kernel/known-projects.ts): the sandbox profiles and the policy keep
+// each project's agent out of the others, wherever they live.
+process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE = join(app.getPath('userData'), 'known-projects.json')
+const knowProject = (dir: string): void => { try { rememberProject(dir) } catch { /* best effort */ } }
 const relayProjects = new Set<string>()
 const runRelays = new Map<string, { project: string; close(): Promise<void> }>()
 async function closeRunRelay(id: string) {
@@ -430,11 +435,12 @@ app.whenReady().then(() => {
     }
     const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
     const picked = r.canceled ? null : (r.filePaths[0] ?? null)
-    if (picked) allowedRoots.add(resolve(picked))
+    if (picked) { allowedRoots.add(resolve(picked)); knowProject(picked) }
     return picked
   })
   ipcMain.handle('project:read', async (_e, dir: string) => {
     const snap = await readProject(dir)
+    knowProject(snap.dir)
     watchProject(snap.dir)
     telemetry.noteProjectFiles(snap)
     return snap
@@ -540,6 +546,7 @@ app.whenReady().then(() => {
   ipcMain.handle('projects:create', async (_e, input: { name: string; pdfPath?: string; sample?: boolean }, action?: unknown) => {
     const ref = actionRef(action)
     const dir = await createProject(input)
+    knowProject(dir)
     telemetry.noteProjectCreated(dir, ref)
     telemetry.track('project.created', { metadata: { sample: Boolean(input?.sample), withPaper: Boolean(input?.pdfPath) }, ...(ref ? { action: ref } : {}) }, dir)
     return dir
@@ -557,12 +564,13 @@ app.whenReady().then(() => {
   ipcMain.handle('projects:rename', async (_e, dir: string, name: string) => {
     const from = resolve(dir)
     const to = await renameProject(from, name)
-    if (to !== from) unwatch(from)
+    if (to !== from) { unwatch(from); try { forgetProject(from) } catch { /* best effort */ } knowProject(to) }
     return to
   })
   ipcMain.handle('projects:trash', async (_e, dir: string) => {
     unwatch(resolve(dir))
     await trashProject(dir)
+    try { forgetProject(dir) } catch { /* best effort */ }
   })
 
   setCommunityCacheDir(app.getPath('userData'))

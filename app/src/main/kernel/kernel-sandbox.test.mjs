@@ -18,6 +18,8 @@ await build({ entryPoints: [join(here, 'index.ts')], bundle: true, platform: 'no
 await build({ entryPoints: [join(here, 'agent-sandbox.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'a.mjs'), logLevel: 'error' })
 const { OpencodeKernel } = await import(pathToFileURL(join(out, 'k.mjs')).href)
 const A = await import(pathToFileURL(join(out, 'a.mjs')).href)
+await build({ entryPoints: [join(here, 'known-projects.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'kp.mjs'), logLevel: 'error' })
+const K = await import(pathToFileURL(join(out, 'kp.mjs')).href)
 process.on('exit', () => rmSync(out, { recursive: true, force: true }))
 
 const managed = join(homedir(), 'Library/Application Support/HumanStudy Hub/opencode')
@@ -36,6 +38,14 @@ test('the kernel runs sandboxed: tools cannot read participant data or other pro
   await new Promise(r => net.listen(0, '127.0.0.1', r))
   const before = process.env.HUMANSTUDY_PROJECTS_ROOT
   process.env.HUMANSTUDY_PROJECTS_ROOT = join(root, 'projects')
+  // Review 7: a known project outside the home folder (/Users/Shared).
+  const shared = mkdtempSync(existsSync('/Users/Shared') ? '/Users/Shared/hs-kernel-sandbox-' : join(root, 'shared-'))
+  const projectC = join(shared, 'C')
+  mkdirSync(join(projectC, 'sources', 'private'), { recursive: true })
+  writeFileSync(join(projectC, 'sources', 'private', 's.txt'), 'PRIVATE-SOURCE-C\n')
+  const knownBefore = process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE
+  process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE = join(root, 'known-projects.json')
+  K.rememberProject(project); K.rememberProject(other); K.rememberProject(projectC)
   const k = new OpencodeKernel({ binary, provider: '', home: join(root, 'kernel'), readyTimeoutMs: 60_000 })
   try {
     const sid = await k.startSession(project)
@@ -48,6 +58,7 @@ test('the kernel runs sandboxed: tools cannot read participant data or other pro
     assert.match(await get('/file/content?path=program.json'), /findme/)
     assert.ok(!(await get('/find?pattern=TOPSECRET')).includes('TOPSECRET'))
     assert.ok(!(await get('/file/content?path=' + encodeURIComponent(join(other, 'o.txt')))).includes('OTHERPROJECT'))
+    assert.ok(!(await get('/file/content?path=' + encodeURIComponent(join(projectC, 'sources/private/s.txt')))).includes('PRIVATE-SOURCE-C'), 'kernel: known project outside home')
     // The bash tool's form (`<shell> -c <command>`, which the kernel runs) through the shim and the
     // broker: outside the kernel's sandbox, in the agent profile.
     const viaShim = (cmd, shell = s.agentShell.shell, cwd = project) => new Promise(resolve => {
@@ -61,6 +72,8 @@ test('the kernel runs sandboxed: tools cannot read participant data or other pro
     assert.ok(!o1.o.includes('TOPSECRET'))
     assert.match(o1.o, /findme/)
     assert.match(o1.o, /net-ok/)
+    const oc = await viaShim(`cat "${projectC}/sources/private/s.txt"; python3 -c "print(open('${projectC}/sources/private/s.txt').read())"`)
+    assert.ok(!oc.o.includes('PRIVATE-SOURCE-C'), 'agent shell: known project outside home')
     // A researcher-approved command runs once outside the sandbox; exit status and stderr come back.
     A.approveCommandOnce(s.agentShell.dir, 'cat human-data/a.csv', project)
     assert.match((await viaShim('cat human-data/a.csv')).o, /TOPSECRET/)
@@ -140,6 +153,8 @@ test('the kernel runs sandboxed: tools cannot read participant data or other pro
     await k.dispose()
     net.close()
     if (before === undefined) delete process.env.HUMANSTUDY_PROJECTS_ROOT; else process.env.HUMANSTUDY_PROJECTS_ROOT = before
+    if (knownBefore === undefined) delete process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE; else process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE = knownBefore
+    rmSync(shared, { recursive: true, force: true })
     rmSync(root, { recursive: true, force: true })
   }
 })

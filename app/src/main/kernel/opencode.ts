@@ -57,6 +57,7 @@ import type { Kernel, KernelEvent, KernelPermission, KernelSubagent, PermissionR
 import { classifyPermission, defaultPolicyContext, READ_ONLY_COMMANDS, type PolicyContext, type PolicyVerdict } from './permission-policy'
 import { agentSandboxKind, approveCommandOnce, ensureSearchIgnore, macosKernelProfile, prepareAgentShell, type AgentShell } from './agent-sandbox'
 import { brokerSocketPath, startShellBroker, type ShellBroker } from './shell-broker'
+import { otherProjectRoots } from './known-projects'
 
 /** What OpenCode itself asks the app about (every edit, every shell command, every path outside the
  *  project, and reads of sensitive folders). The app answers each one through classifyPermission
@@ -789,7 +790,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
             realShell: researcherShell(), researcherEnv: researcherEnv(),
           })
           kernelProfile = join(agentShell.dir, 'kernel.sb')
-          writeFileSync(kernelProfile, macosKernelProfile({ project: dir, kernelHome: this.home, secretPaths: kernelSecretPaths(ctx.secretPaths ?? [], this.home), projectsRoots: projectsRoots(), socket, agentShellDir: agentShell.dir }), { mode: 0o600 })
+          writeFileSync(kernelProfile, macosKernelProfile({ project: dir, kernelHome: this.home, secretPaths: kernelSecretPaths(ctx.secretPaths ?? [], this.home), projectsRoots: otherProjectRoots(dir), socket, agentShellDir: agentShell.dir }), { mode: 0o600 })
         }
       } catch {
         await broker?.close()
@@ -1501,12 +1502,7 @@ function kernelSecretPaths(secrets: string[], kernelHome: string): string[] {
   return secrets.filter(p => !p.startsWith(join(kernelHome, 'config')) && !p.startsWith(join(kernelHome, 'data')) && !p.startsWith(join(kernelHome, 'agent-shell')))
 }
 
-/** Folders that hold projects (other projects stay unreadable to the kernel): the researcher's projects
- *  root (HUMANSTUDY_PROJECTS_ROOT, set by the app from Settings), else the default root. Not the retired
- *  defaults: ~/HumanStudy matches unrelated folders such as ~/humanstudy on a case-insensitive disk. */
-function projectsRoots(): string[] {
-  return [process.env.HUMANSTUDY_PROJECTS_ROOT?.trim() || join(homedir(), 'HumanStudy Hub')]
-}
+
 
 export function toKernelPermission(p: {
   id?: string

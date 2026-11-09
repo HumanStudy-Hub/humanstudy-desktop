@@ -15,6 +15,9 @@ const here = dirname(fileURLToPath(import.meta.url))
 const out = mkdtempSync(join(tmpdir(), 'agent-sandbox-'))
 await build({ entryPoints: [join(here, 'agent-sandbox.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'a.mjs'), logLevel: 'error' })
 const A = await import(pathToFileURL(join(out, 'a.mjs')).href)
+await build({ entryPoints: [join(here, 'known-projects.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'kp.mjs'), logLevel: 'error' })
+const K = await import(pathToFileURL(join(out, 'kp.mjs')).href)
+const cleanups = []
 process.on('exit', () => rmSync(out, { recursive: true, force: true }))
 
 const mac = process.platform === 'darwin' && A.agentSandboxKind() === 'sandbox-exec'
@@ -90,7 +93,17 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
     writeFileSync(join(project, '.opencode/skills/build/prompt_context.py'), readerSrc)
     const sha = t => createHash('sha256').update(t).digest('hex')
     A.setTrustedHelperFiles([...helpers.map(h => ['.opencode/skills/' + h, sha(helperSrc)]), ['.opencode/skills/build/sandbox_run.py', sha(sandboxRun)], ['.opencode/skills/build/effects.py', sha(effectsSrc)], ['.opencode/skills/build/prompt_context.py', sha(readerSrc)]])
+    // Review 7: another project outside the home folder (/Users/Shared), known to the app.
+    const shared = existsSync('/Users/Shared') ? mkdtempSync('/Users/Shared/hs-agent-sandbox-') : mkdtempSync(join(root, 'shared-'))
+    const projectB = join(shared, 'B')
+    mkdirSync(join(projectB, 'sources', 'private'), { recursive: true })
+    writeFileSync(join(projectB, 'sources', 'private', 's.txt'), 'PRIVATE-SOURCE-B\n')
+    const knownBefore = process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE
+    process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE = join(root, 'known-projects.json')
+    K.rememberProject(project); K.rememberProject(projectB)
     const s = A.prepareAgentShell({ project, kernelHome, kind: 'sandbox-exec', realShell: '/bin/bash', runtimeBin: py ? dirname(py) : undefined })
+    if (knownBefore === undefined) delete process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE; else process.env.HUMANSTUDY_KNOWN_PROJECTS_FILE = knownBefore
+    cleanups.push(() => rmSync(shared, { recursive: true, force: true }))
     assert.ok(A.isAgentShell(s.shell))
     const env = { PATH: process.env.PATH, HOME: homedir(), TMPDIR: process.env.TMPDIR ?? '/tmp', OPENCODE_SERVER_PASSWORD: 'pw-should-vanish', OPENCODE_CONFIG_CONTENT: '{"token":"x"}', SOME_API_KEY: 'k-should-vanish', HUMANSTUDY_RELAY_REQUIRED: '1' }
     // Exactly how OpenCode runs a command: <shell> -c <command>, cwd = project.
@@ -111,6 +124,10 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
     // Ordinary work is untouched: project files, the researcher's private sources, tool output, temp.
     assert.equal((await run('cat program.json')).out.trim(), '{}')
     assert.equal((await run('cat sources/private/si.txt')).out.trim(), 'private-ok')
+    // Review 7: another known project outside the home folder is unreadable and unwritable.
+    for (const c of [`cat "${projectB}/sources/private/s.txt"`, `python3 -c "print(open('${projectB}/sources/private/s.txt').read())"`, `ls "${projectB}"`])
+      assert.ok(!(await run(c)).out.includes('PRIVATE-SOURCE-B'), c)
+    assert.notEqual((await run(`echo x > "${projectB}/planted.txt"`)).code, 0)
     // Review 5: OpenCode's tool-output folder is shared by every project, so the shell cannot read it.
     assert.ok(!(await run(`cat "${kernelHome}/data/opencode/tool-output/t1"`)).out.includes('tool-output-ok'))
     assert.equal((await run('mkdir -p artifacts && echo ok > artifacts/x.txt && cat artifacts/x.txt')).out.trim(), 'ok')
@@ -218,6 +235,7 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
     server.close()
     A.setTrustedHelperFiles([])
     rmSync(outsideFile, { force: true })
+    for (const c of cleanups) c()
     rmSync(root, { recursive: true, force: true })
   }
 })

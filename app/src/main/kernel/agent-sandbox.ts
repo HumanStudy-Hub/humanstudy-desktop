@@ -27,6 +27,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { otherProjectRoots } from './known-projects'
 
 export type AgentSandboxKind = 'sandbox-exec' | 'bwrap' | 'none'
 
@@ -117,6 +118,8 @@ export interface AgentShellOptions {
   socket?: string
   /** Per-launch secret the broker requires (written only into this project's client.pl). */
   secret?: string
+  /** Other projects' folders to deny (default: known-projects.ts). */
+  otherProjects?: string[]
 }
 
 export interface AgentShell { kind: AgentSandboxKind; shell?: string; dir?: string; /** the wrapper the broker runs */ inner?: string }
@@ -136,7 +139,7 @@ function tempRoots(platform: string): string[] {
 }
 
 /** The macOS Seatbelt profile for one project. Later rules win, so each allow/deny list is ordered. */
-export function macosAgentProfile(o: { project: string; kernelHome: string; secretPaths?: string[]; home?: string; temps?: string[]; runtimeBin?: string; socket?: string }): string {
+export function macosAgentProfile(o: { project: string; kernelHome: string; secretPaths?: string[]; home?: string; temps?: string[]; runtimeBin?: string; socket?: string; otherProjects?: string[] }): string {
   const project = real(o.project)
   const home = real(o.home ?? homedir())
   const kernel = real(o.kernelHome)
@@ -169,6 +172,8 @@ export function macosAgentProfile(o: { project: string; kernelHome: string; secr
     // shell history, other projects, other apps' tokens stay out of reach.
     `(deny file-read-data (subpath ${sb(home)}))`,
     `(allow file-read-data ${homeReads.map(p => `(subpath ${sb(p)})`).join(' ')})`,
+    // Every other project the app knows, wherever it lives (/Users/Shared, an external drive): this one only.
+    ...(o.otherProjects?.length ? [`(deny file-read-data ${o.otherProjects.map(p => `(subpath ${sb(p)})`).join(' ')})`, `(allow file-read-data (subpath ${sb(project)}))`] : []),
     // Participant data and credentials: contents unreadable (a folder's existence still shows).
     `(deny file-read-data (regex #"${PARTICIPANT_REGEX}") ${secrets.map(p => `(subpath ${sb(p)})`).join(' ')})`,
     // (No exception for OpenCode's tool-output folder: it is shared by all projects and can hold the output
@@ -178,6 +183,7 @@ export function macosAgentProfile(o: { project: string; kernelHome: string; secr
     // Writes: the project and temp folders only ...
     '(deny file-write*)',
     `(allow file-write* (subpath ${sb(project)}) ${temps.map(t => `(subpath ${sb(t)})`).join(' ')} (literal "/dev/null") (literal "/dev/zero") (literal "/dev/tty") (literal "/dev/ptmx") (literal "/dev/dtracehelper") (subpath "/dev/fd") (regex #"^/dev/ttys[0-9]+$"))`,
+    ...(o.otherProjects?.length ? [`(deny file-write* ${o.otherProjects.map(p => `(subpath ${sb(p)})`).join(' ')})`, `(allow file-write* (subpath ${sb(project)}))`] : []),
     // ... except participant data, the agent's own configuration, any .git (its config and hooks run code
     // later, outside this sandbox; replacing .git with a `gitdir:` file is a write to that path too), the
     // search-ignore files that keep participant data out of OpenCode's grep/glob, and the app's files.
@@ -204,7 +210,8 @@ export function runtimeRoot(bin: string): string {
 export function macosKernelProfile(o: { project: string; kernelHome?: string; home?: string; secretPaths?: string[]; projectsRoots?: string[]; socket?: string; agentShellDir?: string }): string {
   const project = real(o.project)
   const home = real(o.home ?? homedir())
-  // Projects folders (other projects live there); never the home folder itself or the project's own folder.
+  // Projects folders and every other known project (known-projects.ts); never the home folder itself or
+  // the project's own folder.
   const roots = [...new Set((o.projectsRoots ?? []).map(real))].filter(r => r !== home && r !== '/' && !within(project, r))
   const secrets = [...HOME_SECRETS.map(d => join(home, d)), ...(o.secretPaths ?? []).map(real)]
   return [
@@ -384,7 +391,7 @@ export function prepareAgentShell(o: AgentShellOptions): AgentShell {
   const temps = tempRoots(platform)
   const shell = join(dir, basename(realShell)) // same name, so OpenCode treats it as that shell
   if (kind === 'sandbox-exec') {
-    writeFileSync(join(dir, 'profile.sb'), macosAgentProfile({ project, kernelHome: o.kernelHome, secretPaths: o.secretPaths, home: o.home, temps, runtimeBin, socket: o.socket }), { mode: 0o600 })
+    writeFileSync(join(dir, 'profile.sb'), macosAgentProfile({ project, kernelHome: o.kernelHome, secretPaths: o.secretPaths, home: o.home, temps, runtimeBin, socket: o.socket, otherProjects: o.otherProjects ?? otherProjectRoots(project, { home: o.home }) }), { mode: 0o600 })
     if (o.socket) {
       const inner = join(dir, 'inner.sh')
       writeFileSync(inner, macosWrapper({ dir, project, realShell, runtimeBin }), { mode: 0o700 })

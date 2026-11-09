@@ -20,6 +20,7 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { KernelPermission } from './types'
 import { HELPER_FORBIDDEN, PARTICIPANT_DATA_DIRS, searchIgnoreInstalled } from './agent-sandbox'
+import { otherProjectRoots } from './known-projects'
 
 export type PolicyDecision = 'allow' | 'ask' | 'deny'
 export interface PolicyVerdict { decision: PolicyDecision; reason?: string }
@@ -44,6 +45,8 @@ export interface PolicyContext {
   /** OpenCode's truncated tool output files this project's own calls produced (opencode.ts); any other
    *  file in the shared tool-output folder is another project's, or an approved command's (deleted). */
   toolOutputs?: () => ReadonlySet<string>
+  /** Other projects' folders (known-projects.ts): the projects root and every project the app knows. */
+  otherProjects?: string[]
   /** The kernel's data folder: every project's conversations (opencode.db), snapshots and tool output. */
   kernelData?: string
   /** Participant-data folders under a search root (tests replace it). */
@@ -108,7 +111,7 @@ export function defaultPolicyContext(dir: string, kernelHome?: string, env: Node
   const runtime = env.HUMANSTUDY_RUNTIME_BIN?.trim()
   if (runtime) allowedRoots.push(dirname(runtime))
   if (env.HUMANSTUDY_RELAY_DIR) secretPaths.push(env.HUMANSTUDY_RELAY_DIR)
-  return { dir, allowedRoots, secretPaths, osSandbox, searchIgnore: () => searchIgnoreInstalled(dir), ...(kernelHome ? { kernelData: join(kernelHome, 'data') } : {}) }
+  return { dir, allowedRoots, secretPaths, osSandbox, searchIgnore: () => searchIgnoreInstalled(dir), otherProjects: otherProjectRoots(dir), ...(kernelHome ? { kernelData: join(kernelHome, 'data') } : {}) }
 }
 
 /** Case-insensitive containment (macOS and Windows file systems ignore case). */
@@ -120,7 +123,7 @@ const relTo = (root: string, p: string): string => relative(root.toLowerCase(), 
 
 /** secret: the app's own credentials (denied); credential: key files and folders (asked); config: the
  *  agent's own configuration inside the project (editing it asks). */
-type Where = 'project' | 'config' | 'sensitive' | 'allowed' | 'outside' | 'credential' | 'secret' | 'conversations'
+type Where = 'project' | 'config' | 'sensitive' | 'allowed' | 'outside' | 'credential' | 'secret' | 'conversations' | 'other-project'
 
 /** Expand `~`, `$HOME` and `${HOME}` at the start of a path. */
 function expandHome(p: string, home: string): string {
@@ -129,7 +132,7 @@ function expandHome(p: string, home: string): string {
   return m ? join(home, p.slice(m[0].length)) : p
 }
 
-const RANK: Record<Where, number> = { project: 0, allowed: 1, config: 2, outside: 3, conversations: 3.5, sensitive: 4, credential: 5, secret: 6 }
+const RANK: Record<Where, number> = { project: 0, allowed: 1, config: 2, outside: 3, conversations: 3.5, 'other-project': 3.6, sensitive: 4, credential: 5, secret: 6 }
 
 function classifyAbs(ctx: PolicyContext, abs: string, real: (p: string) => string): Where {
   const home = ctx.home ?? homedir()
@@ -141,6 +144,7 @@ function classifyAbs(ctx: PolicyContext, abs: string, real: (p: string) => strin
   if (isSensitiveRelative(abs)) return 'sensitive' // participant data anywhere (other projects too)
   const dir = roots(ctx.dir).find(x => within(x, abs))
   if (dir !== undefined) return AGENT_CONFIG.test(relTo(dir, abs)) ? 'config' : 'project'
+  if ((ctx.otherProjects ?? []).some(inside)) return 'other-project'
   // The kernel's data first (it may sit under an allowed temp folder): this project's own tool output only.
   if (ctx.toolOutputs?.().has(abs)) return 'allowed'
   if (ctx.kernelData && inside(ctx.kernelData)) return 'conversations'
@@ -172,6 +176,7 @@ const pathVerdict = (where: Where, what: string, writing = false): PolicyVerdict
     : where === 'credential' ? { decision: 'ask', reason: `a key or credential file (${what})` }
     : where === 'sensitive' ? { decision: 'ask', reason: `participant data (${what})` }
       : where === 'outside' ? { decision: 'ask', reason: `outside the project folder (${what})` }
+      : where === 'other-project' ? { decision: 'ask', reason: `another project (${what})` }
       : where === 'conversations' ? { decision: 'ask', reason: `another project's conversations, snapshots or tool output, kept by the app's agent (${what})` }
         : where === 'config' && writing ? { decision: 'ask', reason: `changes the agent's own configuration (${what})` }
           : { decision: 'allow' }
