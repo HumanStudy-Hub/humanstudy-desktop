@@ -677,6 +677,8 @@ test('review 4 S3: the sync guard refuses study surnames and id shapes anywhere 
     ['msg = "Zorbel (2019) found"\n', /study surname Zorbel/],                         // "Surname (year)"
     ["q = '\"\"\"'\nnote = 'see zorbel'\n", /render\.py:2: study surname zorbel/],     // after an odd triple quote
     ['{"description": "after Zorbel et al."}\n', /study surname Zorbel/],             // JSON text
+    ['def getZorbel(): pass\n', /study surname Zorbel/],                              // CamelCase, after
+    ['ZorbelItems = []\n', /study surname Zorbel/],                                   // CamelCase, before
   ]) {
     const r = guard(text)
     assert.notEqual(r.status, 0, text)
@@ -701,14 +703,14 @@ test('review 4 S1: the trusted run copy holds the engine, the run skill, the san
   assert.ok(rels.every((rel) => !rel.startsWith('skills/simulate/')), 'not the package runners')
   const index = readFileSync(join(here, 'index.ts'), 'utf8')
   const send = index.slice(index.indexOf("ipcMain.handle('kernel:send'"))
-  assert.match(send, /if \(route === 'protocol'\) await startProtocolRun\(id, projectDir, approved, binding as ProtocolBinding, relay\)/)
-  assert.match(send, /await startProtocolRun\(id, projectDir, approved, binding\)/, 'the pre-relay path too')
+  assert.match(send, /if \(route === 'protocol'\) await startProtocolRun\(projectDir, approved, binding as ProtocolBinding, relay,/)
+  assert.match(send, /await startProtocolRun\(projectDir, approved, binding, undefined,/, 'the pre-relay path too')
   assert.match(index, /files: trustedRunFiles\(\), codeDir: join\(app\.getPath\('userData'\), 'protocol-runs', binding\.runId\)/, 'code outside the project')
   const skill = readFileSync(join(packDir, 'skills/run/SKILL.md'), 'utf8')
   assert.match(skill, /Do not start, restart or copy a protocol run yourself/)
 })
 
-test('review 4 S2: an official verdict on an unverified human n says so, in the headline and the paragraph', { skip: !python311 }, async () => {
+test('review 4 S2 / review 5: an official verdict on an unverified human n says so, consistently, in the headline and the paragraph', { skip: !python311 }, async () => {
   const proj = await protocolProject()
   const r = spawnSync(python311, ['-B', '-c', `import sys, json; sys.path.insert(0, '.opencode/skills/run'); import protocol_report as P
 run = lambda arms, passed: {"evaluation": {"plan": {"official": True, "n_unverified_arms": arms}, "rewards": {"direction_match-v2": {"passed": passed}}}}
@@ -718,14 +720,45 @@ print(json.dumps({"verified": P.outcome([], run([], True)), "unverified": P.outc
   assert.equal(r.status, 0, r.stderr)
   const o = JSON.parse(r.stdout)
   assert.deepEqual([o.verified, o.unverified, o.unverified_no], ['agree', 'agree_unverified', 'disagree_unverified'])
-  assert.match(o.para, /on an unverified human n \(the paper's printed n, no analysed n, in control, treatment\): the engine's direction check agreed/)
+  assert.match(o.para, /On the paper's printed n, not verified \(no analysed n in control, treatment\): the engine's direction check agreed/)
   assert.match(o.para_verified, /Official n \(the paper's analysed n in every arm\): the engine's direction check did not agree/)
   const dictOut = mkdtempSync(join(tmpdir(), 'dict-'))
   await build({ entryPoints: [join(here, '../renderer/i18n-dict.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(dictOut, 'dict.mjs'), logLevel: 'error' })
   const { EN, ZH } = await import(pathToFileURL(join(dictOut, 'dict.mjs')).href)
   for (const k of ['sim.outcome.agree_unverified', 'sim.outcome.disagree_unverified']) {
-    assert.match(EN[k], /on an unverified human n$/); assert.ok(ZH[k])
+    assert.match(EN[k], /\(paper’s printed n, not verified; engine check\)$/); assert.ok(ZH[k])
   }
   const css = readFileSync(join(here, '../renderer/styles.css'), 'utf8')
   for (const c of ['o-agree', 'o-disagree', 'o-agree_unverified', 'o-disagree_unverified']) assert.ok(css.includes('.sim-outcome.' + c), c)
+})
+
+test('review 5 M1/S3: app_run plays the plan the app approved, refuses another plan.json, and refuses a protocol swapped before the engine loads it', { skip: !python311 }, async () => {
+  const { proj, run } = await runFixture(2)
+  const hash = sha(join(proj, 'protocol.json'))
+  const approvedPlan = JSON.stringify({ route: 'protocol', protocolSha256: hash, perArm: 2, arms: null, seeds: [1], temperature: 1 })
+  const bound = { HUMANSTUDY_RUN_ROUTE: 'protocol', HUMANSTUDY_RUN_ID: 'm1', HUMANSTUDY_RUN_PROTOCOL_SHA256: hash, HUMANSTUDY_RUN_APPROVED_AT: String(Date.now()), HUMANSTUDY_RUN_PLAN: approvedPlan }
+  const plan = JSON.parse(readFileSync(join(proj, run, 'plan.json'), 'utf8'))
+  writeFileSync(join(proj, run, 'plan.json'), JSON.stringify({ ...plan, perArm: 7, seeds: [1, 2, 3], temperature: 0 }))
+  assert.match(last(play(proj, run, { env: bound })).refused, /plan\.json in the run folder is not the approved plan/)
+  writeFileSync(join(proj, run, 'plan.json'), JSON.stringify(plan))
+  // The engine loads protocol.json again after the hash check: a swap in between is caught and nothing is reported.
+  const r = spawnSync(python311, ['-B', '-c', `import sys, json; from pathlib import Path
+sys.path.insert(0, '.opencode/skills/run'); import app_run, run_study
+orig = run_study.load_protocol
+def swapped(arg):
+    p, sha, d, v = orig(arg)
+    return p, 'f' * 64, d, v
+run_study.load_protocol = swapped
+try:
+    app_run.main_run(Path(sys.argv[1]).resolve(), Path('.').resolve(), complete=lambda m: '{}', model='stub')
+except SystemExit as e:
+    print(json.dumps({'refused': str(e)}))`, run], { cwd: proj, encoding: 'utf8', env: { PATH: process.env.PATH, ...bound } })
+  assert.match(last(r).refused, /protocol\.json changed while the run started/)
+  assert.equal(JSON.parse(readFileSync(join(proj, run, 'progress.json'), 'utf8')).stage, 'failed')
+  assert.ok(!existsSync(join(proj, run, 'results.html')))
+  // A variant is not part of the approval.
+  writeFileSync(join(proj, 'variant.json'), '{}')
+  const { proj: p2, run: r2 } = { proj, run: 'artifacts/simulations/other' }
+  mkdirSync(join(p2, r2), { recursive: true }); writeFileSync(join(p2, r2, 'plan.json'), JSON.stringify(plan))
+  assert.match(last(play(p2, r2, { env: bound })).refused, /variant/)
 })

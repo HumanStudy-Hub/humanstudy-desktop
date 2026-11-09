@@ -143,7 +143,7 @@ def paragraph(table: list[dict], run: dict, partial: bool = False) -> str:
         reward = direction_reward(run) or {}
         if reward.get("passed") is not None:
             arms = unverified_n(run)
-            s += ((" Official n, but on an unverified human n (the paper's printed n, no analysed n, in %s): "
+            s += ((" On the paper's printed n, not verified (no analysed n in %s): "
                    % ", ".join(map(str, arms))) if arms else " Official n (the paper's analysed n in every arm): ") + (
                 f"the engine's direction check {'agreed' if reward['passed'] else 'did not agree'} with the paper.")
     else:

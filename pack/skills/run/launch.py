@@ -33,7 +33,7 @@ def main():
     env = {"HUMANSTUDY_PROJECT_DIR": str(project), "HSENV_PRIVATE_CONFIG": "",
            "HUMANSTUDY_LLM_USAGE_LOG": str(run_dir / "llm-usage.jsonl")}
     for name in ("HUMANSTUDY_RUN_ROUTE", "HUMANSTUDY_RUN_ID", "HUMANSTUDY_RUN_PROTOCOL_SHA256", "HUMANSTUDY_RUN_APPROVED_AT",
-                 "HUMANSTUDY_LLM_MAX_OUTPUT"):
+                 "HUMANSTUDY_RUN_PLAN", "HUMANSTUDY_LLM_MAX_OUTPUT"):
         if os.environ.get(name):
             env[name] = os.environ[name]
     base, token = os.environ.get("HS_RELAY_BASEURL", ""), os.environ.get("HS_RELAY_TOKEN", "")
@@ -75,4 +75,20 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit as e:   # a refusal says why in run.log, which the app quotes when it marks the run failed
+        if e.code not in (None, 0) and not isinstance(e.code, int):
+            try:
+                with open(Path(sys.argv[1]) / "run.log", "a", encoding="utf-8") as fh:
+                    fh.write("refused: %s\n" % e.code)
+            except OSError:
+                pass
+        raise
+    except Exception as e:   # noqa: BLE001
+        try:
+            with open(Path(sys.argv[1]) / "run.log", "a", encoding="utf-8") as fh:
+                fh.write("launch failed: %s: %s\n" % (type(e).__name__, e))
+        except OSError:
+            pass
+        raise SystemExit(1)

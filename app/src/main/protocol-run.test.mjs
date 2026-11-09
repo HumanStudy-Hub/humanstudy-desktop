@@ -97,6 +97,8 @@ test('pre-relay path: the app runs the protocol from its trusted copy; agent-wri
     for (const rel of ['.opencode/skills/run/render.py', '.opencode/skills/run/app_run.py', '.opencode/hsenv/hsenv/engine.py', 'artifacts/simulations/json.py'])
       assert.ok(!existsSync(join(dir, rel + '.RAN')), rel + ' ran')
     assert.equal(JSON.parse(readFileSync(join(runDir, 'plan.json'), 'utf8')).startedBy, 'app')
+    await new Promise((res) => setTimeout(res, 200))
+    assert.ok(!existsSync(codeDir), 'the per-run code copy is removed when the run ends')
   } finally { server.close() }
 })
 
@@ -119,4 +121,61 @@ test('macOS: the app runs the protocol confined, through the relay only, and the
     await new Promise((res) => setTimeout(res, 100))
     assert.ok(closed, 'the run gave its model access back')
   } finally { await relay.close(); server.close() }
+})
+
+test('review 5 M1: a plan.json changed after the app wrote it is refused; the approved plan comes from the app', { skip: !python }, async () => {
+  const dir = project()
+  const server = await fakeModel()
+  try {
+    const runDir = R.newRunFolder(dir)
+    const binding = { route: 'protocol', runId: 'run-m1', approvedAt: Date.now(), protocolSha256: sha(join(dir, 'protocol.json')) }
+    const codeDir = join(out, 'code-m1')
+    // Launch, then (as a process of the same user could) rewrite plan.json before the run reads it: hold the
+    // child back by starting it on a Python that first waits for the edit.
+    const files = FILES.map(([rel, text]) => rel === 'skills/run/app_run.py'
+      ? [rel, text.replace('def approved_plan(run_dir: Path) -> dict:', 'def approved_plan(run_dir: Path) -> dict:\n    import time as _t\n    while not (run_dir / "EDITED").exists(): _t.sleep(0.05)')]
+      : [rel, text])
+    const child = await R.launchProtocolRun({ python, files, codeDir, project: dir, runDir, binding,
+      plan: { perArm: 2, arms: null, seeds: [1], temperature: 1 },
+      env: { PATH: process.env.PATH, HUMANSTUDY_HOSTED_BASEURL: `http://127.0.0.1:${server.address().port}/v1`, HUMANSTUDY_DESKTOP_KEY: 'fake-key', HUMANSTUDY_SIM_MODEL: 'stub' } })
+    const plan = JSON.parse(readFileSync(join(runDir, 'plan.json'), 'utf8'))
+    writeFileSync(join(runDir, 'plan.json'), JSON.stringify({ ...plan, perArm: 7, seeds: [1, 2, 3] }))
+    writeFileSync(join(runDir, 'EDITED'), '')
+    assert.notEqual(await exited(child), 0)
+    await new Promise((res) => setTimeout(res, 200))
+    const progress = JSON.parse(readFileSync(join(runDir, 'progress.json'), 'utf8'))
+    assert.equal(progress.stage, 'failed', 'the app marks a run that ended without a final stage (review 5, S2)')
+    assert.match(progress.message, /The run ended before it finished \(exit 1\)\..*not the approved plan/)
+    assert.ok(!existsSync(join(runDir, 'records.jsonl')), 'nobody was run')
+  } finally { server.close() }
+})
+
+test('review 5 S3/S4: a variant or a run folder outside the project is refused before anything starts', { skip: !python }, async () => {
+  const dir = project()
+  const binding = { route: 'protocol', runId: 'run-s', approvedAt: Date.now(), protocolSha256: sha(join(dir, 'protocol.json')) }
+  const plan = { perArm: 2, arms: null, seeds: [1], temperature: 1 }
+  writeFileSync(join(dir, 'variant.json'), '{"variant_of": {"study_dir": "/elsewhere"}}')
+  await assert.rejects(R.launchProtocolRun({ python, files: FILES, codeDir: join(out, 'code-v'), project: dir, runDir: R.newRunFolder(dir), binding, plan }), /variant/)
+  const { rmSync, symlinkSync } = await import('node:fs')
+  rmSync(join(dir, 'variant.json'))
+  const outside = mkdtempSync(join(tmpdir(), 'outside-'))
+  rmSync(join(dir, 'artifacts'), { recursive: true, force: true })
+  mkdirSync(join(dir, 'artifacts'))
+  symlinkSync(outside, join(dir, 'artifacts/simulations'))
+  const runDir = R.newRunFolder(dir)
+  await assert.rejects(R.launchProtocolRun({ python, files: FILES, codeDir: join(out, 'code-l'), project: dir, runDir, binding, plan }), /outside the project/)
+  assert.deepEqual(readdirSync(outside), [], 'nothing was written outside')
+})
+
+test('review 5 S2: a launcher that fails before the run writes progress leaves the run marked failed', { skip: !python }, async () => {
+  const dir = project()
+  const runDir = R.newRunFolder(dir)
+  const binding = { route: 'protocol', runId: 'run-f', approvedAt: Date.now(), protocolSha256: sha(join(dir, 'protocol.json')) }
+  const child = await R.launchProtocolRun({ python, files: FILES, codeDir: join(out, 'code-f'), project: dir, runDir, binding,
+    plan: { perArm: 2, arms: null, seeds: [1], temperature: 1 }, relay: { baseURL: 'http://example.org/v1', token: 't', model: 'm', expiresAt: Date.now() + 60_000 } })
+  assert.notEqual(await exited(child), 0)
+  await new Promise((res) => setTimeout(res, 200))
+  const progress = JSON.parse(readFileSync(join(runDir, 'progress.json'), 'utf8'))
+  assert.equal(progress.stage, 'failed')
+  assert.match(progress.message, /invalid model relay/)
 })

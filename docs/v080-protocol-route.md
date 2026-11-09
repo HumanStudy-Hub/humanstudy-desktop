@@ -16,7 +16,8 @@ upstream `studies/`, read at sync time, case-insensitive; no folder means no syn
 - `LEGACY_*` tables written out as data;
 - ids shaped like a study (letters plus a year, with or without a topic, any case);
 - a study's surname anywhere in a vendored file: code, strings, comments, JSON. Surnames of 4 letters or more
-  count everywhere, also as part of an identifier. Shorter ones count only next to a year or "et al";
+  count everywhere, also as part of an identifier and in CamelCase compounds (`getSurname`, `SurnameItems`).
+  Shorter ones count only next to a year or "et al";
 - local home paths.
 
 `--check` runs the guard alone and copies nothing (review 4, S3). The
@@ -81,8 +82,10 @@ checked offline; plus `summary.json`), `budget.py` and `launch.py`.
 **Who starts a run (review 4, S1).** The main process starts it, never the agent. When the researcher presses
 Run simulation and the approval passes, `kernel:send` does three things:
 1. starts the relay (macOS);
-2. creates `artifacts/simulations/<stamp>/` with `plan.json` (`"startedBy": "app"`, the approved n and the
-   SHA-256 of protocol.json the app read itself) and the run's salt in `<runs>/.operator/`;
+2. creates a new `artifacts/simulations/<stamp>/` with `plan.json` (`"startedBy": "app"`, the approved n and the
+   SHA-256 of protocol.json the app read itself) and the run's salt in `<runs>/.operator/`. It refuses when the
+   folder's real path leaves the project (a linked `artifacts/simulations`), or when the project holds a
+   `variant.json`, which the approval does not cover;
 3. writes its trusted copy of the code (`trustedRunFiles()`: the engine, the run skill, `sandbox_run.py`, the
    kit) to app storage outside the project (`userData/protocol-runs/<runId>/`) and starts `launch.py` from it.
 
@@ -90,9 +93,22 @@ Run simulation and the approval passes, `kernel:send` does three things:
 - On macOS it is confined by sandbox-exec (`sandbox_run.run_python`). It writes only to its run folder, reaches
   the network only through the relay port, and hands the capability back when it finishes.
 - On Linux and Windows it runs unconfined, with the app's simulation environment, as package runs do there.
-- When it exits, the relay closes.
+- When it exits, its own relay closes, never a later run's (owner-checked, `run-registry.ts`; review 5, M2). The
+  per-run code copy is deleted.
+- If it ends before writing a final stage, the app marks the run `failed` with the end of `run.log`, so the tab and
+  the agent stop waiting. This covers a refusal, a broken runtime or an invalid relay (review 5, S2).
 - The run's sys.path is the trusted run skill and engine plus the runtime's site-packages. `-I` keeps the working
   folder, PYTHONPATH and the user site out. The project and the run folder are data, never code.
+- The plan is bound (review 5, M1). The main process hands the approved plan to the run in its environment
+  (`HUMANSTUDY_RUN_PLAN`): route, protocol hash, n per arm, arms, seeds, temperature. That is what plays. A
+  plan.json that differs from it is refused, because any process of the user can rewrite that file.
+- After the engine has loaded protocol.json, app_run checks again that its hash is the approved one. A swap in
+  between ends the run `failed`, and nothing is reported from it (review 5, S3).
+
+**Trust boundary (review 5, S6).** The boundary is the project: the files the agent edits without asking. The
+code copy in app storage and the runtime's site-packages are outside it. They are still the same user's files, and
+an approved shell command could change them while a run is going. The app does not defend against the user's own
+approved commands.
 - A test plants agent code in `.opencode/skills/run/`, `.opencode/hsenv/` and `artifacts/simulations/`. None of
   it runs.
 
@@ -124,9 +140,18 @@ one call per page, and each prompt carries every earlier page and answer.
   becomes `failed` with "Partial run: k of n …". The page carries "PARTIAL RUN — not the planned n" and
   summary.json says `not_ready`.
 
-**Binding and stop (S6, S7).** The relay descriptor the app writes carries the approval's `route`, the SHA-256 of
+**Binding and stop (S6, S7).** A package run's relay descriptor carries the approval's `route`, the SHA-256 of
 protocol.json as the app read it at approval, a fresh `runId` and `approvedAt`. run_confined.py hands them to the
-run:
+run.
+
+A protocol run's relay writes no descriptor (review 5, M3). The app hands the capability to `launch.py` directly,
+so the agent never holds that token and cannot spend it or end the run with `/run/complete`.
+
+One leak remains: `launch.py` and the confined run hold the token in their environment from the start, and on
+macOS a process of the same user can read another process's environment (`sysctl KERN_PROCARGS2`). Closing it
+would mean passing the token on a pipe; that is not done.
+
+The binding checks:
 - `app_run` refuses a package-route capability or another protocol version;
 - simkit refuses a protocol-route capability;
 - a stopped run (STOP or progress `stopped`) restarts only under an approval given after the stop, recorded in
@@ -135,16 +160,20 @@ run:
 The agent cannot forge the descriptor. Since review 4 (S1) the code that checks it and computes the scores also
 runs from the app's trusted copy, not from the project. `refreshAppOwned` still puts the project's `.opencode` copy
 back at the shipped version before every approved run. That keeps the agent's own tools honest. It is not what
-binds the run: an agent could edit that copy again afterwards. The relay's token cap remains the hard bound on
-spend in every case.
+binds the run: an agent could edit that copy again afterwards.
+
+On macOS the relay's token cap is the hard bound on spend. On Linux and Windows there is no relay and no cap: the
+run uses the signed-in key, as package runs do there. The run confirmation says so. The app allows one protocol run
+per project at a time, and holds that claim until the run's process exits (review 5, S5).
 
 **One runner per run folder (review 3, S2).** `app_run` takes an OS lock on `<run>/run.lock` for the life of its
 process (fcntl, or msvcrt on Windows), with its pid and start time written in.
 - A second start under the same approval or a new one refuses while the first process lives.
-- A resume after Stop waits up to 120 s for the stopped process to exit, then runs. A Stop is dated by when the
-  researcher asked (`stopRequestedAt` = STOP's time, written into progress.json with `stopped`), not by when the
-  stopped process finished writing (review 4, M1). Only a process still alive after 120 s makes the resume
-  refuse, with a plain message.
+- Each approval from the Simulation tab is a new run in a new folder. Stop followed by Run starts a fresh run,
+  and the stopped folder keeps its partial data. A stopped folder resumes only when someone restarts it by hand
+  (`app_run.py run`) under a new approval. That resume waits up to 120 s for the stopped process to exit, then
+  runs. A Stop is dated by when the researcher asked (`stopRequestedAt` = STOP's time, written into progress.json
+  with `stopped`), not by when the stopped process finished writing (review 4, M1).
 - The lock is released however the process ends.
 
 **Private engine config (review 3, S4).** `HSENV_PRIVATE_CONFIG=''` is set on every desktop path: the readiness
@@ -174,17 +203,22 @@ table:
   and its paragraph says "Offline report · non_official … no pass/fail";
 - an official run takes the engine's `direction_match` verdict, worded as direction agreement ("Directions agreed /
   did not agree with the paper (official n, engine check)"), never as "showed the effect". When the plan lists
-  `n_unverified_arms` (the paper's printed n, no analysed n), the headline and the paragraph add "on an unverified
-  human n" (review 4, S2).
+  `n_unverified_arms` (the paper's printed n, no analysed n), both the headline and the paragraph say so: the
+  headline reads "(paper's printed n, not verified; engine check)" and the paragraph "On the paper's printed n, not
+  verified …" (review 4, S2; review 5).
 
 A partial run never shows `done`. The app holds run_study's own `done` back, writes `failed` before it builds the
 page, and keeps `failed` if the page cannot be written. A partial page shows no pass/fail: each reward reads "no
 verdict (partial run)" and the text report is left out. The token cap is detected by `HTTP 402` or "token cap", not
 by any "402".
 
-**Relay refunds (review 4, S5).** When the provider rejects a call (a non-2xx answer), the relay gives back that
-call's reservation and logs a `refunded` event. A provider outage, during which humanstudy_llm retries each 502 up to
-six times, therefore no longer uses up the run's budget.
+**Relay refunds (review 4, S5; review 5, S1).** The relay gives a call's reservation back only when the provider did
+not process it, and logs a `refunded` event:
+- a 400, 401, 403, 404, 413, 422 or 429 answer;
+- a connection refused or a name that does not resolve.
+
+A 500, 502, 504 or a timeout may come after the model ran and billed, so it is never refunded. Total refunds per
+run never exceed the cap.
 
 **Like with like (S8).** The results page compares directions only when the paper's metric is the engine's metric:
 cells give a risk or mean difference, then an estimate in the same metric, then a printed value with its stated

@@ -5,8 +5,9 @@
 import { spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
+import { realpath, stat } from 'node:fs/promises'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, sep } from 'node:path'
 
 export interface ProtocolRunPlan { perArm: number; arms: string[] | null; seeds: number[]; temperature: number }
 export interface RelayAccess { baseURL: string; token: string; model: string; expiresAt: number }
@@ -22,10 +23,38 @@ export function newRunFolder(project: string, now = new Date()): string {
   }
 }
 
-/** plan.json exactly as app_run.py reads it, from the approved plan and the hash the app read itself. */
+/** The approved plan: what app_run plays. The main process hands it to the run in its environment
+ *  (HUMANSTUDY_RUN_PLAN), and app_run refuses a plan.json that differs (review 5, M1). */
+export function approvedPlan(binding: Binding, plan: ProtocolRunPlan) {
+  return { route: 'protocol' as const, protocolSha256: binding.protocolSha256, perArm: plan.perArm, arms: plan.arms,
+    seeds: plan.seeds, temperature: plan.temperature }
+}
+
+/** plan.json as app_run.py reads it: the approved plan, as a record in the run folder. */
 export function planJson(binding: Binding, plan: ProtocolRunPlan): string {
-  return JSON.stringify({ route: 'protocol', protocolSha256: binding.protocolSha256, perArm: plan.perArm, arms: plan.arms,
-    seeds: plan.seeds, temperature: plan.temperature, startedBy: 'app' }, null, 1) + '\n'
+  return JSON.stringify({ ...approvedPlan(binding, plan), startedBy: 'app' }, null, 1) + '\n'
+}
+
+/** The run folder must stay inside the project, whatever links the project holds (review 5, S4). */
+export async function checkInside(project: string, runDir: string): Promise<void> {
+  const root = await realpath(project)
+  const parent = await realpath(dirname(runDir))
+  if (parent !== root && !parent.startsWith(root + sep))
+    throw Error('artifacts/simulations leads outside the project, so the run was not started.')
+}
+
+const TERMINAL = new Set(['done', 'failed', 'stopped'])
+/** A run that ended without a final stage (it was refused or broke before it could write one) is marked failed
+ *  with the end of its log, so the tab and the agent stop waiting (review 5, S2). */
+export async function markEnded(runDir: string, code: number | null): Promise<void> {
+  let progress: Record<string, unknown> = {}
+  try { progress = JSON.parse(await readFile(join(runDir, 'progress.json'), 'utf8')) } catch { /* none yet */ }
+  if (TERMINAL.has(String(progress.stage))) return
+  const log = await readFile(join(runDir, 'run.log'), 'utf8').catch(() => '')
+  const tail = log.trim().split('\n').filter(Boolean).slice(-3).join(' ').slice(-300)
+  const now = new Date().toISOString().slice(0, 19) + 'Z'
+  await writeFile(join(runDir, 'progress.json'), JSON.stringify({ done: 0, total: 0, failed: 0, conditions: [], ...progress, stage: 'failed',
+    runner: 'exited', updatedAt: now, message: `The run ended before it finished (exit ${code ?? 'unknown'}).${tail ? ' ' + tail : ''}` }, null, 1))
 }
 
 /** Write the trusted code into `codeDir` (fresh) and start launch.py; resolves with the child once it runs.
@@ -38,13 +67,18 @@ export async function launchProtocolRun(o: {
   const bytes = await readFile(join(o.project, 'protocol.json'))
   if (createHash('sha256').update(bytes).digest('hex') !== o.binding.protocolSha256)
     throw Error('The study changed after approval. Review the simulation scope again.')
+  // A variant (variant.json) is not the original experiment and is not part of the approval: not on this path.
+  if (await stat(join(o.project, 'variant.json')).then(() => true, () => false))
+    throw Error('This project holds a variant (variant.json); variants are not run from the Simulation tab.')
   await rm(o.codeDir, { recursive: true, force: true })
   for (const [rel, content] of o.files) {
     const path = join(o.codeDir, ...rel.split('/'))
     await mkdir(dirname(path), { recursive: true })
     await writeFile(path, content, 'utf8')
   }
-  await mkdir(o.runDir, { recursive: true })
+  await mkdir(dirname(o.runDir), { recursive: true })
+  await checkInside(o.project, o.runDir)
+  await mkdir(o.runDir)
   await writeFile(join(o.runDir, 'plan.json'), planJson(o.binding, o.plan), { flag: 'wx' })
   // run_study keeps the run's secret salt (opaque participant ids are HMACs under it) outside the run folder, in
   // <runs>/.operator/<run>.salt. The confined run may write only its run folder, so the app makes it here.
@@ -55,12 +89,21 @@ export async function launchProtocolRun(o: {
     ...(o.env ?? { PATH: process.env.PATH }), HSENV_PRIVATE_CONFIG: '',
     HUMANSTUDY_RUN_ROUTE: 'protocol', HUMANSTUDY_RUN_ID: o.binding.runId, HUMANSTUDY_RUN_APPROVED_AT: String(o.binding.approvedAt),
     HUMANSTUDY_RUN_PROTOCOL_SHA256: o.binding.protocolSha256,
+    HUMANSTUDY_RUN_PLAN: JSON.stringify(approvedPlan(o.binding, o.plan)),
     ...(o.relay ? { HS_RELAY_BASEURL: o.relay.baseURL, HS_RELAY_TOKEN: o.relay.token, HS_RELAY_MODEL: o.relay.model, HS_RELAY_EXPIRES_AT: String(o.relay.expiresAt) } : {}),
   }
   delete env.PYTHONPATH; delete env.PYTHONHOME; delete env.PYTHONSTARTUP
   const child = spawn(o.python, ['-I', '-B', '-X', 'utf8', join(o.codeDir, 'skills', 'run', 'launch.py'), o.runDir, o.project, o.codeDir],
     { cwd: o.runDir, env, stdio: 'ignore', detached: process.platform !== 'win32', windowsHide: true })
-  child.once('exit', (code) => o.onExit?.(code))
-  child.once('error', () => o.onExit?.(null))
+  let ended = false
+  const end = async (code: number | null) => {
+    if (ended) return
+    ended = true
+    if (code !== 0) await markEnded(o.runDir, code).catch(() => undefined)
+    await rm(o.codeDir, { recursive: true, force: true }).catch(() => undefined)   // per-run copy: gone with the run
+    o.onExit?.(code)
+  }
+  child.once('exit', (code) => void end(code))
+  child.once('error', () => void end(null))
   return child
 }

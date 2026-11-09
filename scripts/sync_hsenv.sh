@@ -43,6 +43,9 @@ long_rx = re.compile(r"(?<![A-Za-z])(" + "|".join(map(re.escape, [x for x in sur
     if any(len(x) >= 4 for x in surnames) else None
 short_rx = re.compile(r"(?<![A-Za-z])(" + "|".join(map(re.escape, [x for x in surnames if len(x) < 4])) +
                       r")(?:[\s_,(]*(?:19|20)\d\d|\s+et\s+al)", re.I) if any(len(x) < 4 for x in surnames) else None
+# CamelCase compounds (getZorbel, ZorbelItems): the capitalised surname on a case boundary (review 5)
+camel_rx = re.compile(r"(?<![A-Z])(" + "|".join(map(re.escape, [x.capitalize() for x in surnames if len(x) >= 4])) + r")(?![a-z])") \
+    if any(len(x) >= 4 for x in surnames) else None
 # an id shaped like a study folder: letters + a year, with or without a topic, any case
 id_rx = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]{2,}(?:19|20)\d\d[A-Za-z]*(?![A-Za-z0-9])")
 
@@ -53,7 +56,7 @@ for f in files:
     line = lambda m: text.count(chr(10), 0, m.start()) + 1
     for m in names_rx.finditer(text):
         bad.append(f"{f}:{line(m)}: study folder name {m.group(0)}")
-    for rx in (long_rx, short_rx):
+    for rx in (long_rx, short_rx, camel_rx):
         for m in (rx.finditer(text) if rx else ()):
             bad.append(f"{f}:{line(m)}: study surname {m.group(0)}")
     # a LEGACY_* table written out as data (a literal opening with a string or number); a table built from the

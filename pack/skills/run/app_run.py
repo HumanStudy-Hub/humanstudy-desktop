@@ -102,11 +102,35 @@ def binding() -> dict:
     return out
 
 
+PLAN_KEYS = ("route", "protocolSha256", "perArm", "arms", "seeds", "temperature")
+
+
+def approved_plan(run_dir: Path) -> dict:
+    """The plan to play. When the app started the run it hands over the approved plan itself (HUMANSTUDY_RUN_PLAN,
+    set by the main process from the approval it checked): that is what runs, and plan.json in the run folder, which
+    any process of the user can rewrite, must say exactly the same or the run is refused (review 5, M1). Without
+    it (the agent path on Linux/Windows) plan.json is the plan."""
+    on_disk = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
+    given = os.environ.get("HUMANSTUDY_RUN_PLAN")
+    if not given:
+        return on_disk
+    try:
+        approved = json.loads(given)
+    except ValueError:
+        raise Refused("the app's approved plan is unreadable: the run was not started")
+    if any(on_disk.get(k) != approved.get(k) for k in PLAN_KEYS):
+        raise Refused("plan.json in the run folder is not the approved plan (it was changed after the app wrote it): "
+                      "the run was not started")
+    return {**on_disk, **{k: approved.get(k) for k in PLAN_KEYS}}
+
+
 def check_approval(run_dir: Path, project: Path, plan: dict, bound: dict) -> str:
     """-> the protocol's SHA-256, after checking the plan, the file and the app's binding agree (review 2, S6)."""
     actual = sha256(project / "protocol.json")
     if actual != plan.get("protocolSha256"):
         raise Refused("protocol.json changed after approval: ask the researcher to press Run simulation again")
+    if bound and (project / "variant.json").exists():
+        raise Refused("this project holds a variant (variant.json), which is not part of the approval: not run")
     if bound:
         if bound.get("route") != "protocol":
             raise Refused("this run was approved for the package, not for protocol.json")
@@ -294,7 +318,7 @@ def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, m
     """Play the approved plan. `complete` (messages -> text) and `model` replace the app's model client in tests.
     A run is `done`, with a results page, only when every planned participant finished without a failed model
     call; otherwise it ends `failed` and any page it writes is labelled partial (review 2, M3)."""
-    plan = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
+    plan = approved_plan(run_dir)
     bound = binding()
     check_approval(run_dir, project, plan, bound)
     at = None if trial else stopped_at(run_dir)
@@ -313,7 +337,9 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
         check_not_stopped(run_dir, plan, bound)
         if bound.get("runId") and bound["runId"] not in (plan.get("runIds") or []):
             plan.setdefault("runIds", []).append(bound["runId"])
-        (run_dir / "plan.json").write_text(json.dumps(plan, indent=1) + "\n", encoding="utf-8")
+        record = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
+        record.update({k: plan[k] for k in ("runIds", "resumedAfterStop") if k in plan})
+        (run_dir / "plan.json").write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
     if complete is None:
         from humanstudy_llm import model_name
         complete, model = relay_complete(plan.get("temperature", 1.0)), model_name()
@@ -336,6 +362,12 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
                              top_up=False)   # exactly the approved n: no extra sessions beyond the measured budget
     finally:
         run_study.baseline_cached, run_study.Progress.stage = original_cache, original_stage
+    # The protocol the engine actually loaded must be the approved one: run_study reads protocol.json again after
+    # check_approval hashed it (review 5, S3).
+    if meta.get("protocol_sha256") != plan.get("protocolSha256"):
+        write_progress(out, "failed", "protocol.json changed while the run started; nothing from this run is "
+                       "reported. Press Run simulation again.")
+        raise Refused("protocol.json changed while the run started")
     if meta.get("status") == "stopped" and not trial:
         return stopped(run_dir, meta, bound)
     if meta.get("status") != "done":
