@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { realpath, stat } from 'node:fs/promises'
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, sep } from 'node:path'
 
 export interface ProtocolRunPlan { perArm: number; arms: string[] | null; seeds: number[]; temperature: number }
@@ -53,8 +53,11 @@ export async function markEnded(runDir: string, code: number | null): Promise<vo
   const log = await readFile(join(runDir, 'run.log'), 'utf8').catch(() => '')
   const tail = log.trim().split('\n').filter(Boolean).slice(-3).join(' ').slice(-300)
   const now = new Date().toISOString().slice(0, 19) + 'Z'
-  await writeFile(join(runDir, 'progress.json'), JSON.stringify({ done: 0, total: 0, failed: 0, conditions: [], ...progress, stage: 'failed',
+  // Written whole and then renamed into place, so a reader never sees a half-written file (Windows readers poll it).
+  const tmp = join(runDir, `progress.json.${process.pid}.tmp`)
+  await writeFile(tmp, JSON.stringify({ done: 0, total: 0, failed: 0, conditions: [], ...progress, stage: 'failed',
     runner: 'exited', updatedAt: now, message: `The run ended before it finished (exit ${code ?? 'unknown'}).${tail ? ' ' + tail : ''}` }, null, 1))
+  await rename(tmp, join(runDir, 'progress.json'))
 }
 
 /** Write the trusted code into `codeDir` (fresh) and start launch.py; resolves with the child once it runs.

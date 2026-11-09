@@ -58,6 +58,8 @@ const fakeModel = async () => {
   return server
 }
 const exited = (child) => new Promise((res) => child.once('exit', res))
+// What a child needs on every platform: PATH, and on Windows SystemRoot (Python's sockets and random need it).
+const processEnv = () => ({ PATH: process.env.PATH, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) })
 
 test('a new run folder never reuses an existing one; plan.json comes from the approval and the app\'s hash', () => {
   const dir = mkdtempSync(join(tmpdir(), 'runs-'))
@@ -84,20 +86,24 @@ test('pre-relay path: the app runs the protocol from its trusted copy; agent-wri
     const runDir = R.newRunFolder(dir)
     const binding = { route: 'protocol', runId: 'run-1', approvedAt: Date.now(), protocolSha256: sha(join(dir, 'protocol.json')) }
     const codeDir = join(out, 'code-1')
-    const child = await R.launchProtocolRun({ python, files: FILES, codeDir, project: dir, runDir, binding,
+    let ended
+    const endedP = new Promise((res) => { ended = res })
+    await R.launchProtocolRun({ python, files: FILES, codeDir, project: dir, runDir, binding, onExit: (code) => ended(code),
       plan: { perArm: 3, arms: null, seeds: [1], temperature: 1 },
-      env: { PATH: process.env.PATH, HUMANSTUDY_HOSTED_BASEURL: `http://127.0.0.1:${server.address().port}/v1`, HUMANSTUDY_DESKTOP_KEY: 'fake-key', HUMANSTUDY_SIM_MODEL: 'stub' } })
-    assert.equal(await exited(child), 0, readFileSync(join(runDir, 'run.log'), 'utf8'))
+      env: { ...processEnv(), HUMANSTUDY_HOSTED_BASEURL: `http://127.0.0.1:${server.address().port}/v1`, HUMANSTUDY_DESKTOP_KEY: 'fake-key', HUMANSTUDY_SIM_MODEL: 'stub' } })
+    assert.equal(await endedP, 0, readFileSync(join(runDir, 'run.log'), 'utf8'))
     const progress = JSON.parse(readFileSync(join(runDir, 'progress.json'), 'utf8'))
     assert.equal(progress.stage, 'done', readFileSync(join(runDir, 'run.log'), 'utf8'))
     assert.ok(existsSync(join(runDir, 'results.html')) && existsSync(join(runDir, 'summary.json')))
     const meta = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8'))
     assert.equal(meta.app.runId, 'run-1')
-    assert.ok(meta.engine.path.startsWith(realpathSync(codeDir)), 'the engine that ran is the app\'s copy: ' + meta.engine.path)
+    // Long, real, case-folded paths: Windows' temp folder can come as an 8.3 short name (RUNNER~1). The copy is gone
+    // by now (removed when the run ended), so its still-existing parent is resolved.
+    const norm = (p) => p.replace(/\\/g, '/').toLowerCase()
+    assert.ok(norm(meta.engine.path).startsWith(norm(join(realpathSync.native(out), 'code-1'))), 'the engine that ran is the app\'s copy: ' + meta.engine.path)
     for (const rel of ['.opencode/skills/run/render.py', '.opencode/skills/run/app_run.py', '.opencode/hsenv/hsenv/engine.py', 'artifacts/simulations/json.py'])
       assert.ok(!existsSync(join(dir, rel + '.RAN')), rel + ' ran')
     assert.equal(JSON.parse(readFileSync(join(runDir, 'plan.json'), 'utf8')).startedBy, 'app')
-    await new Promise((res) => setTimeout(res, 200))
     assert.ok(!existsSync(codeDir), 'the per-run code copy is removed when the run ends')
   } finally { server.close() }
 })
@@ -135,14 +141,15 @@ test('review 5 M1: a plan.json changed after the app wrote it is refused; the ap
     const files = FILES.map(([rel, text]) => rel === 'skills/run/app_run.py'
       ? [rel, text.replace('def approved_plan(run_dir: Path) -> dict:', 'def approved_plan(run_dir: Path) -> dict:\n    import time as _t\n    while not (run_dir / "EDITED").exists(): _t.sleep(0.05)')]
       : [rel, text])
-    const child = await R.launchProtocolRun({ python, files, codeDir, project: dir, runDir, binding,
-      plan: { perArm: 2, arms: null, seeds: [1], temperature: 1 },
-      env: { PATH: process.env.PATH, HUMANSTUDY_HOSTED_BASEURL: `http://127.0.0.1:${server.address().port}/v1`, HUMANSTUDY_DESKTOP_KEY: 'fake-key', HUMANSTUDY_SIM_MODEL: 'stub' } })
+    let ended
+    const endedP = new Promise((res) => { ended = res })
+    await R.launchProtocolRun({ python, files, codeDir, project: dir, runDir, binding,
+      plan: { perArm: 2, arms: null, seeds: [1], temperature: 1 }, onExit: (code) => ended(code),
+      env: { ...processEnv(), HUMANSTUDY_HOSTED_BASEURL: `http://127.0.0.1:${server.address().port}/v1`, HUMANSTUDY_DESKTOP_KEY: 'fake-key', HUMANSTUDY_SIM_MODEL: 'stub' } })
     const plan = JSON.parse(readFileSync(join(runDir, 'plan.json'), 'utf8'))
     writeFileSync(join(runDir, 'plan.json'), JSON.stringify({ ...plan, perArm: 7, seeds: [1, 2, 3] }))
     writeFileSync(join(runDir, 'EDITED'), '')
-    assert.notEqual(await exited(child), 0)
-    await new Promise((res) => setTimeout(res, 200))
+    assert.notEqual(await endedP, 0, 'the app marks the run only after its own end handling (markEnded) is done')
     const progress = JSON.parse(readFileSync(join(runDir, 'progress.json'), 'utf8'))
     assert.equal(progress.stage, 'failed', 'the app marks a run that ended without a final stage (review 5, S2)')
     assert.match(progress.message, /The run ended before it finished \(exit 1\)\..*not the approved plan/)
@@ -171,10 +178,11 @@ test('review 5 S2: a launcher that fails before the run writes progress leaves t
   const dir = project()
   const runDir = R.newRunFolder(dir)
   const binding = { route: 'protocol', runId: 'run-f', approvedAt: Date.now(), protocolSha256: sha(join(dir, 'protocol.json')) }
-  const child = await R.launchProtocolRun({ python, files: FILES, codeDir: join(out, 'code-f'), project: dir, runDir, binding,
+  let ended
+  const endedP = new Promise((res) => { ended = res })
+  await R.launchProtocolRun({ python, files: FILES, codeDir: join(out, 'code-f'), project: dir, runDir, binding, onExit: (code) => ended(code),
     plan: { perArm: 2, arms: null, seeds: [1], temperature: 1 }, relay: { baseURL: 'http://example.org/v1', token: 't', model: 'm', expiresAt: Date.now() + 60_000 } })
-  assert.notEqual(await exited(child), 0)
-  await new Promise((res) => setTimeout(res, 200))
+  assert.notEqual(await endedP, 0)
   const progress = JSON.parse(readFileSync(join(runDir, 'progress.json'), 'utf8'))
   assert.equal(progress.stage, 'failed')
   assert.match(progress.message, /invalid model relay/)
