@@ -24,6 +24,24 @@ KINDS = {"choice", "multi", "number", "scale", "slider", "text"}
 DONE_STATUSES = {"completed", "screened_out", "excluded", "ended"}
 
 
+
+SPAN_LIMITS = {"colspan": 100, "rowspan": 1000}   # the same limits the checker's grid uses (hsenv.checks)
+
+
+def _cell_span(v, limit):
+    """A served table cell's colspan / rowspan: an integer 1..limit, else None (not served; checks flag it)."""
+    return v if isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= limit else None
+
+
+def _state_cell(c):
+    """A table cell as served in a State: its text, or {text, mark?, spans?, colspan?, rowspan?} when it has any of
+    them (a spanning header covers the columns it spans in the source, not one)."""
+    out = {k: c[k] for k in ("text", "mark", "spans") if c.get(k) is not None}
+    for k in ("colspan", "rowspan"):
+        if _cell_span(c.get(k), SPAN_LIMITS[k]) is not None:
+            out[k] = c[k]
+    return out if (c.get("mark") or c.get("spans") or "colspan" in out or "rowspan" in out) else c.get("text")
+
 class ProtocolError(ValueError):
     pass
 
@@ -342,9 +360,8 @@ class Session:
                         item["lines"] = lines
                     if isinstance(raw.get("rows"), list):   # a table as shown: rows of cell texts
                         item["type"] = it.get("type", "table")
-                        item["rows"] = [[({k: c[k] for k in ("text", "mark", "spans") if c.get(k) is not None}
-                                          if (c.get("mark") or c.get("spans")) else c.get("text"))
-                                         if isinstance(c, dict) else c for c in row] for row in raw["rows"]]
+                        item["rows"] = [[_state_cell(c) if isinstance(c, dict) else c for c in row]
+                                        for row in raw["rows"]]
                     text, cite, self._last_spans = None, raw.get("cite"), None
                 else:
                     text, cite = self._text(raw, b) if not isinstance(raw, str) else (raw, None)

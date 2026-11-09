@@ -430,6 +430,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
     return { projectDir: project.dir, context: {
       project: project.name,
       programId: program?.id,
+      uiLanguage: getLang(),
       ...(st ? { study: { id: st.id, title: st.title, type: st.type } } : {}),
       activeTab: active.startsWith('file:') ? 'file' : active as MainTab,
       visibleViews: compare ? ['study', 'paper'] : [active.startsWith('file:') ? 'file' : active],

@@ -6,10 +6,11 @@ description: Show the study's protocol.json as participants saw it, screen by sc
 # preview: the participant view of protocol.json
 
 ```bash
-python .opencode/skills/preview/make_preview.py --out artifacts/preview.html [--arms a b]
+python .opencode/skills/preview/make_preview.py --out artifacts/preview.html --lang <uiLanguage> [--arms a b]
 ```
 
-It plays a few sessions per arm with the engine (no model calls) and prints `PASS <file>` or `FAIL` with the
+Pass `--lang` the `uiLanguage` from the workspace context (en or zh-CN): the page's own words follow it, and the
+participant's screens keep the protocol's language. It plays a few sessions per arm with the engine (no model calls) and prints `PASS <file>` or `FAIL` with the
 problems; fix nothing in protocol.json to make it pass, report the findings it prints instead (an arm with no
 session, a session that did not complete). The page opens as an artifact card in the app.
 

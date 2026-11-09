@@ -184,22 +184,23 @@ class Builder:
         if ref in self.images:
             return
         if ref.startswith(("http://", "https://")):
-            self.images[ref] = {"omitted": "remote image (not loaded: the preview works offline)", "url": ref}
+            self.images[ref] = {"omitted": "remote image (not loaded: the preview works offline)", "why": "remote", "url": ref}
             return
         path = self.p._asset_paths.get(ref.replace("asset:", ""))
         if not path or not Path(path).is_file():
-            self.images[ref] = {"omitted": "image file not found in the study folder"}
+            self.images[ref] = {"omitted": "image file not found in the study folder", "why": "notfound"}
             return
         data = Path(path).read_bytes()
         mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
         if not mime.startswith("image/"):
-            self.images[ref] = {"omitted": "not an image file (%s)" % Path(path).suffix}
+            self.images[ref] = {"omitted": "not an image file (%s)" % Path(path).suffix, "why": "notimage",
+                                "why_arg": Path(path).suffix}
         elif len(data) > self.max_image or len(data) > self.image_budget:
             why = ("image too large to embed (%d KB)" % (len(data) // 1024) if len(data) > self.max_image else
                    "image budget of this preview used up (%d KB image; earlier images filled the 1.8 MB budget)"
                    % (len(data) // 1024))
-            self.images[ref] = {"omitted": why,
-                                "file": Path(path).name}
+            self.images[ref] = {"omitted": why, "why": "toolarge" if len(data) > self.max_image else "budget",
+                                "why_arg": len(data) // 1024, "file": Path(path).name}
         else:
             self.image_budget -= len(data)
             self.images[ref] = {"uri": "data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii")),
@@ -460,7 +461,7 @@ def build(study, arms_filter, seed, tries, max_image_kb):
                 images[it["src"]] = B.images.get(it["src"])
     meta = p.raw.get("meta") or {}
     data = {
-        "study": p.id, "version": p.version, "citation": meta.get("citation"), "language": meta.get("language"),
+        "study": p.id, "title": meta.get("title") or None, "version": p.version, "citation": meta.get("citation"), "language": meta.get("language"),
         "built": time.strftime("%Y-%m-%d %H:%M"), "seed": seed, "tries": tries, "policy": policy,
         "engine_problems": [str(x)[:300] for x in problems[:8]],
         "arms": arm_out, "screens": screens, "images": images,
@@ -473,7 +474,21 @@ def build(study, arms_filter, seed, tries, max_image_kb):
 
 
 # ------------------------------------------------------------------------------------------- page
-def page(data):
+UI_LANGS = ("en", "zh")
+PAGE_TXT = {"en": {"title": "Participant preview — %s", "loading": "Loading preview…"},
+            "zh": {"title": "参与者预览 — %s", "loading": "正在加载预览…"}}
+
+
+def ui_lang(lang=None):
+    """'en' or 'zh' from an app UI language such as 'zh-CN' or 'en-US' (default: env HS_UI_LANG, else 'en')."""
+    lang = (lang or os.environ.get("HS_UI_LANG") or "en").strip().lower().replace("_", "-")
+    return "zh" if lang.startswith("zh") else "en"
+
+
+def page(data, lang=None):
+    """The HTML page. lang: the UI language of the page's own words ('en' default, 'zh'); the participant's
+    screens keep the protocol's language."""
+    lang = ui_lang(lang)
     raw = json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str)
     if len(raw.encode()) > GZIP_OVER:
         blob = base64.b64encode(gzip.compress(raw.encode("utf-8"), 9)).decode("ascii")
@@ -483,14 +498,15 @@ def page(data):
         block = '<script type="application/json" id="hs-preview">%s</script>' % safe
     css = (HERE / "preview.css").read_text("utf-8")
     js = (HERE / "preview.js").read_text("utf-8").replace("</script", "<\\/script")
-    title = "Participant preview — %s" % data["study"]
-    return ("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
+    title = PAGE_TXT[lang]["title"] % (data.get("title") or data["study"])
+    return ("<!doctype html>\n<html lang=\"%s\" data-ui-lang=\"%s\">\n<head>\n<meta charset=\"utf-8\">\n"
             '<meta http-equiv="Content-Security-Policy" content="%s">\n'
             '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
             '<meta name="hs-artifact" content="participant-preview">\n'
             "<title>%s</title>\n<style>\n%s</style>\n</head>\n<body>\n"
-            '<div class="hs-page" id="app"><p class="hs-sub">Loading preview…</p></div>\n'
-            "%s\n<script>\n%s</script>\n</body>\n</html>\n") % (CSP, html.escape(title), css, block, js)
+            '<div class="hs-page" id="app"><p class="hs-sub">%s</p></div>\n'
+            "%s\n<script>\n%s</script>\n</body>\n</html>\n") % (lang, lang, CSP, html.escape(title), css,
+                                                               PAGE_TXT[lang]["loading"], block, js)
 
 
 def kit_module():
@@ -545,11 +561,13 @@ def main(argv=None):
     ap.add_argument("--tries", type=int, default=None,
                     help="sessions per runnable arm (default: 2-8, fewer when there are many arms)")
     ap.add_argument("--max-image-kb", type=int, default=1500, help="embed images up to this size")
+    ap.add_argument("--lang", default=None,
+                    help="language of the page's own words: en (default) or zh; zh-CN etc. accepted (env HS_UI_LANG)")
     a = ap.parse_args(argv)
     data = build(a.study, a.arms, a.seed, a.tries, a.max_image_kb)
     out = Path(a.out) if a.out else HSENV / "studies" / a.study / "preview" / "preview.html"
     out.parent.mkdir(parents=True, exist_ok=True)
-    text, probs = finish(page(data), HSENV / "studies" / a.study / "protocol.json")
+    text, probs = finish(page(data, a.lang), HSENV / "studies" / a.study / "protocol.json")
     out.write_text(text, encoding="utf-8")
     n_scr = sum(len(pp["screens"]) for arm in data["arms"] for pp in arm["participants"])
     omitted = sum(1 for v in data["images"].values() if v and v.get("omitted"))

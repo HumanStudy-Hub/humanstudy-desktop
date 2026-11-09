@@ -354,6 +354,12 @@ test('skills/preview builds the participant view of the fixture and it passes th
   assert.match(readFileSync(join(proj, 'artifacts/preview.html'), 'utf8'), /id="hs-protocol" data-hs-kit="protocol">\{"id": "fixture-mini"/)
   const again = spawnSync(python311, ['.opencode/artifact-kit/inline.py', 'artifacts/preview.html'], { cwd: proj, encoding: 'utf8' })
   assert.equal(again.status, 0, again.stdout)
+  // The page's own words follow the app's UI language (the workspace context's uiLanguage); screens keep theirs.
+  const zh = spawnSync(python311, ['-B', '.opencode/skills/preview/make_preview.py', '--out', 'artifacts/preview-zh.html', '--lang', 'zh-CN'], { cwd: proj, encoding: 'utf8' })
+  assert.equal(zh.status, 0, zh.stdout + zh.stderr)
+  assert.match(readFileSync(join(proj, 'artifacts/preview-zh.html'), 'utf8'), /data-ui-lang="zh"/)
+  assert.match(readFileSync(join(proj, 'artifacts/preview.html'), 'utf8'), /data-ui-lang="en"/)
+  assert.match(readFileSync(join(here, '../renderer/components/Workbench.tsx'), 'utf8'), /uiLanguage: getLang\(\),/)
 })
 
 // Review 2 (S10): app_run.py, protocol_report.py and the relay binding, on the made-up fixture with a fake model.
@@ -699,7 +705,7 @@ test('review 4 S3: the sync guard refuses study surnames and id shapes anywhere 
     assert.match(r.stderr, expected, text)
   }
   // Ordinary words and tags are not flagged: a short surname alone, <li>, ids without a year.
-  const ok = guard('html = "<li>wu</li>"\nwidgets = 2\nutf8 = "x"\n')
+  const ok = guard('html = "<li>wu</li>"\nwidgets = 2\nutf8 = "x"\nnote = "THE SOFTWARE SHALL BE"  # BEZORBELT\n')
   assert.equal(ok.status, 0, ok.stderr)
   assert.match(ok.stdout, /guard passed/, '--check copies nothing')
   // The folder-name rule stays the hard gate (any case), and no studies folder means no sync.

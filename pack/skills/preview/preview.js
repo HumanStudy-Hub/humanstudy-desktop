@@ -8,10 +8,178 @@
   var S = { arm: 0, pid: 0, scr: 0, view: 'participant', marks: true, theme: 'auto' }
   var app = document.getElementById('app')
 
+  // ---------- UI language (the page's chrome; the participant's screen keeps the protocol's own language) ----------
+  // build_preview.page(data, lang) sets data-ui-lang ("en" or "zh") on the html element. {0}, {1} … are filled by t().
+  var STR = {
+    en: {
+      scriptErr: 'Script error in this preview: ', line: ' (line {0})', dataMissing: 'preview data missing',
+      noDecomp: 'this browser cannot unpack the preview (no DecompressionStream)', openFail: 'Could not open the preview: ',
+      eyebrow: 'Participant preview · private protocol text · not for publication',
+      tabParticipant: 'Participant view', tabCompare: 'Compare conditions', marks: 'Show source marks',
+      toDark: 'Dark mode', toLight: 'Light mode', themeTitle: 'Switch the colour scheme of this page',
+      condition: 'Condition', cantRun: ' — can’t be run yet', member: 'Group member',
+      people: 'People in the paper: {0}', groupsOf: ' (in groups of {0})', language: 'Language: {0}',
+      example: 'Example participant · {0}', exampleMember: 'Example group member {1} · {0}',
+      screens1: '{0} screen', screensN: '{0} screens',
+      cantRunWhy: 'Can’t be run yet: {0}', noReason: 'no reason recorded', hold: 'On hold before release: {0}',
+      derivedOnScreen: 'Reconstructed text on screen: {0}', failed: 'Preview failed: {0}',
+      unfinished: 'This example did not reach the end ({0}).',
+      legendPlain: 'Unmarked = word for word from the materials',
+      legendRep: 'wording not printed',
+      legendDer: 'pieced together',
+      legendMis: 'no source gives it',
+      legendHover: 'hover a mark for its source',
+      legendNotes: 'grey notes are about the page, not on it',
+      lab_reported: 'described in paper', lab_derived: 'reconstructed', lab_missing: 'missing', lab_unlabelled: 'unlabelled',
+      tip_reported: 'The paper describes this but does not print the exact words participants saw.',
+      tip_derived: 'Pieced together from the sources; not printed word for word anywhere.',
+      tip_missing: 'No source gives this text: it is a gap.',
+      tipSource: 'Source: {0}', page: 'p. {0}', tipImage: 'Read off an image (independent readings agree).', tipNote: 'Note: {0}',
+      w_image: 'image', w_option: 'option', w_anchors: 'scale labels', w_question: 'question', w_instruction: 'instruction',
+      hoverText: 'Hover text shown to participants:',
+      ui_hover: 'hover text', ui_popup: 'pop-up', ui_tab: 'tab', ui_disabled: 'disabled field',
+      imgAlt: 'image shown to participants', imgMiss: 'Image not embedded: {0}',
+      img_remote: 'an online image (not loaded: the preview works offline)',
+      img_notfound: 'image file not found in the study folder', img_notimage: 'not an image file ({0})',
+      img_toolarge: 'image too large to embed ({0} KB)',
+      img_budget: 'this preview’s room for images is used up ({0} KB image)', img_notrecorded: 'image not recorded',
+      imgLines1: 'Text in this image (1 line)', imgLinesN: 'Text in this image ({0} lines)',
+      ddNote: 'Drop-down options in the order shown (participants saw them only when opening the list):',
+      range: 'range {0}–{1}', rangeHidden: 'range not shown to participants', startsAt: 'starts at {0}',
+      startUnknown: 'start position unknown', noHandle: 'no handle until clicked', valueHidden: 'value not displayed',
+      valueShown: 'value displayed', barSlider: 'bar slider', naOption: '“not applicable” option: {0}', yes: 'yes',
+      accepts: 'accepts {0}–{1}', widget: 'input type: {0}', minChars: 'at least {0} characters', respType: 'answer type {0}',
+      softReq: 'a reminder appears if left blank', shuffledOpts: 'options in this participant’s shuffled order',
+      shuffledQs: 'question order shuffled', shuffledCols: 'columns in shuffled order', shuffledRows: 'row order shuffled',
+      required: 'required',
+      adv_self: 'participant clicks to continue', adv_auto: 'moves on automatically', adv_timed: 'moves on when time is up',
+      adv_none: 'last page (no way forward)', adv_wait: 'waits for the other group members', adv_link: 'continues via a link',
+      adv_after: 'continue button appears after a delay', 'adv_after(min_sec)': 'continue button appears after the minimum time',
+      advOther: 'moves on: {0}', minSec: 'at least {0} s on this page', timeLimit: 'time limit {0}', sec: ' s',
+      timerShown: 'timer shown', noBack: 'no going back', backOk: 'going back allowed', backRule: 'going back: {0}', backUnknown: 'going back: not recorded',
+      reopen: '{0} earlier item(s) can be reopened', noBtnLabel: 'Button label not recorded in the protocol',
+      events: 'Shown on arrival (group outcome)',
+      prev: '← Prev', next: 'Next →', prevAria: 'Previous screen', nextAria: 'Next screen', jumpAria: 'Jump to screen',
+      pos: 'Screen {0} of {1}', jumpItem: 'Screen {0}',
+      noSession: 'No example of this condition could be played to a screen.', finding: ' This is a finding for review.',
+      tech: 'Technical details', techArm: 'Condition id: {0}', techStages: 'Protocol stages on this screen: {0}',
+      techSession: 'Example played with seed {0}, using {1}', pol_keyed: 'the answers the protocol lists (keyed answers)',
+      pol_random: 'random valid answers', pol_floor: 'minimal answers', techStatus: 'Session status: {0}',
+      techTries: 'Example sessions played per condition: {0}', techProtocol: 'Protocol {0} · version {1} · built {2}',
+      techEngine: 'Engine problems while playing: {0}',
+      opBanner: '<b>For the research team.</b> Participants never see this page: it names the conditions and the rules behind them. It compares every screen played while building this preview ({0} example sessions); a version no example happened to show is not listed, so also read the list at the bottom.',
+      onlySomeH: 'Screens only some conditions see',
+      onlySomeP: 'Shown in every example of these conditions and in none of the others ({0} conditions played).',
+      onlyIn: 'Only in {0} · {1} screen(s)',
+      sometimes: '{0} screen(s) appeared in only some examples (chance or an earlier answer decides), so they are not counted as belonging to a condition.',
+      differH: 'Screens whose content differs',
+      differP: '{0} screen(s) differ between examples; {1} are identical wherever they appeared. Highlighted words differ from the first version.',
+      differsBy: 'Differs by {0}', differsChance: 'Differs with earlier answers or chance (no single setting explains it)',
+      onlyInShort: ' · only in {0}', versions: '{0} versions', allConds: 'all conditions', conds: 'conditions: ',
+      times: '{0} time(s)', mostly: 'mostly different text (e.g. another language)', showAsSeen: 'Show as the participant saw it',
+      moreVersions: '+ {0} more version(s) of the same kind (values from earlier answers or chance).',
+      staticH: 'Stages whose content depends on the condition or a flow variable',
+      staticP: 'Read from the protocol itself, so this list is complete whichever examples were drawn.',
+      staticNone: 'None: no stage depends on the condition or a flow variable.',
+      firstShown: '{0} versions of this screen; the first is shown.', earlier: 'earlier answers', armWord: 'condition'
+    },
+    zh: {
+      scriptErr: '预览脚本出错：', line: '（第 {0} 行）', dataMissing: '缺少预览数据',
+      noDecomp: '此浏览器无法解压预览（不支持 DecompressionStream）', openFail: '无法打开预览：',
+      eyebrow: '参与者预览 · 非公开的实验方案文本 · 请勿发布',
+      tabParticipant: '参与者视角', tabCompare: '比较各实验条件', marks: '显示来源标记',
+      toDark: '深色模式', toLight: '浅色模式', themeTitle: '切换本页的配色',
+      condition: '实验条件', cantRun: ' — 暂时无法运行', member: '小组成员',
+      people: '论文中的人数：{0}', groupsOf: '（每组 {0} 人）', language: '语言：{0}',
+      example: '示例参与者 · {0}', exampleMember: '示例小组成员 {1} · {0}',
+      screens1: '共 {0} 页', screensN: '共 {0} 页',
+      cantRunWhy: '暂时无法运行：{0}', noReason: '未记录原因', hold: '发布前暂缓：{0}',
+      derivedOnScreen: '页面上有推断补全的文字：{0}', failed: '预览失败：{0}',
+      unfinished: '这个示例没有走到最后（{0}）。',
+      legendPlain: '未标记 = 与材料原文逐字一致',
+      legendRep: '论文未印出原话',
+      legendDer: '由资料拼合',
+      legendMis: '没有任何来源',
+      legendHover: '悬停标记可看来源',
+      legendNotes: '灰色小字是页面规则，参与者看不到',
+      lab_reported: '论文描述', lab_derived: '推断补全', lab_missing: '缺失', lab_unlabelled: '未标注',
+      tip_reported: '论文描述了这部分内容，但没有印出参与者看到的原话。',
+      tip_derived: '根据资料拼合补全，任何来源中都没有逐字印出。',
+      tip_missing: '没有任何来源给出这段文字，这是一个缺口。',
+      tipSource: '来源：{0}', page: '第 {0} 页', tipImage: '从图片中读出（多次独立读取结果一致）。', tipNote: '备注：{0}',
+      w_image: '图片', w_option: '选项', w_anchors: '刻度标签', w_question: '问题', w_instruction: '说明',
+      hoverText: '参与者鼠标悬停时看到的文字：',
+      ui_hover: '悬停文字', ui_popup: '弹窗', ui_tab: '标签页', ui_disabled: '不可编辑的字段',
+      imgAlt: '参与者看到的图片', imgMiss: '图片未嵌入：{0}',
+      img_remote: '网络图片（预览离线运行，未加载）',
+      img_notfound: '研究文件夹中找不到该图片文件', img_notimage: '不是图片文件（{0}）',
+      img_toolarge: '图片太大，无法嵌入（{0} KB）',
+      img_budget: '本预览可容纳的图片已满（该图 {0} KB）', img_notrecorded: '未记录图片',
+      imgLines1: '图片中的文字（1 行）', imgLinesN: '图片中的文字（{0} 行）',
+      ddNote: '下拉选项（按显示顺序；参与者只有展开列表时才看得到）：',
+      range: '范围 {0}–{1}', rangeHidden: '参与者看不到范围', startsAt: '起始位置 {0}',
+      startUnknown: '起始位置不明', noHandle: '点击之前不显示滑块', valueHidden: '不显示数值',
+      valueShown: '显示数值', barSlider: '条形滑块', naOption: '“不适用”选项：{0}', yes: '有',
+      accepts: '可填 {0}–{1}', widget: '输入方式：{0}', minChars: '至少 {0} 个字', respType: '回答类型 {0}',
+      softReq: '留空时会出现提醒', shuffledOpts: '选项按该参与者的随机顺序显示',
+      shuffledQs: '题目顺序随机', shuffledCols: '列的顺序随机', shuffledRows: '行的顺序随机',
+      required: '必答',
+      adv_self: '参与者点击后继续', adv_auto: '自动进入下一页', adv_timed: '时间到后自动进入下一页',
+      adv_none: '最后一页（无法继续）', adv_wait: '等待其他组员', adv_link: '通过链接继续',
+      adv_after: '延迟一段时间后出现继续按钮', 'adv_after(min_sec)': '达到最短停留时间后出现继续按钮',
+      advOther: '翻页方式：{0}', minSec: '本页至少停留 {0} 秒', timeLimit: '时限 {0}', sec: ' 秒',
+      timerShown: '显示计时器', noBack: '不能返回上一页', backOk: '可以返回上一页', backRule: '返回规则：{0}', backUnknown: '能否返回：未记录',
+      reopen: '可以重新打开前面的 {0} 项', noBtnLabel: '方案中没有记录按钮文字',
+      events: '进入本页时显示（小组结果）',
+      prev: '← 上一页', next: '下一页 →', prevAria: '上一页', nextAria: '下一页', jumpAria: '跳转到某一页',
+      pos: '第 {0} 页，共 {1} 页', jumpItem: '第 {0} 页',
+      noSession: '该实验条件没有任何示例能走到页面。', finding: '这是需要复查的问题。',
+      tech: '技术细节', techArm: '条件 ID：{0}', techStages: '本页对应的方案阶段：{0}',
+      techSession: '示例使用随机种子 {0}，答案为{1}', pol_keyed: '方案中给定的答案（keyed）',
+      pol_random: '随机的有效答案', pol_floor: '最少作答', techStatus: '流程状态：{0}',
+      techTries: '每个条件试跑的示例数：{0}', techProtocol: '方案 {0} · 版本 {1} · 生成于 {2}',
+      techEngine: '试跑时引擎报告的问题：{0}',
+      opBanner: '<b>仅供研究团队查看。</b>参与者看不到这一页：这里写明了各实验条件及其背后的规则。本页比较了生成预览时试跑的所有页面（共 {0} 次示例）；没有被任何示例抽到的版本不会列出，请同时参考页面底部的列表。',
+      onlySomeH: '只有部分实验条件会看到的页面',
+      onlySomeP: '这些条件的每个示例都出现了，其他条件从未出现（共试跑 {0} 个条件）。',
+      onlyIn: '仅在 {0} 中 · {1} 页',
+      sometimes: '有 {0} 页只在部分示例中出现（取决于随机抽取或之前的回答），因此不算某个条件特有。',
+      differH: '内容有差异的页面',
+      differP: '{0} 页在不同示例之间有差异；{1} 页无论在哪里出现都完全相同。高亮的词与第一个版本不同。',
+      differsBy: '随{0}而变', differsChance: '随之前的回答或随机抽取而变（没有单一设置能解释）',
+      onlyInShort: ' · 仅在 {0} 中', versions: '{0} 个版本', allConds: '所有实验条件', conds: '实验条件：',
+      times: '{0} 次', mostly: '文字大部分不同（例如换了语言）', showAsSeen: '按参与者看到的样子显示',
+      moreVersions: '另有 {0} 个同类版本（取值来自之前的回答或随机抽取）。',
+      staticH: '内容取决于实验条件或流程变量的阶段',
+      staticP: '直接从方案中读取，因此无论抽到哪些示例，这个列表都是完整的。',
+      staticNone: '无：没有阶段取决于实验条件或流程变量。',
+      firstShown: '此页面有 {0} 个版本，显示的是第一个。', earlier: '之前的回答', armWord: '实验条件'
+    }
+  }
+  var LANG = (function () {
+    var l = (document.documentElement.getAttribute('data-ui-lang') || 'en').toLowerCase()
+    return l.indexOf('zh') === 0 ? 'zh' : 'en'
+  })()
+  function t(key) {
+    var s = STR[LANG][key]
+    if (s == null) s = STR.en[key]
+    if (s == null) return key
+    var args = Array.prototype.slice.call(arguments, 1)
+    return s.replace(/\{(\d)\}/g, function (m, i) { return args[+i] == null ? '' : String(args[+i]) })
+  }
+  /** t() with every argument HTML-escaped (for strings that are inserted as markup). */
+  function th(key) {
+    var args = Array.prototype.slice.call(arguments, 1).map(function (a) { return esc(a) })
+    return t.apply(null, [key].concat(args))
+  }
+  function nScreens(n) { return t(n === 1 ? 'screens1' : 'screensN', n) }
+  /** a variable name in the operator view: 'arm' is shown as the plain word for a condition. */
+  function varName(k) { return k === 'arm' ? t('armWord') : k === 'earlier answers' ? t('earlier') : k }
+
   window.addEventListener('error', function (e) {
     try {
       var box = document.createElement('div'); box.className = 'hs-error'
-      box.textContent = 'Script error in this preview: ' + (e.message || 'unknown') + (e.lineno ? ' (line ' + e.lineno + ')' : '')
+      box.textContent = t('scriptErr') + (e.message || 'unknown') + (e.lineno ? t('line', e.lineno) : '')
       document.body.insertBefore(box, document.body.firstChild)
     } catch (x) { /* nothing more to do */ }
   })
@@ -26,12 +194,12 @@
   // ---------- load ----------
   function load() {
     var tag = document.getElementById('hs-preview')
-    if (!tag) return Promise.reject(new Error('preview data missing'))
+    if (!tag) return Promise.reject(new Error(t('dataMissing')))
     if (tag.getAttribute('data-encoding') === 'gzip+base64') {
       var b64 = JSON.parse(tag.textContent)
       var bin = atob(b64), bytes = new Uint8Array(bin.length)
       for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-      if (typeof DecompressionStream === 'undefined') return Promise.reject(new Error('this browser cannot unpack the preview (no DecompressionStream)'))
+      if (typeof DecompressionStream === 'undefined') return Promise.reject(new Error(t('noDecomp')))
       var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))
       return new Response(stream).text().then(JSON.parse)
     }
@@ -45,20 +213,19 @@
   }
 
   // ---------- provenance ----------
-  var LABEL_TXT = { reported: 'Reported', derived: 'Derived', missing: 'Missing' }
+  /** the plain-words name of a provenance label (the chip text); unknown labels show as written. */
+  function labName(lab) { return STR.en['lab_' + lab] ? t('lab_' + lab) : lab }
   function citeTip(c, what) {
     if (!c) return ''
     var lab = c.label || 'unlabelled'
-    var head = (LABEL_TXT[lab] || lab) + (what ? ' — ' + what : '')
-    var src = [c.source, c.file, c.page != null ? 'p. ' + c.page : null, c.evidence].filter(Boolean).join(' · ')
+    var head = labName(lab) + (what ? ' — ' + t('w_' + what) : '')
+    var src = [c.source, c.file, c.page != null ? t('page', c.page) : null, c.evidence].filter(Boolean).join(' · ')
     var lines = [head]
-    if (lab === 'reported') lines.push('Taken from the paper\'s description, not from the administered material.')
-    if (lab === 'derived') lines.push('Reconstructed by the converter, not printed verbatim in a source.')
-    if (lab === 'missing') lines.push('No source gives this text; it is a gap.')
-    if (src) lines.push('Source: ' + src)
-    if (c.read === 'image') lines.push('Read off an image (blind readings agree).')
+    if (STR.en['tip_' + lab]) lines.push(t('tip_' + lab))
+    if (src) lines.push(t('tipSource', src))
+    if (c.read === 'image') lines.push(t('tipImage'))
     if (c.quote) lines.push('“' + c.quote + '”')
-    if (c.note) lines.push('Note: ' + c.note)
+    if (c.note) lines.push(t('tipNote', c.note))
     return lines.join('\n')
   }
   /** attributes + chip for a cited element. verbatim: plain (still clickable to its source). */
@@ -74,7 +241,7 @@
     return {
       cls: marked ? ' mk mk-' + esc(lab) : '',
       attrs: a,
-      chip: marked ? '<span class="chip c-' + esc(lab) + '">' + esc(lab) + '</span>' : '',
+      chip: marked ? '<span class="chip c-' + esc(lab) + '">' + esc(labName(lab)) + '</span>' : '',
       marked: !!marked
     }
   }
@@ -109,8 +276,8 @@
   }
   function uiTag(style) {
     var w = String(style || '').toLowerCase()
-    var t = /tooltip/.test(w) ? 'hover text' : /popup/.test(w) ? 'pop-up' : /tabs/.test(w) ? 'tab' : /disabled/.test(w) ? 'disabled field' : ''
-    return t ? '<span class="uitag">[' + t + ']</span>' : ''
+    var k = /tooltip/.test(w) ? 'ui_hover' : /popup/.test(w) ? 'ui_popup' : /tabs/.test(w) ? 'ui_tab' : /disabled/.test(w) ? 'ui_disabled' : ''
+    return k ? '<span class="uitag">[' + esc(t(k)) + ']</span>' : ''
   }
 
   /** Text with style spans ({start,end,style|tooltip}); overlapping spans combine. */
@@ -132,7 +299,7 @@
         }
       })
       if (tip) { css.push('text-decoration:underline dotted'); }
-      out += css.length || tip ? '<span style="' + esc(css.filter(Boolean).join(';')) + '"' + (tip ? ' data-tip="' + esc('Hover text shown to participants:\n' + tip) + '"' : '') + '>' + seg + '</span>' : seg
+      out += css.length || tip ? '<span style="' + esc(css.filter(Boolean).join(';')) + '"' + (tip ? ' data-tip="' + esc(t('hoverText') + '\n' + tip) + '"' : '') + '>' + seg + '</span>' : seg
     }
     return out
   }
@@ -152,13 +319,13 @@
     }
     var h = '<div class="it' + p.cls + '"' + p.attrs + '>'
     if (it.src) {
-      var im = D.images[it.src] || { omitted: 'image not recorded' }
+      var im = D.images[it.src] || { omitted: 'image not recorded', why: 'notrecorded' }
       if (im.uri) {
         var sz = it.size || {}
-        h += '<img class="pic" alt="' + esc((it.lines || []).map(function (l) { return typeof l === 'string' ? l : l.text }).join(' ').slice(0, 300) || 'image shown to participants') + '"' +
+        h += '<img class="pic" alt="' + esc((it.lines || []).map(function (l) { return typeof l === 'string' ? l : l.text }).join(' ').slice(0, 300) || t('imgAlt')) + '"' +
           ' data-img="' + esc(it.src) + '"' + (sz.width ? ' width="' + esc(sz.width) + '"' : '') + (sz.height ? ' height="' + esc(sz.height) + '"' : '') + '>'
       } else {
-        h += '<div class="imgmiss">Image not embedded: ' + esc(im.omitted) + (im.file ? ' (' + esc(im.file) + ')' : '') + (im.url ? '<br><span class="uitag">' + esc(im.url) + '</span>' : '') + '</div>'
+        h += '<div class="imgmiss">' + esc(t('imgMiss', im.why ? t('img_' + im.why, im.why_arg) : im.omitted)) + (im.file ? ' (' + esc(im.file) + ')' : '') + (im.url ? '<br><span class="uitag">' + esc(im.url) + '</span>' : '') + '</div>'
       }
     }
     if (it.rows) {
@@ -169,7 +336,7 @@
     if (it.lines && it.lines.length) {
       var lines = it.lines.map(function (l) { return '<div>' + (typeof l === 'string' ? esc(l) : richText(l.text, l.spans)) + '</div>' }).join('')
       var embedded = it.src && D.images[it.src] && D.images[it.src].uri
-      h += embedded ? '<details class="imglines"><summary>Text in this image (' + it.lines.length + ' line' + (it.lines.length > 1 ? 's' : '') + ')</summary>' + lines + '</details>'
+      h += embedded ? '<details class="imglines"><summary>' + esc(t(it.lines.length > 1 ? 'imgLinesN' : 'imgLines1', it.lines.length)) + '</summary>' + lines + '</details>'
         : '<div class="imglines" style="color:inherit;font-size:inherit">' + lines + '</div>'
     }
     return h + p.chip + '</div>'
@@ -201,7 +368,7 @@
     var h = '<div class="q">'
     if (r.prompt != null && r.prompt !== '') {
       h += '<div class="prompt' + ps.cls + p.cls + '"' + p.attrs + (ps.css ? ' style="' + esc(ps.css) + '"' : '') + '>' +
-        richText(r.prompt, r.prompt_spans) + (r.required ? '<span class="req" title="required">*</span>' : '') + p.chip + '</div>'
+        richText(r.prompt, r.prompt_spans) + (r.required ? '<span class="req" title="' + esc(t('required')) + '">*</span>' : '') + p.chip + '</div>'
     }
     if (r.instruction) {
       var pi = prov(r.instruction_cite, r.ref + '#instruction', 'instruction')
@@ -213,7 +380,7 @@
       var type = k === 'multi' ? 'checkbox' : 'radio'
       if (/dropdown|autocomplete/.test(w)) {
         h += '<select><option>' + (r.start === null ? '' : '—') + '</option>' + opts.map(function (o) { return '<option>' + esc(o.label) + '</option>' }).join('') + '</select>'
-        h += '<div class="ddlist"><div class="wnote">Drop-down options in shown order (operator note; participants saw them only when opening the list):</div>' + opts.map(function (o) { return '<div>' + optLabel(r, o) + '</div>' }).join('') + '</div>'
+        h += '<div class="ddlist"><div class="wnote">' + esc(t('ddNote')) + '</div>' + opts.map(function (o) { return '<div>' + optLabel(r, o) + '</div>' }).join('') + '</div>'
       } else if (/buttons/.test(w)) {
         h += '<div class="btnopts">' + opts.map(function (o) { return '<span>' + optLabel(r, o) + '</span>' }).join('') + '</div>'
       } else {
@@ -228,26 +395,26 @@
       var hidden = (r.hidden || []).indexOf('start') >= 0 || wp.handle_hidden_until_clicked || r.start === 'unknown'
       var start = typeof r.start === 'number' ? r.start : (lo + hi) / 2
       h += '<div class="slider' + (hidden ? ' nohandle' : '') + '"><input type="range" min="' + esc(lo) + '" max="' + esc(hi) + '" step="' + esc(r.step || 1) + '" value="' + esc(start) + '" aria-label="slider">' + anchorsHtml(r) + '</div>'
-      if (r.range && (r.hidden || []).indexOf('range') < 0) notes.push('range ' + lo + '–' + hi)
-      if ((r.hidden || []).indexOf('range') >= 0) notes.push('range not shown to participants')
-      if (typeof r.start === 'number') notes.push('starts at ' + r.start)
-      if (hidden) notes.push(r.start === 'unknown' ? 'start position unknown' : 'no handle until clicked')
-      if (r.shows_value === false) notes.push('value not displayed'); else if (r.shows_value) notes.push('value displayed')
-      if (w === 'bar') notes.push('bar slider')
-      if (r.na_option) notes.push('N/A option: ' + (typeof r.na_option === 'string' ? r.na_option : 'yes'))
+      if (r.range && (r.hidden || []).indexOf('range') < 0) notes.push(t('range', lo, hi))
+      if ((r.hidden || []).indexOf('range') >= 0) notes.push(t('rangeHidden'))
+      if (typeof r.start === 'number') notes.push(t('startsAt', r.start))
+      if (hidden) notes.push(r.start === 'unknown' ? t('startUnknown') : t('noHandle'))
+      if (r.shows_value === false) notes.push(t('valueHidden')); else if (r.shows_value) notes.push(t('valueShown'))
+      if (w === 'bar') notes.push(t('barSlider'))
+      if (r.na_option) notes.push(t('naOption', typeof r.na_option === 'string' ? r.na_option : t('yes')))
     } else if (k === 'number' || k === 'scale') {
       h += (r.prefix ? esc(r.prefix) + ' ' : '') + '<input type="number"' + (r.range ? ' min="' + esc(r.range[0]) + '" max="' + esc(r.range[1]) + '"' : '') + (r.prefill != null ? ' value="' + esc(r.prefill) + '"' : '') + ' aria-label="number">' + (r.suffix ? ' ' + esc(r.suffix) : '')
-      if (r.range && (r.hidden || []).indexOf('range') < 0) notes.push('accepts ' + r.range[0] + '–' + r.range[1])
-      if (w && w !== 'text' && w !== 'number' && w !== 'text_box') notes.push('widget: ' + w.replace(/_/g, ' '))
+      if (r.range && (r.hidden || []).indexOf('range') < 0) notes.push(t('accepts', r.range[0], r.range[1]))
+      if (w && w !== 'text' && w !== 'number' && w !== 'text_box') notes.push(t('widget', w.replace(/_/g, ' ')))
     } else if (k === 'text') {
       h += /textarea/.test(w) ? '<textarea aria-label="text">' + esc(r.prefill || '') + '</textarea>' : (r.prefix ? esc(r.prefix) + ' ' : '') + '<input type="text" aria-label="text"' + (r.prefill ? ' value="' + esc(r.prefill) + '"' : '') + '>' + (r.suffix ? ' ' + esc(r.suffix) : '')
-      if (r.min_chars) notes.push('at least ' + r.min_chars + ' characters')
+      if (r.min_chars) notes.push(t('minChars', r.min_chars))
     } else {
-      notes.push('response type ' + k + (w ? '/' + w : ''))
+      notes.push(t('respType', k + (w ? '/' + w : '')))
     }
-    if (r.soft_required) notes.push('soft-required (a reminder if left blank)')
-    if (r.shuffled) notes.push('options shown in this participant\'s shuffled order')
-    if (r.shuffled_with_others) notes.push('question order shuffled')
+    if (r.soft_required) notes.push(t('softReq'))
+    if (r.shuffled) notes.push(t('shuffledOpts'))
+    if (r.shuffled_with_others) notes.push(t('shuffledQs'))
     h += wnote(notes)
     return h + '</div>'
   }
@@ -263,27 +430,26 @@
       h += '<tr><td class="rowq' + p.cls + '"' + p.attrs + '>' + richText(r.prompt, r.prompt_spans) + (r.required ? '<span class="req">*</span>' : '') + p.chip + '</td>' +
         opts.map(function () { return '<td><input type="radio" name="m' + name + '_' + i + '" aria-label="option"></td>' }).join('') + '</tr>'
     })
-    return h + '</tbody></table>' + wnote([rs[0].shuffled ? 'columns in shuffled order' : null, rs.some(function (r) { return r.shuffled_with_others }) ? 'row order shuffled' : null])
+    return h + '</tbody></table>' + wnote([rs[0].shuffled ? t('shuffledCols') : null, rs.some(function (r) { return r.shuffled_with_others }) ? t('shuffledRows') : null])
   }
 
   // ---------- screen ----------
   function timingNotes(sc) {
-    var t = sc.timing || {}, n = sc.navigation || {}, out = []
-    var adv = { self: 'self-paced', auto: 'advances automatically', timed: 'advances when time is up', none: 'no way forward (end page)', wait: 'waits for others', link: 'continues via a link', after: 'continue appears after a delay', 'after(min_sec)': 'continue appears after the minimum time' }
-    if (t.advance) out.push(adv[t.advance] || 'advance: ' + t.advance)
-    if (t.min_sec != null) out.push('minimum ' + t.min_sec + ' s on page')
-    if (t.time_limit != null) out.push('time limit ' + t.time_limit + (typeof t.time_limit === 'number' ? ' s' : ''))
-    if (t.timer_shown) out.push('timer shown')
-    if (n.back) out.push(n.back === 'not_allowed' ? 'no going back' : n.back === 'allowed' ? 'back allowed' : 'back rule ' + n.back)
+    var tm = sc.timing || {}, n = sc.navigation || {}, out = []
+    if (tm.advance) out.push(STR.en['adv_' + tm.advance] ? t('adv_' + tm.advance) : t('advOther', tm.advance))
+    if (tm.min_sec != null) out.push(t('minSec', tm.min_sec))
+    if (tm.time_limit != null) out.push(t('timeLimit', tm.time_limit + (typeof tm.time_limit === 'number' ? t('sec') : '')))
+    if (tm.timer_shown) out.push(t('timerShown'))
+    if (n.back) out.push(n.back === 'not_allowed' ? t('noBack') : n.back === 'allowed' ? t('backOk') : /^(unknown|missing)$/.test(n.back) ? t('backUnknown') : t('backRule', n.back))
     if (n.paging && n.paging !== 'missing') out.push(String(n.paging).replace(/_/g, ' '))
     ;(sc.stages || []).forEach(function (s) { if (s.note) out.push(s.note) })
     return out
   }
   function buttonHtml(sc, inline) {
-    var t = sc.timing || {}
-    if (sc.button == null && /^(auto|timed|none|wait|link)$/.test(t.advance || '')) return ''
+    var tm = sc.timing || {}
+    if (sc.button == null && /^(auto|timed|none|wait|link)$/.test(tm.advance || '')) return ''
     var label = sc.button != null ? sc.button : '→'
-    return '<div class="cont' + (inline ? ' inline' : '') + '"><span' + (sc.button == null ? ' data-tip="Button label not recorded in the protocol"' : '') + '>' + esc(label) + '</span></div>'
+    return '<div class="cont' + (inline ? ' inline' : '') + '"><span' + (sc.button == null ? ' data-tip="' + esc(t('noBtnLabel')) + '"' : '') + '>' + esc(label) + '</span></div>'
   }
   function renderScreen(sc, name) {
     var items = {}, resps = {}
@@ -352,111 +518,147 @@
   // ---------- views ----------
   function arm() { return D.arms[S.arm] }
   function part() { return (arm().participants || [])[S.pid] }
+  function isDark() {
+    if (S.theme !== 'auto') return S.theme === 'dark'
+    try { return window.matchMedia('(prefers-color-scheme: dark)').matches } catch (e) { return false }
+  }
   function header() {
-    var h = '<p class="hs-eyebrow">Participant preview · private protocol text · not for publication</p>' +
-      '<h1 class="hs-title">' + esc(D.study) + '</h1>' +
+    var h = '<p class="hs-eyebrow">' + esc(t('eyebrow')) + '</p>' +
+      '<h1 class="hs-title">' + esc(D.title || D.study) + '</h1>' +
       (D.citation ? '<p class="hs-sub">' + esc(String(D.citation).slice(0, 400)) + '</p>' : '')
-    h += '<div class="bar"><div class="tabs" role="tablist">' +
-      '<button role="tab" data-view="participant" aria-selected="' + (S.view === 'participant') + '">Participant view</button>' +
-      '<button role="tab" data-view="conditions" aria-selected="' + (S.view === 'conditions') + '">Conditions (operators)</button></div>' +
+    // one condition and nothing that varies: no comparison tab, and so no tab bar
+    h += '<div class="bar">' + (D.arms.length > 1 || (D.conditions.differ || []).length
+      ? '<div class="tabs" role="tablist">' +
+        '<button role="tab" data-view="participant" aria-selected="' + (S.view === 'participant') + '">' + esc(t('tabParticipant')) + '</button>' +
+        '<button role="tab" data-view="conditions" aria-selected="' + (S.view === 'conditions') + '">' + esc(t('tabCompare')) + '</button></div>' : '') +
       '<span class="spacer"></span>' +
-      '<label><input type="checkbox" id="marks"' + (S.marks ? ' checked' : '') + '> provenance marks</label>' +
-      '<button class="ghost" id="theme" title="Theme">' + ({ auto: 'Theme: auto', light: 'Theme: light', dark: 'Theme: dark' })[S.theme] + '</button></div>'
+      '<label><input type="checkbox" id="marks"' + (S.marks ? ' checked' : '') + '> ' + esc(t('marks')) + '</label>' +
+      '<button class="ghost" id="theme" title="' + esc(t('themeTitle')) + '">' + esc(isDark() ? t('toLight') : t('toDark')) + '</button></div>'
     return h
   }
   function armPicker() {
     var a = arm()
-    var h = '<div class="bar"><label>Arm <select id="arm">' + D.arms.map(function (x, i) {
-      return '<option value="' + i + '"' + (i === S.arm ? ' selected' : '') + '>' + esc(x.id) + (x.language && D.arms.some(function (y) { return y.language !== x.language }) ? ' (' + esc(x.language) + ')' : '') + (x.runnable ? '' : ' — not runnable') + '</option>'
-    }).join('') + '</select></label>'
+    var h = '<div class="bar">'
+    if (D.arms.length > 1) {
+      h += '<label>' + esc(t('condition')) + ' <select id="arm">' + D.arms.map(function (x, i) {
+        return '<option value="' + i + '"' + (i === S.arm ? ' selected' : '') + '>' + esc(x.id) + (x.language && D.arms.some(function (y) { return y.language !== x.language }) ? ' (' + esc(x.language) + ')' : '') + (x.runnable ? '' : esc(t('cantRun'))) + '</option>'
+      }).join('') + '</select></label>'
+    }
     if ((a.participants || []).length > 1) {
-      h += '<label>Group member <select id="pid">' + a.participants.map(function (p, i) { return '<option value="' + i + '"' + (i === S.pid ? ' selected' : '') + '>' + esc(p.pid) + '</option>' }).join('') + '</select></label>'
+      h += '<label>' + esc(t('member')) + ' <select id="pid">' + a.participants.map(function (p, i) { return '<option value="' + i + '"' + (i === S.pid ? ' selected' : '') + '>' + esc(p.pid) + '</option>' }).join('') + '</select></label>'
     }
     h += '</div>'
     var bits = []
     if (a.what) bits.push('<b>' + esc(a.what.length > 260 ? a.what.slice(0, 260) + '…' : a.what) + '</b>')
     var facts = []
-    if (a.n_paper != null) facts.push('paper N ' + a.n_paper + (a.group_size ? ' groups of ' + a.group_size : ''))
-    if (a.language) facts.push('language ' + a.language)
+    if (a.n_paper != null) facts.push(t('people', a.n_paper) + (a.group_size ? t('groupsOf', a.group_size) : ''))
+    if (a.language && D.arms.some(function (y) { return y.language !== a.language })) facts.push(t('language', a.language))
     if (a.assignment) facts.push(a.assignment.length > 120 ? a.assignment.slice(0, 120) + '…' : a.assignment)
-    if (facts.length) bits.push(esc(facts.join(' · ')))
     var p = part()
-    if (p) bits.push(esc('One played session (seed ' + D.seed + ', ' + p.policy + ' answers' + (a.participants.length > 1 ? ', member ' + p.pid : '') + '): ' + p.screens.length + ' screens, ' + p.status + '.'))
-    if (!a.runnable) bits.push('<span class="warn">Not runnable: ' + esc(a.reason || 'no reason recorded') + '</span>')
-    if (a.release_hold) bits.push('<span class="warn">Release hold: ' + esc(a.release_hold) + '</span>')
-    if (a.derived_on_screen) bits.push('<span class="warn">Derived text on screen: ' + esc([].concat(a.derived_on_screen).join('; ')) + '</span>')
-    if (a.error) bits.push('<span class="warn">Preview failed: ' + esc(a.error) + '</span>')
-    if (p && a.runnable && p.status !== 'completed') bits.push('<span class="warn">This session did not complete (' + esc(p.status) + ').</span>')
+    if (p) facts.push(a.participants.length > 1 ? t('exampleMember', nScreens(p.screens.length), p.pid) : t('example', nScreens(p.screens.length)))
+    if (facts.length) bits.push(esc(facts.join(' · ')))
+    if (!a.runnable) bits.push('<span class="warn">' + th('cantRunWhy', a.reason || t('noReason')) + '</span>')
+    if (a.release_hold) bits.push('<span class="warn">' + th('hold', a.release_hold) + '</span>')
+    if (a.derived_on_screen) bits.push('<span class="warn">' + th('derivedOnScreen', [].concat(a.derived_on_screen).join('; ')) + '</span>')
+    if (a.error) bits.push('<span class="warn">' + th('failed', a.error) + '</span>')
+    if (p && a.runnable && p.status !== 'completed') bits.push('<span class="warn">' + th('unfinished', p.status) + '</span>')
     return h + '<div class="armcard">' + bits.join('<br>') + '</div>'
   }
   function legend() {
-    return '<div class="legend"><span>Plain text = verbatim from the administered material</span>' +
-      '<span><i class="sw rep"></i>reported / derived (hover for the source)</span><span><i class="sw mis"></i>missing (a gap)</span>' +
-      '<span>Small grey notes are operator notes, not on the participant\'s screen.</span></div>'
+    function chip(lab) { return '<span class="chip c-' + lab + '">' + esc(t('lab_' + lab)) + '</span>' }
+    return '<div class="legend"><span>' + esc(t('legendPlain')) + '</span>' +
+      '<span>' + chip('reported') + esc(t('legendRep')) + '</span>' +
+      '<span>' + chip('derived') + esc(t('legendDer')) + '</span>' +
+      '<span>' + chip('missing') + esc(t('legendMis')) + '</span>' +
+      '<span>' + esc(t('legendHover')) + '</span><span>' + esc(t('legendNotes')) + '</span></div>'
+  }
+  /** first words of a screen, so the jump list says which screen is which without stage ids. */
+  function snippet(sc) {
+    var txt = ''
+    sc.items.some(function (i) { if (i.text) { txt = i.text; return true } return false })
+    if (!txt) sc.responses.some(function (r) { if (r.prompt) { txt = r.prompt; return true } return false })
+    txt = String(txt).replace(/\s+/g, ' ').trim()
+    return txt.length > 60 ? txt.slice(0, 60) + '…' : txt
+  }
+  function techDetails(a, p, sc) {
+    var rows = [t('techArm', a.id)]
+    if (sc) rows.push(t('techStages', sc.names.join(' + ')))
+    if (p) {
+      rows.push(t('techSession', D.seed, STR.en['pol_' + p.policy] ? t('pol_' + p.policy) : p.policy))
+      rows.push(t('techStatus', p.status))
+    }
+    if (D.tries) rows.push(t('techTries', D.tries))
+    rows.push(t('techProtocol', D.study, D.version == null ? '—' : D.version, D.built))
+    if ((D.engine_problems || []).length) rows.push(t('techEngine', D.engine_problems.join(' | ')))
+    return '<details class="tech"><summary>' + esc(t('tech')) + '</summary><ul>' +
+      rows.map(function (r) { return '<li>' + esc(r) + '</li>' }).join('') + '</ul></details>'
   }
   function participantView() {
     var a = arm(), p = part()
     var h = armPicker() + legend()
-    if (!p || !p.screens.length) return h + '<div class="hs-card imgmiss">No session of this arm could be played to a screen. ' + (a.runnable ? 'This is a finding for review.' : '') + '</div>'
+    if (!p || !p.screens.length) return h + '<div class="hs-card imgmiss">' + esc(t('noSession') + (a.runnable ? t('finding') : '')) + '</div>' + techDetails(a, p, null)
     S.scr = Math.max(0, Math.min(S.scr, p.screens.length - 1))
     var cur = p.screens[S.scr], sc = D.screens[cur.key]
-    h += '<div class="nav"><button class="ghost" id="prev"' + (S.scr === 0 ? ' disabled' : '') + ' aria-label="Previous screen">← Prev</button>' +
-      '<span class="pos">Screen ' + (S.scr + 1) + ' of ' + p.screens.length + '</span>' +
-      '<button class="ghost" id="next"' + (S.scr === p.screens.length - 1 ? ' disabled' : '') + ' aria-label="Next screen">Next →</button>' +
-      '<select id="jump" aria-label="Jump to screen">' + p.screens.map(function (s, i) {
-        return '<option value="' + i + '"' + (i === S.scr ? ' selected' : '') + '>' + (i + 1) + '. ' + esc(D.screens[s.key].names.join(' + ')) + '</option>'
+    h += '<div class="nav"><button class="ghost" id="prev"' + (S.scr === 0 ? ' disabled' : '') + ' aria-label="' + esc(t('prevAria')) + '">' + esc(t('prev')) + '</button>' +
+      '<span class="pos">' + esc(t('pos', S.scr + 1, p.screens.length)) + '</span>' +
+      '<button class="ghost" id="next"' + (S.scr === p.screens.length - 1 ? ' disabled' : '') + ' aria-label="' + esc(t('nextAria')) + '">' + esc(t('next')) + '</button>' +
+      '<select id="jump" aria-label="' + esc(t('jumpAria')) + '">' + p.screens.map(function (s, i) {
+        var sn = snippet(D.screens[s.key])
+        return '<option value="' + i + '"' + (i === S.scr ? ' selected' : '') + '>' + esc(t('jumpItem', i + 1) + (sn ? ' — ' + sn : '')) + '</option>'
       }).join('') + '</select></div>'
     var notes = timingNotes(sc)
-    if (cur.reviewable) notes.push(cur.reviewable + ' earlier item(s) can be reopened')
-    h += '<div class="notes">' + notes.map(function (n) { return '<span>' + esc(n) + '</span>' }).join('') + '<span class="uitag" style="margin-left:auto">' + esc(sc.names.join(' + ')) + '</span></div>'
-    if (cur.events && cur.events.length) h += '<div class="events"><b>Shown on arrival (group outcome)</b>' + cur.events.map(function (e) { return '<div>' + esc(typeof e === 'string' ? e : JSON.stringify(e)) + '</div>' }).join('') + '</div>'
+    if (cur.reviewable) notes.push(t('reopen', cur.reviewable))
+    if (notes.length) h += '<div class="notes">' + notes.map(function (n) { return '<span>' + esc(n) + '</span>' }).join('') + '</div>'
+    if (cur.events && cur.events.length) h += '<div class="events"><b>' + esc(t('events')) + '</b>' + cur.events.map(function (e) { return '<div>' + esc(typeof e === 'string' ? e : JSON.stringify(e)) + '</div>' }).join('') + '</div>'
     h += '<div class="screen" lang="' + esc(a.language || D.language || 'en') + '">' + renderScreen(sc, 's' + S.scr) + '</div>'
-    return h
+    return h + techDetails(a, p, sc)
   }
   function conditionsView() {
     var C = D.conditions
-    var h = '<div class="opbanner"><b>Operator view.</b> Participants never see this page: it names arms, conditions and flow variables. ' +
-      'It compares every screen played while building this preview (' + C.sessions + ' sessions, seed ' + D.seed + '); a variant that no session drew is not listed, so read it with the static list below.</div>'
+    var h = '<div class="opbanner">' + t('opBanner', esc(C.sessions)) + '</div>'
     var partial = C.partial || []
+    function codes(list) { return list.map(function (x) { return '<code>' + esc(x) + '</code>' }).join(' ') }
     if (partial.length) {
-      h += '<h3 style="margin:14px 0 4px;font-size:14px">Screens only some arms see</h3><p class="hs-sub">Shown in every played session of these arms and in no session of the others (' + C.played_arms.length + ' arms played).</p>'
+      h += '<h3 style="margin:14px 0 4px;font-size:14px">' + esc(t('onlySomeH')) + '</h3><p class="hs-sub">' + th('onlySomeP', C.played_arms.length) + '</p>'
       partial.forEach(function (e, k) {
-        h += '<div class="cv"><p class="by">Only in ' + e.arms.map(function (x) { return '<code>' + esc(x) + '</code>' }).join(' ') + ' · ' + e.screens.length + ' screen(s)</p>' +
+        h += '<div class="cv"><p class="by">' + t('onlyIn', codes(e.arms), esc(e.screens.length)) + '</p>' +
           e.screens.map(function (x, i) {
-            var t = x.names.join(' + ') + (Object.keys(x.item).length ? ' — ' + Object.keys(x.item).map(function (q) { return q + ' = ' + x.item[q] }).join(', ') : '')
-            return '<details data-pk="' + k + '" data-pi="' + i + '"><summary>' + esc(t) + '</summary><div class="screen mini"></div></details>'
+            var sn = snippet(D.screens[x.keys[0]])
+            var tt = (sn || x.names.join(' + ')) + (Object.keys(x.item).length ? ' — ' + Object.keys(x.item).map(function (q) { return q + ' = ' + x.item[q] }).join(', ') : '')
+            return '<details data-pk="' + k + '" data-pi="' + i + '"><summary>' + esc(tt) + '</summary><div class="screen mini"></div></details>'
           }).join('') + '</div>'
       })
     }
-    if (C.sometimes) h += '<p class="hs-sub">' + C.sometimes + ' screen(s) appeared in only some sessions (a random draw or an earlier answer decides), so they are not counted as arm-specific.</p>'
-    h += '<h3 style="margin:22px 0 4px;font-size:14px">Screens whose content differs</h3><p class="hs-sub">' + C.differ.length + ' screen(s) differ between sessions; ' + C.same + ' are identical wherever they appeared. Highlighted words differ from the first variant.</p>'
+    if (C.sometimes) h += '<p class="hs-sub">' + th('sometimes', C.sometimes) + '</p>'
+    h += '<h3 style="margin:22px 0 4px;font-size:14px">' + esc(t('differH')) + '</h3><p class="hs-sub">' + th('differP', C.differ.length, C.same) + '</p>'
     C.differ.forEach(function (d, k) {
-      var title = d.names.join(' + ') + (Object.keys(d.item).length ? ' — ' + Object.keys(d.item).map(function (x) { return x + ' = ' + d.item[x] }).join(', ') : '')
-      var by = d.by.length ? 'Differs by ' + d.by.join(' × ') : 'Differs with earlier answers or random draws (no single variable explains it)'
-      var only = C.played_arms && d.in_arms && d.in_arms.length < C.played_arms.length ? ' · only in ' + d.in_arms.join(', ') : ''
-      h += '<div class="cv"><h3>' + esc(title) + '</h3><p class="by">' + esc(by + only) + ' · ' + d.variants.length + ' variants</p>'
+      var sn = snippet(D.screens[d.variants[0].key])
+      var title = (sn || d.names.join(' + ')) + (Object.keys(d.item).length ? ' — ' + Object.keys(d.item).map(function (x) { return x + ' = ' + d.item[x] }).join(', ') : '')
+      var by = d.by.length ? t('differsBy', d.by.map(varName).join(' × ')) : t('differsChance')
+      var only = C.played_arms && d.in_arms && d.in_arms.length < C.played_arms.length ? t('onlyInShort', d.in_arms.join(', ')) : ''
+      h += '<div class="cv"><h3>' + esc(title) + '</h3><p class="by">' + esc(by + only) + ' · ' + esc(t('versions', d.variants.length)) + '</p>'
       var base = screenText(D.screens[d.variants[0].key])
       var cap = d.by.length ? d.variants.length : Math.min(3, d.variants.length)
       d.variants.forEach(function (v, i) {
         if (i >= cap) return
         var who = []
         var allArms = D.arms.length > 1 && v.arms.length === D.arms.length
-        if (d.by.indexOf('arm') >= 0 || D.arms.length > 1) who.push(allArms ? 'all arms' : 'arms: ' + v.arms.map(function (x) { return '<code>' + esc(x) + '</code>' }).join(''))
-        Object.keys(v.when || {}).forEach(function (key) { if (key !== 'arm') who.push(esc(key) + ' = ' + v.when[key].map(function (x) { return '<code>' + esc(x.replace(/^"|"$/g, '')) + '</code>' }).join(' ')) })
-        who.push(v.n + ' time(s)')
+        if (d.by.indexOf('arm') >= 0 || D.arms.length > 1) who.push(allArms ? esc(t('allConds')) : esc(t('conds')) + v.arms.map(function (x) { return '<code>' + esc(x) + '</code>' }).join(''))
+        Object.keys(v.when || {}).forEach(function (key) { if (key !== 'arm') who.push(esc(varName(key)) + ' = ' + v.when[key].map(function (x) { return '<code>' + esc(x.replace(/^"|"$/g, '')) + '</code>' }).join(' ')) })
+        who.push(esc(t('times', v.n)))
         var txt = screenText(D.screens[v.key])
         var df = i === 0 ? { html: esc(txt), mostly: false } : diffHtml(base, txt)
-        h += '<div class="var"><div class="who">' + who.join(' · ') + (df.mostly ? ' · <i>mostly different text (e.g. another language)</i>' : '') + '</div>' +
+        h += '<div class="var"><div class="who">' + who.join(' · ') + (df.mostly ? ' · <i>' + esc(t('mostly')) + '</i>' : '') + '</div>' +
           '<div class="txt">' + df.html + '</div>' +
-          '<details data-k="' + k + '" data-v="' + i + '"><summary>Show as the participant saw it</summary><div class="screen mini"></div></details></div>'
+          '<details data-k="' + k + '" data-v="' + i + '"><summary>' + esc(t('showAsSeen')) + '</summary><div class="screen mini"></div></details></div>'
       })
-      if (cap < d.variants.length) h += '<p class="wnote">+ ' + (d.variants.length - cap) + ' more variant(s) of the same kind (values piped from earlier answers or random draws).</p>'
+      if (cap < d.variants.length) h += '<p class="wnote">' + th('moreVersions', d.variants.length - cap) + '</p>'
       h += '</div>'
     })
     var st = C.static || {}, keys = Object.keys(st)
-    h += '<h3 style="margin:22px 0 4px;font-size:14px">Static: stages whose content reads a condition or flow variable</h3>' +
-      '<p class="hs-sub">From the protocol\'s expressions, independent of which sessions were drawn.</p>'
-    h += keys.length ? '<ul class="static">' + keys.map(function (s) { return '<li><code>' + esc(s) + '</code> — ' + st[s].map(esc).join(', ') + '</li>' }).join('') + '</ul>' : '<p class="static">None: no stage reads <code>arm</code> or a flow variable.</p>'
+    h += '<h3 style="margin:22px 0 4px;font-size:14px">' + esc(t('staticH')) + '</h3>' +
+      '<p class="hs-sub">' + esc(t('staticP')) + '</p>'
+    h += keys.length ? '<ul class="static">' + keys.map(function (s) { return '<li><code>' + esc(s) + '</code> — ' + st[s].map(function (x) { return esc(varName(x)) }).join(', ') + '</li>' }).join('') + '</ul>' : '<p class="static">' + esc(t('staticNone')) + '</p>'
     return h
   }
 
@@ -504,7 +706,7 @@
     if (t.closest('[data-view]')) { S.view = t.closest('[data-view]').getAttribute('data-view'); render(); return }
     if (t.id === 'prev') { S.scr--; render(); return }
     if (t.id === 'next') { S.scr++; render(); return }
-    if (t.id === 'theme') { S.theme = { auto: 'light', light: 'dark', dark: 'auto' }[S.theme]; applyTheme(); render(); return }
+    if (t.id === 'theme') { S.theme = isDark() ? 'light' : 'dark'; applyTheme(); render(); return }
     var el = t.closest('[data-page],[data-program-id]')
     if (!el || t.closest('input,select,textarea,summary')) return
     var m = { type: 'hs.openSource' }
@@ -547,9 +749,10 @@
       if (typeof saved.marks === 'boolean') S.marks = saved.marks
       if (saved.theme) S.theme = saved.theme
     }
+    if (S.view === 'conditions' && !(D.arms.length > 1 || (D.conditions.differ || []).length)) S.view = 'participant'
     applyTheme()
     render()
   }).catch(function (e) {
-    app.innerHTML = '<div class="hs-error">' + esc('Could not open the preview: ' + (e && e.message || e)) + '</div>'
+    app.innerHTML = '<div class="hs-error">' + esc(t('openFail') + (e && e.message || e)) + '</div>'
   })
 })()

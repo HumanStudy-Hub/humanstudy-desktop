@@ -965,28 +965,86 @@ _BULLET = re.compile(r"^(?:(?:[•·▪◦‣∙●○■□–—-]|\(?\d{1,2}[
 _UNITS = re.compile(r"(?<=[.!?:;])\s+")
 
 
-def _units(field):
+# v3 (review round 4 M2): only list glyphs are stripped, a leading number / letter enumerator only on option / slider
+# lines or when a bullet / numbered note vouches for it (_enum_ok)
+_GLYPH_BULLET = re.compile(r"^(?:[•·▪◦‣∙●○■□–—-]\s+|\*\s*)")
+# round 10 S1: without a bullet clause a dash followed by a digit is a minus sign, never a glyph
+_GLYPH_BULLET_ND = re.compile(r"^(?:[•·▪◦‣∙●○■□]\s+|[–—-]\s+(?![0-9])|\*\s*)")
+_V3_GLYPHS = (_GLYPH_BULLET, _GLYPH_BULLET_ND)
+
+
+_ENUM_UNIT = re.compile(r"\(?[a-z0-9]{1,2}[.):]")   # '3.', 'b)', '3:' — an enumerator, not a sentence / colon part
+
+
+def _v3_bullet(kind, forms):
+    """Round 9 S1: what a v3 line may strip at its start: option / slider lines a leading number or glyph (as before);
+    under a 'numbered n' clause exactly 'n.' / 'n)'; otherwise (also under a bullet clause) only a list glyph."""
+    if re.match(r"(?:option|slider)", kind):
+        return _BULLET
+    nums = [mm.group(1) for f, mm, _ in forms if f == "numbered"]
+    if len(nums) == 1:
+        return re.compile(r"^%s[.)]\s+" % re.escape(nums[0]))
+    return _GLYPH_BULLET if any(f == "bullet" for f, _, _ in forms) else _GLYPH_BULLET_ND
+
+
+def _enum_ok(kind, forms):
+    """v3: may a leading number / letter be stripped from this line's fields?"""
+    return bool(re.match(r"(?:option|slider)", kind)) or any(f in ("bullet", "numbered") for f, _, _ in forms)
+
+
+def _units(field, bul=_BULLET):
     """Whole units of one normalised field (reader marks already removed by _MARKS): the field, the field without a
     list bullet, and every contiguous run of its sentences / colon-separated parts ('Block 1:' and '(Task "orange")'
     of 'Block 1: (Task "orange")'). Never a word or phrase inside a sentence, and bracketed text is never dropped
     (skills review-4 M6)."""
     out = {field}
-    nob = _BULLET.sub("", field)
+    nob = bul.sub("", field)
     out.add(nob)
     for f in list(out):
         us = [u for u in _UNITS.split(f) if u]
+        # v3 (strict bullets): a leading enumerator 'e.' / '3)' is not a sentence of its own
+        # round 10 S1: the enumerator test looks at the first unit after the list glyph is stripped
+        enum0 = bul in _V3_GLYPHS and bool(us) and bool(_ENUM_UNIT.fullmatch(_GLYPH_BULLET.sub("", us[0])))
         if 1 < len(us) <= 60:
             for i in range(len(us)):
+                if i == 1 and enum0:
+                    continue
                 for j in range(i + 1, len(us) + 1):
-                    out.add(_BULLET.sub("", " ".join(us[i:j])))
+                    out.add(bul.sub("", " ".join(us[i:j])))
     return {x for x in out if x}
+
+
+_CONT_NEXT = re.compile(r"\[\s*continues on next page\s*\]", re.I)
+_CONT_NEXT_END = re.compile(r"\s*\[\s*continues on next page\s*\]\s*$", re.I)
+_V3_TOKEN = re.compile(r"format\s*:?\s*v3\b", re.I)
+# LEGACY readings: the closed sha256 pin set of the reading files collected before the v3 reader prompt (private
+# config key legacy_readings; a public copy has none, so every reading is v3)
+LEGACY_READINGS = set(PRIVATE.get("legacy_readings") or ())
+
+
+def reading_sha256(reading):
+    """sha256 of a reading as text (UTF-8; line ends as read)."""
+    return hashlib.sha256(reading.encode("utf-8")).hexdigest()
+
+
+def reading_header_v3(reading):
+    """True when line 1 of a reading carries the format token (NFKC; 'format v3', 'format: v3'); blind_reader_dir.py
+    collect refuses a reading without it."""
+    first = reading.split("\n", 1)[0]
+    return bool(_V3_TOKEN.search(unicodedata.normalize("NFKC", first)))
+
+
+def _is_v3(reading):
+    """A reading is LEGACY only when its sha256 is pinned (LEGACY_READINGS); every other reading is read with the full
+    closed grammar (DESIGN.md §3.5, pass 3 format gate)."""
+    return reading_sha256(reading) not in LEGACY_READINGS
 
 
 def _reading_lines(reading, pages, annots=()):
     """[(page, screen, kind, content fields)] of the reading's lines on <pages>, uncertain lines marked. annots:
     the protocol's declared printed-annotation regexes for this reading's source (meta.image_read
     .reading_annotations), removed from every content field before comparing."""
-    return _reading_lines_c(reading, frozenset(pages), tuple(annots))
+    return _reading_lines_c(reading, frozenset(pages), tuple(annots), _is_v3(reading))
 
 
 import functools as _functools   # noqa: E402  (kept inside the matcher section)
@@ -997,18 +1055,349 @@ _IMAGE_MARK = re.compile(r"\[\s*(?:(?:image|picture|photo|icon|logo|figure)\b[^\
                          r"\b(?:image|picture|photo|icon|logo|figure|pictogram)s?\b[^\]]*)\]", re.I)
 
 
-def _clean_field(f):
-    return _norm(_MARKS.sub("", re.sub(r"\[value [a-z]+: ([^\]]*)\]", r"\1", f)))
+_MARKS_V3 = re.compile(_MARKS.pattern.replace(r"callout\b[^\]]*|", ""), re.I)   # v3: [callout …] is not stripped
 
 
-def _runs(field):
+def _clean_field(f, v3=False):
+    return _norm((_MARKS_V3 if v3 else _MARKS).sub("", re.sub(r"\[value [a-z]+: ([^\]]*)\]", r"\1", f, flags=re.I)))
+
+
+# Engine pass 3 (segmentation rules; every confirmation reports its match_rule). Reader notes are read with a CLOSED
+# GRAMMAR (coordinator 2026-11-08, review round 2): a note is split into clauses on ';' and every clause must fully
+# match one accepted form (_note_clause). A line whose notes hold any unrecognised clause gets no segmentation rule
+# (list_marker, multiline_k, image_gap, column_rows); a '?' or a doubt word in any note makes the line uncertain for
+# every rule. The same forms are the reader vocabulary of skills/refinery-review/prompts.md §1.
+_GAP = ""     # one picture mark inside a reading line (rule 2); a private-use character no text contains
+_BLOCK = ""   # a reader mark that may hide printed text: no gap rule can step over it
+# a list glyph at the start of a served line ('• ', '- ', '* ', '1. '); rule 3. ASCII digits only.
+_LIST_GLYPH = re.compile(r"^(?:([•·▪◦‣∙●○■□–—*-])|([0-9]{1,2})[.)])\s+")
+_NOTE_BODY = re.compile(r"\[\s*note\s*:([^\]]*)\]", re.I)
+_NUM = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
+_NUMROW = re.compile(r"-?[0-9]+(?:\.[0-9]+)?(?: -?[0-9]+(?:\.[0-9]+)?)+")
+_COLPOS = re.compile(r"\bcolumn\s+(\S+)\s+(top|bottom|upper|lower)\b")
+_DELIMS = "\"'()[]«»"
+# doubt about what is printed: uncertain for every rule (Decided 5)
+_DOUBT = re.compile(r"\?|\b(?:could|maybe|may be|might|possibly|perhaps|probably|likely|unsure|not sure|uncertain|"
+                    r"unclear|looks like|hard to read|faint|blurry|blurred|smudged?|illegible|either|vs|versus|"
+                    r"cut off|cropped|seems?|partly|obscured|low resolution|i think)\b|"
+                    r"[0-9]\s*(?:/|\bor\b)\s*[0-9]|[\"']\s*or\s*[\"']", re.I)
+_PIC_FORBIDDEN = {"and", "word", "words", "text", "printed", "reads", "labelled", "labeled", "label", "says", "saying",
+                  "missing", "absent", "instead", "without", "blank", "caption", "lettering", "letters", "heading",
+                  "title", "inscribed", "written", "sign", "name"}
+
+
+def _doubtful(s):
+    """A reader's doubt in a note / kind / style text (format controls such as zero-width spaces removed first)."""
+    return bool(_DOUBT.search(_nfold("".join(ch for ch in s if unicodedata.category(ch) != "Cf"))))
+_CLAUSE_FORMS = (
+    ("bullet", re.compile(r"(?:round |hollow |black )?bullet(?:ed)?(?: point| list(?: item)?| item)?")),
+    ("numbered", re.compile(r"numbered(?: list)?(?: item)? \(?([0-9]{1,2})\)?")),
+    ("picture", re.compile(r"(?:image|picture|photo|icon|logo|figure|die face|callout)"
+                           r"(?: of (?:a|an|the) [a-z]+(?: [a-z]+){0,2})?")),
+    ("picture_die", re.compile(r"die face showing (?:one|two|three|four|five|six|[0-9]) pips?")),
+    ("position", re.compile(r"(?:sits |placed |shown )?between the (?:two )?(?:straight |curly )?(?:double |single )?"
+                            r"quotes")),
+    ("same_cell", re.compile(r"same cell(?: as \"([^\"]+)\")?(?:, printed on (?:two|[0-9]) lines)?")),
+    ("column", re.compile(r"column ([0-9]{1,3})(?: of ([0-9]{1,3}))?")),   # rule 4 option pairs
+    ("line", re.compile(r"line [0-9]+(?: of [0-9]+)?|(?:first|second|third|last) line")),   # rule k
+    # style clauses: recognised, never vouch for anything
+    ("style_q", re.compile(r"\"([^\"]+)\" in (?:bold|italic|underlined?)")),
+    ("style", re.compile(r"(?:bold|italic|underlined|greyed|grey|small|large|centred|centered)(?: text)?")),
+    ("style", re.compile(r"printed on (?:two|[0-9]) lines")),
+    ("style", re.compile(r"wraps onto a second line")),
+    ("style_q", re.compile(r"wraps onto a second line after \"([^\"]+)\"")),
+    ("style", re.compile(r"footer below a horizontal rule")),
+    ("style", re.compile(r"progress bar")),
+    ("style", re.compile(r"salmon-shaded header spanning [0-9]+ columns")),
+    ("style", re.compile(r"row label")),
+)
+_LINE_N = re.compile(r"line ([0-9]+)(?: of ([0-9]+))?|(first|second|third|last) line")   # used with fullmatch
+_MENTION = re.compile(r"\b(?:row|rows|column|columns|col|head|heads|header|headers|heading|headings)\b")
+
+
+def _nfold(s):
+    """NFKC, curly quotes straight, whitespace collapsed, lower case (the form note clauses are matched in)."""
+    return _norm(s)
+
+
+def _note_clause(clause, content=None):
+    """(form, match) when a note clause fully matches one accepted form, else None. A style clause quoting printed
+    text ('"…" in bold', 'wraps onto a second line after "…"') is recognised only when the quote occurs in the same
+    line's own printed content (content: its normalised contents; None = no check, used for style fields)."""
+    c = _nfold(clause)
+    upper = any(w[:1].isupper() for w in re.findall(r"[^\W\d_]+", clause)[1:])
+    for name, rx in _CLAUSE_FORMS:
+        m = rx.fullmatch(c)
+        if m and name in ("picture", "picture_die") and upper:
+            continue   # round 9 S5: a capitalised word inside a picture description may be printed text
+        if not m or (name == "picture" and (_PIC_FORBIDDEN & set(c.split())
+                                            or any(re.search(r"(?:ing|ed)$", w) for w in c.split()[1:]))):
+            continue   # a picture description holds no verb / participle (stamped, showing, …) and no printed-text word
+        if name == "picture_die":
+            return "picture", m
+        if name == "style_q":
+            if content is not None and not any(m.group(1) in x for x in content):
+                return None
+            return "style", m
+        return name, m
+    return None
+
+
+def _clauses(body):
+    return [x for x in (_nfold(p) for p in body.split(";")) if x]
+
+
+def _raw_clauses(body):
+    """The ';' clauses of a note as written (case kept, for the picture form's upper-case check)."""
+    return [p.strip() for p in body.split(";") if p.strip()]
+
+
+def _picture_mark(mark):
+    """Rule 2: a bracketed mark that stands for one picture and nothing printed — [image], [picture …], [callout …]
+    or [note: …] whose body (every ';' clause) is the picture form, optionally with a position clause."""
+    body = mark.strip()[1:-1].strip()
+    if re.match(r"(?i)note\s*:", body):
+        body = re.sub(r"(?i)^note\s*:", "", body)
+    cl = _raw_clauses(body)
+    kinds = [(_note_clause(x) or (None,))[0] for x in cl]
+    return bool(kinds) and kinds.count("picture") == 1 and all(k in ("picture", "position") for k in kinds)
+
+
+def _line_info(line, kind, style, screen="", contents=(), v3=False):
+    """Grammar facts of one reading line: its note clauses, whether all are recognised, doubt (notes, kind and style
+    fields), the rule-k line number (a line-marker part of the kind / style field or a whole line-marker note clause),
+    note clauses mentioning a row / column / head, and 'partish' (v3, S1: a screen / kind / style part or note clause
+    speaking of lines or parts that is not an exact marker or a recognised whole-element style clause)."""
+    raw_notes = [m.group(1) for m in _NOTE_BODY.finditer(line)]
+    notes = [_nfold(x) for x in raw_notes]
+    forms, unknown, mention, any_mention = [], False, False, False
+    for n in raw_notes:
+        for cl_raw in _raw_clauses(n):
+            cl = _nfold(cl_raw)
+            f = _note_clause(cl_raw, contents)
+            if f is None:
+                unknown = True
+                mention = mention or bool(_MENTION.search(cl))
+            any_mention = any_mention or bool(_MENTION.search(cl))
+            forms.append((f[0], f[1], cl) if f else (None, None, cl))
+    callouts = [m.group(0) for m in re.finditer(r"\[\s*callout\b[^\]]*\]", line, re.I)]
+    pics = [m.group(0) for m in _IMAGE_MARK.finditer(line) if not re.match(r"(?i)\[\s*note\s*:", m.group(0))]
+    if any(not _picture_mark(x) for x in callouts + pics):   # a picture / callout mark outside the grammar
+        unknown = True
+    doubt = any(_doubtful(n) for n in notes) or any("?" in x for x in callouts) or _doubtful(kind) \
+        or _doubtful(style)
+    # rule k: only a clause that IS a line marker — a ','-part of the kind or style field, or a whole note clause
+    # ('at the start of line 3' inside a remark is no marker)
+    ln_ = None
+    # a kind / style field holding a bracketed remark ('[photo 3: banner, line 1, cropped]') is a remark, not clauses
+    # (legacy: ','-parts as before; v3: clauses split on ';' and ',' as everywhere else in v3)
+    parts = [x for fld in (kind, style) if "[" not in fld
+             for x in (_field_parts(fld) if v3 else [y.strip() for y in fld.split(",")])] + \
+        [cl for f, _, cl in forms if f == "line"]
+    for where in parts:
+        m = _LINE_N.fullmatch(where)
+        if m:
+            n_ = int(m.group(1)) if m.group(1) else {"first": 1, "second": 2, "third": 3, "last": -1}[m.group(3)]
+            ln_ = (n_, int(m.group(2)) if m.group(2) else None)
+            break
+    exact = lambda x: bool(_LINE_N.fullmatch(x)) or (_note_clause(x, contents) or (None,))[0] in ("style", "same_cell")
+    pieces = [x for fld in (kind, style) for x in _field_parts(fld, contents)] + [cl for _, _, cl in forms]
+    partish = any(re.search(r"\blines?\b|\bln [0-9]|\bpart [0-9]", x) and not exact(x) for x in pieces if x) \
+        or bool(re.search(r"\blines?\b|\bln [0-9]|\bpart [0-9]", screen))   # rule k never reads the screen field
+    return {"forms": forms, "notes_ok": not unknown and not doubt, "doubt": doubt, "line_n": ln_, "unknown": unknown,
+            "note_mention": mention, "any_note_mention": any_mention, "partish": partish}
+
+
+_ANCHOR_FORBIDDEN = _PIC_FORBIDDEN | {"followed", "then"}
+
+
+# coordinator ruling (round 7): the narrow extra legacy forms - an optional article before the picture keyword,
+# 'callout' directly followed by a picture phrase, and the die-face phrases, each optionally followed by a position
+# clause; nothing broader
+_ANCHOR_POS = r"(?:sits |placed |shown )?between the (?:two )?(?:straight |curly )?(?:double |single )?quotes"
+_ANCHOR_DIE = (r"(?:die face|die image|image of a die face|picture of a die face)"
+               r"(?: showing (?:one|two|three|four|five|six|[0-9]) pips?)?")
+_ANCHOR_KW_FORM = r"(?:image|picture|photo|icon|logo|figure|die face)(?: of (?:a|an|the) [a-z]+(?: [a-z]+){0,2})?"
+_ANCHOR_NARROW = re.compile(r"(?:(?:a|an|the) )?(?:callout )?(?:%s|%s)(?: %s)?" % (_ANCHOR_DIE, _ANCHOR_KW_FORM,
+                                                                                    _ANCHOR_POS))
+
+
+def _anchor_picture(mark):
+    """v3 anchor (review rounds 6-7): a legacy mark counts as the picture only if it fully matches _IMAGE_MARK, holds no
+    quote or digit, and every ';' / ',' / '/' part is the bare picture keyword, the v3 picture form ('<kw>( of a/an/the
+    w{1,3})?', 'die face showing <n> pips'), '<kw>: <one to three lower-case words>' or a position clause — with at
+    least one picture part, no upper-case word after the keyword, and none of the forbidden words."""
+    if not _IMAGE_MARK.fullmatch(mark) or re.search(r"[\"“”'‘’`«»„]|[0-9]", mark[1:-1]):
+        return False
+    body = re.sub(r"(?i)^\s*note\s*:\s*", "", mark[1:-1].strip())
+    kw = r"(?:image|picture|photo|icon|logo|figure|die face|callout)"
+    pic = 0
+    for part in (x.strip() for x in re.split(r"[;,/]", body)):
+        if not part:
+            continue
+        if any(w[:1].isupper() for w in re.findall(r"[^\W\d_]+", part)[1:]):
+            return False
+        p = _nfold(part)
+        words = set(re.findall(r"[a-z]+", p))
+        if (_ANCHOR_FORBIDDEN | {"letter", "and"}) & words:
+            return False
+        # round 8 S1: no participle (-ing / -ed), except the die phrases' own 'showing'
+        if any(re.search(r"(?:ing|ed)$", w) for w in words - {"showing", "placed"}):   # 'placed': position clause
+            return False
+        if "showing" in words and not re.search(r"(?:die face|die image) showing (?:one|two|three|four|five|six|[0-9]) "
+                                                 r"pips?", p):
+            return False
+        form = (_note_clause(p) or (None,))[0]
+        if form == "picture" or re.fullmatch(kw + r"(?:\s*:\s*[a-z]+(?: [a-z]+){0,2})?", p) or _ANCHOR_NARROW.fullmatch(p):
+            pic += 1
+        elif form != "position":
+            return False
+    return pic >= 1
+
+
+def _gapform(c, anchor=False):
+    """Rule 2: one reading content with each picture mark (_picture_mark) replaced by _GAP; any other bracketed mark
+    inside the text becomes _BLOCK (it may hide printed text); at the edges marks are dropped (a line whose notes
+    are not all recognised gets no gapform at all). Picture marks are never merged: [image][image] is two."""
+    out, pos = [], 0
+    for m in re.finditer(r"\[[^\]]*\]", c):
+        out.append(("t", c[pos:m.start()]))
+        out.append(("m", m.group(0)))
+        pos = m.end()
+    out.append(("t", c[pos:]))
+    texts = [i for i, (k, x) in enumerate(out) if k == "t" and _clean_field(x)]
+    lo, hi = (texts[0], texts[-1]) if texts else (len(out), -1)
+    s = ""
+    for i, (k, x) in enumerate(out):
+        if k == "t":
+            s += x
+        elif re.fullmatch(r"\[value [a-z]+: [^\]]*\]", x, re.I):
+            s += x
+        elif anchor:   # v3 anchor: a picture remark inside -> the gap, at an edge -> dropped; anything else blocks
+            if not _anchor_picture(x):
+                s += _BLOCK
+            elif lo < i < hi:
+                s += _GAP
+        elif lo < i < hi:
+            s += _GAP if _picture_mark(x) else _BLOCK
+    g_ = _clean_field(s)
+    g_ = re.sub(r"\s*(%s)\s*" % _GAP, r"\1", g_)
+    return g_.strip(" ")
+
+
+_NAME_TAIL = r"(?:,\s*(?:bold|italic|underlined?|line [0-9]+(?: of [0-9]+)?|printed on \w+ lines?))*"
+
+
+def _naming(*fields, screen=""):
+    """The cell a reading line names (rule j): in its kind or style field ('rc', row label, column head) for 'row X /
+    column Y[, line n][, bold]', ('head', k) for 'column head k', ('rowlabel', k) for 'row label k', ('grid', r, c)
+    for 'row r col c' (1-based grid position); in its screen field ('row', n) for '… table row n' (n-th row under
+    the head row) and ('row', 0) for '… table header'; else None."""
+    for f in fields:
+        m = re.fullmatch(r"row ([0-9]+),? col(?:umn)? ([0-9]+)" + _NAME_TAIL, f)
+        if m:
+            return ("grid", int(m.group(1)), int(m.group(2)))
+        m = re.fullmatch(r"row (.+?) / column (.+?)" + _NAME_TAIL, f)
+        if m:
+            return ("rc", m.group(1).strip(), m.group(2).strip())
+        m = re.fullmatch(r"column head ([0-9]+)" + _NAME_TAIL, f)
+        if m:
+            return ("head", int(m.group(1)))
+        m = re.fullmatch(r"row label ([0-9]+)" + _NAME_TAIL, f)
+        if m:
+            return ("rowlabel", int(m.group(1)))
+    m = re.search(r"\btable (?:row ([0-9]+)|(header))$", screen)
+    if m and not _MENTION.search(screen[:m.start()]):
+        return ("row", 0 if m.group(2) else int(m.group(1)))
+    return None
+
+
+def _field_parts(fld, contents=None):
+    """Clauses of a kind / style field: split on ';'; a part that is one recognised clause stays whole (a quote in it
+    may hold commas), any other part is split on ','. A quoted style clause counts only when its quote is in the
+    line's content (contents; None = unchecked)."""
+    out = []
+    for part in (x.strip() for x in fld.split(";")):
+        if not part:
+            continue
+        if _note_clause(part, contents):
+            out.append(part)
+        else:
+            out += [x.strip() for x in part.split(",") if x.strip()]
+    return out
+
+
+_KINDS = {"text", "cell", "label", "note", "heading", "subheading", "headline", "title", "option", "question",
+          "instruction", "button", "number", "caption", "dropdown", "column", "slider", "slider-left", "slider-right",
+          "stat", "domain", "radio", "checkbox", "choice", "scale", "anchor", "link", "tab", "menu", "footer", "lede",
+          "byline", "logo", "picture", "photo text", "interface", "procedure", "story"}
+
+
+def _fields_ok(kind_raw, kind, style, contents=None):
+    """Round 7 S2: the kind field is a kind word (or a cell name / line marker / rule-4 column position) plus recognised
+    clauses, with no bracketed remark; the style field is empty, a cell name, or recognised clauses (style clauses,
+    line markers, column positions)."""
+    if "[" in kind_raw:
+        return False
+
+    def clause_ok(x):
+        return bool(_LINE_N.fullmatch(x)) or (_note_clause(x, contents) or (None,))[0] == "style" or bool(_naming(x)) \
+            or bool(re.fullmatch(r"column \S+ (?:top|bottom|upper|lower)", x))   # rule 4 column positions
+    if kind and not _naming(kind):
+        kp = _field_parts(kind)
+        if not kp or not (kp[0] in _KINDS or re.fullmatch(r"row [0-9]+", kp[0]) or clause_ok(kp[0])) \
+                or not all(clause_ok(x) for x in kp[1:]):
+            return False
+    if style and not _naming(style):
+        if not all(clause_ok(x) for x in _field_parts(style, contents)):
+            return False
+    return True
+
+
+def _style_field_ok(style, contents=None):
+    """The style branch of _fields_ok: a cell name, or clauses that are all recognised (style clauses, line markers,
+    rule-4 column positions)."""
+    return _fields_ok("", "", style, contents)
+
+
+def _style_ok(style):
+    """A style field that is empty, one recognised style clause, or a list of them (', ' / '; '), or a line marker."""
+    if not style:
+        return True
+    parts = _field_parts(style)
+    return all((_note_clause(x) or (None,))[0] == "style" or _LINE_N.fullmatch(x) for x in parts)
+
+
+def _colpos(screen, kind, style):
+    """('<table key>', column label, 'top'|'bottom') when a reading line names a column position (rule 4)."""
+    for where, f in (("s", screen), ("k", kind), ("y", style)):
+        m = _COLPOS.search(f)
+        if m:
+            key = (where, _COLPOS.sub("", f).strip(), screen if where != "s" else "")
+            return (key, m.group(1), "top" if m.group(2) in ("top", "upper") else "bottom")
+    return None
+
+
+def _colnote(forms):
+    """(k, N or None) when exactly one note clause is a 'column k [of N]' form; 'bad' when more than one; None."""
+    cols = [m for f, m, _ in forms if f == "column"]
+    if not cols:
+        return None
+    if len(cols) > 1:
+        return "bad"
+    return (int(cols[0].group(1)), int(cols[0].group(2)) if cols[0].group(2) else None)
+
+
+def _runs(field, bul=_BULLET):
     """(prefix runs, suffix runs) of a field's sentences / colon parts, bullet stripped: the first piece of a
     multi-line served element must END its reading line, the last must START its reading line (review-5 M1)."""
-    f = _BULLET.sub("", field)
+    f = bul.sub("", field)
     us = [u for u in _UNITS.split(f) if u]
     if not us or len(us) > 60:
         return {f}, {f}
-    return ({" ".join(us[:j]) for j in range(1, len(us) + 1)}, {_BULLET.sub("", " ".join(us[i:])) for i in range(len(us))})
+    enum0 = bul in _V3_GLYPHS and bool(_ENUM_UNIT.fullmatch(_GLYPH_BULLET.sub("", us[0])))
+    return ({" ".join(us[:j]) for j in range(1, len(us) + 1)},
+            {bul.sub("", " ".join(us[i:])) for i in range(len(us)) if not (i == 1 and enum0)})
 
 
 def _unquote(x):
@@ -1019,7 +1408,7 @@ def _unquote(x):
 
 
 @_functools.lru_cache(maxsize=512)
-def _reading_lines_c(reading, pages, annots=()):
+def _reading_lines_c(reading, pages, annots=(), v3=True):
     rx_ann = [re.compile(a) for a in annots]
     out = []
     for line in reading.splitlines():
@@ -1030,14 +1419,26 @@ def _reading_lines_c(reading, pages, annots=()):
         screen = _norm(parts[1]) if len(parts) > 2 else ""
         kind = _norm(re.sub(r"\[[^\]]*\]", "", parts[2])) if len(parts) > 3 else ""
         style = _norm(parts[3]) if len(parts) > 4 else ""
+        if v3 and style and not _style_field_ok(style, (_clean_field("|".join(parts[4:]), True),)):
+            style = ""   # round 10 M1: not a recognised style field -> it is part of the printed content
         # fixed fields p | screen | kind | [style |]; everything after them is content, even when it contains ' | '
         # (rule i): content without a style field, content after a style field, and with more than one '|' after the
         # kind, each '|'-separated piece (printed elements on one line, as with ' / ')
         if len(parts) <= 3:
             cands, pieces = [parts[-1]], []
+        elif v3:   # round 9/10 M1: v3 content: the text after a recognised style field, else everything after the kind
+            cands, pieces = ["|".join(parts[4:]) if style else "|".join(parts[3:])], []
         else:
             cands = ["|".join(parts[3:])] + (["|".join(parts[4:])] if len(parts) > 4 else [])
             pieces = parts[3:] if len(parts) > 4 else []
+        # v3 (round 8 M1): '[continues on next page]' only at the very end of a line; it marks the line's element as
+        # going on over the page break (page_join only), never anything else
+        cont_next, cont_bad = False, False
+        if v3 and _CONT_NEXT.search(line):
+            cont_next = bool(_CONT_NEXT_END.search(cands[-1]))
+            cont_bad = len(_CONT_NEXT.findall(line)) > 1 or not cont_next
+            cands = [_CONT_NEXT_END.sub("", x) for x in cands]
+            pieces = [_CONT_NEXT_END.sub("", x) for x in pieces]
         changed = False
         if rx_ann:   # declared printed annotations (e.g. a result share printed after an option): stripped
             def strip(x):
@@ -1047,36 +1448,98 @@ def _reading_lines_c(reading, pages, annots=()):
             new = [strip(x) for x in cands], [strip(x) for x in pieces]
             changed = (new[0], new[1]) != (cands, pieces)
             cands, pieces = new
+        def cf(x):
+            return _clean_field(x, v3)
+        contents = [x for x in (cf(c) for c in cands) if x]
+        # quotes in style clauses are checked against the printed content only (after the style field)
+        info = _line_info(line, kind, style, screen, tuple(contents[-1:]), v3)
+        bul = _BULLET if not v3 else _v3_bullet(kind, info["forms"])
         fields, frags, wholes = [], set(), set()
         two_line = kind in ("label", "heading") or "line" in style
         for f in cands + pieces:
-            fields.append(_clean_field(f))
-            if " / " in f:   # a reader listing several elements of one line ("Yes / No"): each piece is a field
-                fields += [_clean_field(x) for x in f.split(" / ")]
+            fields.append(cf(f))
+            if " / " in f and not v3:   # a reader listing several elements of one line ("Yes / No"): each piece is a field
+                fields += [cf(x) for x in f.split(" / ")]
                 if two_line:   # a label printed on two lines, written 'line 1 / line 2': space-joined
-                    fields.append(_clean_field(" ".join(f.split(" / "))))
+                    fields.append(cf(" ".join(f.split(" / "))))
             if _IMAGE_MARK.search(f):
-                frags |= {_clean_field(x) for x in _IMAGE_MARK.split(f)}
+                frags |= {cf(x) for x in _IMAGE_MARK.split(f)}
         fields = [x for x in fields if x]
         units, prefixes, suffixes, qunits = set(), set(), set(), set()
         for f in fields:
-            units |= _units(f)
-            wholes |= {f, _BULLET.sub("", f)}
-            p_, s_ = _runs(f)
+            units |= _units(f, bul)
+            wholes |= {f, bul.sub("", f)}
+            p_, s_ = _runs(f, bul)
             prefixes |= p_
             suffixes |= s_
             q = _unquote(f)
             if q:
-                qunits |= _units(q)
-        contents = [x for x in (_clean_field(c) for c in cands) if x]
-        hard = bool(_UNCERTAIN.search(_SOFT.sub("", line)))
+                qunits |= _units(q, bul)
+        # '?', 'could be 26', 'maybe', '5 or 6': uncertain for every rule (v3 and legacy readings)
+        # v3: a note clause outside the closed grammar makes the line uncertain too (review round 4)
+        doubt = info["doubt"] or (v3 and info["unknown"])
+        # v3 (round 8 M1): [partial] / [continued] are hard for every rule (never joined over)
+        hard = bool(_UNCERTAIN.search(line if v3 else _SOFT.sub("", line))) or doubt or cont_bad
+        # rule 2: only lines whose notes are all recognised
+        # round 7 S2: a segmentation rule also needs every kind / style clause recognised (kind word, style clause,
+        # line marker or cell name); the field rule is unaffected
+        fields_ok = _fields_ok(parts[2] if len(parts) > 3 else "", kind, style, tuple(contents[-1:])) \
+            and (not v3 or bool(re.fullmatch(r"screen [0-9]+", screen)))   # v3: the screen field is exactly screen k
+        info["notes_ok"] = info["notes_ok"] and fields_ok
+        gapforms = {g_ for g_ in (_gapform(c) for c in cands) if g_} if info["notes_ok"] else set()
+        # v3 anchor (legacy lines only): every mark inside the text is a gap position, an edge mark only a picture
+        # remark (no quote, no digit); anything else blocks — used only when a v3 reading vouched for the gaps
+        agapforms = {g_ for g_ in (_gapform(c, anchor=True) for c in cands) if g_} if not v3 and fields_ok else set()
+        lnum = info["line_n"]   # rule k: a line 'n' of a multi-line element (detected in kind, style or notes)
+        last = contents[-1] if contents else ""
+        lprefixes, lsuffixes = set(), set()
+        for x in contents:   # rule 1: whole printed contents only (no ' / ' or '|' pieces, no style field)
+            p_, s_ = _runs(x, bul)
+            lprefixes |= p_
+            lsuffixes |= s_
+        forms = info["forms"]
+        naming = _naming(kind, style, screen=screen)
+        if naming and naming[0] in ("grid", "row") and not v3:   # v3 names only
+            naming = None
+        # a position named in a form the grammar does not parse ('row 1 col 2' aside): 'X / Y' in the style field
+        slash_pos = bool(re.fullmatch(r"[^/|]+ / [^/|]+", style)) and not _style_ok(style)
+        pos_words = bool(re.search(r"\b(?:top|bottom|left|right|upper|lower|box|position|first|second|third|last)\b",
+                                   " ".join((kind, style)))) and not _style_ok(style)
+        mention = v3 and ((bool(_MENTION.search(" ".join((screen, kind, style)))) or slash_pos or pos_words)
+                          and not naming
+                          or info["note_mention"]
+                          # M3: on a cell / option / label line any note clause about a row / column / head
+                          or (bool(re.match(r"(cell|option|label)\b", kind)) and info["any_note_mention"]))
         out.append({"page": int(m.group(1)), "screen": screen, "kind": kind, "style": style,
+                    "fields": frozenset(contents), "gapforms": frozenset(gapforms), "agapforms": frozenset(agapforms),
+                    "forms": tuple(forms),
+                    "notes_ok": info["notes_ok"], "v3": v3,
+                    "bullet_note": info["notes_ok"] and any(f == "bullet" for f, _, _ in forms)
+                    and not any(f == "numbered" for f, _, _ in forms),
+                    "numbered": tuple(mm.group(1) for f, mm, _ in forms if f == "numbered"),
+                    # M5: 'same cell as "…"' vouches only with a quote (checked against the previous line in the matcher)
+                    "same_cell_quote": next((_norm(mm.group(1)) for f, mm, _ in forms if f == "same_cell"
+                                             and mm.group(1)), None) if info["notes_ok"] else None,
+                    "partish": v3 and info["partish"],
+                    "naming": naming, "naming_bad": mention, "style_ok": _style_ok(style),
+                    "cell_base": (_LINE_N.sub("", kind).strip(" ,"), _LINE_N.sub("", style).strip(" ,"))
+                    if lnum else None,
+                    "cell_line": lnum[0] if lnum else None, "cell_of": lnum[1] if lnum else None,
+                    "colpos": _colpos(screen, kind, style), "colnote": _colnote(forms),
+                    "num": last if _NUM.fullmatch(last) else None, "bul": bul,
+                    "pure_note": kind == "note" and not contents,
+                    "soft_end": bool(_SOFT.search(line)),
+                    "lprefixes": frozenset(lprefixes), "lsuffixes": frozenset(lsuffixes),
                     "units": frozenset(units), "qunits": frozenset(qunits), "wholes": frozenset(wholes),
                     "prefixes": frozenset(prefixes), "suffixes": frozenset(suffixes),
                     "frags": frozenset(x for x in frags if x),
                     # the label/value join reads the field after a style field when there is one
                     "content": contents[-1] if contents else "", "contents": tuple(contents),
-                    "annotated": changed, "uncertain": bool(_UNCERTAIN.search(line)), "hard_uncertain": hard})
+                    "cont_next": cont_next,
+                    # the printed content as written (case kept), for the unmarked-continuation test
+                    "rawc": unicodedata.normalize("NFKC", _MARKS.sub("", cands[-1] if cands else "")).strip(),
+                    "annotated": changed, "uncertain": bool(_UNCERTAIN.search(line)) or doubt or cont_next or cont_bad,
+                    "hard_uncertain": hard or cont_next, "hard_wo_cont": hard})
     return tuple(out)
 
 
@@ -1175,6 +1638,9 @@ def _group_match(group, lines):
     if group[0] == "tpl":
         rx = group[1]
         return any(_template_ok(rx, u_) for ln in lines for u_ in (ln["units"] | ln["frags"]))
+    if group[0] == "gap":   # rule 2: the whole reading line, picture marks as one sentinel each
+        rx = group[1]
+        return any(rx.fullmatch(g_) for ln in lines for g_ in ln["gapforms"])
     return False
 
 
@@ -1184,12 +1650,12 @@ def _hit(want, ln):
     return want in ln["units"] or (want[:1] != '"' and want in ln["qunits"])
 
 
-def _join_eq(want, texts):
+def _join_eq(want, texts, bul=_BULLET):
     """The served text equals the WHOLE join of consecutive reading lines (bullet stripped, or inside one pair of
     outer quotes when the served text has none)."""
     for j in _joins(texts):
         jn = _norm(j)
-        if want in (jn, _BULLET.sub("", jn)):
+        if want in (jn, bul.sub("", jn)):
             return True
         q = _unquote(jn)
         if q and want[:1] != '"' and want == q:
@@ -1200,27 +1666,213 @@ def _join_eq(want, texts):
 _CELL_LINE = re.compile(r",?\s*line \d+\s*$")
 
 
-def _image_match(text, second, page, uncertain=False, groups=(), annots=()):
+def _named_ok(ln, cell, named=frozenset()):
+    """Rule j, for a served table cell (cell: from _cell_positions; a served text outside a table, cell None, has no
+    row / column to swap and is not position-checked): a reading line naming a cell ('row X / column Y', 'column head
+    k', 'row label k', kind or style field) counts only for the cell at that position, never when that row label /
+    column head occurs twice in the served table; a line that mentions a row / column / head / header (screen, kind,
+    style or an unrecognised note clause) without such a parseable name never counts; and once the reading names cells
+    of a sort on the page (named: the sorts it uses), a served cell of that sort needs a line naming its position."""
+    if not cell:
+        return True
+    nm = ln["naming"]
+    if ln["v3"] and (not nm or nm[0] == "row"):
+        return False   # v3 (review round 4 M1): every table cell only from a line naming its exact position
+    if not nm:
+        if ln["naming_bad"]:
+            return False
+        sort = "head" if cell["r"] == 0 else ("rowlabel" if cell["c"] == 0 else "rc")
+        return sort not in named and not (named & {"grid", "row"})
+    if nm[0] == "rc":
+        return cell["r"] >= 1 and cell["c"] >= 1 and (nm[1], nm[2]) == (cell["row"], cell["col"]) \
+            and not cell["row_dup"] and not cell["col_dup"]
+    if nm[0] == "head":
+        return cell["gr"] == 0 and cell.get("head_k") == nm[1]
+    if nm[0] == "grid":   # the cell's top-left grid square, spans honoured (1-based)
+        return (cell["gr"] + 1, cell["gc"] + 1) == (nm[1], nm[2])
+    if nm[0] == "row":
+        return cell["r"] == nm[1]
+    return cell["gc"] == 0 and cell.get("row_k") == nm[1]
+
+
+def _piece_eq(pc, ln):
+    """Rule 1/3: one served line equals one WHOLE printed content of a reading line, literally (a list glyph must be
+    on both sides), or — rule 3 — a served line with a list glyph equals a reading line without it whose notes are
+    all recognised clauses (closed grammar) and vouch for the glyph: '•', '-', '*' … a bullet clause (and no
+    numbered clause), a number 'n.' a 'numbered n' clause with exactly that number; never on a heading or label
+    line. Returns 'eq', 'marker' or None."""
+    if pc in ln["fields"]:
+        return "eq"
+    g = _LIST_GLYPH.match(pc)
+    if not g or ln["kind"] in ("heading", "label", "title") or not ln["notes_ok"]:
+        return None
+    body = pc[g.end():]
+    if not body or body not in ln["fields"]:
+        return None
+    if g.group(1) and ln["bullet_note"]:
+        return "marker"
+    if g.group(2) and list(ln["numbered"]) == [g.group(2)]:
+        return "marker"
+    return None
+
+
+def _partition_eq(pieces, contents):
+    """True when contents (consecutive element lines) split into len(pieces) runs of whole lines whose joins equal the
+    served pieces in order."""
+    if not pieces:
+        return not contents
+    for j in range(1, len(contents) - len(pieces) + 2):
+        if any(_norm(x) == pieces[0] for x in _joins(contents[:j])) and _partition_eq(pieces[1:], contents[j:]):
+            return True
+    return False
+
+
+def _cell_full(run, printed):
+    """Lines of ONE multi-line element marked line 1 … line k (any kind; rule k marks in kind, style or notes), in
+    order, covering every line the reading gives that element ('line n of N': exactly N)."""
+    if any(r["cell_of"] not in (None, len(run)) for r in run):
+        return False
+    return any(len(el) == len(run) and all(a is b for a, b in zip(el, run)) for el in _marker_elements(printed))
+
+
+def _marker_elements(lines):
+    """Round 9 S4: multi-line elements = contiguous runs of lines marked line 1, 2, … N (same page, screen, kind and
+    base); a new 'line 1' starts a new element, anything else ends the run."""
+    out, cur, bad = [], None, set()
+    for ln in lines:
+        n = ln["cell_line"]
+        if n == 1:
+            cur = [ln]
+            out.append(cur)
+        elif n is not None and cur and n == cur[-1]["cell_line"] + 1 and \
+                (ln["page"], ln["screen"], ln["kind"], ln["cell_base"]) == \
+                (cur[0]["page"], cur[0]["screen"], cur[0]["kind"], cur[0]["cell_base"]):
+            cur.append(ln)
+        else:
+            # round 10 S2: the element is invalid when the next line of the same page / screen / kind carries a
+            # marker other than 'line 1' (a duplicate or skipped line) or is an unmarked continuation (it starts
+            # with a lower-case letter)
+            if cur and (ln["page"], ln["screen"], ln["kind"]) == (cur[0]["page"], cur[0]["screen"], cur[0]["kind"]) \
+                    and (n is not None or re.match(r"[a-z]", ln.get("rawc") or "")):
+                bad.add(id(cur))
+            cur = None
+    return [el for el in out if id(el) not in bad]
+
+
+def _numrow_tables(printed, ok):
+    """Rule 4: (top row, bottom row) of numbers that a reading gives column by column. (a) lines naming 'column C top'
+    / 'column C bottom' (screen, kind or style) of one table, contiguous among printed lines, every column exactly
+    one top and one bottom, columns in reading order; (b) option pairs: an option line whose notes name exactly
+    'column k [of N]' (no pointer elsewhere) followed by an unmarked option line, k = 1, 2, 3 … in order, as many
+    pairs as N says, and no further unmarked option line after the last pair. Every entry must be one number of a
+    usable line, otherwise the table yields nothing (it can never confirm)."""
+    out = []
+    i = 0
+    while i < len(printed):   # (a)
+        cp = printed[i]["colpos"]
+        if not cp:
+            i += 1
+            continue
+        j = i
+        while j < len(printed) and printed[j]["colpos"] and printed[j]["colpos"][0] == cp[0] \
+                and printed[j]["page"] == printed[i]["page"]:
+            j += 1
+        cols, good = {}, True
+        for ln in printed[i:j]:
+            c_ = cols.setdefault(ln["colpos"][1], {})
+            if ln["colpos"][2] in c_ or not ok(ln) or ln["num"] is None or not ln["notes_ok"]:
+                good = False
+            c_[ln["colpos"][2]] = ln["num"]
+        if good and cols and all(set(c_) == {"top", "bottom"} for c_ in cols.values()):
+            out.append((" ".join(c_["top"] for c_ in cols.values()), " ".join(c_["bottom"] for c_ in cols.values())))
+        i = j
+    i = 0
+    while i < len(printed):   # (b)
+        cn = printed[i]["colnote"]
+        if printed[i]["kind"] != "option" or not isinstance(cn, tuple) or cn[0] != 1:
+            i += 1
+            continue
+        tops, bots, k, good, of_n = [], [], 1, True, cn[1]
+        where = (printed[i]["page"], printed[i]["screen"])
+        if i and printed[i - 1]["kind"] == "option" and (printed[i - 1]["page"], printed[i - 1]["screen"]) == where:
+            good = False   # a stray option before column 1
+        j = i
+        while j + 1 < len(printed):
+            a, b = printed[j], printed[j + 1]
+            if not (a["kind"] == b["kind"] == "option" and a["colnote"] == (k, of_n) and b["colnote"] is None
+                    and (a["page"], a["screen"]) == (b["page"], b["screen"]) == where):
+                break
+            if not (ok(a) and ok(b)) or a["num"] is None or b["num"] is None or not (a["notes_ok"] and b["notes_ok"]):
+                good = False
+            tops.append(a["num"])
+            bots.append(b["num"])
+            k += 1
+            j += 2
+        if j < len(printed) and printed[j]["kind"] == "option" and (printed[j]["page"], printed[j]["screen"]) == where:
+            good = False   # an option left over after the last pair (or a pair broken off): not this table form
+        if of_n is not None and len(tops) != of_n:
+            good = False
+        if good and len(tops) >= 2:
+            out.append((" ".join(tops), " ".join(bots)))
+        i = max(j, i + 1)
+    return out
+
+
+def _reading_body_key(reading):
+    """A reading's body without its header (first non-blank line), line ends / trailing blanks / blank lines folded."""
+    reading = reading.lstrip("\ufeff")   # a byte-order mark never makes another reader (round 7 S4)
+    lines = [x.rstrip() for x in reading.replace("\r\n", "\n").replace("\r", "\n").split("\n") if x.strip()]
+    if lines and not re.match(r"\s*p\d+\s*\|", lines[0]):   # a header line, not a reading line
+        lines = lines[1:]
+    return "\n".join(lines)
+
+
+def _v3_gap_vouch(reading, page, gap_groups, annots=()):
+    """The gap compositions (regex patterns) a v3 reading confirms by the strict image_gap rule itself (whatever rule
+    it reported first)."""
+    pages = _cited_pages(page)
+    if not gap_groups or pages is None:
+        return set()
+    usable = [ln for ln in _reading_lines(reading, pages, annots) if not ln["uncertain"] and not ln["partish"]]
+    return {g[1].pattern for g in gap_groups if _group_match(g, usable)}
+
+
+def _image_match(text, second, page, uncertain=False, groups=(), annots=(), cell=None, anchor=frozenset()):
     """Reading lines are 'p<N> | screen | kind | [style |] text'. A served text matches a line on its cited page(s)
     only by WHOLE-FIELD EQUALITY after normalisation (NFKC, quotes, U+2212, underscore runs, whitespace, case, reader
     marks removed) — never as a substring or a word inside a longer field ("Agree" is not confirmed by "Strongly
     agree"; skills review-3 M4). A line wholly in double quotes also matches its inside (served text without quotes).
-    Layout tolerances, each a whole-element equality:
-    - a label and its value on two consecutive lines (the first ends with ':' or is of kind 'label'; same page and
-      screen; neither an option/button/cell-like single element) match their join;
-    - consecutive printed lines of ONE element (same page, screen and kind; not a single-element kind, not a label;
-      note lines skipped; split by the print's line end or by a style change) match their whole join;
-    - a served element printed on several lines ('A\nB') matches consecutive reading lines of one page and screen:
-      the first piece ends the first line, the last piece starts the last line, middle pieces are whole fields
-      (review-5 M1); single-element kinds only when every line is a line of the same cell ('…, line 1', '…, line 2');
-    - groups (from _image_groups): one printed line of an image item, or one static fragment of a composed element,
-      matches when its whole join / template matches one reading unit (_group_match);
-    - cross-page join (rule e): a text whose cite spans two pages "p-q" also matches the join of the last line of p
-      and the first line of q (note lines skipped; never a label or single element).
-    A line the reader marked [uncertain …] / [partial] / [continued] is not agreement (Decided 5): skipped unless
-    uncertain=True (used only to report why a text failed); in a join, [partial] / [continued] alone do not block
-    (the join completes the element). An unparseable page cite matches nothing. annots: declared printed
-    annotations stripped (_reading_lines)."""
+    Returns the name of the rule that matched (the check output reports it as match_rule), else False:
+    - 'field': whole-field equality with one line;
+    - 'list_marker' (rule 3): a served line with a leading list glyph equals a reading line without the glyph only
+      when a note of that line vouches for that glyph type (_piece_eq);
+    - 'label_value': a label and its value on two consecutive lines (the first ends with ':' or is of kind 'label';
+      same page and screen; neither an option/button/cell-like single element nor a line 'n' of an element) match
+      their join;
+    - 'element_join': consecutive printed lines of ONE element (same page, screen and kind; not a single-element kind,
+      not a label; pure note lines skipped, a 'note' line holding printed text is a barrier; split by the print's
+      line end or by a style change; the last line not [partial] / [continued]; lines 'n' of an element only all of
+      them) match their whole join;
+    - 'multiline' (review-5 M1): a served element printed on several lines ('A\\nB') matches consecutive reading lines
+      of one page and screen, no single-element kinds and no lines 'n': the first piece ends the first line's printed
+      content, the last piece starts the last line's, middle pieces are whole contents (never ' / ' or '|' pieces or
+      style fields);
+    - 'multiline_k' (rule 1): a served text of k lines equals k consecutive reading lines of one page and screen (only
+      pure note lines between), each served line one WHOLE printed content, in order (list glyphs per rule 3,
+      reported as 'multiline_k+list_marker'); cell lines only as the whole of one element named '…, line 1' … '…,
+      line k', or as an unnamed label+content cell (each break after a served line ending in ':' and before a line
+      ending a sentence, or before a line whose own vouching note says 'same cell');
+    - 'page_join' (rule e): a text whose cite spans two pages "p-q" also matches the join of the last line of p and
+      the first line of q (note lines skipped; never a label or single element);
+    - groups (from _image_groups): 'image_join' (lines of one image item), 'template' (fragments of one composed
+      element; a computed value there is any short rendered number — unchanged, see DESIGN §3.5 pass 3), 'image_gap'
+      (rule 2: texts separated on one stage only by images / computed values, one reading line), 'column_rows'
+      (rule 4: a numeric row and its companion row given column by column).
+    Rule j: a line naming its cell counts only for the served cell at that position (_named_ok); rule k: a line 'n'
+    of a multi-line element never confirms anything on its own. A line the reader marked [uncertain …] / [partial] /
+    [continued], or whose note doubts the print ('could be', 'maybe', '5 or 6'), is not agreement (Decided 5): skipped
+    unless uncertain=True (used only to report why a text failed); in a join, [partial] / [continued] alone do not
+    block. An unparseable page cite matches nothing. annots: declared printed annotations stripped (_reading_lines)."""
     pages = _cited_pages(page)
     if pages is None:
         return False
@@ -1229,64 +1881,143 @@ def _image_match(text, second, page, uncertain=False, groups=(), annots=()):
         return False
     lines = _reading_lines(second, pages, annots)
 
+    v3 = _is_v3(second)
+    named = frozenset(ln["naming"][0] for ln in lines if ln["naming"]) if v3 else frozenset()
+
+    # v3 S1: a line whose fields / notes speak of lines or parts in a non-marker form never counts
+    # round 9 S3: a v3 line ending in [continues on next page] counts only in page_join — for any other text it is a
+    # disagreement (never uncertain-only)
     def ok(ln):
-        return uncertain or not ln["uncertain"]
+        return (uncertain or not ln["uncertain"]) and _named_ok(ln, cell, named) and not ln["partish"] \
+            and not ln.get("cont_next")
 
     def okj(ln):
-        return uncertain or not ln["hard_uncertain"]
-    usable = [ln for ln in lines if ok(ln)]
-    if any(_hit(want, ln) for ln in usable):
-        return True
+        return (uncertain or not ln["hard_uncertain"]) and _named_ok(ln, cell, named) and not ln["partish"] \
+            and not ln.get("cont_next")
+    usable = [ln for ln in lines if ok(ln) and ln["cell_line"] is None]
+    if v3 and cell is not None:   # round 8 S2: a v3 table cell equals the named line's whole content only
+        if any(want in ln["fields"] for ln in usable):
+            return "field"
+    elif any(_hit(want, ln) for ln in usable):
+        return "field"
+    if "\n" not in str(text).strip() and _LIST_GLYPH.match(want) \
+            and any(_piece_eq(want, ln) == "marker" for ln in usable):
+        return "list_marker"
     prev = None
     for ln in lines:
-        if not ok(ln):
+        if not ok(ln) or ln["cell_line"] is not None:
             prev = None
             continue
-        if prev and prev["page"] == ln["page"] and prev["screen"] == ln["screen"] and prev["content"] \
-                and ln["content"] and not _SINGLE_KINDS.match(prev["kind"]) and not _SINGLE_KINDS.match(ln["kind"]) \
+        if prev and not (v3 and cell is not None) and prev["page"] == ln["page"] and prev["screen"] == ln["screen"] \
+                and prev["content"] and ln["content"] and not _SINGLE_KINDS.match(prev["kind"]) \
+                and not _SINGLE_KINDS.match(ln["kind"]) \
                 and (prev["content"].endswith(":") or prev["kind"] == "label") and ln["kind"] != "label":
-            if want in (prev["content"] + " " + ln["content"], _BULLET.sub("", prev["content"]) + " " + ln["content"]):
-                return True
+            if want in (prev["content"] + " " + ln["content"], prev["bul"].sub("", prev["content"]) + " " + ln["content"]):
+                return "label_value"
         prev = ln
-    printed = [ln for ln in lines if ln["kind"] != "note"]
+    printed = [ln for ln in lines if not ln["pure_note"]]
+    # v3 (M1): a pure note line whose clauses are not all recognised ends an element join
+    ej = [ln for ln in lines if not (ln["pure_note"] and (ln["notes_ok"] or not v3))]
     # consecutive printed lines of one element
-    for i in range(len(printed)):
-        a = printed[i]
-        if _SINGLE_KINDS.match(a["kind"]) or a["kind"] == "label" or not okj(a):
+    for i in range(len(ej)):
+        a = ej[i]
+        if _SINGLE_KINDS.match(a["kind"]) or a["kind"] in ("label", "note") or not okj(a):
             continue
         run = [a]
-        for b in printed[i + 1:i + 12]:
+        for b in ej[i + 1:i + 12]:
             if (b["page"], b["screen"], b["kind"]) != (a["page"], a["screen"], a["kind"]) or not okj(b):
                 break
             run.append(b)
-            if _join_eq(want, [x["content"] for x in run]):
-                return True
-    # a served element printed on several lines (review-4 rule a, reading side; review-5 M1)
+            if b["soft_end"] or (any(x["cell_line"] is not None for x in run) and not _cell_full(run, printed)):
+                continue
+            if v3 and not _cell_full(run, printed):   # round 9 S2: v3 joins only the lines of one marked element
+                continue
+            if _join_eq(want, [x["content"] for x in run], run[0]["bul"]):
+                return "element_join"
+    # a served element printed on several lines (review-4 rule a, reading side; review-5 M1; rule 1). A note line
+    # whose clauses are not all recognised is a barrier here (it may stand for printed text).
     pieces = [_norm(x) for x in str(text).split("\n") if _norm(x)]
+    mlines = [ln for ln in lines if not (ln["pure_note"] and (ln["notes_ok"] or not v3))]
     if len(pieces) >= 2:
-        for j in range(len(printed) - len(pieces) + 1):
-            run = printed[j:j + len(pieces)]
-            if not all(ok(r) and r["page"] == run[0]["page"] and r["screen"] == run[0]["screen"] for r in run):
+        for j in range(len(mlines) - len(pieces) + 1):
+            run = mlines[j:j + len(pieces)]
+            if not all(ok(r) and r["page"] == run[0]["page"] and r["screen"] == run[0]["screen"]
+                       and r["kind"] != "note" for r in run):
                 continue
-            cells = {_CELL_LINE.sub("", r["style"]) for r in run}
-            same_cell = all(_CELL_LINE.search(r["style"]) for r in run) and len(cells) == 1 and "" not in cells
-            if not same_cell and any(_SINGLE_KINDS.match(r["kind"]) for r in run):
+            same_cell = _cell_full(run, printed)
+            singles = any(_SINGLE_KINDS.match(r["kind"]) for r in run)
+            lines_n = any(r["cell_line"] is not None for r in run)
+            if not singles and not lines_n and pieces[0] in run[0]["lsuffixes"] \
+                    and pieces[-1] in run[-1]["lprefixes"] \
+                    and all(pc in r["fields"] or pc in {r["bul"].sub("", x) for x in r["fields"]}
+                            for pc, r in zip(pieces[1:-1], run[1:-1])):
+                return "multiline"
+            # rule 1: every served line one whole printed content; every note of the run (and of note lines between
+            # its lines) in the closed grammar
+            if (lines_n and not same_cell) or not all(r["notes_ok"] for r in run):
                 continue
-            if pieces[0] in run[0]["suffixes"] and pieces[-1] in run[-1]["prefixes"] \
-                    and all(pc in r["wholes"] for pc, r in zip(pieces[1:-1], run[1:-1])):
-                return True
+            i0, i1 = lines.index(run[0]), lines.index(run[-1])
+            if any(not x["notes_ok"] for x in lines[i0:i1 + 1]):
+                continue
+            if singles and not same_cell:
+                if cell is not None and not v3 and "cell" not in anchor:
+                    continue   # S4: legacy unnamed cells never confirm a served table cell here (unless v3-anchored)
+                # unnamed cells: no style field may name a position (only recognised style clauses)
+                if not all(r["kind"] == "cell" and not r["naming"] and not r["naming_bad"] and r["style_ok"]
+                           for r in run):
+                    continue
+                # M5: a same-cell note quotes exactly the previous line's content
+                if not all((pieces[k - 1].endswith(":") and re.search(r"[.!?]$", pieces[k]))
+                           or (run[k]["same_cell_quote"] is not None
+                               and run[k]["same_cell_quote"] in run[k - 1]["contents"]) for k in range(1, len(run))):
+                    continue
+            eqs = [_piece_eq(pc, r) for pc, r in zip(pieces, run)]
+            if all(eqs):
+                tag = "+v3_anchor" if singles and not same_cell and cell is not None and not v3 else ""
+                return ("multiline_k+list_marker" if "marker" in eqs else "multiline_k") + tag
+    # a marked multi-line element (lines 1 … m, all of them, contiguous) printed on MORE lines than the served text has:
+    # each served line must be the join of a run of whole consecutive element lines (the print wraps inside a served
+    # line; every served line break is an element line break) — review rounds 5 and 9 (a single-line served text too)
+    if pieces:
+        for el in _marker_elements(mlines):
+            if len(el) <= len(pieces) or any(x["cell_of"] not in (None, len(el)) for x in el):
+                continue
+            if not all(ok(x) and x["notes_ok"] for x in el):
+                continue
+            if _partition_eq(pieces, [x["content"] for x in el]):
+                return "multiline_k"
     if len(pages) == 2:
         a_, b_ = sorted(pages)
-        last = [ln for ln in printed if ln["page"] == a_][-1:]
-        first = [ln for ln in printed if ln["page"] == b_][:1]
-        if last and first and last[0]["kind"] != "label" and \
-                all(okj(ln) and not _SINGLE_KINDS.match(ln["kind"]) for ln in last + first):
+        last = [ln for ln in printed if ln["page"] == a_ and ln["kind"] != "note"][-1:]
+        first = [ln for ln in printed if ln["page"] == b_ and ln["kind"] != "note"][:1]
+        def okp(ln, is_last):   # v3: the last line of page p may carry the continuation mark, nothing else soft
+            if is_last and ln.get("cont_next") and not ln["hard_wo_cont"]:
+                return (uncertain or True) and _named_ok(ln, cell, named) and not ln["partish"]
+            return okj(ln)
+        if v3 and not (last and last[0].get("cont_next")):   # round 9 S2: v3 joins pages only after the mark
+            last = []
+        if last and first and last[0]["kind"] != "label" and okp(last[0], True) and okp(first[0], False) and \
+                all(not _SINGLE_KINDS.match(ln["kind"]) and ln["cell_line"] is None for ln in last + first):
             soft = last[0]["uncertain"] or first[0]["uncertain"]
             for x in last[0]["contents"]:
                 for y in first[0]["contents"]:
-                    if _join_eq(want, [x, y]) or (not soft and any(want in _units(_norm(j)) for j in _joins([x, y]))):
-                        return True
-    return any(_group_match(g, usable) for g in groups)
+                    bul_ = last[0]["bul"]
+                    if _join_eq(want, [x, y], bul_) or (not soft and any(want in _units(_norm(j), bul_)
+                                                                         for j in _joins([x, y]))):
+                        return "page_join"
+    for g in groups:
+        if g[0] == "numrow":
+            if any((_norm(g[1]), _norm(g[2])) == t for t in _numrow_tables(printed, ok)):
+                return "column_rows"
+        elif v3 and cell is not None and g[0] == "tpl":   # round 10 S3: a v3 cell matches a template whole
+            if any(_template_ok(g[1], f_) for ln in usable for f_ in ln["fields"]):
+                return "template"
+        elif _group_match(g, usable):
+            return {"join": "image_join", "tpl": "template", "gap": "image_gap"}[g[0]]
+        elif g[0] == "gap" and ("gap", g[1].pattern) in anchor and not v3 \
+                and any(g[1].fullmatch(x) for ln in usable for x in ln["agapforms"]):
+            return "image_gap+v3_anchor"
+    return False
 
 
 def _expr_parts(node, data, ids):
@@ -1335,6 +2066,12 @@ def _image_groups(p):
                              and cs[k].get("read") == "image" and (cs[k].get("source"), str(cs[k].get("page"))) == key
                              and isinstance(y.get("text"), str) else None for k, y in enumerate(ls)]
                     out.setdefault(id(x), []).append(("join", texts, i))
+                    # rule 4: a numeric row and the next / previous numeric row of the same item (its companion)
+                    for a_, b_ in ((i, i + 1), (i - 1, i)):
+                        if 0 <= a_ and b_ < len(texts) and all(isinstance(texts[k], str) and
+                                                               _NUMROW.fullmatch(_norm(texts[k])) for k in (a_, b_)) \
+                                and len(_norm(texts[a_]).split()) == len(_norm(texts[b_]).split()):
+                            out[id(x)].append(("numrow", texts[a_], texts[b_]))
             for v in o.values():
                 walk(v)
         elif isinstance(o, list):
@@ -1378,6 +2115,284 @@ def _image_groups(p):
             continue
         for obj in refs:
             out.setdefault(id(obj), []).append(("tpl", rx))
+    _gap_groups(p, out)
+    return out
+
+
+def _parts_src(node, data):
+    """Like _expr_parts, but a computed value keeps its source: ('v', consts, source)."""
+    import ast
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        l_, r_ = _parts_src(node.left, data), _parts_src(node.right, data)
+        return None if l_ is None or r_ is None else l_ + r_
+    keys, n = [], node
+    while isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant):
+        keys.append(n.slice.value)
+        n = n.value
+    if isinstance(n, ast.Name) and n.id == "data" and len(keys) == 2:   # a whole served text object data[A][B]
+        obj = (data.get(keys[1]) or {}).get(keys[0]) if isinstance(data.get(keys[1]), dict) else None
+        if isinstance(obj, dict) and isinstance(obj.get("text"), str) and "src" not in obj:
+            return [("s", obj["text"], obj)]
+        return None
+    one = _expr_parts(node, data, None)
+    if one is None or len(one) != 1:
+        return None
+    if one[0][0] == "v":
+        return [("v", one[0][1], ast.unparse(node))]
+    return one
+
+
+def _value_renderings(src, p):
+    """Rule 2: every rendering of a computed value that depends on ONE answer: evaluated for each option code of that
+    response, or for each integer of its declared 'range' [lo, hi] (at most 1001 values). None when that cannot be
+    told or any rendering is not digits only: the gap rule then confirms nothing (strict)."""
+    from .expr import evaluate
+    keys = set(re.findall(r"answer\(\s*['\"]([^'\"]+)['\"]\s*\)", src))
+    if len(keys) != 1:
+        return None
+    sid, _, rid = next(iter(keys)).partition(".")
+    st = (p.stages or {}).get(sid) if isinstance(getattr(p, "stages", None), dict) else None
+    resp = next((r for r in (st or {}).get("responses", []) if isinstance(r, dict) and r.get("id") == rid), None)
+    if not isinstance(resp, dict):
+        return None
+    opts, rng = resp.get("options"), resp.get("range")
+    if isinstance(opts, list) and opts and all(isinstance(o, dict) and o.get("code") is not None for o in opts):
+        codes = [o["code"] for o in opts]
+    elif isinstance(rng, list) and len(rng) == 2 and all(isinstance(x, int) and not isinstance(x, bool) for x in rng) \
+            and 0 <= rng[1] - rng[0] <= 1000:
+        codes = list(range(rng[0], rng[1] + 1))
+    else:
+        return None
+    out = set()
+    for c in codes:
+        try:
+            v = evaluate(src, {"data": p.data}, funcs={"answer": lambda k, c=c: c})
+        except Exception:
+            return None
+        v = str(v)
+        if not re.fullmatch(r"\d{1,9}", v):
+            return None
+        out.add(v)
+    return out
+
+
+def _gap_rx(items, p):
+    """items: [('s', raw static) | ('img',) | ('v', source)] of one stage run -> regex over one reading line's
+    gapform (rule 2), or None. Static texts in order, nothing skipped, a space exactly where the composition has
+    one; an image gap is one picture mark (the sentinel) or, only between delimiters the served texts themselves
+    end / start with, nothing; a computed gap is one of the value's renderings (digits only)."""
+    merged = []
+    for it in items:
+        if it[0] == "s" and merged and merged[-1][0] == "s":
+            merged[-1] = ("s", merged[-1][1] + it[1])
+        else:
+            merged.append(it)
+    SP = object()
+    toks = []
+    for k, it in enumerate(merged):
+        if it[0] == "s":
+            for part in re.split(r"(\s+)", it[1]):
+                if not part:
+                    continue
+                if part.isspace():
+                    toks.append(SP)
+                elif _norm(part):
+                    toks.append(re.escape(_norm(part)))
+        elif it[0] == "img":
+            before = merged[k - 1][1].rstrip() if k and merged[k - 1][0] == "s" else ""
+            after = merged[k + 1][1].lstrip() if k + 1 < len(merged) and merged[k + 1][0] == "s" else ""
+            delim = bool(before and after and before[-1] in _DELIMS and after[0] in _DELIMS)
+            while toks and toks[-1] is SP:
+                toks.pop()
+            toks.append(("img", "(?:%s)%s" % (re.escape(_GAP), "?" if delim else "")))
+        else:
+            r_ = _value_renderings(it[1], p)
+            if not r_:
+                return None
+            toks.append("(?:%s)" % "|".join(map(re.escape, sorted(r_))))
+    rx, prev = "", None
+    for t in toks:
+        if t is SP:
+            if prev is not None and prev is not SP and not isinstance(prev, tuple):
+                prev = SP
+            continue
+        if isinstance(t, tuple):
+            rx += t[1]
+        else:
+            rx += (" " if prev is SP else "") + t
+        prev = t
+    return re.compile(rx) if rx else None
+
+
+def _shown_images(grp, p):
+    """How many pictures consecutive image items show (each is one gap; never merged): all unconditional -> their
+    number; all conditional on ONE choice answer ('answer(K) == "code"'), one item per option code of that response,
+    each code once -> exactly 1; anything else -> 0 (cannot be told: no gap rule)."""
+    if all(it.get("if") is None for it in grp):
+        return len(grp)
+    keys, codes = set(), []
+    for it in grp:
+        m = re.fullmatch(r"\s*answer\(\s*['\"]([^'\"]+)['\"]\s*\)\s*==\s*['\"]([^'\"]*)['\"]\s*", str(it.get("if") or ""))
+        if not m:
+            return 0
+        keys.add(m.group(1))
+        codes.append(m.group(2))
+    if len(keys) != 1 or len(set(codes)) != len(codes):
+        return 0
+    sid, _, rid = next(iter(keys)).partition(".")
+    st = (p.stages or {}).get(sid) if isinstance(getattr(p, "stages", None), dict) else None
+    resp = next((r for r in (st or {}).get("responses", []) if isinstance(r, dict) and r.get("id") == rid), None)
+    opts = resp.get("options") if isinstance(resp, dict) else None
+    want = {str(o.get("code")) for o in opts if isinstance(o, dict)} if isinstance(opts, list) else set()
+    return 1 if want and set(codes) == want and resp.get("required") else 0
+
+
+def _gap_groups(p, out):
+    """Rule 2 groups: on one stage, plain served texts (data refs read off an image of one source page) separated only
+    by image items or computed values — text A, image, text B, computed number, text C — form one run; each text of
+    the run gets ('gap', regex). A text item next to another text item (no gap between), a conditional text item or
+    anything else ends a run."""
+    import ast
+    for st in (p.stages or {}).values() if isinstance(getattr(p, "stages", None), dict) else ():
+        seq = []
+        content = st.get("content", []) if isinstance(st, dict) else []
+        k_ = 0
+        while k_ < len(content):
+            it = content[k_]
+            if not isinstance(it, dict):
+                seq.append(("bar",))
+                k_ += 1
+                continue
+            if it.get("type") == "image":
+                grp = [it]
+                while k_ + len(grp) < len(content) and isinstance(content[k_ + len(grp)], dict) \
+                        and content[k_ + len(grp)].get("type") == "image":
+                    grp.append(content[k_ + len(grp)])
+                k_ += len(grp)
+                n_img = _shown_images(grp, p)
+                seq.extend([("img",)] * n_img if n_img else [("bar",)])
+                continue
+            k_ += 1
+            v = it.get("value", it.get("text"))
+            parts = None
+            if it.get("if") is None and isinstance(v, dict) and isinstance(v.get("expr"), str):
+                try:
+                    tree = ast.parse(v["expr"], mode="eval").body
+                except (SyntaxError, ValueError):
+                    tree = None
+                if isinstance(tree, ast.Dict):
+                    tree = next((y for x, y in zip(tree.keys, tree.values)
+                                 if isinstance(x, ast.Constant) and x.value == "text"), None)
+                parts = _parts_src(tree, p.data) if tree is not None else None
+            if not parts:
+                seq.append(("bar",))
+                continue
+            if seq and seq[-1][0] == "s" and parts[0][0] == "s":
+                seq.append(("bar",))   # two text elements side by side: not this rule
+            seq.extend(parts)
+        run = []
+        for it in seq + [("bar",)]:
+            if it[0] != "bar":
+                run.append(it)
+                continue
+            while run and run[0][0] in ("img", "v"):
+                run.pop(0)
+            while run and run[-1][0] in ("img", "v"):
+                run.pop()
+            objs = [x[2] for x in run if x[0] == "s" and x[2] is not None]
+            cites = {json.dumps([(o.get("cite") or {}).get(k) for k in ("source", "page", "read")], default=str)
+                     for o in objs}
+            if len(objs) >= 2 and any(x[0] in ("img", "v") for x in run) and len(cites) == 1 \
+                    and all((o.get("cite") or {}).get("read") == "image" for o in objs):
+                rx = _gap_rx([("s", x[1]) if x[0] == "s" else (("img",) if x[0] == "img" else ("v", x[2]))
+                              for x in run], p)
+                if rx is not None:
+                    for o in objs:
+                        out.setdefault(id(o), []).append(("gap", rx))
+            run = []
+
+
+from .engine import SPAN_LIMITS as _SPAN_MAX   # noqa: E402  (engine and checker share the span limits)
+
+
+def _table_grid(rows):
+    """{(r, c): (grid row, grid column)} of a served table's cells, 0-based, honouring integer 'colspan' / 'rowspan'
+    (a cell spanning columns 2-3 sits at grid column 2; the next cell of its row at grid column 4)."""
+    return _table_layout(rows)[0]
+
+
+def _table_layout(rows):
+    """(cell -> top-left grid square, grid square -> covering cell (r, c), cell -> (rowspan, colspan))."""
+    owner, out, span = {}, {}, {}
+    for r, row in enumerate(rows):
+        gc = 0
+        for c, x in enumerate(row):
+            while (r, gc) in owner:
+                gc += 1
+            out[(r, c)] = (r, gc)
+            cs = x.get("colspan", 1) if isinstance(x, dict) else 1
+            rs = x.get("rowspan", 1) if isinstance(x, dict) else 1
+            cs = cs if isinstance(cs, int) and not isinstance(cs, bool) and 1 <= cs <= _SPAN_MAX["colspan"] else 1
+            rs = rs if isinstance(rs, int) and not isinstance(rs, bool) and 1 <= rs <= _SPAN_MAX["rowspan"] else 1
+            span[(r, c)] = (rs, cs)
+            for dr in range(rs):
+                for dc in range(cs):
+                    owner[(r + dr, gc + dc)] = (r, c)
+            gc += cs
+    return out, owner, span
+
+
+def _cell_positions(p):
+    """id(served cell dict) -> its position in a served table ({'rows': [[cell, ...], ...]}, in data or inline in a
+    stage's content): row r, column c, the
+    row label (normalised text of rows[r][0]), the column head (rows[0][c]), and for heads / row labels their rank
+    among the non-empty heads / row labels (1-based), as readers number them ('column head k', 'row label k')."""
+    out = {}
+
+    def txt(x):
+        return _norm(x.get("text")) if isinstance(x, dict) and isinstance(x.get("text"), str) else ""
+
+    def walk(o):
+        if isinstance(o, dict):
+            rows = o.get("rows")
+            if isinstance(rows, list) and rows and all(isinstance(r, list) for r in rows):
+                head = rows[0]
+                rl = [txt(r[0]) if r else "" for r in rows[1:]]
+                ch = [txt(x) for x in head[1:]]
+                # round 6 S2: the row label / column head of a cell are the cells covering its grid square in
+                # grid column 0 / grid row 0 (spans honoured); a spanning label / head is ambiguous (duplicate)
+                grid, owner, span = _table_layout(rows)
+                # round 7: heads are the non-empty cells of grid row 0 (from grid column 1), row labels the non-empty
+                # cells of grid column 0 (from grid row 1), each numbered in grid order
+                hk = {rc: k + 1 for k, rc in enumerate(sorted(
+                    (rc for rc, g in grid.items() if g[0] == 0 and g[1] >= 1 and rc[1] < len(rows[rc[0]])
+                     and txt(rows[rc[0]][rc[1]])), key=lambda rc: grid[rc][1]))}
+                rk = {rc: k + 1 for k, rc in enumerate(sorted(
+                    (rc for rc, g in grid.items() if g[1] == 0 and g[0] >= 1 and rc[1] < len(rows[rc[0]])
+                     and txt(rows[rc[0]][rc[1]])), key=lambda rc: grid[rc][0]))}
+
+                def cover(sq):
+                    rc = owner.get(sq)
+                    if rc is None or rc[1] >= len(rows[rc[0]]):
+                        return "", False
+                    return txt(rows[rc[0]][rc[1]]), span.get(rc, (1, 1)) != (1, 1)
+                for r, row in enumerate(rows):
+                    for c, x in enumerate(row):
+                        if isinstance(x, dict):
+                            gr, gc = grid.get((r, c), (r, c))
+                            rlab, rspan = cover((gr, 0))
+                            chd, cspan = cover((0, gc))
+                            out[id(x)] = {"r": r, "c": c, "row": rlab, "col": chd, "gr": gr, "gc": gc,
+                                          "row_dup": rspan or (bool(rlab) and rl.count(rlab) > 1),
+                                          "col_dup": cspan or (bool(chd) and ch.count(chd) > 1),
+                                          "head_k": hk.get((r, c)), "row_k": rk.get((r, c))}
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(getattr(p, "data", None))
+    walk(getattr(p, "stages", None))   # inline table values of stage content (review round 5 MF2)
     return out
 
 
@@ -1436,6 +2451,8 @@ def check_verbatim(p, source_texts, public=False):
     texts = {k: _norm(v) for k, v in source_texts.items()}
     raw = source_texts
     groups = _image_groups(p)
+    cells = _cell_positions(p)
+    matches, rule_counts = [], {}   # match_rule of every confirmed image text (rules other than 'field' listed)
     meta = (getattr(p, "raw", None) or {}).get("meta") or {}
     known = set()
     srcs = meta.get("sources")
@@ -1460,8 +2477,8 @@ def check_verbatim(p, source_texts, public=False):
         rx = re.compile(re.escape(str(source)) + r"#(?:second|third)(?:-\d+)?")
         return [v for k, v in sorted(raw.items()) if rx.fullmatch(k)]
 
-    def legacy(r):
-        return hashlib.sha256(r.encode("utf-8")).hexdigest() in LEGACY_UNCERTAIN_READINGS
+    def legacy(r):   # pinned uncertain-only legacy reading; never a v3 reading (review round 4)
+        return hashlib.sha256(r.encode("utf-8")).hexdigest() in LEGACY_UNCERTAIN_READINGS and not _is_v3(r)
 
     annots, annotations = reading_annotations(meta)
     for a in annotations:   # how many reading lines of that source each declared pattern changes (reviewed)
@@ -1484,15 +2501,42 @@ def check_verbatim(p, source_texts, public=False):
                     # transcribed by the converter from a page image (= the served first reading). Decided 5:
                     rs = readings(c.get("source"))
                     # readings whose reader read this page; a byte-identical copy of a reading is one reading
-                    rs = list(dict.fromkeys(r for r in rs if _covers(r, c.get("page"))))
+                    # one reader once: readings whose bodies (line 1, the header, removed) are the same count once
+                    # (round 6 S3: a re-filed reading with a new header is never a second reader)
+                    rs = list({_reading_body_key(r): r for r in reversed([r for r in rs if _covers(r, c.get("page"))])}
+                              .values())[::-1]
                     if public and not rs:   # readings of non-open sources are not shipped: checked privately
                         checked_privately.add(str(c.get("source")))
                         return
                     g_ = groups.get(id(o), ())   # printed-line joins / composed templates (review-4)
                     an_ = annots.get(c.get("source"), ())
-                    agree = [r for r in rs if _image_match(o["text"], r, c.get("page"), groups=g_, annots=an_)]
+                    cl_ = cells.get(id(o))
+                    rules = {}
+                    for r in rs:
+                        m_ = _image_match(o["text"], r, c.get("page"), groups=g_, annots=an_, cell=cl_)
+                        if m_:
+                            rules[r] = m_
+                    # v3 anchor (coordinator ruling after review round 5): a legacy reading may add an agreeing vote
+                    # through multiline_k (table cell) / image_gap only when a v3 reading confirms this same text by
+                    # that strict rule; the legacy vote never confirms alone and never supplies a position
+                    v3r = [rules[r] for r in rs if r in rules and _is_v3(r)]
+                    gap_g = [g for g in g_ if g[0] == "gap"]
+                    # S1 (round 6): the anchor is bound to the gap composition(s) the v3 reading vouched for
+                    gap_v = set().union(*[_v3_gap_vouch(r, c.get("page"), gap_g, an_)
+                                          for r in rs if r in rules and _is_v3(r)])
+                    anchor = frozenset({("gap", x) for x in gap_v}
+                                       | ({"cell"} if cl_ and any(x.startswith("multiline_k") for x in v3r) else set()))
+                    if anchor:
+                        for r in rs:
+                            if r not in rules and not _is_v3(r):
+                                m_ = _image_match(o["text"], r, c.get("page"), groups=g_, annots=an_, cell=cl_,
+                                                  anchor=anchor)
+                                if m_ and m_.endswith("v3_anchor"):
+                                    rules[r] = m_
+                    agree = [r for r in rs if r in rules]
                     unsure = [r for r in rs if r not in agree
-                              and _image_match(o["text"], r, c.get("page"), uncertain=True, groups=g_, annots=an_)]
+                              and _image_match(o["text"], r, c.get("page"), uncertain=True, groups=g_, annots=an_,
+                                               cell=cl_)]
                     disagree = [r for r in rs if r not in agree and r not in unsure]
                     key = (c.get("source"), c.get("page"), o["text"][:80])
                     if disagree:
@@ -1504,6 +2548,14 @@ def check_verbatim(p, source_texts, public=False):
                     miss = sorted(st for st in styles if not o.get("spans") and not o.get("style") and st not in note)
                     if miss:   # the reader saw emphasis the served text does not carry or declare (report only)
                         style_unserved.append(key + (miss,))
+                    ok_ = (not disagree and agree) or (disagree and len(agree) >= 2 and len(agree) > len(disagree))
+                    if ok_:
+                        mr = ", ".join(rules[r] for r in agree)
+                        for r in agree:
+                            rule_counts[rules[r]] = rule_counts.get(rules[r], 0) + 1
+                        if any(rules[r] != "field" for r in agree):
+                            matches.append({"source": c.get("source"), "page": c.get("page"), "text": o["text"][:80],
+                                            "match_rule": mr})
                     if not disagree and agree:
                         found += 1          # served + one blind reading (an [uncertain]-only reading settled)
                     elif disagree and len(agree) >= 2 and len(agree) > len(disagree):
@@ -1562,6 +2614,7 @@ def check_verbatim(p, source_texts, public=False):
             "bad_source": bad_source, "image_unconfirmed": image_unconfirmed, "image_disputed": image_disputed,
             "image_uncertain_only": image_uncertain_only, "image_uncertain_legacy": image_uncertain_legacy,
             "reading_annotations": annotations, "style_unserved": style_unserved[:40],
+            "image_matches": matches, "image_match_rules": dict(sorted(rule_counts.items())),
             "checked_privately": sorted(checked_privately)}
 
 
@@ -1595,6 +2648,74 @@ def script_texts_not_served(p, source_texts):
             if len(t) >= 12 and re.search(r"[A-Za-z\u00C0-\u024F]{3}", t) and _norm(t) not in served:
                 out.append((name, t[:80]))
     return sorted(set(out))[:40]
+
+
+def sample_sessions(sessions, k=10):
+    """Sessions for the sampled page checks: the first k sessions of every arm, plus, for every stage some session
+    reached, the first k sessions that reached it (arm-ordered designs put whole arms after one another, so the first
+    sessions alone may never show a later arm's pages)."""
+    out, seen, per_arm, per_stage = [], set(), {}, {}
+
+    def add(s):
+        if id(s) not in seen:
+            seen.add(id(s))
+            out.append(s)
+    for s in sessions:
+        arm = (getattr(s, "spec", None) or {}).get("arm")
+        if per_arm.get(arm, 0) < k:
+            per_arm[arm] = per_arm.get(arm, 0) + 1
+            add(s)
+        for st in {n for pg in getattr(s, "pages", []) for n, _ in pg.get("stages", [])}:
+            if per_stage.get(st, 0) < k:
+                per_stage[st] = per_stage.get(st, 0) + 1
+                add(s)
+    return out
+
+
+def table_spans_unserved(p, sessions):
+    """Blocking: a protocol table cell with a colspan / rowspan (integer >= 1, not 1) that the rendered State cell
+    lacks — the spanning header would be shown over the wrong columns. Rendered tables are matched to protocol tables
+    by their cell texts; the spans are compared through the checker's own grid (_table_layout)."""
+    def txt(c):
+        return _norm(c.get("text") or "") if isinstance(c, dict) else _norm(c if isinstance(c, str) else "")
+
+    want, bad = {}, set()
+
+    def walk(o):
+        if isinstance(o, dict):
+            rows = o.get("rows")
+            if isinstance(rows, list) and rows and all(isinstance(r, list) for r in rows):
+                for r_ in rows:   # a span that is present but not an integer within the limits is never served
+                    for c_ in r_:
+                        for k in ("colspan", "rowspan"):
+                            v = c_.get(k) if isinstance(c_, dict) else None
+                            if v is not None and not (isinstance(v, int) and not isinstance(v, bool)
+                                                      and 1 <= v <= _SPAN_MAX[k]):
+                                bad.add("invalid %s %r on cell %r" % (k, v, txt(c_)[:40]))
+                key = tuple(tuple(txt(c) for c in r) for r in rows)
+                lay = _table_layout(rows)
+                if any(v != (1, 1) for v in lay[2].values()):
+                    want[key] = lay
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(getattr(p, "data", None))
+    walk(getattr(p, "stages", None))
+    out = set(bad)
+    if not want:
+        return sorted(out)
+    for s in sessions:
+        for pg in getattr(s, "pages", []):
+            for it in pg.get("shown") or []:
+                rows = it.get("rows") if isinstance(it, dict) else None
+                if not isinstance(rows, list):
+                    continue
+                key = tuple(tuple(txt(c) for c in r) for r in rows if isinstance(r, list))
+                if key in want and _table_layout(rows)[:3:2] != want[key][:3:2]:
+                    out.add("+".join(n for n, _ in pg["stages"]))
+    return sorted(out)
 
 
 def constant_images(sessions):
@@ -1634,8 +2755,8 @@ def main(argv=None):
     report["protocol_sha256"] = canonical_sha256(p.raw)   # binds this report to the exact protocol (stale = fail)
     report["public"] = bool(a.public)
     if a.public:   # the private, study-specific exemptions never apply to a public check
-        global LEGACY_UNCERTAIN_READINGS, LEGACY_CITE_SOURCES
-        LEGACY_UNCERTAIN_READINGS, LEGACY_CITE_SOURCES = {}, {}
+        global LEGACY_UNCERTAIN_READINGS, LEGACY_CITE_SOURCES, LEGACY_READINGS
+        LEGACY_UNCERTAIN_READINGS, LEGACY_CITE_SOURCES, LEGACY_READINGS = {}, {}, set()
     report["refs"] = check_refs(p)
     fail |= bool(report["refs"])
     env, probs, stats = play(p, a.sessions, a.seed, "random")
@@ -1647,6 +2768,7 @@ def main(argv=None):
         n, tries = n * 2, tries + 1
         env, probs, stats = play(p, n, a.seed, "random")
     stats["sessions_run"] = n
+    stats["coverage_pass"] = False
     if stats["unreached_stages"]:   # rare branches (k consecutive choices): coverage-guided pass
         xenv, xprobs, xstats = play(p, n, a.seed + 7, "random", explore={})
         stats["unreached_stages"] = sorted(set(stats["unreached_stages"]) & set(xstats["unreached_stages"]))
@@ -1655,10 +2777,13 @@ def main(argv=None):
     report["fuzz"] = dict(stats, problems=probs[:10])
     tables = env.unit_tables()
     recs = env.records()
-    report["fuzz"]["constant_images"] = constant_images(env.sessions[:50])
+    sample = sample_sessions(env.sessions)   # every arm and every reached stage (fidelity review 8)
+    report["fuzz"]["constant_images"] = constant_images(sample)
+    report["fuzz"]["table_spans_unserved"] = table_spans_unserved(p, sample)
+    fail |= bool(report["fuzz"]["table_spans_unserved"])   # a spanning cell served without its span (blocking)
     report["script_texts_not_served"] = script_texts_not_served(
         p, {k: open(v, errors="replace").read() for k, v in (x.split("=", 1) for x in a.source_text)})
-    report["fuzz"]["unprompted_responses"] = unprompted_responses(env.sessions[:50])
+    report["fuzz"]["unprompted_responses"] = unprompted_responses(sample)
     report["fuzz"]["excluded_share"] = round(sum(1 for r in recs if r["excluded"]) / max(1, len(recs)), 3)
     pop = env.population_exclusions([x for x in env.sessions if x.status])
     report["fuzz"]["population_excluded_sessions"] = {ex["id"]: sum(1 for v in pop.values() for e in v if e["id"] == ex["id"])

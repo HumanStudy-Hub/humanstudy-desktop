@@ -46,11 +46,12 @@ short_rx = re.compile(r"(?<![A-Za-z])(" + "|".join(map(re.escape, [x for x in su
 # CamelCase compounds (review 5, review 6 S1), case-sensitive, 4+ letter surnames:
 #   getZorbel, ZorbelItems, IDZorbel   the capitalised surname not followed by a lowercase letter
 #   zorbelScore                        the lowercase surname followed by an uppercase letter
-#   ZORBELItems, ID_ZORBEL             the uppercase surname not followed by a lowercase letter
+#   ZORBELItems, ID_ZORBEL             the uppercase surname on a word start, not followed by a lowercase letter
+#                                      (so a surname inside an upper word, HALL in SHALL, is not one)
 _long = [x for x in surnames if len(x) >= 4]
 camel_rx = re.compile("|".join([r"(" + "|".join(map(re.escape, [x.capitalize() for x in _long])) + r")(?![a-z])",
                                  r"(?<![A-Za-z])(" + "|".join(map(re.escape, _long)) + r")(?=[A-Z])",
-                                 r"(?<![a-z])(" + "|".join(map(re.escape, [x.upper() for x in _long])) + r")(?![a-z])"])) \
+                                 r"(?<![A-Za-z])(" + "|".join(map(re.escape, [x.upper() for x in _long])) + r")(?![a-z])"])) \
     if _long else None
 # an id shaped like a study folder: letters + a year, with or without a topic, any case
 id_rx = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]{2,}(?:19|20)\d\d[A-Za-z]*(?![A-Za-z0-9])")
