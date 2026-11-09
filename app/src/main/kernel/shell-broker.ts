@@ -60,9 +60,15 @@ if (!$pid) {
   exec @cmd or _exit(127);
 }
 binmode STDIN; binmode STDOUT; $| = 1;
-my $rin = ''; vec($rin, fileno(STDIN), 1) = 1; vec($rin, fileno($m), 1) = 1;
+open(my $ctl, '<&=', 3);   # window sizes, "rows cols" per line (the broker's 'w' frames)
+my $rin = ''; vec($rin, fileno(STDIN), 1) = 1; vec($rin, fileno($m), 1) = 1; vec($rin, fileno($ctl), 1) = 1 if $ctl;
+my $cbuf = '';
 while (1) {
   my $r = $rin; next unless select($r, undef, undef, undef) > 0;
+  if ($ctl && vec($r, fileno($ctl), 1)) {
+    my $n = sysread($ctl, my $b, 256);
+    if (!$n) { vec($rin, fileno($ctl), 1) = 0 } else { $cbuf .= $b; while ($cbuf =~ s/^(\\d+) (\\d+)\\n//) { ioctl($m, 0x80087467, pack('S4', $1, $2, 0, 0)) } }
+  }
   if (vec($r, fileno(STDIN), 1)) { my $n = sysread(STDIN, my $b, 4096); if (!$n) { vec($rin, fileno(STDIN), 1) = 0 } else { syswrite($m, $b) } }
   if (vec($r, fileno($m), 1)) { my $n = sysread($m, my $b, 65536); last unless $n; syswrite(STDOUT, $b) }
 }
@@ -140,11 +146,17 @@ export function startShellBroker(o: BrokerOptions): Promise<ShellBroker> {
         const len = input.readUInt32BE(1)
         if (input.length < 5 + len) break
         if (input[0] === 0x69 && child?.stdin?.writable) child.stdin.write(input.subarray(5, 5 + len))
+        // 'w': a new window size "rows cols" for the terminal's pseudo-terminal (fd 3 of PTY_HELPER).
+        else if (input[0] === 0x77) {
+          const m = /^(\d{1,4}) (\d{1,4})$/.exec(input.subarray(5, 5 + len).toString('latin1'))
+          const ctl = child?.stdio[3] as NodeJS.WritableStream | null | undefined
+          if (m && ctl) ctl.write(`${m[1]} ${m[2]}\n`)
+        }
         input = input.subarray(5 + len)
       }
     }
     const run = (file: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, stdin: boolean): void => {
-      child = spawn(file, args, { cwd, env, stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], detached: true })
+      child = spawn(file, args, { cwd, env, stdio: stdin ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'], detached: true })
       children.add(child)
       child.stdout?.on('data', (d: Buffer) => { if (sock.writable) sock.write(frame('o', d)) })
       child.stderr?.on('data', (d: Buffer) => { if (sock.writable) sock.write(frame('e', d)) })

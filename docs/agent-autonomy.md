@@ -15,11 +15,14 @@ The OpenCode kernel process runs under `sandbox-exec` with a minimal profile (`m
 - reads of key folders (`~/.ssh`, `~/.aws`, `~/Library/Keychains`, ...) and of the app's account,
   credential and settings files and relay folder;
 - reads of the projects folder (the researcher's projects root from Settings, exported as
-  `HUMANSTUDY_PROJECTS_ROOT`, plus the default and earlier default roots), except this project;
+  `HUMANSTUDY_PROJECTS_ROOT`, else the default `~/HumanStudy Hub`), except this project. The retired
+  defaults are left out: `~/HumanStudy` would also match an unrelated `~/humanstudy`, because the disk
+  ignores case;
 - preference writes, LaunchServices (`open`), Apple events and the clipboard.
 
 It also denies writes to what later runs outside it:
-- the agent-shell folder (wrapper, profiles, approval tokens, guard);
+- every project's agent-shell folder (wrappers, profiles, approval tokens, guards). Other projects'
+  agent-shell folders are also unreadable to it (their broker secrets and tokens);
 - the brokers' folder;
 - shell start-up files and launch agents.
 
@@ -39,8 +42,8 @@ kinds of request, and refuses anything else:
   as before the kernel was sandboxed.
 - **The Terminal view**: the app replaces the terminal's command with the client in terminal mode and a
   one-use ticket. The broker starts the researcher's login shell under a pseudo-terminal of its own
-  (`PTY_HELPER`, macOS `/dev/ptmx` ioctls), unconfined, and relays input. The window size is set once
-  when the terminal opens; later resizes do not reach the shell.
+  (`PTY_HELPER`, macOS `/dev/ptmx` ioctls), unconfined, and relays input. When the view resizes, the
+  client sends the new size (SIGWINCH, then a `w` frame) and the helper applies it to the pseudo-terminal.
 
 Every request carries a per-launch secret that only that project's `client.pl` holds. The agent profile
 cannot read the kernel folder, and the broker compares the secret in constant time. The folder must be
@@ -194,9 +197,14 @@ for syntax.
 
 Everything else asks, including every helper that runs package code.
 
-Git: the kernel's environment (and the wrapper) sets `GIT_CONFIG_COUNT`, so every git the kernel starts
-runs with `core.fsmonitor=false` and `core.hooksPath=/dev/null`. A project's `.git/config` therefore
-cannot make OpenCode's own `git status` run code. The researcher's own terminal (the Terminal view) and
+Git: the agent-shell wrapper sets `GIT_CONFIG_COUNT`, so every git an agent command starts runs with
+`core.fsmonitor=false` and `core.hooksPath=/dev/null`.
+
+The kernel's own environment does not set it. Any `GIT_CONFIG_*` there breaks OpenCode's snapshot
+revert, and so Undo/Redo (review 6; `native-live.test.mjs` with `HUMANSTUDY_KERNEL_BIN` checks this).
+Instead:
+- the agent cannot write `.git` anywhere (OS profile and policy);
+- on macOS the kernel's own git (snapshots, `git status`) runs inside the kernel profile. The researcher's own terminal (the Terminal view) and
 `!` commands run their login shell as the researcher, through the broker, not in either profile. Their
 own git is not covered.
 
@@ -300,5 +308,7 @@ What is not protected:
   unconfined by design.
 - The kernel process can still read its own data folder. That folder holds other projects' snapshot
   repositories and `opencode.db` with every project's conversations. It cannot be split per project
-  without moving session storage. OpenCode's tools reach it only through the policy, which asks for a
-  path outside the project.
+  without moving session storage. OpenCode's tools reach it only through the policy. The policy asks,
+  saying "another project's conversations, snapshots or tool output". It reads OpenCode's
+  worktree-relative patterns both ways (repository root and "/"), because a `.git` with no commit makes
+  the worktree "/".

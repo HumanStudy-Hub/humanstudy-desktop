@@ -148,9 +148,9 @@ test('review should-fix: environment dumps ask', () => {
 test("review should-fix: the kernel's data is narrowed to tool output; the agent's configuration asks before edits", () => {
   assert.equal(classifyPath(ctx, join(kernelHome, 'data/opencode/tool-output/tool_1')), 'allowed')
   // Review 5: the tool-output folder is shared by every project; another project's file asks.
-  assert.equal(classifyPath(ctx, join(kernelHome, 'data/opencode/tool-output/tool_2')), 'outside')
+  assert.equal(classifyPath(ctx, join(kernelHome, 'data/opencode/tool-output/tool_2')), 'conversations')
   assert.equal(classifyPermission(ctx, P('external_directory', ['x'], { filepath: join(kernelHome, 'data/opencode/tool-output/tool_2'), parentDir: join(kernelHome, 'data/opencode/tool-output') })).decision, 'ask')
-  assert.equal(classifyPath(ctx, join(kernelHome, 'data/opencode/storage/session/other.json')), 'outside')
+  assert.equal(classifyPath(ctx, join(kernelHome, 'data/opencode/storage/session/other.json')), 'conversations')
   assert.equal(bash(`cat "${kernelHome}/data/opencode/storage/message/x.json"`), 'ask')
   assert.equal(bash(`cat "${kernelHome}/agent-shell/abc/approved/x"`), 'deny')
   assert.equal(bash(`cat "${kernelHome}/state/x"`), 'ask')
@@ -261,5 +261,22 @@ test('review 4: character classes are over-approximated; without an OS sandbox r
       assert.equal(classifyPermission(bareCtx, P('bash', [cmd], { command: cmd })).decision, 'ask', cmd)
     for (const cmd of ['grep -n x program.json', 'cat {a,b}.txt'])
       assert.equal(classifyPermission(bareCtx, P('bash', [cmd], { command: cmd })).decision, 'allow', cmd)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('review 6: a project with an empty .git (worktree "/") cannot read another project\'s tool output', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'policy-r6-')))
+  try {
+    const p = join(root, 'study'), kh = join(root, 'kernel'), out = join(kh, 'data/opencode/tool-output')
+    mkdirSync(join(p, '.git'), { recursive: true }); mkdirSync(out, { recursive: true })
+    writeFileSync(join(out, 'tool_B'), 'PARTICIPANT-ROW-FROM-B'); writeFileSync(join(out, 'tool_A'), 'mine')
+    const c = { ...defaultPolicyContext(p, kh, {}, true), home: '/Users/r', toolOutputs: () => new Set([join(out, 'tool_A')]) }
+    // OpenCode sends a worktree-relative pattern only; with no commit its worktree is "/".
+    const v = classifyPermission(c, P('read', [join(out, 'tool_B').slice(1)]))
+    assert.equal(v.decision, 'ask')
+    assert.match(v.reason, /another project's conversations/)
+    assert.equal(classifyPermission(c, P('read', [join(out, 'tool_A').slice(1)])).decision, 'allow')
+    assert.equal(classifyPermission(c, P('read', [join(kh, 'data/opencode/opencode.db').slice(1)])).decision, 'ask')
+    assert.equal(classifyPermission(c, P('read', ['program.json'])).decision, 'allow')
   } finally { rmSync(root, { recursive: true, force: true }) }
 })

@@ -722,9 +722,9 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       OPENCODE_CONFIG_CONTENT: this.configContent(transport, shell),
       OPENCODE_DISABLE_AUTOUPDATE: '1',
       OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: '1', // no ~/.claude/CLAUDE.md from the user's own Claude Code
-      // Every git the kernel runs (its /vcs status, the agent's shell) ignores fsmonitor and hooks a project's
-      // .git/config could name: they would run outside the agent's sandbox. Same precedence as `git -c`.
-      GIT_CONFIG_COUNT: '2', GIT_CONFIG_KEY_0: 'core.fsmonitor', GIT_CONFIG_VALUE_0: 'false', GIT_CONFIG_KEY_1: 'core.hooksPath', GIT_CONFIG_VALUE_1: '/dev/null',
+      // No GIT_CONFIG_* here: any of it breaks OpenCode's snapshot revert (Undo/Redo, review 6). The agent
+      // shell wrapper sets core.fsmonitor/hooksPath for agent commands; the kernel's own git (snapshots,
+      // /vcs status) runs inside the kernel profile on macOS, and the agent cannot write .git anywhere.
       // humanstudy_llm (simulations) defaults to the model the researcher selected.
       ...(this.provider === HOSTED_PROVIDER ? { HUMANSTUDY_MODEL: this.model } : {}),
     })
@@ -1502,11 +1502,10 @@ function kernelSecretPaths(secrets: string[], kernelHome: string): string[] {
 }
 
 /** Folders that hold projects (other projects stay unreadable to the kernel): the researcher's projects
- *  root (HUMANSTUDY_PROJECTS_ROOT, set by the app) and the default and earlier default roots. */
+ *  root (HUMANSTUDY_PROJECTS_ROOT, set by the app from Settings), else the default root. Not the retired
+ *  defaults: ~/HumanStudy matches unrelated folders such as ~/humanstudy on a case-insensitive disk. */
 function projectsRoots(): string[] {
-  const home = homedir()
-  return [process.env.HUMANSTUDY_PROJECTS_ROOT?.trim(), join(home, 'HumanStudy Hub'), join(home, 'HumanStudy'), join(home, 'Documents', 'HumanStudy Projects')]
-    .filter((x): x is string => Boolean(x))
+  return [process.env.HUMANSTUDY_PROJECTS_ROOT?.trim() || join(homedir(), 'HumanStudy Hub')]
 }
 
 export function toKernelPermission(p: {

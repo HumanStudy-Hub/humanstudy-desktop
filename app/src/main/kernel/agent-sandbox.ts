@@ -219,9 +219,11 @@ export function macosKernelProfile(o: { project: string; kernelHome?: string; ho
     `(deny file-read-data (regex #"${PARTICIPANT_REGEX}") ${secrets.map(p => `(subpath ${sb(p)})`).join(' ')})`,
     // Only its own broker: another project's broker would run commands in that project.
     ...(o.socket ? [`(deny network-outbound (remote unix-socket (subpath ${sb(dirname(o.socket))})))`, `(allow network-outbound (remote unix-socket (path-literal ${sb(o.socket)})))`] : []),
-    // Code running in the kernel must not rewrite what runs outside it later: the agent-shell folder (the
-    // wrapper, profiles, approval tokens, guard), shell start-up files, launch agents, the brokers' folder.
-    `(deny file-write* ${[...(o.agentShellDir ? [real(o.agentShellDir)] : []), ...HOME_STARTUP.map(f => join(home, f)), ...(o.socket ? [dirname(o.socket)] : [])].map(p => `(subpath ${sb(p)})`).join(' ')})`,
+    // Code running in the kernel must not rewrite what runs outside it later: every project's agent-shell
+    // folder (wrappers, profiles, approval tokens, guards), shell start-up files, launch agents, the brokers'.
+    `(deny file-write* ${[...(o.agentShellDir ? [dirname(real(o.agentShellDir))] : []), ...HOME_STARTUP.map(f => join(home, f)), ...(o.socket ? [dirname(o.socket)] : [])].map(p => `(subpath ${sb(p)})`).join(' ')})`,
+    // Other projects' agent-shell folders hold their broker secret and approval tokens: unreadable.
+    ...(o.agentShellDir ? [`(deny file-read-data (subpath ${sb(dirname(real(o.agentShellDir)))}))`, `(allow file-read-data (subpath ${sb(real(o.agentShellDir))}))`] : []),
     '',
   ].join('\n')
 }
@@ -490,8 +492,10 @@ if (defined $terminal) { my $sz = \`stty size 2>/dev/null\`; ($rows, $cols) = ($
 END { system('stty sane 2>/dev/null') if defined $terminal }
 print $s JSON::PP->new->utf8->encode(defined $terminal ? { secret => $secret, terminal => $terminal, rows => $rows + 0, cols => $cols + 0 } : { secret => $secret, args => [@ARGV], cwd => getcwd() }) . "\\n";
 my $sel = IO::Select->new($s); $sel->add(\\*STDIN) if defined $terminal;
-my $buf = '';
+my $buf = ''; my $winch = 0;
+$SIG{WINCH} = sub { $winch = 1 } if defined $terminal;
 while (1) {
+  if ($winch) { $winch = 0; my $sz = \`stty size 2>/dev/null\`; if ($sz =~ /^(\\d+) (\\d+)/) { my $w = "$1 $2"; print $s pack('a1 N', 'w', length $w) . $w } }
   for my $fh ($sel->can_read) {
     if ($fh == \\*STDIN) { my $n = sysread(STDIN, my $in, 4096); if (!$n) { $sel->remove(\\*STDIN); next } print $s pack('a1 N', 'i', length $in) . $in; next }
     my $n = sysread($s, my $chunk, 65536); exit 125 unless $n; $buf .= $chunk;

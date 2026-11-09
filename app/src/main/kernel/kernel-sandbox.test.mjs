@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { createServer } from 'node:http'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { homedir, tmpdir } from 'node:os'
@@ -110,6 +110,28 @@ test('the kernel runs sandboxed: tools cannot read participant data or other pro
     assert.match(await ask(b.broker.socket, { secret: secretB, args: ['-c', 'cat private.txt'], cwd: project }), /inside the project only/)
     assert.match(await ask(b.broker.socket, { secret: secretB, args: ['-x', 'cat private.txt'], cwd: other }), /not allowed/)
     assert.match(await ask(b.broker.socket, { secret: secretB, args: ['-c', 'cat private.txt'], cwd: other }), /OTHER-PROJECT-CONTENT/)
+    // Review 6: the Terminal's window size follows the view ('w' frames to the pseudo-terminal).
+    const secretA = /my \$secret = '([^']+)'/.exec(readFileSync(join(s.agentShell.dir, 'client.pl'), 'utf8'))[1]
+    const sized = await new Promise(resolve => {
+      const c = connect(s.broker.socket); let buf = Buffer.alloc(0)
+      c.on('data', d => { buf = Buffer.concat([buf, d]) }); c.on('close', () => resolve(buf.toString('latin1')))
+      const f = (t, d) => { const b = Buffer.from(d); const h = Buffer.alloc(5); h.write(t, 0, 'latin1'); h.writeUInt32BE(b.length, 1); return Buffer.concat([h, b]) }
+      c.write(JSON.stringify({ secret: secretA, terminal: s.broker.terminalTicket(), rows: 30, cols: 100 }) + '\n')
+      // Generous pauses: the login shell starts slowly, and a resize must land between the two reads.
+      setTimeout(() => { c.write(f('i', 'stty size\n')) }, 500)
+      setTimeout(() => { c.write(f('w', '41 123')) }, 4000)
+      setTimeout(() => { c.write(f('i', 'stty size; exit\n')) }, 4500)
+    })
+    assert.match(sized, /30 100/)
+    assert.match(sized, /41 123/)
+    // Review 6: under its profile the kernel cannot read another project's broker secret or approval
+    // tokens, nor rewrite its agent-shell folder; its own stays readable.
+    const underKernel = cmd => spawnSync('/usr/bin/sandbox-exec', ['-f', join(s.agentShell.dir, 'kernel.sb'), '/bin/sh', '-c', cmd], { encoding: 'utf8' })
+    assert.notEqual(underKernel(`cat "${join(b.agentShell.dir, 'client.pl')}"`).status, 0)
+    assert.notEqual(underKernel(`echo '(allow default)' > "${join(b.agentShell.dir, 'profile.sb')}"`).status, 0)
+    assert.notEqual(underKernel(`echo 1 > "${join(b.agentShell.dir, 'approved', 'x')}"`).status, 0)
+    assert.equal(underKernel(`head -c 4 "${join(s.agentShell.dir, 'client.pl')}"`).stdout, 'use ')
+    assert.match(readFileSync(join(b.agentShell.dir, 'profile.sb'), 'utf8'), /deny file-read-data/)
     // The kernel profile: only its own socket, and no writes to what runs outside it later.
     const profile = readFileSync(join(s.agentShell.dir, 'kernel.sb'), 'utf8')
     assert.match(profile, /\(allow network-outbound \(remote unix-socket \(path-literal/)

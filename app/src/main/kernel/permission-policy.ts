@@ -44,6 +44,8 @@ export interface PolicyContext {
   /** OpenCode's truncated tool output files this project's own calls produced (opencode.ts); any other
    *  file in the shared tool-output folder is another project's, or an approved command's (deleted). */
   toolOutputs?: () => ReadonlySet<string>
+  /** The kernel's data folder: every project's conversations (opencode.db), snapshots and tool output. */
+  kernelData?: string
   /** Participant-data folders under a search root (tests replace it). */
   findSensitive?: (root: string) => string[]
 }
@@ -106,7 +108,7 @@ export function defaultPolicyContext(dir: string, kernelHome?: string, env: Node
   const runtime = env.HUMANSTUDY_RUNTIME_BIN?.trim()
   if (runtime) allowedRoots.push(dirname(runtime))
   if (env.HUMANSTUDY_RELAY_DIR) secretPaths.push(env.HUMANSTUDY_RELAY_DIR)
-  return { dir, allowedRoots, secretPaths, osSandbox, searchIgnore: () => searchIgnoreInstalled(dir) }
+  return { dir, allowedRoots, secretPaths, osSandbox, searchIgnore: () => searchIgnoreInstalled(dir), ...(kernelHome ? { kernelData: join(kernelHome, 'data') } : {}) }
 }
 
 /** Case-insensitive containment (macOS and Windows file systems ignore case). */
@@ -118,7 +120,7 @@ const relTo = (root: string, p: string): string => relative(root.toLowerCase(), 
 
 /** secret: the app's own credentials (denied); credential: key files and folders (asked); config: the
  *  agent's own configuration inside the project (editing it asks). */
-type Where = 'project' | 'config' | 'sensitive' | 'allowed' | 'outside' | 'credential' | 'secret'
+type Where = 'project' | 'config' | 'sensitive' | 'allowed' | 'outside' | 'credential' | 'secret' | 'conversations'
 
 /** Expand `~`, `$HOME` and `${HOME}` at the start of a path. */
 function expandHome(p: string, home: string): string {
@@ -127,7 +129,7 @@ function expandHome(p: string, home: string): string {
   return m ? join(home, p.slice(m[0].length)) : p
 }
 
-const RANK: Record<Where, number> = { project: 0, allowed: 1, config: 2, outside: 3, sensitive: 4, credential: 5, secret: 6 }
+const RANK: Record<Where, number> = { project: 0, allowed: 1, config: 2, outside: 3, conversations: 3.5, sensitive: 4, credential: 5, secret: 6 }
 
 function classifyAbs(ctx: PolicyContext, abs: string, real: (p: string) => string): Where {
   const home = ctx.home ?? homedir()
@@ -139,8 +141,10 @@ function classifyAbs(ctx: PolicyContext, abs: string, real: (p: string) => strin
   if (isSensitiveRelative(abs)) return 'sensitive' // participant data anywhere (other projects too)
   const dir = roots(ctx.dir).find(x => within(x, abs))
   if (dir !== undefined) return AGENT_CONFIG.test(relTo(dir, abs)) ? 'config' : 'project'
-  if ((ctx.allowedRoots ?? []).some(inside)) return 'allowed'
+  // The kernel's data first (it may sit under an allowed temp folder): this project's own tool output only.
   if (ctx.toolOutputs?.().has(abs)) return 'allowed'
+  if (ctx.kernelData && inside(ctx.kernelData)) return 'conversations'
+  if ((ctx.allowedRoots ?? []).some(inside)) return 'allowed'
   return 'outside'
 }
 
@@ -168,6 +172,7 @@ const pathVerdict = (where: Where, what: string, writing = false): PolicyVerdict
     : where === 'credential' ? { decision: 'ask', reason: `a key or credential file (${what})` }
     : where === 'sensitive' ? { decision: 'ask', reason: `participant data (${what})` }
       : where === 'outside' ? { decision: 'ask', reason: `outside the project folder (${what})` }
+      : where === 'conversations' ? { decision: 'ask', reason: `another project's conversations, snapshots or tool output, kept by the app's agent (${what})` }
         : where === 'config' && writing ? { decision: 'ask', reason: `changes the agent's own configuration (${what})` }
           : { decision: 'allow' }
 
@@ -558,16 +563,20 @@ function requestPaths(perm: KernelPermission): string[] {
 function relativeVerdict(ctx: PolicyContext, p: string, writing: boolean): PolicyVerdict {
   if (isSensitiveRelative(p)) return pathVerdict('sensitive', p)
   const exists = (x: string): boolean => { try { lstatSync(x); return true } catch { return false } }
-  // OpenCode's worktree: the nearest folder with a .git, else "/".
+  // OpenCode's worktree: the nearest folder with a .git, else "/" (also with a .git that has no commit
+  // yet, which the policy cannot tell apart): every existing reading counts, the strictest wins.
   let root = '/'
   for (let up = resolve(ctx.dir), i = 0; i < 128; i++) {
     if (exists(join(up, '.git'))) { root = up; break }
     if (dirname(up) === up) break
     up = dirname(up)
   }
-  const found = [join(root, p)].filter(exists)
+  const found = [...new Set([join(root, p), join('/', p)])].filter(exists)
   if (found.length) return worst(found.map(c => pathVerdict(classifyPath(ctx, c), p, writing)))
   const where = classifyPath(ctx, p)
+  // Nothing exists yet: the "/" reading still counts when it names the kernel's data or credentials.
+  const fromRoot = classifyPath(ctx, join('/', p))
+  if (['conversations', 'secret', 'credential', 'sensitive'].includes(fromRoot)) return pathVerdict(fromRoot, p, writing)
   return pathVerdict(where === 'outside' ? 'project' : where, p, writing)
 }
 
