@@ -55,7 +55,7 @@ test('refreshPack installs a missing kit and restores a changed kit file', async
   assert.equal(readFileSync(join(proj, '.opencode/artifact-kit/hs-kit.js'), 'utf8'), readFileSync(join(packDir, 'artifact-kit/hs-kit.js'), 'utf8'))
 })
 
-test('the protocol engine is vendored as listed in VERSION and installed, app-owned, in .opencode/runtime/hsenv', async () => {
+test('the protocol engine is vendored as listed in VERSION and installed, app-owned, in .opencode/hsenv', async () => {
   const version = readFileSync(join(packDir, 'runtime/hsenv/VERSION'), 'utf8')
   assert.ok(!/(^|\s)\/(Users|home)\/|[A-Z]:\\/m.test(version), 'VERSION records hashes and a label, no local paths')
   const listed = [...version.matchAll(/^([0-9a-f]{64}) {2}(\S+)$/gm)].map((m) => [m[2], m[1]])
@@ -64,7 +64,7 @@ test('the protocol engine is vendored as listed in VERSION and installed, app-ow
   assert.deepEqual(P.trustedEngineFiles().map(([rel]) => rel).sort(), ['VERSION', ...listed.map(([f]) => f)].sort())
   const proj = mkdtempSync(join(tmpdir(), 'proj-'))
   await P.installPack(proj)
-  const checks = join(proj, '.opencode/runtime/hsenv/hsenv/checks.py')
+  const checks = join(proj, '.opencode/hsenv/hsenv/checks.py')
   assert.equal(sha(checks), Object.fromEntries(listed)['hsenv/checks.py'])
   writeFileSync(checks, '# edited in the project')
   await P.refreshPack(proj)
@@ -213,4 +213,114 @@ test('T11: end to end, a good package passes and a failed check blocks, whatever
   writeFileSync(join(bad, '.opencode/skills/build/effects.py'), 'def build_rules(*a):\n    return []\n')
   const problems = await SR.scientificReadiness(sciencePython, P.trustedCheckFiles(), bad, 'fixture', '')
   assert.deepEqual(problems, [{ check: 'effects', reason: 'effects.json is missing' }])
+})
+
+// v0.8 protocol route: skills/run plays protocol.json with an f; skills/preview renders it. Python 3.11+ (the app
+// bundles 3.12). A made-up fixture protocol only (protocols are private).
+const python311 = ['python3.12', 'python3.13', 'python3.11', 'python3'].map((p) =>
+  spawnSync(p, ['-c', 'import sys; print(sys.executable) if sys.version_info >= (3, 11) else sys.exit(1)'], { encoding: 'utf8' }))
+  .find((r) => r.status === 0)?.stdout.trim()
+const protocolProject = async () => {
+  const proj = mkdtempSync(join(tmpdir(), 'protocol-proj-'))
+  await P.installPack(proj)
+  for (const rel of ['protocol.json', 'sourcetext/survey.txt']) {
+    mkdirSync(dirname(join(proj, rel)), { recursive: true })
+    writeFileSync(join(proj, rel), readFileSync(join(here, 'fixtures/protocol-mini', rel)))
+  }
+  return proj
+}
+
+test('skills/run and the engine are installed where run_study.py looks for them (.opencode/skills/run, .opencode/hsenv)', async () => {
+  const proj = await protocolProject()
+  for (const rel of ['.opencode/skills/run/run_study.py', '.opencode/skills/run/app_run.py', '.opencode/skills/run/protocol_report.py',
+    '.opencode/skills/run/SKILL.md', '.opencode/hsenv/hsenv/engine.py', '.opencode/skills/preview/make_preview.py'])
+    assert.ok(existsSync(join(proj, rel)), rel)
+  const vendored = readFileSync(join(packDir, 'skills/run/VENDORED'), 'utf8')
+  assert.ok(!/\/Users\/|\/home\//.test(vendored))
+  for (const [, hash, f] of vendored.matchAll(/^([0-9a-f]{64}) {2}(\S+)$/gm)) assert.equal(sha(join(packDir, 'skills/run', f)), hash, f)
+})
+
+test('a protocol run with a stub f ends to end: records, effects, a results page that passes the kit checks, summary', { skip: !python311 }, async () => {
+  const proj = await protocolProject()
+  const run = 'artifacts/simulations/2026-11-09-0100'
+  const hash = sha(join(proj, 'protocol.json'))
+  let r = spawnSync(python311, ['-B', '.opencode/skills/run/app_run.py', 'new', run, '--per-arm', '5', '--protocol-hash', 'f'.repeat(64)], { cwd: proj, encoding: 'utf8' })
+  assert.notEqual(r.status, 0, 'a changed protocol is refused')
+  assert.match(r.stderr, /changed after approval/)
+  r = spawnSync(python311, ['-B', '.opencode/skills/run/app_run.py', 'new', run, '--per-arm', '5', '--protocol-hash', hash], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  assert.match(readFileSync(join(proj, run, 'run.py'), 'utf8'), /app_run\.main_run\(RUN, PROJECT/)
+  // The stub stands in for the relay-backed model: it answers the one question with the first option, as JSON.
+  const stub = `import sys, json; from pathlib import Path
+sys.path.insert(0, '.opencode/skills/run'); import app_run
+def complete(messages):
+    assert messages[0]['role'] == 'system' and 'JSON' in messages[0]['content']
+    return '{"r1": "o1"}' if 'r1' in messages[-1]['content'] else '{}'
+run = Path(sys.argv[1]).resolve()
+app_run.main_run(run, Path('.').resolve(), trial=True, complete=complete, model='stub')
+meta = app_run.main_run(run, Path('.').resolve(), complete=complete, model='stub')
+print(json.dumps({'status': meta['status'], 'completed': meta['participants']['completed']}))`
+  r = spawnSync(python311, ['-B', '-c', stub, run], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  assert.deepEqual(JSON.parse(r.stdout.trim().split('\n').at(-1)), { status: 'done', completed: 10 })
+  for (const f of ['run.json', 'progress.json', 'records.jsonl', 'operator.jsonl', 'effects.json', 'results.html', 'summary.json', 'trial/records.jsonl'])
+    assert.ok(existsSync(join(proj, run, f)), f)
+  const meta = JSON.parse(readFileSync(join(proj, run, 'run.json'), 'utf8'))
+  assert.equal(meta.protocol_sha256, hash)
+  assert.equal(meta.f.model, 'stub')
+  assert.equal(JSON.parse(readFileSync(join(proj, run, 'progress.json'), 'utf8')).stage, 'done')
+  const page = readFileSync(join(proj, run, 'results.html'), 'utf8')
+  assert.match(page, /Simulation — not human data · offline_report — not a leaderboard/)
+  assert.match(page, /id="hs-protocol"/)
+  assert.match(page, /treatment 14\/20 vs control 8\/20/, 'the paper side: printed cells')
+  assert.match(page, /treatment 5\/5 vs control 5\/5/, 'the AI side: this run')
+  r = spawnSync(python311, ['.opencode/artifact-kit/inline.py', join(run, 'results.html')], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stdout)
+  assert.match(r.stdout, /^PASS .*protocol embedded/m)
+  const summary = JSON.parse(readFileSync(join(proj, run, 'summary.json'), 'utf8'))
+  assert.deepEqual([summary.route, summary.outcome, summary.perCondition, summary.calls], ['protocol', 'not_replicated', 5, 20])
+  // A record holds only what f saw and did; the arm stays on the operator side.
+  const record = JSON.parse(readFileSync(join(proj, run, 'records.jsonl'), 'utf8').split('\n')[0])
+  assert.ok(!JSON.stringify(record).includes('treatment') && !JSON.stringify(record).includes('"arm"'))
+})
+
+test('inline.py checks a protocol artifact against protocol.json: a participant preview keeps its own page', { skip: !python }, async () => {
+  const proj = await protocolProject()
+  mkdirSync(join(proj, 'artifacts'))
+  const preview = '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="hs-artifact" content="participant-preview">\n' +
+    '<title>Participant preview</title>\n<style>.p{color:#123}</style>\n</head>\n<body>\n<div class="p" data-program-id="q.pick">Which do you prefer?</div>\n' +
+    '<script type="application/json" id="hs-preview">{"arms":[]}</script>\n<script>document.title += ""</script>\n</body>\n</html>\n'
+  const file = join(proj, 'artifacts/preview.html')
+  writeFileSync(file, preview)
+  let r = spawnSync(python, [join(proj, '.opencode/artifact-kit/inline.py'), 'artifacts/preview.html'], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stdout)
+  assert.match(r.stdout, /protocol embedded/)
+  const once = readFileSync(file, 'utf8')
+  assert.ok(!once.includes('data-hs-kit="js"'), 'the kit is not added to a self-contained preview')
+  assert.match(once, /id="hs-protocol" data-hs-kit="protocol">\{"id": "fixture-mini", "sha256": "[0-9a-f]{64}"/)
+  assert.ok(!once.includes('Which do you prefer?</script>'), 'the protocol block carries ids, not screen text')
+  r = spawnSync(python, [join(proj, '.opencode/artifact-kit/inline.py'), 'artifacts/preview.html'], { cwd: proj, encoding: 'utf8' })
+  assert.equal(readFileSync(file, 'utf8'), once, 'idempotent')
+  writeFileSync(file, preview.replace('data-program-id="q.pick"', 'data-program-id="q.nothing"'))
+  r = spawnSync(python, [join(proj, '.opencode/artifact-kit/inline.py'), 'artifacts/preview.html'], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 1)
+  assert.match(r.stdout, /data-program-id="q\.nothing" is not a protocol ref/)
+  writeFileSync(file, preview.replace('</style>', '</style>\n<img src="https://example.org/x.png">'))
+  r = spawnSync(python, [join(proj, '.opencode/artifact-kit/inline.py'), 'artifacts/preview.html'], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 1, 'offline rules still apply')
+  const bare = mkdtempSync(join(tmpdir(), 'no-protocol-'))
+  writeFileSync(join(bare, 'p.html'), preview)
+  r = spawnSync(python, [join(proj, '.opencode/artifact-kit/inline.py'), join(bare, 'p.html')], { cwd: bare, encoding: 'utf8' })
+  assert.equal(r.status, 1)
+  assert.match(r.stdout, /checked against protocol\.json, and none was found/)
+})
+
+const previewVendored = existsSync(join(packDir, 'skills/preview/build_preview.py'))
+test('skills/preview builds the participant view of the fixture and it passes the kit checks', { skip: !python311 ? 'needs Python 3.11+' : !previewVendored ? 'build_preview.py is not vendored yet (sync_hsenv.sh refuses its local path)' : false }, async () => {
+  const proj = await protocolProject()
+  const r = spawnSync(python311, ['-B', '.opencode/skills/preview/make_preview.py', '--out', 'artifacts/preview.html'], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stdout + r.stderr)
+  assert.match(r.stdout, /^PASS /m)
+  const again = spawnSync(python311, ['.opencode/artifact-kit/inline.py', 'artifacts/preview.html'], { cwd: proj, encoding: 'utf8' })
+  assert.equal(again.status, 0, again.stdout)
 })

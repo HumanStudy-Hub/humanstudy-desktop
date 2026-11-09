@@ -22,7 +22,7 @@ shows the whole folder as the **Program** explorer and `program.json` as the **S
   capabilities.json         what the study can do (read, run, human data, author code, reproduction),
                             each with its reason; written by build/capabilities.py
   protocol.json             the runnable study (protocol route, v0.8): arms, stages, flow, exclusions, units and
-                            analysis, run by the bundled engine (.opencode/runtime/hsenv); every served text cites
+                            analysis, run by the bundled engine (.opencode/hsenv); every served text cites
                             its source. Written by the build, checked by `python -m hsenv.checks`
   study.json                identity of the project beside protocol.json: id, title, paper, which protocol (and
                             variant) is current. Not the package's study.json
@@ -43,11 +43,14 @@ shows the whole folder as the **Program** explorer and `program.json` as the **S
     *.html                  self-contained interactive views (visualize; kit inlined by
                             .opencode/artifact-kit/inline.py)
     *.md, *.py, *.png       analysis reports with their code and figures (analyze)
-    simulations/<stamp>/    run.py, sessions.jsonl, evaluation.json, report.md (simulate)
+    simulations/<stamp>/    run.py, sessions.jsonl, evaluation.json, report.md (simulate, package route);
+                            plan.json, run.py, run.json, records.jsonl, operator.jsonl, effects.json,
+                            results.html, summary.json (simulate, protocol route: skills/run)
+    preview.html            the participant view of protocol.json, screen by screen per arm (skills/preview)
   exports/                  files for leaving the app: *.docx, *.pdf, *.zip (export)
   AGENTS.md, schema/        the pack, installed by the app (do not edit)
   .opencode/skills/         the pack's skills, installed by the app
-  .opencode/runtime/hsenv/  the protocol engine (engine, expr, checks, effects_core; VERSION holds the SHA-256 of
+  .opencode/hsenv/          the protocol engine (engine, expr, checks, effects_core; VERSION holds the SHA-256 of
                             each file), installed by the app and kept at the shipped version
   .humanstudy/              app state; the agent does not edit it
 ```
@@ -56,7 +59,8 @@ Runnable forms: the app checks both forms itself, from its own copy of the check
 keeps the two results apart. `package/<slug>/` runs when it passes the package contract and the build checks.
 `protocol.json` is checked by the engine: refs; random-answer sessions that reach every stage and compute every
 effect; keyed answers; verbatim texts against `sourcetext/`; coding cases. A passing protocol.json never makes a
-package runnable. Protocol runs start once the engine runner ships. New studies take the protocol route; the
+package runnable. A run approval names its route: a protocol run plays protocol.json with the engine
+(skills/run), a package run executes package/. New studies take the protocol route; the
 package route is kept so community studies built before v0.8 still run.
 
 Rules:

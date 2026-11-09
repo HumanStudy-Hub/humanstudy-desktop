@@ -11,7 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const temp = await mkdtemp(join(tmpdir(), 'run-approval-'))
 await build({ entryPoints: [join(here, 'run-approval.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(temp, 'a.mjs'), logLevel: 'error' })
-const { approvedRunLimits, enableProtocolRuns } = await import(pathToFileURL(join(temp, 'a.mjs')).href)
+const { approvedRunLimits } = await import(pathToFileURL(join(temp, 'a.mjs')).href)
 const bytes = await readFile(join(here, '../shared/sample-program.json'))
 await writeFile(join(temp, 'program.json'), bytes)
 const programHash = createHash('sha256').update(bytes).digest('hex')
@@ -35,15 +35,13 @@ test('a forged plan cannot raise the cap', async () => {
   await assert.rejects(approvedRunLimits(temp, '[Simulation scope approved]\nnot json'), /unreadable/)
 })
 
-test('v0.8: a protocol approval is refused until protocol runs exist, then capped by the arms of the hashed protocol.json', async () => {
+test('v0.8: a protocol approval is capped by the arms of the hashed protocol.json', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'run-approval-protocol-'))
   try {
     const proto = await readFile(join(here, 'fixtures/protocol-mini/protocol.json')) // two arms
     await writeFile(join(dir, 'protocol.json'), proto)
     const protocolHash = createHash('sha256').update(proto).digest('hex')
     const text = (plan, extra = {}) => `[Simulation scope approved]\n${JSON.stringify({ route: 'protocol', protocolHash, plan, ...extra })}\nRun it`
-    await assert.rejects(approvedRunLimits(dir, text({ perCondition: 60 })), /Protocol runs are not available yet/, 'no relay for a protocol run until the runner exists')
-    enableProtocolRuns(true)
     const honest = await approvedRunLimits(dir, text({ perCondition: 60 }))
     assert.equal(honest.participants, 120)
     assert.deepEqual(await approvedRunLimits(dir, text({ perCondition: 60, conditions: Array.from({ length: 50 }, (_, i) => `f${i}`) })), honest)
@@ -53,5 +51,5 @@ test('v0.8: a protocol approval is refused until protocol runs exist, then cappe
     await writeFile(join(dir, 'protocol.json'), '{"arms": []}')
     const empty = createHash('sha256').update('{"arms": []}').digest('hex')
     await assert.rejects(approvedRunLimits(dir, text({ perCondition: 10 }, { protocolHash: empty })), /no arms/)
-  } finally { enableProtocolRuns(false); await rm(dir, { recursive: true, force: true }) }
+  } finally { await rm(dir, { recursive: true, force: true }) }
 })

@@ -28,7 +28,8 @@ interface Props {
   agentTurnKey?: string | null
   /** What the agent is doing right now, in plain words (from the chat's activity line). */
   agentActivity?: string
-  onRun(perCondition: number): Promise<void>
+  /** route: which runnable form the approval names (protocol.json through the engine, or package/). */
+  onRun(perCondition: number, route: 'protocol' | 'package', conditions: string[]): Promise<void>
   onBuild(): void
   /** Stop the agent and ask these run folders (absolute paths) to stop. */
   /** Stop: write STOP into these run folders; `ownTurn` when the agent's current turn is this tab's request. */
@@ -95,13 +96,16 @@ export function SimulationPanel(props: Props) {
   const scope = useMemo(() => simulationScope(program, studyId), [program, studyId])
   const limits = useMemo(() => simulationLimits(program, studyId), [program, studyId])
   const { slugs, readiness, checking } = usePackageReadiness(dir, project.tree, studyId, program)
-  const built = Boolean(readiness?.ready)
+  // Two runnable forms, checked separately by the main process: protocol.json (the engine) wins when it passes.
+  const route: 'protocol' | 'package' | null = readiness?.protocol?.ready ? 'protocol' : readiness?.ready ? 'package' : null
+  const built = route !== null
+  const runConditions = route === 'protocol' ? readiness?.protocol?.arms ?? [] : plan.conditions
   const confirmation = runConfirmation(readiness)
   const [perCondition, setPerCondition] = useState(plan.defaultPerCondition)
   useEffect(() => setPerCondition(plan.defaultPerCondition), [plan.defaultPerCondition])
-  const estimate = estimateRun({ conditions: plan.conditions.length, perCondition, model, needsBuild: !built })
+  const estimate = estimateRun({ conditions: runConditions.length || plan.conditions.length, perCondition, model, needsBuild: !built })
   // The relay's cap and lifetime for this plan, computed exactly as the main process will (macOS wording).
-  const access = runLimits({ conditions: plan.conditions, perCondition })
+  const access = runLimits({ conditions: runConditions, perCondition })
   const accessVars = { tokens: formatTokens(access.tokens), minutes: access.minutes }
 
   // Run folders and the two small files each one writes while and after it runs.
@@ -193,7 +197,7 @@ export function SimulationPanel(props: Props) {
     track('simulation.run', { metadata: { perCondition, conditions: plan.conditions.length, model, built } })
     // The approval is checked before it is sent; the resulting agent turn belongs to this run operation.
     holdAction()
-    try { await props.onRun(perCondition) } catch { setPending(null) }
+    try { await props.onRun(perCondition, route ?? 'package', route === 'protocol' ? readiness?.protocol?.arms ?? [] : plan.conditions.map((c) => c.id)) } catch { setPending(null) }
   }
   const build = () => {
     setBuildProblem(false); setNow(Date.now()); setPending({ at: Date.now(), kind: 'build', owner, before: agentTurnKey })
@@ -249,13 +253,18 @@ export function SimulationPanel(props: Props) {
               <button className="link" onClick={() => { setPending(null); setBuildProblem(false); setRunProblem(false); props.onAsk(failedRun ? t('sim.fix_prompt', { run: failedRun.rel }) : t(buildProblem ? 'sim.why_build_prompt' : 'sim.why_prompt')) }}>{t('sim.ask_fix')}</button>
             </section>
           )}
-          {slugs.length > 0 && !built ? (
+          {(slugs.length > 0 || readiness?.protocol) && !built ? (
             <section className="sim-card" aria-live="polite">
-              {readiness ? (<>
-                <p>{t('sim.incomplete')}</p>
-                <ul className="sim-missing">{readiness.problems.map((p) => <li key={p.kind === 'scientific' ? `${p.check}:${p.reason}` : `${p.file}:${p.kind}`}>{problemText(p)}</li>)}</ul>
-                <button className="link" onClick={() => props.onAsk(t('sim.complete_prompt', { pkg: `package/${readiness.slug}`, what: readiness.problems.map(problemText).join(t('sim.list_sep')) }))}>{t('sim.ask_complete')}</button>
-              </>) : <p className="muted small">{t('sim.checking')}</p>}
+              {readiness ? (() => {
+                // A project with protocol.json shows the protocol's problems (the route new studies take).
+                const problems = readiness.protocol ? readiness.protocol.problems : readiness.problems
+                const what = readiness.protocol ? 'protocol.json' : `package/${readiness.slug}`
+                return (<>
+                  <p>{t('sim.incomplete')}</p>
+                  <ul className="sim-missing">{problems.map((p) => <li key={p.kind === 'scientific' ? `${p.check}:${p.reason}` : `${p.file}:${p.kind}`}>{problemText(p)}</li>)}</ul>
+                  <button className="link" onClick={() => props.onAsk(t('sim.complete_prompt', { pkg: what, what: problems.map(problemText).join(t('sim.list_sep')) }))}>{t('sim.ask_complete')}</button>
+                </>)
+              })() : <p className="muted small">{t('sim.checking')}</p>}
             </section>
           ) : !built ? (
             <section className="sim-card">
@@ -275,13 +284,13 @@ export function SimulationPanel(props: Props) {
                 </>)}
                 {studies.length <= 1 && studyTitle && (<><dt>{t('sim.study')}</dt><dd>{studyTitle}</dd></>)}
                 <dt>{t('sim.conditions')}</dt>
-                <dd>{plan.conditions.length ? plan.conditions.map((c) => c.label).join(t('sim.list_sep')) : t('sim.one_group')}</dd>
+                <dd>{route === 'protocol' ? (runConditions as string[]).join(t('sim.list_sep')) || t('sim.one_group') : plan.conditions.length ? plan.conditions.map((c) => c.label).join(t('sim.list_sep')) : t('sim.one_group')}</dd>
                 <dt>{t('sim.participants')}</dt>
                 <dd>
                   <select aria-label={t('sim.participants')} value={perCondition} onChange={(e) => setPerCondition(Number(e.target.value))}>
                     {[...new Set([5, 10, 20, plan.defaultPerCondition, 40, 60].filter((n) => n <= MAX_PER_CONDITION))].sort((a, b) => a - b).map((n) => <option key={n} value={n}>{n}</option>)}
                   </select>{' '}
-                  {t(plan.conditions.length > 1 ? 'sim.per_condition' : 'sim.in_total_one', { total: estimate.participants })}
+                  {t(runConditions.length > 1 ? 'sim.per_condition' : 'sim.in_total_one', { total: estimate.participants })}
                   {plan.paperPerCondition && <span className="muted small"> · {plan.paperPerCondition === perCondition ? t('sim.same_as_paper') : t('sim.paper_had', { n: plan.paperPerCondition })}</span>}
                 </dd>
                 <dt>{t('sim.model')}</dt>

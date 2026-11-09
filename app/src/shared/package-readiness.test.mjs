@@ -286,7 +286,8 @@ test('run confirmation: Linux/Windows say the study code can read the key; macOS
   const panel = readFileSync(join(here, '../renderer/components/SimulationPanel.tsx'), 'utf8')
   assert.match(panel, /runConfirmation\(readiness\)/)
   assert.match(panel, /t\(confirmation\.note, accessVars\)/); assert.match(panel, /t\(confirmation\.notice, accessVars\)/)
-  assert.match(panel, /runLimits\(\{ conditions: plan\.conditions, perCondition \}\)/, 'the wording states the limits the relay will enforce')
+  assert.match(panel, /runLimits\(\{ conditions: runConditions, perCondition \}\)/, 'the wording states the limits the relay will enforce')
+  assert.match(panel, /const runConditions = route === 'protocol' \? readiness\?\.protocol\?\.arms \?\? \[\] : plan\.conditions/, 'a protocol run is capped by its arms, as the main process does')
   assert.ok(!panel.includes("t('sim.note')") && !panel.includes("t('sim.run_notice')"), 'no hard-coded wording bypasses the platform choice')
 })
 
@@ -307,7 +308,7 @@ const protocolApproval = (bytes = PROTOCOL) => '[Simulation scope approved]\n' +
 test('review 1 M2: a passing protocol.json reports beside the package and never makes the package ready', async () => {
   const only = withProtocol(mkdtempSync(join(tmpdir(), 'protocol-only-')))
   const r = await M.projectPackageReadiness(only)
-  assert.deepEqual([r.exists, r.ready, r.protocol], [false, false, { ready: true, problems: [] }])
+  assert.deepEqual([r.exists, r.ready, r.protocol], [false, false, { ready: true, problems: [], arms: ['control', 'treatment'] }])
   const broken = withProtocol(project({ k: COMMENT_ONLY }))
   const b = await M.projectPackageReadiness(broken, 's1')
   assert.equal(b.ready, false, 'an incomplete package stays not ready whatever protocol.json says')
@@ -330,25 +331,24 @@ test('review 1 M2: a program approval still needs check_readiness, even with a p
   await M.assertRunnablePackage(dir, APPROVAL)
 })
 
-test('review 1 M2: protocol approvals name their route and are refused until protocol runs exist', async () => {
+test('review 1 M2: approvals name their route; a protocol approval needs the protocol route, never the package', async () => {
   const dir = withProtocol(project({ k: COMPLETE }))
-  assert.equal(M.protocolRunsEnabled(), false, 'off by default')
-  await assert.rejects(M.assertRunnablePackage(dir, protocolApproval()), /Protocol runs are not available yet/)
   const routed = (route, extra = {}) => '[Simulation scope approved]\n' + JSON.stringify({ ...JSON.parse(APPROVAL.split('\n')[1]), route, ...extra }) + '\nRun it'
   await M.assertRunnablePackage(dir, routed('package'))
   await assert.rejects(M.assertRunnablePackage(dir, routed('engine')), /names no runnable form/)
   await assert.rejects(M.assertRunnablePackage(dir, routed('package', { protocolHash: 'x' })), /names no runnable form/)
-  await assert.rejects(M.assertRunnablePackage(dir, routed('protocol')), /not available yet/)
-  M.enableProtocolRuns(true)
+  await M.assertRunnablePackage(dir, protocolApproval())
+  await assert.rejects(M.assertRunnablePackage(dir, protocolApproval(Buffer.from('{}'))), /changed after approval/)
+  protocolCheck = async () => [{ check: 'refs', reason: 'flow names stage nowhere' }]
   try {
-    await M.assertRunnablePackage(dir, protocolApproval())
-    await assert.rejects(M.assertRunnablePackage(dir, protocolApproval(Buffer.from('{}'))), /changed after approval/)
-    protocolCheck = async () => [{ check: 'refs', reason: 'flow names stage nowhere' }]
     writeFileSync(join(dir, 'sourcetext/survey.txt'), 'a new input state')
     await assert.rejects(M.assertRunnablePackage(dir, protocolApproval()), /protocol did not pass.*refs: flow names stage nowhere/s,
       'a ready package does not run a protocol approval')
-    await assert.rejects(M.assertRunnablePackage(mkdtempSync(join(tmpdir(), 'empty-')), protocolApproval()), /no protocol\.json/)
-  } finally { M.enableProtocolRuns(false); protocolCheck = async () => [] }
+  } finally { protocolCheck = async () => [] }
+  await assert.rejects(M.assertRunnablePackage(mkdtempSync(join(tmpdir(), 'empty-')), protocolApproval()), /no protocol\.json/)
+  const only = withProtocol(mkdtempSync(join(tmpdir(), 'protocol-only-run-')))
+  await M.assertRunnablePackage(only, protocolApproval(), 'a project with only protocol.json runs on the protocol route')
+  assert.deepEqual((await M.projectPackageReadiness(only)).protocol.arms, ['control', 'treatment'])
 })
 
 test('v0.8: failing protocol checks are listed one line per check under protocol', async () => {
@@ -395,7 +395,6 @@ test('v0.8: the protocol route fails closed and never caches a runtime problem',
   const dir = withProtocol(mkdtempSync(join(tmpdir(), 'protocol-closed-')))
   const r = await F.projectPackageReadiness(dir)
   assert.deepEqual([r.ready, r.protocol.ready, r.protocol.problems[0].check], [false, false, 'runtime'])
-  F.enableProtocolRuns(true)
   await assert.rejects(F.assertRunnablePackage(dir, protocolApproval()), /protocol did not pass/)
   let calls = 0
   F.configureProtocolChecks(async () => (calls++ ? [] : [{ check: 'runtime', reason: 'not installed' }]), 'x')

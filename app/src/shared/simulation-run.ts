@@ -135,7 +135,8 @@ export function runFolders(tree: TreeEntry[]): SimRunFiles[] {
     runs.push({
       id: dir.name, rel: dir.rel, path: dir.path,
       progress: pick('progress.json'), summary: pick('summary.json'), results: pick('results.html'), report: pick('report.md'),
-      sessions: pick('sessions.jsonl'), sessionsSize: files.get('sessions.jsonl')?.size, stop: files.has('STOP'),
+      // A protocol run (skills/run) writes records.jsonl: one line per AI participant, like sessions.jsonl.
+      sessions: pick('sessions.jsonl') ?? pick('records.jsonl'), sessionsSize: (files.get('sessions.jsonl') ?? files.get('records.jsonl'))?.size, stop: files.has('STOP'),
       mtime: Math.max(dir.mtime ?? 0, ...[...files.values()].map((f) => f.mtime ?? 0)),
     })
   }

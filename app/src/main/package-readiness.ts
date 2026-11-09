@@ -170,20 +170,23 @@ export const SIMULATION_APPROVAL = '[Simulation scope approved]'
  *    check (check_readiness.py), which run only for a package that already passes the static part. This is the
  *    only form the agent can run today, so nothing else may make it ready;
  *  - the protocol route (protocol.json + the bundled engine's checks, hsenv.checks) is reported beside it as
- *    `protocol`, when protocol.json exists. It runs nothing until the engine runner lands (protocolRunsEnabled). */
+ *    `protocol`, when protocol.json exists. A protocol approval runs protocol.json through the engine
+ *    (skills/run), never package/, and needs this result. */
 export async function projectPackageReadiness(projectDir: string, studyId?: string): Promise<PackageReadiness> {
   const pkg = await packageRouteReadiness(projectDir, studyId)
   if (!(await hasProtocol(projectDir))) return pkg
   const protocol = await protocolRouteReadiness(projectDir)
-  return { ...pkg, protocol: { ready: protocol.ready, problems: protocol.problems } }
+  return { ...pkg, protocol: { ready: protocol.ready, problems: protocol.problems, arms: await protocolArms(projectDir) } }
 }
 
-// Protocol runs start the relay only once a protocol runner exists. Off by default; tests switch it on.
-let protocolRuns = false
-/** Whether a protocol approval may start a run (false until the engine runner ships). */
-export const protocolRunsEnabled = (): boolean => protocolRuns
-export function enableProtocolRuns(on: boolean): void { protocolRuns = on }
-export const PROTOCOL_RUNS_UNAVAILABLE = 'Protocol runs are not available yet: this version of the app can check protocol.json but cannot run it. Run the study from its package, or wait for the protocol runner.'
+/** The runnable arms of protocol.json (the conditions of a protocol run); [] when it cannot be read. */
+export async function protocolArms(projectDir: string): Promise<string[]> {
+  try {
+    const arms: unknown = JSON.parse(await readFile(join(projectDir, 'protocol.json'), 'utf8'))?.arms
+    return [...new Set((Array.isArray(arms) ? arms : []).filter((a) => a?.runnable !== false).map((a) => a?.id)
+      .filter((id): id is string => typeof id === 'string' && id !== ''))]
+  } catch { return [] }
+}
 
 /** The protocol route alone: protocol.json and the bundled engine's checks. */
 async function protocolRouteReadiness(projectDir: string): Promise<PackageReadiness> {
@@ -226,8 +229,8 @@ async function packageRouteReadiness(projectDir: string, studyId?: string): Prom
 
 /** Throws when `text` approves a simulation and the project cannot run it. The approval names its route: a
  *  package approval (studyId, programId, programHash of program.json; the Simulation tab's, route absent or
- *  'package') needs the package route; a protocol approval (route 'protocol', protocolHash of protocol.json) is
- *  refused until protocol runs exist (protocolRunsEnabled), then needs the protocol route. */
+ *  'package') needs the package route; a protocol approval (route 'protocol', protocolHash of protocol.json)
+ *  needs the protocol route and runs protocol.json through the engine (skills/run). */
 export async function assertRunnablePackage(projectDir: string | undefined, text: string): Promise<void> {
   if (!text.startsWith(SIMULATION_APPROVAL)) return
   if (!projectDir) throw new Error('The conversation has no project. Reopen the project before starting a simulation.')
@@ -266,7 +269,6 @@ const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).dig
 
 async function assertRunnableProtocol(projectDir: string, protocolHash: unknown): Promise<void> {
   const notRunnable = (r: PackageReadiness) => new Error(`The study protocol did not pass its checks, so the simulation was not started: ${problemsText(r)}. Ask the agent to fix protocol.json first.`)
-  if (!protocolRunsEnabled()) throw new Error(PROTOCOL_RUNS_UNAVAILABLE)
   const bytes = await readFile(join(projectDir, 'protocol.json')).catch(() => null)
   if (!bytes) throw new Error('The study has no protocol.json. Review the simulation scope again.')
   if (typeof protocolHash !== 'string' || protocolHash !== sha256(bytes))

@@ -41,8 +41,9 @@ export interface PackageReadiness {
   /** At least one folder under package/. */
   exists: boolean
   /** The protocol route, reported separately when protocol.json exists (v0.8): protocol.json against the
-   *  bundled engine's checks. It never makes the package ready; `ready` above is the package route alone. */
-  protocol?: { ready: boolean; problems: PackageProblem[] }
+   *  bundled engine's checks, and its runnable arms (the conditions of a protocol run). It never makes the
+   *  package ready; `ready` above is the package route alone. */
+  protocol?: { ready: boolean; problems: PackageProblem[]; arms?: string[] }
   ready: boolean
   /** The package checked (the ready one, else the most complete one). */
   slug: string | null

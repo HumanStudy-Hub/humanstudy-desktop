@@ -6,8 +6,9 @@
 //   skills/<name>/**               -> <project>/.opencode/skills/<name>/**  (opencode skill discovery)
 //   artifact-kit/*                 -> <project>/.opencode/artifact-kit/*    (offline HTML kit; inline.py embeds it
 //                                     into each artifact, so artifacts stay self-contained)
-//   runtime/hsenv/**               -> <project>/.opencode/runtime/hsenv/**  (the protocol engine that runs protocol.json;
-//                                     vendored by scripts/sync_hsenv.sh, app-owned)
+//   runtime/hsenv/**               -> <project>/.opencode/hsenv/**  (the protocol engine that runs protocol.json;
+//                                     vendored by scripts/sync_hsenv.sh, app-owned). skills/run and skills/preview
+//                                     find it there (their sandbox layout: <root>/skills/<name>, <root>/hsenv)
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import previousHashes from './previous-pack-hashes.json'
@@ -26,7 +27,7 @@ function target(rel: string): string | null {
   if (rel.startsWith('schema/')) return rel
   if (rel.startsWith('skills/')) return join('.opencode', rel)
   if (rel.startsWith('artifact-kit/')) return join('.opencode', rel)
-  if (rel.startsWith('runtime/hsenv/')) return join('.opencode', rel)
+  if (rel.startsWith('runtime/hsenv/')) return join('.opencode', rel.slice('runtime/'.length))
   return null
 }
 
@@ -58,7 +59,13 @@ const HELPERS = ['skills/build/program_io.py', 'skills/build/program_lock.py', '
   'skills/build/check_materials.py', 'skills/export/community.py', 'skills/build/fetch_source.py', 'skills/build/qsf_flow.py',
   'skills/build/check_replies.py', 'skills/build/recorded_answers.py', 'skills/build/package_files/replies.py',
   'skills/build/estimate_run.py', 'skills/build/paper_tables.py', 'skills/build/check_source_use.py', 'skills/build/contract.py',
-  'skills/build/docx_text.py', 'skills/build/design_checks.py', 'skills/build/prompt_context.py']
+  'skills/build/docx_text.py', 'skills/build/design_checks.py', 'skills/build/prompt_context.py',
+  // The protocol route (v0.8): skills/run (vendored run_study/fspec/render + the app's launcher and results page)
+  // and skills/preview (vendored build_preview + the app's wrapper), kept at the shipped version.
+  'skills/run/run_study.py', 'skills/run/fspec.py', 'skills/run/render.py', 'skills/run/VENDORED',
+  'skills/run/app_run.py', 'skills/run/protocol_report.py',
+  'skills/preview/build_preview.py', 'skills/preview/preview.css', 'skills/preview/preview.js', 'skills/preview/VENDORED',
+  'skills/preview/make_preview.py']
 
 /** Every app-owned file refreshPack keeps at the shipped version: the helpers and the protocol engine. */
 const appOwned = (): string[] => [...HELPERS, ...engineFiles()]
