@@ -11,9 +11,15 @@ engine as of engine pass 2. Study pins are no longer in the code: they live in a
 `HSENV_PRIVATE_CONFIG=''` keeps both the app's gate and desktop runs from ever reading one. Upstream `tests/` name
 real studies and are never vendored. `serve.py` is vendored only because `evaldata.code_hash()` hashes it. `pack/runtime/hsenv/VERSION` records a source label (no local paths), the date and the SHA-256
 of each file. Refresh them with `scripts/sync_hsenv.sh <path to hsenv/hsenv> [label]` and never edit them by hand.
-The script refuses study-specific data (protocols are private): `LEGACY_*` tables written out as data, ids shaped like
-author2024topic, the name of any folder in the upstream `studies/` (read at sync time, case-insensitive; no folder,
-no sync) and local home paths. The
+The script refuses study-specific data (protocols are private). The hard gate is the name of any folder in the
+upstream `studies/`, read at sync time, case-insensitive; no folder means no sync. Beyond that it refuses:
+- `LEGACY_*` tables written out as data;
+- ids shaped like a study (letters plus a year, with or without a topic, any case);
+- a study's surname anywhere in a vendored file: code, strings, comments, JSON. Surnames of 4 letters or more
+  count everywhere, also as part of an identifier. Shorter ones count only next to a year or "et al";
+- local home paths.
+
+`--check` runs the guard alone and copies nothing (review 4, S3). The
 re-synced copy passes it (review 1, M1 closed). The earlier commits of this branch still carry the old copy, so
 squash the branch before it is pushed. `pack.ts` installs the engine into `<project>/.opencode/hsenv/` and keeps it at the
 shipped version on refresh, like the other app-owned helpers. The engine is stdlib-only; `checks.py` needs Python
@@ -68,12 +74,30 @@ Simulation tab rechecks when they change.
 **Protocol runs** (`skills/run`). `run_study.py`, `fspec.py` and `render.py` are vendored from the sandbox
 (`scripts/sync_hsenv.sh run <sandbox/skills>`, manifest `VENDORED`). They are installed in `.opencode/skills/run/`
 with the engine in `.opencode/hsenv/`, the sandbox's own layout, so run_study finds the engine unchanged.
-The app adds two files of its own:
-- `app_run.py`. `new` writes `plan.json` and a fixed `run.py` into `artifacts/simulations/<stamp>/`, after
-  checking the approved `protocolHash`. The agent starts run.py through `run_confined.py` (sandbox and relay on
-  macOS) and `simkit.py start`.
-- `protocol_report.py`. It writes `results.html` (people vs AI per effect, labelled
-  `offline_report — not a leaderboard`, kit inlined, protocol embedded, checked offline) and `summary.json`.
+The app adds files of its own: `app_run.py` (the run), `protocol_report.py` (`results.html`: people vs AI per
+effect and the engine's scores, labelled `offline_report — not a leaderboard`, kit inlined, protocol embedded,
+checked offline; plus `summary.json`), `budget.py` and `launch.py`.
+
+**Who starts a run (review 4, S1).** The main process starts it, never the agent. When the researcher presses
+Run simulation and the approval passes, `kernel:send` does three things:
+1. starts the relay (macOS);
+2. creates `artifacts/simulations/<stamp>/` with `plan.json` (`"startedBy": "app"`, the approved n and the
+   SHA-256 of protocol.json the app read itself) and the run's salt in `<runs>/.operator/`;
+3. writes its trusted copy of the code (`trustedRunFiles()`: the engine, the run skill, `sandbox_run.py`, the
+   kit) to app storage outside the project (`userData/protocol-runs/<runId>/`) and starts `launch.py` from it.
+
+`launch.py` runs `app_run.py run` from that copy:
+- On macOS it is confined by sandbox-exec (`sandbox_run.run_python`). It writes only to its run folder, reaches
+  the network only through the relay port, and hands the capability back when it finishes.
+- On Linux and Windows it runs unconfined, with the app's simulation environment, as package runs do there.
+- When it exits, the relay closes.
+- The run's sys.path is the trusted run skill and engine plus the runtime's site-packages. `-I` keeps the working
+  folder, PYTHONPATH and the user site out. The project and the run folder are data, never code.
+- A test plants agent code in `.opencode/skills/run/`, `.opencode/hsenv/` and `artifacts/simulations/`. None of
+  it runs.
+
+The agent only follows `progress.json` and reports. `app_run.py new` remains only as a manual tool, and the
+agent's skill tells it never to start a protocol run.
 
 f is `make_chat_f` over the app's model client (`humanstudy_llm.chat`, so keys stay in the relay), with the
 default renderer: one fresh call per page, JSON answers, text only. `run.json` records the model, the renderer and
@@ -108,15 +132,19 @@ run:
 - a stopped run (STOP or progress `stopped`) restarts only under an approval given after the stop, recorded in
   `plan.json.resumedAfterStop`. STOP is never deleted otherwise.
 
-The agent cannot forge the descriptor. The checks that read it, and the scores, run from the project's
-`.opencode` copy of the app's code, which the agent can edit. So before every approved run, the main process puts
-every app-owned file back at the shipped version (`refreshAppOwned`) before any model access exists. The token cap
-in the relay stays the hard bound in any case (review 3, S3).
+The agent cannot forge the descriptor. Since review 4 (S1) the code that checks it and computes the scores also
+runs from the app's trusted copy, not from the project. `refreshAppOwned` still puts the project's `.opencode` copy
+back at the shipped version before every approved run. That keeps the agent's own tools honest. It is not what
+binds the run: an agent could edit that copy again afterwards. The relay's token cap remains the hard bound on
+spend in every case.
 
 **One runner per run folder (review 3, S2).** `app_run` takes an OS lock on `<run>/run.lock` for the life of its
 process (fcntl, or msvcrt on Windows), with its pid and start time written in.
 - A second start under the same approval or a new one refuses while the first process lives.
-- A resume after Stop waits up to 120 s for the stopped process to exit, then refuses.
+- A resume after Stop waits up to 120 s for the stopped process to exit, then runs. A Stop is dated by when the
+  researcher asked (`stopRequestedAt` = STOP's time, written into progress.json with `stopped`), not by when the
+  stopped process finished writing (review 4, M1). Only a process still alive after 120 s makes the resume
+  refuse, with a plain message.
 - The lock is released however the process ends.
 
 **Private engine config (review 3, S4).** `HSENV_PRIVATE_CONFIG=''` is set on every desktop path: the readiness
@@ -145,12 +173,18 @@ table:
 - a non_official run (the AI n differs from the paper's analysed n, the usual case) shows the neutral "Finished",
   and its paragraph says "Offline report · non_official … no pass/fail";
 - an official run takes the engine's `direction_match` verdict, worded as direction agreement ("Directions agreed /
-  did not agree with the paper (official n, engine check)"), never as "showed the effect".
+  did not agree with the paper (official n, engine check)"), never as "showed the effect". When the plan lists
+  `n_unverified_arms` (the paper's printed n, no analysed n), the headline and the paragraph add "on an unverified
+  human n" (review 4, S2).
 
 A partial run never shows `done`. The app holds run_study's own `done` back, writes `failed` before it builds the
 page, and keeps `failed` if the page cannot be written. A partial page shows no pass/fail: each reward reads "no
 verdict (partial run)" and the text report is left out. The token cap is detected by `HTTP 402` or "token cap", not
 by any "402".
+
+**Relay refunds (review 4, S5).** When the provider rejects a call (a non-2xx answer), the relay gives back that
+call's reservation and logs a `refunded` event. A provider outage, during which humanstudy_llm retries each 502 up to
+six times, therefore no longer uses up the run's budget.
 
 **Like with like (S8).** The results page compares directions only when the paper's metric is the engine's metric:
 cells give a risk or mean difference, then an estimate in the same metric, then a printed value with its stated

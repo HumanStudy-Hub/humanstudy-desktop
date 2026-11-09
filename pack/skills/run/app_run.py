@@ -126,11 +126,16 @@ def stopped_at(run_dir: Path) -> float | None:
     except (OSError, ValueError):
         progress = {}
     if progress.get("stage") == "stopped":
-        try:
-            p_at = calendar.timegm(time.strptime(str(progress.get("updatedAt"))[:19], "%Y-%m-%dT%H:%M:%S"))
-        except ValueError:
-            p_at = time.time()   # unknown: as if just now, so only a later approval counts
-        at = max(at or 0, p_at)
+        # When the researcher asked (review 4, M1), not when the stopped process got round to writing `stopped`:
+        # a resume approved in between must not be taken for an approval given before the stop.
+        if isinstance(progress.get("stopRequestedAt"), (int, float)) and not isinstance(progress.get("stopRequestedAt"), bool):
+            p_at = float(progress["stopRequestedAt"])
+        else:
+            try:
+                p_at = calendar.timegm(time.strptime(str(progress.get("updatedAt"))[:19], "%Y-%m-%dT%H:%M:%S"))
+            except ValueError:
+                p_at = time.time()   # unknown: as if just now, so only a later approval counts
+        at = p_at if at is None else max(at, p_at)   # the latest request: a second Stop after a resume counts
     return at
 
 
@@ -184,11 +189,15 @@ class RunLock:
         deadline = time.time() + self.wait
         while not self._try():
             if time.time() >= deadline:
-                self.fh.seek(0)
-                holder = self.fh.read().strip()[:200]
+                try:   # Windows enforces the lock on reads too
+                    self.fh.seek(0)
+                    holder = json.loads(self.fh.read() or "{}")
+                except (OSError, ValueError):
+                    holder = {}
                 self.fh.close()
-                raise Refused("this run is still running in another process (%s): it was not started again"
-                              % (holder or "lock held"))
+                who = "process %s, started %s" % (holder.get("pid"), holder.get("startedAt")) if holder.get("pid") else "another process"
+                raise Refused("this run is still running (%s): it was not started again. Wait for it to end, or "
+                              "press Stop first." % who)
             time.sleep(0.5)
         self.fh.seek(0)
         self.fh.truncate()
@@ -233,13 +242,15 @@ def outcome(run_dir: Path, meta: dict) -> dict:
             "complete": planned > 0 and valid >= planned and failed_calls == 0}
 
 
-def write_progress(run_dir: Path, stage: str, message: str) -> None:
+def write_progress(run_dir: Path, stage: str, message: str, **extra) -> None:
     path = run_dir / "progress.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {"done": 0, "total": 0, "failed": 0, "conditions": []}
-    data.update(stage=stage, message=message[:400], updatedAt=run_study_now(), runner="exited")
+    data.update(stage=stage, message=message[:400], updatedAt=run_study_now(), runner="exited", **extra)
+    if stage != "stopped":
+        data.pop("stopRequestedAt", None)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
     tmp.replace(path)
@@ -269,9 +280,12 @@ def stopped(run_dir: Path, meta: dict, bound: dict) -> dict:
     result = outcome(run_dir, meta)
     meta["app"] = {"route": "protocol", "runId": bound.get("runId"), **result, "stopped": True, "partial": len(in_flight)}
     (run_dir / "run.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    stop = run_dir / "STOP"
     write_progress(run_dir, "stopped", "Stopped by the researcher: %d of %d planned participants finished; %d in "
                    "progress are recorded as partial (partial.jsonl). No comparison is drawn from a stopped run."
-                   % (result["valid"], result["planned"], len(in_flight)))
+                   % (result["valid"], result["planned"], len(in_flight)),
+                   # when the researcher asked, so a resume approved since then is not mistaken for an earlier one
+                   stopRequestedAt=stop.stat().st_mtime if stop.exists() else time.time())
     print(json.dumps({"status": "stopped", "app": meta["app"]}))
     return meta
 
@@ -358,14 +372,21 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    n = sub.add_parser("new", help="write plan.json and run.py into a new run folder")
+    n = sub.add_parser("new", help="write plan.json and run.py into a new run folder (Linux/Windows agent path)")
     n.add_argument("run_dir")
     n.add_argument("--per-arm", type=int, required=True)
     n.add_argument("--protocol-hash", required=True, help="protocolHash from the researcher's approval")
     n.add_argument("--arms", help="comma-separated arm ids (default: every runnable arm)")
     n.add_argument("--seeds", default="1")
     n.add_argument("--temperature", type=float, default=1.0)
+    r = sub.add_parser("run", help="play the approved plan (the app starts this from its trusted copy)")
+    r.add_argument("run_dir")
+    r.add_argument("project")
     a = ap.parse_args(argv)
+    if a.cmd == "run":
+        meta = main_run(Path(a.run_dir).resolve(), Path(a.project).resolve())
+        print(json.dumps({"status": meta.get("status"), "app": meta.get("app")}, default=str))
+        return
     plan = new(Path(a.run_dir), a.per_arm, a.protocol_hash, a.arms.split(",") if a.arms else None,
                [int(x) for x in a.seeds.split(",")], a.temperature)
     print("ready: %s (%s per arm). Trial: run_confined.py %s/run.py --trial; then simkit.py start %s"

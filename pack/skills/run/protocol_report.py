@@ -94,6 +94,12 @@ def official(run: dict) -> bool:
     return ((run.get("evaluation") or {}).get("plan") or {}).get("official") is True
 
 
+def unverified_n(run: dict) -> list:
+    """Arms whose human n is the printed n_paper with no structured n_analysed: an official verdict is then a
+    verdict on an unverified human n (hsenv.score labels it so)."""
+    return list(((run.get("evaluation") or {}).get("plan") or {}).get("n_unverified_arms") or [])
+
+
 def direction_reward(run: dict) -> dict | None:
     rewards = (run.get("evaluation") or {}).get("rewards")
     if not isinstance(rewards, dict):
@@ -113,7 +119,10 @@ def outcome(table: list[dict], run: dict | None = None, partial: bool = False) -
         return "unknown"
     reward = direction_reward(run)
     passed = (reward or {}).get("passed")
-    return "unknown" if passed is None else "agree" if passed else "disagree"
+    if passed is None:
+        return "unknown"
+    # On an unverified human n the verdict says so (review 4, S2): agree_unverified / disagree_unverified.
+    return ("agree" if passed else "disagree") + ("_unverified" if unverified_n(run) else "")
 
 
 def paragraph(table: list[dict], run: dict, partial: bool = False) -> str:
@@ -133,8 +142,10 @@ def paragraph(table: list[dict], run: dict, partial: bool = False) -> str:
     elif official(run):
         reward = direction_reward(run) or {}
         if reward.get("passed") is not None:
-            s += (" Official n (the paper's analysed n in every arm): the engine's direction check "
-                  f"{'agreed' if reward['passed'] else 'did not agree'} with the paper.")
+            arms = unverified_n(run)
+            s += ((" Official n, but on an unverified human n (the paper's printed n, no analysed n, in %s): "
+                   % ", ".join(map(str, arms))) if arms else " Official n (the paper's analysed n in every arm): ") + (
+                f"the engine's direction check {'agreed' if reward['passed'] else 'did not agree'} with the paper.")
     else:
         s += " Offline report · non_official: the AI n differs from the paper's analysed n, so there is no pass/fail."
     if partial:
@@ -270,7 +281,10 @@ def build(run_dir: Path, project: Path, partial: bool | None = None) -> dict:
     table = rows(protocol, effects)
     if partial is None:
         partial = run.get("status") == "partial"
-    kit = project / ".opencode" / "artifact-kit"
+    # The kit beside this code first: the app's trusted copy when the app started the run (<code>/artifact-kit),
+    # the project's installed kit otherwise (.opencode/artifact-kit, also beside .opencode/skills/run).
+    kit = next((k for k in (HERE.parent.parent / "artifact-kit", project / ".opencode" / "artifact-kit") if (k / "inline.py").is_file()),
+               project / ".opencode" / "artifact-kit")
     sys.path.insert(0, str(kit))
     import inline as kit_inline
     out = kit_inline.inline(page(protocol, run, table, rewards, partial), None, (protocol, sha))

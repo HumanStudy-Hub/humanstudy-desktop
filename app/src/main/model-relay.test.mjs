@@ -175,3 +175,26 @@ print('legacy run ok', sys.argv[1:])
   assert.match(out, /legacy run ok \['--trial'\]/)
   assert.ok(!out.includes('fake-hosted-sentinel') && !err.includes('fake-hosted-sentinel'), 'the launcher never prints the key')
 })
+test('review 4 S5: a call the provider rejects is refunded, so retries during an outage do not use up the cap', async () => {
+  let fail = true
+  const stub = createServer(async (req, res) => {
+    for await (const _ of req) { /* drain */ }
+    if (fail) { res.statusCode = 503; return res.end('{"error": "overloaded"}') }
+    res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }))
+  })
+  await new Promise(resolve => stub.listen(0, '127.0.0.1', resolve))
+  const project = join(temp, 'refund-project'); await mkdir(project)
+  const storage = join(temp, 'refund-app')
+  // One call reserves bytes + 256 + 100; the cap fits two such calls, not ten.
+  const relay = await startModelRelay({ project, storage, model: 'allowed', upstream: `http://127.0.0.1:${stub.address().port}`, key: 'k', tokenCap: 1000 })
+  const call = () => fetch(relay.baseURL + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${relay.token}` }, body: JSON.stringify({ model: 'allowed', messages: [{ role: 'user', content: 'hi' }], max_tokens: 100 }) })
+  try {
+    for (let i = 0; i < 10; i++) assert.equal((await call()).status, 502, `rejected call ${i} is refused by the provider, not by the cap`)
+    fail = false
+    assert.equal((await call()).status, 200, 'the cap is intact after the outage')
+    assert.equal((await call()).status, 200)
+    assert.equal((await call()).status, 402, 'successful calls still count')
+    const log = await readFile(relayDescriptor(storage, project) + '.usage.jsonl', 'utf8')
+    assert.equal(log.split('\n').filter((l) => l.includes('"refunded"')).length, 10)
+  } finally { await relay.close(); await new Promise(resolve => stub.close(resolve)) }
+})

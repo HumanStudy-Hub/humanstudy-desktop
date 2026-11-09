@@ -12,8 +12,11 @@
 # case-insensitive: hsenv/studies next to the engine; STUDIES_DIR overrides), or absolute home-folder paths.
 # Without a readable studies/ folder the sync refuses. The skills' SKILL.md files are app-owned (they describe the
 # app's paths and approval), not vendored.
+#   scripts/sync_hsenv.sh --check <any of the above>             run the guard only; copy and write nothing
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
+CHECK_ONLY=0
+if [ "${1:-}" = "--check" ]; then CHECK_ONLY=1; shift; fi
 # serve.py: evaldata.code_hash() hashes it. Upstream tests/ name real studies and are never vendored.
 ENGINE=(__init__.py engine.py expr.py checks.py effects_core.py evaldata.py rewards.py score.py serve.py schema_check.py)
 # The frozen v1 schemas schema_check.py validates against (it looks for them in ../schema next to the package).
@@ -31,21 +34,17 @@ names = sorted({n for n in os.listdir(studies) if os.path.isdir(os.path.join(stu
 if not names:
     sys.exit(f"refusing to vendor: {studies} lists no study folders")
 names_rx = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(map(re.escape, names)) + r")(?![A-Za-z0-9])", re.I)
-# Study surnames: the author part of every folder named like author2024topic (4 letters or more, so short names
-# such as "li" do not match ordinary words), refused in comments and docstrings, where code has no reason to name
-# a study (review 3, S1).
-surnames = sorted({m.group(1) for n in names for m in [re.match(r"([a-z]{4,})\d{4}", n)] if m}, key=len, reverse=True)
-surname_rx = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(map(re.escape, surnames)) + r")(?![A-Za-z0-9_])", re.I) if surnames else None
-
-
-def comments(f, text):
-    """(offset, comment text) of every comment and docstring: # and \"\"\"…\"\"\" in Python, // and /* */ in JS and CSS."""
-    if f.endswith(".py"):
-        for m in re.finditer(r'#[^\n]*|"""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\'', text):
-            yield m.start(), m.group(0)
-    elif f.endswith((".js", ".css", ".ts")):
-        for m in re.finditer(r"//[^\n]*|/\*[\s\S]*?\*/", text):
-            yield m.start(), m.group(0)
+# Study surnames (review 4, S3): the author part of every folder named like author2024topic, refused anywhere in a
+# vendored file (code, strings, comments, JSON). A surname of 4 letters or more is refused on its own, also inside
+# an identifier (followed by _ or a digit); a shorter one (li, wu) only next to a year or "et al", so it does not
+# trip on ordinary words and tags. Review every hit by hand; the folder-name rule above stays the hard gate.
+surnames = sorted({m.group(1) for n in names for m in [re.match(r"([a-z]+)(?:19|20)\d\d", n)] if m}, key=len, reverse=True)
+long_rx = re.compile(r"(?<![A-Za-z])(" + "|".join(map(re.escape, [x for x in surnames if len(x) >= 4])) + r")(?![A-Za-z])", re.I) \
+    if any(len(x) >= 4 for x in surnames) else None
+short_rx = re.compile(r"(?<![A-Za-z])(" + "|".join(map(re.escape, [x for x in surnames if len(x) < 4])) +
+                      r")(?:[\s_,(]*(?:19|20)\d\d|\s+et\s+al)", re.I) if any(len(x) < 4 for x in surnames) else None
+# an id shaped like a study folder: letters + a year, with or without a topic, any case
+id_rx = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]{2,}(?:19|20)\d\d[A-Za-z]*(?![A-Za-z0-9])")
 
 
 bad = []
@@ -54,17 +53,16 @@ for f in files:
     line = lambda m: text.count(chr(10), 0, m.start()) + 1
     for m in names_rx.finditer(text):
         bad.append(f"{f}:{line(m)}: study folder name {m.group(0)}")
-    if surname_rx:
-        for at, c in comments(f, text):
-            for m in surname_rx.finditer(c):
-                bad.append(f"{f}:{text.count(chr(10), 0, at + m.start()) + 1}: study surname in a comment: {m.group(0)}")
+    for rx in (long_rx, short_rx):
+        for m in (rx.finditer(text) if rx else ()):
+            bad.append(f"{f}:{line(m)}: study surname {m.group(0)}")
     # a LEGACY_* table written out as data (a literal opening with a string or number); a table built from the
     # private sidecar (a comprehension or dict(...) over PRIVATE) holds nothing in the code
     for m in re.finditer(r"^(LEGACY_\w+)\s*=\s*[\[{(]\s*(\S)", text, re.M):
         if m.group(2) in "\"'0123456789-":
             bad.append(f"{f}: {m.group(1)} is not empty")
-    for m in re.finditer(r"\b[a-z]+20\d\d[a-z]+\b", text):
-        bad.append(f"{f}:{line(m)}: study id {m.group(0)}")
+    for m in id_rx.finditer(text):
+        bad.append(f"{f}:{line(m)}: study id shape {m.group(0)}")
     for m in re.finditer(r"(?:/Users/|/home/|[A-Za-z]:\\Users\\)[^\s\"']+", text):
         bad.append(f"{f}:{line(m)}: local path {m.group(0)[:60]}")
 if bad:
@@ -76,6 +74,7 @@ vendor() {  # vendor <studies dir> <src dir> <dest dir> <manifest name> <label> 
   local studies="$1" src="$2" dest="$3" manifest="$4" label="$5"; shift 5
   for f in "$@"; do [ -f "$src/$f" ] || { echo "missing $src/$f" >&2; exit 1; }; done
   guard "$studies" "$src" "$@"
+  if [ "$CHECK_ONLY" = 1 ]; then echo "guard passed: $src"; return 0; fi
   mkdir -p "$dest"
   for f in "$@"; do cp "$src/$f" "$dest/$f"; done
   {
@@ -104,6 +103,10 @@ case "${1:?usage: scripts/sync_hsenv.sh /path/to/hsenv/hsenv [label] | skills|ru
     dest="$here/pack/runtime/hsenv"
     for f in "${ENGINE[@]}"; do [ -f "$src/$f" ] || { echo "missing $src/$f" >&2; exit 1; }; done
     guard "${STUDIES_DIR:-$src/../studies}" "$src" "${ENGINE[@]}"
+    if [ "$CHECK_ONLY" = 1 ]; then
+      guard "${STUDIES_DIR:-$src/../studies}" "$src/../schema" "${SCHEMAS[@]}"
+      echo "guard passed: $src"; exit 0
+    fi
     mkdir -p "$dest/hsenv"
     for f in "${ENGINE[@]}"; do cp "$src/$f" "$dest/hsenv/$f"; done
     for f in "${SCHEMAS[@]}"; do [ -f "$src/../schema/$f" ] || { echo "missing $src/../schema/$f" >&2; exit 1; }; done

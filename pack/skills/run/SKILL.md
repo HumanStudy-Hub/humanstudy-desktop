@@ -12,23 +12,21 @@ pictures appear as an id and their verified text lines), JSON answers. `run.json
 protocol's SHA-256, so every result names what produced it.
 
 `run_study.py`, `fspec.py` and `render.py` are vendored from the sandbox and never edited here.
-`app_run.py` (launcher) and `protocol_report.py` (results page) are the app's.
+`app_run.py` (the run), `launch.py` (how the app starts it), `protocol_report.py` (results page) and `budget.py`
+(the model budget) are the app's. The app runs its own shipped copy of all of them.
 
 ## Approval
 
-Only a `[Simulation scope approved]` message from the Simulation tab with `"route": "protocol"` approves a run.
-Check `protocolHash` against the exact bytes of `protocol.json`
-(`hashlib.sha256(Path('protocol.json').read_bytes()).hexdigest()`). If it differs, do not run even a trial: say
-so in two plain sentences and ask the researcher to press Run simulation again. Run only `plan.perCondition` AI
-participants per arm. Model access, sandbox and limits are the simulate skill's "Model access" section: always
-launch through `run_confined.py`, never import the run in an unconfined process, never handle a key.
+Only a `[Simulation scope approved]` message from the Simulation tab with `"route": "protocol"` approves a run, and
+the app starts that run itself (see Procedure). If protocol.json changed after the approval, the app refuses to
+start and says so; ask the researcher to press Run simulation again. Never handle a key.
 
 The app enforces the rest itself:
 - The relay's token budget is `plan.tokenBudget`. The app measured it from protocol.json (one call per page,
   prompts that grow with every page, every group member) and the researcher approved that figure. Do not try to
   stretch it.
-- On macOS the run capability is bound to this approval's route, protocol.json version and run id. `run.py`
-  refuses to run under any other approval, or after protocol.json changed.
+- On macOS the run capability is bound to this approval's route, protocol.json version and run id, and the run
+  is confined by the system sandbox; it refuses to run under any other approval, or after protocol.json changed.
 - A model call that fails (a refusal, the token budget) ends that participant as incomplete. A run that does not
   reach every planned participant ends `failed`, with a results page and summary labelled PARTIAL. Report it as
   partial; never present it as the planned comparison.
@@ -37,23 +35,20 @@ The app enforces the rest itself:
 
 ## Procedure
 
-```bash
-python .opencode/skills/run/app_run.py new artifacts/simulations/<YYYY-MM-DD-HHMM> --per-arm <plan.perCondition> --protocol-hash <protocolHash>
-python .opencode/skills/simulate/run_confined.py artifacts/simulations/<run>/run.py --trial     # one participant per arm
-python .opencode/skills/simulate/simkit.py start artifacts/simulations/<run>                    # the full run, detached
-```
+The app starts the run itself when the researcher presses Run simulation, from its own copy of this code (not
+the project's `.opencode` copy, and not a script you write). It creates `artifacts/simulations/<YYYY-MM-DD-HHMM>/`
+with a `plan.json` that says `"startedBy": "app"`. Do not start, restart or copy a protocol run yourself; never
+write a run.py for it.
 
-1. **Trial**: read the printed status. Every arm's participant should complete; `trial/records.jsonl` shows each
-   page and the model's raw reply (`note.reply`). A reply that does not parse, or a page the model cannot pass,
-   is a finding for the researcher: report it; never change protocol.json or the renderer to steer answers.
-2. **Full run**: check `progress.json` every 20–60 seconds (`sleep 30; cat artifacts/simulations/<run>/progress.json`)
-   until its stage is `done`, `failed` or `stopped`. `failed` with "Partial run" means some participants did not
-   finish: report the partial page as partial. A run that failed for another reason resumes when started again
-   (logged answers are replayed, no model call is repeated). `stopped` means the researcher pressed Stop: do not
-   restart.
-3. When it is `done`, run.py has written `results.html` (human vs AI per effect, an offline report, not a
-   leaderboard; checked by the artifact kit) and `summary.json`. If either is missing, run
-   `python .opencode/skills/run/protocol_report.py artifacts/simulations/<run>`.
-4. Reply with the completion rate (`run.json` `participants`), the direction comparison from `summary.json`, the
-   number of model calls, and that the result is in the Simulation tab. Say plainly that AI participants are not
-   people and that agreement with the paper does not show human validity.
+1. Find the newest folder under `artifacts/simulations/` whose `plan.json` says `"route": "protocol"`. Check its
+   `progress.json` every 20–60 seconds (`sleep 30; cat artifacts/simulations/<run>/progress.json`) until the stage
+   is `done`, `failed` or `stopped`. `run.log` holds the run's output.
+2. `done`: the app has written `results.html` (human vs AI per effect and the engine's scores, an offline report,
+   not a leaderboard) and `summary.json`.
+   `failed` with "Partial run": some participants did not finish; report the page as partial.
+   `failed` otherwise: read `run.log` and tell the researcher in plain words; a new Run simulation starts a new run.
+   `stopped`: the researcher pressed Stop; report what finished (run.json `app`, partial.jsonl). Do not restart.
+3. Reply with the completion rate (`run.json` `participants`), the headline from `summary.json` (the engine's
+   verdict on an official n, else "Finished" with values only), the number of model calls, and that the result is
+   in the Simulation tab. Say plainly that AI participants are not people and that agreement with the paper does
+   not show human validity.

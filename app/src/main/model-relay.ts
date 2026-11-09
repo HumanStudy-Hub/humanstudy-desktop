@@ -90,7 +90,7 @@ export async function startModelRelay(options: RelayOptions) {
       if (body.messages.some((m: any) => !m || !['system', 'user', 'assistant'].includes(m.role) || typeof m.content !== 'string')) return fail(400, 'Only text messages are supported.')
       const charge = bytes + 256 * body.messages.length + max
       if (reserved + charge > cap) return fail(402, 'Run token cap reached.')
-      reserved += charge // synchronous: concurrent requests cannot oversubscribe; never refunded
+      reserved += charge // synchronous: concurrent requests cannot oversubscribe; refunded only when the provider rejects the call
       await logUsage({ event: 'reserved', model: options.model, reserved: charge })
       const outgoing = { model: options.model, messages: body.messages.map((m: any) => ({ role: m.role, content: m.content })), max_tokens: max,
         ...(typeof body.temperature === 'number' ? { temperature: body.temperature } : {}),
@@ -100,7 +100,13 @@ export async function startModelRelay(options: RelayOptions) {
         headers: { 'content-type': 'application/json', authorization: `Bearer ${options.key}`, ...(options.bypass ? { 'x-vercel-protection-bypass': options.bypass } : {}) },
         body: JSON.stringify(outgoing),
       })
-      if (!upstream.ok) return fail(502, 'Model provider rejected the request.')
+      if (!upstream.ok) {
+        // The provider rejected the call, so nothing was spent: give the reservation back (review 4, S5). Clients
+        // retry a 502; without the refund one flaky minute of the provider would use up a run's whole budget.
+        reserved -= charge
+        await logUsage({ event: 'refunded', model: options.model, reserved: -charge, upstream_status: upstream.status })
+        return fail(502, 'Model provider rejected the request.')
+      }
       const reply = await upstream.json() as any
       // Return only completion text and usage; upstream diagnostic fields cannot expose credentials.
       const choices = Array.isArray(reply.choices) ? reply.choices.map((c: any, index: number) => ({ index, message: { role: 'assistant', content: typeof c.message?.content === 'string' ? c.message.content : '' }, finish_reason: c.finish_reason })) : []

@@ -370,7 +370,7 @@ try:
     print(json.dumps({'status': meta.get('status'), 'app': meta.get('app')}))
 except SystemExit as e:
     print(json.dumps({'refused': str(e)}))`, run], { cwd: proj, encoding: 'utf8', env: { PATH: process.env.PATH, ...env } })
-const last = (r) => JSON.parse(r.stdout.trim().split('\n').at(-1))
+const last = (r) => { try { return JSON.parse(r.stdout.trim().split('\n').at(-1)) } catch { throw Error('no result: ' + r.stdout.slice(-500) + r.stderr.slice(-1500)) } }
 
 test('review 2 M3: a failed model call makes the run partial: stage failed, page and summary labelled, never done', { skip: !python311 }, async () => {
   const { proj, run } = await runFixture(3)
@@ -591,26 +591,36 @@ print(json.dumps({'seen': seen, 'stage': p['stage'], 'message': p['message'],
   assert.ok(!/"stage": "done"/.test(progress))
 })
 
-test('review 3 S2: one runner per run folder; a second start refuses while the first lives, a resume waits for it', { skip: !python311 || process.platform === 'win32' }, async () => {
+test('review 3 S2 / review 4 M1: one runner per run folder; a resume right after Stop waits for the stopped process and runs', { skip: !python311 || process.platform === 'win32' }, async () => {
   const { proj, run } = await runFixture(2)
   const hash = sha(join(proj, 'protocol.json'))
-  // Hold the run's lock in a first process, as a live run does.
+  // A first process holds the run, as a live run does; on STOP it ends the way app_run.stopped does: it writes
+  // `stopped` (with when the researcher asked) a few seconds later, then exits and frees the lock.
   const holder = spawn(python311, ['-B', '-c', `import sys, time; from pathlib import Path
 sys.path.insert(0, '.opencode/skills/run'); import app_run
-with app_run.RunLock(Path(sys.argv[1]).resolve()):
-    print('held', flush=True); time.sleep(float(sys.argv[2]))`, run, '6'], { cwd: proj })
+run = Path(sys.argv[1]).resolve()
+with app_run.RunLock(run):
+    print('held', flush=True)
+    while not (run / 'STOP').exists(): time.sleep(0.1)
+    time.sleep(3)   # the old process keeps retrying its closed relay for a while
+    app_run.write_progress(run, 'stopped', 'Stopped by the researcher', stopRequestedAt=(run / 'STOP').stat().st_mtime)`, run], { cwd: proj })
   await new Promise((res) => holder.stdout.once('data', res))
-  const lockText = readFileSync(join(proj, run, 'run.lock'), 'utf8')
-  assert.match(lockText, /"pid": \d+, "startedAt": "\d{4}-/)
+  assert.match(readFileSync(join(proj, run, 'run.lock'), 'utf8'), /"pid": \d+, "startedAt": "\d{4}-/)
   const bound = (runId, at = Date.now()) => ({ HUMANSTUDY_RUN_ROUTE: 'protocol', HUMANSTUDY_RUN_ID: runId, HUMANSTUDY_RUN_PROTOCOL_SHA256: hash, HUMANSTUDY_RUN_APPROVED_AT: String(at) })
-  assert.match(last(play(proj, run, { env: bound('a') })).refused, /still running in another process \(\{"pid": \d+/, 'same approval')
-  assert.match(last(play(proj, run, { env: bound('b') })).refused, /still running in another process/, 'a new approval')
-  // After Stop, a fresh approval's resume waits for the old process to end, then runs.
+  const busy = last(play(proj, run, { env: bound('a') })).refused
+  assert.match(busy, /this run is still running \(process \d+, started \d{4}-[^)]*\): it was not started again/, 'same approval')
+  assert.ok(!busy.includes('{'), 'a clean message')
+  assert.match(last(play(proj, run, { env: bound('b') })).refused, /still running/, 'a new approval')
+  // The researcher presses Stop, then Run again right away: the approval is dated now, before the stopped
+  // process writes `stopped`. The resume waits for that process to exit, and then runs.
   writeFileSync(join(proj, run, 'STOP'), 'Stopped by the researcher\n')
+  await new Promise((res) => setTimeout(res, 50))
   const started = Date.now()
-  const resumed = last(play(proj, run, { env: bound('c', Date.now() + 1000) }))
+  const resumed = last(play(proj, run, { env: bound('c', Date.now()) }))
   assert.equal(resumed.status, 'done', JSON.stringify(resumed))
-  assert.ok(Date.now() - started >= 2000, 'it waited for the first process')
+  assert.ok(Date.now() - started >= 2500, 'it waited for the stopped process')
+  const plan = JSON.parse(readFileSync(join(proj, run, 'plan.json'), 'utf8'))
+  assert.equal(plan.resumedAfterStop.at(-1).runId, 'c')
   holder.kill()
 })
 
@@ -645,15 +655,77 @@ test('review 3 S3: app-owned files are put back before a run; the approval path 
   assert.ok(send.indexOf('await refreshAppOwned(projectDir)') > 0 && send.indexOf('await refreshAppOwned(projectDir)') < send.indexOf('startModelRelay('))
 })
 
-test('review 3 S1: the sync guard refuses a study surname in a comment, not in code', () => {
+test('review 4 S3: the sync guard refuses study surnames and id shapes anywhere in a vendored file', () => {
   const up = mkdtempSync(join(tmpdir(), 'sandbox-'))
   mkdirSync(join(up, 'skills/run'), { recursive: true })
   mkdirSync(join(up, 'hsenv/studies/zorbel2019widgets'), { recursive: true })
-  mkdirSync(join(up, 'hsenv/studies/li2020x'), { recursive: true })
-  for (const f of ['run_study.py', 'fspec.py', 'render.py']) writeFileSync(join(up, 'skills/run', f), '# clean, li\nzorbel_count = 1\n')
-  writeFileSync(join(up, 'skills/run/render.py'), 'x = 1  # as in Zorbel S2b\n')
-  const r = spawnSync('bash', [join(packDir, '../scripts/sync_hsenv.sh'), 'run', join(up, 'skills')], { encoding: 'utf8' })
-  assert.notEqual(r.status, 0)
-  assert.match(r.stderr, /render\.py:1: study surname in a comment: Zorbel/)
-  assert.ok(!/fspec\.py|run_study\.py/.test(r.stderr), 'an identifier and a short surname (li) are not flagged')
+  mkdirSync(join(up, 'hsenv/studies/wu2020spoons'), { recursive: true })
+  const script = join(packDir, '../scripts/sync_hsenv.sh')
+  const guard = (text) => {
+    for (const f of ['run_study.py', 'fspec.py', 'render.py']) writeFileSync(join(up, 'skills/run', f), '# clean\n')
+    writeFileSync(join(up, 'skills/run/render.py'), text)
+    return spawnSync('bash', [script, '--check', 'run', join(up, 'skills')], { encoding: 'utf8' })
+  }
+  // Each false negative of review 4, one at a time.
+  for (const [text, expected] of [
+    ['raise ValueError("label (Zorbel S2b)")\n', /study surname Zorbel/],             // a string literal
+    ['zorbel_items = []\n', /study surname zorbel/],                                  // an identifier
+    ['x = 1  # zorbel_s2b\n', /study surname zorbel/],                                // _ ends the surname
+    ['n = 3  # as in Wu 2020\n', /study surname Wu 2020/],                            // a short surname with a year
+    ['s = "wu2020"\n', /study id shape wu2020/],                                       // an id with no topic
+    ['K = "Zorbel2019Widgets"\n', /study surname Zorbel|study id shape Zorbel2019Widgets/], // CamelCase
+    ['msg = "Zorbel (2019) found"\n', /study surname Zorbel/],                         // "Surname (year)"
+    ["q = '\"\"\"'\nnote = 'see zorbel'\n", /render\.py:2: study surname zorbel/],     // after an odd triple quote
+    ['{"description": "after Zorbel et al."}\n', /study surname Zorbel/],             // JSON text
+  ]) {
+    const r = guard(text)
+    assert.notEqual(r.status, 0, text)
+    assert.match(r.stderr, expected, text)
+  }
+  // Ordinary words and tags are not flagged: a short surname alone, <li>, ids without a year.
+  const ok = guard('html = "<li>wu</li>"\nwidgets = 2\nutf8 = "x"\n')
+  assert.equal(ok.status, 0, ok.stderr)
+  assert.match(ok.stdout, /guard passed/, '--check copies nothing')
+  // The folder-name rule stays the hard gate (any case), and no studies folder means no sync.
+  assert.match(guard('X = "ZORBEL2019WIDGETS"\n').stderr, /study folder name ZORBEL2019WIDGETS/)
+  const none = spawnSync('bash', [script, '--check', 'run', join(up, 'skills')], { encoding: 'utf8', env: { ...process.env, STUDIES_DIR: join(up, 'nowhere') } })
+  assert.match(none.stderr, /no upstream studies folder/)
+  assert.equal(readFileSync(join(packDir, 'skills/run/render.py'), 'utf8').includes('zorbel'), false, 'nothing was copied')
+})
+
+test('review 4 S1: the trusted run copy holds the engine, the run skill, the sandbox launcher and the kit; the app starts it', () => {
+  const rels = P.trustedRunFiles().map(([rel]) => rel)
+  for (const rel of ['hsenv/hsenv/engine.py', 'hsenv/hsenv/score.py', 'hsenv/schema/protocol.v1.json', 'skills/run/launch.py', 'skills/run/app_run.py',
+    'skills/run/run_study.py', 'skills/run/protocol_report.py', 'skills/build/sandbox_run.py', 'artifact-kit/inline.py', 'artifact-kit/hs-kit.js'])
+    assert.ok(rels.includes(rel), rel)
+  assert.ok(rels.every((rel) => !rel.startsWith('skills/simulate/')), 'not the package runners')
+  const index = readFileSync(join(here, 'index.ts'), 'utf8')
+  const send = index.slice(index.indexOf("ipcMain.handle('kernel:send'"))
+  assert.match(send, /if \(route === 'protocol'\) await startProtocolRun\(id, projectDir, approved, binding as ProtocolBinding, relay\)/)
+  assert.match(send, /await startProtocolRun\(id, projectDir, approved, binding\)/, 'the pre-relay path too')
+  assert.match(index, /files: trustedRunFiles\(\), codeDir: join\(app\.getPath\('userData'\), 'protocol-runs', binding\.runId\)/, 'code outside the project')
+  const skill = readFileSync(join(packDir, 'skills/run/SKILL.md'), 'utf8')
+  assert.match(skill, /Do not start, restart or copy a protocol run yourself/)
+})
+
+test('review 4 S2: an official verdict on an unverified human n says so, in the headline and the paragraph', { skip: !python311 }, async () => {
+  const proj = await protocolProject()
+  const r = spawnSync(python311, ['-B', '-c', `import sys, json; sys.path.insert(0, '.opencode/skills/run'); import protocol_report as P
+run = lambda arms, passed: {"evaluation": {"plan": {"official": True, "n_unverified_arms": arms}, "rewards": {"direction_match-v2": {"passed": passed}}}}
+print(json.dumps({"verified": P.outcome([], run([], True)), "unverified": P.outcome([], run(["control"], True)),
+  "unverified_no": P.outcome([], run(["control"], False)), "para": P.paragraph([], run(["control", "treatment"], True)),
+  "para_verified": P.paragraph([], run([], False))}))`], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  const o = JSON.parse(r.stdout)
+  assert.deepEqual([o.verified, o.unverified, o.unverified_no], ['agree', 'agree_unverified', 'disagree_unverified'])
+  assert.match(o.para, /on an unverified human n \(the paper's printed n, no analysed n, in control, treatment\): the engine's direction check agreed/)
+  assert.match(o.para_verified, /Official n \(the paper's analysed n in every arm\): the engine's direction check did not agree/)
+  const dictOut = mkdtempSync(join(tmpdir(), 'dict-'))
+  await build({ entryPoints: [join(here, '../renderer/i18n-dict.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(dictOut, 'dict.mjs'), logLevel: 'error' })
+  const { EN, ZH } = await import(pathToFileURL(join(dictOut, 'dict.mjs')).href)
+  for (const k of ['sim.outcome.agree_unverified', 'sim.outcome.disagree_unverified']) {
+    assert.match(EN[k], /on an unverified human n$/); assert.ok(ZH[k])
+  }
+  const css = readFileSync(join(here, '../renderer/styles.css'), 'utf8')
+  for (const c of ['o-agree', 'o-disagree', 'o-agree_unverified', 'o-disagree_unverified']) assert.ok(css.includes('.sim-outcome.' + c), c)
 })

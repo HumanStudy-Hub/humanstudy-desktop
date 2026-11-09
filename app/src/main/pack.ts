@@ -63,7 +63,7 @@ const HELPERS = ['skills/build/program_io.py', 'skills/build/program_lock.py', '
   // The protocol route (v0.8): skills/run (vendored run_study/fspec/render + the app's launcher and results page)
   // and skills/preview (vendored build_preview + the app's wrapper), kept at the shipped version.
   'skills/run/run_study.py', 'skills/run/fspec.py', 'skills/run/render.py', 'skills/run/VENDORED',
-  'skills/run/app_run.py', 'skills/run/protocol_report.py', 'skills/run/budget.py',
+  'skills/run/app_run.py', 'skills/run/protocol_report.py', 'skills/run/budget.py', 'skills/run/launch.py',
   'skills/preview/build_preview.py', 'skills/preview/preview.css', 'skills/preview/preview.js', 'skills/preview/VENDORED',
   'skills/preview/make_preview.py']
 
@@ -150,4 +150,17 @@ export async function refreshAppOwned(projectDir: string): Promise<void> {
     await mkdir(dirname(abs), { recursive: true })
     await writeFile(abs, content, 'utf8')
   }
+}
+
+/** What the app runs for an approved protocol run (protocol-run.ts), in the layout launch.py expects: the engine
+ *  under hsenv/, the run skill under skills/run/, the sandbox launcher under skills/build/ and the artifact kit
+ *  under artifact-kit/. Written by the main process outside the project, so the agent cannot change what runs. */
+export function trustedRunFiles(): [string, string][] {
+  const run = ['run_study.py', 'fspec.py', 'render.py', 'app_run.py', 'protocol_report.py', 'launch.py'].map((f) => 'skills/run/' + f)
+  const pick = (rel: string): [string, string][] => (files[PREFIX + rel] !== undefined ? [[rel, files[PREFIX + rel]]] : [])
+  return [
+    ...engineFiles().map((rel): [string, string] => ['hsenv/' + rel.slice('runtime/hsenv/'.length), files[PREFIX + rel]]),
+    ...run.flatMap(pick), ...pick('skills/build/sandbox_run.py'),
+    ...kitFiles().flatMap(pick),
+  ]
 }

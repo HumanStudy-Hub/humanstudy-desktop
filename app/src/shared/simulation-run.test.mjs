@@ -55,6 +55,8 @@ const sizeOf = (e, size) => ({ ...e, size })
 const [proto] = S.runFolders([d('artifacts', [d('artifacts/simulations', [d('artifacts/simulations/2026-11-09-0100', [
   sizeOf(f('artifacts/simulations/2026-11-09-0100/records.jsonl', 3), 42), f('artifacts/simulations/2026-11-09-0100/progress.json', 3),
   d('artifacts/simulations/2026-11-09-0100/trial', [f('artifacts/simulations/2026-11-09-0100/trial/progress.json', 2)])])])])])
+assert.deepEqual(S.runFolders([d('artifacts', [d('artifacts/simulations', [d('artifacts/simulations/.operator', [f('artifacts/simulations/.operator/r.salt')]),
+  d('artifacts/simulations/.baseline-cache', [])])])]), [], 'the engine\'s .operator/ and .baseline-cache/ beside the runs are not runs')
 assert.deepEqual([proto.sessions, proto.sessionsSize, proto.progress], ['/p/artifacts/simulations/2026-11-09-0100/records.jsonl', 42, '/p/artifacts/simulations/2026-11-09-0100/progress.json'])
 assert.equal(new Date(S.runDate('2026-10-15-1329-example')).getHours(), 13)
 assert.equal(S.runDate('latest'), null)

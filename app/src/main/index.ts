@@ -32,7 +32,7 @@ import { createThreads, threads } from './threads'
 import { saveProjectText } from './program-save'
 import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
-import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles } from './pack'
+import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedRunFiles } from './pack'
 import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks } from './package-readiness'
@@ -40,6 +40,7 @@ import { protocolBudget, protocolReadiness } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
 import { closeProjectRelays, isRunStop } from './run-stop'
+import { launchProtocolRun, newRunFolder, type Binding as ProtocolBinding } from './protocol-run'
 import type { Kernel, KernelEvent } from './kernel-types'
 import { actionRef } from '../shared/research-operations'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
@@ -695,6 +696,24 @@ app.whenReady().then(() => {
     return id
   })
   threadsInitialized = true
+  /** An approved protocol run, started here from the app's trusted copy (review 4, S1), never by the agent: the
+   *  run folder and plan.json come from the checked approval, and the run ends its relay when it exits. */
+  async function startProtocolRun(id: string, projectDir: string, approved: { plan?: { perCondition?: unknown; model?: unknown; conditions?: unknown } }, binding: ProtocolBinding, relay?: { baseURL: string; token: string; model: string; expiresAt: number }) {
+    const per = approved.plan?.perCondition
+    if (!Number.isSafeInteger(per) || (per as number) < 1 || (per as number) > 60) throw Error('Participants per condition must be a whole number from 1 to 60. Review the simulation scope again.')
+    const python = await readyPython()
+    if (!python) throw Error('The research runtime is not installed yet, so the run cannot start. Try again in a minute.')
+    const runDir = newRunFolder(projectDir)
+    await launchProtocolRun({
+      python, files: trustedRunFiles(), codeDir: join(app.getPath('userData'), 'protocol-runs', binding.runId), project: projectDir, runDir, binding,
+      plan: { perArm: per as number, arms: null, seeds: [1], temperature: 1.0 },
+      relay: relay ? { baseURL: relay.baseURL, token: relay.token, model: relay.model, expiresAt: relay.expiresAt } : undefined,
+      // Pre-relay path: the same environment the agent's runs get there (the run confirmation said the key is readable).
+      env: relay ? { PATH: (process.env.HUMANSTUDY_RUNTIME_BIN ? process.env.HUMANSTUDY_RUNTIME_BIN + (process.platform === 'win32' ? ';' : ':') : '') + (process.env.PATH ?? '') } : { ...process.env },
+      onExit: () => { if (relay) void closeRunRelay(id) },
+    })
+  }
+
   ipcMain.handle('kernel:send', async (_e, id: string, text: string, workspace?: WorkspaceContext, action?: unknown) => {
     if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
     const k = kernelFor(id)
@@ -731,7 +750,17 @@ app.whenReady().then(() => {
         bypass: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_SERVER_BYPASS : undefined })
         runRelays.set(id, { project: projectDir, close: relay.close })
         startedRelay = true
-      } catch (error) { relayProjects.delete(projectDir); throw error }
+        if (route === 'protocol') await startProtocolRun(id, projectDir, approved, binding as ProtocolBinding, relay)
+      } catch (error) { if (startedRelay) await closeRunRelay(id); relayProjects.delete(projectDir); throw error }
+    } else if (projectDir && text.startsWith('[Simulation scope approved]')) {
+      // Pre-relay path (Linux, Windows): no relay, but a protocol run is still started by the app from its trusted copy.
+      const approved = JSON.parse(text.split('\n')[1])
+      if (approved.route === 'protocol' || (approved.route === undefined && approved.protocolHash !== undefined)) {
+        const binding: ProtocolBinding = { route: 'protocol', runId: randomUUID(), approvedAt: Date.now(),
+          protocolSha256: createHash('sha256').update(await readFile(join(projectDir, 'protocol.json'))).digest('hex') }
+        if (binding.protocolSha256 !== approved.protocolHash) throw Error('The study changed after approval. Review the simulation scope again.')
+        await startProtocolRun(id, projectDir, approved, binding)
+      }
     }
     telemetry.trackTurnStart(id, text, actionRef(action))
     const prompt = threads().beforeSend(id, text, workspace)

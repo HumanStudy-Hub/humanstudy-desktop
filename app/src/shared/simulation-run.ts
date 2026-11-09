@@ -74,7 +74,7 @@ export function parseProgress(text: string | null | undefined): SimProgress | nu
 /** summary.json, written by the agent when a run finishes: the plain-language comparison. */
 export interface SimSummary {
   /** agree / disagree: a protocol run's engine direction check on an official n (skills/run protocol_report). */
-  outcome: 'replicated' | 'partly' | 'not_replicated' | 'not_ready' | 'unknown' | 'agree' | 'disagree'
+  outcome: 'replicated' | 'partly' | 'not_replicated' | 'not_ready' | 'unknown' | 'agree' | 'disagree' | 'agree_unverified' | 'disagree_unverified'
   paragraph: string
   model?: string
   perCondition?: number
@@ -88,7 +88,7 @@ export function parseSummary(text: string | null | undefined, lang = 'en'): SimS
   try { r = JSON.parse(text) } catch { return null }
   if (!r || typeof r !== 'object') return null
   const o = String(r.outcome ?? r.verdict ?? '').toLowerCase()
-  const outcome: SimSummary['outcome'] = o === 'agree' || o === 'disagree' ? o : /not[_ -]?ready/.test(o) ? 'not_ready' : /not|fail/.test(o) ? 'not_replicated' : /part|mixed|weak/.test(o) ? 'partly' : /replicat|yes|shown/.test(o) ? 'replicated' : 'unknown'
+  const outcome: SimSummary['outcome'] = ['agree', 'disagree', 'agree_unverified', 'disagree_unverified'].includes(o) ? o as SimSummary['outcome'] : /not[_ -]?ready/.test(o) ? 'not_ready' : /not|fail/.test(o) ? 'not_replicated' : /part|mixed|weak/.test(o) ? 'partly' : /replicat|yes|shown/.test(o) ? 'replicated' : 'unknown'
   const zh = lang.startsWith('zh') && typeof r.paragraph_zh === 'string' && r.paragraph_zh.trim() ? r.paragraph_zh : null
   const raw = zh ?? r.paragraph ?? r.summary ?? r.text
   if (!str(raw)) return null
@@ -128,7 +128,8 @@ export function runFolders(tree: TreeEntry[]): SimRunFiles[] {
   const root = find(tree, SIM_DIR)
   const runs: SimRunFiles[] = []
   for (const dir of root?.children ?? []) {
-    if (dir.kind !== 'dir') continue
+    // .operator/ (run salts) and .baseline-cache/ beside the runs are the engine's, not runs.
+    if (dir.kind !== 'dir' || dir.name.startsWith('.')) continue
     const files = new Map<string, TreeEntry>()
     const walk = (es: TreeEntry[]) => es.forEach((e) => (e.kind === 'dir' ? walk(e.children ?? []) : files.set(e.rel.slice(dir.rel.length + 1), e)))
     walk(dir.children ?? [])
