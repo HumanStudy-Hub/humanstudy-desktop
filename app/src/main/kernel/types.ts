@@ -20,6 +20,8 @@ export interface KernelPermission {
   metadata?: Record<string, unknown>
   /** Set on the follow-up event once the request was answered (by the user, auto-approval or elsewhere). */
   resolved?: PermissionReply
+  /** OpenCode's tool call that asked (to find its input, e.g. the bash `workdir`). */
+  callID?: string
   /** Asked by a subagent (OpenCode task tool) of this conversation: its agent name. */
   subagent?: string
   /** Why the autonomy policy did not answer it by itself (sensitive material, outside the project, ...). */

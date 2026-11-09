@@ -15,7 +15,7 @@
 //
 // Pattern matching is done here, not in OpenCode's wildcard rules, because a command line needs real
 // parsing (quotes, `=`, `~`, `${HOME}`, `cd` chains, globs) that a last-match-wins glob list cannot express.
-import { lstatSync, readlinkSync, realpathSync } from 'node:fs'
+import { lstatSync, readdirSync, readlinkSync, realpathSync, type Dirent } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { KernelPermission } from './types'
@@ -41,6 +41,8 @@ export interface PolicyContext {
   realpath?: (p: string) => string
   /** Whether the project's .ignore keeps participant data out of grep/glob (agent-sandbox.ts). */
   searchIgnore?: () => boolean
+  /** Participant-data folders under a search root (tests replace it). */
+  findSensitive?: (root: string) => string[]
 }
 
 /** Real path of `p`, resolving its nearest existing ancestor (for files about to be created). */
@@ -264,6 +266,58 @@ function globHitsSensitive(pattern: string, strict: boolean): boolean {
   })
 }
 
+/** Participant-data folders under `root` (paths relative to it), at most 8 levels deep. */
+export function findSensitiveDirs(root: string): string[] {
+  const out: string[] = []
+  let seen = 0
+  const walk = (dir: string, rel: string, depth: number): void => {
+    if (depth > 8 || seen > 20000 || out.length > 64) return
+    let entries: Dirent[]
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      seen++
+      if (!e.isDirectory() || e.name === 'node_modules' || e.name === '.git') continue
+      const r = rel ? rel + '/' + e.name : e.name
+      if (SENSITIVE_NAMES.has(norm(e.name))) out.push(r)
+      else walk(join(dir, e.name), r, depth + 1)
+    }
+  }
+  walk(root, '', 0)
+  return out
+}
+
+/** A ripgrep --glob as a regular expression over a slash-separated relative path (gitignore rules: no
+ *  slash matches the basename at any depth; `**`; character classes; `{a,b}` alternatives). */
+export function ripgrepGlobRegex(glob: string): RegExp | null {
+  let g = glob.replace(/^\//, '')
+  const anchoredPath = g.includes('/')
+  let re = ''
+  for (let i = 0; i < g.length; i++) {
+    const c = g[i]
+    if (c === '*' && g[i + 1] === '*') {
+      if (g[i + 2] === '/') { re += '(?:.*/)?'; i += 2 } else { re += '.*'; i += 1 }
+    } else if (c === '*') re += '[^/]*'
+    else if (c === '?') re += '[^/]'
+    else if (c === '[') { const j = g.indexOf(']', i + 2); if (j < 0) return null; re += '[' + g.slice(i + 1, j).replace(/^!/, '^').replace(/\\/g, '\\\\') + ']'; i = j }
+    else if (c === '{') re += '(?:'
+    else if (c === '}') re += ')'
+    else if (c === ',') re += '|'
+    else if (c === '\\' && i + 1 < g.length) re += g[++i].replace(/[.+^$(){}|[\]\\*?]/g, '\\$&')
+    else re += c.replace(/[.+^$()|\\]/g, '\\$&')
+  }
+  try { return new RegExp((anchoredPath ? '^' : '^(?:.*/)?') + re + '/?$', 'i') } catch { return null }
+}
+
+/** Whether a ripgrep --glob could whitelist a participant-data folder under `root` (and so override the
+ *  project's .ignore). Exclusions (`!…`) never do; a glob that cannot be parsed counts as reaching. */
+export function globReachesSensitive(glob: string, root: string, find: (root: string) => string[] = findSensitiveDirs): boolean {
+  if (glob.startsWith('!')) return false
+  const dirs = find(root)
+  if (!dirs.length) return false
+  const re = ripgrepGlobRegex(glob)
+  return !re || dirs.some(d => re.test(d))
+}
+
 /** Prefixes that run the command that follows them. */
 const WRAPPERS = new Set(['env', 'command', 'exec', 'nohup', 'time', 'nice', 'timeout', 'xargs', 'caffeinate', 'stdbuf'])
 const GIT_SENSITIVE_KEY = /^(alias|remote|url|credential|include|includeif|core\.(sshcommand|hookspath|fsmonitor|askpass|gitproxy|editor|pager))(\.|=|$)/i
@@ -397,12 +451,12 @@ function commandVerdicts(ctx: PolicyContext, words: ShellWord[], cmd: string): P
 }
 
 /** Decide one shell command line. */
-export function classifyCommand(ctx: PolicyContext, cmd: string): PolicyVerdict {
+export function classifyCommand(ctx: PolicyContext, cmd: string, start?: string): PolicyVerdict {
   const verdicts: PolicyVerdict[] = []
   for (const [re, decision, reason] of COMMAND_RULES) if (re.test(cmd)) verdicts.push({ decision, reason: `${reason}: ${cmd.slice(0, 120)}` })
   const strict = !ctx.osSandbox
   const vars = new Map<string, string>()
-  let base = ctx.dir
+  let base = start ?? ctx.dir
   for (const words of parseShell(cmd)) {
     const p0 = programOf(words)
     const prog = p0 >= 0 ? words[p0].text : ''
@@ -452,6 +506,13 @@ export function classifyCommand(ctx: PolicyContext, cmd: string): PolicyVerdict 
 function requestPaths(perm: KernelPermission): string[] {
   const md = perm.metadata ?? {}
   const list: string[] = []
+  // apply_patch: one request for several files, `filepath` is their names joined by ", " (never a path).
+  // Every file and every move target is checked, and every pattern.
+  if (Array.isArray(md.files)) {
+    for (const f of md.files as Array<Record<string, unknown>>) for (const k of ['filePath', 'movePath']) if (f && typeof f[k] === 'string' && f[k]) list.push(f[k] as string)
+    return [...list, ...(perm.patterns ?? [])]
+  }
+  if ((perm.patterns?.length ?? 0) > 1) return [...perm.patterns!]
   for (const k of ['filepath', 'filePath', 'parentDir', 'path']) if (typeof md[k] === 'string' && md[k]) list.push(md[k] as string)
   if (Array.isArray(md.directories)) for (const d of md.directories) if (typeof d === 'string') list.push(d)
   if (list.length) return list
@@ -484,19 +545,34 @@ export function classifyPermission(ctx: PolicyContext, perm: KernelPermission): 
     case 'bash': {
       const cmds = typeof md.command === 'string' && md.command ? [md.command] : perm.patterns ?? []
       if (!cmds.length) return { decision: 'ask', reason: 'unknown command' }
-      return worst(cmds.map(c => classifyCommand(ctx, c)))
+      // The tool's `workdir` (from the tool call's input, opencode.ts): relative paths start there.
+      const wd = typeof md.workdir === 'string' && md.workdir ? md.workdir : undefined
+      const base = wd ? resolve(ctx.dir, expandHome(wd, ctx.home ?? homedir())) : undefined
+      const wv = wd ? pathVerdict(classifyPath(ctx, wd), wd) : { decision: 'allow' as const }
+      return worst([wv, ...cmds.map(c => classifyCommand(ctx, c, base))])
     }
     case 'glob': case 'grep': {
       // Where it searches: metadata.path (absolute or project-relative), else the project. Participant data
       // under it is skipped by ripgrep through the project's .ignore (agent-sandbox.ts); if that block is
-      // missing, a search over the project asks.
+      // missing, a search over the project asks. Outside the project only OpenCode's tool output is searched
+      // freely (temp folders can hold copies of a study).
       const where = typeof md.path === 'string' && md.path ? md.path : ctx.dir
-      const v = pathVerdict(classifyPath(ctx, where), where)
+      const at = classifyPath(ctx, where)
+      const v = pathVerdict(at, where)
       if (v.decision !== 'allow') return v
-      for (const k of ['pattern', 'include']) if (typeof md[k] === 'string' && (isSensitiveRelative(md[k] as string) || globHitsSensitive(md[k] as string, false)))
-        return { decision: 'ask', reason: `a search pattern aimed at participant data (${md[k]})` }
-      const searchesProject = classifyPath(ctx, where) === 'project'
-      if (searchesProject && !(ctx.searchIgnore?.() ?? false)) return { decision: 'ask', reason: `a search that can reach participant data (the project's .ignore is missing its HumanStudy block)` }
+      const toolOutput = (ctx.allowedRoots ?? []).filter(r => /[\\/]tool-output$/.test(r)).some(r => classifyPath({ ...ctx, dir: r }, where) === 'project')
+      if (at === 'allowed' && !toolOutput) return { decision: 'ask', reason: `a search outside the project (${where})` }
+      // ripgrep gets `include` (grep) or `pattern` (glob) as --glob, and a matching --glob overrides .ignore:
+      // ask when it could match a participant-data folder that exists under the search root.
+      const root = resolve(ctx.dir, expandHome(where, ctx.home ?? homedir()))
+      for (const k of perm.type === 'glob' ? ['pattern'] : ['include', 'pattern']) {
+        const g = typeof md[k] === 'string' ? md[k] as string : ''
+        if (!g) continue
+        if (isSensitiveRelative(g) || globHitsSensitive(g, false)) return { decision: 'ask', reason: `a search pattern aimed at participant data (${g})` }
+        if ((perm.type === 'glob' || k === 'include') && globReachesSensitive(g, root, ctx.findSensitive))
+          return { decision: 'ask', reason: `a search filter that would include participant data (${g})` }
+      }
+      if (at === 'project' && !(ctx.searchIgnore?.() ?? false)) return { decision: 'ask', reason: `a search that can reach participant data (the project's .ignore is missing its HumanStudy block)` }
       return { decision: 'allow' }
     }
     case 'edit': case 'write': case 'read': case 'external_directory': case 'list': case 'lsp': {

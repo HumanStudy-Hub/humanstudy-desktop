@@ -40,11 +40,20 @@ named like the real shell so OpenCode's shell handling is unchanged). The wrappe
 
 ### What each helper may do outside the sandbox (audit of `HELPERS`, 2026-11-08)
 
+Package code started by the agent never reads participant data. On the helper path the wrapper sets
+`HUMANSTUDY_AGENT_RUN=1` (the plain-command rule leaves the agent no way to unset it), and
+`sandbox_run.py` then adds a final rule to its own Seatbelt profile that denies participant-data folders,
+over every folder it would otherwise allow. So a helper's output, which passes the child's stdout and
+stderr through (`run_confined.py`, `effects.py` error text), cannot carry participant data. The app's
+own runs (Readiness, `scientific-readiness.ts`) and commands the researcher approved do not set it,
+and read the data as before. Agent-run checks that need the human data say it could not be read; the
+authoritative check is the app's Readiness.
+
 | Helper | Runs project code? | Prints project data? | Refused here |
 |---|---|---|---|
-| `simulate/run_confined.py` | the run script, through sandbox_run and the relay. It has no network except the relay and writes only in a scratch folder. It can read the project, including `human-data/`. | what the run script prints | anything but a relay run or `--no-model study_core.py --root . reproduce` |
-| `export/agent/study_core.py` (through run_confined `--no-model`) | package analysis code, confined as above | `reproduce` prints the recomputed results. Agent-written package code could also print rows. | every subcommand but `reproduce` (`human-data`, `run --cli`, ...) |
-| `build/check_readiness.py`, `check_package.py`, `check_validity.py`, `check_replies.py`, `recorded_answers.py`, `audit.py`, `effects.py`, `prompt_context.py`, `export/agent_package.py` | package code, only through sandbox_run (a copy of the package, no network, no home folder) | check results. `check_readiness`, `effects` and `audit` read `human-data/` for their checks. | the in-process child modes: `recorded_answers.py --child`, `check_validity.py --capture/--probe`, `audit.py --probe/--n/--workdir`, `check_replies.py --smoke-child`, `check_package.py`/`agent_package.py --smoke-test`. Any other flag not listed is refused too. |
+| `simulate/run_confined.py` | the run script, through sandbox_run and the relay. It has no network except the relay and writes only in a scratch folder. It reads the project, but **not** participant data (below). | what the run script prints | anything but a relay run or `--no-model study_core.py --root . reproduce` |
+| `export/agent/study_core.py` (through run_confined `--no-model`) | package analysis code, confined as above | `reproduce` prints the recomputed results; started by the agent it runs without participant data, so it reports the data as unreadable | every subcommand but `reproduce` (`human-data`, `run --cli`, ...) |
+| `build/check_readiness.py`, `check_package.py`, `check_validity.py`, `check_replies.py`, `recorded_answers.py`, `audit.py`, `effects.py`, `prompt_context.py`, `export/agent_package.py` | package code, only through sandbox_run (a copy of the package, no network, no home folder) | check results. The helper process itself reads `human-data/` only for its checks (counts, hashes, field names); the package code it starts cannot read it when the agent started the helper. | the in-process child modes: `recorded_answers.py --child`, `check_validity.py --capture/--probe`, `audit.py --probe/--n/--workdir`, `check_replies.py --smoke-child`, `check_package.py`/`agent_package.py --smoke-test`. Any other flag not listed is refused too. |
 
 Helpers that do not run project code only call `pdftotext`/`pdftoppm`: `check_program.py`,
 `check_quotes.py`, `check_results.py`, `check_verbatim.py`, `sources.py`, `qsf_flow.py`,
@@ -76,9 +85,15 @@ existence (`stat`) stays visible. Otherwise, such a command cannot:
 - write the project's `.opencode/` or `opencode.json(c)`;
 - write any `.git`. So there are no commits, and `.git` cannot be replaced by a `gitdir:` file;
 - write any `.ignore`/`.rgignore`;
-- create symbolic links at all, so `python -m venv` fails;
+- create symbolic links at all, so `python -m venv`, `npm install` and unpacking archives or wheels that
+  contain links fail;
 - hard-link a file it may not write;
-- see other processes (`ps`), whose environment holds keys, or talk to the keychain service.
+- see other processes (`ps`), whose environment holds keys, or talk to the keychain service;
+- start anything outside the sandbox through LaunchServices (`open`, app bundles: `(deny lsopen)`) or
+  run `osascript`/`osacompile`/`automator`/`shortcuts` (Apple events are also denied; a copied
+  `osascript` fails its library check, and an Apple event to another app would still need the
+  researcher's Automation consent for HumanStudy);
+- query Spotlight (`mdfind`), which would reveal what other folders contain.
 
 **Linux with bubblewrap.** This is not tested on a Linux machine; the generated script is only checked
 for syntax.
@@ -118,8 +133,39 @@ folders in any case. ripgrep honours it, also with `--glob` and from parent fold
 A search whose path or pattern points at participant data asks. If the block is missing, a
 project-wide search asks.
 
+ripgrep lets a matching `--glob` override `.ignore`, and OpenCode passes grep's `include` and glob's
+`pattern` as `--glob`. So the app lists the participant-data folders under the search root and asks
+when the filter (gitignore syntax, `**`, classes and `{a,b}` expanded) could match one of them: `*`,
+`**`, `**/*`, `{*}`, `?*` or `sub/**` ask; `*.csv`, `**/*.py` or `src/**` do not. Outside the project
+only OpenCode's tool-output files are searched without asking, because temp folders can hold study
+copies.
+
+apply_patch asks once for several files, with their names joined by ", " in `filepath`. The app checks
+every `files[].filePath` and `movePath` and every pattern, and never the joined string.
+
+The bash request carries only the command. The app takes the tool call's `workdir` from its input (the
+`message.part.updated` event with the same call id) and judges relative paths from there.
+
+The `.ignore` block also hides participant data from the researcher's own `rg` and from editor searches
+that honour `.ignore` (VS Code does).
+
 `HUMANSTUDY_AGENT_SANDBOX_OFF=1` switches the sandbox off for development; the classifier then uses the
 allowlist.
+
+### Why the kernel itself is not sandboxed (evaluated 2026-11-08)
+
+Running the OpenCode process under the same profile would confine its own tools (read, grep, glob,
+apply_patch) at the root, and was the first option. It is not done, for these reasons:
+
+- The kernel must read and write its shared session storage, which holds other projects'
+  conversations. Its children (the agent's shell) would inherit that access.
+- The kernel's environment holds the server password and the transport token. Inside one sandbox its
+  children may inspect it (`process-info` within the same sandbox).
+- macOS cannot nest a sandbox, so every approved command, every approved read by a tool, and every
+  confining helper would need an app-side broker: a request channel, output streaming, cancellation
+  and timeouts, plus an OpenCode-side tool for approved reads.
+- That is a redesign of the kernel integration, not a fix. The targeted fixes above close each hole
+  found so far, and the policy checks every tool request after resolving symlinks.
 
 ## Layer 2: the command classifier
 
@@ -171,9 +217,8 @@ What is not protected:
 - Sensitive content under ordinary names. The network stays open, so an allowed command or `webfetch`
   can send out anything readable in the project. That includes `sources/private/`, which the owner rule
   lets the agent read.
-- What the helpers that start outside the sandbox read. They read participant data on the app's behalf,
-  and the agent-written package code they run (confined, no network) can print what it reads; that
-  output reaches the agent.
+- What the helpers that start outside the sandbox compute from participant data themselves (counts,
+  hashes, field names, check messages) reaches the agent. The package code they run cannot read it.
 - A path named only by `$HUMANSTUDY_HUMAN_DATA` that is not under a participant-data folder name.
 - On Linux with bubblewrap: participant data in other projects, and symbolic links.
 - Without any OS sandbox (Windows, Linux without bubblewrap): everything outside the allowlist asks,

@@ -206,3 +206,36 @@ test('review 2 M2: symlinks are resolved before deciding; writes into config or 
     assert.equal(classifyPermission(c, P('glob', ['**/*.json'], { pattern: '**/*.json', path: p })).decision, 'allow')
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test('review 3: grep/glob filters that would override .ignore, apply_patch file lists, bash workdir, temp searches', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'policy-r3-')))
+  try {
+    const p = join(root, 'study')
+    mkdirSync(join(p, 'Human-Data'), { recursive: true }); mkdirSync(join(p, 'sub/human-data'), { recursive: true }); mkdirSync(join(p, 'src'))
+    ensureSearchIgnore(p)
+    const c = { ...defaultPolicyContext(p, undefined, {}, true), home: '/Users/r' }
+    const grep = (include, path) => classifyPermission(c, P('grep', ['x'], { pattern: 'x', ...(include ? { include } : {}), ...(path ? { path } : {}) })).decision
+    const glob = (pattern, path) => classifyPermission(c, P('glob', [pattern], { pattern, ...(path ? { path } : {}) })).decision
+    // Each of these made real ripgrep return the human-data row (review 3 item 2).
+    for (const g of ['*', '**', '**/*', '{*}', '?*', 'sub/**', 'H*', '{ok,H*}']) { assert.equal(grep(g), 'ask', g); assert.equal(glob(g), 'ask', g) }
+    for (const g of ['*.csv', '**/*.py', '*.{py,json}', 'src/**', '!human-data']) { assert.equal(grep(g), 'allow', g); assert.equal(glob(g), 'allow', g) }
+    assert.equal(grep('*', join(p, 'src')), 'allow', 'no participant folder under that root')
+    // Temp folders can hold study copies (audit.py): only OpenCode's tool output is searched freely.
+    assert.equal(grep(undefined, tmpdir()), 'ask')
+    const k = { ...defaultPolicyContext(p, '/Users/r/Library/Application Support/HumanStudy/kernel', {}, true), home: '/Users/r' }
+    assert.equal(classifyPermission(k, P('grep', ['x'], { pattern: 'x', path: '/Users/r/Library/Application Support/HumanStudy/kernel/data/opencode/tool-output/tool_1' })).decision, 'allow')
+    // apply_patch: one request, several files; every one is checked (review 3 item 3).
+    const patch = (...rels) => classifyPermission(c, P('edit', rels, { filepath: rels.join(', '), files: rels.map(r => ({ filePath: join(p, r), relativePath: r, type: 'update' })) })).decision
+    for (const bad of ['.opencode/plugin/p.ts', 'Human-Data/a.csv', 'opencode.json', '.ignore', '.git/config']) assert.equal(patch('src/x.py', bad), 'ask', bad)
+    assert.equal(patch('src/x.py', 'src/y.py'), 'allow')
+    assert.equal(classifyPermission(c, P('edit', ['src/x.py'], { filepath: 'src/x.py, src/y.py', files: [{ filePath: join(p, 'src/x.py'), movePath: join(p, '.opencode/plugin/p.ts') }] })).decision, 'ask', 'a move into config')
+    // bash workdir (from the tool call input): relative paths start there.
+    const sh = (command, workdir, ctx0 = c) => classifyPermission(ctx0, P('bash', [command], { command, ...(workdir ? { workdir } : {}) })).decision
+    assert.equal(sh('cat a.csv', 'Human-Data'), 'ask')
+    assert.equal(sh('cat a.csv', join(p, 'sub/human-data'), { ...c, osSandbox: false }), 'ask')
+    assert.equal(sh('cat ../Human-Data/a.csv', 'src', { ...c, osSandbox: false }), 'ask')
+    assert.equal(sh('ls', 'src', { ...c, osSandbox: false }), 'allow')
+    // `open` never runs without asking where there is no OS sandbox (the sandbox denies it elsewhere).
+    assert.equal(sh('open -g Probe.app', undefined, { ...c, osSandbox: false }), 'ask')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})

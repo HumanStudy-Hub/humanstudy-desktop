@@ -609,6 +609,8 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   /** One decision for a parent's or a subagent's request; `sessionId`/`s` are the parent conversation's. */
   private decide(sessionId: string, s: SessionState, perm: KernelPermission, emit: (e: Omit<KernelEvent, 'sessionId'>) => void): void {
     s.pendingPermissions.set(perm.id, perm)
+    const input = perm.callID ? this.toolInputs.get(perm.callID) : undefined
+    if (perm.type === 'bash' && typeof input?.workdir === 'string' && input.workdir) perm.metadata = { ...(perm.metadata ?? {}), workdir: input.workdir }
     const v = this.verdict(s.server.dir, perm)
     if (v.reason) perm.reason = v.reason
     // OpenCode's loop breaker: answered automatically a few times per turn, then the researcher decides.
@@ -1178,7 +1180,20 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   }
 
   /** Map one opencode bus event onto zero or more KernelEvents. */
+  /** Tool inputs by call id (bounded): the bash permission request carries only the command, its
+   *  `workdir` is in the tool call's input. */
+  private toolInputs = new Map<string, Record<string, unknown>>()
+  private rememberToolInput(ev: OcEvent): void {
+    const part = ev.properties?.part
+    if (ev.type !== 'message.part.updated' || part?.type !== 'tool' || typeof part.callID !== 'string') return
+    const input = part.state?.input
+    if (!input || typeof input !== 'object') return
+    this.toolInputs.set(part.callID, input as Record<string, unknown>)
+    if (this.toolInputs.size > 512) this.toolInputs.delete(this.toolInputs.keys().next().value as string)
+  }
+
   private handle(ev: OcEvent, server?: Server): void {
+    this.rememberToolInput(ev)
     const p = ev.properties ?? {}
     const sessionId: string | undefined = p.sessionID ?? p.part?.sessionID ?? p.info?.sessionID
     if (!sessionId) return
@@ -1402,13 +1417,14 @@ export function toKernelPermission(p: {
   permission?: string
   patterns?: string[]
   metadata?: Record<string, unknown>
+  tool?: { messageID?: string; callID?: string }
 }): KernelPermission | null {
   if (!p.id) return null
   const patterns = Array.isArray(p.patterns) ? p.patterns.filter((x): x is string => typeof x === 'string') : []
   const md = p.metadata ?? {}
   const pick = (k: string): string | undefined => (typeof md[k] === 'string' && md[k] ? (md[k] as string) : undefined)
   const title = pick('command') ?? pick('filepath') ?? pick('filePath') ?? pick('description') ?? (patterns.join(' ') || undefined)
-  return { id: p.id, type: p.permission ?? 'unknown', title, patterns, metadata: md }
+  return { id: p.id, type: p.permission ?? 'unknown', title, patterns, metadata: md, ...(typeof p.tool?.callID === 'string' ? { callID: p.tool.callID } : {}) }
 }
 
 /** Tool permissions that are safe to auto-approve when "inside the project": edit/write patterns that

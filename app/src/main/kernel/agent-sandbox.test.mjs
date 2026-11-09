@@ -78,7 +78,15 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
     // The probe prints whether it runs inside a sandbox; installed under each helper name it is checked as.
     const helpers = ['simulate/run_confined.py', 'build/recorded_answers.py', 'build/check_validity.py', 'build/audit.py', 'build/check_replies.py', 'build/check_readiness.py', 'export/agent/study_core.py']
     for (const h of helpers) { mkdirSync(dirname(join(project, '.opencode/skills', h)), { recursive: true }); writeFileSync(join(project, '.opencode/skills', h), helperSrc) }
-    A.setTrustedHelperFiles(helpers.map(h => ['.opencode/skills/' + h, createHash('sha256').update(helperSrc).digest('hex')]))
+    // effects.py stands in for a helper that runs package code through the real sandbox_run.py: the child
+    // (agent-written package code) tries to read participant data and prints what it got.
+    const sandboxRun = readFileSync(join(here, '../../../../pack/skills/build/sandbox_run.py'), 'utf8')
+    writeFileSync(join(project, '.opencode/skills/build/sandbox_run.py'), sandboxRun)
+    writeFileSync(join(project, 'leak.py'), 'try:\n    print("LEAK:" + open("human-data/a.csv").read().strip())\nexcept Exception as e:\n    print("DENIED:" + type(e).__name__)\n')
+    const effectsSrc = 'import os, sys\nsys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\nimport sandbox_run\nfrom pathlib import Path\nwith sandbox_run.work_dir() as w:\n    r = sandbox_run.run_python(Path("leak.py").resolve(), [], cwd=Path(".").resolve(), work=w, timeout=60, read=[Path("human-data").resolve()])\nprint(r.stdout.strip())\n'
+    writeFileSync(join(project, '.opencode/skills/build/effects.py'), effectsSrc)
+    const sha = t => createHash('sha256').update(t).digest('hex')
+    A.setTrustedHelperFiles([...helpers.map(h => ['.opencode/skills/' + h, sha(helperSrc)]), ['.opencode/skills/build/sandbox_run.py', sha(sandboxRun)], ['.opencode/skills/build/effects.py', sha(effectsSrc)]])
     const s = A.prepareAgentShell({ project, kernelHome, kind: 'sandbox-exec', realShell: '/bin/bash', runtimeBin: py ? dirname(py) : undefined })
     assert.ok(A.isAgentShell(s.shell))
     const env = { PATH: process.env.PATH, HOME: homedir(), TMPDIR: process.env.TMPDIR ?? '/tmp', OPENCODE_SERVER_PASSWORD: 'pw-should-vanish', OPENCODE_CONFIG_CONTENT: '{"token":"x"}', SOME_API_KEY: 'k-should-vanish', HUMANSTUDY_RELAY_REQUIRED: '1' }
@@ -126,6 +134,15 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
     for (const c of ['ln -s .opencode cfg', 'ln -s human-data hd', 'mv .git g2', 'rm -rf .git', 'echo "gitdir: g2" > .git', 'mkdir -p sub/.git', 'echo x > .ignore', 'echo "!human-data" > sources/.ignore'])
       assert.notEqual((await run(c)).code, 0, c)
     assert.ok(!existsSync(join(project, 'cfg')) && existsSync(join(project, '.git', 'config')))
+    // Review 3 M1: nothing starts outside the sandbox through LaunchServices or Apple events.
+    const marker = join(root, 'pwn-open')
+    mkdirSync(join(project, 'Probe.app/Contents/MacOS'), { recursive: true })
+    writeFileSync(join(project, 'Probe.app/Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleExecutable</key><string>p</string><key>CFBundleIdentifier</key><string>hs.agent-sandbox.probe</string></dict></plist>')
+    writeFileSync(join(project, 'Probe.app/Contents/MacOS/p'), `#!/bin/sh\ncat "${project}/human-data/a.csv" > "${marker}"\n`, { mode: 0o755 })
+    for (const c of ['open -g -j Probe.app', '/usr/bin/open -g Probe.app', 'osascript -e 1', `python3 -c "import subprocess; subprocess.run(['/usr/bin/open', '-g', 'Probe.app'], check=True)"`])
+      assert.notEqual((await run(c)).code, 0, c)
+    await new Promise(r => setTimeout(r, 1500))
+    assert.ok(!existsSync(marker), 'the app bundle never ran')
     assert.equal((await run('echo "$PIP_CACHE_DIR" | grep -c humanstudy-agent-pip; git config core.fsmonitor; git config core.hooksPath')).out.trim(), '1\nfalse\n/dev/null')
     if (py) {
       // The app's confining helper starts outside the sandbox as one plain command, while unmodified ...
@@ -146,6 +163,17 @@ test('real sandbox-exec: participant data, writes outside, network, environment,
       const noRelay = { ...env }; delete noRelay.HUMANSTUDY_RELAY_REQUIRED
       const r = await new Promise(resolve => { const c = spawn(s.shell, ['-c', 'python3 .opencode/skills/simulate/run_confined.py artifacts/simulations/r1/run.py'], { cwd: project, env: noRelay }); let o = ''; c.stdout.on('data', d => { o += d }); c.on('close', () => resolve(o)) })
       assert.equal(r.trim(), 'sandboxed', 'without the relay run_confined would run the script unconfined')
+      // Review 3: `--flag=/abs` and the removed flags fall back to the sandbox.
+      for (const c of ['python3 .opencode/skills/build/check_validity.py . --json=/tmp/x.json', 'python3 .opencode/skills/build/audit.py --keep .',
+        'python3 .opencode/skills/build/check_readiness.py --no-validity .', 'python3 .opencode/skills/build/check_validity.py . --json=~/x.json'])
+        assert.equal((await run(c)).out.trim(), 'sandboxed', c)
+      // Review 3 M4: package code started by the agent through a helper cannot read participant data, so
+      // the helper's output cannot carry it; the same helper started by the app (no agent flag) can.
+      const viaAgent = (await run('python3 .opencode/skills/build/effects.py')).out
+      assert.match(viaAgent, /DENIED:PermissionError/, viaAgent)
+      assert.ok(!viaAgent.includes('secret-row'))
+      const byApp = spawnSync(py, ['.opencode/skills/build/effects.py'], { cwd: project, env: { PATH: process.env.PATH, HOME: homedir() }, encoding: 'utf8' })
+      assert.match(byApp.stdout, /LEAK:secret-row/, byApp.stdout + byApp.stderr)
       // ... but not inside a compound command, and not after a change (here made outside the agent).
       assert.equal((await run('true && python3 .opencode/skills/simulate/run_confined.py')).out.trim(), 'sandboxed')
       writeFileSync(helper, helperSrc + '# changed\n')

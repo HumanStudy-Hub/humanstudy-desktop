@@ -46,11 +46,11 @@ export const CONFINING_HELPERS = ['skills/simulate/run_confined.py', 'skills/bui
  *  run_confined.py runs a simulation only through the relay (HUMANSTUDY_RELAY_REQUIRED=1, which needs the
  *  researcher's Run approval), and `--no-model` only with the shipped study_core.py `reproduce`. */
 export const HELPER_FLAGS: Record<string, string[]> = {
-  'check_readiness.py': ['--no-validity'],
+  'check_readiness.py': [],
   'check_package.py': ['--no-validity', '--program'],
   'check_replies.py': ['--package'],
   'check_validity.py': ['--package', '--json'],
-  'audit.py': ['--out', '--book', '--online', '--no-run', '--no-export', '--keep', '--only', '--timeout'],
+  'audit.py': ['--out', '--book', '--online', '--no-run', '--no-export', '--only', '--timeout'],
   'effects.py': [],
   'recorded_answers.py': [],
   'prompt_context.py': [],
@@ -63,7 +63,7 @@ export const HELPER_FORBIDDEN = ['.opencode', '.git', 'opencode.json', '.ignore'
 
 /** Environment variables never passed to the agent's commands (the local server password, the inline
  *  config that carries the transport token, the hosted bypass). Key-shaped names go too, see wrapper. */
-export const STRIPPED_ENV = ['OPENCODE_SERVER_PASSWORD', 'OPENCODE_CONFIG_CONTENT', 'HUMANSTUDY_SERVER_BYPASS', 'HUMANSTUDY_RELAY_DIR',
+export const STRIPPED_ENV = ['HUMANSTUDY_AGENT_RUN', 'OPENCODE_SERVER_PASSWORD', 'OPENCODE_CONFIG_CONTENT', 'HUMANSTUDY_SERVER_BYPASS', 'HUMANSTUDY_RELAY_DIR',
   'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME']
 /** Approval tokens expire: an approved command that never ran must not stay runnable outside the sandbox. */
 export const APPROVAL_TTL_S = 600
@@ -145,6 +145,13 @@ export function macosAgentProfile(o: { project: string; kernelHome: string; secr
     '(deny process-info*)',
     '(allow process-info* (target same-sandbox))',
     '(deny mach-lookup (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd.xpc") (global-name "com.apple.security.agent") (global-name "com.apple.security.authhost"))',
+    // Nothing starts outside this sandbox: LaunchServices (`open`, app bundles) and Apple events (scripting
+    // Terminal, Finder) would run code unconfined. Spotlight queries (mdfind) would reveal what other
+    // folders contain.
+    '(deny lsopen)',
+    '(deny appleevent-send)',
+    '(deny process-exec (literal "/usr/bin/open") (literal "/usr/bin/osascript") (literal "/usr/bin/osacompile") (literal "/usr/bin/automator") (literal "/usr/bin/shortcuts"))',
+    '(deny mach-lookup (global-name-regex #"^com\\.apple\\.metadata\\.mds"))',
     // Participant data and credentials: contents unreadable (a folder's existence still shows).
     `(deny file-read-data (regex #"${PARTICIPANT_REGEX}") ${secrets.map(p => `(subpath ${sb(p)})`).join(' ')})`,
     `(allow file-read-data (subpath ${sb(join(kernel, 'data', 'opencode', 'tool-output'))}))`,
@@ -211,7 +218,8 @@ hs_args_ok() {
     fi
   fi
   for hs_a in "$@"; do
-    case "$hs_a" in /*|*..*|*:*|*@*) return 1 ;; esac
+    case "$hs_a" in /*|*..*|*:*|*@*|~*) return 1 ;; esac
+    case "\${hs_a#*=}" in /*|~*) return 1 ;; esac
     hs_l=$(printf '%s' "$hs_a" | tr 'A-Z' 'a-z')
     case "$hs_l" in ${forbidden}) return 1 ;; esac
     case "$hs_a" in
@@ -248,11 +256,13 @@ if [ "$#" -eq 2 ] && [ "$1" = "-c" ]; then
   hs_t="$HS_DIR/approved/$hs_h"
   if [ -f "$hs_t" ] && mv "$hs_t" "$hs_t.$$" 2>/dev/null; then
     hs_exp=$(cat "$hs_t.$$" 2>/dev/null); rm -f "$hs_t.$$"
-    case "$hs_exp" in ''|*[!0-9]*) ;; *) [ "$(date +%s)" -le "$hs_exp" ] && exec "$HS_REAL" -c "$2" ;; esac
+    case "$hs_exp" in ''|*[!0-9]*) ;; *) [ "$(date +%s)" -le "$hs_exp" ] && { unset HUMANSTUDY_AGENT_RUN; exec "$HS_REAL" -c "$2"; } ;; esac
   fi
-  if hs_trusted "$2"; then exec "$HS_REAL" -c "$2"; fi
+  # The helper confines package code itself; HUMANSTUDY_AGENT_RUN makes sandbox_run.py deny participant
+  # data to it (the agent cannot unset it: the command is one plain python call).
+  if hs_trusted "$2"; then HUMANSTUDY_AGENT_RUN=1; export HUMANSTUDY_AGENT_RUN; exec "$HS_REAL" -c "$2"; fi
 fi
-HUMANSTUDY_AGENT_SANDBOX=1; export HUMANSTUDY_AGENT_SANDBOX
+HUMANSTUDY_AGENT_SANDBOX=1 HUMANSTUDY_AGENT_RUN=1; export HUMANSTUDY_AGENT_SANDBOX HUMANSTUDY_AGENT_RUN
 `
 }
 

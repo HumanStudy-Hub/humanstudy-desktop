@@ -50,6 +50,11 @@ import uuid
 from pathlib import Path
 
 MARK = "HUMANSTUDY_SANDBOX"
+AGENT_RUN = "HUMANSTUDY_AGENT_RUN"
+# Participant-data folder names in any letter case (same list as the app's agent-sandbox.ts).
+PARTICIPANT_REGEX = "/(%s)(/|$)" % "|".join(
+    "".join("[%s%s]" % (c.lower(), c.upper()) if c.isalpha() else c for c in name)
+    for name in ("human-data", "human_data", "quarantine", "quarantined", "withheld", "participant-data", "participant_data"))
 RUN_MARK = "HUMANSTUDY_SANDBOX_RUN"
 SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSW|CREDENTIAL|AUTH|BYPASS", re.I)
 SECRET_SHAPES = re.compile(r"sk-ant-[A-Za-z0-9_-]{16,}|sk-or-v1-[A-Za-z0-9]{20,}|\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}|"
@@ -140,6 +145,11 @@ def macos_profile(work, read=(), relay_port=None):
         lines.append('(allow network-outbound (remote ip "localhost:%d"))' % relay_port)
     if allow_read:
         lines.append("(allow file-read-data %s)" % " ".join("(subpath %s)" % _sb_str(p) for p in allow_read))
+    if os.environ.get(AGENT_RUN) == "1":
+        # Started by the desktop agent (its shell wrapper sets this; the agent cannot unset it): package code
+        # never reads participant data there, so nothing it prints can carry it. Last rule, so it wins over
+        # the folders allowed above. The app's own runs and runs the researcher approved do not set it.
+        lines.append('(deny file-read-data (regex #"%s"))' % PARTICIPANT_REGEX)
     return "\n".join(lines) + "\n"
 
 

@@ -43,10 +43,11 @@ key folders and other processes are unreadable, and nothing outside the project 
 folders (nor `.opencode/`) can be written, whatever the command. A command the researcher approves
 runs once outside it. The app's helpers that confine package code themselves
 (`run_confined.py`, `check_readiness.py`, `check_package.py`, ...) must be run as one plain command
-from the project folder, e.g. `python .opencode/skills/build/check_readiness.py .`, with no `cd`,
+from the project folder, e.g. `python .opencode/skills/build/check_readiness.py . <package-slug>`, with no `cd`,
 `&&`, pipes, quotes or variables. The sandbox also forbids symbolic links and writes to `.git` (no
 commits, no `python -m venv`; use `pip install --target .humanstudy/pylib`). Participant data never
-appears in grep/glob results; search inside it only after asking. Do not try to route around a prompt or the sandbox (another
+appears in grep/glob results (a broad `include` such as `*` asks); package code you run cannot read it
+(the app checks human data in Readiness). `open`, `osascript` and app bundles do not run. Do not try to route around a prompt or the sandbox (another
 command, a script, a copy elsewhere): ask for what you need in the conversation instead.
 
 ## Non-negotiable scientific rules

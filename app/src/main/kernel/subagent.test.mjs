@@ -200,3 +200,13 @@ test('a shell command the researcher approves after an ask runs once outside the
     assert.equal(tokens().length, 1)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 }, 'ask'))
+
+test("a bash request is judged with its tool call's workdir (OpenCode sends only the command)", () => fixture(async ({ k, events, replies, project, settle }) => {
+  k.handle({ type: 'message.part.updated', properties: { part: { sessionID: 's', messageID: 'm1', id: 'p1', callID: 'call_1', type: 'tool', tool: 'bash', state: { status: 'running', input: { command: 'cat a.csv', workdir: 'human-data' } } } } })
+  k.handle({ type: 'permission.asked', properties: { id: 'per_wd', sessionID: 's', permission: 'bash', patterns: ['cat a.csv'], metadata: { command: 'cat a.csv' }, tool: { messageID: 'm1', callID: 'call_1' }, always: [] } })
+  k.handle({ type: 'permission.asked', properties: { id: 'per_plain', sessionID: 's', permission: 'bash', patterns: ['cat a.csv'], metadata: { command: 'cat a.csv' }, always: [] } })
+  await settle(1)
+  assert.ok(!replies.some(r => r.path.includes('per_wd')), 'waits for the researcher')
+  assert.match(events.find(e => e.permission?.id === 'per_wd' && !e.permission.resolved).permission.reason, /participant data/)
+  assert.equal(replies.find(r => r.path === '/permission/per_plain/reply')?.body.reply, 'once')
+}))
