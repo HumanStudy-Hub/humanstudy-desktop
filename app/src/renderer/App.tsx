@@ -518,6 +518,7 @@ export default function App() {
               onWorkspaceChange={cacheWorkspace}
               onRecheck={recheck}
               onRunSimulation={approval => sendInWorkspace(approval, session.busy ? session.enqueue : session.send)}
+              canRun={Boolean(hasAccess)}
               onSendAgent={text => sendInWorkspace(text, session.busy ? session.enqueue : session.send)}
               onStopAgent={() => void session.abort()}
               model={settings?.model ?? ''}

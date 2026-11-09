@@ -142,7 +142,9 @@ export function readinessStamp(entries: { rel: string; size?: number; mtime?: nu
 /** The i18n keys of the run confirmation text shown next to Run simulation. Without the relay the
  *  confirmation always says that the study's code can read the key; anything but an explicit
  *  'relay' from the main process gets that wording. */
-export function runConfirmation(r: Pick<PackageReadiness, 'modelAccess' | 'runNotice'> | null | undefined): { note: 'sim.note' | 'sim.note_key'; notice: 'sim.run_notice' | 'sim.run_notice_relay' | null } {
+export function runConfirmation(r: Pick<PackageReadiness, 'modelAccess' | 'runNotice'> | null | undefined): { note: 'sim.note' | 'sim.note_key'; notice: 'sim.run_notice' | 'sim.run_notice_relay' | null; detail: 'sim.relay_detail' | null } {
+  // With the relay the visible text states only the time limit; `detail` (the relay and its token cap) sits in a
+  // disclosure for readers who want it. The Linux/Windows key notice is never folded away.
   const relay = r?.modelAccess === 'relay'
-  return { note: relay ? 'sim.note' : 'sim.note_key', notice: r?.runNotice ? (relay ? 'sim.run_notice_relay' : 'sim.run_notice') : null }
+  return { note: relay ? 'sim.note' : 'sim.note_key', notice: r?.runNotice ? (relay ? 'sim.run_notice_relay' : 'sim.run_notice') : null, detail: relay ? 'sim.relay_detail' : null }
 }

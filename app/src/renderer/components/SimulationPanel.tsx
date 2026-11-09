@@ -9,7 +9,7 @@ import { simulationScope, simulationLimits } from '../../shared/simulation-scope
 import { estimateRun, hasParticipantData, isResult, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
 import { packageStamp, readinessStamp, runConfirmation, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
 import { shortModelName } from './ModelPicker'
-import { formatTokens, MAX_PER_CONDITION, MAX_RUN_TOKENS, protocolRunLimits, runLimits } from '../../shared/run-limits'
+import { formatTokens, MAX_PER_CONDITION, protocolRunLimits, runLimits } from '../../shared/run-limits'
 import { listenToArtifact } from '../bridge'
 import { getLang, t } from '../i18n'
 import { holdAction, track } from '../telemetry'
@@ -28,6 +28,8 @@ interface Props {
   agentTurnKey?: string | null
   /** What the agent is doing right now, in plain words (from the chat's activity line). */
   agentActivity?: string
+  /** Model access (signed in, as App.tsx decides it): without it Run is disabled and says so. */
+  canRun?: boolean
   /** route: which runnable form the approval names (protocol.json through the engine, or package/). */
   onRun(perCondition: number, route: 'protocol' | 'package', conditions: string[], tokenBudget?: number): Promise<void>
   onBuild(): void
@@ -89,7 +91,7 @@ const fileUrl = (tree: ProjectEntry[], path?: string): string | undefined => {
 const STEPS: SimStage[] = ['preparing', 'trial', 'running', 'scoring', 'writing']
 
 export function SimulationPanel(props: Props) {
-  const { project, program, studyId, studies, model, agentBusy, agentThreadId = '', agentTurnKey = null } = props
+  const { project, program, studyId, studies, model, agentBusy, agentThreadId = '', agentTurnKey = null, canRun = true } = props
   const dir = project.dir
   const owner = `${dir}:${agentThreadId}`
   const plan = useMemo(() => simulationPlan(program, studyId), [program, studyId])
@@ -158,7 +160,8 @@ export function SimulationPanel(props: Props) {
   const building = pending?.kind === 'build' && requestBusy
   // Bind the request to its actual chat turn. A different conversation or later
   // question must never resurrect a project-level "building" flag.
-  const quietMiss = runProblem || (pending?.kind === 'run' && !requestBusy && !newRun && now - pending.at > 8_000)
+  // Only a run that could start (signed in) can be missed; never point to a chat reply that cannot exist.
+  const quietMiss = canRun && (runProblem || (pending?.kind === 'run' && !requestBusy && !newRun && now - pending.at > 8_000))
   useEffect(() => {
     if (!pending) return
     // Until the conversation is known again (reopening a project, signing in) it cannot own anything;
@@ -226,6 +229,9 @@ export function SimulationPanel(props: Props) {
     setPending(null); setBuildProblem(false); setRunProblem(false)
   }
   const activeRun = active ?? (newRun && states.get(newRun.id) === 'running' ? newRun : undefined)
+  // The newest run, when the researcher stopped it: one line says how far it got (no comparison is drawn).
+  const newest = runs.find((r) => !texts[r.id]?.summary?.example)
+  const latestStopped = newest && states.get(newest.id) === 'stopped' ? { done: texts[newest.id]?.progress?.done ?? 0, total: texts[newest.id]?.progress?.total ?? 0 } : null
   const activeProgress = activeRun ? texts[activeRun.id]?.progress ?? null : null
   const studyTitle = studies.find((s) => s.id === studyId)?.title ?? ''
   const modelName = shortModelName(model)
@@ -247,6 +253,9 @@ export function SimulationPanel(props: Props) {
       </header>
 
       {resultFirst && result}
+      {latestStopped && !running && !building && (
+        <p className="sim-stopped muted small" role="status">{latestStopped.total ? t('sim.stopped_line', { done: latestStopped.done, total: latestStopped.total }) : t('sim.stopped_line_none')}</p>
+      )}
       {running ? (
         <Progress progress={activeProgress} startedAt={activeProgress?.startedAt ?? pending?.at ?? activeRun?.mtime ?? now} now={now} plan={plan} built={built} activity={requestBusy ? props.agentActivity : undefined} model={activeProgress?.model ?? model} onStop={stop} />
       ) : building ? (
@@ -307,7 +316,7 @@ export function SimulationPanel(props: Props) {
                 <dd>{modelName}</dd>
                 {protocolLimits && (<>
                   <dt>{t('sim.budget')}</dt>
-                  <dd>{protocolLimits.fits ? t(readiness?.modelAccess === 'relay' ? 'sim.budget_value' : 'sim.budget_estimate', { tokens: formatTokens(protocolLimits.tokens) }) : t('sim.budget_too_large', { tokens: formatTokens(protocolLimits.needed), limit: formatTokens(MAX_RUN_TOKENS) })}</dd>
+                  <dd>{protocolLimits.fits ? t(readiness?.modelAccess === 'relay' ? 'sim.budget_value' : 'sim.budget_estimate', { minutes: protocolLimits.minutes }) : t('sim.budget_too_large')}</dd>
                 </>)}
                 <dt>{t('sim.estimate')}</dt>
                 <dd>{t('sim.estimate_value', { lo: estimate.minutes[0], hi: estimate.minutes[1], cost: costText(estimate.cost) })}</dd>
@@ -324,10 +333,17 @@ export function SimulationPanel(props: Props) {
               {!scopeReady && <p className="sim-blocked">{t('sim.blocked', { what: [...scope.missing.map((m) => t(`sim.need.${m}`)), ...scope.blocking.map((b) => b.title)].join(t('sim.list_sep')) })}</p>}
               {confirmation.notice && <p className="sim-note">{t(confirmation.notice, accessVars)}</p>}
               <div className="sim-actions">
-                <button className="primary" disabled={!scopeReady || agentBusy || protocolLimits?.fits === false} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
+                <button className="primary" disabled={!canRun || !scopeReady || agentBusy || protocolLimits?.fits === false} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
                 <button className="ghost" onClick={() => props.onAsk(scopeReady ? t('sim.ask_prompt', { study: studyTitle }) : t('sim.resolve_prompt', { study: studyTitle }))}>{t('sim.ask')}</button>
               </div>
+              {!canRun && <p className="sim-note">{t('sim.sign_in_to_run')}</p>}
               <p className="muted small sim-note">{t(confirmation.note, accessVars)}</p>
+              {confirmation.detail && (
+                <details className="muted small sim-detail">
+                  <summary>{t('sim.details')}</summary>
+                  <p>{t(confirmation.detail, accessVars)}</p>
+                </details>
+              )}
             </section>
           )}
         </>
@@ -431,7 +447,7 @@ function Result({ run, tree, summary, progress, onOpen, onAsk }: { run: SimRunFi
       {summary ? (
         <div className={`sim-summary o-${summary.outcome}`}>
           <p className="sim-verdict">{t(`sim.outcome.${summary.outcome}`)}</p>
-          <p>{summary.paragraph}</p>
+          <p>{summary.facts ? factsParagraph(summary.facts) : summary.paragraph}</p>
         </div>
       ) : (
         <p className="muted small">{t('sim.no_summary')}</p>
@@ -443,4 +459,16 @@ function Result({ run, tree, summary, progress, onOpen, onAsk }: { run: SimRunFi
       </div>
     </section>
   )
+}
+
+/** A protocol run's paragraph in the app's language, from its structured summary (never the page's English). */
+export function factsParagraph(f: NonNullable<SimSummary['facts']>): string {
+  return [
+    t('sim.p.finished', { done: f.done, planned: f.planned }),
+    f.partial ? t('sim.p.partial') : '',
+    f.compared ? t('sim.p.directions', { same: f.same, compared: f.compared }) : t('sim.p.no_directions'),
+    f.partial ? '' : f.official ? t('sim.p.official') : t('sim.p.unofficial'),
+    f.unverified ? t('sim.p.unverified') : '',
+    t('sim.p.caveat'),
+  ].filter(Boolean).join(' ')
 }

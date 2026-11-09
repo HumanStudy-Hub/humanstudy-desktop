@@ -10,7 +10,7 @@ import { claimAction, lap, track } from '../telemetry'
 import { FileView } from './FileView'
 import { Explorer, flatten } from './Explorer'
 import { SourceDrawer, type PassageSelection, type SourceRef } from './SourceDrawer'
-import { t } from '../i18n'
+import { getLang, t } from '../i18n'
 import { BuildProgress } from './BuildProgress'
 import { WEB_EDITION } from '../edition'
 import { sourceTarget } from '../../shared/source-target'
@@ -73,7 +73,7 @@ async function approveSimulation(dir: string, program: HumanProgram, studyId: st
   if (plan.route === 'protocol') {
     // The protocol route (v0.8): the approval names protocol.json by the hash of its bytes; the engine runs it.
     const raw = await window.humanstudy.project.readText(`${dir}/protocol.json`)
-    return `[Simulation scope approved]\n${JSON.stringify({ route: 'protocol', protocolHash: await sha(raw), hashFormat: 'protocol.json UTF-8 file bytes', programId: program.id, studyId, scope: scope.fields, plan: { perCondition: plan.perCondition, conditions: plan.conditions, model: plan.model, tokenBudget: plan.tokenBudget } })}\n${request}`
+    return `[Simulation scope approved]\n${JSON.stringify({ route: 'protocol', protocolHash: await sha(raw), hashFormat: 'protocol.json UTF-8 file bytes', lang: getLang(), programId: program.id, studyId, scope: scope.fields, plan: { perCondition: plan.perCondition, conditions: plan.conditions, model: plan.model, tokenBudget: plan.tokenBudget } })}\n${request}`
   }
   const raw = await window.humanstudy.project.readText(`${dir}/program.json`)
   if (JSON.stringify(JSON.parse(raw)) !== JSON.stringify(program)) throw new Error(t('simulation.changed'))
@@ -95,6 +95,8 @@ interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSour
   onFixProgram?(text: string): void
   onFold(): void
   onRunSimulation?(approval: string): void
+  /** Model access (signed in): the Simulation tab's Run is disabled without it. */
+  canRun?: boolean
   /** Send the agent a message right away (the Simulation tab's "Build the study first"). */
   onSendAgent?(text: string): void
   onStopAgent?(): void
@@ -130,7 +132,7 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, source, onRestoreSource, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, onSendAgent, onStopAgent, model = '', agentBusy = false, agentWaiting = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
+export function Workbench({ ref, project, source, onRestoreSource, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, canRun = true, onSendAgent, onStopAgent, model = '', agentBusy = false, agentWaiting = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
   // Tolerant: one slip by the agent sets that detail aside and the document still renders.
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
@@ -169,6 +171,13 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
     return () => { live = false }
   }, [program, protocolEntry?.path, protocolEntry?.mtime, protocolEntry?.size]) // eslint-disable-line react-hooks/exhaustive-deps
   const simProgram = useMemo(() => program ?? protocolProgram(protocolText), [program, protocolText])
+  // A project with only protocol.json opens on the Simulation tab (its Study tab has nothing to show), once.
+  const openedProtocolOnly = useRef('')
+  useEffect(() => {
+    if (program || !simProgram || openedProtocolOnly.current === project.dir) return
+    openedProtocolOnly.current = project.dir
+    if (layout.active === 'study') update((l) => ({ ...l, active: 'simulation' }))
+  }, [program, simProgram, project.dir]) // eslint-disable-line react-hooks/exhaustive-deps
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
 
   const [layout, setLayout] = useState<Layout>(() => loadLayout(project.dir))
@@ -528,7 +537,9 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
               agentThreadId={agentThreadId}
               agentTurnKey={agentTurnKey}
               agentActivity={agentActivity}
+              canRun={canRun}
               onRun={async (perCondition, route, conditions, tokenBudget) => {
+                if (!canRun) return   // signed out: the tab says "Sign in to run"; nothing is sent
                 const study = simStudies.find(st => st.id === simStudyId)?.title ?? simStudyId
                 const request = t('sim.request', { study, n: perCondition, model: model || 'selected in the app' })
                 try {

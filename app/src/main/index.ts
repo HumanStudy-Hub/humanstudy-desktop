@@ -700,7 +700,7 @@ app.whenReady().then(() => {
   threadsInitialized = true
   /** An approved protocol run, started here from the app's trusted copy (review 4, S1), never by the agent: the
    *  run folder and plan.json come from the checked approval, and the run ends its relay when it exits. */
-  async function startProtocolRun(projectDir: string, approved: { plan?: { perCondition?: unknown; model?: unknown; conditions?: unknown } }, binding: ProtocolBinding, relay: { baseURL: string; token: string; model: string; expiresAt: number } | undefined, ended: () => void) {
+  async function startProtocolRun(projectDir: string, approved: { lang?: unknown; plan?: { perCondition?: unknown; model?: unknown; conditions?: unknown } }, binding: ProtocolBinding, relay: { baseURL: string; token: string; model: string; expiresAt: number } | undefined, ended: () => void) {
     const per = approved.plan?.perCondition
     if (!Number.isSafeInteger(per) || (per as number) < 1 || (per as number) > 60) throw Error('Participants per condition must be a whole number from 1 to 60. Review the simulation scope again.')
     const python = await readyPython()
@@ -713,6 +713,7 @@ app.whenReady().then(() => {
       // Pre-relay path: the same environment the agent's runs get there (the run confirmation said the key is readable).
       env: relay ? { PATH: (process.env.HUMANSTUDY_RUNTIME_BIN ? process.env.HUMANSTUDY_RUNTIME_BIN + (process.platform === 'win32' ? ';' : ':') : '') + (process.env.PATH ?? '') } : { ...process.env },
       onExit: ended,
+      lang: approved.lang === 'zh-CN' ? 'zh-CN' : 'en',
     })
   }
 

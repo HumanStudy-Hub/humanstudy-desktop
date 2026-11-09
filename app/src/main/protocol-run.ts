@@ -62,6 +62,8 @@ export async function markEnded(runDir: string, code: number | null): Promise<vo
 export async function launchProtocolRun(o: {
   python: string; files: [string, string][]; codeDir: string; project: string; runDir: string; binding: Binding;
   plan: ProtocolRunPlan; relay?: RelayAccess; env?: NodeJS.ProcessEnv; onExit?(code: number | null): void
+  /** The app's language for the run's messages and results page ('zh-CN' or 'en'). */
+  lang?: string
 }) {
   if (!o.files.some(([rel]) => rel === 'skills/run/launch.py')) throw Error('The protocol runner is not available in this version.')
   const bytes = await readFile(join(o.project, 'protocol.json'))
@@ -91,6 +93,7 @@ export async function launchProtocolRun(o: {
     HUMANSTUDY_RUN_ROUTE: 'protocol', HUMANSTUDY_RUN_ID: o.binding.runId, HUMANSTUDY_RUN_APPROVED_AT: String(o.binding.approvedAt),
     HUMANSTUDY_RUN_PROTOCOL_SHA256: o.binding.protocolSha256,
     HUMANSTUDY_RUN_PLAN: JSON.stringify(approvedPlan(o.binding, o.plan)),
+    HUMANSTUDY_LANG: o.lang === 'zh-CN' ? 'zh-CN' : 'en',
     ...(o.relay ? { HS_RELAY_BASEURL: o.relay.baseURL, HS_RELAY_TOKEN: o.relay.token, HS_RELAY_MODEL: o.relay.model, HS_RELAY_EXPIRES_AT: String(o.relay.expiresAt) } : {}),
   }
   delete env.PYTHONPATH; delete env.PYTHONHOME; delete env.PYTHONSTARTUP

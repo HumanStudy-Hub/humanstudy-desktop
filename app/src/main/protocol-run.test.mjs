@@ -208,10 +208,14 @@ test('review 6 S4: launch.py refuses a run folder whose real path is outside the
 
 test('review 6 S5: on Linux/Windows the budget row is an estimate, not an approved, enforced figure', async () => {
   const panel = readFileSync(join(here, '../renderer/components/SimulationPanel.tsx'), 'utf8')
-  assert.match(panel, /t\(readiness\?\.modelAccess === 'relay' \? 'sim\.budget_value' : 'sim\.budget_estimate'/)
   const dictOut = mkdtempSync(join(tmpdir(), 'dict-'))
   await build({ entryPoints: [join(here, '../renderer/i18n-dict.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(dictOut, 'd.mjs'), logLevel: 'error' })
   const { EN, ZH } = await import(pathToFileURL(join(dictOut, 'd.mjs')).href)
-  assert.match(EN['sim.budget_estimate'], /nothing enforces it: the run is bounded by the participants per arm/)
+  assert.match(EN['sim.budget_estimate'], /nothing enforces a limit, so the run is bounded by the number of participants/)
   assert.ok(!/approves/.test(EN['sim.budget_estimate'])); assert.ok(ZH['sim.budget_estimate'])
+  // UX: no token figures in the visible rows; tokens only behind Details (relay_detail).
+  for (const k of ['sim.budget_value', 'sim.budget_estimate', 'sim.budget_too_large', 'sim.note', 'sim.run_notice_relay']) {
+    assert.ok(!/token|\{tokens\}/i.test(EN[k]), k); assert.ok(!/词元|\{tokens\}/.test(ZH[k]), k)
+  }
+  assert.match(panel, /t\(readiness\?\.modelAccess === 'relay' \? 'sim\.budget_value' : 'sim\.budget_estimate', \{ minutes: protocolLimits\.minutes \}\)/)
 })

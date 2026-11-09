@@ -37,7 +37,7 @@ def main():
     env = {"HUMANSTUDY_PROJECT_DIR": str(project), "HSENV_PRIVATE_CONFIG": "",
            "HUMANSTUDY_LLM_USAGE_LOG": str(run_dir / "llm-usage.jsonl")}
     for name in ("HUMANSTUDY_RUN_ROUTE", "HUMANSTUDY_RUN_ID", "HUMANSTUDY_RUN_PROTOCOL_SHA256", "HUMANSTUDY_RUN_APPROVED_AT",
-                 "HUMANSTUDY_RUN_PLAN", "HUMANSTUDY_LLM_MAX_OUTPUT"):
+                 "HUMANSTUDY_RUN_PLAN", "HUMANSTUDY_LLM_MAX_OUTPUT", "HUMANSTUDY_LANG"):
         if os.environ.get(name):
             env[name] = os.environ[name]
     base, token = os.environ.get("HS_RELAY_BASEURL", ""), os.environ.get("HS_RELAY_TOKEN", "")

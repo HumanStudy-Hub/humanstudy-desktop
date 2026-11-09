@@ -231,6 +231,31 @@ not process it, and logs a `refunded` event:
 A 500, 502, 504 or a timeout may come after the model ran and billed, so it is never refunded. Total refunds per
 run never exceed the cap.
 
+**What the researcher sees (UX check, 0.8.0-beta.1).** The owner's rules apply: agent-first, minimal UI, jargon
+hidden by default, zh and en.
+- **The Simulation tab.**
+  - No token figures are shown. The budget row reads as a time limit ("a fixed limit … at most N minutes";
+    without a relay, an estimate that nothing enforces). Token numbers sit behind the existing Details disclosure
+    (`sim.relay_detail`).
+  - Signed out, Run is disabled and says "Sign in to run a simulation." The tab never points to a chat reply that
+    cannot exist.
+  - After Stop, one line says how far the run got.
+  - Partial or failed runs that wrote a results page stay listed.
+  - A project with only protocol.json opens on this tab.
+- **The results page** (`protocol_report.py`) is written in the app's language (en, zh-CN; the approval carries it
+  to the run as `HUMANSTUDY_LANG`).
+  - Its visible part is plain: a banner ("… not a leaderboard"), a paragraph, and the comparison table with plain
+    names and metrics.
+  - The engine's scores and "What ran", with every code string, are collapsed under "Technical details".
+  - The page says "official" only when the plan is official, the paper's n is verified and the run is complete.
+    Otherwise it says "unofficial" (zh: 非正式), and a partial run is never official.
+- **The card and the headline.**
+  - The card builds its paragraph from the summary's structured `facts` with i18n keys.
+  - The headline reads "Directions agreed / did not agree with the paper", plus "(unofficial: the paper's printed
+    sample size, not yet checked)" when it is.
+- **Elsewhere.** app_run's progress messages follow the app's language, the version is 0.8.0-beta.1, and "Check for
+  updates" is translated.
+
 **Like with like (S8).** The results page compares directions only when the paper's metric is the engine's metric:
 cells give a risk or mean difference, then an estimate in the same metric, then a printed value with its stated
 metric. Unsigned metrics (phi, Cramér's V) are not compared by direction. Anything else shows

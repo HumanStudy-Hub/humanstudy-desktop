@@ -266,6 +266,37 @@ def outcome(run_dir: Path, meta: dict) -> dict:
             "complete": planned > 0 and valid >= planned and failed_calls == 0}
 
 
+# What the Simulation tab shows from progress.json, in the app's language (HUMANSTUDY_LANG, set by the app).
+MSG = {
+    "en": {"stopped": "Stopped by the researcher: {done} of {planned} planned participants finished; {partial} in "
+                      "progress are recorded as partial (partial.jsonl). No comparison is drawn from a stopped run.",
+           "changed": "protocol.json changed, or a variant appeared, while the run started; nothing from this run is "
+                      "reported. Press Run simulation again.",
+           "finished": "{done} of {planned} planned participants finished",
+           "trial": "Trial: {finished}",
+           "cap": "the run reached its approved token budget", "calls": "{n} model call(s) failed",
+           "unfinished": "some participants did not finish",
+           "partial": "Partial run: {finished}; {why}. The results page is labelled partial.",
+           "page_failed": "{before} The results page could not be written: {error}",
+           "ran": "The run finished ({finished}).", "done": "{finished}; {calls} model calls."},
+    "zh": {"stopped": "已由研究者停止：计划 {planned} 名参与者中完成了 {done} 名；{partial} 名进行中的记为部分完成"
+                      "（partial.jsonl）。已停止的运行不做比较。",
+           "changed": "运行开始时 protocol.json 被改动，或出现了变体；本次运行不报告任何结果。请重新点击“运行模拟”。",
+           "finished": "计划 {planned} 名参与者中完成了 {done} 名",
+           "trial": "试运行：{finished}",
+           "cap": "运行用完了批准的模型用量", "calls": "{n} 次模型调用失败",
+           "unfinished": "有参与者没有完成",
+           "partial": "部分运行：{finished}；{why}。结果页标为部分运行。",
+           "page_failed": "{before}结果页无法生成：{error}",
+           "ran": "运行已完成（{finished}）。", "done": "{finished}；{calls} 次模型调用。"},
+}
+
+
+def msg(key: str, **kw) -> str:
+    lang = "zh" if os.environ.get("HUMANSTUDY_LANG", "").lower().startswith("zh") else "en"
+    return MSG[lang][key].format(**kw)
+
+
 def write_progress(run_dir: Path, stage: str, message: str, **extra) -> None:
     path = run_dir / "progress.json"
     try:
@@ -305,9 +336,7 @@ def stopped(run_dir: Path, meta: dict, bound: dict) -> dict:
     meta["app"] = {"route": "protocol", "runId": bound.get("runId"), **result, "stopped": True, "partial": len(in_flight)}
     (run_dir / "run.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     stop = run_dir / "STOP"
-    write_progress(run_dir, "stopped", "Stopped by the researcher: %d of %d planned participants finished; %d in "
-                   "progress are recorded as partial (partial.jsonl). No comparison is drawn from a stopped run."
-                   % (result["valid"], result["planned"], len(in_flight)),
+    write_progress(run_dir, "stopped", msg("stopped", done=result["valid"], planned=result["planned"], partial=len(in_flight)),
                    # when the researcher asked, so a resume approved since then is not mistaken for an earlier one
                    stopRequestedAt=stop.stat().st_mtime if stop.exists() else time.time())
     print(json.dumps({"status": "stopped", "app": meta["app"]}))
@@ -366,8 +395,7 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     # check_approval hashed it (review 5, S3).
     if meta.get("protocol_sha256") != plan.get("protocolSha256") or (bound and meta.get("variant") is not None):
         # a variant.json that appeared after check_approval leaves protocol.json's hash unchanged (review 6, S2)
-        write_progress(out, "failed", "protocol.json changed, or a variant appeared, while the run started; nothing "
-                       "from this run is reported. Press Run simulation again.")
+        write_progress(out, "failed", msg("changed"))
         raise Refused("protocol.json changed while the run started" if meta.get("protocol_sha256") != plan.get("protocolSha256")
                       else "a variant (variant.json) appeared while the run started")
     if meta.get("status") == "stopped" and not trial:
@@ -380,26 +408,25 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     if not result["complete"]:
         meta["status"] = "partial"
     (out / "run.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
-    finished = "%d of %d planned participants finished" % (result["valid"], result["planned"])
+    finished = msg("finished", done=result["valid"], planned=result["planned"])
     if trial:
-        write_progress(out, "done" if result["complete"] else "failed", "Trial: " + finished)
+        write_progress(out, "done" if result["complete"] else "failed", msg("trial", finished=finished))
         print(json.dumps({"status": meta["status"], **result}))
         return meta
     if not result["complete"]:
-        why = ("the run reached its approved token budget" if result["token_cap"] else
-               "%d model call(s) failed" % result["failed_calls"] if result["failed_calls"] else
-               "some participants did not finish")
-        message = "Partial run: %s; %s. The results page is labelled partial." % (finished, why)
+        why = (msg("cap") if result["token_cap"] else
+               msg("calls", n=result["failed_calls"]) if result["failed_calls"] else msg("unfinished"))
+        message = msg("partial", finished=finished, why=why)
         write_progress(run_dir, "failed", message)   # before the page: never `done`, whatever happens next
     import protocol_report
     try:
         protocol_report.build(run_dir, project, partial=not result["complete"])
     except BaseException as e:   # noqa: BLE001 — the run's data is kept; the stage says what is missing
-        write_progress(run_dir, "failed", ("%s The results page could not be written: %s" % (
-            message if not result["complete"] else "The run finished (%s)." % finished, str(e)[:200])))
+        write_progress(run_dir, "failed", msg("page_failed", before=message if not result["complete"] else msg("ran", finished=finished),
+                                              error=str(e)[:200]))
         raise
     if result["complete"]:
-        write_progress(run_dir, "done", "%s; %d model calls." % (finished, meta.get("calls", 0)))
+        write_progress(run_dir, "done", msg("done", finished=finished, calls=meta.get("calls", 0)))
     return meta
 
 

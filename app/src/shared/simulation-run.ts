@@ -80,6 +80,9 @@ export interface SimSummary {
   perCondition?: number
   calls?: number
   example?: boolean
+  /** A protocol run's structured summary (skills/run protocol_report.py): the card builds its paragraph from these
+   *  with i18n keys, in the app's language. */
+  facts?: { done: number; planned: number; same: number; compared: number; official: boolean; unverified: boolean; partial: boolean }
 }
 /** `lang` 'zh-CN' prefers `paragraph_zh` when the file carries one (the shipped example does). */
 export function parseSummary(text: string | null | undefined, lang = 'en'): SimSummary | null {
@@ -93,7 +96,10 @@ export function parseSummary(text: string | null | undefined, lang = 'en'): SimS
   const raw = zh ?? r.paragraph ?? r.summary ?? r.text
   if (!str(raw)) return null
   const per = r.perCondition ?? r.n_per_condition
-  return { outcome, paragraph: String(raw).trim().slice(0, 2000), model: str(r.model), perCondition: typeof per === 'number' ? per : undefined, calls: typeof r.calls === 'number' ? r.calls : undefined, example: r.example === true }
+  const f = r.facts && typeof r.facts === 'object' ? r.facts as Record<string, unknown> : null
+  const int = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0)
+  const facts = f ? { done: int(f.done), planned: int(f.planned), same: int(f.same), compared: int(f.compared), official: f.official === true, unverified: f.unverified === true, partial: f.partial === true } : undefined
+  return { outcome, paragraph: String(raw).trim().slice(0, 2000), model: str(r.model), perCondition: typeof per === 'number' ? per : undefined, calls: typeof r.calls === 'number' ? r.calls : undefined, example: r.example === true, ...(facts ? { facts } : {}) }
 }
 
 /** One run folder as seen in the project tree. */
@@ -182,7 +188,8 @@ export function hasParticipantData(run: Pick<SimRunFiles, 'sessions' | 'sessions
 
 /** A result: finished, with a results page, from real participant data. */
 export function isResult(run: Pick<SimRunFiles, 'results' | 'sessions' | 'sessionsSize'>, progress: SimProgress | null, state: RunState | undefined): boolean {
-  return Boolean(run.results) && state === 'done' && hasParticipantData(run, progress)
+  // A partial or failed run that still wrote its (labelled) results page is listed too, so it stays findable.
+  return Boolean(run.results) && (state === 'done' || state === 'failed') && hasParticipantData(run, progress)
 }
 
 /** "Run from 15 Oct, 14:02" needs the stamp folder name as a date. */

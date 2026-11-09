@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { AppInfo, UpdateStatus } from '../../preload/types'
 import './updates.css'
 import { WEB_EDITION } from '../edition'
+import { t } from '../i18n'
 
 /** Live update status from the main process (electron-updater). */
 export function useUpdateStatus(): UpdateStatus | null {
@@ -91,7 +92,7 @@ export function AboutUpdates() {
             </button>
           ) : (
             <button className="ghost" disabled={busy} onClick={() => void window.humanstudy.updates.check()}>
-              {status?.state === 'checking' ? 'Checking…' : 'Check for updates'}
+              {status?.state === 'checking' ? t('updates.checking') : t('updates.check')}
             </button>
           )}
         </div>
@@ -136,10 +137,10 @@ export function VersionFooter() {
       <span>HumanStudy Hub v{status.version}</span>
       {WEB_EDITION ? null : <span aria-hidden> · </span>}
       {WEB_EDITION ? null : ready ? (
-        <button className="link" onClick={() => void window.humanstudy.updates.install()}>Update ready</button>
+        <button className="link" onClick={() => void window.humanstudy.updates.install()}>{t('updates.ready')}</button>
       ) : (
         <button className="link" disabled={status.state === 'checking'} onClick={() => void window.humanstudy.updates.check()}>
-          {status.state === 'checking' ? 'Checking…' : 'Check for updates'}
+          {status.state === 'checking' ? t('updates.checking') : t('updates.check')}
         </button>
       )}
     </div>
