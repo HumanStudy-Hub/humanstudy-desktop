@@ -14,11 +14,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const out = mkdtempSync(join(tmpdir(), 'original-text-'))
-for (const [entry, name] of [['original-text.ts', 'o.mjs'], ['protocol-readiness.ts', 'r.mjs'], ['package-readiness.ts', 'p.mjs']])
+for (const [entry, name] of [['original-text.ts', 'o.mjs'], ['protocol-readiness.ts', 'r.mjs'], ['package-readiness.ts', 'p.mjs'], ['telemetry-core.ts', 't.mjs'], ['../shared/workspace-context.ts', 'w.mjs']])
   await build({ entryPoints: [join(here, entry)], bundle: true, platform: 'node', format: 'esm', outfile: join(out, name), logLevel: 'error' })
 const O = await import(pathToFileURL(join(out, 'o.mjs')).href)
 const R = await import(pathToFileURL(join(out, 'r.mjs')).href)
 const P = await import(pathToFileURL(join(out, 'p.mjs')).href)
+const T = await import(pathToFileURL(join(out, 't.mjs')).href)
+const W = await import(pathToFileURL(join(out, 'w.mjs')).href)
 
 const pack = join(here, '../../../pack')
 const FIX = join(pack, 'runtime/tests/fixtures/original_text')
@@ -192,6 +194,13 @@ test('end to end with the bundled engine: downloads the link source, takes the d
     assert.ok(!shown.includes(cache))
     assert.deepEqual(JSON.parse(shown).sources.map((s) => s.file), ['sources/private/booklet.html', null, 'sources/private/leaflet.pdf'])
     assert.equal(JSON.parse(shown).complete, true)
+    // the helper indexed the private copies, the download and the restored wording for research capture (hashes
+    // only): the app's capture recognises a quote of any of them
+    const index = new Set(readdirSync(join(cache, 'redact')).flatMap((f) => readFileSync(join(cache, 'redact', f), 'utf8').split('\n').filter(Boolean)))
+    for (const f of readdirSync(join(cache, 'redact'))) assert.doesNotMatch(readFileSync(join(cache, 'redact', f), 'utf8'), /[g-z]/, 'hashes only')
+    assert.equal(T.containsPrivateRun('the booklet asks: how many MINUTES did you walk this morning, did you see a neighbour', index), true)
+    assert.equal(T.containsPrivateRun('Thank you for joining this short study about walking before breakfast.', index), true)
+    assert.equal(T.containsPrivateRun('A summary in my own words about a study of morning walks and breakfast habits.', index), false)
   } finally { close() }
 })
 
@@ -227,6 +236,15 @@ test('the held list is pinned when the study is first seen: an edited or removed
   assert.equal((await O.heldPinProblem(cache, proj))?.text?.need, 'held-changed')
   writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p))
   assert.equal(await O.heldPinProblem(cache, proj), null, 'the pinned version is fine again')
+  // an import path that writes a new published version accepts it explicitly
+  const update = structuredClone(p)
+  update.distribution.held.h3.text_sha256 = 'e'.repeat(64)
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(update))
+  assert.equal((await O.heldPinProblem(cache, proj))?.text?.need, 'held-changed')
+  await O.repinHeld(cache, proj)
+  assert.equal(await O.heldPinProblem(cache, proj), null)
+  assert.match(O.restoredChecksProblem('T').reason, /put back the versions you received/)
+  assert.doesNotMatch(O.restoredChecksProblem('T').reason, /verbatim|fuzz|keyed|refs|leaks/)
   // never pinned: an ordinary protocol is fine; one that still holds placeholder runs is not
   const plain = mkdtempSync(join(tmpdir(), 'plain-'))
   writeFileSync(join(plain, 'protocol.json'), JSON.stringify({ id: 'x', stages: { a: { content: [{ id: 't', value: 'Hello' }] } } }))
@@ -253,4 +271,15 @@ test('the engine checks run on the restored copy in app storage; their findings 
   assert.ok(found.length > 0)
   for (const f of found) assert.ok(!f.reason.includes('walk this morning'), f.reason)
   assert.deepEqual(readdirSync(work), [], 'the scratch copy is removed')
+})
+
+test('a drop into a published study tells the agent, in the prompt only, not to open the file', () => {
+  const text = '[Attached: sources/private/booklet.html, notes.txt]\nHere is my copy'
+  assert.deepEqual(W.privateAttachments(text), ['sources/private/booklet.html'])
+  const prompt = W.withWorkspaceContext(text)
+  assert.ok(prompt.startsWith(text), 'the researcher\'s own words come first, unchanged')
+  assert.match(prompt, /received to fill in the study's original wording.*Do not open, read, extract or move this file/)
+  assert.equal(W.withWorkspaceContext('[Attached: sources/open/a.pdf]\nhi'), '[Attached: sources/open/a.pdf]\nhi')
+  const chat = readFileSync(join(here, '../renderer/components/Chat.tsx'), 'utf8')
+  assert.doesNotMatch(chat, /Do not open/, 'the chat bubble carries no agent instruction')
 })

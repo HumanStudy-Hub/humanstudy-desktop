@@ -31,8 +31,8 @@ app fills it in on the researcher's own computer, without you:
 **Never open, read, extract, summarise or quote any file in `sources/private/`**, nor anything in the app's storage
 folder `original-text/` (the restored wording): no read tool, no `cat`, `hs-pdf`, `pdftotext`, Python or `grep` on
 them. Their text must stay on this computer, and whatever you read goes to the model and into the conversation
-record. When the researcher drops a file, the message says it was received for filling in the wording; reply from
-`.humanstudy/original-text.json` only.
+record. When the researcher drops a file, an app note tells you it was received for filling in the wording; reply
+from `.humanstudy/original-text.json` only.
 
 Never move, copy or rename the researcher's copy of a source out of `sources/private/` (into `paper.pdf`,
 `sources/` or anywhere else): only `sources/private/` stays out of exports and research capture. If they mention a
@@ -53,7 +53,8 @@ their language, never with the words "rehydrate", "projection", "placeholder", "
 | `changed-online` | "The copy of <title> online has changed since the study was built. Drop in your copy of the version the study used." |
 | `pdf-reader` | "This computer cannot read PDF files yet: update or reinstall HumanStudy Hub, then open the study again." |
 | `app-version` | "This study was published with a different version of HumanStudy Hub's PDF reader: update the app; if that does not help, ask the study's publisher." |
-| `held-changed` | "This study's record of which wording to fill in was changed or removed after it was opened on this computer, so it cannot run. Download the study again from the library." |
+| `held-changed` | "This study's record of which wording to fill in was changed or removed after it was first opened on this computer, so it cannot run. Put back the study's protocol.json exactly as you received it." (never edit it back yourself from memory) |
+| `checks-failed` | "With its original wording filled in, the study did not pass its own checks, so it cannot run. If protocol.json or the files in sourcetext/ were changed on this computer, put back the versions you received; otherwise the published version itself needs fixing." |
 | `picture` | "Some screens show pictures from <title>, which this version of HumanStudy Hub cannot show yet, so the study cannot run." |
 | `reading` | "Some wording is printed inside a picture and cannot be filled in automatically yet." |
 

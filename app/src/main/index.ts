@@ -36,9 +36,9 @@ import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, tr
 import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf } from './package-readiness'
-import { fillOriginalText, heldPinProblem, isPublishedStudy, originalTextProblems, restoredProtocolText, restoredRunFiles, writeAgentStatus } from './original-text'
+import { fillOriginalText, heldPinProblem, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, restoredRunFiles, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
-import { protocolBudget, protocolReadiness, restoredReadiness } from './protocol-readiness'
+import { protocolBudget, protocolReadiness, restoredReadiness, sourceTextArgs } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
 import { closeProjectRelays, isRunStop } from './run-stop'
@@ -392,6 +392,14 @@ app.on('second-instance', () => {
 
 /** App storage for published studies' original wording (downloads and restored protocols; never in a project). */
 const originalTextCache = (): string => join(app.getPath('userData'), 'original-text')
+/** The contents of the project's sourcetext/ files the checks read (part of the restored-copy check's cache key). */
+async function sourceTextStamp(project: string): Promise<string> {
+  const h = createHash('sha256')
+  const args = await sourceTextArgs(project)
+  for (let i = 1; i < args.length; i += 2) h.update(args[i]).update(await readFile(args[i].slice(args[i].indexOf('=') + 1)).catch(() => Buffer.from('missing')))
+  return h.digest('hex')
+}
+const studyTitle = (restored: string): string => { try { const t = JSON.parse(restored)?.meta?.title; return typeof t === 'string' ? t.slice(0, 200) : '' } catch { return '' } }
 
 app.whenReady().then(() => {
   // Per-run code copies of protocol runs that a quit or a crash left behind.
@@ -410,6 +418,7 @@ app.whenReady().then(() => {
   // A published study's original wording, filled in on this computer (original-text.ts): downloads and the restored
   // protocol stay in app storage; the project gets only a status for the agent.
   const textFiles = trustedOriginalTextFiles()
+  void telemetry.refreshPrivateIndex().catch(() => undefined)
   const restoredChecks = new Map<string, ScientificProblemLike[]>()
   configureOriginalText(async (project) => {
     const pinned = await heldPinProblem(originalTextCache(), project).catch(() => null)
@@ -419,17 +428,20 @@ app.whenReady().then(() => {
     if (!python) return [{ check: 'runtime', reason: "The research runtime is not installed yet, so the study's original wording cannot be filled in." }]
     try {
       const status = await fillOriginalText(python, textFiles, project, originalTextCache(), process.env.HUMANSTUDY_RUNTIME_BIN || '')
+      await telemetry.refreshPrivateIndex().catch(() => undefined)   // the helper indexed the private copies it read
       await writeAgentStatus(project, status).catch(() => undefined)
       const problems = originalTextProblems(status)
       if (problems.length || !status.complete || !status.projectionSha256) return problems
       // The engine's checks once on the restored copy (leaks, expressions, verbatim), in app storage, per copy.
       const restored = await restoredProtocolText(originalTextCache(), status.projectionSha256)
       if (restored === null) return [{ check: 'runtime', reason: "The study's original wording could not be filled in. Retry." }]
-      const key = createHash('sha256').update(restored).digest('hex')
+      // Keyed by the restored copy and the project's source texts; only a completed report is kept (a runtime
+      // failure or a time/memory stop is checked again next time).
+      const key = createHash('sha256').update(restored).update(await sourceTextStamp(project)).digest('hex')
       if (!restoredChecks.has(key)) {
         const found = await restoredReadiness(python, engine, project, restored, join(originalTextCache(), status.projectionSha256), process.env.HUMANSTUDY_RUNTIME_BIN || '')
-        if (found.some((p) => p.check === 'runtime')) return found
-        restoredChecks.set(key, found)
+        if (found.some((p) => p.check === 'runtime' || p.check === 'limits')) return found.map((p) => ({ check: 'runtime', reason: "The study's checks with its original wording filled in could not complete. Retry." }))
+        restoredChecks.set(key, found.length ? [restoredChecksProblem(studyTitle(restored))] : [])
       }
       return restoredChecks.get(key)!
     } catch {

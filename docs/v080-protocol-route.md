@@ -364,8 +364,11 @@ computer:
   and any other text cited verbatim from that source is not, so it still blocks (no rule in the app decides which
   texts are excused). Once the wording is restored, the checks run again on the restored copy in app storage (held
   texts checked against themselves, after their hash check), and any finding blocks, reported by check name only.
-  The held list (`distribution`) is pinned in app storage the first time the study is seen; an edited or removed
-  list blocks the run (download the study again). An
+  That check's result is cached by the restored copy and the project's sourcetext/ contents, and only when it
+  completed; its message names no check. The held list (`distribution`) is pinned in app storage the first time the
+  study is seen; an edited or removed list blocks the run until protocol.json is put back as received. This build has
+  no import path for a published protocol.json (the library forks program.json, package/, artifacts/ and sources/
+  only); an import path must call `repinHeld` after writing a new published version. An
   approved run copies the restored protocol into its trusted code folder (`restored/protocol.json`); app_run reads
   it from beside its own code (never from the environment) and plays it only if every held text hashes to its
   `text_sha256`, no placeholder is left and nothing else differs from protocol.json. It records the approved
@@ -375,10 +378,16 @@ computer:
   restored copy.
 - **Agent.** `skills/run` "Original wording" tells the agent how to read the status and what to say, and never to
   open a file in `sources/private/` or the app's `original-text/` storage; AGENTS.md says the same. A drop into a
-  published study tells the agent the file was received to fill in the wording and not to open it. Research capture
-  redacts the input and output of any tool call (and any raw part) that names those paths
-  (`telemetry-core.ts` `redactPrivatePart`), before anything is stored or put in a blob.
-- **Downloads** also stop after 90 s each (150 s for all of one check), write the failure marker on a timeout, treat
+  published study adds an app note to the prompt (not the researcher's bubble) that the file was received to fill in
+  the wording and must not be opened. Research capture (`telemetry-core.ts` `redactPrivatePart`, before anything is
+  stored or put in a blob) drops any tool call that names those paths (also built in pieces, globbed, searched under
+  sources/, with `./` segments or URL-encoded), and any tool call, text, reasoning or raw part that quotes a run of 40
+  letters or digits from a private copy, a download or the restored wording: the helper writes hashes of every such
+  run to `<userData>/original-text/redact/*.idx` (never text), loaded once per session and after each drop. Only
+  published studies are indexed (the helper runs for them); researcher materials in sources/private/ of other
+  projects are covered by the path rule only.
+- **Downloads** also stop after 90 s each (150 s for all of one check; every socket read waits at most the time
+  left, and reads take what has arrived), write the failure marker on a timeout, treat
   a web page returned for a non-HTML source as a failed download (a sign-in or paywall page), and never fetch a host
   that does not resolve here.
 - **Follow-up (hsenv 0.8.2 / sandbox skills/run).** `run_study.load_protocol` (vendored) cannot be guarded here:

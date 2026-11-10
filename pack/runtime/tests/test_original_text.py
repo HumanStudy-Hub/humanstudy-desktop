@@ -173,29 +173,38 @@ class OriginalText(unittest.TestCase):
         self.assertEqual(self.by_key(st)["handout"]["need"], "download")
         self.assertEqual(st["downloadsFailed"], 1)
 
-    def test_a_trickling_server_is_cut_off_and_remembered(self):
+    def test_a_trickling_server_is_cut_off_at_the_deadline_and_remembered(self):
         import time as _t
+        stop = threading.Event()
 
         class Slow(BaseHTTPRequestHandler):
-            def do_GET(self):   # noqa: N802
+            def do_GET(self):   # noqa: N802 - one byte every 0.7 s, for as long as the client listens
                 self.send_response(200)
                 self.end_headers()
-                for _ in range(40):
-                    self.wfile.write(b"x")
-                    self.wfile.flush()
-                    _t.sleep(0.1)
+                try:
+                    while not stop.is_set():
+                        self.wfile.write(b"x")
+                        self.wfile.flush()
+                        _t.sleep(0.7)
+                except OSError:
+                    pass
 
             def log_message(self, *a):
                 pass
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+        httpd.daemon_threads = True
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         self.addCleanup(httpd.server_close)
         self.addCleanup(httpd.shutdown)
+        self.addCleanup(stop.set)
         url = "http://127.0.0.1:%d/handout.txt" % httpd.server_address[1]
-        old = O.DOWNLOAD_DEADLINE
-        O.DOWNLOAD_DEADLINE = 1
-        self.addCleanup(setattr, O, "DOWNLOAD_DEADLINE", old)
+        for name, value in (("DOWNLOAD_DEADLINE", 2), ("DOWNLOAD_TIMEOUT", 30)):
+            self.addCleanup(setattr, O, name, getattr(O, name))
+            setattr(O, name, value)
+        started = _t.monotonic()
         st = self.run_helper(protocol=self.published(url), files=[])
+        elapsed = _t.monotonic() - started
+        self.assertLess(elapsed, 2 + 1.5, "the download stops at its deadline, not when the server closes")
         self.assertEqual(self.by_key(st)["handout"]["need"], "download")
         failed = list((self.cache / "downloads").glob("*.failed"))
         self.assertEqual(len(failed), 1)

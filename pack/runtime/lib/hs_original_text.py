@@ -27,6 +27,7 @@ import os
 import socket
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -139,6 +140,20 @@ def looks_like_html(data: bytes) -> bool:
     return head.startswith((b"<!doctype html", b"<html", b"<head", b"<body")) or b"<html" in head[:512]
 
 
+def _socket_deadline(res, seconds: float) -> None:
+    """Make the next socket read wait at most `seconds` (the time left of the download's deadline), so a server
+    that sends a byte now and then cannot stretch a single read past the deadline."""
+    for path in (("fp", "raw", "_sock"), ("fp", "_sock")):
+        obj = res
+        try:
+            for name in path:
+                obj = getattr(obj, name)
+            obj.settimeout(max(0.05, seconds))
+            return
+        except (AttributeError, OSError):
+            continue
+
+
 def make_fetch(cache: Path, allow_local: bool = False, offline: bool = False, log: list | None = None,
                formats: dict | None = None):
     """fetch(url) -> bytes for hsenv.rehydrate: http(s) only, at most MAX_BYTES and DOWNLOAD_DEADLINE seconds (all
@@ -172,11 +187,13 @@ def make_fetch(cache: Path, allow_local: bool = False, offline: bool = False, lo
             if time.monotonic() >= deadline:
                 raise TimeoutError("no time left for downloads in this check")
             chunks, size = [], 0
-            with opener.open(req, timeout=DOWNLOAD_TIMEOUT) as res:
+            with opener.open(req, timeout=max(0.1, min(DOWNLOAD_TIMEOUT, deadline - time.monotonic()))) as res:
                 while True:
-                    if time.monotonic() > deadline:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
                         raise TimeoutError("the download took longer than %d seconds" % DOWNLOAD_DEADLINE)
-                    chunk = res.read(64 * 1024)
+                    _socket_deadline(res, min(DOWNLOAD_TIMEOUT, left))
+                    chunk = res.read1(64 * 1024)   # whatever has arrived: a trickling server cannot hold one read
                     if not chunk:
                         break
                     chunks.append(chunk)
@@ -360,6 +377,84 @@ def status(projection: dict, report: dict, chosen: dict, extractors: dict, log: 
             "downloadsFailed": len(log)}
 
 
+# ------------------------------------------------------------------------------- research-capture redaction index
+PRIVATE_RUN = 40   # telemetry-core.ts PRIVATE_RUN: a run of 40 skeleton characters quoted from private material
+_M32 = 0xFFFFFFFF
+
+
+def skeleton(text: str) -> list[int]:
+    """NFKC, lower case, letters and digits only, as code points (telemetry-core.ts skeleton)."""
+    return [ord(ch) for ch in unicodedata.normalize("NFKC", text).lower() if unicodedata.category(ch)[0] in "LN"]
+
+
+def window_hashes(text: str) -> set[str]:
+    """The hash of every PRIVATE_RUN-long window of the text's skeleton (telemetry-core.ts windowHash)."""
+    cps, out = skeleton(text)[:2_000_000], set()   # a very large file: its first two million characters
+    for i in range(len(cps) - PRIVATE_RUN + 1):
+        a, b = 0x811C9DC5, 0x9747B28C
+        for cp in cps[i:i + PRIVATE_RUN]:
+            a = ((a ^ cp) * 0x01000193) & _M32
+            b = ((b ^ cp) * 0x5BD1E995) & _M32
+            b = (b ^ (b >> 15)) & _M32
+        out.add("%08x%08x" % (a, b))
+    return out
+
+
+def write_index(cache: Path, name: str, text: str) -> None:
+    """<cache>/redact/<name>.idx: hashes only, never text. The app's research capture drops any agent step that
+    quotes 40 characters of it (telemetry.ts refreshPrivateIndex)."""
+    root = cache / "redact"
+    dest = root / (name + ".idx")
+    if dest.is_file() or not text:
+        return
+    root.mkdir(parents=True, exist_ok=True)
+    tmp = root / ("%s.%d.tmp" % (name, os.getpid()))
+    tmp.write_text("\n".join(sorted(window_hashes(text))) + "\n", encoding="utf-8")
+    os.replace(tmp, dest)
+
+
+def file_text(data: bytes, extractors: dict) -> str:
+    from hsenv import distribution as D
+    try:
+        return "\n".join(D.units(D.sniff(data), data, extractors))
+    except Exception:   # noqa: BLE001 - an unreadable file: nothing to index
+        try:
+            return data.decode("utf-8", errors="ignore")
+        except Exception:   # noqa: BLE001
+            return ""
+
+
+def index_private(cache: Path, files: list[Path], extractors: dict, restored=None, held=None) -> None:
+    """Index the researcher's private copies (files under sources/private/), every download and the restored
+    wording, so research capture can recognise them however the agent reaches them."""
+    for f in files:
+        parts = [x.lower() for x in f.parts]
+        if not any(parts[i] == "sources" and parts[i + 1] == "private" for i in range(len(parts) - 1)):
+            continue
+        data = read_file(f)
+        if data is not None:
+            write_index(cache, sha256(data), file_text(data, extractors))
+    for d in sorted((cache / "downloads").glob("*")) if (cache / "downloads").is_dir() else []:
+        if d.suffix in (".failed", ".tmp") or not d.is_file():
+            continue
+        data = read_file(d)
+        if data is not None:
+            write_index(cache, sha256(data), file_text(data, extractors))
+    if restored is not None and held:
+        texts = []
+        for e in held.values():
+            try:
+                v = restored
+                for part in e["path"].split("/")[1:]:
+                    part = part.replace("~1", "/").replace("~0", "~")
+                    v = v[int(part)] if isinstance(v, list) else v[part]
+                if isinstance(v, str):
+                    texts.append(v)
+            except (KeyError, IndexError, ValueError, TypeError):
+                continue
+        write_index(cache, "restored-" + sha256("\n".join(texts).encode("utf-8")), "\n".join(texts))
+
+
 def main(argv: list[str]) -> int:
     args = list(argv)
     allow_local = "--allow-local" in args
@@ -383,9 +478,17 @@ def main(argv: list[str]) -> int:
     if done.is_file() and (here / "status.json").is_file():
         st = json.loads((here / "status.json").read_text(encoding="utf-8"))
         if st.get("complete") and st.get("restoredSha256") == sha256(done.read_bytes()):
+            try:
+                index_private(cache, files, pdf_extractors(), json.loads(done.read_text(encoding="utf-8")), held_of(projection))
+            except Exception:   # noqa: BLE001
+                pass
             print(json.dumps(dict(st, restoredPath=str(done), cached=True)))
             return 0
     restored, report, chosen, extractors, log = restore(projection, cache, files, allow_local, offline)
+    try:
+        index_private(cache, files, extractors, restored, held_of(projection))
+    except Exception:   # noqa: BLE001 - the index is a safeguard; never stop the restore over it
+        pass
     st = status(projection, report, chosen, extractors, log)
     st["projectionSha256"] = version
     here.mkdir(parents=True, exist_ok=True)

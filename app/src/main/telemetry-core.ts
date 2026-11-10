@@ -167,22 +167,69 @@ export interface RowBase {
 }
 
 /** Builds the exact row that is sent, or null when the event is not allowed. */
-/** A path to material that must never leave this computer: the researcher's private copies (sources/private/, e.g.
- *  a copy of a paper dropped in to fill in a published study's wording) and the app-storage cache of restored
- *  wording (…/original-text/…). */
-export const PRIVATE_MATERIAL = /(?:^|[^A-Za-z0-9_-])sources[\\/]+private(?:[\\/]|\b)|[\\/]original-text(?:[\\/]|\b)/i
+/** Paths to material that must never leave this computer: the researcher's private copies (sources/private/, e.g. a
+ *  copy of a paper dropped in to fill in a published study's wording) and the app-storage folder of restored wording
+ *  (…/original-text/…, a folder: `.humanstudy/original-text.json`, a status without wording, is not one). Matched
+ *  on the text URL-decoded and with `./` segments removed; a command that names both `sources` and `private`, or
+ *  globs or searches under sources/, counts too (the agent may build the path in pieces). */
+export const PRIVATE_MATERIAL = /(?:^|[^A-Za-z0-9_-])sources[\\/]+private(?:[\\/]|\b)|[\\/]original-text[\\/]/i
 export const REDACTED_PRIVATE = '[redacted: private material]'
 
-/** An agent transcript part with every field that touches private material blanked: a tool call whose input,
- *  title or output names such a path loses its input and output (the output is the file's content); a raw (native)
- *  part that names one is dropped. Other parts are returned unchanged. */
-export function redactPrivatePart<T extends { kind: string }>(part: T): T {
-  const named = (v: unknown): boolean => v !== undefined && PRIVATE_MATERIAL.test(typeof v === 'string' ? v : JSON.stringify(v) ?? '')
-  const q = part as T & { input?: unknown; output?: unknown; detail?: unknown }
-  if (part.kind === 'tool' && (named(q.input) || named(q.detail) || named(q.output)))
+function decoded(s: string): string {
+  let out = s
+  for (let i = 0; i < 3; i++) { try { const d = decodeURIComponent(out); if (d === out) break; out = d } catch { break } }
+  return out.replace(/(^|[\\/])(?:\.[\\/])+/g, '$1')
+}
+/** True when a tool call's text names private material by path (see PRIVATE_MATERIAL). */
+export function namesPrivatePath(text: string): boolean {
+  const t = decoded(text)
+  if (PRIVATE_MATERIAL.test(t)) return true
+  if (/\bsources\b/i.test(t) && /private/i.test(t)) return true
+  return /\bsources[\\/]+[^\s'"]*[*?[{]/i.test(t) || /\b(?:find|grep|egrep|rg|ag)\b[^\n|;&]*(?:^|[\s'"=/])sources(?:[\\/]*)(?=[\s'"]|$)/i.test(t)
+}
+
+// ---- content index: 40-character runs of private text, by hash ------------------------------------------------
+/** The run length that counts as a quote of private material: 40 letters or digits in a row, after dropping case,
+ *  spaces, punctuation and markup (the skeleton). pack/runtime/lib/hs_original_text.py writes the same hashes. */
+export const PRIVATE_RUN = 40
+const M = 0x5bd1e995
+/** The skeleton of a text: NFKC, lower case, letters and digits only, as code points. */
+export function skeleton(text: string): number[] {
+  const out: number[] = []
+  for (const ch of text.normalize('NFKC').toLowerCase()) if (/[\p{L}\p{N}]/u.test(ch)) out.push(ch.codePointAt(0)!)
+  return out
+}
+/** Hash of one window of skeleton code points: two independent 32-bit hashes, as 16 hex digits. */
+export function windowHash(cps: number[], start: number, n = PRIVATE_RUN): string {
+  let a = 0x811c9dc5, b = 0x9747b28c
+  for (let i = start; i < start + n; i++) {
+    a = Math.imul(a ^ cps[i], 0x01000193) >>> 0
+    b = Math.imul(b ^ cps[i], M) >>> 0
+    b = (b ^ (b >>> 15)) >>> 0
+  }
+  return a.toString(16).padStart(8, '0') + b.toString(16).padStart(8, '0')
+}
+/** True when `text` holds a run of PRIVATE_RUN skeleton characters found in the index (at most the first 300k). */
+export function containsPrivateRun(text: string, index: ReadonlySet<string>): boolean {
+  if (!index.size || !text) return false
+  const cps = skeleton(text.length > 300_000 ? text.slice(0, 300_000) : text)
+  for (let i = 0; i + PRIVATE_RUN <= cps.length; i++) if (index.has(windowHash(cps, i))) return true
+  return false
+}
+
+/** An agent transcript part with private material blanked. A tool call whose input or title names a private path,
+ *  or any of whose fields quotes private text (index), loses input, output and title; a text part that quotes it
+ *  loses its text; a raw (native) or reasoning part that names or quotes it is dropped. */
+export function redactPrivatePart<T extends { kind: string }>(part: T, index: ReadonlySet<string> = new Set()): T {
+  const str = (v: unknown): string => (v === undefined ? '' : typeof v === 'string' ? v : JSON.stringify(v) ?? '')
+  const quotes = (v: unknown): boolean => containsPrivateRun(str(v), index)
+  const q = part as T & { input?: unknown; output?: unknown; detail?: unknown; text?: unknown }
+  if (part.kind === 'tool' && (namesPrivatePath(str(q.input)) || namesPrivatePath(str(q.detail)) || quotes(q.input) || quotes(q.output) || quotes(q.detail)))
     return { ...part, input: REDACTED_PRIVATE, output: REDACTED_PRIVATE, detail: REDACTED_PRIVATE, redacted: 'private-material' }
-  if ((part.kind === 'native' || part.kind === 'reasoning') && named(part))
+  if (part.kind === 'text' && quotes(q.text)) return { ...part, text: REDACTED_PRIVATE, redacted: 'private-material' }
+  if ((part.kind === 'native' || part.kind === 'reasoning') && (namesPrivatePath(str(part)) || quotes(part)))
     return { kind: part.kind, redacted: 'private-material' } as unknown as T
+  if (part.kind !== 'tool' && part.kind !== 'text' && quotes(part)) return { kind: part.kind, redacted: 'private-material' } as unknown as T
   return part
 }
 

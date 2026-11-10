@@ -102,7 +102,8 @@ const PLAIN: Record<OriginalTextReason, string> = {
   'app-version': 'the study was published with a different version of the app\'s PDF reader (update HumanStudy Hub)',
   reading: 'the wording is printed inside a picture and cannot be filled in automatically',
   picture: 'the study shows pictures from it, which this version of HumanStudy Hub cannot show yet',
-  'held-changed': 'the study was changed after it was opened (download it again)',
+  'held-changed': 'the study was changed after it was opened (put back its protocol.json as received)',
+  'checks-failed': 'with the wording filled in, the study did not pass its own checks',
 }
 
 /** One problem per source that still has screens without their wording: a run is blocked until there are none.
@@ -162,9 +163,11 @@ export async function restoredRunFiles(project: string, cacheDir: string, protoc
 
 /** The held-back list of a published study is pinned the first time this computer sees it (app storage, keyed by
  *  the project folder): an edited `distribution.held` could select another span of the real source under a new hash,
- *  and a removed one would leave placeholders on screen. Either change blocks the run; downloading the study again
- *  (a new project folder) starts a new pin. An ordinary protocol.json that still holds runs of placeholders is
- *  refused the same way. */
+ *  and a removed one would leave placeholders on screen. Either change blocks the run until protocol.json is put back
+ *  as received. This build has no import path for a published protocol.json yet (the community library forks
+ *  program.json, package/, artifacts/ and sources/ only); when one lands, it calls `repinHeld` after writing the new
+ *  version, which is how a legitimate update is accepted. An ordinary protocol.json that still holds runs of
+ *  placeholders is refused the same way. */
 export async function heldPinProblem(cacheDir: string, project: string): Promise<OriginalTextProblem | null> {
   let raw: string
   try { raw = await readFile(join(project, 'protocol.json'), 'utf8') } catch { return null }
@@ -178,7 +181,7 @@ export async function heldPinProblem(cacheDir: string, project: string): Promise
   const now = dist ? sha256(JSON.stringify(dist)) : null
   const title = typeof p?.meta?.title === 'string' ? p.meta.title.slice(0, 200) : 'this study'
   const changed: OriginalTextProblem = { check: 'original-text', text: { need: 'held-changed', title, format: '', screens: 0 },
-    reason: "This study's record of which wording to fill in was changed or removed after it was opened on this computer, so it cannot run. Download the study again from the library." }
+    reason: "This study's record of which wording to fill in was changed or removed after it was first opened on this computer, so it cannot run. Put back the study's protocol.json exactly as you received it." }
   if (pins[root] !== undefined) return pins[root] === now ? null : changed
   if (now === null) return /░{3,}/.test(raw) ? changed : null
   pins[root] = now
@@ -187,4 +190,25 @@ export async function heldPinProblem(cacheDir: string, project: string): Promise
   await writeFile(tmp, JSON.stringify(pins, null, 1), 'utf8')
   await rename(tmp, file)
   return null
+}
+
+/** Accept the protocol.json now in the project as the published version (for an import path that writes a new
+ *  published version on the researcher's behalf): its held list becomes the pinned one. */
+export async function repinHeld(cacheDir: string, project: string): Promise<void> {
+  const file = join(cacheDir, 'pins.json')
+  let pins: Record<string, string> = {}
+  try { pins = JSON.parse(await readFile(file, 'utf8')) } catch { /* none yet */ }
+  delete pins[await realpath(project)]
+  await mkdir(cacheDir, { recursive: true })
+  const tmp = `${file}.${process.pid}.tmp`
+  await writeFile(tmp, JSON.stringify(pins, null, 1), 'utf8')
+  await rename(tmp, file)
+  await heldPinProblem(cacheDir, project)
+}
+
+/** The problem shown when the engine's checks fail on the restored copy: plain words, no check names and no source
+ *  text (the details could quote it), and no blame (a local edit can cause it as well as the publisher's version). */
+export function restoredChecksProblem(title: string): OriginalTextProblem {
+  return { check: 'original-text', text: { need: 'checks-failed', title, format: '', screens: 0 },
+    reason: "With its original wording filled in, the study did not pass its own checks, so it cannot run. If protocol.json or the files in sourcetext/ were changed on this computer, put back the versions you received; otherwise the published version itself needs fixing." }
 }

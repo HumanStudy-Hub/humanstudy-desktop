@@ -177,11 +177,9 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
   const compose = () => {
     const text = draft.trim()
     if (!text && !attached.length) return null
-    // A copy dropped into a published study lands in sources/private/: it is received only to fill in the study's
-    // wording on this computer, so the agent is told not to open it (its text must not reach the model or capture).
-    const privateCopies = attached.filter((a) => /^sources\/private\//.test(a.rel))
-    const prefix = attached.length ? `[Attached: ${attached.map((a) => a.rel).join(', ')}]\n` +
-      (privateCopies.length ? `[Received to fill in the study's original wording on this computer: ${privateCopies.map((a) => a.rel).join(', ')}. Do not open, read or move ${privateCopies.length === 1 ? 'this file' : 'these files'}; read .humanstudy/original-text.json to see what is filled in.]\n` : '') : ''
+    // A copy dropped into a published study lands in sources/private/; the main process tells the agent, in the
+    // prompt only, that it was received to fill in the wording and must not be opened (withPrivateCopyNote).
+    const prefix = attached.length ? `[Attached: ${attached.map((a) => a.rel).join(', ')}]\n` : ''
     return selectionContext(selected) + prefix + text
   }
   const submit = () => {

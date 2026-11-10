@@ -587,11 +587,41 @@ await test('a dropped private file never reaches capture: tool calls naming sour
   // ordinary work is captured unchanged
   const plain = { kind: 'tool', tool: 'read', state: 'completed', detail: 'Read', input: { filePath: 'sources/open/handout.txt' }, output: 'public text' }
   assert.equal(redactPrivatePart(plain), plain)
-  assert.equal(redactPrivatePart({ kind: 'tool', input: { filePath: 'my-sources/privateer.txt' }, output: 'x' }).output, 'x')
+  assert.equal(redactPrivatePart({ kind: 'tool', input: { filePath: 'sources/open/notes-on-privacy.txt' }, output: 'x' }).output, 'x')
   // the transcript capture redacts before anything is stored or put in a blob
   const src = readFileSync(join(here, 'telemetry.ts'), 'utf8')
   const capture = src.slice(src.indexOf('export function onThreadCapture'))
-  assert.ok(capture.indexOf('redactPrivatePart(c.part)') > 0 && capture.indexOf('redactPrivatePart(c.part)') < capture.indexOf("fit(base, 'input'"))
+  assert.ok(capture.indexOf('redactPrivatePart(c.part, privateIndex)') > 0 && capture.indexOf('redactPrivatePart(c.part, privateIndex)') < capture.indexOf("fit(base, 'input'"))
+})
+
+await test('redaction by path survives the ways an agent names the folder (review probe red.mjs); the status file is not redacted', () => {
+  const { redactPrivatePart } = core
+  const leak = (command) => redactPrivatePart({ kind: 'tool', tool: 'bash', input: { command }, output: 'SECRET' }).output === 'SECRET'
+  for (const c of ['cd sources; cat private/booklet.html', 'cat sources/priv*/booklet.html',
+    "python3 -c \"print(open('sources/'+'private/b.html').read())\"", 'cat ./sources/./private/b.html',
+    'find sources -name "*.html" -exec cat {} +', 'file:///Users/x/P/sources%2Fprivate/b.html', 'hs-pdf sources/private/b.pdf',
+    '/Users/x/Library/Application Support/HumanStudy Hub/original-text/ab/protocol.json', 'cat sources/Private/b.html',
+    'grep -r walk sources/', 'cat sources/*'])
+    assert.equal(leak(c), false, c)
+  for (const c of ['cat .humanstudy/original-text.json', 'cat sources/open/handout.txt', 'python .opencode/skills/build/sources.py .', 'ls sources/open'])
+    assert.equal(leak(c), true, c)
+})
+
+await test('redaction by content: any agent step that quotes 40 characters of a private copy is dropped, however it got there', () => {
+  const { redactPrivatePart, windowHash, skeleton, containsPrivateRun, PRIVATE_RUN } = core
+  const privateText = 'Before you begin, please take a slow walk around the block and notice the colour of every front door you pass.'
+  const cps = skeleton(privateText)
+  const index = new Set()
+  for (let i = 0; i + PRIVATE_RUN <= cps.length; i++) index.add(windowHash(cps, i))
+  const quote = 'it says: "please take a SLOW walk around the block, and notice the colour of every front door"'
+  assert.equal(containsPrivateRun(quote, index), true, 'case, spacing and punctuation do not hide a quote')
+  assert.equal(containsPrivateRun('please take a slow walk around', index), false, 'shorter than 40 letters')
+  const tool = redactPrivatePart({ kind: 'tool', tool: 'bash', input: { command: 'cat $(ls -d s*)/p*/b.html' }, output: privateText }, index)
+  assert.equal(tool.output, '[redacted: private material]')
+  assert.equal(redactPrivatePart({ kind: 'text', text: 'The booklet reads: ' + quote }, index).text, '[redacted: private material]')
+  assert.deepEqual(redactPrivatePart({ kind: 'reasoning', text: quote }, index), { kind: 'reasoning', redacted: 'private-material' })
+  const plain = { kind: 'text', text: 'I filled in 3 screens of the walking study.' }
+  assert.equal(redactPrivatePart(plain, index), plain)
 })
 
 console.log(`\n${passed} passed`)

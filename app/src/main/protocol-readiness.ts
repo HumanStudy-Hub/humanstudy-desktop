@@ -282,9 +282,8 @@ export async function restoredReadiness(python: string | null, engine: [string, 
       const run = await confinedPython(python, runner(limits.cpuSeconds, limits.memoryBytes),
         [work, dir, '--sessions', String(PROTOCOL_SESSIONS), ...await sourceTextArgs(project), ...held], home, bin, timeout, limits)
       if (run.limit) return [ENGINE_LIMIT]
-      const found = protocolOutcome(run.stdout, run.stderr)
-      return [...new Set(found.map((p) => p.check))].map((check) => ({ check,
-        reason: `With the original wording filled in on this computer, the study's checks found a problem (${check}). The study cannot run as published; tell its publisher.` }))
+      // Check names only (the details can quote the restored wording); the app words the problem itself.
+      return [...new Set(protocolOutcome(run.stdout, run.stderr).map((p) => p.check))].map((check) => ({ check, reason: check }))
     })
   } catch { return [ENGINE_FAILED] } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined)
