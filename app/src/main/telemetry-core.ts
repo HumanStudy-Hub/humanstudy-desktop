@@ -189,7 +189,7 @@ export function namesPrivatePath(text: string, globs = true): boolean {
 }
 
 // ---- content index: 40-character runs of private text, by hash ------------------------------------------------
-/** The run length that counts as a quote of private material: 40 letters or digits in a row, after dropping case,
+/** The run length that counts as a quote of private material: 40 letters in a row, after dropping case, digits,
  *  spaces, punctuation and markup (the skeleton). pack/runtime/lib/hs_original_text.py writes the same hashes. */
 export const PRIVATE_RUN = 40
 /** A part longer than this is not scanned: while any private material is indexed, it is redacted as a whole. */
@@ -205,9 +205,17 @@ export function skeleton(text: string): number[] {
 /** Version of the index format (skeleton and hashes); the helper writes `<name>.v<INDEX_FORMAT>.bin`, and older
  *  files are dropped so they are rebuilt. */
 export const INDEX_FORMAT = 2
-/** A line's enumerator or bullet (`1.`, `Q1:`, `(a)`, `Item 3:`, `- `, a read tool's `12| `), which inserts letters
- *  (q, item, a) between items: removed in one of the checked forms, and on the helper's side too. */
-export const ENUMERATOR = /^\s*(?:\d+\|\s?)?(?:[-*\u2022\u00b7]\s+|\(?(?:q|item|no\.?)?\s*\d+[a-z]?\s*[.):]\s*|\(?[a-z]\s*[.)]\s+)?/i
+/** A line's enumerator, bullet or heading (`1.`, `Q1:`, `S1.`, `A1)`, `(a)`, `i.`, `(ii)`, `Question 1:`,
+ *  `Statement 2:`, `Item 3:`, `### Q1`, `第1题：`, `- `, a read tool's `12| `), which inserts letters (q, item, a, ii, 第题)
+ *  between items: removed in one of the checked forms, and on the helper's side too (hs_original_text.py, same text). */
+export const ENUMERATOR = /^\s*(?:[0-9]+\|\s?)?(?:#{1,6}\s*)?(?:\*\*)?(?:[-*•·]\s+|\(?(?:[a-z]{1,2}|item|no\.?|question|statement)?\s*[0-9]+[a-z]?\s*(?:[.):：]\s*|$)|\(?(?:[ivx]{1,5}|[a-z])\s*[.)]\s+|第\s*[0-9]+\s*[题问項项条]\s*[:：.、]?\s*)?(?:\*\*)?/i
+/** The same enumerators in the middle of a line (`Q1: … Q2: …`, `(a) … (b) …`, `第1题…第2题`). */
+export const INLINE_ENUMERATOR = /(?:^|(?<=[\s,;]))(?:\((?:[ivx]{1,5}|[a-z]|[0-9]+)\)|(?:q|question|statement|item|s|a)\s*[0-9]+[a-z]?\s*[:.)]|第\s*[0-9]+\s*[题问項项条]\s*[:：.、]?)/gi
+/** A text with every line's leading enumerator and every inline enumerator removed (the second checked form). NFKC
+ *  first, so full-width digits and colons (第１题：) are the ASCII ones the patterns name ([0-9], never \d). */
+export function stripEnumerators(text: string): string {
+  return text.normalize('NFKC').split(/\r?\n/).map((l) => l.replace(ENUMERATOR, '').replace(INLINE_ENUMERATOR, ' ')).join('\n')
+}
 /** Hash of one window of skeleton code points: two independent 32-bit hashes. */
 export function windowPair(cps: number[], start: number, n = PRIVATE_RUN): [number, number] {
   let a = 0x811c9dc5, b = 0x9747b28c
@@ -285,7 +293,7 @@ function sortedIndex(pairs: Uint32Array): PrivateIndex {
 export function privateIndexOf(texts: string[]): PrivateIndex {
   const out: number[] = []
   for (const raw of texts) {
-    const stripped = raw.split(/\r?\n/).map((l) => l.replace(ENUMERATOR, '')).join('\n')
+    const stripped = stripEnumerators(raw)
     for (const t of stripped === raw ? [raw] : [raw, stripped]) { const cps = skeleton(t); for (let i = 0; i + PRIVATE_RUN <= cps.length; i++) out.push(...windowPair(cps, i)) }
   }
   const buf = new Uint8Array(out.length * 4)
@@ -312,7 +320,7 @@ export function checkedForms(text: string): string[] {
   const out = [text]
   if (unescaped !== text) out.push(unescaped)
   for (const t of [...out]) {
-    const stripped = t.split(/\r?\n/).map((l) => l.replace(ENUMERATOR, '')).join('\n')
+    const stripped = stripEnumerators(t)
     if (stripped !== t) out.push(stripped)
   }
   return out

@@ -826,6 +826,58 @@ await test('a withheld file\'s name is not logged as an event target', () => {
   assert.equal(core.namesPrivatePath('artifacts/notes.md', false), false)
 })
 
+await test('enumerators of every common shape are removed, at line start and mid-line (review probe probe4)', () => {
+  const { redactCapture, privateIndexOf, stripEnumerators } = core
+  const ITEMS = ['I often feel nervous at work.', 'My manager listens to me.', 'I trust my colleagues fully.', 'I would leave this job soon.']
+  const R = ['i', 'ii', 'iii', 'iv']
+  for (const src of [ITEMS.join('\n'), ITEMS.map((l, i) => `${i + 1}. ${l}`).join('\n')]) {
+    const idx = privateIndexOf([src])
+    const leaks = (t) => JSON.stringify(redactCapture({ event_type: 'x', metadata: { t } }, idx, true)).includes('nervous at work')
+    const cases = {
+      roman: ITEMS.map((l, i) => `${R[i]}. ${l}`).join('\n'),
+      romanParen: ITEMS.map((l, i) => `(${R[i]}) ${l}`).join('\n'),
+      question: ITEMS.map((l, i) => `Question ${i + 1}: ${l}`).join('\n'),
+      statement: ITEMS.map((l, i) => `Statement ${i + 1}: ${l}`).join('\n'),
+      S1: ITEMS.map((l, i) => `S${i + 1}. ${l}`).join('\n'),
+      A1: ITEMS.map((l, i) => `A${i + 1}) ${l}`).join('\n'),
+      boldnum: ITEMS.map((l, i) => `**${i + 1}.** ${l}`).join('\n'),
+      hash: ITEMS.map((l, i) => `#${i + 1} ${l}`).join('\n'),
+      mdheading: ITEMS.map((l, i) => `### Q${i + 1}\n${l}`).join('\n'),
+      inline: ITEMS.map((l, i) => `(${i + 1}) ${l}`).join(' '),
+      inlineQ: ITEMS.map((l, i) => `Q${i + 1}: ${l}`).join(' '),
+      inlineLetter: ITEMS.map((l, i) => `(${'abcd'[i]}) ${l}`).join(' '),
+      semicolon: ITEMS.join('; '),
+      quotes: ITEMS.map((l) => `"${l}"`).join(', '),
+      numTab: ITEMS.map((l, i) => `${i + 1}\t${l}`).join('\n'),
+      zhNum: ITEMS.map((l, i) => `第${i + 1}题：${l}`).join('\n'),
+      crlf: ITEMS.map((l, i) => `Q${i + 1}. ${l}`).join('\r\n'),
+    }
+    for (const [k, v] of Object.entries(cases)) assert.equal(leaks(v), false, `${k} (${src.startsWith('1.') ? 'numbered' : 'plain'} source)`)
+  }
+  // ordinary prose keeps its words: only enumerator shapes go
+  assert.equal(stripEnumerators('My manager listens to me. I agree (mostly).'), 'My manager listens to me. I agree (mostly).')
+  // the accepted limit, named in the doc: per-item structured data (JSON objects with ids, YAML, CSV) is not recognised
+})
+
+await test('full-width digits are enumerators too, and stripping is linear on hostile lines', () => {
+  const { redactCapture, privateIndexOf, stripEnumerators, ENUMERATOR } = core
+  const ITEMS = ['I often feel nervous at work.', 'My manager listens to me.', 'I trust my colleagues fully.', 'I would leave this job soon.']
+  const idx = privateIndexOf([ITEMS.join('\n')])
+  const leaks = (t) => JSON.stringify(redactCapture({ event_type: 'x', metadata: { t } }, idx, true)).includes('nervous at work')
+  assert.equal(leaks(ITEMS.map((l, i) => `第${String.fromCharCode(0xff11 + i)}题：${l}`).join('\n')), false, '第１题：')
+  assert.equal(leaks(ITEMS.map((l, i) => `Ｑ${String.fromCharCode(0xff11 + i)}： ${l}`).join('\n')), false, 'Ｑ１：')
+  assert.equal(stripEnumerators('第１题：走路').trim(), '走路')
+  for (const line of [' '.repeat(100_000) + '1' + ' '.repeat(100_000), ' '.repeat(100_000) + '1' + ' '.repeat(100_000) + 'x',
+    'Q' + ' '.repeat(100_000) + '1' + ' '.repeat(100_000) + 'x']) {
+    const t0 = performance.now()
+    line.replace(ENUMERATOR, '')
+    stripEnumerators(line)
+    const ms = performance.now() - t0
+    assert.ok(ms < 100, `took ${ms.toFixed(0)} ms`)
+  }
+  assert.equal(stripEnumerators('### Q1'), '')
+})
+
 console.log(`\n${passed} passed`)
 
 await test('large Unicode content reconstructs exactly from ordered gzip parts', () => {

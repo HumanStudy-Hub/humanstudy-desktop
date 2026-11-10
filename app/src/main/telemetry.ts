@@ -3,7 +3,7 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { storeResearchContent } from './research-content'
 import { createResearchCollector } from './research-collector'
@@ -13,7 +13,8 @@ import { actionRef, type ActionRef } from '../shared/research-operations'
 import { createSerial, createWriteAttribution, isSaveTemp } from './write-capture'
 import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
-import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, INDEX_FORMAT, namesPrivatePath, mayCollectFile, mergePrivateIndex, programDiff, REDACTED_PRIVATE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
+import { loadPrivateIndexDir } from './private-index'
+import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, namesPrivatePath, mayCollectFile, programDiff, REDACTED_PRIVATE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
 import { createReplay, REPLAY_FLUSH_MS, type Replay, type ReplayFile, type ReplayFs } from './replay-core'
 import type { Capture } from './threads-core'
 import type { KernelEvent } from './kernel-types'
@@ -412,29 +413,14 @@ function fit(out: Record<string, unknown>, key: string, value: string | undefine
 
 }
 
-// ---- private material: hashes of every 40-character run of the researcher's private copies -----------------------
-// Written by pack/runtime/lib/hs_original_text.py into <userData>/original-text/redact/*.idx (one 16-hex-digit hash
-// per line, never text); loaded once per session and again after a file is dropped (refreshPrivateIndex).
+// ---- private material: hashes of every 40-letter run of the researcher's private copies ---------------------------
+// Written by pack/runtime/lib/hs_original_text.py into <userData>/original-text/redact/<sha256 of a project
+// folder>.v<INDEX_FORMAT>.bin (sorted 8-byte hashes, never text) beside <sha>.path; loaded by private-index.ts once
+// per session and again after each check and each drop (refreshPrivateIndex).
 let privateIndex: PrivateIndex = EMPTY_INDEX
 const originalTextDir = (): string => join(app.getPath('userData'), 'original-text')
 export async function refreshPrivateIndex(dir = join(originalTextDir(), 'redact')): Promise<void> {
-  const buffers: Uint8Array[] = []
-  const current = `.v${INDEX_FORMAT}.bin`
-  for (const name of await readdir(dir).catch(() => [] as string[])) {
-    if (!name.endsWith('.bin')) continue
-    // an index of an older format is dropped (the helper rebuilds it on the next check)
-    if (!name.endsWith(current)) { await rm(join(dir, name), { force: true }).catch(() => undefined); continue }
-    // a project folder that no longer exists: its index is pruned (the helper records the folder beside it)
-    const pathFile = join(dir, name.slice(0, -current.length) + '.path')
-    const folder = await readFile(pathFile, 'utf8').catch(() => null)
-    if (folder !== null && !existsSync(folder.trim())) {
-      await Promise.all([rm(join(dir, name), { force: true }), rm(pathFile, { force: true })]).catch(() => undefined)
-      continue
-    }
-    const b = await readFile(join(dir, name)).catch(() => null)
-    if (b) buffers.push(b)
-  }
-  privateIndex = mergePrivateIndex(buffers)   // each file is already sorted: merged, never re-sorted
+  privateIndex = await loadPrivateIndexDir(dir)
 }
 /** A project with a published study: protocol.json carries a `distribution` block, or the app pinned one for it.
  *  Read synchronously (capture calls it on every event) and kept for a few seconds per project. */

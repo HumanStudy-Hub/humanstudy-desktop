@@ -385,9 +385,16 @@ _M32 = 0xFFFFFFFF
 
 
 INDEX_FORMAT = 2   # telemetry-core.ts INDEX_FORMAT: files are <name>.v2.bin; older ones are rebuilt
-# telemetry-core.ts ENUMERATOR: a line's enumerator or bullet, removed in a second form of every text
-ENUMERATOR = re.compile(r"^\s*(?:\d+\|\s?)?(?:[-*\u2022\u00b7]\s+|\(?(?:q|item|no\.?)?\s*\d+[a-z]?\s*[.):]\s*|\(?[a-z]\s*[.)]\s+)?",
-                        re.I)
+# telemetry-core.ts ENUMERATOR / INLINE_ENUMERATOR (the same patterns): a line's enumerator, bullet or heading, and the
+# same enumerators mid-line, removed in a second form of every text
+ENUMERATOR = re.compile(r"^\s*(?:[0-9]+\|\s?)?(?:#{1,6}\s*)?(?:\*\*)?(?:[-*•·]\s+|\(?(?:[a-z]{1,2}|item|no\.?|question|statement)?\s*[0-9]+[a-z]?\s*(?:[.):：]\s*|$)|\(?(?:[ivx]{1,5}|[a-z])\s*[.)]\s+|第\s*[0-9]+\s*[题问項项条]\s*[:：.、]?\s*)?(?:\*\*)?", re.I)
+INLINE_ENUMERATOR = re.compile(r"(?:^|(?<=[\s,;]))(?:\((?:[ivx]{1,5}|[a-z]|[0-9]+)\)|(?:q|question|statement|item|s|a)\s*[0-9]+[a-z]?\s*[:.)]|第\s*[0-9]+\s*[题问項项条]\s*[:：.、]?)", re.I)
+
+
+def strip_enumerators(text: str) -> str:
+    """telemetry-core.ts stripEnumerators: lines split on \\n with a trailing \\r dropped (the app's /\\r?\\n/)."""
+    return "\n".join(INLINE_ENUMERATOR.sub(" ", ENUMERATOR.sub("", line.rstrip("\r"), count=1))
+                     for line in unicodedata.normalize("NFKC", text).split("\n"))   # NFKC first, as the app
 
 
 def skeleton(text: str) -> list[int]:
@@ -399,7 +406,7 @@ def skeleton(text: str) -> list[int]:
 def window_pairs(text: str) -> set[tuple[int, int]]:
     """(a, b) hash of every PRIVATE_RUN-long window of the text's skeleton (telemetry-core.ts windowHash), for the
     text as it is and with each line's enumerator removed (Q1:, (a), Item 3: insert letters between items)."""
-    stripped = "\n".join(ENUMERATOR.sub("", line, count=1) for line in text.splitlines())
+    stripped = strip_enumerators(text)
     out = _windows(text)
     if stripped != text:
         out |= _windows(stripped)
@@ -482,6 +489,10 @@ def index_project(cache: Path, project: Path, projection: dict, files: list[Path
     is a hosted source's recorded sha256 in that received copy. Nothing written on this computer (sources/ outside
     private/, sources/researcher/, effects.json, the live protocol.json) ever counts as public: text copied out of
     sources/private/ stays private."""
+    # cached windows of an older index format are dropped (they are rebuilt from the files when needed)
+    for old in (cache / "windows").glob("*.bin") if (cache / "windows").is_dir() else []:
+        if not old.name.endswith(".v%d.bin" % INDEX_FORMAT):
+            old.unlink(missing_ok=True)
     private: set = set()
     for f in files:
         if _is_private(f):
