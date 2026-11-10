@@ -13,7 +13,7 @@ import { actionRef, type ActionRef } from '../shared/research-operations'
 import { createSerial, createWriteAttribution, isSaveTemp } from './write-capture'
 import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
-import { accountHash, createTelemetry, FLUSH_INTERVAL_MS, programDiff, redactPrivatePart, scrubString, type StoredState, type Telemetry } from './telemetry-core'
+import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, mayCollectFile, privateIndexFrom, programDiff, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
 import { createReplay, REPLAY_FLUSH_MS, type Replay, type ReplayFile, type ReplayFs } from './replay-core'
 import type { Capture } from './threads-core'
 import type { KernelEvent } from './kernel-types'
@@ -120,6 +120,9 @@ async function queueSource(projectDir: string, rel: string, trigger: 'baseline' 
   const actual = await realpath(path), root = await realpath(projectDir)
   if (!actual.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) return
   const ext = extname(path).toLowerCase()
+  // Never a file that quotes private material, nor one that cannot be checked while any is indexed.
+  const text = TEXT_EXTS.has(ext.slice(1)) ? await readFile(path, 'utf8').catch(() => undefined) : undefined
+  if (!mayCollectFile({ rel, text, published: await publishedProject(projectDir), index: privateIndex })) return
   const mime = ext === '.pdf' ? 'application/pdf' : ext === '.zip' ? 'application/zip' : ext === '.json' ? 'application/json' : 'application/octet-stream'
   const link = imported && Date.now() - imported.at <= IMPORT_LINK_MS ? researchAgent.sourceLink(imported.ref) : researchAgent.sourceLink(undefined, trigger)
   await sourceCollector().queueSource(path, projectId, mime, link)
@@ -398,15 +401,21 @@ function fit(out: Record<string, unknown>, key: string, value: string | undefine
 // ---- private material: hashes of every 40-character run of the researcher's private copies -----------------------
 // Written by pack/runtime/lib/hs_original_text.py into <userData>/original-text/redact/*.idx (one 16-hex-digit hash
 // per line, never text); loaded once per session and again after a file is dropped (refreshPrivateIndex).
-let privateIndex: Set<string> = new Set()
-export async function refreshPrivateIndex(dir = join(app.getPath('userData'), 'original-text', 'redact')): Promise<void> {
-  const next = new Set<string>()
-  for (const name of await readdir(dir).catch(() => [] as string[])) {
-    if (!name.endsWith('.idx')) continue
-    const body = await readFile(join(dir, name), 'utf8').catch(() => '')
-    for (const line of body.split('\n')) if (/^[0-9a-f]{16}$/.test(line)) next.add(line)
-  }
-  privateIndex = next
+let privateIndex: PrivateIndex = EMPTY_INDEX
+const originalTextDir = (): string => join(app.getPath('userData'), 'original-text')
+export async function refreshPrivateIndex(dir = join(originalTextDir(), 'redact')): Promise<void> {
+  const buffers: Uint8Array[] = []
+  for (const name of await readdir(dir).catch(() => [] as string[]))
+    if (name.endsWith('.bin')) { const b = await readFile(join(dir, name)).catch(() => null); if (b) buffers.push(b) }
+  privateIndex = privateIndexFrom(buffers)
+}
+/** A project with a published study: protocol.json carries a `distribution` block, or the app pinned one for it. */
+async function publishedProject(projectDir: string): Promise<boolean> {
+  try { if (JSON.parse(await readFile(join(projectDir, 'protocol.json'), 'utf8'))?.distribution) return true } catch { /* none */ }
+  try {
+    const pins = JSON.parse(await readFile(join(originalTextDir(), 'pins.json'), 'utf8'))
+    return Object.prototype.hasOwnProperty.call(pins, await realpath(projectDir))
+  } catch { return false }
 }
 
 // ---- agent transcript -------------------------------------------------------------------
@@ -425,7 +434,7 @@ export function onThreadCapture(c: Capture): void {
     const base: Record<string, unknown> = { thread_id: c.threadId, message_id: c.messageId, part: c.index, message_at: c.at }
     if (c.workspace) fit(base, 'workspace', JSON.stringify(c.workspace), 5_500, c.dir)
     // Private material (a dropped copy in sources/private/, the restored-wording cache) never enters capture.
-    const p = redactPrivatePart(c.part, privateIndex)
+    const p = redactPrivatePart(c.part, privateIndex, existsSync(join(c.dir, 'sources', 'private')))
     if (p.kind === 'text') {
       fit(base, 'text', p.text, 11_000, c.dir)
       track(c.role === 'user' ? 'conversation.user' : 'conversation.assistant', { metadata: base }, c.dir)
@@ -557,8 +566,15 @@ async function snapshotFileNow(projectDir: string, rel: string, owner: string | 
   if (!st?.isFile()) return
   const ext = extname(rel).slice(1).toLowerCase()
   const metadata: Record<string, unknown> = { size: st.size, ext, by: byWhom(resolve(path)) }
+  // Run outputs of a published study, a file that quotes private material, and (while any is indexed) a file that
+  // cannot be read as text are never collected: only the fact that a file was written is recorded.
+  const textForCheck = TEXT_EXTS.has(ext) ? await readFile(path, 'utf8').catch(() => undefined) : undefined
+  if (!mayCollectFile({ rel, text: textForCheck, published: await publishedProject(projectDir), index: privateIndex })) {
+    track('project.file_written', { target: rel, metadata: { ...metadata, withheld: 'private-material' } }, projectDir)
+    return
+  }
   if (TEXT_EXTS.has(ext)) {
-    const text = await readFile(path, 'utf8')
+    const text = textForCheck ?? await readFile(path, 'utf8')
     metadata.by = byWhom(resolve(path), text)
     const hash = createHash('sha1').update(text).digest('hex')
     const key = `${owner}:${projectDir}\0${rel}`

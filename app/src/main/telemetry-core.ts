@@ -181,17 +181,19 @@ function decoded(s: string): string {
   return out.replace(/(^|[\\/])(?:\.[\\/])+/g, '$1')
 }
 /** True when a tool call's text names private material by path (see PRIVATE_MATERIAL). */
-export function namesPrivatePath(text: string): boolean {
+export function namesPrivatePath(text: string, globs = true): boolean {
   const t = decoded(text)
   if (PRIVATE_MATERIAL.test(t)) return true
   if (/\bsources\b/i.test(t) && /private/i.test(t)) return true
-  return /\bsources[\\/]+[^\s'"]*[*?[{]/i.test(t) || /\b(?:find|grep|egrep|rg|ag)\b[^\n|;&]*(?:^|[\s'"=/])sources(?:[\\/]*)(?=[\s'"]|$)/i.test(t)
+  return globs && (/\bsources[\\/]+[^\s'"]*[*?[{]/i.test(t) || /\b(?:find|grep|egrep|rg|ag)\b[^\n|;&]*(?:^|[\s'"=/])sources(?:[\\/]*)(?=[\s'"]|$)/i.test(t))
 }
 
 // ---- content index: 40-character runs of private text, by hash ------------------------------------------------
 /** The run length that counts as a quote of private material: 40 letters or digits in a row, after dropping case,
  *  spaces, punctuation and markup (the skeleton). pack/runtime/lib/hs_original_text.py writes the same hashes. */
 export const PRIVATE_RUN = 40
+/** A part longer than this is not scanned: while any private material is indexed, it is redacted as a whole. */
+export const SCAN_LIMIT = 300_000
 const M = 0x5bd1e995
 /** The skeleton of a text: NFKC, lower case, letters and digits only, as code points. */
 export function skeleton(text: string): number[] {
@@ -199,38 +201,93 @@ export function skeleton(text: string): number[] {
   for (const ch of text.normalize('NFKC').toLowerCase()) if (/[\p{L}\p{N}]/u.test(ch)) out.push(ch.codePointAt(0)!)
   return out
 }
-/** Hash of one window of skeleton code points: two independent 32-bit hashes, as 16 hex digits. */
-export function windowHash(cps: number[], start: number, n = PRIVATE_RUN): string {
+/** Hash of one window of skeleton code points: two independent 32-bit hashes. */
+export function windowPair(cps: number[], start: number, n = PRIVATE_RUN): [number, number] {
   let a = 0x811c9dc5, b = 0x9747b28c
   for (let i = start; i < start + n; i++) {
     a = Math.imul(a ^ cps[i], 0x01000193) >>> 0
     b = Math.imul(b ^ cps[i], M) >>> 0
     b = (b ^ (b >>> 15)) >>> 0
   }
+  return [a, b]
+}
+export function windowHash(cps: number[], start: number, n = PRIVATE_RUN): string {
+  const [a, b] = windowPair(cps, start, n)
   return a.toString(16).padStart(8, '0') + b.toString(16).padStart(8, '0')
 }
-/** True when `text` holds a run of PRIVATE_RUN skeleton characters found in the index (at most the first 300k). */
-export function containsPrivateRun(text: string, index: ReadonlySet<string>): boolean {
+/** A compact set of window hashes: sorted (a, b) uint32 pairs in one typed array, searched by bisection. */
+export interface PrivateIndex { size: number; has(a: number, b: number): boolean }
+export const EMPTY_INDEX: PrivateIndex = { size: 0, has: () => false }
+/** The index from the helper's files: each a run of big-endian (a, b) uint32 pairs (8 bytes per hash). */
+export function privateIndexFrom(buffers: Uint8Array[]): PrivateIndex {
+  const n = buffers.reduce((k, b) => k + Math.floor(b.length / 8), 0)
+  const order = new Uint32Array(n * 2)
+  let k = 0
+  for (const buf of buffers) {
+    const v = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+    for (let i = 0; i + 8 <= buf.length; i += 8) { order[k++] = v.getUint32(i); order[k++] = v.getUint32(i + 4) }
+  }
+  const idx = Array.from({ length: n }, (_, i) => i).sort((x, y) => order[2 * x] - order[2 * y] || order[2 * x + 1] - order[2 * y + 1])
+  const pairs = new Uint32Array(n * 2)
+  idx.forEach((j, i) => { pairs[2 * i] = order[2 * j]; pairs[2 * i + 1] = order[2 * j + 1] })
+  return {
+    size: n,
+    has(a, b) {
+      let lo = 0, hi = n - 1
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1, x = pairs[2 * mid], y = pairs[2 * mid + 1]
+        if (x === a && y === b) return true
+        if (x < a || (x === a && y < b)) lo = mid + 1; else hi = mid - 1
+      }
+      return false
+    },
+  }
+}
+/** The index of some texts (tests, and the app's own fallbacks). */
+export function privateIndexOf(texts: string[]): PrivateIndex {
+  const out: number[] = []
+  for (const t of texts) { const cps = skeleton(t); for (let i = 0; i + PRIVATE_RUN <= cps.length; i++) out.push(...windowPair(cps, i)) }
+  const buf = new Uint8Array(out.length * 4)
+  const v = new DataView(buf.buffer)
+  out.forEach((x, i) => v.setUint32(i * 4, x))
+  return privateIndexFrom([buf])
+}
+/** True when `text` holds a run of PRIVATE_RUN skeleton characters found in the index. A text longer than
+ *  SCAN_LIMIT counts as private while anything is indexed (it is not scanned, and never sent in part). */
+export function containsPrivateRun(text: string, index: PrivateIndex): boolean {
   if (!index.size || !text) return false
-  const cps = skeleton(text.length > 300_000 ? text.slice(0, 300_000) : text)
-  for (let i = 0; i + PRIVATE_RUN <= cps.length; i++) if (index.has(windowHash(cps, i))) return true
+  if (text.length > SCAN_LIMIT) return true
+  const cps = skeleton(text)
+  for (let i = 0; i + PRIVATE_RUN <= cps.length; i++) { const [a, b] = windowPair(cps, i); if (index.has(a, b)) return true }
   return false
 }
 
 /** An agent transcript part with private material blanked. A tool call whose input or title names a private path,
  *  or any of whose fields quotes private text (index), loses input, output and title; a text part that quotes it
- *  loses its text; a raw (native) or reasoning part that names or quotes it is dropped. */
-export function redactPrivatePart<T extends { kind: string }>(part: T, index: ReadonlySet<string> = new Set()): T {
+ *  loses its text; a raw (native) or reasoning part that names or quotes it is dropped. `globs`: also count globs and
+ *  searches under sources/ (only where the project has a sources/private/ folder). */
+export function redactPrivatePart<T extends { kind: string }>(part: T, index: PrivateIndex = EMPTY_INDEX, globs = true): T {
   const str = (v: unknown): string => (v === undefined ? '' : typeof v === 'string' ? v : JSON.stringify(v) ?? '')
   const quotes = (v: unknown): boolean => containsPrivateRun(str(v), index)
+  const names = (v: unknown): boolean => namesPrivatePath(str(v), globs)
   const q = part as T & { input?: unknown; output?: unknown; detail?: unknown; text?: unknown }
-  if (part.kind === 'tool' && (namesPrivatePath(str(q.input)) || namesPrivatePath(str(q.detail)) || quotes(q.input) || quotes(q.output) || quotes(q.detail)))
+  if (part.kind === 'tool' && (names(q.input) || names(q.detail) || quotes(q.input) || quotes(q.output) || quotes(q.detail)))
     return { ...part, input: REDACTED_PRIVATE, output: REDACTED_PRIVATE, detail: REDACTED_PRIVATE, redacted: 'private-material' }
   if (part.kind === 'text' && quotes(q.text)) return { ...part, text: REDACTED_PRIVATE, redacted: 'private-material' }
-  if ((part.kind === 'native' || part.kind === 'reasoning') && (namesPrivatePath(str(part)) || quotes(part)))
+  if ((part.kind === 'native' || part.kind === 'reasoning') && (names(part) || quotes(part)))
     return { kind: part.kind, redacted: 'private-material' } as unknown as T
   if (part.kind !== 'tool' && part.kind !== 'text' && quotes(part)) return { kind: part.kind, redacted: 'private-material' } as unknown as T
   return part
+}
+
+/** Whether research capture may collect a project file. Never: run outputs (artifacts/simulations/, runs/) of a
+ *  published study (its AI participants' replies can quote the restored wording); a text file that quotes private
+ *  material; and, while any private material is indexed, a file that cannot be read as text (it cannot be checked). */
+export function mayCollectFile(o: { rel: string; text?: string; published: boolean; index: PrivateIndex }): boolean {
+  const rel = o.rel.split('\\').join('/')
+  if (o.published && /^(?:artifacts\/simulations|runs)(?:\/|$)/.test(rel)) return false
+  if (o.text === undefined) return o.index.size === 0
+  return !containsPrivateRun(o.text, o.index)
 }
 
 export function sanitizeEvent(

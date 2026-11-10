@@ -36,7 +36,7 @@ import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, tr
 import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf } from './package-readiness'
-import { fillOriginalText, heldPinProblem, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, restoredRunFiles, writeAgentStatus } from './original-text'
+import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, restoredRunFiles, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
 import { protocolBudget, protocolReadiness, restoredReadiness, sourceTextArgs } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
@@ -46,6 +46,7 @@ import { RunRegistry } from './run-registry'
 import { launchProtocolRun, newRunFolder, sweepRunCopies, type Binding as ProtocolBinding } from './protocol-run'
 import type { Kernel, KernelEvent } from './kernel-types'
 import { actionRef } from '../shared/research-operations'
+import { withPrivateCopyNote } from '../shared/workspace-context'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
 
 // macOS with /usr/bin/sandbox-exec: simulations go through a per-run relay. Elsewhere they use the
@@ -391,6 +392,8 @@ app.on('second-instance', () => {
 })
 
 /** App storage for published studies' original wording (downloads and restored protocols; never in a project). */
+/** Per project: the paths of copies dropped into sources/private/ of a published study (for the agent's note). */
+const privateImports = new Map<string, Set<string>>()
 const originalTextCache = (): string => join(app.getPath('userData'), 'original-text')
 /** The contents of the project's sourcetext/ files the checks read (part of the restored-copy check's cache key). */
 async function sourceTextStamp(project: string): Promise<string> {
@@ -585,8 +588,15 @@ app.whenReady().then(() => {
       // Import is a known completed action; don't rely on fs.watch reporting a filename on Windows.
       telemetry.noteFsChange(root, relative(root, target))
       out.push({ name: basename(target), path: target, url: toUrl(target), ext: extname(target).slice(1).toLowerCase() })
+      if (published) privateImports.set(root, new Set([...(privateImports.get(root) ?? []), relative(root, target).split(sep).join('/')]))
     }
-    if (published && out.length) void originalTextProblemsOf(root).catch(() => undefined)   // fill in what the copy can
+    if (published && out.length) {
+      // Recognise the copy in research capture before the agent hears of it, then fill in what it can.
+      const python = await readyPython()
+      if (python) await indexPrivateCopies(python, trustedOriginalTextFiles(), root, originalTextCache(), process.env.HUMANSTUDY_RUNTIME_BIN || '').catch(() => undefined)
+      await telemetry.refreshPrivateIndex().catch(() => undefined)
+      void originalTextProblemsOf(root).catch(() => undefined)
+    }
     return out
   })
 
@@ -831,7 +841,7 @@ app.whenReady().then(() => {
       }
     }
     telemetry.trackTurnStart(id, text, actionRef(action))
-    const prompt = threads().beforeSend(id, text, workspace)
+    const prompt = withPrivateCopyNote(threads().beforeSend(id, text, workspace), text, projectDir ? privateImports.get(resolve(projectDir)) ?? [] : [])
     const alreadyActive = activeTurns.has(id)
     activeTurns.add(id)
     try { await k.send(id, prompt) }

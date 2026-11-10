@@ -5,7 +5,7 @@ import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -196,8 +196,9 @@ test('end to end with the bundled engine: downloads the link source, takes the d
     assert.equal(JSON.parse(shown).complete, true)
     // the helper indexed the private copies, the download and the restored wording for research capture (hashes
     // only): the app's capture recognises a quote of any of them
-    const index = new Set(readdirSync(join(cache, 'redact')).flatMap((f) => readFileSync(join(cache, 'redact', f), 'utf8').split('\n').filter(Boolean)))
-    for (const f of readdirSync(join(cache, 'redact'))) assert.doesNotMatch(readFileSync(join(cache, 'redact', f), 'utf8'), /[g-z]/, 'hashes only')
+    const index = T.privateIndexFrom(readdirSync(join(cache, 'redact')).map((f) => readFileSync(join(cache, 'redact', f))))
+    assert.ok(index.size > 0)
+    for (const f of readdirSync(join(cache, 'redact'))) assert.ok(!readFileSync(join(cache, 'redact', f)).includes('walk'), 'hashes only')
     assert.equal(T.containsPrivateRun('the booklet asks: how many MINUTES did you walk this morning, did you see a neighbour', index), true)
     assert.equal(T.containsPrivateRun('Thank you for joining this short study about walking before breakfast.', index), true)
     assert.equal(T.containsPrivateRun('A summary in my own words about a study of morning walks and breakfast habits.', index), false)
@@ -274,12 +275,38 @@ test('the engine checks run on the restored copy in app storage; their findings 
 })
 
 test('a drop into a published study tells the agent, in the prompt only, not to open the file', () => {
-  const text = '[Attached: sources/private/booklet.html, notes.txt]\nHere is my copy'
-  assert.deepEqual(W.privateAttachments(text), ['sources/private/booklet.html'])
-  const prompt = W.withWorkspaceContext(text)
-  assert.ok(prompt.startsWith(text), 'the researcher\'s own words come first, unchanged')
-  assert.match(prompt, /received to fill in the study's original wording.*Do not open, read, extract or move this file/)
-  assert.equal(W.withWorkspaceContext('[Attached: sources/open/a.pdf]\nhi'), '[Attached: sources/open/a.pdf]\nhi')
+  const odd = 'sources/private/Walk, booklet [v2].pdf'
+  const text = `[Attached: ${odd}, notes.txt]\nHere is my copy`
+  assert.deepEqual(W.privateAttachments(text, [odd, 'sources/private/other.pdf']), [odd], 'commas and ] in a name')
+  const prompt = W.withPrivateCopyNote('PROMPT', text, [odd])
+  assert.ok(prompt.startsWith('PROMPT'))
+  assert.match(prompt, /Walk, booklet \[v2\]\.pdf was received to fill in the study's original wording.*Do not open, read, extract or move this file/)
+  assert.equal(W.withPrivateCopyNote('P', '[Attached: sources/open/a.pdf]\nhi', [odd]), 'P')
+  assert.equal(W.withWorkspaceContext(text), text, 'the researcher\'s message itself is unchanged')
+  assert.match(readFileSync(join(here, 'index.ts'), 'utf8'), /withPrivateCopyNote\(threads\(\)\.beforeSend\(id, text, workspace\), text,/)
   const chat = readFileSync(join(here, '../renderer/components/Chat.tsx'), 'utf8')
   assert.doesNotMatch(chat, /Do not open/, 'the chat bubble carries no agent instruction')
+})
+
+test('the redaction index leaves out what the project shows publicly, and is written before any download', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject({ 'sources/private/booklet.html': 'booklet.html' })
+  close()
+  // a private copy with two long sentences; the project's own effects.json quotes the first (public)
+  const A = 'The first invented sentence of this private copy is long enough to count as a quote.'
+  const B = 'The second invented sentence of this private copy stays private and must be recognised.'
+  writeFileSync(join(proj, 'sources/private/notes.txt'), A + '\n' + B + '\n')
+  writeFileSync(join(proj, 'effects.json'), JSON.stringify({ effects: [{ id: 'e', quote: A }] }))
+  const cache = mkdtempSync(join(tmpdir(), 'text-cache-'))
+  await O.indexPrivateCopies(python, FILES, proj, cache, '')
+  assert.ok(!existsSync(join(cache, 'downloads')), 'index-only: nothing downloaded')
+  const index = T.privateIndexFrom(readdirSync(join(cache, 'redact')).map((f) => readFileSync(join(cache, 'redact', f))))
+  assert.equal(T.containsPrivateRun('the notes say: ' + B, index), true)
+  assert.equal(T.containsPrivateRun('the effects file quotes: ' + A, index), false, 'public in effects.json')
+  assert.equal(T.containsPrivateRun('How many minutes did you walk this morning? Did you see a neighbour on the way?', index), true, 'the dropped booklet')
+  // the file's windows are kept by its sha256: a second index does not extract it again
+  const windows = readdirSync(join(cache, 'windows'))
+  assert.ok(windows.length >= 1)
+  const before = windows.map((f) => statSync(join(cache, 'windows', f)).mtimeMs)
+  await O.indexPrivateCopies(python, FILES, proj, cache, '')
+  assert.deepEqual(readdirSync(join(cache, 'windows')).map((f) => statSync(join(cache, 'windows', f)).mtimeMs), before)
 })

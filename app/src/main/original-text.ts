@@ -72,12 +72,12 @@ function networkEnv(): Record<string, string> {
 /** Fill in the original wording of the project's protocol.json (a no-op answer for an ordinary one). `files`: the
  *  engine under hsenv/ and the helper as hs_original_text.py, from the app's own copy. */
 export async function fillOriginalText(python: string, files: [string, string][], project: string, cacheDir: string, bin: string,
-  o: { allowLocal?: boolean; offline?: boolean; timeout?: number } = {}): Promise<OriginalTextStatus> {
+  o: { allowLocal?: boolean; offline?: boolean; timeout?: number; indexOnly?: boolean } = {}): Promise<OriginalTextStatus> {
   if (!files.some(([rel]) => rel === 'hs_original_text.py') || !files.some(([rel]) => rel === 'hsenv/hsenv/distribution.py'))
     throw Error('The original-wording helper is not available in this version.')
   const protocol = await realpath(join(project, 'protocol.json'))
   await mkdir(cacheDir, { recursive: true })
-  const args = [...(o.allowLocal ? ['--allow-local'] : []), ...(o.offline ? ['--offline'] : []),
+  const args = [...(o.allowLocal ? ['--allow-local'] : []), ...(o.offline ? ['--offline'] : []), ...(o.indexOnly ? ['--index-only'] : []),
     ...(await candidateFiles(project)).flatMap((f) => ['--file', f])]
   return withScratch(files, async (work, home) => {
     const code = runner(LIMITS.cpuSeconds, LIMITS.memoryBytes).replace(/sys\.path\.insert[\s\S]*$/,
@@ -211,4 +211,10 @@ export async function repinHeld(cacheDir: string, project: string): Promise<void
 export function restoredChecksProblem(title: string): OriginalTextProblem {
   return { check: 'original-text', text: { need: 'checks-failed', title, format: '', screens: 0 },
     reason: "With its original wording filled in, the study did not pass its own checks, so it cannot run. If protocol.json or the files in sourcetext/ were changed on this computer, put back the versions you received; otherwise the published version itself needs fixing." }
+}
+
+/** Index the project's private copies for research capture now, without downloading or restoring anything (the
+ *  drop path calls it before it returns, so a copy is recognised before the agent hears of it). */
+export async function indexPrivateCopies(python: string, files: [string, string][], project: string, cacheDir: string, bin: string): Promise<void> {
+  await fillOriginalText(python, files, project, cacheDir, bin, { indexOnly: true, offline: true, timeout: 120_000 })
 }

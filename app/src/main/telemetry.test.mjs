@@ -591,7 +591,7 @@ await test('a dropped private file never reaches capture: tool calls naming sour
   // the transcript capture redacts before anything is stored or put in a blob
   const src = readFileSync(join(here, 'telemetry.ts'), 'utf8')
   const capture = src.slice(src.indexOf('export function onThreadCapture'))
-  assert.ok(capture.indexOf('redactPrivatePart(c.part, privateIndex)') > 0 && capture.indexOf('redactPrivatePart(c.part, privateIndex)') < capture.indexOf("fit(base, 'input'"))
+  assert.ok(capture.indexOf('redactPrivatePart(c.part, privateIndex,') > 0 && capture.indexOf('redactPrivatePart(c.part, privateIndex,') < capture.indexOf("fit(base, 'input'"))
 })
 
 await test('redaction by path survives the ways an agent names the folder (review probe red.mjs); the status file is not redacted', () => {
@@ -608,11 +608,9 @@ await test('redaction by path survives the ways an agent names the folder (revie
 })
 
 await test('redaction by content: any agent step that quotes 40 characters of a private copy is dropped, however it got there', () => {
-  const { redactPrivatePart, windowHash, skeleton, containsPrivateRun, PRIVATE_RUN } = core
+  const { redactPrivatePart, containsPrivateRun, privateIndexOf, SCAN_LIMIT } = core
   const privateText = 'Before you begin, please take a slow walk around the block and notice the colour of every front door you pass.'
-  const cps = skeleton(privateText)
-  const index = new Set()
-  for (let i = 0; i + PRIVATE_RUN <= cps.length; i++) index.add(windowHash(cps, i))
+  const index = privateIndexOf([privateText])
   const quote = 'it says: "please take a SLOW walk around the block, and notice the colour of every front door"'
   assert.equal(containsPrivateRun(quote, index), true, 'case, spacing and punctuation do not hide a quote')
   assert.equal(containsPrivateRun('please take a slow walk around', index), false, 'shorter than 40 letters')
@@ -622,6 +620,45 @@ await test('redaction by content: any agent step that quotes 40 characters of a 
   assert.deepEqual(redactPrivatePart({ kind: 'reasoning', text: quote }, index), { kind: 'reasoning', redacted: 'private-material' })
   const plain = { kind: 'text', text: 'I filled in 3 screens of the walking study.' }
   assert.equal(redactPrivatePart(plain, index), plain)
+  // a part too long to scan is redacted whole while anything is indexed (never sent in part)
+  const long = 'x'.repeat(SCAN_LIMIT) + ' ' + privateText
+  assert.equal(redactPrivatePart({ kind: 'text', text: long }, index).text, '[redacted: private material]')
+  assert.equal(redactPrivatePart({ kind: 'text', text: long }, core.EMPTY_INDEX).text, long, 'nothing indexed: nothing to hide')
+})
+
+await test('glob and search rules apply only where the project has a sources/private/ folder', () => {
+  const { redactPrivatePart } = core
+  const kept = (command, globs) => redactPrivatePart({ kind: 'tool', tool: 'bash', input: { command }, output: 'OUT' }, core.EMPTY_INDEX, globs).output === 'OUT'
+  for (const c of ['ls sources/*.pdf', 'find sources -name SOURCE.json', 'rg "Results" sources']) {
+    assert.equal(kept(c, false), true, c + ' in an ordinary project')
+    assert.equal(kept(c, true), false, c + ' where sources/private/ exists')
+  }
+  assert.equal(kept('cat sources/private/b.html', false), false, 'the private path itself always counts')
+})
+
+await test('project files: a published study\'s run outputs are never collected, nor any file that quotes private text', () => {
+  const { mayCollectFile, privateIndexOf, EMPTY_INDEX } = core
+  const wording = 'Thank you for joining this short study about walking before breakfast, says the invented handout.'
+  const index = privateIndexOf([wording])
+  // a run of a published study: its records quote the restored wording in the AI participants' replies
+  const reply = JSON.stringify({ note: { reply: 'The page said: thank you for joining this short study about walking before breakfast.' } })
+  for (const rel of ['artifacts/simulations/2026-11-10-0100/records.jsonl', 'artifacts/simulations/2026-11-10-0100/results.html',
+    'artifacts/simulations/2026-11-10-0100/baseline/records.jsonl', 'runs/2026-11-10/sessions.jsonl'])
+    assert.equal(mayCollectFile({ rel, text: rel.endsWith('.html') ? '<p>ok</p>' : undefined, published: true, index: EMPTY_INDEX }), false, rel)
+  // any artifact holding private text is skipped, published or not
+  assert.equal(mayCollectFile({ rel: 'artifacts/notes.md', text: 'My notes. ' + reply, published: false, index }), false)
+  assert.equal(mayCollectFile({ rel: 'sources/open/extract.txt', text: wording, published: false, index }), false)
+  // a file that cannot be read as text is not collected while anything is indexed
+  assert.equal(mayCollectFile({ rel: 'artifacts/figure.png', text: undefined, published: false, index }), false)
+  // ordinary work is collected as before
+  assert.equal(mayCollectFile({ rel: 'artifacts/notes.md', text: 'My own notes.', published: false, index }), true)
+  assert.equal(mayCollectFile({ rel: 'artifacts/simulations/x/records.jsonl', text: undefined, published: false, index: EMPTY_INDEX }), true)
+  // and the capture paths use it
+  const src = readFileSync(join(here, 'telemetry.ts'), 'utf8')
+  for (const fn of ['async function snapshotFileNow', 'async function queueSource']) {
+    const body = src.slice(src.indexOf(fn), src.indexOf('\n}\n', src.indexOf(fn)))
+    assert.match(body, /mayCollectFile\(/, fn)
+  }
 })
 
 console.log(`\n${passed} passed`)

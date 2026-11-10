@@ -378,14 +378,21 @@ computer:
   restored copy.
 - **Agent.** `skills/run` "Original wording" tells the agent how to read the status and what to say, and never to
   open a file in `sources/private/` or the app's `original-text/` storage; AGENTS.md says the same. A drop into a
-  published study adds an app note to the prompt (not the researcher's bubble) that the file was received to fill in
-  the wording and must not be opened. Research capture (`telemetry-core.ts` `redactPrivatePart`, before anything is
-  stored or put in a blob) drops any tool call that names those paths (also built in pieces, globbed, searched under
-  sources/, with `./` segments or URL-encoded), and any tool call, text, reasoning or raw part that quotes a run of 40
-  letters or digits from a private copy, a download or the restored wording: the helper writes hashes of every such
-  run to `<userData>/original-text/redact/*.idx` (never text), loaded once per session and after each drop. Only
-  published studies are indexed (the helper runs for them); researcher materials in sources/private/ of other
-  projects are covered by the path rule only.
+  published study adds an app note to the prompt (not the researcher's bubble; the dropped paths are matched as
+  whole strings, so commas or `]` in a name do not break it) that the file was received to fill in the wording and
+  must not be opened. Research capture (`telemetry-core.ts`, before anything is stored or put in a blob):
+  - drops any agent step that names those paths (also built in pieces, with `./` segments or URL-encoded; globs and
+    searches under sources/ count only in a project that has sources/private/), and any tool, text, reasoning or raw
+    part that quotes a run of 40 letters or digits from a private copy, this study's downloads or its restored
+    wording; a part longer than 300k characters is dropped whole while anything is indexed;
+  - never collects a published study's run outputs (`artifacts/simulations/`, `runs/`), nor any project file that
+    quotes such a run, nor (while anything is indexed) a file that cannot be read as text (`mayCollectFile`).
+  The helper writes the index per project to `<userData>/original-text/redact/<sha256 of the folder>.bin` (sorted
+  8-byte hashes, never text; at most the first million letters of a file), minus every run that also occurs in the
+  project's public files (protocol.json's shipped strings, effects.json, paper.pdf and sources/ outside private/).
+  Each file's runs are kept by its sha256 (`windows/`), so it is extracted once. The index is written before any
+  download, and a drop indexes the copy before importFiles returns; the app loads it once per session and after
+  each drop. Only published studies are indexed; researcher materials in other projects rely on the path rule.
 - **Downloads** also stop after 90 s each (150 s for all of one check; every socket read waits at most the time
   left, and reads take what has arrived), write the failure marker on a timeout, treat
   a web page returned for a non-HTML source as a failed download (a sign-in or paywall page), and never fetch a host

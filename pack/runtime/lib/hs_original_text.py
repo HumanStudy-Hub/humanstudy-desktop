@@ -379,6 +379,7 @@ def status(projection: dict, report: dict, chosen: dict, extractors: dict, log: 
 
 # ------------------------------------------------------------------------------- research-capture redaction index
 PRIVATE_RUN = 40   # telemetry-core.ts PRIVATE_RUN: a run of 40 skeleton characters quoted from private material
+MAX_SKELETON = 1_000_000   # characters of one text indexed (a very large file: its first million)
 _M32 = 0xFFFFFFFF
 
 
@@ -387,60 +388,95 @@ def skeleton(text: str) -> list[int]:
     return [ord(ch) for ch in unicodedata.normalize("NFKC", text).lower() if unicodedata.category(ch)[0] in "LN"]
 
 
-def window_hashes(text: str) -> set[str]:
-    """The hash of every PRIVATE_RUN-long window of the text's skeleton (telemetry-core.ts windowHash)."""
-    cps, out = skeleton(text)[:2_000_000], set()   # a very large file: its first two million characters
+def window_pairs(text: str) -> set[tuple[int, int]]:
+    """(a, b) hash of every PRIVATE_RUN-long window of the text's skeleton (telemetry-core.ts windowHash)."""
+    cps, out = skeleton(text)[:MAX_SKELETON], set()
     for i in range(len(cps) - PRIVATE_RUN + 1):
         a, b = 0x811C9DC5, 0x9747B28C
         for cp in cps[i:i + PRIVATE_RUN]:
             a = ((a ^ cp) * 0x01000193) & _M32
             b = ((b ^ cp) * 0x5BD1E995) & _M32
             b = (b ^ (b >> 15)) & _M32
-        out.add("%08x%08x" % (a, b))
+        out.add((a, b))
     return out
 
 
-def write_index(cache: Path, name: str, text: str) -> None:
-    """<cache>/redact/<name>.idx: hashes only, never text. The app's research capture drops any agent step that
-    quotes 40 characters of it (telemetry.ts refreshPrivateIndex)."""
-    root = cache / "redact"
-    dest = root / (name + ".idx")
-    if dest.is_file() or not text:
-        return
-    root.mkdir(parents=True, exist_ok=True)
-    tmp = root / ("%s.%d.tmp" % (name, os.getpid()))
-    tmp.write_text("\n".join(sorted(window_hashes(text))) + "\n", encoding="utf-8")
+def window_hashes(text: str) -> set[str]:
+    return {"%08x%08x" % ab for ab in window_pairs(text)}
+
+
+def _write_pairs(dest: Path, pairs) -> None:
+    """Sorted big-endian (a, b) uint32 pairs, 8 bytes each: hashes only, never text."""
+    import struct
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name("%s.%d.tmp" % (dest.name, os.getpid()))
+    tmp.write_bytes(b"".join(struct.pack(">II", a, b) for a, b in sorted(pairs)))
     os.replace(tmp, dest)
+
+
+def _read_pairs(path: Path) -> set[tuple[int, int]]:
+    import struct
+    data = path.read_bytes()
+    return {struct.unpack_from(">II", data, i) for i in range(0, len(data) - len(data) % 8, 8)}
 
 
 def file_text(data: bytes, extractors: dict) -> str:
     from hsenv import distribution as D
     try:
         return "\n".join(D.units(D.sniff(data), data, extractors))
-    except Exception:   # noqa: BLE001 - an unreadable file: nothing to index
-        try:
-            return data.decode("utf-8", errors="ignore")
-        except Exception:   # noqa: BLE001
-            return ""
+    except Exception:   # noqa: BLE001 - an unreadable file: its raw text, if any
+        return data.decode("utf-8", errors="ignore")
 
 
-def index_private(cache: Path, files: list[Path], extractors: dict, restored=None, held=None) -> None:
-    """Index the researcher's private copies (files under sources/private/), every download and the restored
-    wording, so research capture can recognise them however the agent reaches them."""
+def file_windows(cache: Path, data: bytes, extractors: dict) -> set[tuple[int, int]]:
+    """The windows of one file, kept by its sha256 (<cache>/windows/<sha>.bin): it is extracted only once."""
+    dest = cache / "windows" / (sha256(data) + ".bin")
+    if dest.is_file():
+        return _read_pairs(dest)
+    pairs = window_pairs(file_text(data, extractors))
+    _write_pairs(dest, pairs)
+    return pairs
+
+
+def _is_private(f: Path) -> bool:
+    parts = [x.lower() for x in f.parts]
+    return any(parts[i] == "sources" and parts[i + 1] == "private" for i in range(len(parts) - 1))
+
+
+def _strings(o, skip=()):
+    if isinstance(o, str):
+        yield o
+    elif isinstance(o, dict):
+        for k, v in o.items():
+            if k not in skip:
+                yield from _strings(v)
+    elif isinstance(o, list):
+        for v in o:
+            yield from _strings(v)
+
+
+def index_project(cache: Path, project: Path, projection: dict, files: list[Path], extractors: dict,
+                  restored=None) -> Path:
+    """The redaction index of one project (<cache>/redact/<sha256 of its folder>.bin), which the app's research
+    capture loads: every run of the researcher's private copies (files under sources/private/), of this study's
+    downloads and of its restored wording, minus every run that also occurs in the project's public files (the
+    shipped strings of protocol.json, effects.json, paper.pdf and sources/ outside private/), so quoting what the
+    project itself shows is never redacted."""
+    private: set = set()
     for f in files:
-        parts = [x.lower() for x in f.parts]
-        if not any(parts[i] == "sources" and parts[i + 1] == "private" for i in range(len(parts) - 1)):
-            continue
-        data = read_file(f)
-        if data is not None:
-            write_index(cache, sha256(data), file_text(data, extractors))
-    for d in sorted((cache / "downloads").glob("*")) if (cache / "downloads").is_dir() else []:
-        if d.suffix in (".failed", ".tmp") or not d.is_file():
-            continue
-        data = read_file(d)
-        if data is not None:
-            write_index(cache, sha256(data), file_text(data, extractors))
-    if restored is not None and held:
+        if _is_private(f):
+            data = read_file(f)
+            if data is not None:
+                private |= file_windows(cache, data, extractors)
+    for k in sources_of(projection):
+        d = distribution_of(projection, k)
+        if d.get("tier") == "link" and isinstance(d.get("url"), str):
+            got = cache / "downloads" / sha256(d["url"].encode("utf-8"))
+            data = read_file(got) if got.is_file() else None
+            if data is not None:
+                private |= file_windows(cache, data, extractors)
+    held = held_of(projection)
+    if restored is not None:
         texts = []
         for e in held.values():
             try:
@@ -452,14 +488,30 @@ def index_private(cache: Path, files: list[Path], extractors: dict, restored=Non
                     texts.append(v)
             except (KeyError, IndexError, ValueError, TypeError):
                 continue
-        write_index(cache, "restored-" + sha256("\n".join(texts).encode("utf-8")), "\n".join(texts))
+        private |= window_pairs("\n".join(texts))
+    public: set = window_pairs("\n".join(_strings(projection, skip=("distribution",))))
+    effects = project / "effects.json"
+    if effects.is_file():
+        try:
+            public |= window_pairs("\n".join(_strings(json.loads(effects.read_text(encoding="utf-8")))))
+        except (OSError, ValueError):
+            pass
+    for f in files:
+        if not _is_private(f):
+            data = read_file(f)
+            if data is not None:
+                public |= file_windows(cache, data, extractors)
+    dest = cache / "redact" / (sha256(str(project.resolve()).encode("utf-8")) + ".bin")
+    _write_pairs(dest, private - public)
+    return dest
 
 
 def main(argv: list[str]) -> int:
     args = list(argv)
     allow_local = "--allow-local" in args
     offline = "--offline" in args
-    args = [a for a in args if a not in ("--allow-local", "--offline")]
+    index_only = "--index-only" in args
+    args = [a for a in args if a not in ("--allow-local", "--offline", "--index-only")]
     files: list[Path] = []
     while "--file" in args:
         i = args.index("--file")
@@ -475,19 +527,29 @@ def main(argv: list[str]) -> int:
     version = sha256(raw)
     here = cache / version
     done = here / "protocol.json"
+    project = protocol_path.parent
+    cached = None
     if done.is_file() and (here / "status.json").is_file():
         st = json.loads((here / "status.json").read_text(encoding="utf-8"))
         if st.get("complete") and st.get("restoredSha256") == sha256(done.read_bytes()):
-            try:
-                index_private(cache, files, pdf_extractors(), json.loads(done.read_text(encoding="utf-8")), held_of(projection))
-            except Exception:   # noqa: BLE001
-                pass
-            print(json.dumps(dict(st, restoredPath=str(done), cached=True)))
-            return 0
-    restored, report, chosen, extractors, log = restore(projection, cache, files, allow_local, offline)
+            cached = st
+    # The index first, before any download: a copy the researcher just dropped is recognised by research capture
+    # from now on, whatever the agent does with it while the downloads run.
     try:
-        index_private(cache, files, extractors, restored, held_of(projection))
+        index_project(cache, project, projection, files, pdf_extractors(),
+                      json.loads(done.read_text(encoding="utf-8")) if cached else None)
     except Exception:   # noqa: BLE001 - the index is a safeguard; never stop the restore over it
+        pass
+    if index_only:
+        print(json.dumps({"version": STATUS_VERSION, "projection": True, "indexed": True}))
+        return 0
+    if cached:
+        print(json.dumps(dict(cached, restoredPath=str(done), cached=True)))
+        return 0
+    restored, report, chosen, extractors, log = restore(projection, cache, files, allow_local, offline)
+    try:   # again with what the downloads and the restore added
+        index_project(cache, project, projection, files, extractors, restored)
+    except Exception:   # noqa: BLE001
         pass
     st = status(projection, report, chosen, extractors, log)
     st["projectionSha256"] = version

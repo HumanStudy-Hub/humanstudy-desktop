@@ -280,9 +280,16 @@ export function SimulationPanel(props: Props) {
                 const problems = readiness.protocol ? readiness.protocol.problems : readiness.problems
                 const what = readiness.protocol ? 'protocol.json' : `package/${readiness.slug}`
                 // A published study whose screens still lack their original wording: it previews, but cannot run yet.
-                const wording = problems.filter((p) => p.kind === 'scientific' && p.text)
+                // A published study that cannot run as it stands (its held list was changed, or it fails its checks
+                // with the wording filled in): its own heading and button, not "fill in the wording".
+                const stuck = problems.filter((p) => p.kind === 'scientific' && (p.text?.need === 'held-changed' || p.text?.need === 'checks-failed'))
+                const wording = problems.filter((p) => p.kind === 'scientific' && p.text && !stuck.includes(p))
                 const rest = problems.filter((p) => !(p.kind === 'scientific' && p.text))
                 return (<>
+                  {stuck.length > 0 && <>
+                    <p>{t('sim.text_blocked')}</p>
+                    <ul className="sim-missing">{stuck.map((p) => <li key={problemText(p)}>{problemText(p)}</li>)}</ul>
+                  </>}
                   {wording.length > 0 && <>
                     <p>{t('sim.text_needed')}</p>
                     <ul className="sim-missing">{wording.map((p) => <li key={problemText(p)}>{problemText(p)}</li>)}</ul>
@@ -293,7 +300,8 @@ export function SimulationPanel(props: Props) {
                   </>}
                   <button className="link" onClick={() => props.onAsk(rest.length
                     ? t('sim.complete_prompt', { pkg: what, what: problems.map(problemText).join(t('sim.list_sep')) })
-                    : t('sim.text_prompt', { what: wording.map(problemText).join(t('sim.list_sep')) }))}>{t(rest.length ? 'sim.ask_complete' : 'sim.ask_text')}</button>
+                    : stuck.length ? t('sim.text_blocked_prompt', { what: stuck.map(problemText).join(t('sim.list_sep')) })
+                    : t('sim.text_prompt', { what: wording.map(problemText).join(t('sim.list_sep')) }))}>{t(rest.length ? 'sim.ask_complete' : stuck.length ? 'sim.ask_text_blocked' : 'sim.ask_text')}</button>
                 </>)
               })() : <p className="muted small">{t('sim.checking')}</p>}
             </section>
