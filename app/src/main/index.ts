@@ -36,8 +36,9 @@ import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, tr
 import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf } from './package-readiness'
-import { fillOriginalText, isPublishedStudy, originalTextProblems, restoredRunFiles, writeAgentStatus } from './original-text'
-import { protocolBudget, protocolReadiness } from './protocol-readiness'
+import { fillOriginalText, heldPinProblem, isPublishedStudy, originalTextProblems, restoredProtocolText, restoredRunFiles, writeAgentStatus } from './original-text'
+type ScientificProblemLike = { check: string; reason: string }
+import { protocolBudget, protocolReadiness, restoredReadiness } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
 import { closeProjectRelays, isRunStop } from './run-stop'
@@ -409,14 +410,28 @@ app.whenReady().then(() => {
   // A published study's original wording, filled in on this computer (original-text.ts): downloads and the restored
   // protocol stay in app storage; the project gets only a status for the agent.
   const textFiles = trustedOriginalTextFiles()
+  const restoredChecks = new Map<string, ScientificProblemLike[]>()
   configureOriginalText(async (project) => {
+    const pinned = await heldPinProblem(originalTextCache(), project).catch(() => null)
+    if (pinned) return [pinned]
     if (!(await isPublishedStudy(project))) return []
     const python = await readyPython()
     if (!python) return [{ check: 'runtime', reason: "The research runtime is not installed yet, so the study's original wording cannot be filled in." }]
     try {
       const status = await fillOriginalText(python, textFiles, project, originalTextCache(), process.env.HUMANSTUDY_RUNTIME_BIN || '')
       await writeAgentStatus(project, status).catch(() => undefined)
-      return originalTextProblems(status)
+      const problems = originalTextProblems(status)
+      if (problems.length || !status.complete || !status.projectionSha256) return problems
+      // The engine's checks once on the restored copy (leaks, expressions, verbatim), in app storage, per copy.
+      const restored = await restoredProtocolText(originalTextCache(), status.projectionSha256)
+      if (restored === null) return [{ check: 'runtime', reason: "The study's original wording could not be filled in. Retry." }]
+      const key = createHash('sha256').update(restored).digest('hex')
+      if (!restoredChecks.has(key)) {
+        const found = await restoredReadiness(python, engine, project, restored, join(originalTextCache(), status.projectionSha256), process.env.HUMANSTUDY_RUNTIME_BIN || '')
+        if (found.some((p) => p.check === 'runtime')) return found
+        restoredChecks.set(key, found)
+      }
+      return restoredChecks.get(key)!
     } catch {
       return [{ check: 'runtime', reason: "The study's original wording could not be filled in. Retry; if it persists, reinstall the research runtime." }]
     }

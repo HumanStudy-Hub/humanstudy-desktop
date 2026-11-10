@@ -92,6 +92,7 @@ export async function fillOriginalText(python: string, files: [string, string][]
   })
 }
 
+const FORMAT: Record<string, string> = { pdf: 'PDF', html: 'web page', text: 'text file', docx: 'Word file', qsf: 'Qualtrics file' }
 const PLAIN: Record<OriginalTextReason, string> = {
   download: 'the download from the publisher did not work; drop in your copy',
   file: 'drop in your copy',
@@ -101,6 +102,7 @@ const PLAIN: Record<OriginalTextReason, string> = {
   'app-version': 'the study was published with a different version of the app\'s PDF reader (update HumanStudy Hub)',
   reading: 'the wording is printed inside a picture and cannot be filled in automatically',
   picture: 'the study shows pictures from it, which this version of HumanStudy Hub cannot show yet',
+  'held-changed': 'the study was changed after it was opened (download it again)',
 }
 
 /** One problem per source that still has screens without their wording: a run is blocked until there are none.
@@ -112,7 +114,7 @@ export function originalTextProblems(status: OriginalTextStatus): OriginalTextPr
     if (!s.need || s.restored >= s.items) continue
     const screens = Math.max(1, s.screens)
     out.push({ check: 'original-text', text: { need: s.need, title: s.title, format: s.format, screens },
-      reason: `${screens === 1 ? '1 screen is' : `${screens} screens are`} missing the wording from ${s.title} (${s.format}): ${PLAIN[s.need] ?? 'it could not be filled in'}.` })
+      reason: `${screens === 1 ? '1 screen is' : `${screens} screens are`} missing the wording from ${s.title} (${FORMAT[s.format] ?? 'file'}): ${PLAIN[s.need] ?? 'it could not be filled in'}.` })
   }
   if (!out.length) out.push({ check: 'original-text', reason: 'Some screens are missing their original wording.' })
   return out
@@ -156,4 +158,33 @@ export async function restoredRunFiles(project: string, cacheDir: string, protoc
   const text = await restoredProtocolText(cacheDir, protocolSha256)
   if (text === null) throw Error("This study's original wording has not been filled in on this computer yet, so the simulation was not started (its screens would show \"[text not available]\"). Ask the agent what is missing.")
   return [['restored/protocol.json', text]]
+}
+
+/** The held-back list of a published study is pinned the first time this computer sees it (app storage, keyed by
+ *  the project folder): an edited `distribution.held` could select another span of the real source under a new hash,
+ *  and a removed one would leave placeholders on screen. Either change blocks the run; downloading the study again
+ *  (a new project folder) starts a new pin. An ordinary protocol.json that still holds runs of placeholders is
+ *  refused the same way. */
+export async function heldPinProblem(cacheDir: string, project: string): Promise<OriginalTextProblem | null> {
+  let raw: string
+  try { raw = await readFile(join(project, 'protocol.json'), 'utf8') } catch { return null }
+  let p: { distribution?: unknown; meta?: { title?: unknown } }
+  try { p = JSON.parse(raw) } catch { return null }
+  const dist = p?.distribution && typeof p.distribution === 'object' ? p.distribution : null
+  const root = await realpath(project)
+  const file = join(cacheDir, 'pins.json')
+  let pins: Record<string, string> = {}
+  try { pins = JSON.parse(await readFile(file, 'utf8')) } catch { /* none yet */ }
+  const now = dist ? sha256(JSON.stringify(dist)) : null
+  const title = typeof p?.meta?.title === 'string' ? p.meta.title.slice(0, 200) : 'this study'
+  const changed: OriginalTextProblem = { check: 'original-text', text: { need: 'held-changed', title, format: '', screens: 0 },
+    reason: "This study's record of which wording to fill in was changed or removed after it was opened on this computer, so it cannot run. Download the study again from the library." }
+  if (pins[root] !== undefined) return pins[root] === now ? null : changed
+  if (now === null) return /░{3,}/.test(raw) ? changed : null
+  pins[root] = now
+  await mkdir(cacheDir, { recursive: true })
+  const tmp = `${file}.${process.pid}.tmp`
+  await writeFile(tmp, JSON.stringify(pins, null, 1), 'utf8')
+  await rename(tmp, file)
+  return null
 }

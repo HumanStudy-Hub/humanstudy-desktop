@@ -33,7 +33,9 @@ import urllib.request
 from pathlib import Path
 
 MAX_BYTES = 100 * 1024 * 1024        # largest source file read or downloaded
-DOWNLOAD_TIMEOUT = 60                 # seconds per download attempt
+DOWNLOAD_TIMEOUT = 30                 # seconds a socket operation may wait
+DOWNLOAD_DEADLINE = 90                # seconds one download may take in all (a trickling server is cut off)
+DOWNLOADS_BUDGET = 150                # seconds all downloads of one check may take (the app stops the helper at 300)
 RETRY_AFTER = 10 * 60                 # a failed download is not tried again for this long (seconds)
 MAX_CANDIDATES = 12                   # project files tried per source
 EXTENSIONS = {"pdf": (".pdf",), "html": (".html", ".htm", ".xhtml"), "text": (".txt", ".text", ".md"),
@@ -102,7 +104,7 @@ def _public_host(url: str) -> bool:
     try:
         infos = socket.getaddrinfo(host, None)
     except OSError:
-        return True   # cannot resolve: the download itself fails and says so
+        return False   # cannot resolve here: never handed to a proxy, which might reach an internal name
     for info in infos:
         ip = ipaddress.ip_address(info[4][0].split("%")[0])
         if not ip.is_global or ip.is_multicast:
@@ -132,10 +134,19 @@ class _NoDowngrade(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def make_fetch(cache: Path, allow_local: bool = False, offline: bool = False, log: list | None = None):
-    """fetch(url) -> bytes for hsenv.rehydrate: http(s) only, at most MAX_BYTES, cached under <cache>/downloads by
-    URL; a failure is remembered for RETRY_AFTER seconds so a check that repeats does not hammer the publisher."""
+def looks_like_html(data: bytes) -> bool:
+    head = data[:2048].lstrip().lower()
+    return head.startswith((b"<!doctype html", b"<html", b"<head", b"<body")) or b"<html" in head[:512]
+
+
+def make_fetch(cache: Path, allow_local: bool = False, offline: bool = False, log: list | None = None,
+               formats: dict | None = None):
+    """fetch(url) -> bytes for hsenv.rehydrate: http(s) only, at most MAX_BYTES and DOWNLOAD_DEADLINE seconds (all
+    downloads of one check together at most DOWNLOADS_BUDGET), cached under <cache>/downloads by URL; a failure is
+    remembered for RETRY_AFTER seconds so a check that repeats does not hammer the publisher. A web page returned for a
+    source that is not one (`formats`: url -> source format) is a sign-in or paywall page: a failed download."""
     root = cache / "downloads"
+    started = time.monotonic()
     redirects = _NoDowngrade()
     redirects.allow_local = allow_local
     opener = urllib.request.build_opener(redirects)
@@ -157,10 +168,24 @@ def make_fetch(cache: Path, allow_local: bool = False, offline: bool = False, lo
                 raise ValueError("the source URL points to this computer or a private network")
             req = urllib.request.Request(url, headers={"User-Agent": "HumanStudyHub-desktop (original wording)",
                                                        "Accept": "*/*"})
+            deadline = min(time.monotonic() + DOWNLOAD_DEADLINE, started + DOWNLOADS_BUDGET)
+            if time.monotonic() >= deadline:
+                raise TimeoutError("no time left for downloads in this check")
+            chunks, size = [], 0
             with opener.open(req, timeout=DOWNLOAD_TIMEOUT) as res:
-                data = res.read(MAX_BYTES + 1)
-            if len(data) > MAX_BYTES:
-                raise ValueError("the source file is larger than %d MB" % (MAX_BYTES // 2 ** 20))
+                while True:
+                    if time.monotonic() > deadline:
+                        raise TimeoutError("the download took longer than %d seconds" % DOWNLOAD_DEADLINE)
+                    chunk = res.read(64 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > MAX_BYTES:
+                        raise ValueError("the source file is larger than %d MB" % (MAX_BYTES // 2 ** 20))
+            data = b"".join(chunks)
+            if (formats or {}).get(url) not in (None, "html") and looks_like_html(data):
+                raise ValueError("the server returned a web page (a sign-in or paywall page), not the source file")
         except Exception as e:   # noqa: BLE001 - any failure: the source is unavailable for now
             root.mkdir(parents=True, exist_ok=True)
             failed.write_text("%s: %s" % (type(e).__name__, str(e)[:160]), encoding="utf-8")
@@ -234,7 +259,9 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
     from hsenv import distribution as D
     extractors = pdf_extractors()
     log: list = []
-    fetch = make_fetch(cache, allow_local=allow_local, offline=offline, log=log)
+    formats = {d["url"]: d.get("format") for d in (distribution_of(projection, k) for k in sources_of(projection))
+               if d.get("tier") == "link" and isinstance(d.get("url"), str)}
+    fetch = make_fetch(cache, allow_local=allow_local, offline=offline, log=log, formats=formats)
     out, report = D.rehydrate(projection, fetch=fetch, extractors=extractors)
     chosen: dict[str, Path] = {}
     supplied: dict[str, bytes] = {}

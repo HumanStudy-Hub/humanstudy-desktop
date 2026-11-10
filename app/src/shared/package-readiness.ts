@@ -26,7 +26,7 @@ export const PACKAGE_ENTRY_POINTS: Partial<Record<PackageFile, string>> = {
 }
 
 /** Why some screens of a published study still lack their original wording (main/original-text.ts). */
-export type OriginalTextReason = 'download' | 'file' | 'wrong-file' | 'changed-online' | 'pdf-reader' | 'app-version' | 'reading' | 'picture'
+export type OriginalTextReason = 'download' | 'file' | 'wrong-file' | 'changed-online' | 'pdf-reader' | 'app-version' | 'reading' | 'picture' | 'held-changed'
 /** One source of a published study whose wording is not filled in yet: what is needed, the source as the
  *  researcher knows it, its file format and how many screens wait for it. The app words it in the UI language. */
 export interface OriginalTextNeed { need: OriginalTextReason; title: string; format: string; screens: number }

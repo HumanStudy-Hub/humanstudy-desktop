@@ -358,9 +358,14 @@ computer:
   sha256 of protocol.json), never in the project, so neither exports nor research capture see them. A file dropped
   into a published study goes to `sources/private/` (never exported or collected) and never becomes paper.pdf. The
   project gets `.humanstudy/original-text.json`: counts, titles, formats and what each source needs, no wording.
-- **Run.** Missing wording is a blocking protocol problem (the Simulation tab words it, en and zh), and the engine
-  checks no longer block on `verbatim.unchecked` when every unchecked source is a held one and the count is at most
-  the number of held texts that really are placeholders (each held item is checked by its own hash instead). An
+- **Run.** Missing wording is a blocking protocol problem (the Simulation tab words it, en and zh), The engine checks
+  of a published study get, for each held source without its own sourcetext/ file, a source text that is one run of
+  placeholders as long as its longest held text: by the engine's own verbatim rule every held placeholder is found
+  and any other text cited verbatim from that source is not, so it still blocks (no rule in the app decides which
+  texts are excused). Once the wording is restored, the checks run again on the restored copy in app storage (held
+  texts checked against themselves, after their hash check), and any finding blocks, reported by check name only.
+  The held list (`distribution`) is pinned in app storage the first time the study is seen; an edited or removed
+  list blocks the run (download the study again). An
   approved run copies the restored protocol into its trusted code folder (`restored/protocol.json`); app_run reads
   it from beside its own code (never from the environment) and plays it only if every held text hashes to its
   `text_sha256`, no placeholder is left and nothing else differs from protocol.json. It records the approved
@@ -368,8 +373,19 @@ computer:
   study.
 - **Preview.** make_preview.py shows "[text not available]" (zh: "[文字不可用]") for held texts; it never uses the
   restored copy.
-- **Agent.** `skills/run` "Original wording" tells the agent how to read the status and what to say; AGENTS.md
-  points to it.
+- **Agent.** `skills/run` "Original wording" tells the agent how to read the status and what to say, and never to
+  open a file in `sources/private/` or the app's `original-text/` storage; AGENTS.md says the same. A drop into a
+  published study tells the agent the file was received to fill in the wording and not to open it. Research capture
+  redacts the input and output of any tool call (and any raw part) that names those paths
+  (`telemetry-core.ts` `redactPrivatePart`), before anything is stored or put in a blob.
+- **Downloads** also stop after 90 s each (150 s for all of one check), write the failure marker on a timeout, treat
+  a web page returned for a non-HTML source as a failed download (a sign-in or paywall page), and never fetch a host
+  that does not resolve here.
+- **Follow-up (hsenv 0.8.2 / sandbox skills/run).** `run_study.load_protocol` (vendored) cannot be guarded here:
+  the guard against placeholders is in app_run (it refuses any protocol with runs of placeholders and no restored
+  copy). Upstream, `run_study.load_protocol` (or `hsenv.engine.Protocol.load`) should refuse a protocol with a
+  non-empty `distribution.held` or runs of U+2591, and `checks.check_verbatim` should report the paths it counts as
+  unchecked, so the app can excuse exactly the held paths without the placeholder source text.
 
 ## Not done (next)
 

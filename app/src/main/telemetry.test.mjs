@@ -5,7 +5,7 @@
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { gunzipSync } from 'node:zlib'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -561,6 +561,37 @@ await test('program diff names the nodes and steps that were added, removed or c
   assert.equal(tool.metadata.output.length, 5000)
   assert.equal(sanitizeEvent('conversation.tool', { metadata: { input: 'y' } }, { ...ctx, content: false }, base), null)
   void t
+})
+
+await test('a dropped private file never reaches capture: tool calls naming sources/private or the wording cache are redacted', () => {
+  const { redactPrivatePart, REDACTED_PRIVATE } = core
+  const secret = 'How many minutes did you walk this morning? (invented private wording)'
+  const ctx = { content: true, email: EMAIL }
+  const base = { installId: 'install-0001', sessionId: SID, appVersion: '0.2.0', platform: 'darwin', now: clock }
+  const parts = [
+    { kind: 'tool', tool: 'read', state: 'completed', detail: 'Read booklet', input: { filePath: '/Users/x/Proj/sources/private/booklet.html' }, output: secret },
+    { kind: 'tool', tool: 'bash', state: 'completed', detail: 'cat', input: { command: 'cd sources/private && cat booklet.html' }, output: secret },
+    { kind: 'tool', tool: 'bash', state: 'completed', detail: 'x', input: { command: 'cat "C:\\Users\\x\\Proj\\sources\\private\\b.pdf"' }, output: secret },
+    { kind: 'tool', tool: 'read', state: 'completed', detail: 'Read', input: { filePath: '/Users/x/Library/Application Support/HumanStudy Hub/original-text/ab/protocol.json' }, output: secret },
+    { kind: 'native', raw: { tool: 'read', path: 'sources/private/booklet.html', content: secret } },
+  ]
+  for (const part of parts) {
+    const p = redactPrivatePart(part)
+    // as onThreadCapture builds the event: detail, input, output (or the raw part) in the metadata
+    const metadata = p.kind === 'tool' ? { thread_id: 't', detail: p.detail, input: typeof p.input === 'string' ? p.input : JSON.stringify(p.input), output: p.output }
+      : { thread_id: 't', content: JSON.stringify(p) }
+    const row = sanitizeEvent(p.kind === 'tool' ? 'conversation.tool' : 'conversation.native', { target: part.tool, metadata }, ctx, base)
+    assert.ok(!JSON.stringify(row ?? {}).includes('walk this morning'), JSON.stringify(row))
+    if (p.kind === 'tool') assert.equal(p.output, REDACTED_PRIVATE)
+  }
+  // ordinary work is captured unchanged
+  const plain = { kind: 'tool', tool: 'read', state: 'completed', detail: 'Read', input: { filePath: 'sources/open/handout.txt' }, output: 'public text' }
+  assert.equal(redactPrivatePart(plain), plain)
+  assert.equal(redactPrivatePart({ kind: 'tool', input: { filePath: 'my-sources/privateer.txt' }, output: 'x' }).output, 'x')
+  // the transcript capture redacts before anything is stored or put in a blob
+  const src = readFileSync(join(here, 'telemetry.ts'), 'utf8')
+  const capture = src.slice(src.indexOf('export function onThreadCapture'))
+  assert.ok(capture.indexOf('redactPrivatePart(c.part)') > 0 && capture.indexOf('redactPrivatePart(c.part)') < capture.indexOf("fit(base, 'input'"))
 })
 
 console.log(`\n${passed} passed`)

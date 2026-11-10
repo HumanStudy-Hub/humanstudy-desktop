@@ -76,10 +76,6 @@
     {
      "id": "minutes",
      "kind": "number",
-     "range": [
-      0,
-      300
-     ],
      "prompt": "░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
      "prompt_cite": {
       "label": "verbatim",

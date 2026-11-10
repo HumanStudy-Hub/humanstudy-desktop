@@ -406,9 +406,13 @@ def restored_protocol(project: Path) -> dict | None:
     The copy is read from the app's code folder next to this file (<code>/restored/protocol.json), never from the
     environment; and whatever its origin, every held text must hash to the value the published study recorded,
     so a copy written by anyone else can never put other wording on a screen."""
-    projection = json.loads((project / "protocol.json").read_text(encoding="utf-8"))
+    raw = (project / "protocol.json").read_text(encoding="utf-8")
+    projection = json.loads(raw)
     dist = projection.get("distribution") if isinstance(projection, dict) else None
     if not (isinstance(dist, dict) and isinstance(dist.get("held"), dict) and dist["held"]):
+        # no held list, but placeholders left (a published study whose list was removed): never played as is
+        if PLACEHOLDER * 3 in json.dumps(projection, ensure_ascii=False):
+            raise Refused(msg("text_missing"))
         return None
     given = HERE.parents[1] / "restored" / "protocol.json"
     if not given.is_file():

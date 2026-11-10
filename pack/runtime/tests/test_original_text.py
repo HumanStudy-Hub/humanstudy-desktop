@@ -21,11 +21,18 @@ sys.path.insert(0, str(RUNTIME / "hsenv"))
 import hs_original_text as O  # noqa: E402
 from hsenv import distribution as D  # noqa: E402
 
-try:
-    import pypdfium2  # noqa: F401
-    HAVE_PDFIUM = True
-except ImportError:
-    HAVE_PDFIUM = False
+def _pdf_reader_matches():
+    """pypdfium2 is installed AND is the version the fixture's PDF locator was written with (the lock's pin); another
+    version is a different extractor, which hsenv refuses by design: those cases skip instead of failing."""
+    try:
+        name = D.pdfium_extractor().name
+    except ImportError:
+        return False
+    held = json.loads((FIX / "protocol.json").read_text(encoding="utf-8"))["distribution"]["held"]
+    return all(h["locator"]["extractor"] == name for h in held.values() if h.get("locator", {}).get("format") == "pdf")
+
+
+HAVE_PDFIUM = _pdf_reader_matches()
 
 TEXTS = {   # what each held item must read once filled in (the fixture's own invented wording)
     "/stages/intro/content/0/value": "Thank you for joining this short study about walking before breakfast.",
@@ -108,7 +115,7 @@ class OriginalText(unittest.TestCase):
         for path, text in TEXTS.items():
             self.assertEqual(get(p, path), D.PLACEHOLDER * len(text), "no wording ships in the fixture")
 
-    @unittest.skipUnless(HAVE_PDFIUM, "needs pypdfium2 (the runtime python)")
+    @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
     def test_link_downloaded_and_dropped_files_fill_in_every_screen(self):
         st = self.run_helper(files=[self.drop("booklet.html"), self.drop("leaflet.pdf")])
         self.assertTrue(st["complete"], st)
@@ -159,8 +166,46 @@ class OriginalText(unittest.TestCase):
         self.assertEqual(self.by_key(st)["handout"]["restored"], 0)
         self.assertEqual(self.by_key(st)["handout"]["need"], "changed-online")
 
+    def test_a_sign_in_page_is_a_failed_download(self):
+        server = Server({"/handout.txt": b"<!DOCTYPE html><html><body>Please sign in to read this article</body></html>"})
+        self.addCleanup(server.close)
+        st = self.run_helper(protocol=self.published(server.url + "/handout.txt"), files=[])
+        self.assertEqual(self.by_key(st)["handout"]["need"], "download")
+        self.assertEqual(st["downloadsFailed"], 1)
+
+    def test_a_trickling_server_is_cut_off_and_remembered(self):
+        import time as _t
+
+        class Slow(BaseHTTPRequestHandler):
+            def do_GET(self):   # noqa: N802
+                self.send_response(200)
+                self.end_headers()
+                for _ in range(40):
+                    self.wfile.write(b"x")
+                    self.wfile.flush()
+                    _t.sleep(0.1)
+
+            def log_message(self, *a):
+                pass
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        url = "http://127.0.0.1:%d/handout.txt" % httpd.server_address[1]
+        old = O.DOWNLOAD_DEADLINE
+        O.DOWNLOAD_DEADLINE = 1
+        self.addCleanup(setattr, O, "DOWNLOAD_DEADLINE", old)
+        st = self.run_helper(protocol=self.published(url), files=[])
+        self.assertEqual(self.by_key(st)["handout"]["need"], "download")
+        failed = list((self.cache / "downloads").glob("*.failed"))
+        self.assertEqual(len(failed), 1)
+        self.assertIn("TimeoutError", failed[0].read_text(encoding="utf-8"))
+
+    def test_an_unresolvable_host_is_not_public(self):
+        self.assertFalse(O._public_host("https://no-such-host.invalid/x.txt"))
+
     def test_a_download_that_restores_nothing_is_not_kept(self):
-        server = Server({"/handout.txt": b"<html>Please sign in to read this article</html>"})
+        server = Server({"/handout.txt": b"Morning Walk Survey\nAn entirely different handout text.\n"})
         self.addCleanup(server.close)
         path = self.published(server.url + "/handout.txt")
         for _ in range(2):   # the second check says the same, from the remembered failure

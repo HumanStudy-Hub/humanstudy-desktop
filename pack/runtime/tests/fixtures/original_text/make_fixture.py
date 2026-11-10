@@ -48,7 +48,7 @@ PROTOCOL = {
                                                      "breakfast.", "cite": cite("handout")},
                               {"id": "w", "value": "Remember to drink a glass of water first.",
                                "cite": cite("leaflet", page=2)}]},
-        "q": {"responses": [{"id": "minutes", "kind": "number", "range": [0, 300],
+        "q": {"responses": [{"id": "minutes", "kind": "number",
                              "prompt": "How many minutes did you walk this morning?",
                              "prompt_cite": cite("booklet")},
                             {"id": "pick", "kind": "choice", "prompt": "Did you see a neighbour on the way?",

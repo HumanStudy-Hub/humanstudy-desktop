@@ -5,7 +5,7 @@ import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -32,7 +32,10 @@ const FILES = [
 const python = [process.env.HUMANSTUDY_TEST_PYTHON, 'python3.12', 'python3.13', 'python3.11', 'python3'].filter(Boolean).map((p) =>
   spawnSync(p, ['-c', 'import sys; print(sys.executable) if sys.version_info >= (3, 11) else sys.exit(1)'], { encoding: 'utf8' }))
   .find((r) => r.status === 0)?.stdout.trim()
-const hasPdfium = python ? spawnSync(python, ['-c', 'import pypdfium2'], { encoding: 'utf8' }).status === 0 : false
+// pypdfium2 at exactly the version the fixture's PDF locator names (the runtime lock's pin); another version is a
+// different extractor, which hsenv refuses by design, so those cases skip.
+const pdfLocator = Object.values(JSON.parse(readFileSync(join(FIX, 'protocol.json'), 'utf8')).distribution.held).find((h) => h.locator?.format === 'pdf').locator.extractor
+const hasPdfium = python ? spawnSync(python, ['-c', 'import pypdfium2.version as v; print("pypdfium2/%s+pdfium/%s" % (v.PYPDFIUM_INFO, v.PDFIUM_INFO))'], { encoding: 'utf8' }).stdout.trim() === pdfLocator : false
 const sha = (b) => createHash('sha256').update(b).digest('hex')
 const HANDOUT_TEXT = 'Thank you for joining this short study about walking before breakfast.'
 
@@ -58,30 +61,46 @@ test('a published study is recognised by its held wording; an ordinary protocol 
   close()
   assert.equal(await O.isPublishedStudy(proj), true)
   assert.deepEqual([...await R.heldSources(proj)].sort(), ['booklet', 'handout', 'leaflet'])
-  const held = await R.heldTexts(proj)
-  assert.deepEqual([[...held.sources].sort(), held.texts], [['booklet', 'handout', 'leaflet'], 4])
-  // a held entry that points at real text (not a placeholder) is not counted
-  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
-  p.stages.intro.content[0].value = 'x'.repeat(p.distribution.held.h1.length)
-  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p))
-  assert.equal((await R.heldTexts(proj)).texts, 3)
   const plain = mkdtempSync(join(tmpdir(), 'plain-'))
   writeFileSync(join(plain, 'protocol.json'), JSON.stringify({ id: 'x' }))
   assert.equal(await O.isPublishedStudy(plain), false)
   assert.equal(await O.isPublishedStudy(mkdtempSync(join(tmpdir(), 'none-'))), false)
 })
 
-test('the engine checks block on unchecked texts only when they cite a source the study does not hold back', () => {
-  const report = (unchecked, sources, extra = {}) => JSON.stringify({ refs: [], fuzz: { problems: [] }, PASS: false, ...extra,
-    verbatim: { not_found: [], image_unconfirmed: [], bad_source: [], unchecked, unchecked_sources: sources } })
-  const held = new Set(['handout', 'booklet'])
-  assert.deepEqual(R.parseProtocolReport(report(3, ['handout', 'booklet']), held, 3), [], 'held texts are checked by their own hash instead')
-  assert.deepEqual(R.parseProtocolReport(report(3, ['handout', 'survey']), held, 3).map((p) => p.check), ['verbatim'])
-  assert.deepEqual(R.parseProtocolReport(report(5, ['handout']), held, 1).map((p) => p.check), ['verbatim'], 'more unverified texts than held placeholders')
-  assert.deepEqual(R.parseProtocolReport(report(3, ['handout'])).map((p) => p.check), ['verbatim'], 'an ordinary protocol is unchanged')
-  // any other failing finding still blocks, including one the parser lists only since this change
-  assert.deepEqual(R.parseProtocolReport(report(3, ['handout'], { fuzz: { problems: [], table_spans_unserved: ['t1'] } }), held, 3).map((p) => p.check), ['fuzz'])
-  assert.deepEqual(R.parseProtocolReport(report(0, []), held, 3).map((p) => p.check), ['protocol'], 'an unexplained failure is never a pass')
+// The engine's own verbatim rule decides which texts the published study may leave to the per-item hash check: each
+// held source is checked against a run of placeholders, so the held placeholders are found and any other text cited
+// verbatim from that source is not (review of PR #94, probe q3).
+const ENGINE = ['VERSION', ...[...readFileSync(join(engineDir, 'VERSION'), 'utf8').matchAll(/^[0-9a-f]{64} {2}(\S+)$/gm)].map((m) => m[1])]
+  .map((rel) => [rel, readFileSync(join(engineDir, rel), 'utf8')])
+test('engine checks: a published study passes with its placeholders; an unverified text from a held source still blocks (q3)', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+  // q3: a held text loses its verbatim cite, and a made-up option label claims to be verbatim from a held source
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  delete p.stages.q.responses[1].prompt_cite
+  p.stages.q.responses[1].options[0].cite = { label: 'verbatim', source: 'booklet', page: 1 }
+  p.stages.q.responses[1].options[0].label = 'Absolutely, I walked every single day'
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const problems = await R.protocolReadiness(python, ENGINE, proj, '')
+  assert.deepEqual(problems.map((x) => x.check), ['verbatim'])
+  assert.match(problems[0].reason, /not found in the source/)
+  // an ordinary protocol gets no placeholder text: its unchecked texts block as before
+  assert.equal((await R.heldSourceTexts(mkdtempSync(join(tmpdir(), 'none-')))).size, 0)
+})
+
+test('held source texts: placeholders before, the restored texts after; a project sourcetext file wins', async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const before = await R.heldSourceTexts(proj)
+  assert.deepEqual([...before.keys()].sort(), ['booklet', 'handout', 'leaflet'])
+  assert.match(before.get('booklet'), /^\u2591{43}$/)
+  const restored = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  restored.stages.intro.content[0].value = HANDOUT_TEXT
+  assert.equal((await R.heldSourceTexts(proj, restored)).get('handout'), HANDOUT_TEXT)
+  mkdirSync(join(proj, 'sourcetext'))
+  writeFileSync(join(proj, 'sourcetext/handout.txt'), 'own')
+  assert.ok(!(await R.heldSourceTexts(proj)).has('handout'))
 })
 
 test('problems: one per source, in plain words, with the parts the app translates; none once complete', () => {
@@ -183,8 +202,55 @@ test('end to end, nothing dropped: the link source fills its screen, the others 
     const status = await O.fillOriginalText(python, FILES, proj, cache, '', { allowLocal: true })
     assert.equal(status.complete, false)
     const needs = Object.fromEntries(status.sources.map((s) => [s.key, s.need ?? 'ok']))
-    assert.deepEqual(needs, { booklet: 'file', handout: 'ok', leaflet: hasPdfium ? 'file' : 'pdf-reader' })
+    assert.equal(needs.booklet, 'file'); assert.equal(needs.handout, 'ok')
+    assert.ok(['file', 'pdf-reader', 'app-version'].includes(needs.leaflet))
     assert.equal(status.restoredPath, null)
     assert.equal(existsSync(join(cache, status.projectionSha256, 'protocol.json')), false)
   } finally { close() }
+})
+
+test('the held list is pinned when the study is first seen: an edited or removed list blocks the run', async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const cache = mkdtempSync(join(tmpdir(), 'text-cache-'))
+  assert.equal(await O.heldPinProblem(cache, proj), null, 'first sight pins it')
+  assert.equal(await O.heldPinProblem(cache, proj), null, 'unchanged')
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  const edited = structuredClone(p)
+  edited.distribution.held.h3.text_sha256 = 'f'.repeat(64)   // another span of the real source under a new hash
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(edited))
+  const changed = await O.heldPinProblem(cache, proj)
+  assert.equal(changed?.text?.need, 'held-changed')
+  assert.doesNotMatch(changed.reason, /hash|sha|projection|placeholder|rehydrat/i)
+  delete edited.distribution   // removed: the placeholders would show
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(edited))
+  assert.equal((await O.heldPinProblem(cache, proj))?.text?.need, 'held-changed')
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p))
+  assert.equal(await O.heldPinProblem(cache, proj), null, 'the pinned version is fine again')
+  // never pinned: an ordinary protocol is fine; one that still holds placeholder runs is not
+  const plain = mkdtempSync(join(tmpdir(), 'plain-'))
+  writeFileSync(join(plain, 'protocol.json'), JSON.stringify({ id: 'x', stages: { a: { content: [{ id: 't', value: 'Hello' }] } } }))
+  assert.equal(await O.heldPinProblem(cache, plain), null)
+  writeFileSync(join(plain, 'protocol.json'), JSON.stringify({ id: 'x', stages: { a: { content: [{ id: 't', value: '░'.repeat(12) }] } } }))
+  assert.equal((await O.heldPinProblem(cache, plain))?.text?.need, 'held-changed')
+})
+
+test('the engine checks run on the restored copy in app storage; their findings never quote it', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const restored = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  delete restored.distribution
+  restored.stages.intro.content[0].value = HANDOUT_TEXT
+  restored.stages.intro.content[1].value = 'Remember to drink a glass of water first.'
+  restored.stages.q.responses[0].prompt = 'How many minutes did you walk this morning?'
+  restored.stages.q.responses[1].prompt = 'Did you see a neighbour on the way?'
+  const work = mkdtempSync(join(tmpdir(), 'text-cache-'))
+  assert.deepEqual(await R.restoredReadiness(python, ENGINE, proj, JSON.stringify(restored), work, ''), [])
+  // a restored text that shows an unresolved expression is a leak the placeholders hid
+  const leaky = structuredClone(restored)
+  leaky.stages.q.responses[0].prompt = "How many minutes {answer('q.pick')} did you walk this morning?"
+  const found = await R.restoredReadiness(python, ENGINE, proj, JSON.stringify(leaky), work, '')
+  assert.ok(found.length > 0)
+  for (const f of found) assert.ok(!f.reason.includes('walk this morning'), f.reason)
+  assert.deepEqual(readdirSync(work), [], 'the scratch copy is removed')
 })

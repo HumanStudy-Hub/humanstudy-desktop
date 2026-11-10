@@ -394,7 +394,8 @@ export function SimulationPanel(props: Props) {
 function problemText(p: PackageProblem): string {
   if (p.kind === 'scientific' && p.text) {
     const { need, title, format, screens } = p.text
-    const vars = { title, format: t(`sim.text_format.${format}`) === `sim.text_format.${format}` ? format : t(`sim.text_format.${format}`),
+    const known = t(`sim.text_format.${format}`) !== `sim.text_format.${format}`
+    const vars = { title, format: t(known ? `sim.text_format.${format}` : 'sim.text_format.unknown'),
       screens: screens === 1 ? t('sim.text_one_screen') : t('sim.text_screens', { n: screens }) }
     return t(`sim.text_need.${need}`, vars)
   }

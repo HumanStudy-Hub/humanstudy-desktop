@@ -13,7 +13,7 @@ import { actionRef, type ActionRef } from '../shared/research-operations'
 import { createSerial, createWriteAttribution, isSaveTemp } from './write-capture'
 import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
-import { accountHash, createTelemetry, FLUSH_INTERVAL_MS, programDiff, scrubString, type StoredState, type Telemetry } from './telemetry-core'
+import { accountHash, createTelemetry, FLUSH_INTERVAL_MS, programDiff, redactPrivatePart, scrubString, type StoredState, type Telemetry } from './telemetry-core'
 import { createReplay, REPLAY_FLUSH_MS, type Replay, type ReplayFile, type ReplayFs } from './replay-core'
 import type { Capture } from './threads-core'
 import type { KernelEvent } from './kernel-types'
@@ -410,7 +410,8 @@ export function onThreadCapture(c: Capture): void {
     }
     const base: Record<string, unknown> = { thread_id: c.threadId, message_id: c.messageId, part: c.index, message_at: c.at }
     if (c.workspace) fit(base, 'workspace', JSON.stringify(c.workspace), 5_500, c.dir)
-    const p = c.part
+    // Private material (a dropped copy in sources/private/, the restored-wording cache) never enters capture.
+    const p = redactPrivatePart(c.part)
     if (p.kind === 'text') {
       fit(base, 'text', p.text, 11_000, c.dir)
       track(c.role === 'user' ? 'conversation.user' : 'conversation.assistant', { metadata: base }, c.dir)

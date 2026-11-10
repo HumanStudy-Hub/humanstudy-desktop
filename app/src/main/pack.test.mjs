@@ -961,6 +961,8 @@ seen = []
 def complete(messages):
     seen.append(messages[-1]['content'])
     c = messages[-1]['content']
+    if len(seen) == 3:   # one failed call: its f_errors trace must not carry the wording either
+        raise RuntimeError('model call failed: HTTP 500')
     return '{"r1": 20, "r2": "o1"}' if 'r2' in c else '{"r1": 20}' if 'r1' in c else '{}'
 try:
     meta = app_run.main_run(Path(sys.argv[1]).resolve(), Path('.').resolve(), complete=complete, model='stub')
@@ -981,6 +983,18 @@ except SystemExit as e:
   assert.match(result(r).refused ?? r.stderr, /another version of this study/)
   r = go(fill((p) => { p.distribution = projection.distribution }))
   assert.match(result(r).refused ?? r.stderr, /another version of this study/)
+  // the held list removed from protocol.json itself: its placeholders are never played either
+  const saved = readFileSync(join(proj, 'protocol.json'))
+  const stripped = structuredClone(projection); delete stripped.distribution
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(stripped))
+  r = spawnSync(python311, ['-B', '-c', `import sys, json; from pathlib import Path
+sys.path.insert(0, '.opencode/skills/run'); import app_run
+try:
+    app_run.restored_protocol(Path('.').resolve()); print(json.dumps({'ok': True}))
+except SystemExit as e:
+    print(json.dumps({'refused': str(e)}))`], { cwd: proj, encoding: 'utf8' })
+  assert.match(result(r).refused ?? r.stderr, /original wording has not been filled in/)
+  writeFileSync(join(proj, 'protocol.json'), saved)
   // an environment variable cannot point the run at another copy
   rmSync(join(proj, '.opencode/restored'), { recursive: true })
   r = go({ HUMANSTUDY_RUN_RESTORED: join(proj, 'elsewhere.json') })
@@ -988,12 +1002,17 @@ except SystemExit as e:
   // the restored copy: plays the wording, records the published version's hash, keeps no screens in the project
   r = go(fill())
   const out = result(r)
-  assert.equal(out.status, 'done', r.stdout.slice(-800) + r.stderr.slice(-1500))
+  assert.equal(out.status, 'partial', r.stdout.slice(-800) + r.stderr.slice(-1500))   // the one failed call
   assert.equal(out.sha, sha(join(proj, 'protocol.json')))
   assert.ok(out.seen.some((c) => c.includes('walking before breakfast')), 'the model saw the restored wording')
   assert.ok(!out.seen.some((c) => c.includes('░')), 'never a placeholder')
-  for (const f of ['records.jsonl', 'steps.jsonl', 'run.json', 'results.html', 'summary.json', 'operator.jsonl', 'effects.json'])
-    if (existsSync(join(proj, run, f))) assert.ok(!readFileSync(join(proj, run, f), 'utf8').includes('walking before breakfast'), f + ' holds no restored wording')
+  // every file the run left in the project (records, partial.jsonl, baseline/, the f_errors traces, logs, the page)
+  const left = walk(join(proj, 'artifacts'))
+  assert.ok(left.some((f) => f.endsWith('records.jsonl')) && left.some((f) => f.includes('baseline')), left.join('\n'))
+  for (const f of left) {
+    const body = readFileSync(f, 'utf8')
+    for (const text of Object.values(texts)) assert.ok(!body.includes(text), relative(proj, f) + ' holds restored wording')
+  }
   void seen
 })
 

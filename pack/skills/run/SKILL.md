@@ -28,12 +28,18 @@ app fills it in on the researcher's own computer, without you:
 - it checks every screen's wording against the exact text the study was built with, so a wrong file can only leave
   a screen empty, never put other words on it.
 
+**Never open, read, extract, summarise or quote any file in `sources/private/`**, nor anything in the app's storage
+folder `original-text/` (the restored wording): no read tool, no `cat`, `hs-pdf`, `pdftotext`, Python or `grep` on
+them. Their text must stay on this computer, and whatever you read goes to the model and into the conversation
+record. When the researcher drops a file, the message says it was received for filling in the wording; reply from
+`.humanstudy/original-text.json` only.
+
 Never move, copy or rename the researcher's copy of a source out of `sources/private/` (into `paper.pdf`,
 `sources/` or anywhere else): only `sources/private/` stays out of exports and research capture. If they mention a
 copy that sits elsewhere in the project, ask before moving it into `sources/private/`. The restored copy stays in
 the app's own storage, never in the project. You never see it, and you never write or
 edit the wording yourself: never type, paste or reconstruct held text into protocol.json, `sourcetext/` or any
-file, and never remove the `distribution` block.
+file, and never edit or remove the `distribution` block (the app notices a changed one and blocks the run).
 
 What the app found is in `.humanstudy/original-text.json` (read it; never edit it): `complete`, `screensMissing`,
 and per source its `title`, `format`, `screens` still empty and `need`. Tell the researcher in plain words, in
@@ -47,11 +53,14 @@ their language, never with the words "rehydrate", "projection", "placeholder", "
 | `changed-online` | "The copy of <title> online has changed since the study was built. Drop in your copy of the version the study used." |
 | `pdf-reader` | "This computer cannot read PDF files yet: update or reinstall HumanStudy Hub, then open the study again." |
 | `app-version` | "This study was published with a different version of HumanStudy Hub's PDF reader: update the app; if that does not help, ask the study's publisher." |
+| `held-changed` | "This study's record of which wording to fill in was changed or removed after it was opened on this computer, so it cannot run. Download the study again from the library." |
 | `picture` | "Some screens show pictures from <title>, which this version of HumanStudy Hub cannot show yet, so the study cannot run." |
 | `reading` | "Some wording is printed inside a picture and cannot be filled in automatically yet." |
 
-The first line to say is: "The study's original wording comes from the paper; HumanStudy Hub fetches it from the
-publisher on your computer." After the researcher drops a file into the chat, wait a few seconds and read
+The first line to say is: "The study's original wording comes from its original materials (the paper,
+questionnaire or booklet), and HumanStudy Hub fills it in on your computer." Say "HumanStudy Hub fetches it from the
+publisher on your computer" only for a source with a `url` (tier `link`); for the others the researcher supplies
+the file. After the researcher drops a file into the chat, wait a few seconds and read
 `.humanstudy/original-text.json` again; say how many screens are now filled in and what is still needed.
 
 Until `complete` is true the study opens as a preview (`skills/preview` shows "[text not available]" where wording

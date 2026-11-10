@@ -167,6 +167,25 @@ export interface RowBase {
 }
 
 /** Builds the exact row that is sent, or null when the event is not allowed. */
+/** A path to material that must never leave this computer: the researcher's private copies (sources/private/, e.g.
+ *  a copy of a paper dropped in to fill in a published study's wording) and the app-storage cache of restored
+ *  wording (…/original-text/…). */
+export const PRIVATE_MATERIAL = /(?:^|[^A-Za-z0-9_-])sources[\\/]+private(?:[\\/]|\b)|[\\/]original-text(?:[\\/]|\b)/i
+export const REDACTED_PRIVATE = '[redacted: private material]'
+
+/** An agent transcript part with every field that touches private material blanked: a tool call whose input,
+ *  title or output names such a path loses its input and output (the output is the file's content); a raw (native)
+ *  part that names one is dropped. Other parts are returned unchanged. */
+export function redactPrivatePart<T extends { kind: string }>(part: T): T {
+  const named = (v: unknown): boolean => v !== undefined && PRIVATE_MATERIAL.test(typeof v === 'string' ? v : JSON.stringify(v) ?? '')
+  const q = part as T & { input?: unknown; output?: unknown; detail?: unknown }
+  if (part.kind === 'tool' && (named(q.input) || named(q.detail) || named(q.output)))
+    return { ...part, input: REDACTED_PRIVATE, output: REDACTED_PRIVATE, detail: REDACTED_PRIVATE, redacted: 'private-material' }
+  if ((part.kind === 'native' || part.kind === 'reasoning') && named(part))
+    return { kind: part.kind, redacted: 'private-material' } as unknown as T
+  return part
+}
+
 export function sanitizeEvent(
   type: string,
   opts: TelemetryTrackOptions & { projectId?: string | null },
