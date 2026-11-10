@@ -283,7 +283,7 @@ if (!('humanstudy' in window)) {
   ]
   const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'project'
   const settings: Settings = {
-    theme: 'system',
+    theme: 'light',
     busyEnter: 'queue',
     permission: 'project',
     model: 'anthropic/claude-haiku-5.5',

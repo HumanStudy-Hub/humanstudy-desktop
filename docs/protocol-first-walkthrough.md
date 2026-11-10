@@ -74,3 +74,7 @@ no tracked files and no running apps/dev servers. About 3.8 GiB was removed; fre
 (observed filesystem capacity also reflects other system activity). No installed user app, projects, chats,
 research sources, dependencies or uncommitted source trees were deleted. A local cleanup manifest is retained
 outside Git. RELEASING.md records retention guidance so old generated distributions do not accumulate.
+
+### Website palette alignment
+
+Following Astra's design review, new/missing settings default to Light to match the current website's Folio Moss palette (web app/globals.css). Previously saved Light/Dark/System preferences remain unchanged. Secondary text now uses the exact website #5e6e60 value. Embedded frames inherit the host colour scheme, including OS-dark browser/light-app cases; the terminal reads live app tokens rather than a hard-coded forest-green background. Existing user-authored artifacts may implement their own explicit theme controls.

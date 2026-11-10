@@ -7,15 +7,24 @@ export function NativeTerminal({ id, run }: { id: string; run(request: NativeReq
   const host = useRef<HTMLDivElement>(null),
     [error, setError] = useState('')
   useEffect(() => {
+    const theme = () => {
+      const css = getComputedStyle(document.documentElement)
+      return { background: css.getPropertyValue('--bg').trim(), foreground: css.getPropertyValue('--text').trim(), cursor: css.getPropertyValue('--accent').trim() }
+    }
     const terminal = new Terminal({
         convertEol: false,
         fontSize: 13,
         scrollback: 10000,
-        theme: { background: '#132019', foreground: '#e5ede2' },
+        theme: theme(),
       }),
       fit = new FitAddon()
     terminal.loadAddon(fit)
     terminal.open(host.current!)
+    const updateTheme = () => { terminal.options.theme = theme() }
+    const themeObserver = new MutationObserver(updateTheme)
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+    const systemTheme = window.matchMedia('(prefers-color-scheme: dark)')
+    systemTheme.addEventListener('change', updateTheme)
     fit.fit()
     let socket: WebSocket | undefined,
       closed = false,
@@ -83,6 +92,8 @@ export function NativeTerminal({ id, run }: { id: string; run(request: NativeReq
       clearTimeout(resizeTimer)
       clearTimeout(reconnectTimer)
       observer.disconnect()
+      themeObserver.disconnect()
+      systemTheme.removeEventListener('change', updateTheme)
       input.dispose()
       socket?.close()
       terminal.dispose()
