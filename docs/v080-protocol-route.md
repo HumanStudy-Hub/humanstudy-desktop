@@ -386,6 +386,10 @@ computer:
   put in a blob or sent. An event that names a private path (sources/private/, the restored-wording cache; in a
   published or private-folder project also paths built in pieces, `./` segments, URL-encoded, globs and searches
   under sources/) or quotes a run of 40 letters or digits from indexed private text keeps only its structural fields.
+  Every string value is checked raw (never the event's JSON), also with escape sequences turned into spaces (a
+  string holding JSON or a heredoc) and with a read tool's line-number prefixes removed. Every blob passes the same
+  check in `putBlob` (refused), and `fit` checks before anything goes inline or to a blob; the workspace context
+  is redacted before it is fitted.
   The agent adapter also marks a tool call whose input names a private path, so its end event (the file's content,
   no path) is blanked too. The transcript capture blanks such parts first (`redactPrivatePart`). Project files go
   through `mayCollectFile`: a published study's run outputs (`artifacts/simulations/`, `runs/`) and any file quoting

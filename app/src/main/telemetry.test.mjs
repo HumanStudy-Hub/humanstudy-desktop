@@ -712,6 +712,63 @@ await test('the capture boundary keeps ordinary events whole and redacts only co
   assert.equal(redactCapture(big, privateIndexOf(['A completely different private sentence that is long enough.']), false), big)
 })
 
+await test('each string is checked raw: quotes over several lines, tabs, escaped JSON, heredocs and numbered reads are caught (review probe rc.mjs)', async () => {
+  const { createResearchAgent } = agentMod
+  const { redactCapture, redactPrivatePart, privateIndexOf, holdsPrivate } = core
+  const SECRET = 'How many minutes did you walk this morning? Did you see a neighbour on the way to work?'
+  const ITEMS = ['I often feel nervous at work.', 'My manager listens to me.', 'I trust my colleagues fully.', 'I would leave this job soon.']
+  const idx = privateIndexOf([SECRET, ITEMS.join('\n')])
+  // A: a single-line quote through the agent adapter and the boundary
+  const got = []
+  const ra = createResearchAgent(async (ev) => { got.push(redactCapture(ev, idx, true)); return 'id' })
+  ra.bind('s1', 'p1', '/proj'); ra.start('s1', 'hello')
+  ra.event({ type: 'tool', sessionId: 's1', toolCallId: 't1', tool: 'read', text: 'completed', input: { filePath: '/proj/sources/private/booklet.txt' }, output: SECRET })
+  ra.event({ type: 'text', sessionId: 's1', text: 'The booklet says: ' + SECRET })
+  ra.event({ type: 'done', sessionId: 's1' }); await ra.drain?.()
+  assert.ok(!JSON.stringify(got).includes('neighbour on the way'), 'A')
+  const leaks = (ev) => JSON.stringify(redactCapture(ev, idx, true)).includes('nervous at work')
+  // B: a multi-line quote, every line shorter than 40 letters
+  const q = 'Items:\n' + ITEMS.join('\n')
+  assert.equal(leaks({ event_type: 'conversation.message', metadata: { text: q } }), false, 'B')
+  assert.ok(!JSON.stringify(redactPrivatePart({ kind: 'text', text: q }, idx)).includes('nervous at work'), 'B, transcript part')
+  // C: a heredoc inside a JSON-string tool input (escaped newlines)
+  assert.equal(leaks({ event_type: 'tool.start', metadata: { input: JSON.stringify({ command: 'cat > notes.txt <<EOF\n' + ITEMS.join('\n') + '\nEOF' }) } }), false, 'C')
+  // D: tab-joined, and CRLF
+  assert.equal(leaks({ event_type: 'x', metadata: { t: ITEMS.join('\t') } }), false, 'D tabs')
+  assert.equal(leaks({ event_type: 'x', metadata: { t: ITEMS.join('\r\n') } }), false, 'D CRLF')
+  // a read tool's numbered lines
+  assert.equal(leaks({ event_type: 'tool.end', metadata: { output: ITEMS.map((l, i) => `${String(i + 1).padStart(5)}| ${l}`).join('\n') } }), false, 'line numbers')
+  // \u escapes inside a JSON string
+  assert.equal(holdsPrivate(JSON.stringify({ t: SECRET.replace(/ /g, '\\u0020') }), idx, true), true)
+  // ordinary text passes untouched
+  const plain = { event_type: 'x', metadata: { t: 'Line one of my own notes.\nLine two of my own notes.' } }
+  assert.equal(redactCapture(plain, idx, true), plain)
+})
+
+await test('blobs pass the boundary: an oversized workspace or program.json holding private text never becomes a blob', () => {
+  const { holdsPrivate, privateIndexOf, redactCapture } = core
+  const SECRET = 'How many minutes did you walk this morning? Did you see a neighbour on the way to work?'
+  const idx = privateIndexOf([SECRET])
+  const workspace = { project: '/p', activeTab: 'file', openTabs: Array.from({ length: 400 }, (_, i) => `artifacts/f${i}.md`),
+    source: { file: 'notes.md', quote: SECRET } }
+  assert.ok(JSON.stringify(workspace).length > 5_500, 'too large to go inline: it would become a blob')
+  assert.equal(holdsPrivate(JSON.stringify(workspace), idx, true), true, 'the blob check refuses it')
+  assert.ok(!JSON.stringify(redactCapture(workspace, idx, true)).includes('neighbour'), 'redacted before fit')
+  const program = JSON.stringify({ schemaVersion: 2, nodes: [{ id: 'n1', fields: { text: SECRET } }], pad: 'x'.repeat(20_000) }, null, 2)
+  assert.equal(holdsPrivate(program, idx, true), true)
+  assert.equal(holdsPrivate(JSON.stringify({ schemaVersion: 2, nodes: [{ id: 'n1', fields: { text: 'my own design' } }] }), idx, true), false)
+  // the wiring: putBlob refuses private text itself, fit checks before anything goes inline or to a blob, and the
+  // workspace is redacted before fit
+  const src = readFileSync(join(here, 'telemetry.ts'), 'utf8')
+  const put = src.slice(src.indexOf('function putBlob'), src.indexOf('\n}\n', src.indexOf('function putBlob')))
+  assert.ok(put.indexOf('privateText(text, projectDir)') > 0 && put.indexOf('privateText(text, projectDir)') < put.indexOf('storeResearchContent'))
+  const fitSrc = src.slice(src.indexOf('function fit('), src.indexOf('\n}\n', src.indexOf('function fit(')))
+  assert.ok(fitSrc.indexOf('privateText(value, projectDir)') > 0 && fitSrc.indexOf('privateText(value, projectDir)') < fitSrc.indexOf('putBlob('))
+  assert.match(src, /fit\(base, 'workspace', JSON\.stringify\(redactCapture\(c\.workspace, privateIndex, scopedProject\(c\.dir\)\)\)/)
+  assert.match(src, /redactPrivatePart\(c\.part, privateIndex, scopedProject\(c\.dir\)\)/)
+  assert.equal((src.match(/putBlob\(/g) || []).length - 1, (src.match(/putBlob\((?:value|text|raw|JSON\.stringify\(metadata\)), (?:projectDir|dirFor)\)/g) || []).length, 'every blob goes through putBlob')
+})
+
 console.log(`\n${passed} passed`)
 
 await test('large Unicode content reconstructs exactly from ordered gzip parts', () => {

@@ -13,7 +13,7 @@ import { actionRef, type ActionRef } from '../shared/research-operations'
 import { createSerial, createWriteAttribution, isSaveTemp } from './write-capture'
 import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
-import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, mayCollectFile, mergePrivateIndex, programDiff, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
+import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, mayCollectFile, mergePrivateIndex, programDiff, REDACTED_PRIVATE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
 import { createReplay, REPLAY_FLUSH_MS, type Replay, type ReplayFile, type ReplayFs } from './replay-core'
 import type { Capture } from './threads-core'
 import type { KernelEvent } from './kernel-types'
@@ -378,10 +378,16 @@ export function getReplay(): Replay {
 }
 
 /** Gzips `text` (after removing emails, keys and absolute paths) into the replay store; returns the blob name. */
+/** A text that must not leave this computer: it names a private path or quotes indexed private text. Every blob and
+ *  every inline payload too large for an event passes this check (the private-material boundary for blobs). */
+function privateText(text: string, projectDir?: string): boolean {
+  return holdsPrivate(text, privateIndex, projectDir ? scopedProject(projectDir) : false)
+}
 function putBlob(text: string, projectDir?: string): string | null {
   try {
     const t = getTelemetry()
     if (!t.status().content) return null
+    if (privateText(text, projectDir)) return null   // never stored, never sent
     const clean = scrubString(text, { projectDir, email: getAccount().status().email })
     return storeResearchContent(clean, bytes => getReplay().addBlob(t.sessionId, bytes))
   } catch {
@@ -392,6 +398,7 @@ function putBlob(text: string, projectDir?: string): string | null {
 /** `value` inline up to `maxBytes`; longer values keep a prefix inline and the whole text in a blob. */
 function fit(out: Record<string, unknown>, key: string, value: string | undefined, maxBytes: number, projectDir?: string): void {
   if (value === undefined || value === '') return
+  if (privateText(value, projectDir)) { out[key] = REDACTED_PRIVATE; out.redacted = 'private-material'; return }
   if (Buffer.byteLength(value) <= maxBytes) {
     out[key] = value
     return
@@ -454,9 +461,10 @@ export function onThreadCapture(c: Capture): void {
       return
     }
     const base: Record<string, unknown> = { thread_id: c.threadId, message_id: c.messageId, part: c.index, message_at: c.at }
-    if (c.workspace) fit(base, 'workspace', JSON.stringify(c.workspace), 5_500, c.dir)
-    // Private material (a dropped copy in sources/private/, the restored-wording cache) never enters capture.
-    const p = redactPrivatePart(c.part, privateIndex, existsSync(join(c.dir, 'sources', 'private')))
+    // Private material (a dropped copy in sources/private/, the restored-wording cache) never enters capture: the
+    // workspace and the part are checked before anything is put inline or in a blob (fit checks again).
+    if (c.workspace) fit(base, 'workspace', JSON.stringify(redactCapture(c.workspace, privateIndex, scopedProject(c.dir))), 5_500, c.dir)
+    const p = redactPrivatePart(c.part, privateIndex, scopedProject(c.dir))
     if (p.kind === 'text') {
       fit(base, 'text', p.text, 11_000, c.dir)
       track(c.role === 'user' ? 'conversation.user' : 'conversation.assistant', { metadata: base }, c.dir)

@@ -294,14 +294,48 @@ export function containsPrivateRun(text: string, index: PrivateIndex, strict = t
   return false
 }
 
+/** The forms of one string that are checked: as it is; with escape sequences (`\\n`, `\\t`, `\\u00e9`, …, as in a
+ *  string holding JSON or a heredoc) turned into spaces; and with a read tool's line-number prefixes (`12| `) removed
+ *  from every line. JSON escaping of the whole event is never involved: each string value is checked raw. */
+export function checkedForms(text: string): string[] {
+  const unescaped = text.replace(/\\+u[0-9a-fA-F]{4}/g, ' ').replace(/\\+[nrtbf"]/g, ' ')
+  const out = [text]
+  if (unescaped !== text) out.push(unescaped)
+  for (const t of [...out]) {
+    const stripped = t.split(/\r?\n/).map((l) => l.replace(/^\s*\d+\| ?/, '')).join('\n')
+    if (stripped !== t) out.push(stripped)
+  }
+  return out
+}
+/** True when any string inside `value` (each checked raw, in its checkedForms) names a private path or quotes a run of
+ *  indexed private text. `scoped`: the project is published or has sources/private/ (also globs and pieces count, and
+ *  an oversized string counts as private while anything is indexed). */
+/** Every string inside `value`, raw. */
+function strings(value: unknown, out: string[] = [], depth = 0): string[] {
+  if (typeof value === 'string') out.push(value)
+  else if (value && typeof value === 'object' && depth <= 50) for (const x of Array.isArray(value) ? value : Object.values(value as Record<string, unknown>)) strings(x, out, depth + 1)
+  return out
+}
+const holdsPath = (v: unknown, globs: boolean): boolean => strings(v).some((s) => checkedForms(s).some((f) => namesPrivatePath(f, globs)))
+const holdsContent = (v: unknown, index: PrivateIndex): boolean => strings(v).some((s) => checkedForms(s).some((f) => containsPrivateRun(f, index)))
+export function holdsPrivate(value: unknown, index: PrivateIndex, scoped: boolean): boolean {
+  const seen = (s: string): boolean => checkedForms(s).some((f) =>
+    (scoped ? namesPrivatePath(f, true) : PRIVATE_MATERIAL.test(decoded(f))) || containsPrivateRun(f, index, scoped))
+  const walk = (v: unknown, depth: number): boolean => {
+    if (typeof v === 'string') return seen(v)
+    if (depth > 50 || !v || typeof v !== 'object') return false
+    return (Array.isArray(v) ? v : Object.values(v as Record<string, unknown>)).some((x) => walk(x, depth + 1))
+  }
+  return walk(value, 0)
+}
+
 /** An agent transcript part with private material blanked. A tool call whose input or title names a private path,
  *  or any of whose fields quotes private text (index), loses input, output and title; a text part that quotes it
  *  loses its text; a raw (native) or reasoning part that names or quotes it is dropped. `globs`: also count globs and
  *  searches under sources/ (only where the project has a sources/private/ folder). */
 export function redactPrivatePart<T extends { kind: string }>(part: T, index: PrivateIndex = EMPTY_INDEX, globs = true): T {
-  const str = (v: unknown): string => (v === undefined ? '' : typeof v === 'string' ? v : JSON.stringify(v) ?? '')
-  const quotes = (v: unknown): boolean => containsPrivateRun(str(v), index)
-  const names = (v: unknown): boolean => namesPrivatePath(str(v), globs)
+  const quotes = (v: unknown): boolean => v !== undefined && holdsContent(v, index)
+  const names = (v: unknown): boolean => v !== undefined && holdsPath(v, globs)
   const q = part as T & { input?: unknown; output?: unknown; detail?: unknown; text?: unknown }
   if (part.kind === 'tool' && (names(q.input) || names(q.detail) || quotes(q.input) || quotes(q.output) || quotes(q.detail)))
     return { ...part, input: REDACTED_PRIVATE, output: REDACTED_PRIVATE, detail: REDACTED_PRIVATE, redacted: 'private-material' }
@@ -335,10 +369,7 @@ const CAPTURE_KEEP = new Set(['event_type', 'id', 'thread_id', 'project_id', 'ac
  *  sources/) or quotes a 40-character run of indexed private text keeps only its structural fields; every other
  *  string becomes REDACTED_PRIVATE. `scoped`: the project is published or has sources/private/. */
 export function redactCapture<T>(value: T, index: PrivateIndex, scoped: boolean): T {
-  let s: string
-  try { s = JSON.stringify(value) ?? '' } catch { return value }
-  const named = scoped ? namesPrivatePath(s, true) : PRIVATE_MATERIAL.test(decoded(s))
-  if (!named && !containsPrivateRun(s, index, scoped)) return value
+  if (!holdsPrivate(value, index, scoped)) return value
   const walk = (v: unknown, key?: string): unknown => {
     if (typeof v === 'string') return key !== undefined && CAPTURE_KEEP.has(key) && !namesPrivatePath(v, scoped) && v.length < 200 ? v : REDACTED_PRIVATE
     if (Array.isArray(v)) return v.map((x) => walk(x))
