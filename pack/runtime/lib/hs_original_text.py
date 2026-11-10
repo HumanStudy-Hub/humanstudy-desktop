@@ -583,15 +583,17 @@ def main(argv: list[str]) -> int:
     st["projectionSha256"] = version
     here.mkdir(parents=True, exist_ok=True)
     if restored is not None:
-        text = json.dumps(restored, ensure_ascii=False, indent=1) + "\n"
+        # written as bytes: the sha256 recorded below is of exactly these bytes (a text-mode write would turn \n into
+        # \r\n on Windows, and the cached copy would never match its record)
+        data = (json.dumps(restored, ensure_ascii=False, indent=1) + "\n").encode("utf-8")
         tmp = here / ("protocol.json.%d.tmp" % os.getpid())
-        tmp.write_text(text, encoding="utf-8")
+        tmp.write_bytes(data)
         os.replace(tmp, done)
-        st["restoredSha256"] = sha256(text.encode("utf-8"))
+        st["restoredSha256"] = sha256(data)
     else:
         done.unlink(missing_ok=True)
     tmp = here / ("status.json.%d.tmp" % os.getpid())
-    tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    tmp.write_bytes((json.dumps(st, ensure_ascii=False, indent=1) + "\n").encode("utf-8"))
     os.replace(tmp, here / "status.json")
     print(json.dumps(dict(st, restoredPath=str(done) if restored is not None else None)))
     return 0
