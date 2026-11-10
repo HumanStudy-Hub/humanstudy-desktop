@@ -8,4 +8,4 @@ Both studies are included, with face-threat/face-boost assignment inside each st
 
 The independent review and its resolved findings are under review/. Review is not proof of equivalence to human behaviour. No participant-level data is included.
 
-Open Study, compare a page citation with Paper, inspect the participant preview, and review Simulation's scope before approving any paid model call. The sample is a normal local project: edits, files and chat remain yours. No old program.json or package is installed.
+Open Study, compare a page citation with Paper, inspect the participant preview, and review Simulation's scope before approving any paid model call. The sample is a normal local project: edits, files and chat remain yours. The scholarly program.json adds source-linked research notes for both studies without duplicating the executable protocol. These notes are a draft; the existing independent review applies to the execution protocol. No legacy execution package is installed.

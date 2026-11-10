@@ -185,6 +185,8 @@ export interface PaperBuildState {
   checked?: boolean
   /** SHA-256 of the independently validated program bytes; any later write invalidates it. */
   validationHash?: string
+  /** Paired scholarly document and preview bytes; independent of the execution protocol hash. */
+  deliveryHash?: string
   /** Draft structure was independently checked; never grants simulation permission. */
   validationRoute?: 'program' | 'protocol'
   /** When the build started (epoch ms), so the Study view can say how long it has run. */

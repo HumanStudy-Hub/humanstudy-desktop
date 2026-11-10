@@ -935,3 +935,21 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
 
 .wb-protocol-host { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .wb-protocol-host > .protocol-document, .wb-protocol-host > .protocol-study { flex: 1; min-height: 0; }
+
+/* One readable research document, with technical detail and participant screens on demand. */
+.protocol-research-document { flex: 1; min-height: 0; overflow: auto; background: var(--bg); }
+.research-overview { max-width: 880px; margin: 0 auto; padding: 28px 28px 20px; }
+.research-overview h1 { font: 500 28px/1.25 var(--font-serif); margin: 0 0 8px; }
+.research-overview h3 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+.research-section { margin: 22px 0; }
+.research-claim p { margin: 6px 0; white-space: pre-wrap; }
+.research-cite { display: inline; margin: 0 8px 0 0; font-size: 12px; }
+.research-claim > .muted { font-size: 12px; display: block; }
+.research-citation { font-size: 12px; }
+.research-notice { padding: 10px 12px; border-left: 2px solid var(--warning); background: var(--warning-bg); }
+.research-experiments { margin: 28px 0 18px; border-top: 1px solid var(--line); }
+.research-experiments > section { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.research-experiments p { margin: 6px 0 10px; }
+.research-overview summary, .research-preview summary { cursor: pointer; color: var(--muted); }
+.research-preview { max-width: 880px; margin: 0 auto; padding: 0 28px 28px; }
+.research-preview iframe { display: block; min-height: 720px; margin-top: 16px; }

@@ -404,3 +404,34 @@ test('only the owning build or an explicit build action selects the build model'
  assert.equal(P.isBuildTurn(undefined,'chat','paper.build'),true)
  assert.equal(P.isBuildTurn({status:'complete',phase:'checking'},'chat','composer.send'),false)
 })
+
+test('paired builds wait for complete research and preview, then bind both without changing run readiness',async()=>{
+ const dir=project(), assets=join(here,'../../resources/protocol-sample')
+ const protocol=JSON.parse(readFileSync(join(assets,'protocol.json'),'utf8'));protocol.meta.delivery='research-program-v1'
+ const raw=JSON.stringify(protocol),hash=createHash('sha256').update(raw).digest('hex')
+ writeFileSync(join(dir,'protocol.json'),raw)
+ const builds=P.createPaperBuilds(()=>{},async()=>({hash,problems:[]}))
+ builds.bind('paired',dir);builds.start(dir,'paired')
+ await builds.event({sessionId:'paired',type:'done'})
+ assert.equal(builds.read(dir).status,'error','a protocol-only success is not a complete paired build')
+ const research=JSON.parse(readFileSync(join(assets,'program.json'),'utf8'));research.extensions.scholarly.protocol.sha256=hash
+ writeFileSync(join(dir,'program.json'),JSON.stringify(research))
+ assert.equal(P.programComplete(dir),false,'a scholarly document cannot pass the legacy executable-program route')
+ mkdirSync(join(dir,'artifacts'),{recursive:true})
+ writeFileSync(join(dir,'artifacts/preview.html'),`<script id="hs-protocol">${JSON.stringify({id:protocol.id,sha256:hash})}</script>`)
+ await builds.event({sessionId:'paired',type:'done'})
+ assert.equal(builds.read(dir).status,'complete')
+ assert.match(builds.read(dir).deliveryHash,/^[a-f0-9]{64}$/)
+ research.nodes[0].fields[0].value='A researcher edit';writeFileSync(join(dir,'program.json'),JSON.stringify(research))
+ assert.equal(builds.read(dir).status,'error','old completion cannot certify changed scholarly bytes')
+})
+
+test('scholarly checkpoint writer refuses stale bytes and keeps the researcher edit', {skip: !python},()=>{
+ const dir=project(), file=join(dir,'program.json'), io=join(here,'../../../pack/skills/build/program_io.py')
+ const save=(patch,expected)=>spawnSync(python,[io,'-','--expected-hash',expected],{cwd:dir,input:JSON.stringify(patch),encoding:'utf8'})
+ const original=save(JSON.parse(sample),'absent');assert.equal(original.status,0,original.stderr)
+ const base=createHash('sha256').update(readFileSync(file)).digest('hex')
+ const changed=JSON.parse(readFileSync(file,'utf8'));changed.title='Researcher title';writeFileSync(file,JSON.stringify(changed))
+ const stale=save({title:'Agent patch'},base);assert.notEqual(stale.status,0);assert.match(stale.stderr,/changed/)
+ assert.equal(JSON.parse(readFileSync(file,'utf8')).title,'Researcher title')
+})

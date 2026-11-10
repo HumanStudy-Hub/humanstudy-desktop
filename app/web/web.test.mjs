@@ -77,11 +77,12 @@ test('an uploaded paper becomes a project whose files are served at /hsfile/', a
   assert.equal(outside.status, 403)
 })
 
-test('the shipped example opens as a protocol project with sources and a current view, without building', async () => {
+test('the shipped example opens with research and experiment files without building', async () => {
   const created = await ipc('projects:create', { name: 'Protocol walkthrough', sample: true })
   assert.equal(created.ok, true, JSON.stringify(created))
   const snap = (await ipc('project:read', created.value)).value
-  assert.equal(snap.program, null)
+  assert.equal(snap.program.extensions.scholarly.profile, 'scholarly-v1')
+  assert.deepEqual(snap.program.studies.map(s => s.id), ['s1', 's2'])
   assert.equal(snap.build, undefined)
   const text = (await ipc('project:readText', `${created.value}/protocol.json`)).value
   const p = JSON.parse(text)

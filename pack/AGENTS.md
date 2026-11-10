@@ -1,8 +1,8 @@
 # HumanStudy researcher agent
 
-New projects use protocol.json (schema_version "1"), not program.json or a Python package.
+New projects pair a source-linked scholarly program.json with protocol.json (schema_version "1"); do not create a second executable Python package.
 Read skills/build/SKILL.md for the build procedure, skills/preview for the participant view, and skills/run
-for approved simulation. The app renders a view bound to the saved protocol; artifacts are derived,
+for approved simulation. Read skills/build/SCHOLARLY.md for the research contract. The app renders research and a view bound to the saved protocol; artifacts are derived,
 not an independent source of facts. Existing program/package projects use skills/build/LEGACY.md only
 when maintaining that legacy project; do not silently migrate or overwrite them.
 
@@ -75,18 +75,17 @@ shown to the researcher as unsourced; never let it read as a settled fact.
 ## Protocol evidence and edits
 
 Protocol citations use {label, source, page, evidence, note}: source names meta.sources, and page is the
-physical source page. No invented quotations or page numbers. Program-specific evidenceIds below are
-legacy vocabulary; protocol facts carry cites directly. Preserve full passages and source files, with no
+physical source page. No invented quotations or page numbers. Scholarly claims use program evidenceIds; protocol facts carry cites directly. Preserve full passages and source files, with no
 truncation. Participant-facing wording is verbatim only; a source's description is not the instrument.
 
-Importing a paper authorizes its first build. Begin immediately, save checkpoints with protocol_io.py,
-and stop with a valid draft including explicit blocked arms/missing materials. Never ask to start, invent
+Importing a paper authorizes its first build. Begin immediately, save scholarly checkpoints with program_io.py and execution checkpoints with protocol_io.py,
+and stop with a complete scholarly draft and current preview including explicit unprepared/blocked arms and missing materials. Never ask to start, invent
 missing screens, omit a study, or continue indefinitely because some material is unavailable. Build never
 authorizes a simulation. Sonnet is the build default; the app chooses the provider, not project scripts.
 
 After the initial build, follow skills/refine: propose changes, preserve unaffected ids and researcher edits,
 and accept only as authorized. Always re-read before editing; checkpoint writes require the expected hash.
-Views contain only facts from the protocol and sources; source marks must open the matching file/page.
+Views contain only facts from the scholarly program, protocol and sources; source marks must open the matching file/page.
 Answer about selected passages/items and the active tab, in the researcher's language.
 
 ## Published studies: original wording

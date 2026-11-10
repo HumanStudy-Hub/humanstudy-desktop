@@ -25,7 +25,7 @@ function check(dir){
  assert.equal(p.schema_version,'1')
  assert.equal(p.meta.sources.paper.file,'paper.pdf')
  assert.ok(existsSync(join(dir,'artifacts/preview.html')))
- assert.equal(existsSync(join(dir,'program.json')),false)
+ assert.equal(JSON.parse(readFileSync(join(dir,'program.json'),'utf8')).extensions.scholarly.profile,'scholarly-v1')
 }
 test('actual project creation produces an editable offline sample and lists its paper and program',async()=>{
  const dir=await createProject({name:'Sample',sample:true});check(dir)

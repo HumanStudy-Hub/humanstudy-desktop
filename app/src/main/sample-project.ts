@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 
 export const SAMPLE_TITLE = "Believing what you're told: Politeness and scalar inferences"
 export const SAMPLE_ASSET_FILES = [
-  'paper.pdf', 'protocol.json', 'study.json', 'sourcetext/paper.txt', 'README.md',
+  'paper.pdf', 'program.json', 'protocol.json', 'study.json', 'sourcetext/paper.txt', 'README.md',
   'review/fidelity-review-1.md', 'review/resolutions-1.md', 'review/checks-latest.json', 'artifacts/preview.html',
 ] as const
 

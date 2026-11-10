@@ -86,6 +86,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("batch", help="JSON batch file, or - for stdin")
     parser.add_argument("--program", default="program.json")
+    parser.add_argument('--expected-hash', help='Expected raw program bytes hash, or absent for a new document')
     args = parser.parse_args()
     target = Path(args.program)
     tmp = target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
@@ -93,7 +94,11 @@ def main() -> int:
         text = sys.stdin.buffer.read().decode("utf-8-sig") if args.batch == "-" else Path(args.batch).read_text(encoding="utf-8-sig")
         batch = json.loads(text)
         with program_lock(target):
-            prior = json.loads(target.read_text(encoding="utf-8-sig")) if target.exists() else {}
+            raw_prior = target.read_bytes() if target.exists() else None
+            actual = hashlib.sha256(raw_prior).hexdigest() if raw_prior is not None else 'absent'
+            if args.expected_hash is not None and args.expected_hash != actual:
+                raise ValueError('program.json changed; re-read it and review your patch before saving')
+            prior = json.loads(raw_prior.decode('utf-8-sig')) if raw_prior is not None else {}
             conflicts = []
             merged = apply(prior, batch, conflicts)
             if conflicts:

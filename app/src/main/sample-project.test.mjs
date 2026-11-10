@@ -16,11 +16,11 @@ writeFileSync(join(bundleDir, 'sample-project.mjs'), compiled)
 const { installSampleAssets } = await import(pathToFileURL(join(bundleDir, 'sample-project.mjs')).href)
 const sha = b => createHash('sha256').update(b).digest('hex')
 
-test('installs a protocol-only real study, exact licensed paper and current participant preview', async () => {
+test('installs a paired research document and real study, exact licensed paper and current participant preview', async () => {
  const project = mkdtempSync(join(tmpdir(), 'sample-project-'))
  try {
   await installSampleAssets(assets, project)
-  assert.equal(existsSync(join(project,'program.json')),false)
+  assert.equal(existsSync(join(project,'program.json')),true)
   assert.equal(existsSync(join(project,'package')),false)
   const raw=readFileSync(join(project,'protocol.json')), p=JSON.parse(raw)
   assert.equal(p.schema_version,'1');assert.equal(p.arms.length,2)

@@ -1,6 +1,6 @@
 ---
 name: run
-description: Run the study's protocol.json with AI participants (answers = f(state), f = the app's model) and compare the result with the paper's printed numbers. Use only after a "[Simulation scope approved]" message whose JSON has "route": "protocol"; for "route": "package" (or no route) use the simulate skill.
+description: Prepare a requested experiment scope, or run the study's protocol.json with AI participants (answers = f(state), f = the app's model) and compare the result with the paper's printed numbers. Start a run only after a "[Simulation scope approved]" message whose JSON has "route": "protocol"; for "route": "package" (or no route) use the simulate skill.
 ---
 
 # run: AI participants take part in protocol.json
@@ -14,6 +14,14 @@ protocol's SHA-256, so every result names what produced it.
 `run_study.py`, `fspec.py` and `render.py` are vendored from the sandbox and never edited here.
 `app_run.py` (the run), `launch.py` (how the app starts it), `protocol_report.py` (results page) and `budget.py`
 (the model budget) are the app's. The app runs its own shipped copy of all of them.
+
+## A request before approval
+
+If the researcher asks to run a named experiment before an approved scope exists, use build's requested-scope
+procedure first. Read the complete scholarly program and current protocol, prepare only the requested scope,
+and use a specific question/material request if needed. Do not start the run or create a new paid-model script.
+If the original cannot run, show the exact gap; a modified-wording proposal needs researcher confirmation
+and separate storage. Never silently replace the original protocol to make it runnable.
 
 ## Original wording (published studies)
 

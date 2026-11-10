@@ -18,9 +18,9 @@ identity and app approval use raw-file bytes. These hashes deliberately serve di
 
 ## Verified walkthrough
 
-1. Create the sample without an account or an agent turn: protocol, paper and a current preview are installed;
-   no program.json, Python replay package, automatic build or fake AI result is created.
-2. Study opens on the participant preview. Traverse pages and compare conditions; these are seeded examples,
+1. Create the sample without an account or an agent turn: a scholarly program, protocol, paper and a current preview are installed;
+   no legacy execution package, automatic build or fake AI result is created.
+2. Study opens on the research overview. Expand the participant preview to traverse pages and compare conditions; these are seeded examples,
    not all possible sessions or a claim that missing consent/timing information has been recovered.
 3. Click a participant passage: source comparison stays in Study, opens the correct paper page and carries
    the complete passage. Preview notes/quotes and bridge payloads are not clipped. Frames stay sandboxed with
@@ -78,3 +78,15 @@ outside Git. RELEASING.md records retention guidance so old generated distributi
 ### Website palette alignment
 
 Following Astra's design review, new/missing settings default to Light to match the current website's Folio Moss palette (web app/globals.css). Previously saved Light/Dark/System preferences remain unchanged. Secondary text now uses the exact website #5e6e60 value. Embedded frames inherit the host colour scheme, including OS-dark browser/light-app cases; the terminal reads live app tokens rather than a hard-coded forest-green background. Existing user-authored artifacts may implement their own explicit theme controls.
+
+## Paired research pilots
+
+The public build skill now distinguishes initial complete research understanding from preparing a requested experimental scope. `program.json` is a scholarly-v1 profile of Human Program v2, with original-source evidence, a version pin, study/arm mappings and result references. It does not duplicate executable steps. The trusted draft gate checks paired files and the current preview; legacy protocol-only projects remain readable. A valid draft is not run approval.
+
+Mazzarella adds a curated research draft for both studies; its previously reviewed protocol bytes are unchanged. The existing engine supports categorical outcomes but not paper reaction-time analyses. Browser verification opened the source beside Study and loaded the participant view. The trusted runner completed both studies, and in a separate test completed only the requested Study 1, using a localhost test responder. Research hypotheses did not enter participant requests.
+
+Knobe is a local-only pilot built from the existing sandbox protocol. It retains both experiments and their reported results in the research document. Missing administered questions/response labels keep both original experiments blocked. The browser exposed the targeted material review action and no valid run. No replacement wording or variant was accepted or run. Copyrighted PDF, protocol materials and local quotes are not shipped or committed.
+
+The preparation action prefills the existing agent composer, rather than starting a run. Guest UI verification covered the switch to the agent panel, not a hosted model conversation. On-demand preparation instructions, machine checks, local UI and the local runner are verified; live fresh-PDF generation, a real clarification/material handoff, a user-approved variant run, automatic preview regeneration and private intake/handback integration are not yet accepted. No batch work resumed, paid call, merge or release.
+
+Verification: typecheck, production desktop/web build, 103 targeted app/IPC/runner/checkpoint tests, and both browser walkthroughs.

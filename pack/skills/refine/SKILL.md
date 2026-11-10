@@ -15,7 +15,7 @@ reconstruction and must say so. Validate the proposal with the bundled protocol 
 checks; never remove missing items or distribution restrictions to pass. When the researcher accepts,
 re-read the current file, refuse a stale overwrite, save under the shared protocol lock, update the study
 card hash and regenerate the participant preview. Never run a simulation just because an edit was accepted.
-Do not synthesize a program.json alongside a protocol to make it appear in the UI.
+Preserve the paired scholarly program. After protocol changes, review its affected claims/effect references and update its version pin only after reconciling them; never just change a hash to conceal stale research notes. The scholarly program never duplicates execution steps.
 
 ## Program changes
 

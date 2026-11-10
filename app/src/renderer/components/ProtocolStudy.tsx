@@ -5,6 +5,8 @@ import type { SourceRef } from '../../shared/program-view'
 import { acceptFrom, dispatchBridge } from '../bridge'
 import { t } from '../i18n'
 import { versionedUrl } from '../../shared/file-version'
+import type { HumanProgram } from '../../shared/human-program'
+import { ResearchOverview } from './ResearchOverview'
 
 export async function matchingPreview(text: string, html: string): Promise<boolean> {
   const match = html.match(/<script\b[^>]*\bid=["']hs-protocol["'][^>]*>([\s\S]*?)<\/script>/i)
@@ -16,7 +18,7 @@ export async function matchingPreview(text: string, html: string): Promise<boole
   } catch { return false }
 }
 
-export function ProtocolStudy({ text, preview, onSource, onAsk }: { text: string; preview?: ProjectEntry; onSource(ref: SourceRef): void; onAsk?(text: string): void }) {
+export function ProtocolStudy({ text, preview, program, onSource, onAsk }: { text: string; preview?: ProjectEntry; program?: HumanProgram | null; onSource(ref: SourceRef): void; onAsk?(text: string): void }) {
   const frame = useRef<HTMLIFrameElement>(null)
   const [about, setAbout] = useState(false)
   const [view, setView] = useState<{ text: string; html: string } | null>(null)
@@ -38,9 +40,16 @@ export function ProtocolStudy({ text, preview, onSource, onAsk }: { text: string
     window.addEventListener('message', listener)
     return () => window.removeEventListener('message', listener)
   }, [onSource])
+  const research = program ? <ResearchOverview program={program} text={text} onSource={onSource} onAsk={onAsk} /> : null
   let p: Record<string, any>
   try { p = JSON.parse(text); if (!p || typeof p !== 'object' || Array.isArray(p)) throw Error() }
-  catch { return <div className="empty-state">{t('protocol.invalid')}</div> }
+  catch { return research ? <section className="protocol-research-document">{research}<p className="research-overview muted">{t('protocol.invalid')}</p></section> : <div className="empty-state">{t('protocol.invalid')}</div> }
+  if (view?.text === text && preview?.url && research) return <section className="protocol-research-document">
+    {research}
+    <details className="research-preview"><summary>Explore the participant view</summary>
+      <iframe ref={frame} className="artifact-frame" title={String(p.meta?.title ?? p.id)} sandbox="allow-scripts" src={versionedUrl(preview.url, preview.version)} />
+    </details>
+  </section>
   if (view?.text === text && preview?.url) return <section className="protocol-document">
     <details className="protocol-overview" onToggle={e => setAbout(e.currentTarget.open)}><summary>{t('protocol.overview')}</summary>
       {about && <>
@@ -55,9 +64,12 @@ export function ProtocolStudy({ text, preview, onSource, onAsk }: { text: string
   </section>
   const sources = Object.entries(p.meta?.sources && typeof p.meta.sources === 'object' ? p.meta.sources : {}) as [string, { file?: string; title?: string }][]
   return <article className="protocol-study">
+    {research}
+    {!research && <>
     <h1>{typeof p.meta?.title === 'string' ? p.meta.title : String(p.id ?? '')}</h1>
     <p>{typeof p.meta?.citation === 'string' ? p.meta.citation : ''}</p>
     {typeof p.meta?.scope === 'string' && <p>{p.meta.scope}</p>}
+    </>}
     <div className="row">{sources.map(([id, source]) => <button key={id} className="link" onClick={() => onSource({ file: source?.file, sourceId: id, page: 1, quote: '', verified: false })}>{typeof source?.title === 'string' ? source.title : id}</button>)}</div>
     <ol>{(Array.isArray(p.arms) ? p.arms : []).filter(a => a && typeof a.id === 'string').map((arm: any) => <li key={arm.id}><strong>{typeof arm.label === 'string' ? arm.label : arm.id}</strong>{arm.runnable === false && <div>{detail(arm.why ?? arm.not_runnable_reason)}</div>}</li>)}</ol>
     <p className="muted">{t('protocol.preview_missing')}</p>

@@ -1,4 +1,5 @@
 import { ProtocolStudy } from './ProtocolStudy'
+import { scholarlyProfile } from '../../shared/scholarly-program'
 // The right pane: Study (the 12-section document) and Paper, plus any file the researcher or the agent
 // opens as another tab, like an artifact panel. A Files sidebar (hidden by default, ⌘B) lists the folder.
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
@@ -173,6 +174,8 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
     return () => { live = false }
   }, [protocolKey]) // eslint-disable-line react-hooks/exhaustive-deps
   const hasProtocol = Boolean(protocolEntry)
+  const scholarlyProgram = scholarlyProfile(program) ? program : null
+  const showResearchDespiteReadError = Boolean(scholarlyProgram && loadedProtocol?.key === protocolKey && loadedProtocol.error)
   const simProgram = useMemo(() => hasProtocol ? protocolProgram(protocolText) : program, [program, protocolText, hasProtocol])
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
 
@@ -564,7 +567,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
               <div className="wb-protocol-host">
                 {building && build && <BuildProgress build={build} waiting={agentWaiting} />}
                 {buildFailed && <div className="part error edit-error" role="alert">{buildFailed} <button className="link" onClick={retryBuild}>{t('build.retry')}</button></div>}
-                {protocolText ? <ProtocolStudy text={protocolText} preview={files.find(f => f.rel === 'artifacts/preview.html')}
+                {protocolText || showResearchDespiteReadError ? <ProtocolStudy text={protocolText ?? ''} program={scholarlyProgram} preview={files.find(f => f.rel === 'artifacts/preview.html')}
                   onAsk={docProps.onPrefill}
                   onSource={ref => { rememberHere(); docProps.onSource('protocol', ref); update(l => ({ ...l, active: 'study', compare: true })) }} />
                   : <div className="empty-state">{loadedProtocol?.key === protocolKey && loadedProtocol.error ? loadedProtocol.error : t('protocol.loading')}</div>}

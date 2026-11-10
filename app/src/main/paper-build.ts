@@ -18,6 +18,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { join, resolve } from 'node:path'
 import type { KernelEvent } from './kernel-types'
 import { validateHumanProgram } from '../shared/human-program'
+import { scholarlyDeliveryHash, scholarlyDeliveryProblems } from './scholarly-delivery'
+import { scholarlyProfile } from '../shared/scholarly-program'
 import type { PaperBuildError, PaperBuildState } from '../preload/types'
 
 const file = (dir: string): string => join(dir, '.humanstudy', 'paper-build.json')
@@ -52,6 +54,7 @@ export function programCertificate(dir: string): { hash: string; problems: strin
   try {
     const bytes = readFileSync(join(dir, 'program.json'))
     const program = validateHumanProgram(JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, '')))
+    if (scholarlyProfile(program)) return null // paired research completes through the protocol route only
     return { hash: createHash('sha256').update(bytes).digest('hex'), problems: buildCoverageProblems(program) }
   } catch { return null }
 }
@@ -62,7 +65,10 @@ export function programComplete(dir: string): boolean {
 const currentCertificate = (dir: string, state: PaperBuildState): boolean => {
   if (!state.checked || !state.validationHash) return false
   if (state.validationRoute === 'protocol') {
-    try { return createHash('sha256').update(readFileSync(join(dir, 'protocol.json'))).digest('hex') === state.validationHash } catch { return false }
+    try {
+      const raw = readFileSync(join(dir, 'protocol.json'), 'utf8')
+      return createHash('sha256').update(raw).digest('hex') === state.validationHash && scholarlyDeliveryHash(dir, raw) === state.deliveryHash && !scholarlyDeliveryProblems(dir, raw).length
+    } catch { return false }
   }
   const current = programCertificate(dir)
   return current !== null && current.hash === state.validationHash && !current.problems.length
@@ -145,7 +151,12 @@ export function createPaperBuilds(changed: (dir: string) => void, checkProtocol?
     const pending = checking.get(dir)
     if (pending) return pending
     let before: string
-    try { before = createHash('sha256').update(readFileSync(join(dir, 'protocol.json'))).digest('hex') } catch { fail(dir, state, 'incomplete'); return Promise.resolve() }
+    let deliveryBefore: string | undefined
+    try {
+      const raw = readFileSync(join(dir, 'protocol.json'), 'utf8')
+      before = createHash('sha256').update(raw).digest('hex')
+      deliveryBefore = scholarlyDeliveryHash(dir, raw)
+    } catch { fail(dir, state, 'incomplete'); return Promise.resolve() }
     if (state.status !== 'complete') save(dir, { ...state, phase: 'checking' })
     const mine = (async () => {
       let result: { hash: string; problems: string[] } | null = null
@@ -153,14 +164,20 @@ export function createPaperBuilds(changed: (dir: string) => void, checkProtocol?
       const now = readPaperBuild(dir)
       if (!now || now.sessionId !== state.sessionId || now.startedAt !== state.startedAt || (now.status !== state.status && !(state.status === 'complete' && now.status === 'error' && now.error === 'incomplete'))) return
       let after = ''
-      try { after = createHash('sha256').update(readFileSync(join(dir, 'protocol.json'))).digest('hex') } catch { /* removed */ }
-      if (before !== after || result?.hash !== after || result.problems.length) {
+      let deliveryAfter: string | undefined, deliveryProblems: string[] = ['The study files changed during checking.']
+      try {
+        const raw = readFileSync(join(dir, 'protocol.json'), 'utf8')
+        after = createHash('sha256').update(raw).digest('hex')
+        deliveryAfter = scholarlyDeliveryHash(dir, raw)
+        deliveryProblems = scholarlyDeliveryProblems(dir, raw)
+      } catch { /* fail closed */ }
+      if (before !== after || deliveryBefore !== deliveryAfter || result?.hash !== after || result.problems.length || deliveryProblems.length) {
         protocolProofs.delete(dir)
         return fail(dir, { ...now, checked: false, validationHash: undefined }, 'incomplete')
       }
-      protocolProofs.set(dir, result.hash)
+      protocolProofs.set(dir, `${result.hash}:${deliveryAfter ?? ''}`)
       if (state.sessionId) live.delete(state.sessionId)
-      save(dir, { ...now, status: 'complete', error: undefined, checked: true, validationRoute: 'protocol', validationHash: result.hash })
+      save(dir, { ...now, status: 'complete', error: undefined, checked: true, validationRoute: 'protocol', validationHash: result.hash, deliveryHash: deliveryAfter })
     })().finally(() => { if (checking.get(dir) === mine) checking.delete(dir) })
     checking.set(dir, mine)
     return mine
@@ -173,7 +190,9 @@ export function createPaperBuilds(changed: (dir: string) => void, checkProtocol?
       if (state?.status === 'complete' && state.validationRoute === 'protocol' && checkProtocol) {
         let hash = ''
         try { hash = createHash('sha256').update(readFileSync(join(dir, 'protocol.json'))).digest('hex') } catch { /* read() invalidates it */ }
-        if (hash && protocolProofs.get(dir) !== hash) await finishProtocol(dir, state)
+        let delivery: string | undefined
+        try { delivery = scholarlyDeliveryHash(dir, readFileSync(join(dir, 'protocol.json'), 'utf8')) } catch { /* read invalidates it */ }
+        if (hash && protocolProofs.get(dir) !== `${hash}:${delivery ?? ''}`) await finishProtocol(dir, state)
       }
       return read(dir)
     },

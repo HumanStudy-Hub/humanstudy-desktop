@@ -7,7 +7,7 @@ description: Make an interactive, self-contained HTML view of the study in artif
 
 ## Protocol projects (default)
 
-For a protocol project, protocol.json is canonical. Use skills/preview to show actual participant pages and condition comparisons; use the artifact kit in protocol mode for other requested views, bound to the current protocol bytes. Cite the correct source file/page. Show flow operators and conditions only as specified; never flatten a repeat, interaction or conditional path into a made-up linear design. Never create a parallel program.json solely to render a view. The program-specific procedure below is for legacy projects only.
+For a paired project, program.json holds scholarly claims and protocol.json is canonical for execution. Use skills/preview to show actual participant pages and condition comparisons; use the artifact kit in protocol mode for other requested views, bound to the current protocol bytes. Cite the correct source file/page. Show flow operators and conditions only as specified; never flatten a repeat, interaction or conditional path into a made-up linear design. Use the scholarly program for paper-level understanding; never duplicate executable flow in it solely to render a view. The program-specific procedure below is for legacy projects only.
 
 
 A view arranges `program.json` (and, for simulations, a run's own outputs) so a researcher sees it
