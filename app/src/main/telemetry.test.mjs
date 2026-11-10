@@ -769,6 +769,63 @@ await test('blobs pass the boundary: an oversized workspace or program.json hold
   assert.equal((src.match(/putBlob\(/g) || []).length - 1, (src.match(/putBlob\((?:value|text|raw|JSON\.stringify\(metadata\)), (?:projectDir|dirFor)\)/g) || []).length, 'every blob goes through putBlob')
 })
 
+await test('letters only: re-numbered items, Q1:, a 1-5 column and changed numbering still match; CJK too (review probes probe2/probe3)', () => {
+  const { redactCapture, privateIndexOf, holdsPrivate, track: _t } = core
+  const ITEMS = ['I often feel nervous at work.', 'My manager listens to me.', 'I trust my colleagues fully.', 'I would leave this job soon.']
+  for (const source of [ITEMS.join('\n'), ITEMS.map((l, i) => `${i + 1}. ${l}`).join('\n')]) {
+    const idx = privateIndexOf([source])
+    const leaks = (t) => JSON.stringify(redactCapture({ event_type: 'x', metadata: { t } }, idx, true)).includes('nervous at work')
+    const cases = {
+      numbered: ITEMS.map((l, i) => `${i + 1}. ${l}`).join('\n'),
+      renumbered: ITEMS.map((l, i) => `${i + 7}) ${l}`).join('\n'),
+      unnumbered: ITEMS.join('\n'),
+      q: ITEMS.map((l, i) => `Q${i + 1}: ${l}`).join('\n'),
+      item: ITEMS.map((l, i) => `Item ${i + 1}: ${l}`).join('\n'),
+      lettered: ITEMS.map((l, i) => `(${'abcd'[i]}) ${l}`).join('\n'),
+      bullets: ITEMS.map((l) => `- ${l}`).join('\n'),
+      table: '| item | scale |\n|---|---|\n' + ITEMS.map((l) => `| ${l} | 1-5 |`).join('\n'),
+      json: JSON.stringify(ITEMS),
+      escaped: JSON.stringify(JSON.stringify(ITEMS.map((l, i) => `Q${i + 1}: ${l}`).join('\n'))),
+    }
+    for (const [k, v] of Object.entries(cases)) assert.equal(leaks(v), false, `${k} (source ${source.startsWith('1.') ? 'numbered' : 'plain'})`)
+  }
+  // CJK characters are letters
+  const zh = '我经常在工作中感到紧张。我的经理会倾听我的意见。我完全信任我的同事。我很快会离开这份工作。我对现在的工资感到满意。'
+  const zidx = privateIndexOf([zh])
+  assert.equal(holdsPrivate('1. 我经常在工作中感到紧张。\n2. 我的经理会倾听我的意见。\n3. 我完全信任我的同事。\n4. 我很快会离开这份工作。\n5. 我对现在的工资感到满意。', zidx, true), true)
+})
+
+await test('letters only does not over-redact ordinary text: false positives against a questionnaire index', () => {
+  const { privateIndexOf, holdsPrivate, containsPrivateRun } = core
+  const questionnaire = ['How many minutes did you walk this morning?', 'Did you see a neighbour on the way to work?',
+    'I often feel nervous at work.', 'My manager listens to me.', 'I trust my colleagues fully.', 'I would leave this job soon.',
+    'How satisfied are you with your life as a whole these days?', 'In general, would you say your health is excellent, very good, good, fair or poor?']
+  const idx = privateIndexOf([questionnaire.join('\n')])
+  const ordinary = [
+    'The study replicates a classic finding on how framing changes risky choices. Participants read a short scenario and chose between two programmes.',
+    'I filled in the method section and checked every condition against the paper. The sample was recruited online and paid a fixed fee.',
+    'Results: the effect was in the same direction as in the original study, but smaller. We report means, standard deviations and the test statistic.',
+    'Please review the protocol, then run the simulation with ten participants per arm. The run will take a few minutes and costs very little.',
+    'The questionnaire asks about the participant\'s work, their manager and their colleagues, and about their health and how satisfied they are.',
+    'Of the people who answered, most said they walked to work in the morning and saw a neighbour on the way, as expected from the original data.',
+    'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam.',
+    'This is a long ordinary sentence with many common English words that appear in almost every text about research and studies of people.',
+  ]
+  const hits = ordinary.filter((t) => containsPrivateRun(t, idx))
+  console.log(`  false positives: ${hits.length} of ${ordinary.length} ordinary texts against a ${questionnaire.length}-item questionnaire index (${idx.size} windows)`)
+  assert.equal(hits.length, 0)
+  assert.equal(holdsPrivate(ordinary.join('\n'), idx, true), false)
+})
+
+await test('a withheld file\'s name is not logged as an event target', () => {
+  const src = readFileSync(join(here, 'telemetry.ts'), 'utf8')
+  const body = src.slice(src.indexOf('export function track('), src.indexOf('\n}\n', src.indexOf('export function track(')))
+  assert.match(body, /if \(typeof legacy\.target === 'string' && namesPrivatePath\(legacy\.target, false\)\) legacy\.target = REDACTED_PRIVATE/)
+  assert.match(body, /namesPrivatePath\(opts\.target, false\) \? \{ target: REDACTED_PRIVATE \}/)
+  assert.equal(core.namesPrivatePath('sources/private/booklet.html', false), true)
+  assert.equal(core.namesPrivatePath('artifacts/notes.md', false), false)
+})
+
 console.log(`\n${passed} passed`)
 
 await test('large Unicode content reconstructs exactly from ordered gzip parts', () => {

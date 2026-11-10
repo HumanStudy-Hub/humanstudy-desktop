@@ -306,7 +306,9 @@ class RedactionIndex(unittest.TestCase):
             (p / rel).write_text(txt, encoding="utf-8")
         files = [f for f in (p / "sources").rglob("*") if f.is_file()]
         dest = O.index_project(c, p, protocol or {"distribution": {"held": {}}}, files, {}, received=received)
-        self.assertEqual(dest.with_suffix(".path").read_text(encoding="utf-8"), str(p.resolve()))
+        self.assertTrue(dest.name.endswith(".v%d.bin" % O.INDEX_FORMAT))
+        self.assertEqual(dest.with_name(dest.name[:-len(".v%d.bin" % O.INDEX_FORMAT)] + ".path").read_text(encoding="utf-8"),
+                         str(p.resolve()))
         return len(O._read_pairs(dest))
 
     def test_copies_made_on_this_computer_stay_private(self):

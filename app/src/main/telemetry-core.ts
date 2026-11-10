@@ -195,12 +195,19 @@ export const PRIVATE_RUN = 40
 /** A part longer than this is not scanned: while any private material is indexed, it is redacted as a whole. */
 export const SCAN_LIMIT = 300_000
 const M = 0x5bd1e995
-/** The skeleton of a text: NFKC, lower case, letters and digits only, as code points. */
+/** The skeleton of a text: NFKC, lower case, letters only (any script, CJK included), as code points. Digits are
+ *  left out, so re-numbered items (1. → Q1: → (a) 3), a 1-5 column or page numbers never break a run. */
 export function skeleton(text: string): number[] {
   const out: number[] = []
-  for (const ch of text.normalize('NFKC').toLowerCase()) if (/[\p{L}\p{N}]/u.test(ch)) out.push(ch.codePointAt(0)!)
+  for (const ch of text.normalize('NFKC').toLowerCase()) if (/\p{L}/u.test(ch)) out.push(ch.codePointAt(0)!)
   return out
 }
+/** Version of the index format (skeleton and hashes); the helper writes `<name>.v<INDEX_FORMAT>.bin`, and older
+ *  files are dropped so they are rebuilt. */
+export const INDEX_FORMAT = 2
+/** A line's enumerator or bullet (`1.`, `Q1:`, `(a)`, `Item 3:`, `- `, a read tool's `12| `), which inserts letters
+ *  (q, item, a) between items: removed in one of the checked forms, and on the helper's side too. */
+export const ENUMERATOR = /^\s*(?:\d+\|\s?)?(?:[-*\u2022\u00b7]\s+|\(?(?:q|item|no\.?)?\s*\d+[a-z]?\s*[.):]\s*|\(?[a-z]\s*[.)]\s+)?/i
 /** Hash of one window of skeleton code points: two independent 32-bit hashes. */
 export function windowPair(cps: number[], start: number, n = PRIVATE_RUN): [number, number] {
   let a = 0x811c9dc5, b = 0x9747b28c
@@ -277,7 +284,10 @@ function sortedIndex(pairs: Uint32Array): PrivateIndex {
 /** The index of some texts (tests, and the app's own fallbacks). */
 export function privateIndexOf(texts: string[]): PrivateIndex {
   const out: number[] = []
-  for (const t of texts) { const cps = skeleton(t); for (let i = 0; i + PRIVATE_RUN <= cps.length; i++) out.push(...windowPair(cps, i)) }
+  for (const raw of texts) {
+    const stripped = raw.split(/\r?\n/).map((l) => l.replace(ENUMERATOR, '')).join('\n')
+    for (const t of stripped === raw ? [raw] : [raw, stripped]) { const cps = skeleton(t); for (let i = 0; i + PRIVATE_RUN <= cps.length; i++) out.push(...windowPair(cps, i)) }
+  }
   const buf = new Uint8Array(out.length * 4)
   const v = new DataView(buf.buffer)
   out.forEach((x, i) => v.setUint32(i * 4, x))
@@ -298,11 +308,11 @@ export function containsPrivateRun(text: string, index: PrivateIndex, strict = t
  *  string holding JSON or a heredoc) turned into spaces; and with a read tool's line-number prefixes (`12| `) removed
  *  from every line. JSON escaping of the whole event is never involved: each string value is checked raw. */
 export function checkedForms(text: string): string[] {
-  const unescaped = text.replace(/\\+u[0-9a-fA-F]{4}/g, ' ').replace(/\\+[nrtbf"]/g, ' ')
+  const unescaped = text.replace(/\\+u[0-9a-fA-F]{4}/g, ' ').replace(/\\+[nr]/g, '\n').replace(/\\+[tbf"]/g, ' ')
   const out = [text]
   if (unescaped !== text) out.push(unescaped)
   for (const t of [...out]) {
-    const stripped = t.split(/\r?\n/).map((l) => l.replace(/^\s*\d+\| ?/, '')).join('\n')
+    const stripped = t.split(/\r?\n/).map((l) => l.replace(ENUMERATOR, '')).join('\n')
     if (stripped !== t) out.push(stripped)
   }
   return out

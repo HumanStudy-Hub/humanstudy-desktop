@@ -13,7 +13,7 @@ import { actionRef, type ActionRef } from '../shared/research-operations'
 import { createSerial, createWriteAttribution, isSaveTemp } from './write-capture'
 import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
-import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, mayCollectFile, mergePrivateIndex, programDiff, REDACTED_PRIVATE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
+import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, INDEX_FORMAT, namesPrivatePath, mayCollectFile, mergePrivateIndex, programDiff, REDACTED_PRIVATE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
 import { createReplay, REPLAY_FLUSH_MS, type Replay, type ReplayFile, type ReplayFs } from './replay-core'
 import type { Capture } from './threads-core'
 import type { KernelEvent } from './kernel-types'
@@ -185,7 +185,7 @@ export function track(type: string, opts: TelemetryTrackOptions = {}, projectDir
     const dirFor = projectDir ?? (projectId ? projectIds.get(projectId) : undefined)
     const unified = researchInteraction(type, opts)
     const ref = actionRef(opts.action)
-    if (unified || ref) researchAgent.interaction(type, { ...opts, action: ref }, { project_id: projectId, dir: dirFor })
+    if (unified || ref) researchAgent.interaction(type, { ...opts, ...(typeof opts.target === 'string' && namesPrivatePath(opts.target, false) ? { target: REDACTED_PRIVATE } : {}), action: ref }, { project_id: projectId, dir: dirFor })
     if (opts.v1Only) return
     // The private-material boundary, before the metadata is put in a blob or queued.
     let metadata = opts.metadata ? redactCapture({ metadata: opts.metadata }, privateIndex, dirFor ? scopedProject(dirFor) : false).metadata : opts.metadata
@@ -194,6 +194,8 @@ export function track(type: string, opts: TelemetryTrackOptions = {}, projectDir
       if (blob) metadata = { metadata_blob: blob }
     }
     const { action: _action, v1Only: _v1, ...legacy } = opts
+    // a withheld file's name (sources/private/…) is not logged either
+    if (typeof legacy.target === 'string' && namesPrivatePath(legacy.target, false)) legacy.target = REDACTED_PRIVATE
     t.track(type, { ...legacy, metadata, projectId }, { projectDir: dirFor })
   } catch {
     /* research data must never break the app */
@@ -417,12 +419,16 @@ let privateIndex: PrivateIndex = EMPTY_INDEX
 const originalTextDir = (): string => join(app.getPath('userData'), 'original-text')
 export async function refreshPrivateIndex(dir = join(originalTextDir(), 'redact')): Promise<void> {
   const buffers: Uint8Array[] = []
+  const current = `.v${INDEX_FORMAT}.bin`
   for (const name of await readdir(dir).catch(() => [] as string[])) {
     if (!name.endsWith('.bin')) continue
+    // an index of an older format is dropped (the helper rebuilds it on the next check)
+    if (!name.endsWith(current)) { await rm(join(dir, name), { force: true }).catch(() => undefined); continue }
     // a project folder that no longer exists: its index is pruned (the helper records the folder beside it)
-    const folder = await readFile(join(dir, name.replace(/\.bin$/, '.path')), 'utf8').catch(() => null)
+    const pathFile = join(dir, name.slice(0, -current.length) + '.path')
+    const folder = await readFile(pathFile, 'utf8').catch(() => null)
     if (folder !== null && !existsSync(folder.trim())) {
-      await Promise.all([rm(join(dir, name), { force: true }), rm(join(dir, name.replace(/\.bin$/, '.path')), { force: true })]).catch(() => undefined)
+      await Promise.all([rm(join(dir, name), { force: true }), rm(pathFile, { force: true })]).catch(() => undefined)
       continue
     }
     const b = await readFile(join(dir, name)).catch(() => null)

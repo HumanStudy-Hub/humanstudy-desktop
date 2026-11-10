@@ -24,6 +24,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import socket
 import sys
 import time
@@ -383,13 +384,29 @@ MAX_SKELETON = 1_000_000   # characters of one text indexed (a very large file: 
 _M32 = 0xFFFFFFFF
 
 
+INDEX_FORMAT = 2   # telemetry-core.ts INDEX_FORMAT: files are <name>.v2.bin; older ones are rebuilt
+# telemetry-core.ts ENUMERATOR: a line's enumerator or bullet, removed in a second form of every text
+ENUMERATOR = re.compile(r"^\s*(?:\d+\|\s?)?(?:[-*\u2022\u00b7]\s+|\(?(?:q|item|no\.?)?\s*\d+[a-z]?\s*[.):]\s*|\(?[a-z]\s*[.)]\s+)?",
+                        re.I)
+
+
 def skeleton(text: str) -> list[int]:
-    """NFKC, lower case, letters and digits only, as code points (telemetry-core.ts skeleton)."""
-    return [ord(ch) for ch in unicodedata.normalize("NFKC", text).lower() if unicodedata.category(ch)[0] in "LN"]
+    """NFKC, lower case, letters only (any script), as code points (telemetry-core.ts skeleton): digits are left
+    out, so re-numbered items never break a run."""
+    return [ord(ch) for ch in unicodedata.normalize("NFKC", text).lower() if unicodedata.category(ch)[0] == "L"]
 
 
 def window_pairs(text: str) -> set[tuple[int, int]]:
-    """(a, b) hash of every PRIVATE_RUN-long window of the text's skeleton (telemetry-core.ts windowHash)."""
+    """(a, b) hash of every PRIVATE_RUN-long window of the text's skeleton (telemetry-core.ts windowHash), for the
+    text as it is and with each line's enumerator removed (Q1:, (a), Item 3: insert letters between items)."""
+    stripped = "\n".join(ENUMERATOR.sub("", line, count=1) for line in text.splitlines())
+    out = _windows(text)
+    if stripped != text:
+        out |= _windows(stripped)
+    return out
+
+
+def _windows(text: str) -> set[tuple[int, int]]:
     cps, out = skeleton(text)[:MAX_SKELETON], set()
     for i in range(len(cps) - PRIVATE_RUN + 1):
         a, b = 0x811C9DC5, 0x9747B28C
@@ -430,7 +447,7 @@ def file_text(data: bytes, extractors: dict) -> str:
 
 def file_windows(cache: Path, data: bytes, extractors: dict) -> set[tuple[int, int]]:
     """The windows of one file, kept by its sha256 (<cache>/windows/<sha>.bin): it is extracted only once."""
-    dest = cache / "windows" / (sha256(data) + ".bin")
+    dest = cache / "windows" / ("%s.v%d.bin" % (sha256(data), INDEX_FORMAT))
     if dest.is_file():
         return _read_pairs(dest)
     pairs = window_pairs(file_text(data, extractors))
@@ -503,9 +520,9 @@ def index_project(cache: Path, project: Path, projection: dict, files: list[Path
             data = read_file(f)
             if data is not None and sha256(data) in hosted:
                 public |= file_windows(cache, data, extractors)
-    dest = cache / "redact" / (sha256(str(project.resolve()).encode("utf-8")) + ".bin")
+    dest = cache / "redact" / ("%s.v%d.bin" % (sha256(str(project.resolve()).encode("utf-8")), INDEX_FORMAT))
     _write_pairs(dest, private - public)
-    dest.with_suffix(".path").write_text(str(project.resolve()), encoding="utf-8")   # the app prunes stale indexes
+    dest.with_name(dest.name[:-len(".v%d.bin" % INDEX_FORMAT)] + ".path").write_text(str(project.resolve()), encoding="utf-8")   # the app prunes stale indexes
     return dest
 
 
