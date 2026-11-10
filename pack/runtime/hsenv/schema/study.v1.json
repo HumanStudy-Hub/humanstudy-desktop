@@ -1,0 +1,243 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "urn:humanstudy:schema:study:v1",
+ "title": "HumanStudy study card v1 (study.json)",
+ "description": "The catalogue entry for one study: what paper it is, which protocol file (by canonical sha256) is the study, how far it has been checked, and whether its content may be released. One file per study directory, next to protocol.json. Read by desktop, web, cloud, Bench and the website.",
+ "type": "object",
+ "required": [
+  "schema_version",
+  "id",
+  "title",
+  "authors",
+  "year",
+  "version",
+  "quality",
+  "licence",
+  "protocol"
+ ],
+ "additionalProperties": false,
+ "properties": {
+  "schema_version": {
+   "const": "1"
+  },
+  "id": {
+   "type": "string",
+   "pattern": "^[a-z0-9][a-z0-9_-]*$",
+   "description": "equals protocol.json id and the directory name"
+  },
+  "title": {
+   "type": "string",
+   "minLength": 1
+  },
+  "authors": {
+   "type": "array",
+   "minItems": 1,
+   "items": {
+    "type": "string",
+    "minLength": 1
+   }
+  },
+  "year": {
+   "type": "integer",
+   "minimum": 1800,
+   "maximum": 2100
+  },
+  "doi": {
+   "type": [
+    "string",
+    "null"
+   ],
+   "pattern": "^10\\.\\d{4,9}/\\S+$",
+   "description": "bare DOI (10.xxxx/…), null when the paper has none"
+  },
+  "version": {
+   "type": "string",
+   "pattern": "^\\d+\\.\\d+\\.\\d+$",
+   "description": "the study's own semver: major = a change that alters what participants see or how it is scored"
+  },
+  "quality": {
+   "enum": [
+    "draft",
+    "checked",
+    "high_fidelity"
+   ],
+   "description": "draft = built, checks not passing or not run; checked = hsenv.checks PASS; high_fidelity = checks PASS and an independent fidelity review signed it off"
+  },
+  "quality_evidence": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   },
+   "description": "paths to the review files behind the quality level (review/checks-*.json, review/fidelity-review-*.md)"
+  },
+  "licence": {
+   "type": "object",
+   "required": [
+    "paper",
+    "materials"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "paper": {
+     "type": "string",
+     "description": "SPDX id or 'unknown'"
+    },
+    "materials": {
+     "type": "string",
+     "description": "SPDX id (+ where stated) or 'unknown'"
+    },
+    "cite": {
+     "type": "string",
+     "description": "where the licence is stated"
+    }
+   }
+  },
+  "release_hold": {
+   "type": [
+    "string",
+    "null"
+   ],
+   "description": "non-null = runnable for private research only; the reason (e.g. materials licence not stated in the PDF). Never publish content while set"
+  },
+  "protocol": {
+   "type": "object",
+   "required": [
+    "path",
+    "sha256",
+    "schema_version"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "path": {
+     "type": "string",
+     "description": "relative to this file, normally protocol.json"
+    },
+    "sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$",
+     "description": "sha256 of the canonical JSON (json.dumps(data, sort_keys=True)); first 16 hex = hsenv Protocol.version"
+    },
+    "schema_version": {
+     "type": "string",
+     "description": "the protocol's schema_version ('1'; 'legacy' for a pre-v1 protocol)"
+    }
+   }
+  },
+  "tags": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "updated": {
+   "type": "string",
+   "pattern": "^\\d{4}-\\d{2}-\\d{2}"
+  },
+  "slug": {
+   "type": "string",
+   "pattern": "^[a-z0-9][a-z0-9_-]*$",
+   "description": "public release name (normally equals id)"
+  },
+  "paper": {
+   "type": [
+    "string",
+    "object"
+   ],
+   "description": "the paper this study replays (catalogue paper id or a {title, doi} object)"
+  },
+  "paperId": {
+   "type": "string",
+   "description": "the catalogue paper id (paper_<hex>) once indexed"
+  },
+  "contributors": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "name"
+    ],
+    "properties": {
+     "name": {
+      "type": "string",
+      "minLength": 1
+     },
+     "github": {
+      "type": "string"
+     },
+     "role": {
+      "type": "string"
+     }
+    }
+   },
+   "description": "people credited for the study (Bench CI matches a PR author against github)"
+  },
+  "visibility": {
+   "enum": [
+    "private",
+    "public"
+   ],
+   "description": "public = may be released; private = runnable for private research only"
+  },
+  "hsenv": {
+   "type": "string",
+   "description": "engine version range this study needs, e.g. '>=0.8,<0.9'"
+  },
+  "fidelity": {
+   "type": "object",
+   "properties": {
+    "verdict": {
+     "type": "string"
+    },
+    "review": {
+     "type": "string"
+    },
+    "signed_by": {
+     "type": "string"
+    },
+    "date": {
+     "type": "string"
+    }
+   },
+   "description": "the independent fidelity verdict behind quality high_fidelity: verdict, review file, who signed it"
+  },
+  "arms": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "id"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "runnable": {
+      "type": "boolean"
+     },
+     "release_hold": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    }
+   },
+   "description": "arm summary written by study sync from protocol.json (never hand-edited)"
+  },
+  "release": {
+   "type": "object",
+   "properties": {
+    "slug": {
+     "type": "string"
+    },
+    "private_commit": {
+     "type": "string"
+    },
+    "projection_sha": {
+     "type": "string"
+    }
+   },
+   "description": "where a public release came from: {slug, private_commit, projection_sha}"
+  }
+ }
+}

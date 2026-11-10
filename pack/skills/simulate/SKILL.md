@@ -5,6 +5,11 @@ description: Run the study's replay package with a language model playing every 
 
 # Simulate: AI participants take part in the study
 
+**Two routes.** An approval whose JSON has `"route": "protocol"` runs `protocol.json` with the engine: follow the
+`run` skill (`.opencode/skills/run/SKILL.md`) instead of this page's procedure; the model access rules below
+apply to it unchanged. An approval with `"route": "package"`, or with no route, runs `package/<paper-slug>/` as
+described here.
+
 A simulation runs the participants of `package/<paper-slug>/` (prompts and reply parsing in
 `task/adapter.py`) and scores them with `evaluation/evaluation.py` → `evaluate(sessions)`. If there
 is no package yet, run the `build` skill first (section 3). If `study.json.readiness.status` is

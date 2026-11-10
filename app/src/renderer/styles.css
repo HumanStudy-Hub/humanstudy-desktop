@@ -656,7 +656,7 @@ button.person:hover { border-color: var(--accent); }
 .home-version .link { color: var(--muted); font-size: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .home-version .link:hover:not(:disabled) { color: var(--accent); }
 .home-side .home-version button { display: inline; padding: 0; background: none; }
-.home-version { display: flex; flex-wrap: wrap; column-gap: 4px; }
+.home-version { display: flex; flex-direction: column; align-items: flex-start; row-gap: 2px; }
 
 /* ---- R3: permission cards, threads, usage footer, kernel bar, diffs ---- */
 .perm { border: 1px solid var(--warning-line); background: var(--warning-bg); border-radius: 10px; padding: 10px 12px; font-size: 13px; display: flex; flex-direction: column; gap: 10px; }
@@ -876,6 +876,13 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
 .sim-outcome.o-replicated { color: var(--ok); }
 .sim-outcome.o-not_replicated, .sim-outcome.o-failed { color: var(--danger); }
 .sim-outcome.o-partly, .sim-outcome.o-stopped { color: var(--warning); }
+/* Protocol runs: a direction verdict appears only on the strict official comparison. */
+.sim-summary.o-same { border-color: var(--ok); }
+.sim-summary.o-differs { border-color: var(--danger); }
+.sim-summary.o-mixed { border-color: var(--warning); }
+.sim-outcome.o-same { color: var(--ok); }
+.sim-outcome.o-differs { color: var(--danger); }
+.sim-outcome.o-mixed { color: var(--warning); }
 .wb-compare { padding: 0 10px; border-left: 1px solid var(--line); font-size: 12px; white-space: nowrap; color: var(--muted); }
 .wb-compare[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
 .wb-editors.comparing > .wb-content, .wb-editors.comparing > .wb-paper { min-width: 260px; }

@@ -50,6 +50,14 @@ assert.equal(runs[0].progress, '/p/artifacts/simulations/2026-10-16-0910/progres
 assert.equal(runs[0].results, undefined); assert.equal(runs[1].results, '/p/artifacts/simulations/2026-10-15-1329-example/results.html')
 assert.equal(runs[1].mtime, 5)
 assert.deepEqual(S.runFolders([]), [])
+// v0.8: a protocol run (skills/run) writes records.jsonl, one line per AI participant; trial/ is not the run's data
+const sizeOf = (e, size) => ({ ...e, size })
+const [proto] = S.runFolders([d('artifacts', [d('artifacts/simulations', [d('artifacts/simulations/2026-11-09-0100', [
+  sizeOf(f('artifacts/simulations/2026-11-09-0100/records.jsonl', 3), 42), f('artifacts/simulations/2026-11-09-0100/progress.json', 3),
+  d('artifacts/simulations/2026-11-09-0100/trial', [f('artifacts/simulations/2026-11-09-0100/trial/progress.json', 2)])])])])])
+assert.deepEqual(S.runFolders([d('artifacts', [d('artifacts/simulations', [d('artifacts/simulations/.operator', [f('artifacts/simulations/.operator/r.salt')]),
+  d('artifacts/simulations/.baseline-cache', [])])])]), [], 'the engine\'s .operator/ and .baseline-cache/ beside the runs are not runs')
+assert.deepEqual([proto.sessions, proto.sessionsSize, proto.progress], ['/p/artifacts/simulations/2026-11-09-0100/records.jsonl', 42, '/p/artifacts/simulations/2026-11-09-0100/progress.json'])
 assert.equal(new Date(S.runDate('2026-10-15-1329-example')).getHours(), 13)
 assert.equal(S.runDate('latest'), null)
 
@@ -106,6 +114,16 @@ assert.equal(S.hasParticipantData(real, null), true)
 assert.equal(S.isResult(blank, null, 'done'), false, 'a results page without participants is not a result')
 assert.equal(S.isResult(real, null, 'done'), true)
 assert.equal(S.isResult(real, null, 'running'), false)
+assert.equal(S.isResult(real, null, 'failed'), true, 'a partial run with its labelled results page stays listed after reopening')
+assert.equal(S.isResult(real, null, 'stopped'), false, 'a stopped run draws no comparison')
+// A protocol run's summary carries structured facts; the card writes them in the app's language.
+const fs = S.parseSummary(JSON.stringify({ outcome: 'unknown', paragraph: 'en text', facts: { done: 4, planned: 20, same: 1, compared: 1, official: false, unverified: true, partial: false, failedCalls: 0, tokenCap: false } }))
+assert.equal(fs.outcome, 'unknown'); assert.deepEqual(fs.facts, { done: 4, planned: 20, same: 1, compared: 1, official: false, unverified: true, partial: false, failedCalls: 0, tokenCap: false, engineDirection: null })
+const panelSrc = readFileSync(join(here, '../renderer/components/SimulationPanel.tsx'), 'utf8')
+assert.match(panelSrc, /summary\.facts \? factsParagraph\(summary\.facts\) : summary\.paragraph/)
+assert.match(panelSrc, /t\('sim\.stopped_line', \{ done: latestStopped\.done, total: latestStopped\.total \}\)/)
+const benchSrc = readFileSync(join(here, '../renderer/components/Workbench.tsx'), 'utf8')
+assert.match(benchSrc, /if \(layout\.active === 'study'\) update\(\(l\) => \(\{ \.\.\.l, active: 'simulation' \}\)\)/, 'a protocol-only project opens on the Simulation tab')
 assert.equal(S.isResult(runs[1], S.parseProgress(readFileSync(join(here, '../../resources/sample/example-simulation/progress.json'), 'utf8')), 'done'), true, 'the shipped example (participant counts in progress.json) is still a result')
 assert.equal(S.isResult(runs[1], null, 'done'), false)
 

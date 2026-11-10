@@ -79,6 +79,10 @@ async function summarize(dir: string): Promise<ProjectSummary> {
   } catch {
     /* no artifacts yet */
   }
+  // Finished simulations count too: each run folder with its results page (artifacts/simulations/<run>/results.html).
+  for (const d of await readdir(join(dir, 'artifacts', 'simulations'), { withFileTypes: true }).catch(() => [])) {
+    if (d.isDirectory() && !d.name.startsWith('.') && existsSync(join(dir, 'artifacts', 'simulations', d.name, 'results.html'))) artifactCount++
+  }
   let title: string | undefined
   try {
     const t = (JSON.parse(await readFile(join(dir, 'program.json'), 'utf8')) as { source?: { title?: unknown } }).source?.title

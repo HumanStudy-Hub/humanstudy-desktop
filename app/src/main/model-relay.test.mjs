@@ -175,3 +175,54 @@ print('legacy run ok', sys.argv[1:])
   assert.match(out, /legacy run ok \['--trial'\]/)
   assert.ok(!out.includes('fake-hosted-sentinel') && !err.includes('fake-hosted-sentinel'), 'the launcher never prints the key')
 })
+test('review 4 S5 / review 5 S1: only calls the provider did not process are refunded, never more than the cap', async () => {
+  let status = 429
+  const stub = createServer(async (req, res) => {
+    for await (const _ of req) { /* drain */ }
+    if (status !== 200) { res.statusCode = status; return res.end('{"error": "x"}') }
+    res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }))
+  })
+  await new Promise(resolve => stub.listen(0, '127.0.0.1', resolve))
+  const project = join(temp, 'refund-project'); await mkdir(project)
+  const storage = join(temp, 'refund-app')
+  // One call reserves bytes + 256 + 100 (about 450); the cap fits two such calls.
+  const relay = await startModelRelay({ project, storage, model: 'allowed', upstream: `http://127.0.0.1:${stub.address().port}`, key: 'k', tokenCap: 1000 })
+  const call = () => fetch(relay.baseURL + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${relay.token}` }, body: JSON.stringify({ model: 'allowed', messages: [{ role: 'user', content: 'hi' }], max_tokens: 100 }) })
+  try {
+    // A rate limit (429) means not processed: refunded, until the refunds reach the cap (two calls' worth here).
+    assert.equal((await call()).status, 502)
+    assert.equal((await call()).status, 502)
+    status = 200
+    assert.equal((await call()).status, 200, 'two refunds: the cap is intact')
+    status = 429
+    assert.equal((await call()).status, 502, 'a third rejection is not refunded: total refunds stay within the cap')
+    status = 200
+    assert.equal((await call()).status, 402, 'that rejection used the last room')
+    const log = await readFile(relayDescriptor(storage, project) + '.usage.jsonl', 'utf8')
+    assert.equal(log.split('\n').filter((l) => l.includes('"refunded"')).length, 2)
+  } finally { await relay.close() }
+  // A 502/504 may come after the model ran and billed: never refunded.
+  const relay2 = await startModelRelay({ project, storage: join(temp, 'refund-app-2'), model: 'allowed', upstream: `http://127.0.0.1:${stub.address().port}`, key: 'k', tokenCap: 1000 })
+  const call2 = () => fetch(relay2.baseURL + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${relay2.token}` }, body: JSON.stringify({ model: 'allowed', messages: [{ role: 'user', content: 'hi' }], max_tokens: 100 }) })
+  try {
+    for (const st of [502, 504]) { status = st; assert.equal((await call2()).status, 502) }
+    status = 200
+    assert.equal((await call2()).status, 402, 'the two 5xx calls kept their reservation')
+  } finally { await relay2.close(); await new Promise(resolve => stub.close(resolve)) }
+  // A connection refused never reached the provider: refunded.
+  const closedPort = await new Promise((resolve) => { const srv = createServer(); srv.listen(0, '127.0.0.1', () => { const p = srv.address().port; srv.close(() => resolve(p)) }) })
+  const relay3 = await startModelRelay({ project, storage: join(temp, 'refund-app-3'), model: 'allowed', upstream: `http://127.0.0.1:${closedPort}`, key: 'k', tokenCap: 1000 })
+  try {
+    const c = () => fetch(relay3.baseURL + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${relay3.token}` }, body: JSON.stringify({ model: 'allowed', messages: [{ role: 'user', content: 'hi' }], max_tokens: 100 }) })
+    assert.equal((await c()).status, 502); assert.equal((await c()).status, 502)
+    const log = await readFile(relayDescriptor(join(temp, 'refund-app-3'), project) + '.usage.jsonl', 'utf8')
+    assert.equal(log.split('\n').filter((l) => l.includes('"refunded"') && l.includes('ECONNREFUSED')).length, 2)
+  } finally { await relay3.close() }
+})
+
+test('review 5 M3: a protocol run\'s relay writes no descriptor, so the agent never holds its token', async () => {
+  const project = join(temp, 'publish-project'); await mkdir(project)
+  const storage = join(temp, 'publish-app')
+  const relay = await startModelRelay({ project, storage, model: 'm', upstream: 'http://127.0.0.1:9', key: 'k', publish: false })
+  try { await assert.rejects(readFile(relayDescriptor(storage, project)), /ENOENT/) } finally { await relay.close() }
+})

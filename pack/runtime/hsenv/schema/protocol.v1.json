@@ -1,0 +1,2660 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "urn:humanstudy:schema:protocol:v1",
+ "title": "HumanStudy protocol v1 (protocol.json)",
+ "description": "One study as an executable protocol: what each participant saw, in what order, what they could answer, and how the paper analysed it. Frozen 2026-11-08 from DESIGN.md §3/§3.5 and the protocols converted so far. Strict on settled vocabulary (evidence labels, response kinds, back/advance, flow nodes, effect ops/roles); permissive (accepted, reported as undocumented) on notes and study-specific fields. x-legacy-values marks enum values legacy protocols use but DESIGN does not document; x-report-unknown marks objects whose unknown keys are reported. Keys ending in _cite hold a cite, a list of cites or a map of cites; keys named note / *_note are free text never served.",
+ "type": "object",
+ "properties": {
+  "schema_version": {
+   "const": "1",
+   "description": "protocol format version; absent = legacy (pre-v1) file"
+  },
+  "schema": {
+   "type": "string",
+   "description": "legacy free-form tag (hsenv-protocol/0.1, /3.2 …); superseded by schema_version"
+  },
+  "id": {
+   "type": "string",
+   "pattern": "^[a-z0-9][a-z0-9_-]*$"
+  },
+  "meta": {
+   "$ref": "#/$defs/meta"
+  },
+  "arms": {
+   "type": "array",
+   "minItems": 1,
+   "items": {
+    "$ref": "#/$defs/arm"
+   }
+  },
+  "conditions": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/condition"
+   }
+  },
+  "data": {
+   "$ref": "#/$defs/dataNode",
+   "description": "optional: the engine defaults it to {} (engine.py Protocol)"
+  },
+  "vars": {
+   "type": "object"
+  },
+  "stages": {
+   "type": "object",
+   "minProperties": 1,
+   "additionalProperties": {
+    "$ref": "#/$defs/stage"
+   }
+  },
+  "flow": {
+   "$ref": "#/$defs/flowNode"
+  },
+  "units": {
+   "type": "object",
+   "additionalProperties": {
+    "$ref": "#/$defs/unit"
+   }
+  },
+  "exclusions": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/exclusion"
+   }
+  },
+  "analysis_exclusions": {
+   "type": "array",
+   "items": {
+    "$ref": "#/$defs/analysisExclusion"
+   }
+  },
+  "analysis": {
+   "$ref": "#/$defs/analysis"
+  },
+  "keyed": {
+   "type": "object",
+   "description": "answers that make the paper's pattern true (fuzz/self-test only; keys never reach a State)",
+   "properties": {
+    "why": {},
+    "answers": {
+     "type": "object",
+     "additionalProperties": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "$ref": "#/$defs/expr"
+       },
+       {
+        "type": [
+         "string",
+         "number",
+         "integer",
+         "boolean",
+         "null"
+        ]
+       }
+      ]
+     }
+    }
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "answers"
+   ],
+   "x-report-unknown": true
+  },
+  "coding": {
+   "type": "object",
+   "additionalProperties": {
+    "$ref": "#/$defs/coding"
+   }
+  },
+  "omitted": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "properties": {
+     "what": {},
+     "why": {},
+     "label": {}
+    },
+    "patternProperties": {
+     "(^|_)cites?$": {
+      "$ref": "#/$defs/citeField"
+     },
+     "(^|_)note(s)?$|_note_|^note_": {
+      "$ref": "#/$defs/note"
+     }
+    },
+    "required": [
+     "what"
+    ],
+    "x-report-unknown": true
+   }
+  },
+  "run_excluded": {
+   "type": "array"
+  },
+  "pages": {
+   "type": [
+    "object",
+    "array"
+   ]
+  },
+  "image_text": {},
+  "licence_missing": {}
+ },
+ "patternProperties": {
+  "(^|_)cites?$": {
+   "$ref": "#/$defs/citeField"
+  },
+  "(^|_)note(s)?$|_note_|^note_": {
+   "$ref": "#/$defs/note"
+  }
+ },
+ "required": [
+  "id",
+  "meta",
+  "arms",
+  "stages",
+  "flow",
+  "units",
+  "exclusions",
+  "analysis",
+  "keyed"
+ ],
+ "x-report-unknown": true,
+ "$defs": {
+  "expr": {
+   "type": "object",
+   "required": [
+    "expr"
+   ],
+   "properties": {
+    "expr": {
+     "type": "string"
+    }
+   },
+   "description": "an expression in the hsenv expression language (expr.py), evaluated per participant"
+  },
+  "dataNode": {
+   "description": "the study's materials, read by expressions (data['story'][v][c]); free-form, but every cite / *_cite inside is checked",
+   "type": [
+    "object",
+    "array",
+    "string",
+    "number",
+    "boolean",
+    "null"
+   ],
+   "items": {
+    "$ref": "#/$defs/dataNode"
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    }
+   },
+   "additionalProperties": {
+    "$ref": "#/$defs/dataNode"
+   }
+  },
+  "note": {
+   "description": "free-text annotation for operators/reviewers; never served",
+   "type": [
+    "string",
+    "array",
+    "object",
+    "boolean",
+    "number",
+    "null"
+   ]
+  },
+  "label": {
+   "enum": [
+    "verbatim",
+    "reported",
+    "derived",
+    "missing"
+   ],
+   "description": "evidence label: verbatim = transcribed as printed/shown; reported = stated by the source; derived = computed/inferred from cited material; missing = the source does not say (never filled with plausible text)"
+  },
+  "cite": {
+   "type": "object",
+   "description": "where a value comes from",
+   "properties": {
+    "label": {
+     "$ref": "#/$defs/label"
+    },
+    "source": {
+     "type": "string",
+     "minLength": 1,
+     "description": "key of meta.sources (or a named source file)"
+    },
+    "page": {
+     "type": [
+      "integer",
+      "string"
+     ]
+    },
+    "read": {
+     "enum": [
+      "image"
+     ],
+     "description": "text read off an image; served only when a blind reading agrees (DESIGN §3.5)"
+    },
+    "evidence": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      }
+     ]
+    },
+    "where": {
+     "type": "string"
+    },
+    "file": {
+     "type": "string"
+    },
+    "qid": {
+     "type": "string"
+    },
+    "block": {
+     "type": "string"
+    },
+    "part": {
+     "type": "string"
+    },
+    "table": {
+     "type": "string"
+    },
+    "licence": {
+     "type": "string"
+    },
+    "second_reading": {
+     "type": "string"
+    }
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "label",
+    "source"
+   ],
+   "x-report-unknown": true
+  },
+  "citeField": {
+   "x-name": "cite (a cite, a list of cites, or a map name -> cite)",
+   "anyOf": [
+    {
+     "$ref": "#/$defs/cite"
+    },
+    {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/cite"
+     }
+    },
+    {
+     "type": "object",
+     "additionalProperties": {
+      "$ref": "#/$defs/cite"
+     },
+     "not": {
+      "required": [
+       "label"
+      ]
+     }
+    }
+   ]
+  },
+  "span": {
+   "type": "object",
+   "properties": {
+    "start": {
+     "type": "integer"
+    },
+    "end": {
+     "type": "integer"
+    },
+    "style": {
+     "type": "string"
+    },
+    "tooltip": {
+     "type": "string"
+    }
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "start",
+    "end"
+   ],
+   "x-report-unknown": true
+  },
+  "richText": {
+   "type": "object",
+   "description": "a data value with its cite and inline emphasis",
+   "properties": {
+    "text": {
+     "type": "string"
+    },
+    "spans": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/span"
+     }
+    }
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "text"
+   ],
+   "x-report-unknown": true
+  },
+  "imageLine": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "$ref": "#/$defs/richText"
+    }
+   ]
+  },
+  "cell": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": [
+      "number",
+      "null"
+     ]
+    },
+    {
+     "type": "object",
+     "properties": {
+      "text": {
+       "type": "string"
+      },
+      "mark": {},
+      "spans": {
+       "type": "array",
+       "items": {
+        "$ref": "#/$defs/span"
+       }
+      }
+     },
+     "patternProperties": {
+      "(^|_)cites?$": {
+       "$ref": "#/$defs/citeField"
+      },
+      "(^|_)note(s)?$|_note_|^note_": {
+       "$ref": "#/$defs/note"
+      }
+     },
+     "x-report-unknown": true
+    }
+   ]
+  },
+  "itemValue": {
+   "x-name": "item value",
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": [
+      "number",
+      "boolean",
+      "null"
+     ]
+    },
+    {
+     "$ref": "#/$defs/expr"
+    },
+    {
+     "$ref": "#/$defs/richText"
+    },
+    {
+     "type": "object",
+     "description": "an image",
+     "properties": {
+      "src": {
+       "type": "string"
+      },
+      "sha256": {
+       "type": "string",
+       "pattern": "^[0-9a-f]{64}$"
+      },
+      "lines": {
+       "type": "array",
+       "items": {
+        "$ref": "#/$defs/imageLine"
+       }
+      },
+      "size": {
+       "type": "object",
+       "properties": {
+        "width": {
+         "type": "number"
+        },
+        "height": {
+         "type": "number"
+        }
+       },
+       "patternProperties": {
+        "(^|_)cites?$": {
+         "$ref": "#/$defs/citeField"
+        },
+        "(^|_)note(s)?$|_note_|^note_": {
+         "$ref": "#/$defs/note"
+        }
+       },
+       "x-report-unknown": true
+      }
+     },
+     "patternProperties": {
+      "(^|_)cites?$": {
+       "$ref": "#/$defs/citeField"
+      },
+      "(^|_)note(s)?$|_note_|^note_": {
+       "$ref": "#/$defs/note"
+      }
+     },
+     "required": [
+      "src"
+     ],
+     "x-report-unknown": true
+    },
+    {
+     "type": "object",
+     "description": "a table as shown",
+     "properties": {
+      "rows": {
+       "type": "array",
+       "items": {
+        "type": "array",
+        "items": {
+         "$ref": "#/$defs/cell"
+        }
+       }
+      }
+     },
+     "patternProperties": {
+      "(^|_)cites?$": {
+       "$ref": "#/$defs/citeField"
+      },
+      "(^|_)note(s)?$|_note_|^note_": {
+       "$ref": "#/$defs/note"
+      }
+     },
+     "required": [
+      "rows"
+     ],
+     "x-report-unknown": true
+    },
+    {
+     "type": "object",
+     "description": "a gap: the text is not printed anywhere (text null, cite labelled missing; DESIGN §2 rule 2)",
+     "properties": {
+      "text": {
+       "type": "null"
+      },
+      "cite": {
+       "allOf": [
+        {
+         "$ref": "#/$defs/cite"
+        },
+        {
+         "properties": {
+          "label": {
+           "const": "missing"
+          }
+         }
+        }
+       ]
+      }
+     },
+     "patternProperties": {
+      "(^|_)note(s)?$|_note_|^note_": {
+       "$ref": "#/$defs/note"
+      }
+     },
+     "required": [
+      "text",
+      "cite"
+     ],
+     "additionalProperties": false
+    }
+   ]
+  },
+  "item": {
+   "type": "object",
+   "description": "one content item of a stage",
+   "properties": {
+    "id": {
+     "type": "string"
+    },
+    "value": {
+     "$ref": "#/$defs/itemValue"
+    },
+    "text": {
+     "$ref": "#/$defs/itemValue"
+    },
+    "type": {
+     "enum": [
+      "text",
+      "image",
+      "table",
+      "piped",
+      "computed",
+      "audio",
+      "video",
+      "button"
+     ],
+     "x-legacy-values": [
+      "button"
+     ]
+    },
+    "style": {
+     "type": "string"
+    },
+    "if": {
+     "type": "string"
+    },
+    "reviewable": {
+     "type": "boolean"
+    },
+    "reviewable_on": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "piped": {},
+    "piped_from": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "id"
+   ],
+   "x-report-unknown": true
+  },
+  "option": {
+   "type": "object",
+   "properties": {
+    "code": {
+     "type": [
+      "string",
+      "integer",
+      "number",
+      "boolean"
+     ]
+    },
+    "label": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "$ref": "#/$defs/expr"
+      },
+      {
+       "$ref": "#/$defs/richText"
+      },
+      {
+       "type": [
+        "number",
+        "boolean",
+        "null"
+       ]
+      }
+     ]
+    },
+    "text_entry": {
+     "type": "boolean"
+    },
+    "fixed": {
+     "type": "boolean"
+    }
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "code"
+   ],
+   "x-report-unknown": true
+  },
+  "validate": {
+   "type": "object",
+   "properties": {
+    "min": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      },
+      {
+       "$ref": "#/$defs/expr"
+      },
+      {
+       "type": "string"
+      }
+     ]
+    },
+    "max": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      },
+      {
+       "$ref": "#/$defs/expr"
+      },
+      {
+       "type": "string"
+      }
+     ]
+    },
+    "equals": {},
+    "also": {
+     "type": "array"
+    },
+    "contains": {},
+    "pattern": {
+     "type": "string"
+    },
+    "ignore_case": {
+     "type": "boolean"
+    },
+    "message": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "$ref": "#/$defs/expr"
+      },
+      {
+       "$ref": "#/$defs/richText"
+      },
+      {
+       "type": [
+        "number",
+        "boolean",
+        "null"
+       ]
+      }
+     ]
+    },
+    "message_label": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "x-report-unknown": true
+  },
+  "response": {
+   "type": "object",
+   "description": "one input",
+   "properties": {
+    "id": {
+     "type": "string"
+    },
+    "kind": {
+     "enum": [
+      "choice",
+      "multi",
+      "number",
+      "scale",
+      "slider",
+      "text",
+      "rank"
+     ]
+    },
+    "prompt": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "$ref": "#/$defs/expr"
+      },
+      {
+       "$ref": "#/$defs/richText"
+      },
+      {
+       "type": [
+        "number",
+        "boolean",
+        "null"
+       ]
+      }
+     ]
+    },
+    "required": {
+     "type": "boolean"
+    },
+    "soft_required": {
+     "type": "boolean"
+    },
+    "widget": {
+     "enum": [
+      "autocomplete",
+      "bar",
+      "buttons",
+      "checkbox",
+      "date",
+      "dropdown",
+      "file",
+      "grid",
+      "horizontal",
+      "hslider",
+      "likert",
+      "matrix",
+      "number",
+      "radio",
+      "rank",
+      "slider",
+      "spinner",
+      "star",
+      "text",
+      "textarea",
+      "timed_collection",
+      "vertical",
+      "text_box",
+      "list",
+      "radio_vertical",
+      "radio_horizontal",
+      "radio_column",
+      "checkbox_column",
+      "matrix_dropdown"
+     ],
+     "x-legacy-values": [
+      "text_box",
+      "list",
+      "radio_vertical",
+      "radio_horizontal",
+      "radio_column",
+      "checkbox_column",
+      "matrix_dropdown"
+     ]
+    },
+    "widget_params": {
+     "type": "object"
+    },
+    "options": {
+     "anyOf": [
+      {
+       "type": "array",
+       "items": {
+        "$ref": "#/$defs/option"
+       }
+      },
+      {
+       "$ref": "#/$defs/expr"
+      }
+     ]
+    },
+    "shuffle_options": {
+     "type": "boolean"
+    },
+    "range": {
+     "anyOf": [
+      {
+       "type": "array",
+       "minItems": 2,
+       "maxItems": 2,
+       "items": {
+        "anyOf": [
+         {
+          "type": "number"
+         },
+         {
+          "type": "null"
+         },
+         {
+          "$ref": "#/$defs/expr"
+         },
+         {
+          "type": "string"
+         }
+        ]
+       }
+      },
+      {
+       "$ref": "#/$defs/expr"
+      }
+     ]
+    },
+    "range_visible": {
+     "type": "boolean"
+    },
+    "step": {
+     "type": "number"
+    },
+    "integer": {
+     "type": "boolean"
+    },
+    "start": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      },
+      {
+       "$ref": "#/$defs/expr"
+      }
+     ]
+    },
+    "start_visible": {
+     "type": "boolean"
+    },
+    "shows_value": {
+     "type": "boolean"
+    },
+    "gridlines": {},
+    "anchors": {},
+    "columns": {},
+    "prefix": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "$ref": "#/$defs/expr"
+      },
+      {
+       "$ref": "#/$defs/richText"
+      },
+      {
+       "type": [
+        "number",
+        "boolean",
+        "null"
+       ]
+      }
+     ]
+    },
+    "suffix": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "$ref": "#/$defs/expr"
+      },
+      {
+       "$ref": "#/$defs/richText"
+      },
+      {
+       "type": [
+        "number",
+        "boolean",
+        "null"
+       ]
+      }
+     ]
+    },
+    "validate": {
+     "$ref": "#/$defs/validate"
+    },
+    "required_message": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "$ref": "#/$defs/expr"
+      },
+      {
+       "$ref": "#/$defs/richText"
+      },
+      {
+       "type": [
+        "number",
+        "boolean",
+        "null"
+       ]
+      }
+     ]
+    },
+    "prefill": {},
+    "min_chars": {
+     "type": "integer"
+    },
+    "na_option": {},
+    "prompt_style": {
+     "type": "string"
+    },
+    "instruction": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "$ref": "#/$defs/expr"
+      },
+      {
+       "$ref": "#/$defs/richText"
+      },
+      {
+       "type": [
+        "number",
+        "boolean",
+        "null"
+       ]
+      }
+     ]
+    },
+    "depends_on": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "coding": {},
+    "coding_ref": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "object"
+      }
+     ]
+    },
+    "if": {
+     "type": "string"
+    },
+    "button": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "$ref": "#/$defs/expr"
+      },
+      {
+       "$ref": "#/$defs/richText"
+      },
+      {
+       "type": [
+        "number",
+        "boolean",
+        "null"
+       ]
+      }
+     ]
+    }
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "id",
+    "kind"
+   ],
+   "x-report-unknown": true,
+   "allOf": [
+    {
+     "anyOf": [
+      {
+       "properties": {
+        "kind": {
+         "not": {
+          "enum": [
+           "choice",
+           "multi",
+           "rank"
+          ]
+         }
+        }
+       }
+      },
+      {
+       "required": [
+        "options"
+       ],
+       "properties": {
+        "options": {
+         "anyOf": [
+          {
+           "type": "array",
+           "minItems": 1
+          },
+          {
+           "$ref": "#/$defs/expr"
+          }
+         ]
+        }
+       }
+      }
+     ],
+     "x-name": "response (choice/multi/rank need a non-empty options list)"
+    },
+    {
+     "anyOf": [
+      {
+       "properties": {
+        "kind": {
+         "not": {
+          "enum": [
+           "slider",
+           "scale"
+          ]
+         }
+        }
+       }
+      },
+      {
+       "required": [
+        "range"
+       ]
+      }
+     ],
+     "x-name": "response (slider/scale need a range)"
+    }
+   ]
+  },
+  "presentation": {
+   "type": "object",
+   "description": "how the page was shown: plain values only, evidence in presentation_cite",
+   "properties": {
+    "back": {
+     "enum": [
+      "allowed",
+      "not_allowed",
+      "unknown"
+     ]
+    },
+    "advance": {
+     "anyOf": [
+      {
+       "enum": [
+        "self",
+        "timed",
+        "after",
+        "auto",
+        "none",
+        "wait",
+        "link",
+        "unknown"
+       ],
+       "x-legacy-values": [
+        "auto",
+        "none",
+        "wait",
+        "link"
+       ]
+      },
+      {
+       "type": "string",
+       "pattern": "^(timed|after)\\(.*\\)$"
+      }
+     ]
+    },
+    "time_limit": {
+     "anyOf": [
+      {
+       "type": "number",
+       "minimum": 0
+      },
+      {
+       "enum": [
+        "none",
+        "unknown",
+        null
+       ]
+      }
+     ]
+    },
+    "min_sec": {
+     "type": "number",
+     "minimum": 0
+    },
+    "paging": {
+     "type": "string"
+    },
+    "stays": {
+     "enum": [
+      "until_next",
+      "whole_block",
+      "whole_session"
+     ]
+    },
+    "button": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "$ref": "#/$defs/expr"
+      }
+     ]
+    },
+    "timer_shown": {
+     "type": "boolean"
+    },
+    "dialog": {
+     "type": "boolean"
+    },
+    "same_page_as": {
+     "type": "string"
+    },
+    "page": {
+     "type": "string"
+    },
+    "instructions_available": {
+     "type": [
+      "string",
+      "number",
+      "integer",
+      "boolean",
+      "null"
+     ]
+    }
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "x-report-unknown": true
+  },
+  "stage": {
+   "type": "object",
+   "description": "one screen (or one part of a page)",
+   "properties": {
+    "id": {
+     "type": "string"
+    },
+    "role": {
+     "type": "string"
+    },
+    "content": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/item"
+     }
+    },
+    "responses": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/response"
+     }
+    },
+    "presentation": {
+     "$ref": "#/$defs/presentation"
+    },
+    "layout": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "shuffle_responses": {
+     "type": "boolean"
+    },
+    "validate_page": {
+     "type": "array",
+     "items": {
+      "type": "object"
+     }
+    },
+    "validate_page_message": {},
+    "sum_to": {
+     "type": "object",
+     "properties": {
+      "responses": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      },
+      "total": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        },
+        {
+         "$ref": "#/$defs/expr"
+        },
+        {
+         "type": "string"
+        }
+       ]
+      },
+      "message": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "$ref": "#/$defs/expr"
+        },
+        {
+         "$ref": "#/$defs/richText"
+        },
+        {
+         "type": [
+          "number",
+          "boolean",
+          "null"
+         ]
+        }
+       ]
+      }
+     },
+     "patternProperties": {
+      "(^|_)cites?$": {
+       "$ref": "#/$defs/citeField"
+      },
+      "(^|_)note(s)?$|_note_|^note_": {
+       "$ref": "#/$defs/note"
+      }
+     },
+     "required": [
+      "responses",
+      "total"
+     ],
+     "x-report-unknown": true
+    },
+    "single_switch": {
+     "type": "object",
+     "properties": {
+      "responses": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      },
+      "from": {},
+      "to": {},
+      "message": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "$ref": "#/$defs/expr"
+        },
+        {
+         "$ref": "#/$defs/richText"
+        },
+        {
+         "type": [
+          "number",
+          "boolean",
+          "null"
+         ]
+        }
+       ]
+      },
+      "enforce": {
+       "type": "boolean"
+      }
+     },
+     "patternProperties": {
+      "(^|_)cites?$": {
+       "$ref": "#/$defs/citeField"
+      },
+      "(^|_)note(s)?$|_note_|^note_": {
+       "$ref": "#/$defs/note"
+      }
+     },
+     "required": [
+      "responses"
+     ],
+     "x-report-unknown": true
+    },
+    "required_message_page": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "$ref": "#/$defs/expr"
+      },
+      {
+       "$ref": "#/$defs/richText"
+      },
+      {
+       "type": [
+        "number",
+        "boolean",
+        "null"
+       ]
+      }
+     ]
+    },
+    "display_logic": {},
+    "implicit_page_break": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "x-report-unknown": true
+  },
+  "flowNode": {
+   "x-name": "flow node",
+   "anyOf": [
+    {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/flowNode"
+     }
+    },
+    {
+     "type": "object",
+     "description": "a flow node (DESIGN §3.2); a list is shorthand for {seq: [...]}",
+     "properties": {
+      "seq": {
+       "type": "array",
+       "items": {
+        "$ref": "#/$defs/flowNode"
+       }
+      },
+      "stage": {
+       "type": "string"
+      },
+      "page": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        }
+       ]
+      },
+      "if": {
+       "type": "string"
+      },
+      "then": {
+       "$ref": "#/$defs/flowNode"
+      },
+      "else": {
+       "$ref": "#/$defs/flowNode"
+      },
+      "shuffle": {
+       "anyOf": [
+        {
+         "type": "boolean"
+        },
+        {
+         "type": "array",
+         "items": {
+          "$ref": "#/$defs/flowNode"
+         }
+        }
+       ]
+      },
+      "pick": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "$ref": "#/$defs/expr"
+        }
+       ]
+      },
+      "for": {
+       "type": "string"
+      },
+      "in": {
+       "anyOf": [
+        {
+         "type": "array"
+        },
+        {
+         "$ref": "#/$defs/expr"
+        }
+       ]
+      },
+      "let": {
+       "type": "object",
+       "additionalProperties": {
+        "$ref": "#/$defs/expr"
+       }
+      },
+      "do": {
+       "$ref": "#/$defs/flowNode"
+      },
+      "loop": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "$ref": "#/$defs/expr"
+        }
+       ]
+      },
+      "as": {
+       "type": "string"
+      },
+      "repeat": {
+       "$ref": "#/$defs/flowNode"
+      },
+      "until": {
+       "type": "string"
+      },
+      "max": {
+       "type": "integer",
+       "minimum": 1
+      },
+      "on_max": {
+       "type": "string",
+       "pattern": "^(continue|flag|end:.+)$"
+      },
+      "set": {
+       "type": "object",
+       "additionalProperties": {
+        "anyOf": [
+         {
+          "$ref": "#/$defs/expr"
+         },
+         {
+          "type": [
+           "string",
+           "number",
+           "integer",
+           "boolean",
+           "null"
+          ]
+         },
+         {
+          "type": [
+           "array",
+           "object"
+          ]
+         }
+        ]
+       }
+      },
+      "flag": {
+       "type": "string"
+      },
+      "sync": {
+       "type": "string"
+      },
+      "compute": {
+       "type": "object"
+      },
+      "events": {
+       "type": "array"
+      },
+      "expr": {},
+      "end": {
+       "enum": [
+        "completed",
+        "excluded",
+        "screened_out",
+        "ended"
+       ],
+       "x-legacy-values": [
+        "ended"
+       ]
+      },
+      "doc": {}
+     },
+     "patternProperties": {
+      "(^|_)cites?$": {
+       "$ref": "#/$defs/citeField"
+      },
+      "(^|_)note(s)?$|_note_|^note_": {
+       "$ref": "#/$defs/note"
+      }
+     },
+     "x-report-unknown": true,
+     "anyOf": [
+      {
+       "required": [
+        "seq"
+       ]
+      },
+      {
+       "required": [
+        "stage"
+       ]
+      },
+      {
+       "required": [
+        "page"
+       ]
+      },
+      {
+       "required": [
+        "shuffle"
+       ]
+      },
+      {
+       "required": [
+        "for",
+        "in",
+        "do"
+       ]
+      },
+      {
+       "required": [
+        "loop",
+        "do"
+       ]
+      },
+      {
+       "required": [
+        "repeat",
+        "until",
+        "max",
+        "on_max"
+       ]
+      },
+      {
+       "required": [
+        "if"
+       ],
+       "anyOf": [
+        {
+         "required": [
+          "then"
+         ]
+        },
+        {
+         "required": [
+          "else"
+         ]
+        }
+       ]
+      },
+      {
+       "required": [
+        "set"
+       ]
+      },
+      {
+       "required": [
+        "flag"
+       ]
+      },
+      {
+       "required": [
+        "sync"
+       ]
+      },
+      {
+       "required": [
+        "end"
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "arm": {
+   "type": "object",
+   "description": "a sample/arm of the study; a runnable arm cites its n",
+   "properties": {
+    "id": {
+     "type": "string"
+    },
+    "label": {
+     "type": "string"
+    },
+    "n_paper": {
+     "anyOf": [
+      {
+       "type": "integer",
+       "minimum": 0
+      },
+      {
+       "type": "null"
+      },
+      {
+       "type": "string"
+      },
+      {
+       "type": "object"
+      }
+     ]
+    },
+    "n_analysed": {
+     "description": "human analysed n of this arm (after the paper's exclusions): the planned agent n (DESIGN §8.2, §8.7)",
+     "anyOf": [
+      {
+       "type": "object",
+       "properties": {
+        "value": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "cite": {
+         "$ref": "#/$defs/cite"
+        }
+       },
+       "required": [
+        "value",
+        "cite"
+       ],
+       "additionalProperties": false
+      },
+      {
+       "type": "integer",
+       "minimum": 0,
+       "description": "legacy bare count without a cite (to be converted)"
+      }
+     ]
+    },
+    "n_recruited": {
+     "description": "human recruited n of this arm (before the paper's exclusions); with n_analysed it gives the human exclusion rate (DESIGN §8.7)",
+     "anyOf": [
+      {
+       "type": "object",
+       "properties": {
+        "value": {
+         "type": "integer",
+         "minimum": 0
+        },
+        "cite": {
+         "$ref": "#/$defs/cite"
+        }
+       },
+       "required": [
+        "value",
+        "cite"
+       ],
+       "additionalProperties": false
+      },
+      {
+       "type": "integer",
+       "minimum": 0,
+       "description": "legacy bare count without a cite (to be converted)"
+      }
+     ]
+    },
+    "group_size": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "runnable": {
+     "type": "boolean"
+    },
+    "release_hold": {
+     "type": [
+      "string",
+      "null",
+      "boolean"
+     ]
+    },
+    "assignment": {
+     "type": "string"
+    },
+    "exclusion_caveat": {},
+    "what": {},
+    "why": {},
+    "label_operator_only": {},
+    "design": {},
+    "language": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "id",
+    "n_paper"
+   ],
+   "x-report-unknown": true,
+   "anyOf": [
+    {
+     "required": [
+      "cite"
+     ]
+    },
+    {
+     "required": [
+      "runnable"
+     ],
+     "properties": {
+      "runnable": {
+       "const": false
+      }
+     }
+    }
+   ],
+   "x-name": "arm (cite required unless runnable is false)",
+   "allOf": [
+    {
+     "anyOf": [
+      {
+       "required": [
+        "runnable"
+       ],
+       "properties": {
+        "runnable": {
+         "const": false
+        }
+       }
+      },
+      {
+       "properties": {
+        "n_paper": {
+         "type": "integer",
+         "minimum": 0
+        }
+       }
+      },
+      {
+       "required": [
+        "n_operator"
+       ],
+       "properties": {
+        "n_paper": {
+         "type": "null"
+        }
+       }
+      }
+     ],
+     "x-name": "arm (a runnable arm's n_paper is an integer, or null with n_operator)"
+    }
+   ]
+  },
+  "condition": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string"
+    },
+    "assignment": {},
+    "factor": {},
+    "factors": {},
+    "levels": {},
+    "ratio": {},
+    "n_paper": {},
+    "arm": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "id"
+   ],
+   "x-report-unknown": true
+  },
+  "trim": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string"
+    },
+    "field": {
+     "type": "string"
+    },
+    "group_by": {},
+    "center": {
+     "type": "string"
+    },
+    "spread": {
+     "type": "string"
+    },
+    "k": {
+     "type": "number"
+    },
+    "fence": {},
+    "keep": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "id",
+    "field"
+   ],
+   "x-report-unknown": true
+  },
+  "unit": {
+   "type": "object",
+   "description": "one analysis table (rows per session/group/trial)",
+   "properties": {
+    "per": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "fields": {
+     "type": "object",
+     "additionalProperties": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "$ref": "#/$defs/expr"
+       }
+      ]
+     }
+    },
+    "arms": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "trim": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/trim"
+     }
+    }
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "fields"
+   ],
+   "x-report-unknown": true
+  },
+  "population": {
+   "type": "object",
+   "properties": {
+    "values": {},
+    "rule": {
+     "enum": [
+      "mean_plus_k_sd",
+      "mean_minus_k_sd",
+      "iqr_fence"
+     ],
+     "x-legacy-values": [
+      "mean_minus_k_sd"
+     ]
+    },
+    "k": {
+     "type": "number"
+    },
+    "group_by": {},
+    "after_exclusions": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "per_position": {
+     "type": "boolean"
+    }
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "rule"
+   ],
+   "x-report-unknown": true
+  },
+  "exclusion": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string"
+    },
+    "if": {
+     "type": "string"
+    },
+    "applies_to": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "runtime exclusion: the analysis ids (targets/effects) it scopes to; absent = the whole session. Never prose (put prose in scope_note)."
+    },
+    "population": {
+     "$ref": "#/$defs/population"
+    },
+    "pending_if": {
+     "type": "string"
+    },
+    "what": {},
+    "how": {},
+    "rule": {},
+    "why": {},
+    "label": {},
+    "coding": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "x-report-unknown": true
+  },
+  "target": {
+   "type": "object",
+   "description": "a reported level (Kind A target, DESIGN §8.3)",
+   "properties": {
+    "id": {
+     "type": "string"
+    },
+    "unit": {
+     "type": "string"
+    },
+    "field": {
+     "type": "string"
+    },
+    "stat": {
+     "enum": [
+      "mean",
+      "share",
+      "median"
+     ]
+    },
+    "where": {
+     "type": "object"
+    },
+    "success": {},
+    "human": {},
+    "reference": {},
+    "reference_mismatch": {},
+    "scoring": {
+     "enum": [
+      "direction_only",
+      "not_comparable",
+      "none"
+     ]
+    },
+    "no_uncertainty": {},
+    "uncertainty": {},
+    "readings": {},
+    "role": {
+     "enum": [
+      "test",
+      "paper_claim",
+      "descriptive",
+      "robustness",
+      "exploratory",
+      "check"
+     ]
+    },
+    "missing_values": {
+     "type": "array"
+    },
+    "direction_unresolved": {},
+    "second_reading": {},
+    "suspect": {},
+    "scale_note": {},
+    "why": {},
+    "arm": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "id",
+    "unit",
+    "field",
+    "stat"
+   ],
+   "x-report-unknown": true
+  },
+  "compute": {
+   "type": "object",
+   "description": "how the effect is computed from unit rows (ops = effects_core.OPS)",
+   "properties": {
+    "op": {
+     "enum": [
+      "mean_difference",
+      "paired_difference",
+      "proportion_difference",
+      "contingency",
+      "correlation",
+      "spearman",
+      "proportion_vs_chance",
+      "smd",
+      "interaction",
+      "rank_sum",
+      "package"
+     ]
+    },
+    "field": {
+     "type": "string"
+    },
+    "key": {
+     "type": "string"
+    },
+    "where": {
+     "type": "object"
+    },
+    "groupBy": {
+     "type": "string"
+    },
+    "referenceField": {
+     "type": "string"
+    },
+    "withField": {
+     "type": "string"
+    },
+    "success": {},
+    "compareAs": {},
+    "chance": {
+     "type": "number"
+    },
+    "factor_a": {
+     "type": "string"
+    },
+    "a_levels": {
+     "type": "array"
+    },
+    "factor_b": {
+     "type": "string"
+    },
+    "b_levels": {
+     "type": "array"
+    },
+    "groups": {},
+    "levels": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "op"
+   ],
+   "x-report-unknown": true
+  },
+  "contrast": {
+   "type": "object",
+   "properties": {
+    "kind": {
+     "enum": [
+      "two_groups",
+      "paired",
+      "association",
+      "interaction",
+      "groups",
+      "single_group"
+     ]
+    },
+    "treatment": {},
+    "reference": {},
+    "valueMeans": {},
+    "groups": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "kind"
+   ],
+   "x-report-unknown": true
+  },
+  "reported": {
+   "type": "object",
+   "description": "the paper's printed numbers",
+   "properties": {
+    "test": {},
+    "type": {
+     "type": "string"
+    },
+    "cells": {},
+    "value": {},
+    "estimates": {},
+    "n": {},
+    "no_uncertainty": {},
+    "metric": {},
+    "ci": {},
+    "se": {},
+    "p": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "x-report-unknown": true
+  },
+  "effect": {
+   "type": "object",
+   "description": "a contrast scored against the paper (effects.json schema 2 effect)",
+   "properties": {
+    "id": {
+     "type": "string"
+    },
+    "unit": {
+     "type": "string"
+    },
+    "label": {},
+    "compute": {
+     "$ref": "#/$defs/compute"
+    },
+    "contrast": {
+     "$ref": "#/$defs/contrast"
+    },
+    "reported": {
+     "$ref": "#/$defs/reported"
+    },
+    "role": {
+     "enum": [
+      "test",
+      "paper_claim",
+      "descriptive",
+      "robustness",
+      "exploratory",
+      "check"
+     ]
+    },
+    "scoring": {
+     "enum": [
+      "direction_only",
+      "not_comparable",
+      "none"
+     ]
+    },
+    "direction_claimed": {
+     "type": "boolean"
+    },
+    "design": {},
+    "reference_mismatch": {},
+    "studyId": {},
+    "compareAs": {},
+    "readings": {},
+    "direction_unresolved": {},
+    "suspect": {},
+    "no_uncertainty": {},
+    "second_reading": {},
+    "arm": {},
+    "outcome": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "id",
+    "unit",
+    "compute",
+    "reported"
+   ],
+   "x-report-unknown": true
+  },
+  "pendingEffect": {
+   "type": "object",
+   "description": "an effect whose op the engine does not run yet; never scored",
+   "properties": {
+    "id": {
+     "type": "string"
+    },
+    "unit": {
+     "type": "string"
+    },
+    "label": {},
+    "compute": {
+     "type": "object",
+     "required": [
+      "op"
+     ],
+     "properties": {
+      "op": {
+       "type": "string"
+      }
+     }
+    },
+    "contrast": {
+     "$ref": "#/$defs/contrast"
+    },
+    "reported": {
+     "$ref": "#/$defs/reported"
+    },
+    "role": {
+     "enum": [
+      "test",
+      "paper_claim",
+      "descriptive",
+      "robustness",
+      "exploratory",
+      "check"
+     ]
+    },
+    "scoring": {
+     "enum": [
+      "direction_only",
+      "not_comparable",
+      "none"
+     ]
+    },
+    "direction_claimed": {
+     "type": "boolean"
+    },
+    "design": {},
+    "reference_mismatch": {},
+    "studyId": {},
+    "compareAs": {},
+    "readings": {},
+    "direction_unresolved": {},
+    "suspect": {},
+    "no_uncertainty": {},
+    "second_reading": {},
+    "arm": {},
+    "outcome": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "id",
+    "compute"
+   ],
+   "x-report-unknown": true
+  },
+  "note_entry": {
+   "type": "object",
+   "description": "an unsupported / reference-only / not-comparable entry",
+   "properties": {
+    "what": {},
+    "why": {},
+    "id": {
+     "type": "string"
+    }
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "x-report-unknown": true
+  },
+  "analysis": {
+   "type": "object",
+   "properties": {
+    "targets": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/target"
+     }
+    },
+    "effects": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/effect"
+     }
+    },
+    "unsupported": {
+     "type": "array",
+     "items": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/note_entry"
+       },
+       {
+        "type": "string"
+       }
+      ]
+     }
+    },
+    "blocked_arm_effects": {
+     "type": "array",
+     "items": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/effect"
+       },
+       {
+        "$ref": "#/$defs/note_entry"
+       }
+      ]
+     }
+    },
+    "blocked_arm_targets": {
+     "type": "array",
+     "items": {
+      "anyOf": [
+       {
+        "$ref": "#/$defs/target"
+       },
+       {
+        "$ref": "#/$defs/note_entry"
+       }
+      ]
+     }
+    },
+    "pending_effects": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/pendingEffect"
+     }
+    },
+    "effects_means": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/effect"
+     }
+    },
+    "reference_only": {
+     "type": "array"
+    },
+    "not_comparable": {
+     "type": [
+      "array",
+      "object"
+     ]
+    },
+    "run_excluded_targets": {
+     "type": "array"
+    }
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "targets",
+    "effects",
+    "unsupported"
+   ],
+   "x-report-unknown": true
+  },
+  "coding": {
+   "type": "object",
+   "description": "free-text coding rule (DESIGN §3.4)",
+   "properties": {
+    "apply": {
+     "type": "string"
+    },
+    "cases": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "text": {},
+       "code": {},
+       "item": {}
+      },
+      "patternProperties": {
+       "(^|_)cites?$": {
+        "$ref": "#/$defs/citeField"
+       },
+       "(^|_)note(s)?$|_note_|^note_": {
+        "$ref": "#/$defs/note"
+       }
+      },
+      "required": [
+       "text",
+       "code"
+      ],
+      "x-report-unknown": true
+     }
+    },
+    "coder": {
+     "type": "object",
+     "properties": {
+      "rubric": {},
+      "input": {},
+      "output": {},
+      "provenance": {}
+     },
+     "patternProperties": {
+      "(^|_)cites?$": {
+       "$ref": "#/$defs/citeField"
+      },
+      "(^|_)note(s)?$|_note_|^note_": {
+       "$ref": "#/$defs/note"
+      }
+     },
+     "x-report-unknown": true
+    },
+    "free_text": {},
+    "rule": {},
+    "codes": {},
+    "uncoded": {},
+    "heldout_probes": {},
+    "normalize": {},
+    "patterns": {},
+    "categories": {},
+    "fields": {},
+    "closed_answers": {},
+    "applies_to": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "x-report-unknown": true
+  },
+  "meta": {
+   "type": "object",
+   "description": "citation, licence, sources, sample",
+   "properties": {
+    "citation": {},
+    "doi": {
+     "type": "string"
+    },
+    "licence": {},
+    "sources": {
+     "type": "object"
+    },
+    "sample": {},
+    "conflicts": {
+     "type": "array"
+    },
+    "language": {},
+    "foreign_text_allowed": {},
+    "export_tags": {},
+    "pages": {},
+    "image_read": {},
+    "engine_requests": {},
+    "scope": {},
+    "paper_inconsistencies": {},
+    "derived_on_screen": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "required": [
+    "citation",
+    "licence",
+    "sources",
+    "sample"
+   ],
+   "x-report-unknown": true
+  },
+  "analysisExclusion": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string"
+    },
+    "if": {
+     "type": "string"
+    },
+    "applies_to": {
+     "anyOf": [
+      {
+       "type": "array",
+       "items": {
+        "type": "string"
+       }
+      },
+      {
+       "type": "string"
+      }
+     ]
+    },
+    "population": {
+     "$ref": "#/$defs/population"
+    },
+    "pending_if": {
+     "type": "string"
+    },
+    "what": {},
+    "how": {},
+    "rule": {},
+    "why": {},
+    "label": {},
+    "coding": {}
+   },
+   "patternProperties": {
+    "(^|_)cites?$": {
+     "$ref": "#/$defs/citeField"
+    },
+    "(^|_)note(s)?$|_note_|^note_": {
+     "$ref": "#/$defs/note"
+    }
+   },
+   "x-report-unknown": true,
+   "description": "analysis-only exclusion (analysis_exclusions): documented, not run by the engine. applies_to is a list of analysis ids; a plain string is accepted here only for prose scopes in 5 legacy studies (REPORT §3, to be moved to scope_note)"
+  }
+ }
+}

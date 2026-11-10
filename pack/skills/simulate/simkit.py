@@ -188,6 +188,8 @@ class SimRun:
     def participants(self, one: Callable[[str, int, random.Random], dict], trial: int = 0) -> list[dict]:
         if os.environ.get("HUMANSTUDY_RELAY_REQUIRED") == "1":
             raise RuntimeError("Launch the complete run script with run_confined.py.")
+        if os.environ.get("HUMANSTUDY_RUN_ROUTE") == "protocol":
+            raise RuntimeError("This run was approved for protocol.json (the run skill), not for the package.")
         """Run every planned participant (or `trial` per condition), in parallel; returns all sessions.
 
         Each participant gets its own random generator seeded by (seed, condition, index), so a
@@ -261,7 +263,7 @@ def _start(run_dir: Path) -> None:
         sys.exit(f"no run.py in {run_dir}")
     log = open(run_dir / "run.log", "a", encoding="utf-8")
     proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name('run_confined.py')), '--final', str(script)] if os.environ.get('HUMANSTUDY_RELAY_REQUIRED') == '1' else [sys.executable, str(script)], cwd=str(run_dir), stdout=log, stderr=subprocess.STDOUT,
-                            stdin=subprocess.DEVNULL, start_new_session=True, env=os.environ.copy())
+                            stdin=subprocess.DEVNULL, start_new_session=True, env={**os.environ, 'HSENV_PRIVATE_CONFIG': ''})
     print(f"started run.py (pid {proc.pid}); follow progress.json and run.log")
 
 

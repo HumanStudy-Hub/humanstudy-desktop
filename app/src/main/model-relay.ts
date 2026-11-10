@@ -36,7 +36,17 @@ export interface RelayOptions {
   tokenCap?: number
   /** Lifetime of the run capability in minutes; default 30. */
   expiryMinutes?: number
+  /** What this capability may run (review 2, S6), written into the descriptor: the approval's route, the
+   *  SHA-256 of protocol.json the app read at approval (protocol route) and a fresh run id. */
+  binding?: { route: 'protocol' | 'package'; runId: string; approvedAt: number; protocolSha256?: string }
+  /** Write the descriptor the agent's runs read (default true). A protocol run gets its capability from the app
+   *  directly (protocol-run.ts), so its descriptor is never written: the agent never holds that token (review 5, M3). */
+  publish?: boolean
 }
+
+/** Upstream statuses that mean the provider did not process (or bill) the call: only these are refunded
+ *  (review 5, S1). A 500/502/504 can come after the model already ran, so it is never refunded. */
+export const NOT_PROCESSED = new Set([400, 401, 403, 404, 413, 422, 429])
 export const relayDescriptor = (storage: string, project: string) => join(storage, createHash('sha256').update(project).digest('hex') + '.json')
 
 export async function startModelRelay(options: RelayOptions) {
@@ -45,6 +55,7 @@ export async function startModelRelay(options: RelayOptions) {
   const minutes = options.expiryMinutes ?? 30
   if (!options.model || !Number.isSafeInteger(cap) || cap <= 0 || !Number.isSafeInteger(minutes) || minutes <= 0 || minutes > 24 * 60) throw Error('Invalid run limits.')
   let reserved = 0
+  let refunded = 0
   const folder = options.storage
   const path = relayDescriptor(folder, options.project)
   await mkdir(folder, { recursive: true })
@@ -70,6 +81,7 @@ export async function startModelRelay(options: RelayOptions) {
     if (req.method !== 'POST' || req.url !== '/v1/chat/completions') return fail(404, 'Unsupported run endpoint.')
     const controller = new AbortController()
     requests.add(controller)
+    let held = 0   // what this request has reserved, for a refund when it never reached the provider
     try {
       let bytes = 0
       const chunks: Buffer[] = []
@@ -87,7 +99,7 @@ export async function startModelRelay(options: RelayOptions) {
       if (body.messages.some((m: any) => !m || !['system', 'user', 'assistant'].includes(m.role) || typeof m.content !== 'string')) return fail(400, 'Only text messages are supported.')
       const charge = bytes + 256 * body.messages.length + max
       if (reserved + charge > cap) return fail(402, 'Run token cap reached.')
-      reserved += charge // synchronous: concurrent requests cannot oversubscribe; never refunded
+      reserved += charge; held = charge // synchronous: concurrent requests cannot oversubscribe; refunded only when the provider rejects the call
       await logUsage({ event: 'reserved', model: options.model, reserved: charge })
       const outgoing = { model: options.model, messages: body.messages.map((m: any) => ({ role: m.role, content: m.content })), max_tokens: max,
         ...(typeof body.temperature === 'number' ? { temperature: body.temperature } : {}),
@@ -97,7 +109,15 @@ export async function startModelRelay(options: RelayOptions) {
         headers: { 'content-type': 'application/json', authorization: `Bearer ${options.key}`, ...(options.bypass ? { 'x-vercel-protection-bypass': options.bypass } : {}) },
         body: JSON.stringify(outgoing),
       })
-      if (!upstream.ok) return fail(502, 'Model provider rejected the request.')
+      if (!upstream.ok) {
+        // Refund only a call the provider did not process (review 4, S5; review 5, S1), and never more in total than
+        // the cap itself: a rejected call costs nothing, but a 5xx may come after the model ran and billed.
+        if (NOT_PROCESSED.has(upstream.status) && refunded + charge <= cap) {
+          reserved -= charge; refunded += charge
+          await logUsage({ event: 'refunded', model: options.model, reserved: -charge, upstream_status: upstream.status })
+        } else await logUsage({ event: 'failed', model: options.model, reserved: charge, upstream_status: upstream.status })
+        return fail(502, 'Model provider rejected the request.')
+      }
       const reply = await upstream.json() as any
       // Return only completion text and usage; upstream diagnostic fields cannot expose credentials.
       const choices = Array.isArray(reply.choices) ? reply.choices.map((c: any, index: number) => ({ index, message: { role: 'assistant', content: typeof c.message?.content === 'string' ? c.message.content : '' }, finish_reason: c.finish_reason })) : []
@@ -105,7 +125,16 @@ export async function startModelRelay(options: RelayOptions) {
       const finish = choices.map((c: any) => typeof c.finish_reason === 'string' ? c.finish_reason.slice(0, 32) : null)
       await logUsage({ event: 'completed', model: options.model, reserved: charge, usage, finish_reason: finish[0] ?? null, truncated: finish.includes('length') })
       res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ choices, usage, model: options.model }))
-    } catch { if (!res.headersSent) fail(502, 'Run model request failed.') }
+    } catch (error) {
+      // A connection refused or a name that does not resolve never reached the provider: refund it too.
+      const cause = (error as { cause?: { code?: string; errors?: { code?: string }[] } })?.cause
+      const code = cause?.code ?? cause?.errors?.find((e) => e?.code)?.code
+      if (held > 0 && (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EAI_AGAIN') && refunded + held <= cap) {
+        reserved -= held; refunded += held
+        await logUsage({ event: 'refunded', model: options.model, reserved: -held, upstream_error: code }).catch(() => undefined)
+      }
+      if (!res.headersSent) fail(502, 'Run model request failed.')
+    }
     finally { requests.delete(controller) }
   })
   server.requestTimeout = 30_000
@@ -115,8 +144,12 @@ export async function startModelRelay(options: RelayOptions) {
   const address = server.address()
   if (!address || typeof address === 'string') throw Error('Run relay unavailable.')
   // expiresAt (ms since epoch) lets the launcher give the run script exactly the capability's remaining lifetime.
-  const config = { baseURL: `http://127.0.0.1:${address.port}/v1`, token, model: options.model, tokenCap: cap, expiresAt: Date.now() + minutes * 60_000 }
-  try { await unlink(path).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error }); await writeFile(path, JSON.stringify(config), { mode: 0o600, flag: 'wx' }) }
+  const config = { baseURL: `http://127.0.0.1:${address.port}/v1`, token, model: options.model, tokenCap: cap, expiresAt: Date.now() + minutes * 60_000,
+    ...(options.binding ? { route: options.binding.route, runId: options.binding.runId, approvedAt: options.binding.approvedAt, ...(options.binding.protocolSha256 ? { protocolSha256: options.binding.protocolSha256 } : {}) } : {}) }
+  try {
+    await unlink(path).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error })
+    if (options.publish !== false) await writeFile(path, JSON.stringify(config), { mode: 0o600, flag: 'wx' })
+  }
   catch (error) { server.close(); throw error }
   const expiry = setTimeout(() => void finish(), minutes * 60_000)
   expiry.unref()

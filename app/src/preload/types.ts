@@ -89,6 +89,8 @@ export interface WorkspaceContext {
   file?: { path: string; ext: string; unsaved: boolean }
   source?: { file?: string; sourceId?: string; page?: number; quote?: string; nodeId?: string; unavailable?: boolean; citation?: { page?: number; quote?: string; nodeId?: string } }
   panels?: { agent: boolean; workspace: boolean }
+  /** The app's UI language ('en', 'zh-CN'): tools that write pages for the researcher use it (make_preview --lang). */
+  uiLanguage?: string
 }
 
 export interface ThreadUsage {

@@ -1,0 +1,119 @@
+{
+ "id": "fixture-mini",
+ "data": {},
+ "arms": [
+  {
+   "id": "control",
+   "n_paper": 10
+  },
+  {
+   "id": "treatment",
+   "n_paper": 10
+  }
+ ],
+ "stages": {
+  "intro": {
+   "content": [
+    {
+     "id": "t",
+     "value": "Please read the question below.",
+     "cite": {
+      "source": "survey",
+      "page": 1
+     }
+    }
+   ]
+  },
+  "q": {
+   "responses": [
+    {
+     "id": "pick",
+     "kind": "choice",
+     "prompt": "Which do you prefer?",
+     "options": [
+      {
+       "code": "a",
+       "label": "Option A"
+      },
+      {
+       "code": "b",
+       "label": "Option B"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "flow": {
+  "seq": [
+   {
+    "stage": "intro"
+   },
+   {
+    "stage": "q"
+   }
+  ]
+ },
+ "units": {
+  "s": {
+   "per": "session",
+   "fields": {
+    "pick": "answer('q.pick')",
+    "picked_a": "None if answer('q.pick') is None else (1 if answer('q.pick') == 'a' else 0)"
+   },
+   "cites": {
+    "picked_a": {
+     "label": "derived",
+     "source": "paper",
+     "page": 1
+    }
+   }
+  }
+ },
+ "meta": {
+  "title": "Made-up fixture study (not a real paper)"
+ },
+ "analysis": {
+  "effects": [
+   {
+    "id": "prefer_a",
+    "unit": "s",
+    "contrast": {
+     "kind": "two_groups",
+     "treatment": "treatment",
+     "reference": "control"
+    },
+    "compute": {
+     "op": "proportion_difference",
+     "field": "picked_a",
+     "success": [
+      1
+     ],
+     "groupBy": "arm"
+    },
+    "reported": {
+     "cells": {
+      "treatment": {
+       "k": 14,
+       "n": 20
+      },
+      "control": {
+       "k": 8,
+       "n": 20
+      }
+     },
+     "cite": {
+      "label": "reported",
+      "source": "paper",
+      "page": 1
+     }
+    }
+   }
+  ]
+ },
+ "keyed": {
+  "answers": {
+   "q.pick": "'a' if arm == 'treatment' else 'b'"
+  }
+ }
+}

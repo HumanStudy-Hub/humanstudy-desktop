@@ -58,3 +58,13 @@ test('containment: siblings and parents are outside; on Windows a differently ca
     assert.ok(isWithin(flip(root),root))
   }
 })
+test('the project list counts finished simulations (a run folder with its results page) as results',async()=>{
+ const dir=await createProject({name:'Counted'})
+ const fs=await import('node:fs/promises')
+ const count=async()=>(await listProjects()).find(p=>p.dir===dir).artifactCount
+ const before=await count()
+ await fs.mkdir(join(dir,'artifacts/simulations/2026-11-09-1200'),{recursive:true});await fs.writeFile(join(dir,'artifacts/simulations/2026-11-09-1200/results.html'),'<p>x</p>')
+ await fs.mkdir(join(dir,'artifacts/simulations/2026-11-09-1300'),{recursive:true});await fs.writeFile(join(dir,'artifacts/simulations/2026-11-09-1300/progress.json'),'{}')
+ await fs.mkdir(join(dir,'artifacts/simulations/.operator'),{recursive:true})
+ assert.equal(await count(),before+1,'one finished run; an unfinished run and the engine folder do not count')
+})

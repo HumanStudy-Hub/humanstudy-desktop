@@ -87,7 +87,8 @@ export function toolAction(tool: string | undefined, input: unknown): string | n
 export function buildPhase(tool: string | undefined, input: unknown): PaperBuildState['phase'] | null {
   const text = toolAction(tool, input)
   if (text === null) return null
-  if (/check_package|package[\\/]/.test(text)) return 'packaging'
+  // The runnable form: package/<slug>/ (check_package) or, on the protocol route, protocol.json (hsenv.checks).
+  if (/check_package|package[\\/]|hsenv[.\\/]checks|build_protocol[.]py|(^|[\\/\s'"])protocol[.]json\b/.test(text)) return 'packaging'
   if (/check_program/.test(text)) return 'checking'
   if (/program_io|program\.json/.test(text)) return 'writing'
   return null
@@ -213,7 +214,7 @@ export function createPaperBuilds(changed: (dir: string) => void) {
   }
 }
 
-/** A finished program or package check: true when it printed PASS, false when it failed; a write to
+/** A finished program, package or protocol check: true when it printed PASS, false when it failed; a write to
  *  program.json is false too (it needs checking again). null: says nothing about the check. */
 export function checkResult(e: Pick<KernelEvent, 'tool' | 'input' | 'detail' | 'output'>): boolean | null {
   const text = toolAction(e.tool, e.input ?? e.detail)
@@ -223,6 +224,11 @@ export function checkResult(e: Pick<KernelEvent, 'tool' | 'input' | 'detail' | '
   if (/check_program|check_package/.test(text) && e.output !== undefined && /^(PASS|FAIL)\b/m.test(e.output)) {
     return /^PASS\b/m.test(e.output) && !/^FAIL\b/m.test(e.output)
   }
+  // The protocol engine's checks print one JSON report whose top-level "PASS" is the verdict.
+  if (/hsenv[.\\/]checks/.test(text) && e.output !== undefined && /^ ?"PASS": (true|false)\b/m.test(e.output)) {
+    return /^ ?"PASS": true\b/m.test(e.output) && !/^ ?"PASS": false\b/m.test(e.output)
+  }
+  if (/hsenv[.\\/]checks/.test(text)) return null
   if (/check_program|check_package/.test(text) && !/program_io/.test(text)) return null
   if (/program_io/.test(text) || (WRITE_TOOLS.test(e.tool ?? '') && /program\.json/.test(text))) return false
   return null

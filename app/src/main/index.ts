@@ -1,6 +1,6 @@
 import { NATIVE_TURNS, NATIVE_MUTATIONS, type NativeRequest, type NativeSelection } from '../shared/native'
 import { nativeMessages } from './native-history'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron'
 import { applyCredentials, providers, setKey } from './credentials'
 import { applyAccount, getAccount } from './account'
@@ -32,12 +32,16 @@ import { createThreads, threads } from './threads'
 import { saveProjectText } from './program-save'
 import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
-import { refreshPack, trustedCheckFiles } from './pack'
+import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedRunFiles } from './pack'
 import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
-import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks } from './package-readiness'
+import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks } from './package-readiness'
+import { protocolBudget, protocolReadiness } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
+import { closeProjectRelays, isRunStop } from './run-stop'
+import { RunRegistry } from './run-registry'
+import { launchProtocolRun, newRunFolder, sweepRunCopies, type Binding as ProtocolBinding } from './protocol-run'
 import type { Kernel, KernelEvent } from './kernel-types'
 import { actionRef } from '../shared/research-operations'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
@@ -45,11 +49,10 @@ import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPromp
 // macOS with /usr/bin/sandbox-exec: simulations go through a per-run relay. Elsewhere they use the
 // pre-relay path and the run confirmation says that the study's code can read the key.
 const RELAY = relaySupported()
-const relayProjects = new Set<string>()
-const runRelays = new Map<string, { project: string; close(): Promise<void> }>()
+const runs = new RunRegistry()
+const runRelays = runs.relays
 async function closeRunRelay(id: string) {
-  const relay = runRelays.get(id)
-  if (relay) { runRelays.delete(id); await relay.close(); relayProjects.delete(relay.project) }
+  await runs.closeCurrent(id)   // the relay's onClose frees its project (owner-checked)
 }
 
 // ---- kernel: accept a factory, a default export, a class, or an instance -------------
@@ -386,11 +389,19 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(() => {
+  // Per-run code copies of protocol runs that a quit or a crash left behind.
+  void sweepRunCopies(join(app.getPath('userData'), 'protocol-runs'))
   process.env.HUMANSTUDY_RELAY_DIR = join(app.getPath('userData'), 'run-relays')
   // `ready` needs every build check (pack/skills/build/check_readiness.py), run from the app's own copy.
   const checkFiles = trustedCheckFiles()
   configureScientificChecks(async (project, slug) => scientificReadiness(await readyPython(), checkFiles, project, slug, process.env.HUMANSTUDY_RUNTIME_BIN || ''),
     app.getVersion() + ':' + createHash('sha256').update(JSON.stringify(checkFiles)).digest('hex').slice(0, 16))
+  // The protocol route: protocol.json checked by the bundled engine (pack/runtime/hsenv), never the project's copy.
+  const engine = trustedEngineFiles()
+  const budgetFiles = trustedBudgetFiles()
+  configureProtocolChecks(async (project) => protocolReadiness(await readyPython(), engine, project, process.env.HUMANSTUDY_RUNTIME_BIN || ''),
+    app.getVersion() + ':' + createHash('sha256').update(JSON.stringify([engine, budgetFiles])).digest('hex').slice(0, 16),
+    async (project) => protocolBudget(await readyPython(), budgetFiles, project, process.env.HUMANSTUDY_RUNTIME_BIN || ''))
   if (!primaryInstance) return
   applyCredentials()
   try {
@@ -488,6 +499,9 @@ app.whenReady().then(() => {
       paperBuilds.humanSaved(root)
     }
     telemetry.track('file.edited', { target: extname(q).slice(1) || 'file', ...(ref ? { action: ref } : {}) })
+    // The researcher's Stop: the run's model access ends now, not when the relay expires.
+    const stopRoot = [...openProjects].find((d) => isInside(d, q))
+    if (stopRoot && isRunStop(stopRoot, q)) await closeProjectRelays(stopRoot, runRelays, closeRunRelay)
   })
 
   ipcMain.handle('project:importFiles', async (_e, dir: string, paths: string[], action?: unknown) => {
@@ -684,6 +698,25 @@ app.whenReady().then(() => {
     return id
   })
   threadsInitialized = true
+  /** An approved protocol run, started here from the app's trusted copy (review 4, S1), never by the agent: the
+   *  run folder and plan.json come from the checked approval, and the run ends its relay when it exits. */
+  async function startProtocolRun(projectDir: string, approved: { lang?: unknown; plan?: { perCondition?: unknown; model?: unknown; conditions?: unknown } }, binding: ProtocolBinding, relay: { baseURL: string; token: string; model: string; expiresAt: number } | undefined, ended: () => void) {
+    const per = approved.plan?.perCondition
+    if (!Number.isSafeInteger(per) || (per as number) < 1 || (per as number) > 60) throw Error('Participants per condition must be a whole number from 1 to 60. Review the simulation scope again.')
+    const python = await readyPython()
+    if (!python) throw Error('The research runtime is not installed yet, so the run cannot start. Try again in a minute.')
+    const runDir = newRunFolder(projectDir)
+    await launchProtocolRun({
+      python, files: trustedRunFiles(), codeDir: join(app.getPath('userData'), 'protocol-runs', binding.runId), project: projectDir, runDir, binding,
+      plan: { perArm: per as number, arms: null, seeds: [1], temperature: 1.0 },
+      relay: relay ? { baseURL: relay.baseURL, token: relay.token, model: relay.model, expiresAt: relay.expiresAt } : undefined,
+      // Pre-relay path: the same environment the agent's runs get there (the run confirmation said the key is readable).
+      env: relay ? { PATH: (process.env.HUMANSTUDY_RUNTIME_BIN ? process.env.HUMANSTUDY_RUNTIME_BIN + (process.platform === 'win32' ? ';' : ':') : '') + (process.env.PATH ?? '') } : { ...process.env },
+      onExit: ended,
+      lang: approved.lang === 'zh-CN' ? 'zh-CN' : 'en',
+    })
+  }
+
   ipcMain.handle('kernel:send', async (_e, id: string, text: string, workspace?: WorkspaceContext, action?: unknown) => {
     if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
     const k = kernelFor(id)
@@ -692,25 +725,54 @@ app.whenReady().then(() => {
     let projectDir = sessionProject.get(id)
     try { projectDir ??= k.directory?.(id) } catch { /* unknown to the kernel; it will refuse the send itself */ }
     await assertRunnablePackage(projectDir, text)
+    // The run checks its approval binding and computes its scores with the project's .opencode copy of the app's
+    // code; put that copy back at the shipped version before any model access exists (review 3, S3).
+    if (projectDir && text.startsWith('[Simulation scope approved]')) await refreshAppOwned(projectDir)
     let startedRelay = false
     if (RELAY && text.startsWith('[Simulation scope approved]')) {
-      if (!projectDir || relayProjects.has(projectDir)) throw Error('A simulation is already active in this project.')
+      const owner = projectDir ? runs.claim(projectDir) : null
+      if (!projectDir || !owner) throw Error('A simulation is already active in this project.')
       const approved = JSON.parse(text.split('\n')[1])
       const model = approved.plan?.model
       if (typeof model !== 'string' || !model) throw Error('Select a model before running.')
       const key = process.env.HUMANSTUDY_DESKTOP_KEY || (process.env.HUMANSTUDY_DEV_KEYS === '1' ? process.env.OPENROUTER_API_KEY : undefined)
       if (!key) throw Error('Sign in before running a simulation.')
-      relayProjects.add(projectDir)
       try {
         // The cap and lifetime follow the approved plan (the same figures the run confirmation showed),
         // rebuilt from the hashed program.json; a forged participant count is refused.
         const limits = await approvedRunLimits(projectDir, text)
-        const relay = await startModelRelay({ project: projectDir, model, key, storage: process.env.HUMANSTUDY_RELAY_DIR!, tokenCap: limits.tokens, expiryMinutes: limits.minutes, onClose: () => { runRelays.delete(id); relayProjects.delete(projectDir!) },
+        // The run capability names what it may run (review 2, S6): the route the approval names, the SHA-256 of
+        // protocol.json as the app reads it now (never a hash typed by the agent), a fresh run id and when it was
+        // approved (a stopped run restarts only under a later approval). run_confined.py
+        // hands them to the run, and skills/run refuses anything else.
+        const route: 'protocol' | 'package' = approved.route === 'protocol' || (approved.route === undefined && approved.protocolHash !== undefined) ? 'protocol' : 'package'
+        const binding = { route, runId: randomUUID(), approvedAt: Date.now(), ...(route === 'protocol' ? { protocolSha256: createHash('sha256').update(await readFile(join(projectDir, 'protocol.json'))).digest('hex') } : {}) }
+        if (route === 'protocol' && binding.protocolSha256 !== approved.protocolHash) throw Error('The study changed after approval. Review the simulation scope again.')
+        // A protocol run gets its capability from the app directly: no descriptor for the agent (review 5, M3).
+        // Removals are by owner, so this relay closing late never frees the next run's (review 5, M2).
+        let ownClose: (() => Promise<void>) | undefined
+        const relay = await startModelRelay({ project: projectDir, model, key, storage: process.env.HUMANSTUDY_RELAY_DIR!, tokenCap: limits.tokens, expiryMinutes: limits.minutes, binding, publish: route !== 'protocol',
+        onClose: () => { if (ownClose) runs.forget(id, ownClose); runs.release(projectDir!, owner) },
         upstream: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_HOSTED_BASEURL || 'https://humanstudy-hub.com/api/desktop/v1' : 'https://openrouter.ai/api/v1',
         bypass: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_SERVER_BYPASS : undefined })
-        runRelays.set(id, { project: projectDir, close: relay.close })
+        ownClose = relay.close
+        runs.register(id, { project: projectDir, close: relay.close })
         startedRelay = true
-      } catch (error) { relayProjects.delete(projectDir); throw error }
+        if (route === 'protocol') await startProtocolRun(projectDir, approved, binding as ProtocolBinding, relay, () => { runs.forget(id, relay.close); void relay.close() })
+      } catch (error) { if (startedRelay) await closeRunRelay(id); runs.release(projectDir, owner); throw error }
+    } else if (projectDir && text.startsWith('[Simulation scope approved]')) {
+      // Pre-relay path (Linux, Windows): no relay, but a protocol run is still started by the app from its trusted copy.
+      const approved = JSON.parse(text.split('\n')[1])
+      if (approved.route === 'protocol' || (approved.route === undefined && approved.protocolHash !== undefined)) {
+        const binding: ProtocolBinding = { route: 'protocol', runId: randomUUID(), approvedAt: Date.now(),
+          protocolSha256: createHash('sha256').update(await readFile(join(projectDir, 'protocol.json'))).digest('hex') }
+        if (binding.protocolSha256 !== approved.protocolHash) throw Error('The study changed after approval. Review the simulation scope again.')
+        // No relay here, so no cap: one protocol run per project at a time, held until its process exits (review 5, S5).
+        const owner = runs.claim(projectDir)
+        if (!owner) throw Error('A simulation is already active in this project.')
+        try { await startProtocolRun(projectDir, approved, binding, undefined, () => runs.release(projectDir, owner)) }
+        catch (error) { runs.release(projectDir, owner); throw error }
+      }
     }
     telemetry.trackTurnStart(id, text, actionRef(action))
     const prompt = threads().beforeSend(id, text, workspace)

@@ -32,3 +32,28 @@ export function runLimits(plan: { conditions?: unknown; perCondition?: unknown }
 
 /** "1,500,000" in either language (the confirmation wording quotes it). */
 export const formatTokens = (n: number): string => n.toLocaleString('en-US')
+
+/** A protocol run's model budget, measured by skills/run/budget.py when protocol.json passes its checks: per
+ *  runnable arm, members per group, model calls and reserved tokens per member (one call per page; each prompt
+ *  carries the earlier pages and answers, so it grows). */
+export interface ProtocolBudget { arms: Record<string, { group_size: number; calls: number; tokens_per_member: number }>; output_tokens: number }
+
+/** Seconds per model call with 8 in flight, and the margin, for a protocol run's lifetime. */
+export const SECONDS_PER_CALL = 3
+const IN_FLIGHT = 8
+
+/** Limits of a protocol run (review 2, M3): sized from the protocol, not from the package allowance.
+ *  participants = AI members (per arm x group size); tokens = their measured reservation plus a one-per-arm
+ *  trial, at least MIN_RUN_TOKENS. `fits` is false above MAX_RUN_TOKENS (the hard ceiling): such a plan is never
+ *  approved, whatever the text says; `tokens` is then the ceiling and `needed` the true figure. */
+export function protocolRunLimits(budget: ProtocolBudget | null | undefined, perCondition: unknown): RunLimits & { needed: number; fits: boolean } {
+  const per = Number.isSafeInteger(perCondition) && (perCondition as number) > 0 ? Math.min(perCondition as number, MAX_PER_CONDITION) : 1
+  const arms = Object.values(budget?.arms ?? {})
+  if (!arms.length) return { participants: 0, tokens: MIN_RUN_TOKENS, minutes: MIN_RUN_MINUTES, needed: Infinity, fits: false }
+  const members = arms.reduce((n, a) => n + per * a.group_size, 0)
+  const trial = arms.reduce((n, a) => n + a.group_size * a.tokens_per_member, 0)
+  const needed = arms.reduce((n, a) => n + per * a.group_size * a.tokens_per_member, 0) + trial
+  const calls = arms.reduce((n, a) => n + (per + 1) * a.group_size * a.calls, 0)
+  const minutes = Math.min(MAX_RUN_MINUTES, Math.max(MIN_RUN_MINUTES, Math.ceil(calls * SECONDS_PER_CALL / IN_FLIGHT / 60 * 1.5)))
+  return { participants: members, tokens: Math.min(MAX_RUN_TOKENS, Math.max(MIN_RUN_TOKENS, needed)), minutes, needed, fits: needed <= MAX_RUN_TOKENS }
+}
