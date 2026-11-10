@@ -88,6 +88,8 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
   }, [])
   const [attached, setAttached] = useState<{ rel: string; name: string }[]>([])
   const [attachError, setAttachError] = useState('')
+  // Files being copied in (for a published study the app also prepares the copy before it can be sent)
+  const [importing, setImporting] = useState<string[]>([])
   const [dragging, setDragging] = useState(false)
   const [caret, setCaret] = useState(0)
   const [pick, setPick] = useState(0)
@@ -157,6 +159,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
   const attach = async (list: File[], action?: ActionRef) => {
     if (!list.length) return
     setAttachError('')
+    setImporting(list.map((f) => f.name))
     try {
       const paths = list.map((f) => window.humanstudy.files.pathOf(f)).filter(Boolean)
       const copies = await window.humanstudy.project.importFiles(projectDir, paths, action ?? claimAction('source.import', false, 'pointer'))
@@ -171,6 +174,8 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
       focus()
     } catch (e) {
       setAttachError(e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': (?:\w*Error: )?/, '') : t('chat.attach_failed'))
+    } finally {
+      setImporting([])
     }
   }
 
@@ -276,8 +281,13 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
             <button className="link" onClick={onClearSelection}>{t('chat.clear')}</button>
           </div>
         )}
-        {attached.length > 0 && (
+        {(attached.length > 0 || importing.length > 0) && (
           <div className="chips attachments">
+            {importing.map((name, i) => (
+              <span key={'importing:' + name + i} className="chip file busy" aria-busy="true" title={t('chat.attach_preparing')}>
+                {t('chat.attach_preparing_named', { name })}
+              </span>
+            ))}
             {attached.map((a, i) => (
               <span key={a.rel + i} className="chip file" title={a.rel}>
                 <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden>

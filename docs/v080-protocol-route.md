@@ -380,19 +380,27 @@ computer:
   open a file in `sources/private/` or the app's `original-text/` storage; AGENTS.md says the same. A drop into a
   published study adds an app note to the prompt (not the researcher's bubble; the dropped paths are matched as
   whole strings, so commas or `]` in a name do not break it) that the file was received to fill in the wording and
-  must not be opened. Research capture (`telemetry-core.ts`, before anything is stored or put in a blob):
-  - drops any agent step that names those paths (also built in pieces, with `./` segments or URL-encoded; globs and
-    searches under sources/ count only in a project that has sources/private/), and any tool, text, reasoning or raw
-    part that quotes a run of 40 letters or digits from a private copy, this study's downloads or its restored
-    wording; a part longer than 300k characters is dropped whole while anything is indexed;
-  - never collects a published study's run outputs (`artifacts/simulations/`, `runs/`), nor any project file that
-    quotes such a run, nor (while anything is indexed) a file that cannot be read as text (`mayCollectFile`).
+  must not be opened. Research capture has ONE boundary for private material, `telemetry-core.ts` `redactCapture`:
+  every research-v1 event (`captureResearch` in telemetry.ts is the only caller of the collector: the agent adapter,
+  selection, program.json and artifact versions) and every telemetry metadata object passes it before it is stored,
+  put in a blob or sent. An event that names a private path (sources/private/, the restored-wording cache; in a
+  published or private-folder project also paths built in pieces, `./` segments, URL-encoded, globs and searches
+  under sources/) or quotes a run of 40 letters or digits from indexed private text keeps only its structural fields.
+  The agent adapter also marks a tool call whose input names a private path, so its end event (the file's content,
+  no path) is blanked too. The transcript capture blanks such parts first (`redactPrivatePart`). Project files go
+  through `mayCollectFile`: a published study's run outputs (`artifacts/simulations/`, `runs/`) and any file quoting
+  private text are never collected; in a published or private-folder project, files that cannot be read as text
+  and texts over 300k characters are not either (ordinary projects keep collecting their PDFs and figures).
   The helper writes the index per project to `<userData>/original-text/redact/<sha256 of the folder>.bin` (sorted
-  8-byte hashes, never text; at most the first million letters of a file), minus every run that also occurs in the
-  project's public files (protocol.json's shipped strings, effects.json, paper.pdf and sources/ outside private/).
-  Each file's runs are kept by its sha256 (`windows/`), so it is extracted once. The index is written before any
-  download, and a drop indexes the copy before importFiles returns; the app loads it once per session and after
-  each drop. Only published studies are indexed; researcher materials in other projects rely on the path rule.
+  8-byte hashes, never text; first million letters of each file), beside a `.path` file so the app prunes the index
+  of a folder that no longer exists. Only what verifiably ships is subtracted: the strings of protocol.json as
+  RECEIVED (kept in app storage at first sight, with the pin) and files whose sha256 a hosted source of that copy
+  records. Nothing written on this computer counts as public (sources/ outside private/, sources/researcher/,
+  effects.json, the live protocol.json). Each file's runs are cached by its sha256 (`windows/`). The index is
+  written before any download; a drop indexes the copy before importFiles returns (the chip shows "Adding <name>…"),
+  and the app merges the sorted files once per session and after each drop.
+  Follow-ups: text past the first million letters of a private copy is not indexed; "Export complete conversation"
+  and "Export my research data" are explicit local saves and are not redacted.
 - **Downloads** also stop after 90 s each (150 s for all of one check; every socket read waits at most the time
   left, and reads take what has arrived), write the failure marker on a timeout, treat
   a web page returned for a non-HTML source as a failed download (a sign-in or paywall page), and never fetch a host

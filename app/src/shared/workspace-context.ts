@@ -23,7 +23,9 @@ export function withWorkspaceContext(text: string, workspace?: WorkspaceContext)
 export function privateAttachments(text: string, known: Iterable<string>): string[] {
   const line = text.split('\n').find((l) => l.startsWith('[Attached: '))
   if (!line) return []
-  return [...new Set(known)].filter((rel) => /^sources\/private\//.test(rel) && line.includes(rel))
+  // exact path tokens of the `[Attached: a, b]` line: preceded by ": " or ", " and followed by ", " or "]"
+  return [...new Set(known)].filter((rel) => /^sources\/private\//.test(rel)
+    && [': ', ', '].some((pre) => [', ', ']'].some((post) => line.includes(pre + rel + post))))
 }
 /** The agent is told, in the prompt only (never in the researcher's own chat bubble), that those files were received
  *  to fill in the wording and must not be opened. */

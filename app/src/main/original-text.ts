@@ -77,7 +77,9 @@ export async function fillOriginalText(python: string, files: [string, string][]
     throw Error('The original-wording helper is not available in this version.')
   const protocol = await realpath(join(project, 'protocol.json'))
   await mkdir(cacheDir, { recursive: true })
-  const args = [...(o.allowLocal ? ['--allow-local'] : []), ...(o.offline ? ['--offline'] : []), ...(o.indexOnly ? ['--index-only'] : []),
+  const received = receivedPath(cacheDir, await realpath(project))
+  const receivedArgs = (await lstat(received).then((x) => x.isFile(), () => false)) ? ['--received', received] : []
+  const args = [...receivedArgs, ...(o.allowLocal ? ['--allow-local'] : []), ...(o.offline ? ['--offline'] : []), ...(o.indexOnly ? ['--index-only'] : []),
     ...(await candidateFiles(project)).flatMap((f) => ['--file', f])]
   return withScratch(files, async (work, home) => {
     const code = runner(LIMITS.cpuSeconds, LIMITS.memoryBytes).replace(/sys\.path\.insert[\s\S]*$/,
@@ -185,12 +187,17 @@ export async function heldPinProblem(cacheDir: string, project: string): Promise
   if (pins[root] !== undefined) return pins[root] === now ? null : changed
   if (now === null) return /░{3,}/.test(raw) ? changed : null
   pins[root] = now
-  await mkdir(cacheDir, { recursive: true })
+  await mkdir(join(cacheDir, 'received'), { recursive: true })
+  // The protocol.json as received: what verifiably ships with the study (the redaction index subtracts only its text).
+  await writeFile(receivedPath(cacheDir, root), raw, 'utf8')
   const tmp = `${file}.${process.pid}.tmp`
   await writeFile(tmp, JSON.stringify(pins, null, 1), 'utf8')
   await rename(tmp, file)
   return null
 }
+
+/** Where the protocol.json of a project is kept as the app first received it (app storage). */
+export const receivedPath = (cacheDir: string, root: string): string => join(cacheDir, 'received', sha256(root) + '.json')
 
 /** Accept the protocol.json now in the project as the published version (for an import path that writes a new
  *  published version on the researcher's behalf): its held list becomes the pinned one. */

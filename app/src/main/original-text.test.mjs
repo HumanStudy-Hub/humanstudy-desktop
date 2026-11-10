@@ -196,9 +196,9 @@ test('end to end with the bundled engine: downloads the link source, takes the d
     assert.equal(JSON.parse(shown).complete, true)
     // the helper indexed the private copies, the download and the restored wording for research capture (hashes
     // only): the app's capture recognises a quote of any of them
-    const index = T.privateIndexFrom(readdirSync(join(cache, 'redact')).map((f) => readFileSync(join(cache, 'redact', f))))
+    const index = T.mergePrivateIndex(readdirSync(join(cache, 'redact')).filter((f) => f.endsWith('.bin')).map((f) => readFileSync(join(cache, 'redact', f))))
     assert.ok(index.size > 0)
-    for (const f of readdirSync(join(cache, 'redact'))) assert.ok(!readFileSync(join(cache, 'redact', f)).includes('walk'), 'hashes only')
+    for (const f of readdirSync(join(cache, 'redact')).filter((f) => f.endsWith('.bin'))) assert.ok(!readFileSync(join(cache, 'redact', f)).includes('walk'), 'hashes only')
     assert.equal(T.containsPrivateRun('the booklet asks: how many MINUTES did you walk this morning, did you see a neighbour', index), true)
     assert.equal(T.containsPrivateRun('Thank you for joining this short study about walking before breakfast.', index), true)
     assert.equal(T.containsPrivateRun('A summary in my own words about a study of morning walks and breakfast habits.', index), false)
@@ -278,6 +278,7 @@ test('a drop into a published study tells the agent, in the prompt only, not to 
   const odd = 'sources/private/Walk, booklet [v2].pdf'
   const text = `[Attached: ${odd}, notes.txt]\nHere is my copy`
   assert.deepEqual(W.privateAttachments(text, [odd, 'sources/private/other.pdf']), [odd], 'commas and ] in a name')
+  assert.deepEqual(W.privateAttachments('[Attached: sources/private/a.pdf.bak]', ['sources/private/a.pdf']), [], 'exact tokens only')
   const prompt = W.withPrivateCopyNote('PROMPT', text, [odd])
   assert.ok(prompt.startsWith('PROMPT'))
   assert.match(prompt, /Walk, booklet \[v2\]\.pdf was received to fill in the study's original wording.*Do not open, read, extract or move this file/)
@@ -291,17 +292,22 @@ test('a drop into a published study tells the agent, in the prompt only, not to 
 test('the redaction index leaves out what the project shows publicly, and is written before any download', { skip: !python }, async () => {
   const { proj, close } = await publishedProject({ 'sources/private/booklet.html': 'booklet.html' })
   close()
-  // a private copy with two long sentences; the project's own effects.json quotes the first (public)
+  // a private copy with two long sentences; the study as received shows the first (public); the project's own
+  // effects.json quoting the second does not make it public (written on this computer)
   const A = 'The first invented sentence of this private copy is long enough to count as a quote.'
   const B = 'The second invented sentence of this private copy stays private and must be recognised.'
   writeFileSync(join(proj, 'sources/private/notes.txt'), A + '\n' + B + '\n')
-  writeFileSync(join(proj, 'effects.json'), JSON.stringify({ effects: [{ id: 'e', quote: A }] }))
+  writeFileSync(join(proj, 'effects.json'), JSON.stringify({ effects: [{ id: 'e', quote: B }] }))
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.meta.note_shown = A
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p))
   const cache = mkdtempSync(join(tmpdir(), 'text-cache-'))
+  assert.equal(await O.heldPinProblem(cache, proj), null, 'first sight: pinned, and the received copy kept')
   await O.indexPrivateCopies(python, FILES, proj, cache, '')
   assert.ok(!existsSync(join(cache, 'downloads')), 'index-only: nothing downloaded')
-  const index = T.privateIndexFrom(readdirSync(join(cache, 'redact')).map((f) => readFileSync(join(cache, 'redact', f))))
+  const index = T.mergePrivateIndex(readdirSync(join(cache, 'redact')).filter((f) => f.endsWith('.bin')).map((f) => readFileSync(join(cache, 'redact', f))))
   assert.equal(T.containsPrivateRun('the notes say: ' + B, index), true)
-  assert.equal(T.containsPrivateRun('the effects file quotes: ' + A, index), false, 'public in effects.json')
+  assert.equal(T.containsPrivateRun('the received protocol shows: ' + A, index), false, 'public: the study as received ships it')
   assert.equal(T.containsPrivateRun('How many minutes did you walk this morning? Did you see a neighbour on the way?', index), true, 'the dropped booklet')
   // the file's windows are kept by its sha256: a second index does not extract it again
   const windows = readdirSync(join(cache, 'windows'))
@@ -309,4 +315,22 @@ test('the redaction index leaves out what the project shows publicly, and is wri
   const before = windows.map((f) => statSync(join(cache, 'windows', f)).mtimeMs)
   await O.indexPrivateCopies(python, FILES, proj, cache, '')
   assert.deepEqual(readdirSync(join(cache, 'windows')).map((f) => statSync(join(cache, 'windows', f)).mtimeMs), before)
+})
+
+test('the merged index matches a sorted build, and a stale project index is pruned', async () => {
+  const a = T.privateIndexOf(['First invented private sentence long enough to make several windows here.'])
+  const b = T.privateIndexOf(['Second invented private sentence long enough to make several windows too.'])
+  void a; void b
+  // build two sorted helper-style files and merge them
+  const toBin = (texts) => { const idx = []; for (const t of texts) { const cps = T.skeleton(t); for (let i = 0; i + T.PRIVATE_RUN <= cps.length; i++) idx.push(T.windowPair(cps, i)) }
+    idx.sort((x, y) => x[0] - y[0] || x[1] - y[1]); const buf = Buffer.alloc(idx.length * 8); idx.forEach(([x, y], i) => { buf.writeUInt32BE(x, i * 8); buf.writeUInt32BE(y, i * 8 + 4) }); return buf }
+  const t1 = 'First invented private sentence long enough to make several windows here.'
+  const t2 = 'Second invented private sentence long enough to make several windows too.'
+  const merged = T.mergePrivateIndex([toBin([t1]), toBin([t2]), toBin([t1])])
+  assert.equal(T.containsPrivateRun(t1, merged), true)
+  assert.equal(T.containsPrivateRun(t2, merged), true)
+  assert.equal(T.containsPrivateRun('An unrelated public sentence that is also long enough to check.', merged), false)
+  assert.equal(merged.size, T.privateIndexOf([t1, t2]).size, 'duplicates dropped')
+  const src = readFileSync(join(here, 'telemetry.ts'), 'utf8')
+  assert.match(src, /folder !== null && !existsSync\(folder\.trim\(\)\)/, 'stale project indexes are pruned on load')
 })

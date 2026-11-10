@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const out = mkdtempSync(join(tmpdir(), 'telemetry-test-'))
 await build({
-  entryPoints: [join(here, 'telemetry-core.ts'), join(here, 'replay-core.ts'), join(here, 'research-content.ts')],
+  entryPoints: [join(here, 'telemetry-core.ts'), join(here, 'replay-core.ts'), join(here, 'research-content.ts'), join(here, 'research-agent.ts')],
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -24,6 +24,7 @@ await build({
 const { storeResearchContent } = await import(pathToFileURL(join(out, 'research-content.js')).href)
 const core = await import(pathToFileURL(join(out, 'telemetry-core.js')).href)
 const replayMod = await import(pathToFileURL(join(out, 'replay-core.js')).href)
+const agentMod = await import(pathToFileURL(join(out, 'research-agent.js')).href)
 rmSync(out, { recursive: true, force: true })
 const { createReplay, DISK_CAP } = replayMod
 const { programDiff } = core
@@ -648,10 +649,14 @@ await test('project files: a published study\'s run outputs are never collected,
   // any artifact holding private text is skipped, published or not
   assert.equal(mayCollectFile({ rel: 'artifacts/notes.md', text: 'My notes. ' + reply, published: false, index }), false)
   assert.equal(mayCollectFile({ rel: 'sources/open/extract.txt', text: wording, published: false, index }), false)
-  // a file that cannot be read as text is not collected while anything is indexed
-  assert.equal(mayCollectFile({ rel: 'artifacts/figure.png', text: undefined, published: false, index }), false)
-  // ordinary work is collected as before
+  // a file that cannot be read as text is not collected while anything is indexed, in a published study
+  assert.equal(mayCollectFile({ rel: 'artifacts/figure.png', text: undefined, published: true, index }), false)
+  // ordinary work is collected as before; an ordinary project keeps collecting its PDFs and figures and long texts
   assert.equal(mayCollectFile({ rel: 'artifacts/notes.md', text: 'My own notes.', published: false, index }), true)
+  assert.equal(mayCollectFile({ rel: 'paper.pdf', text: undefined, published: false, hasPrivate: false, index }), true)
+  assert.equal(mayCollectFile({ rel: 'artifacts/fig.png', text: undefined, published: false, hasPrivate: false, index }), true)
+  assert.equal(mayCollectFile({ rel: 'artifacts/big.md', text: 'x '.repeat(200_000), published: false, hasPrivate: false, index }), true)
+  assert.equal(mayCollectFile({ rel: 'artifacts/fig.png', text: undefined, published: false, hasPrivate: true, index }), false)
   assert.equal(mayCollectFile({ rel: 'artifacts/simulations/x/records.jsonl', text: undefined, published: false, index: EMPTY_INDEX }), true)
   // and the capture paths use it
   const src = readFileSync(join(here, 'telemetry.ts'), 'utf8')
@@ -659,6 +664,52 @@ await test('project files: a published study\'s run outputs are never collected,
     const body = src.slice(src.indexOf(fn), src.indexOf('\n}\n', src.indexOf(fn)))
     assert.match(body, /mayCollectFile\(/, fn)
   }
+})
+
+await test('research-v1 capture: an agent reading a private copy and quoting it reaches capture with neither path nor text (review probe ra.mjs)', async () => {
+  const { createResearchAgent } = agentMod
+  const { redactCapture, privateIndexOf, EMPTY_INDEX } = core
+  const SECRET = 'How many minutes did you walk this morning? Did you see a neighbour on the way to work?'
+  for (const index of [privateIndexOf([SECRET]), EMPTY_INDEX]) {
+    const got = []
+    // the sink is the capture boundary exactly as telemetry.ts wires it (captureResearch -> redactCapture)
+    const ra = createResearchAgent(async (ev) => { got.push(redactCapture(ev, index, true)); return 'id' })
+    ra.bind('s1', 'p1', '/proj')
+    ra.start('s1', 'hello')
+    ra.event({ type: 'tool', sessionId: 's1', toolCallId: 't1', tool: 'read', text: 'running', input: { filePath: '/proj/sources/private/booklet.txt' } })
+    ra.event({ type: 'tool', sessionId: 's1', toolCallId: 't1', tool: 'read', text: 'completed', output: SECRET })
+    ra.event({ type: 'tool', sessionId: 's1', toolCallId: 't2', tool: 'bash', text: 'running', input: { command: 'cd sources; cat private/booklet.txt' } })
+    ra.event({ type: 'tool', sessionId: 's1', toolCallId: 't2', tool: 'bash', text: 'completed', output: SECRET })
+    if (index.size) ra.event({ type: 'text', sessionId: 's1', text: 'The booklet says: ' + SECRET })
+    ra.event({ type: 'error', sessionId: 's1', text: 'failed reading /proj/sources/private/booklet.txt: ' + SECRET })
+    ra.event({ type: 'done', sessionId: 's1' })
+    await ra.drain?.()
+    const all = JSON.stringify(got)
+    assert.ok(!all.includes('sources/private') && !all.includes('private/booklet'), 'no private path')
+    assert.ok(!all.includes('neighbour on the way'), 'no private text')
+    assert.ok(got.some((e) => e.event_type === 'tool.end'), 'the steps themselves are still recorded')
+  }
+  // every capture sink in telemetry.ts goes through the one boundary
+  const src = readFileSync(join(here, 'telemetry.ts'), 'utf8')
+  assert.equal((src.match(/sourceCollector\(\)\.capture\(/g) || []).length, 1, 'only captureResearch calls the collector')
+  assert.match(src, /return sourceCollector\(\)\.capture\(redactCapture\(event, privateIndex,/)
+  assert.match(src, /createResearchAgent\(\(event, context\) => captureResearch\(event, context\)\)/)
+  assert.match(src, /let metadata = opts\.metadata \? redactCapture\(/, 'telemetry metadata too, before any blob')
+})
+
+await test('the capture boundary keeps ordinary events whole and redacts only content fields of a private one', () => {
+  const { redactCapture, privateIndexOf, EMPTY_INDEX } = core
+  const ev = { event_type: 'tool.end', tool_call_id: 't', target: 'read', metadata: { status: 'completed', output: 'public result' } }
+  assert.equal(redactCapture(ev, EMPTY_INDEX, false), ev)
+  const priv = redactCapture({ ...ev, metadata: { ...ev.metadata, input: 'sources/private/x.pdf' } }, EMPTY_INDEX, false)
+  assert.deepEqual([priv.event_type, priv.tool_call_id, priv.target, priv.metadata.status, priv.metadata.output, priv.metadata.redacted],
+    ['tool.end', 't', 'read', 'completed', '[redacted: private material]', 'private-material'])
+  // an ordinary project with the words "sources" and "private" in a program is not redacted (no private folder)
+  const prog = { event_type: 'program.version', metadata: { file: 'Sources: the private sector survey' } }
+  assert.equal(redactCapture(prog, EMPTY_INDEX, false), prog)
+  // a long event of an ordinary project is scanned, not dropped
+  const big = { event_type: 'artifact.version', metadata: { file: 'y '.repeat(200_000) } }
+  assert.equal(redactCapture(big, privateIndexOf(['A completely different private sentence that is long enough.']), false), big)
 })
 
 console.log(`\n${passed} passed`)

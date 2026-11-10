@@ -108,6 +108,8 @@ const ROWS: Row[] = [
   ['sim.complete_prompt', 'The runnable study in {pkg} is incomplete: {what}. Complete it following the build skill’s section 3 (Package), and run the package check until it passes. Do not run a simulation yet.', '{pkg} 中的可运行研究还不完整：{what}。请按 build 技能第 3 节（Package）补全，并反复运行包检查直到通过。先不要运行模拟。'],
   ['sim.text_needed', 'You can preview this study, but it cannot run yet: some screens would show “[text not available]”. The study’s original wording comes from its original materials (the paper, questionnaire or booklet), and HumanStudy Hub fills it in on your computer. What is still needed:', '你可以预览这项研究，但还不能运行：有些页面会显示“[文字不可用]”。研究的原始措辞来自它的原始材料（论文、问卷或手册），由 HumanStudy Hub 在你的电脑上补全。还需要：'],
   ['sim.ask_text', 'Ask the agent how to fill it in', '问助手如何补全'],
+  ['chat.attach_preparing', 'Adding the file to this study…', '正在把文件加入这项研究…'],
+  ['chat.attach_preparing_named', 'Adding {name}…', '正在加入 {name}…'],
   ['sim.text_blocked', 'You can preview this study, but it cannot run as it stands:', '你可以预览这项研究，但按现在的样子还不能运行：'],
   ['sim.ask_text_blocked', 'Ask the agent what to do', '问助手该怎么办'],
   ['sim.text_blocked_prompt', 'This study cannot run as it stands: {what}. Explain in plain words what happened and what I can do. Do not edit protocol.json or its distribution block yourself, and do not run a simulation.', '这项研究按现在的样子还不能运行：{what}。请用简单的话说明发生了什么、我可以怎么做。不要自己修改 protocol.json 或其中的 distribution 部分，也不要运行模拟。'],

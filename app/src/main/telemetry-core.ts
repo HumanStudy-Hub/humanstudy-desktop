@@ -218,18 +218,49 @@ export function windowHash(cps: number[], start: number, n = PRIVATE_RUN): strin
 /** A compact set of window hashes: sorted (a, b) uint32 pairs in one typed array, searched by bisection. */
 export interface PrivateIndex { size: number; has(a: number, b: number): boolean }
 export const EMPTY_INDEX: PrivateIndex = { size: 0, has: () => false }
-/** The index from the helper's files: each a run of big-endian (a, b) uint32 pairs (8 bytes per hash). */
+/** The index from files of big-endian (a, b) uint32 pairs in any order (8 bytes per hash): each sorted, then merged. */
 export function privateIndexFrom(buffers: Uint8Array[]): PrivateIndex {
-  const n = buffers.reduce((k, b) => k + Math.floor(b.length / 8), 0)
-  const order = new Uint32Array(n * 2)
-  let k = 0
-  for (const buf of buffers) {
+  return mergePrivateIndex(buffers.map((buf) => {
     const v = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
-    for (let i = 0; i + 8 <= buf.length; i += 8) { order[k++] = v.getUint32(i); order[k++] = v.getUint32(i + 4) }
+    const pairs: [number, number][] = []
+    for (let i = 0; i + 8 <= buf.length; i += 8) pairs.push([v.getUint32(i), v.getUint32(i + 4)])
+    pairs.sort((x, y) => x[0] - y[0] || x[1] - y[1])
+    const out = new Uint8Array(pairs.length * 8)
+    const w = new DataView(out.buffer)
+    pairs.forEach(([x, y], i) => { w.setUint32(i * 8, x); w.setUint32(i * 8 + 4, y) })
+    return out
+  }))
+}
+/** The index from files that are each already sorted (the helper writes them sorted): merged pairwise in linear
+ *  time, duplicates dropped, never re-sorted. */
+export function mergePrivateIndex(buffers: Uint8Array[]): PrivateIndex {
+  const toPairs = (buf: Uint8Array): Uint32Array => {
+    const v = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
+    const out = new Uint32Array(Math.floor(buf.length / 8) * 2)
+    for (let i = 0; i < out.length; i++) out[i] = v.getUint32(i * 4)
+    return out
   }
-  const idx = Array.from({ length: n }, (_, i) => i).sort((x, y) => order[2 * x] - order[2 * y] || order[2 * x + 1] - order[2 * y + 1])
-  const pairs = new Uint32Array(n * 2)
-  idx.forEach((j, i) => { pairs[2 * i] = order[2 * j]; pairs[2 * i + 1] = order[2 * j + 1] })
+  const merge = (x: Uint32Array, y: Uint32Array): Uint32Array => {
+    const out = new Uint32Array(x.length + y.length)
+    let i = 0, j = 0, k = 0
+    const push = (a: number, b: number) => { if (k >= 2 && out[k - 2] === a && out[k - 1] === b) return; out[k++] = a; out[k++] = b }
+    while (i < x.length || j < y.length) {
+      if (j >= y.length || (i < x.length && (x[i] < y[j] || (x[i] === y[j] && x[i + 1] <= y[j + 1])))) { push(x[i], x[i + 1]); i += 2 }
+      else { push(y[j], y[j + 1]); j += 2 }
+    }
+    return out.subarray(0, k)
+  }
+  let lists = buffers.map(toPairs)
+  if (!lists.length) return EMPTY_INDEX
+  while (lists.length > 1) {
+    const next: Uint32Array[] = []
+    for (let i = 0; i < lists.length; i += 2) next.push(i + 1 < lists.length ? merge(lists[i], lists[i + 1]) : merge(lists[i], new Uint32Array(0)))
+    lists = next
+  }
+  return sortedIndex(merge(lists[0], new Uint32Array(0)))
+}
+function sortedIndex(pairs: Uint32Array): PrivateIndex {
+  const n = pairs.length / 2
   return {
     size: n,
     has(a, b) {
@@ -252,11 +283,12 @@ export function privateIndexOf(texts: string[]): PrivateIndex {
   out.forEach((x, i) => v.setUint32(i * 4, x))
   return privateIndexFrom([buf])
 }
-/** True when `text` holds a run of PRIVATE_RUN skeleton characters found in the index. A text longer than
- *  SCAN_LIMIT counts as private while anything is indexed (it is not scanned, and never sent in part). */
-export function containsPrivateRun(text: string, index: PrivateIndex): boolean {
+/** True when `text` holds a run of PRIVATE_RUN skeleton characters found in the index. With `strict` (a project that
+ *  is published or has sources/private/), a text longer than SCAN_LIMIT counts as private while anything is indexed
+ *  (it is not scanned, and never sent in part); elsewhere it is scanned whole. */
+export function containsPrivateRun(text: string, index: PrivateIndex, strict = true): boolean {
   if (!index.size || !text) return false
-  if (text.length > SCAN_LIMIT) return true
+  if (text.length > SCAN_LIMIT && strict) return true
   const cps = skeleton(text)
   for (let i = 0; i + PRIVATE_RUN <= cps.length; i++) { const [a, b] = windowPair(cps, i); if (index.has(a, b)) return true }
   return false
@@ -283,11 +315,42 @@ export function redactPrivatePart<T extends { kind: string }>(part: T, index: Pr
 /** Whether research capture may collect a project file. Never: run outputs (artifacts/simulations/, runs/) of a
  *  published study (its AI participants' replies can quote the restored wording); a text file that quotes private
  *  material; and, while any private material is indexed, a file that cannot be read as text (it cannot be checked). */
-export function mayCollectFile(o: { rel: string; text?: string; published: boolean; index: PrivateIndex }): boolean {
+export function mayCollectFile(o: { rel: string; text?: string; published: boolean; index: PrivateIndex; hasPrivate?: boolean }): boolean {
   const rel = o.rel.split('\\').join('/')
+  const strict = o.published || Boolean(o.hasPrivate)
   if (o.published && /^(?:artifacts\/simulations|runs)(?:\/|$)/.test(rel)) return false
-  if (o.text === undefined) return o.index.size === 0
-  return !containsPrivateRun(o.text, o.index)
+  // an ordinary project (not published, no sources/private/) keeps collecting its PDFs and figures
+  if (o.text === undefined) return !strict || o.index.size === 0
+  return !containsPrivateRun(o.text, o.index, strict)
+}
+
+/** Keys of a research event that hold structure, never content: kept when the event is redacted. */
+const CAPTURE_KEEP = new Set(['event_type', 'id', 'thread_id', 'project_id', 'action_id', 'caused_by', 'tool_call_id', 'message_id',
+  'target', 'view', 'artifact_version', 'status', 'state', 'via', 'trigger', 'action_link', 'model', 'kind', 'duration_ms',
+  'native_id_reported', 'native_message_id', 'native_part_id', 'parent_action_id', 'occurred_at', 'part', 'role'])
+
+/** THE capture boundary for private material: every research event and every telemetry metadata object passes here
+ *  before it is stored, put in a blob or sent. An event that names a private path (sources/private/, the restored-
+ *  wording cache; in a published or private-folder project also paths built in pieces, globs and searches under
+ *  sources/) or quotes a 40-character run of indexed private text keeps only its structural fields; every other
+ *  string becomes REDACTED_PRIVATE. `scoped`: the project is published or has sources/private/. */
+export function redactCapture<T>(value: T, index: PrivateIndex, scoped: boolean): T {
+  let s: string
+  try { s = JSON.stringify(value) ?? '' } catch { return value }
+  const named = scoped ? namesPrivatePath(s, true) : PRIVATE_MATERIAL.test(decoded(s))
+  if (!named && !containsPrivateRun(s, index, scoped)) return value
+  const walk = (v: unknown, key?: string): unknown => {
+    if (typeof v === 'string') return key !== undefined && CAPTURE_KEEP.has(key) && !namesPrivatePath(v, scoped) && v.length < 200 ? v : REDACTED_PRIVATE
+    if (Array.isArray(v)) return v.map((x) => walk(x))
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, walk(x, k)]))
+    return v
+  }
+  const out = walk(value) as Record<string, unknown>
+  if (out && typeof out === 'object' && !Array.isArray(out)) {
+    const meta = out.metadata && typeof out.metadata === 'object' ? out.metadata as Record<string, unknown> : {}
+    out.metadata = { ...meta, redacted: 'private-material' }
+  }
+  return out as T
 }
 
 export function sanitizeEvent(

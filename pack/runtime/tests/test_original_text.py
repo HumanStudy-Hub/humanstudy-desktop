@@ -290,6 +290,44 @@ class OriginalText(unittest.TestCase):
         self.assertEqual(self.run_helper(protocol=path), {"version": O.STATUS_VERSION, "projection": False})
 
 
+class RedactionIndex(unittest.TestCase):
+    """Only text that verifiably ships is left out of the index: copying private text elsewhere in the project, into
+    sources/researcher/, effects.json or the live protocol.json never makes it public (review probe launder.py)."""
+    B = "How many minutes did you walk this morning, and did you see a neighbour on the way to work today?"
+
+    def run_index(self, extra, received=None, protocol=None):
+        p, c = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, p, True)
+        self.addCleanup(shutil.rmtree, c, True)
+        (p / "sources/private").mkdir(parents=True)
+        (p / "sources/private/booklet.txt").write_text(self.B, encoding="utf-8")
+        for rel, txt in extra.items():
+            (p / rel).parent.mkdir(parents=True, exist_ok=True)
+            (p / rel).write_text(txt, encoding="utf-8")
+        files = [f for f in (p / "sources").rglob("*") if f.is_file()]
+        dest = O.index_project(c, p, protocol or {"distribution": {"held": {}}}, files, {}, received=received)
+        self.assertEqual(dest.with_suffix(".path").read_text(encoding="utf-8"), str(p.resolve()))
+        return len(O._read_pairs(dest))
+
+    def test_copies_made_on_this_computer_stay_private(self):
+        alone = self.run_index({})
+        self.assertEqual(alone, 37)
+        for extra in ({"sources/notes/extract.txt": self.B}, {"sources/researcher/booklet.txt": self.B},
+                      {"artifacts/x.txt": self.B}, {"effects.json": json.dumps({"quote": self.B})}):
+            self.assertEqual(self.run_index(extra), alone, extra)
+        live = {"distribution": {"held": {}}, "stages": {"a": {"content": [{"id": "t", "value": self.B}]}}}
+        self.assertEqual(self.run_index({}, protocol=live), alone, "the live protocol.json is not what was received")
+
+    def test_what_the_received_study_ships_is_left_out(self):
+        received = {"distribution": {"held": {}}, "stages": {"a": {"content": [{"id": "t", "value": self.B}]}}}
+        self.assertEqual(self.run_index({}, received=received), 0, "the received protocol shows it")
+        hosted = {"distribution": {"held": {}}, "meta": {"sources": {"open": {"distribution": {
+            "tier": "hosted", "sha256": O.sha256(self.B.encode("utf-8"))}}}}}
+        self.assertEqual(self.run_index({"sources/open/handout.txt": self.B}, received=hosted), 0, "a hosted file it lists")
+        self.assertEqual(self.run_index({"sources/researcher/handout.txt": self.B}, received=hosted), 37,
+                         "never from sources/researcher/")
+
+
 class Runtime(unittest.TestCase):
     def test_the_runtime_ships_the_pdf_reader_hsenv_pins(self):
         lock = (RUNTIME / "requirements.lock").read_text(encoding="utf-8")

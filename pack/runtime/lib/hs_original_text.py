@@ -456,12 +456,15 @@ def _strings(o, skip=()):
 
 
 def index_project(cache: Path, project: Path, projection: dict, files: list[Path], extractors: dict,
-                  restored=None) -> Path:
+                  restored=None, received=None) -> Path:
     """The redaction index of one project (<cache>/redact/<sha256 of its folder>.bin), which the app's research
     capture loads: every run of the researcher's private copies (files under sources/private/), of this study's
-    downloads and of its restored wording, minus every run that also occurs in the project's public files (the
-    shipped strings of protocol.json, effects.json, paper.pdf and sources/ outside private/), so quoting what the
-    project itself shows is never redacted."""
+    downloads and of its restored wording, minus only what verifiably ships with the study, so quoting what the
+    study itself shows is never redacted: the strings of the protocol.json as RECEIVED (`received`, the copy the app
+    stored when it first saw the study, never the live file; its held list left out) and project files whose sha256
+    is a hosted source's recorded sha256 in that received copy. Nothing written on this computer (sources/ outside
+    private/, sources/researcher/, effects.json, the live protocol.json) ever counts as public: text copied out of
+    sources/private/ stays private."""
     private: set = set()
     for f in files:
         if _is_private(f):
@@ -489,20 +492,20 @@ def index_project(cache: Path, project: Path, projection: dict, files: list[Path
             except (KeyError, IndexError, ValueError, TypeError):
                 continue
         private |= window_pairs("\n".join(texts))
-    public: set = window_pairs("\n".join(_strings(projection, skip=("distribution",))))
-    effects = project / "effects.json"
-    if effects.is_file():
-        try:
-            public |= window_pairs("\n".join(_strings(json.loads(effects.read_text(encoding="utf-8")))))
-        except (OSError, ValueError):
-            pass
-    for f in files:
-        if not _is_private(f):
+    public: set = set()
+    if isinstance(received, dict):
+        public |= window_pairs("\n".join(_strings(received, skip=("distribution",))))
+        hosted = {d.get("sha256") for d in (distribution_of(received, k) for k in sources_of(received))
+                  if d.get("tier") == "hosted" and isinstance(d.get("sha256"), str)}
+        for f in files:
+            if _is_private(f) or "researcher" in [x.lower() for x in f.parts]:
+                continue
             data = read_file(f)
-            if data is not None:
+            if data is not None and sha256(data) in hosted:
                 public |= file_windows(cache, data, extractors)
     dest = cache / "redact" / (sha256(str(project.resolve()).encode("utf-8")) + ".bin")
     _write_pairs(dest, private - public)
+    dest.with_suffix(".path").write_text(str(project.resolve()), encoding="utf-8")   # the app prunes stale indexes
     return dest
 
 
@@ -511,6 +514,14 @@ def main(argv: list[str]) -> int:
     allow_local = "--allow-local" in args
     offline = "--offline" in args
     index_only = "--index-only" in args
+    received = None
+    if "--received" in args:
+        i = args.index("--received")
+        try:
+            received = json.loads(Path(args[i + 1]).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            received = None
+        del args[i:i + 2]
     args = [a for a in args if a not in ("--allow-local", "--offline", "--index-only")]
     files: list[Path] = []
     while "--file" in args:
@@ -537,7 +548,7 @@ def main(argv: list[str]) -> int:
     # from now on, whatever the agent does with it while the downloads run.
     try:
         index_project(cache, project, projection, files, pdf_extractors(),
-                      json.loads(done.read_text(encoding="utf-8")) if cached else None)
+                      json.loads(done.read_text(encoding="utf-8")) if cached else None, received)
     except Exception:   # noqa: BLE001 - the index is a safeguard; never stop the restore over it
         pass
     if index_only:
@@ -548,7 +559,7 @@ def main(argv: list[str]) -> int:
         return 0
     restored, report, chosen, extractors, log = restore(projection, cache, files, allow_local, offline)
     try:   # again with what the downloads and the restore added
-        index_project(cache, project, projection, files, extractors, restored)
+        index_project(cache, project, projection, files, extractors, restored, received)
     except Exception:   # noqa: BLE001
         pass
     st = status(projection, report, chosen, extractors, log)

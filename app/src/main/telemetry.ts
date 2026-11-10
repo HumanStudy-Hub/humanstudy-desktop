@@ -2,8 +2,8 @@
 // PostgREST credentials, project ids, IPC, and main-process capture of kernel/session events.
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { storeResearchContent } from './research-content'
 import { createResearchCollector } from './research-collector'
@@ -13,7 +13,7 @@ import { actionRef, type ActionRef } from '../shared/research-operations'
 import { createSerial, createWriteAttribution, isSaveTemp } from './write-capture'
 import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
-import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, mayCollectFile, privateIndexFrom, programDiff, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
+import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, mayCollectFile, mergePrivateIndex, programDiff, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
 import { createReplay, REPLAY_FLUSH_MS, type Replay, type ReplayFile, type ReplayFs } from './replay-core'
 import type { Capture } from './threads-core'
 import type { KernelEvent } from './kernel-types'
@@ -78,7 +78,11 @@ function sourceCollector() {
   })
   return sources
 }
-const researchAgent = createResearchAgent((event, context) => sourceCollector().capture(event, context))
+/** The one way a research event reaches the collector: through the private-material boundary (redactCapture). */
+function captureResearch(event: Parameters<ReturnType<typeof createResearchCollector>['capture']>[0], context: { projectDir?: string; email?: string | null } = {}): Promise<string | null> {
+  return sourceCollector().capture(redactCapture(event, privateIndex, context.projectDir ? scopedProject(context.projectDir) : false), context)
+}
+const researchAgent = createResearchAgent((event, context) => captureResearch(event, context))
 /** Drain local capture before a restart; network delivery remains resumable. */
 export async function settleResearch(final = false): Promise<void> {
   await researchAgent.drain()
@@ -122,7 +126,7 @@ async function queueSource(projectDir: string, rel: string, trigger: 'baseline' 
   const ext = extname(path).toLowerCase()
   // Never a file that quotes private material, nor one that cannot be checked while any is indexed.
   const text = TEXT_EXTS.has(ext.slice(1)) ? await readFile(path, 'utf8').catch(() => undefined) : undefined
-  if (!mayCollectFile({ rel, text, published: await publishedProject(projectDir), index: privateIndex })) return
+  if (!mayCollectFile({ rel, text, published: await publishedProject(projectDir), index: privateIndex, hasPrivate: existsSync(join(projectDir, 'sources', 'private')) })) return
   const mime = ext === '.pdf' ? 'application/pdf' : ext === '.zip' ? 'application/zip' : ext === '.json' ? 'application/json' : 'application/octet-stream'
   const link = imported && Date.now() - imported.at <= IMPORT_LINK_MS ? researchAgent.sourceLink(imported.ref) : researchAgent.sourceLink(undefined, trigger)
   await sourceCollector().queueSource(path, projectId, mime, link)
@@ -183,7 +187,8 @@ export function track(type: string, opts: TelemetryTrackOptions = {}, projectDir
     const ref = actionRef(opts.action)
     if (unified || ref) researchAgent.interaction(type, { ...opts, action: ref }, { project_id: projectId, dir: dirFor })
     if (opts.v1Only) return
-    let metadata = opts.metadata
+    // The private-material boundary, before the metadata is put in a blob or queued.
+    let metadata = opts.metadata ? redactCapture({ metadata: opts.metadata }, privateIndex, dirFor ? scopedProject(dirFor) : false).metadata : opts.metadata
     if (metadata && Buffer.byteLength(JSON.stringify(metadata)) > 12_000) {
       const blob = putBlob(JSON.stringify(metadata), dirFor)
       if (blob) metadata = { metadata_blob: blob }
@@ -405,25 +410,42 @@ let privateIndex: PrivateIndex = EMPTY_INDEX
 const originalTextDir = (): string => join(app.getPath('userData'), 'original-text')
 export async function refreshPrivateIndex(dir = join(originalTextDir(), 'redact')): Promise<void> {
   const buffers: Uint8Array[] = []
-  for (const name of await readdir(dir).catch(() => [] as string[]))
-    if (name.endsWith('.bin')) { const b = await readFile(join(dir, name)).catch(() => null); if (b) buffers.push(b) }
-  privateIndex = privateIndexFrom(buffers)
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    if (!name.endsWith('.bin')) continue
+    // a project folder that no longer exists: its index is pruned (the helper records the folder beside it)
+    const folder = await readFile(join(dir, name.replace(/\.bin$/, '.path')), 'utf8').catch(() => null)
+    if (folder !== null && !existsSync(folder.trim())) {
+      await Promise.all([rm(join(dir, name), { force: true }), rm(join(dir, name.replace(/\.bin$/, '.path')), { force: true })]).catch(() => undefined)
+      continue
+    }
+    const b = await readFile(join(dir, name)).catch(() => null)
+    if (b) buffers.push(b)
+  }
+  privateIndex = mergePrivateIndex(buffers)   // each file is already sorted: merged, never re-sorted
 }
-/** A project with a published study: protocol.json carries a `distribution` block, or the app pinned one for it. */
-async function publishedProject(projectDir: string): Promise<boolean> {
-  try { if (JSON.parse(await readFile(join(projectDir, 'protocol.json'), 'utf8'))?.distribution) return true } catch { /* none */ }
-  try {
-    const pins = JSON.parse(await readFile(join(originalTextDir(), 'pins.json'), 'utf8'))
-    return Object.prototype.hasOwnProperty.call(pins, await realpath(projectDir))
-  } catch { return false }
+/** A project with a published study: protocol.json carries a `distribution` block, or the app pinned one for it.
+ *  Read synchronously (capture calls it on every event) and kept for a few seconds per project. */
+const publishedSeen = new Map<string, { at: number; yes: boolean }>()
+function publishedProjectSync(projectDir: string): boolean {
+  const key = resolve(projectDir)
+  const hit = publishedSeen.get(key)
+  if (hit && Date.now() - hit.at < 5_000) return hit.yes
+  let yes = false
+  try { yes = Boolean(JSON.parse(readFileSync(join(key, 'protocol.json'), 'utf8'))?.distribution) } catch { /* none */ }
+  if (!yes) try { yes = Object.prototype.hasOwnProperty.call(JSON.parse(readFileSync(join(originalTextDir(), 'pins.json'), 'utf8')), realpathSync(key)) } catch { /* none */ }
+  publishedSeen.set(key, { at: Date.now(), yes })
+  return yes
 }
+async function publishedProject(projectDir: string): Promise<boolean> { return publishedProjectSync(projectDir) }
+/** Published, or holding private materials: the strict capture rules apply. */
+const scopedProject = (projectDir: string): boolean => publishedProjectSync(projectDir) || existsSync(join(projectDir, 'sources', 'private'))
 
 // ---- agent transcript -------------------------------------------------------------------
 /** Called by the thread store for every final message part and per-message usage. */
 export function onThreadCapture(c: Capture): void {
   try {
     if (!getTelemetry().status().content) return
-    if (c.kind === 'part' && c.workspace && c.role === 'user') void sourceCollector().capture({ event_type: 'selection.commit',
+    if (c.kind === 'part' && c.workspace && c.role === 'user') void captureResearch({ event_type: 'selection.commit',
       project_id: projectIdFor(c.dir), thread_id: c.threadId, message_id: c.messageId, view: 'agent',
       ...(sendingAction ? { action_id: sendingAction, caused_by: sendingAction } : {}),
       metadata: { kind: 'workspace-context', workspace: c.workspace } }, { projectDir: c.dir }).catch(() => undefined)
@@ -547,7 +569,7 @@ async function snapshotProgramNow(projectDir: string, owner: string | null, stat
   if (blob) metadata.blob = blob
   if (getAccount().researchOwner() !== owner) return
   const link = researchAgent.versionLink(projectDir, 'program.json', String(metadata.by), humanWrites.action(resolve(path), raw))
-  const captured = await sourceCollector().capture({ event_type: 'program.version', project_id: projectIdFor(projectDir), artifact_id: 'program.json',
+  const captured = await captureResearch({ event_type: 'program.version', project_id: projectIdFor(projectDir), artifact_id: 'program.json',
     artifact_version: version, ...linkColumns(link), metadata: { ...link.metadata, by: metadata.by, program: raw, hash: createHash('sha256').update(raw).digest('hex') } }, { projectDir })
   if (captured) programState.set(stateKey, { hash, json, version })
   track('project.program_version', { target: 'program.json', metadata }, projectDir)
@@ -569,7 +591,7 @@ async function snapshotFileNow(projectDir: string, rel: string, owner: string | 
   // Run outputs of a published study, a file that quotes private material, and (while any is indexed) a file that
   // cannot be read as text are never collected: only the fact that a file was written is recorded.
   const textForCheck = TEXT_EXTS.has(ext) ? await readFile(path, 'utf8').catch(() => undefined) : undefined
-  if (!mayCollectFile({ rel, text: textForCheck, published: await publishedProject(projectDir), index: privateIndex })) {
+  if (!mayCollectFile({ rel, text: textForCheck, published: await publishedProject(projectDir), index: privateIndex, hasPrivate: existsSync(join(projectDir, 'sources', 'private')) })) {
     track('project.file_written', { target: rel, metadata: { ...metadata, withheld: 'private-material' } }, projectDir)
     return
   }
@@ -586,7 +608,7 @@ async function snapshotFileNow(projectDir: string, rel: string, owner: string | 
     const nextVersion = (fileVersions.get(versionKey) ?? 0) + 1
     if (getAccount().researchOwner() !== owner) return
     const link = researchAgent.versionLink(projectDir, rel, String(metadata.by), humanWrites.action(resolve(path), text))
-    const captured = await sourceCollector().capture({ event_type: 'artifact.version', project_id: projectIdFor(projectDir), artifact_id: rel,
+    const captured = await captureResearch({ event_type: 'artifact.version', project_id: projectIdFor(projectDir), artifact_id: rel,
       artifact_version: nextVersion, ...linkColumns(link), metadata: { ...link.metadata, by: metadata.by, file: text, hash: createHash('sha256').update(text).digest('hex') } }, { projectDir })
     if (captured) { fileVersions.set(versionKey, nextVersion); fileHashes.set(key, hash) }
   } else {

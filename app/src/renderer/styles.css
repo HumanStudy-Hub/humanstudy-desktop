@@ -635,6 +635,7 @@ button.person:hover { border-color: var(--accent); }
 
 .chip.file { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 4px 2px 8px; }
 .chip.file button { color: inherit; opacity: 0.7; padding: 0 4px; font-size: 14px; line-height: 1; }
+.chip.file.busy { opacity: 0.7; padding-right: 8px; }
 .chip.file button:hover { opacity: 1; }
 .attach-error { color: var(--danger); margin: 0 0 6px; }
 
