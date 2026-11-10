@@ -208,12 +208,13 @@ export const INDEX_FORMAT = 2
 /** A line's enumerator, bullet or heading (`1.`, `Q1:`, `S1.`, `A1)`, `(a)`, `i.`, `(ii)`, `Question 1:`,
  *  `Statement 2:`, `Item 3:`, `### Q1`, `第1题：`, `- `, a read tool's `12| `), which inserts letters (q, item, a, ii, 第题)
  *  between items: removed in one of the checked forms, and on the helper's side too (hs_original_text.py, same text). */
-export const ENUMERATOR = /^\s*(?:\d+\|\s?)?(?:#{1,6}\s*)?(?:\*\*)?(?:[-*•·]\s+|\(?(?:[a-z]{1,2}|item|no\.?|question|statement)?\s*\d+[a-z]?\s*(?:[.):：]|(?=\s*$))\s*|\(?(?:[ivx]{1,5}|[a-z])\s*[.)]\s+|第\s*\d+\s*[题问項项条]\s*[:：.、]?\s*)?(?:\*\*)?/i
+export const ENUMERATOR = /^\s*(?:[0-9]+\|\s?)?(?:#{1,6}\s*)?(?:\*\*)?(?:[-*•·]\s+|\(?(?:[a-z]{1,2}|item|no\.?|question|statement)?\s*[0-9]+[a-z]?\s*(?:[.):：]\s*|$)|\(?(?:[ivx]{1,5}|[a-z])\s*[.)]\s+|第\s*[0-9]+\s*[题问項项条]\s*[:：.、]?\s*)?(?:\*\*)?/i
 /** The same enumerators in the middle of a line (`Q1: … Q2: …`, `(a) … (b) …`, `第1题…第2题`). */
-export const INLINE_ENUMERATOR = /(?:^|(?<=[\s,;]))(?:\((?:[ivx]{1,5}|[a-z]|\d+)\)|(?:q|question|statement|item|s|a)\s*\d+[a-z]?\s*[:.)]|第\s*\d+\s*[题问項项条]\s*[:：.、]?)/gi
-/** A text with every line's leading enumerator and every inline enumerator removed (the second checked form). */
+export const INLINE_ENUMERATOR = /(?:^|(?<=[\s,;]))(?:\((?:[ivx]{1,5}|[a-z]|[0-9]+)\)|(?:q|question|statement|item|s|a)\s*[0-9]+[a-z]?\s*[:.)]|第\s*[0-9]+\s*[题问項项条]\s*[:：.、]?)/gi
+/** A text with every line's leading enumerator and every inline enumerator removed (the second checked form). NFKC
+ *  first, so full-width digits and colons (第１题：) are the ASCII ones the patterns name ([0-9], never \d). */
 export function stripEnumerators(text: string): string {
-  return text.split(/\r?\n/).map((l) => l.replace(ENUMERATOR, '').replace(INLINE_ENUMERATOR, ' ')).join('\n')
+  return text.normalize('NFKC').split(/\r?\n/).map((l) => l.replace(ENUMERATOR, '').replace(INLINE_ENUMERATOR, ' ')).join('\n')
 }
 /** Hash of one window of skeleton code points: two independent 32-bit hashes. */
 export function windowPair(cps: number[], start: number, n = PRIVATE_RUN): [number, number] {

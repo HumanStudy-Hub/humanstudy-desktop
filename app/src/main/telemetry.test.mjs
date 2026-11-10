@@ -859,6 +859,25 @@ await test('enumerators of every common shape are removed, at line start and mid
   // the accepted limit, named in the doc: per-item structured data (JSON objects with ids, YAML, CSV) is not recognised
 })
 
+await test('full-width digits are enumerators too, and stripping is linear on hostile lines', () => {
+  const { redactCapture, privateIndexOf, stripEnumerators, ENUMERATOR } = core
+  const ITEMS = ['I often feel nervous at work.', 'My manager listens to me.', 'I trust my colleagues fully.', 'I would leave this job soon.']
+  const idx = privateIndexOf([ITEMS.join('\n')])
+  const leaks = (t) => JSON.stringify(redactCapture({ event_type: 'x', metadata: { t } }, idx, true)).includes('nervous at work')
+  assert.equal(leaks(ITEMS.map((l, i) => `第${String.fromCharCode(0xff11 + i)}题：${l}`).join('\n')), false, '第１题：')
+  assert.equal(leaks(ITEMS.map((l, i) => `Ｑ${String.fromCharCode(0xff11 + i)}： ${l}`).join('\n')), false, 'Ｑ１：')
+  assert.equal(stripEnumerators('第１题：走路').trim(), '走路')
+  for (const line of [' '.repeat(100_000) + '1' + ' '.repeat(100_000), ' '.repeat(100_000) + '1' + ' '.repeat(100_000) + 'x',
+    'Q' + ' '.repeat(100_000) + '1' + ' '.repeat(100_000) + 'x']) {
+    const t0 = performance.now()
+    line.replace(ENUMERATOR, '')
+    stripEnumerators(line)
+    const ms = performance.now() - t0
+    assert.ok(ms < 100, `took ${ms.toFixed(0)} ms`)
+  }
+  assert.equal(stripEnumerators('### Q1'), '')
+})
+
 console.log(`\n${passed} passed`)
 
 await test('large Unicode content reconstructs exactly from ordered gzip parts', () => {

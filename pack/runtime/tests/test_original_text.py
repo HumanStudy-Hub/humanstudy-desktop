@@ -354,6 +354,15 @@ class Skeleton(unittest.TestCase):
         self.assertEqual(O.strip_enumerators("My manager listens to me. I agree (mostly)."),
                          "My manager listens to me. I agree (mostly).")
 
+    def test_full_width_digits_and_linear_time(self):
+        self.assertEqual(O.strip_enumerators("第１题：走路").strip(), "走路")
+        self.assertEqual(O.strip_enumerators("Ｑ１： Walk").strip(), "Walk")
+        import time as _t
+        for line in (" " * 100_000 + "1" + " " * 100_000, " " * 100_000 + "1" + " " * 100_000 + "x"):
+            t0 = _t.perf_counter()
+            O.strip_enumerators(line)
+            self.assertLess(_t.perf_counter() - t0, 0.1)
+
     def test_renumbered_items_share_windows(self):
         items = ["I often feel nervous at work.", "My manager listens to me.", "I trust my colleagues fully."]
         src = O.window_pairs("\n".join(items))

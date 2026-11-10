@@ -387,14 +387,14 @@ _M32 = 0xFFFFFFFF
 INDEX_FORMAT = 2   # telemetry-core.ts INDEX_FORMAT: files are <name>.v2.bin; older ones are rebuilt
 # telemetry-core.ts ENUMERATOR / INLINE_ENUMERATOR (the same patterns): a line's enumerator, bullet or heading, and the
 # same enumerators mid-line, removed in a second form of every text
-ENUMERATOR = re.compile(r"^\s*(?:\d+\|\s?)?(?:#{1,6}\s*)?(?:\*\*)?(?:[-*•·]\s+|\(?(?:[a-z]{1,2}|item|no\.?|question|statement)?\s*\d+[a-z]?\s*(?:[.):：]|(?=\s*$))\s*|\(?(?:[ivx]{1,5}|[a-z])\s*[.)]\s+|第\s*\d+\s*[题问項项条]\s*[:：.、]?\s*)?(?:\*\*)?", re.I)
-INLINE_ENUMERATOR = re.compile(r"(?:^|(?<=[\s,;]))(?:\((?:[ivx]{1,5}|[a-z]|\d+)\)|(?:q|question|statement|item|s|a)\s*\d+[a-z]?\s*[:.)]|第\s*\d+\s*[题问項项条]\s*[:：.、]?)", re.I)
+ENUMERATOR = re.compile(r"^\s*(?:[0-9]+\|\s?)?(?:#{1,6}\s*)?(?:\*\*)?(?:[-*•·]\s+|\(?(?:[a-z]{1,2}|item|no\.?|question|statement)?\s*[0-9]+[a-z]?\s*(?:[.):：]\s*|$)|\(?(?:[ivx]{1,5}|[a-z])\s*[.)]\s+|第\s*[0-9]+\s*[题问項项条]\s*[:：.、]?\s*)?(?:\*\*)?", re.I)
+INLINE_ENUMERATOR = re.compile(r"(?:^|(?<=[\s,;]))(?:\((?:[ivx]{1,5}|[a-z]|[0-9]+)\)|(?:q|question|statement|item|s|a)\s*[0-9]+[a-z]?\s*[:.)]|第\s*[0-9]+\s*[题问項项条]\s*[:：.、]?)", re.I)
 
 
 def strip_enumerators(text: str) -> str:
     """telemetry-core.ts stripEnumerators: lines split on \\n with a trailing \\r dropped (the app's /\\r?\\n/)."""
     return "\n".join(INLINE_ENUMERATOR.sub(" ", ENUMERATOR.sub("", line.rstrip("\r"), count=1))
-                     for line in text.split("\n"))
+                     for line in unicodedata.normalize("NFKC", text).split("\n"))   # NFKC first, as the app
 
 
 def skeleton(text: str) -> list[int]:

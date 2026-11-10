@@ -413,9 +413,10 @@ function fit(out: Record<string, unknown>, key: string, value: string | undefine
 
 }
 
-// ---- private material: hashes of every 40-character run of the researcher's private copies -----------------------
-// Written by pack/runtime/lib/hs_original_text.py into <userData>/original-text/redact/*.idx (one 16-hex-digit hash
-// per line, never text); loaded once per session and again after a file is dropped (refreshPrivateIndex).
+// ---- private material: hashes of every 40-letter run of the researcher's private copies ---------------------------
+// Written by pack/runtime/lib/hs_original_text.py into <userData>/original-text/redact/<sha256 of a project
+// folder>.v<INDEX_FORMAT>.bin (sorted 8-byte hashes, never text) beside <sha>.path; loaded by private-index.ts once
+// per session and again after each check and each drop (refreshPrivateIndex).
 let privateIndex: PrivateIndex = EMPTY_INDEX
 const originalTextDir = (): string => join(app.getPath('userData'), 'original-text')
 export async function refreshPrivateIndex(dir = join(originalTextDir(), 'redact')): Promise<void> {
