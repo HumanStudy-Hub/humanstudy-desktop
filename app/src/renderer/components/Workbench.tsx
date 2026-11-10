@@ -164,12 +164,12 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   // Protocol is canonical whenever present; legacy program-only projects keep their renderer.
   const protocolEntry = files.find((f) => f.rel === 'protocol.json')
   const protocolKey = protocolEntry ? `${protocolEntry.path}:${protocolEntry.version ?? `${protocolEntry.mtime}:${protocolEntry.size}`}` : ''
-  const [loadedProtocol, setLoadedProtocol] = useState<{ key: string; text: string } | null>(null)
-  const protocolText = loadedProtocol?.key === protocolKey ? loadedProtocol.text : null
+  const [loadedProtocol, setLoadedProtocol] = useState<{ key: string; text?: string; error?: string } | null>(null)
+  const protocolText = loadedProtocol?.key === protocolKey ? loadedProtocol.text ?? null : null
   useEffect(() => {
     if (!protocolEntry) { setLoadedProtocol(null); return }
     let live = true
-    window.humanstudy.project.readText(protocolEntry.path).then((text) => { if (live) setLoadedProtocol({key: protocolKey, text}) }, () => { if (live) setLoadedProtocol(null) })
+    window.humanstudy.project.readText(protocolEntry.path).then((text) => { if (live) setLoadedProtocol({key: protocolKey, text}) }, (error: unknown) => { if (live) setLoadedProtocol({key: protocolKey, error: String(error)}) })
     return () => { live = false }
   }, [protocolKey]) // eslint-disable-line react-hooks/exhaustive-deps
   const hasProtocol = Boolean(protocolEntry)
@@ -561,10 +561,14 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
           {active === 'simulation' && simProgram && editError && <div className="part error edit-error">{editError}</div>}
           {active === 'study' &&
             (protocolEntry ? (
-              protocolText ? <ProtocolStudy text={protocolText} preview={files.find(f => f.rel === 'artifacts/preview.html')}
-                onAsk={docProps.onPrefill}
-                onSource={ref => { rememberHere(); docProps.onSource('protocol', ref); update(l => ({ ...l, active: 'study', compare: true })) }} />
-                : <div className="empty-state">{t('protocol.loading')}</div>
+              <div className="wb-protocol-host">
+                {building && build && <BuildProgress build={build} waiting={agentWaiting} />}
+                {buildFailed && <div className="part error edit-error" role="alert">{buildFailed} <button className="link" onClick={retryBuild}>{t('build.retry')}</button></div>}
+                {protocolText ? <ProtocolStudy text={protocolText} preview={files.find(f => f.rel === 'artifacts/preview.html')}
+                  onAsk={docProps.onPrefill}
+                  onSource={ref => { rememberHere(); docProps.onSource('protocol', ref); update(l => ({ ...l, active: 'study', compare: true })) }} />
+                  : <div className="empty-state">{loadedProtocol?.key === protocolKey && loadedProtocol.error ? loadedProtocol.error : t('protocol.loading')}</div>}
+              </div>
             ) : program ? (
               <div className="wb-study-host" ref={studyHost} onScrollCapture={(e) => {
                 const el = e.target as HTMLElement

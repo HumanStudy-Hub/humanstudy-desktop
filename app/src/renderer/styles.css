@@ -932,3 +932,6 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
 .protocol-overview > summary { cursor: pointer; }
 .protocol-overview dd { margin: .25rem 0 .75rem 1rem; overflow-wrap: anywhere; }
 .protocol-overview h3 { font-size: 1em; margin: 1rem 0 .5rem; }
+
+.wb-protocol-host { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+.wb-protocol-host > .protocol-document, .wb-protocol-host > .protocol-study { flex: 1; min-height: 0; }
