@@ -8,18 +8,35 @@ vendored build_preview.py (sandbox skills/preview).
 Run from the project folder. Plays a few sessions per arm with the engine (no model calls), renders every screen
 as the participant saw it, then embeds the protocol's identity and checks the page with the artifact kit
 (.opencode/artifact-kit/inline.py, protocol mode). Prints PASS <file> or FAIL with the problems (exit 1). The page
-holds the protocol's screen text: it stays in the project (never published or attached anywhere).
+holds the protocol's screen text: it stays in the project (never published or attached anywhere). For a published
+study whose wording is held back, the held texts read "[text not available]": the preview never shows wording the
+app filled in on this computer (that copy stays in app storage).
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import sys
 from pathlib import Path
 
 os.environ["HSENV_PRIVATE_CONFIG"] = ""   # never the engine's private sidecar in the app (before any hsenv import)
 
 HERE = Path(__file__).resolve().parent
+# A published study holds back wording it may not redistribute: each held text is a run of U+2591 of the same
+# length until the app fills it in on the researcher's computer. The preview shows plainly what is missing.
+PLACEHOLDER_RUN = re.compile("\u2591+")
+NOT_AVAILABLE = {"en": "[text not available]", "zh-CN": "[文字不可用]"}
+
+
+def published(project: Path) -> bool:
+    """True when protocol.json is a published study with wording held back (distribution.held)."""
+    try:
+        dist = json.loads((project / "protocol.json").read_text(encoding="utf-8")).get("distribution")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(dist, dict) and isinstance(dist.get("held"), dict) and bool(dist["held"])
 
 
 def make(project: Path, out: Path, arms=None, seed: int = 1, tries=None, max_image_kb: int = 1500, lang=None) -> list[str]:
@@ -29,7 +46,11 @@ def make(project: Path, out: Path, arms=None, seed: int = 1, tries=None, max_ima
     import build_preview   # vendored; finds the engine in .opencode/hsenv and the kit in .opencode/artifact-kit
     data = build_preview.build(str(project.resolve()), arms, seed, tries, max_image_kb)
     # The same finishing step as the sandbox CLI: the protocol's identity block, then the kit's protocol-mode check.
-    text, problems = build_preview.finish(build_preview.page(data, lang), project / "protocol.json",
+    html = build_preview.page(data, lang)
+    if published(project):
+        marker = NOT_AVAILABLE["zh-CN" if (lang or os.environ.get("HS_UI_LANG", "")).startswith("zh") else "en"]
+        html = PLACEHOLDER_RUN.sub(marker, html)
+    text, problems = build_preview.finish(html, project / "protocol.json",
                                           build_preview.kit_module() or _project_kit(project))
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")

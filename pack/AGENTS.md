@@ -162,6 +162,14 @@ Views are derived from the program; they never decide study facts. Arrows come o
 `next`; conditions only from condition nodes and `conditionIds`. Every rendered element carries
 `data-program-id` and its page citation. Reply in the language of the researcher's latest message.
 
+## Published studies: original wording
+
+A study opened from HumanStudy Hub may hold back wording its sources do not allow to redistribute (protocol.json
+then has a top-level `distribution` block and runs of `░` where that wording goes). The app fills it in on the
+researcher's computer from the publisher's link or from a copy they drop into the chat; follow the run skill's
+section "Original wording" and never write or reconstruct that wording yourself. Never open, read or extract a
+file in `sources/private/` or in the app's `original-text/` storage: that text must stay on this computer.
+
 ## Building after a paper import
 
 Importing a paper authorizes building its study: the app then asks you to build it. Start at

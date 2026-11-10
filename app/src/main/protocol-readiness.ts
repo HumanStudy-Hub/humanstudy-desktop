@@ -4,7 +4,7 @@
 // folder for every run (never the project's editable .opencode copy), Python runs isolated (-I -B), from an
 // empty home, with no keys or tokens in its environment. The checks make no model calls and fetch nothing.
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, sep } from 'node:path'
 import type { ProtocolBudget } from '../shared/run-limits'
@@ -64,6 +64,8 @@ export function protocolProblems(report: unknown): ProtocolProblem[] {
   const unreached = list(fuzz.unreached_stages)
   if (unreached.length) add('fuzz', `stages no session reached: ${some(unreached, 5)}`)
   if (Number(fuzz.n_unanswerable) > 0) add('fuzz', `${fuzz.n_unanswerable} screen(s) could not be answered`)
+  const spans = list(fuzz.table_spans_unserved)
+  if (spans.length) add('fuzz', `${spans.length} table cell(s) served without their span: ${some(spans)}`)
   const leaks = list(fuzz.leaks)
   if (leaks.length) add('leaks', `${leaks.length} screen(s) show text meant to stay hidden: ${some(leaks)}`)
   const exprLeaks = list(fuzz.state_expr_leaks)
@@ -96,7 +98,7 @@ export function protocolProblems(report: unknown): ProtocolProblem[] {
     if (list(obj(c).mismatches).length) add('coding', `coding ${id}: ${list(obj(c).mismatches).length} test case(s) coded differently`)
   if (r.PASS === false && !out.length) add('protocol', 'The protocol checks did not pass.')
   if (r.PASS === true && out.length) return out // a report that contradicts itself is not a pass
-  return r.PASS ? [] : out
+  return out
 }
 
 /** Parse the engine's report (indented JSON on stdout); anything else counts as a failed check, never a pass. */
@@ -115,6 +117,51 @@ export function protocolOutcome(stdout: string, stderr: string): ProtocolProblem
   throw Error('No protocol checks report')
 }
 
+/** For a published protocol.json: per held source, the text its served strings must be found in, by the engine's own
+ *  verbatim rule (checks.py check_verbatim), as a `--source-text` file. Before the wording is filled in that text is
+ *  one run of placeholders as long as the longest held text: every held placeholder is found in it, and any other
+ *  text cited verbatim from that source is not (so it still blocks). `restored` (the copy filled in on this computer)
+ *  gives instead the restored held texts themselves, each already checked by its own hash. A source with its own
+ *  sourcetext/ file in the project keeps that file. Never a placeholder text for an ordinary protocol.json. */
+export async function heldSourceTexts(project: string, restored?: Record<string, unknown>): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  try {
+    const p = JSON.parse(await readFile(join(project, 'protocol.json'), 'utf8'))
+    const held = p?.distribution?.held
+    if (!held || typeof held !== 'object' || Array.isArray(held)) return out
+    const own = new Set((await sourceTextArgs(project)).filter((_, i, a) => i > 0 && a[i - 1] === '--source-text').map((x) => x.split('=')[0]))
+    const pieces = new Map<string, string[]>()
+    for (const h of Object.values(held as Record<string, { source?: unknown; path?: unknown; kind?: unknown; length?: unknown }>)) {
+      if (!h || typeof h.source !== 'string' || own.has(h.source) || h.kind === 'image' || typeof h.path !== 'string') continue
+      let piece: string
+      if (restored) {
+        let v: unknown = restored
+        for (const part of h.path.split('/').slice(1).map((x) => x.replace(/~1/g, '/').replace(/~0/g, '~')))
+          v = v && typeof v === 'object' ? (v as Record<string, unknown>)[part] : undefined
+        if (typeof v !== 'string') continue
+        piece = v
+      } else {
+        const n = Number(h.length)
+        if (!Number.isSafeInteger(n) || n < 1 || n > 200_000) continue
+        piece = '\u2591'.repeat(n)
+      }
+      pieces.set(h.source, [...(pieces.get(h.source) ?? []), piece])
+    }
+    for (const [k, list_] of pieces)
+      out.set(k, restored ? list_.join('\n') : list_.reduce((a, b) => (b.length > a.length ? b : a), ''))
+  } catch { /* unreadable: the checks report it */ }
+  return out
+}
+
+/** The sources a published protocol.json holds wording back from (`distribution.held[*].source`). */
+export async function heldSources(project: string): Promise<Set<string>> {
+  try {
+    const held = JSON.parse(await readFile(join(project, 'protocol.json'), 'utf8'))?.distribution?.held
+    if (!held || typeof held !== 'object' || Array.isArray(held)) return new Set()
+    return new Set(Object.values(held as Record<string, { source?: unknown }>).map((h) => h?.source).filter((k): k is string => typeof k === 'string'))
+  } catch { return new Set() }
+}
+
 /** `--source-text name=path` for every regular sourcetext/*.txt inside the project (links out of it are skipped). */
 export async function sourceTextArgs(project: string): Promise<string[]> {
   const root = await realpath(project)
@@ -130,13 +177,14 @@ export async function sourceTextArgs(project: string): Promise<string[]> {
   return args
 }
 
-interface Limits { cpuSeconds?: number; memoryBytes?: number }
-type Ran = { stdout: string; stderr: string; limit?: boolean }
+export interface Limits { cpuSeconds?: number; memoryBytes?: number }
+export type Ran = { stdout: string; stderr: string; limit?: boolean }
 
 /** Run Python confined: -I -B, an empty home as working folder and temp, no keys in the environment, the CPU and
  *  memory bounds set before any engine code runs, an RSS watch where the OS ignores them, a wall clock. Exit 0/1
  *  resolve with the output; a stop at a bound resolves with `limit`; anything else rejects. */
-async function confinedPython(python: string, code: string, args: string[], home: string, bin: string, timeout: number, limits: Limits): Promise<Ran> {
+export async function confinedPython(python: string, code: string, args: string[], home: string, bin: string, timeout: number, limits: Limits,
+  extraEnv: Record<string, string> = {}): Promise<Ran> {
   const win = process.platform === 'win32'
   const system = win ? `${process.env.SystemRoot || 'C:\\Windows'}\\System32` : '/usr/bin:/bin:/usr/sbin:/sbin'
   const memoryBytes = limits.memoryBytes ?? PROTOCOL_MEMORY_BYTES
@@ -152,6 +200,7 @@ async function confinedPython(python: string, code: string, args: string[], home
         // would otherwise be looked for next to the scratch folder, where anything could plant it.
         HSENV_PRIVATE_CONFIG: '',
         ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+        ...extraEnv,
       },
     }, (error, stdout, stderr) => {
       // checks.py exits 1 when the protocol fails (its report is still the answer) and Python exits 1 on an
@@ -172,7 +221,7 @@ async function confinedPython(python: string, code: string, args: string[], home
   })
 }
 
-async function withScratch<T>(files: [string, string][], body: (work: string, home: string) => Promise<T>): Promise<T> {
+export async function withScratch<T>(files: [string, string][], body: (work: string, home: string) => Promise<T>): Promise<T> {
   const work = await mkdtemp(join(tmpdir(), 'hs-protocol-'))
   const home = await mkdtemp(join(tmpdir(), 'hs-protocol-home-'))
   try {
@@ -194,8 +243,14 @@ export async function protocolReadiness(python: string | null, engine: [string, 
   if (!engine.some(([rel]) => rel === 'hsenv/checks.py')) return [ENGINE_FAILED]
   try {
     return await withScratch(engine, async (work, home) => {
+      const held: string[] = []
+      for (const [name, text] of await heldSourceTexts(project)) {
+        const file = join(home, `held-${held.length / 2}.txt`)
+        await writeFile(file, text, 'utf8')
+        held.push('--source-text', `${name}=${file}`)
+      }
       const run = await confinedPython(python, runner(limits.cpuSeconds, limits.memoryBytes),
-        [work, await realpath(project), '--sessions', String(PROTOCOL_SESSIONS), ...await sourceTextArgs(project)], home, bin, timeout, limits)
+        [work, await realpath(project), '--sessions', String(PROTOCOL_SESSIONS), ...await sourceTextArgs(project), ...held], home, bin, timeout, limits)
       if (run.limit) return [ENGINE_LIMIT]
       if (/\bMemoryError\b/.test(run.stderr) && !run.stdout.includes('{')) return [ENGINE_LIMIT]
       return protocolOutcome(run.stdout, run.stderr)
@@ -203,6 +258,37 @@ export async function protocolReadiness(python: string | null, engine: [string, 
   } catch { return [ENGINE_FAILED] }
 }
 
+
+/** The engine's checks on the copy of a published study restored on this computer (leaks, unresolved expressions,
+ *  verbatim texts and everything else), run once before a run is allowed. The copy is written to a folder in app
+ *  storage (`workDir`, removed afterwards), never in the project. Held texts are checked against themselves (each was
+ *  already checked by its own hash); every other text against the project's sourcetext/. Findings are reported by
+ *  check name only: their details can quote the restored wording, which must not reach the UI, the agent or logs. */
+export async function restoredReadiness(python: string | null, engine: [string, string][], project: string, restored: string,
+  workDir: string, bin: string, timeout = PROTOCOL_TIMEOUT_MS, limits: Limits = {}): Promise<ProtocolProblem[]> {
+  if (!python) return [ENGINE_MISSING]
+  if (!engine.some(([rel]) => rel === 'hsenv/checks.py')) return [ENGINE_FAILED]
+  await mkdir(workDir, { recursive: true })
+  const dir = await mkdtemp(join(workDir, 'check-'))
+  try {
+    await writeFile(join(dir, 'protocol.json'), restored, 'utf8')
+    const held: string[] = []
+    for (const [name, text] of await heldSourceTexts(project, JSON.parse(restored))) {
+      const file = join(dir, `held-${held.length / 2}.txt`)
+      await writeFile(file, text, 'utf8')
+      held.push('--source-text', `${name}=${file}`)
+    }
+    return await withScratch(engine, async (work, home) => {
+      const run = await confinedPython(python, runner(limits.cpuSeconds, limits.memoryBytes),
+        [work, dir, '--sessions', String(PROTOCOL_SESSIONS), ...await sourceTextArgs(project), ...held], home, bin, timeout, limits)
+      if (run.limit) return [ENGINE_LIMIT]
+      // Check names only (the details can quote the restored wording); the app words the problem itself.
+      return [...new Set(protocolOutcome(run.stdout, run.stderr).map((p) => p.check))].map((check) => ({ check, reason: check }))
+    })
+  } catch { return [ENGINE_FAILED] } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined)
+  }
+}
 
 /** Parse budget.py's line; anything malformed is an error, never a small budget. */
 export function parseBudget(stdout: string): ProtocolBudget {

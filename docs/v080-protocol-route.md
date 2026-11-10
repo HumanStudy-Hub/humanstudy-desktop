@@ -9,7 +9,8 @@ One protocol across all platforms. A study's runnable form is now `protocol.json
 serve,schema_check,distribution}.py`, `schema/{protocol,study,run}.v1.json` and `LICENSE` (MIT) are exact copies of
 the public engine, github.com/HumanStudy-Hub/hsenv at tag v0.8.1 (commit db85a9c82f4c7cedeb808a3d39ae2858605d5a20).
 - `distribution.py` (since v0.8.1) backs `hsenv.rehydrate`, which rebuilds a protocol from a release projection on
-  the user's machine. The app UI does not call it yet.
+  the user's machine. The app calls it through `pack/runtime/lib/hs_original_text.py` (see "Published studies"
+  below).
 - Study pins are not in the code. The engine reads a private sidecar only when `HSENV_PRIVATE_CONFIG` names one, and
   the app sets it empty everywhere.
 - The engine's `tests/` are never vendored.
@@ -334,6 +335,90 @@ or with `--protocol`:
   - the preview build of the fixture, checked in protocol mode.
 - `shared/simulation-run.test.mjs`: records.jsonl counts as a run's participant data.
 - `paper-build` and `ux` tests: the new regexes.
+
+## Published studies: original wording (hsenv 0.8.1 link + hash)
+
+A published protocol.json (a release projection) holds placeholders where wording from a non-redistributable source
+goes (`distribution.held`: path, source, length, `text_sha256`, locator). The app fills it in on the researcher's
+computer:
+- **Where.** `main/original-text.ts` runs `pack/runtime/lib/hs_original_text.py` from the app's own copy, with the
+  bundled engine, isolated like the checks (-I -B, empty home, no keys; proxy settings only), when the project
+  opens, after a file is dropped into it, and as part of readiness (`package-readiness.ts`, lane `text`, cached by
+  protocol.json + sources/ + paper.pdf and kept at most ten minutes, so a failed download is tried again; the helper
+  itself waits ten minutes before asking the publisher again, and drops a download that restored nothing, such as
+  a sign-in page).
+- **How.** Link-tier sources are downloaded (http(s) only, no https→http redirect, no local or private addresses
+  for the URL or any redirect (a DNS answer that changes after the check is not caught), 100 MB cap); the rest are tried from `sources/private/`, `paper.pdf` and `sources/` (best first: named after the
+  source, then the builder's file sha256, then any file of the format). Each item is accepted only when its text
+  hashes to `text_sha256` (hsenv's rule), so a wrong file can only leave a screen empty. PDF needs pypdfium2, which
+  the runtime has (pinned in requirements.lock via pdfplumber); without it PDF sources say so and text, HTML,
+  docx and QSF sources still work. Held pictures (and regions rendered as pictures) are not supported yet: such a
+  study stays unresolved with need `picture`.
+- **What stays local.** Downloads and the restored protocol live in `<userData>/original-text/` (per
+  sha256 of protocol.json), never in the project, so neither exports nor research capture see them. A file dropped
+  into a published study goes to `sources/private/` (never exported or collected) and never becomes paper.pdf. The
+  project gets `.humanstudy/original-text.json`: counts, titles, formats and what each source needs, no wording.
+- **Run.** Missing wording is a blocking protocol problem (the Simulation tab words it, en and zh), The engine checks
+  of a published study get, for each held source without its own sourcetext/ file, a source text that is one run of
+  placeholders as long as its longest held text: by the engine's own verbatim rule every held placeholder is found
+  and any other text cited verbatim from that source is not, so it still blocks (no rule in the app decides which
+  texts are excused). Once the wording is restored, the checks run again on the restored copy in app storage (held
+  texts checked against themselves, after their hash check), and any finding blocks, reported by check name only.
+  That check's result is cached by the restored copy and the project's sourcetext/ contents, and only when it
+  completed; its message names no check. The held list (`distribution`) is pinned in app storage the first time the
+  study is seen; an edited or removed list blocks the run until protocol.json is put back as received. This build has
+  no import path for a published protocol.json (the library forks program.json, package/, artifacts/ and sources/
+  only); an import path must call `repinHeld` after writing a new published version. An
+  approved run copies the restored protocol into its trusted code folder (`restored/protocol.json`); app_run reads
+  it from beside its own code (never from the environment) and plays it only if every held text hashes to its
+  `text_sha256`, no placeholder is left and nothing else differs from protocol.json. It records the approved
+  (published) hash and keeps no screens in records.jsonl (`states="none"`). Without it app_run refuses a published
+  study.
+- **Preview.** make_preview.py shows "[text not available]" (zh: "[文字不可用]") for held texts; it never uses the
+  restored copy.
+- **Agent.** `skills/run` "Original wording" tells the agent how to read the status and what to say, and never to
+  open a file in `sources/private/` or the app's `original-text/` storage; AGENTS.md says the same. A drop into a
+  published study adds an app note to the prompt (not the researcher's bubble; the dropped paths are matched as
+  whole strings, so commas or `]` in a name do not break it) that the file was received to fill in the wording and
+  must not be opened. Research capture has ONE boundary for private material, `telemetry-core.ts` `redactCapture`:
+  every research-v1 event (`captureResearch` in telemetry.ts is the only caller of the collector: the agent adapter,
+  selection, program.json and artifact versions) and every telemetry metadata object passes it before it is stored,
+  put in a blob or sent. An event that names a private path (sources/private/, the restored-wording cache; in a
+  published or private-folder project also paths built in pieces, `./` segments, URL-encoded, globs and searches
+  under sources/) or quotes a run of 40 letters or digits from indexed private text keeps only its structural fields.
+  Every string value is checked raw (never the event's JSON), also with escape sequences turned into spaces (a
+  string holding JSON or a heredoc) and with a read tool's line-number prefixes removed. Every blob passes the same
+  check in `putBlob` (refused), and `fit` checks before anything goes inline or to a blob; the workspace context
+  is redacted before it is fitted.
+  The agent adapter also marks a tool call whose input names a private path, so its end event (the file's content,
+  no path) is blanked too. The transcript capture blanks such parts first (`redactPrivatePart`). Project files go
+  through `mayCollectFile`: a published study's run outputs (`artifacts/simulations/`, `runs/`) and any file quoting
+  private text are never collected; in a published or private-folder project, files that cannot be read as text
+  and texts over 300k characters are not either (ordinary projects keep collecting their PDFs and figures).
+  The helper writes the index per project to `<userData>/original-text/redact/<sha256 of the folder>.bin` (sorted
+  8-byte hashes, never text; first million letters of each file), beside a `.path` file so the app prunes the index
+  of a folder that no longer exists. Only what verifiably ships is subtracted: the strings of protocol.json as
+  RECEIVED (kept in app storage at first sight, with the pin) and files whose sha256 a hosted source of that copy
+  records. Nothing written on this computer counts as public (sources/ outside private/, sources/researcher/,
+  effects.json, the live protocol.json). Each file's runs are cached by its sha256 (`windows/`). The index is
+  written before any download; a drop indexes the copy before importFiles returns (the chip shows "Adding <name>…"),
+  and the app merges the sorted files once per session and after each drop.
+  The skeleton is letters only (any script, CJK included; index format v2, older files are rebuilt), and every
+  text is also checked with each line's enumerator removed (`1.`, `Q1:`, `(a)`, `Item 3:`, bullets), so re-numbered
+  items, a 1-5 column or page numbers never break a run. Accepted limit of the beta (telemetry is opt-in research
+  data): a quote whose items, each shorter than 40 letters, are reordered, or separated by inserted HTML tags or
+  Likert labels, is not recognised by content (the path rule still covers reading the file itself).
+  Follow-ups: text past the first million letters of a private copy is not indexed; "Export complete conversation"
+  and "Export my research data" are explicit local saves and are not redacted.
+- **Downloads** also stop after 90 s each (150 s for all of one check; every socket read waits at most the time
+  left, and reads take what has arrived), write the failure marker on a timeout, treat
+  a web page returned for a non-HTML source as a failed download (a sign-in or paywall page), and never fetch a host
+  that does not resolve here.
+- **Follow-up (hsenv 0.8.2 / sandbox skills/run).** `run_study.load_protocol` (vendored) cannot be guarded here:
+  the guard against placeholders is in app_run (it refuses any protocol with runs of placeholders and no restored
+  copy). Upstream, `run_study.load_protocol` (or `hsenv.engine.Protocol.load`) should refuse a protocol with a
+  non-empty `distribution.held` or runs of U+2591, and `checks.check_verbatim` should report the paths it counts as
+  unchecked, so the app can excuse exactly the held paths without the placeholder source text.
 
 ## Not done (next)
 

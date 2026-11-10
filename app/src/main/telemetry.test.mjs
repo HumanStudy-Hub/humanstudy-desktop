@@ -5,7 +5,7 @@
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { gunzipSync } from 'node:zlib'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const out = mkdtempSync(join(tmpdir(), 'telemetry-test-'))
 await build({
-  entryPoints: [join(here, 'telemetry-core.ts'), join(here, 'replay-core.ts'), join(here, 'research-content.ts')],
+  entryPoints: [join(here, 'telemetry-core.ts'), join(here, 'replay-core.ts'), join(here, 'research-content.ts'), join(here, 'research-agent.ts')],
   bundle: true,
   platform: 'node',
   format: 'esm',
@@ -24,6 +24,7 @@ await build({
 const { storeResearchContent } = await import(pathToFileURL(join(out, 'research-content.js')).href)
 const core = await import(pathToFileURL(join(out, 'telemetry-core.js')).href)
 const replayMod = await import(pathToFileURL(join(out, 'replay-core.js')).href)
+const agentMod = await import(pathToFileURL(join(out, 'research-agent.js')).href)
 rmSync(out, { recursive: true, force: true })
 const { createReplay, DISK_CAP } = replayMod
 const { programDiff } = core
@@ -561,6 +562,268 @@ await test('program diff names the nodes and steps that were added, removed or c
   assert.equal(tool.metadata.output.length, 5000)
   assert.equal(sanitizeEvent('conversation.tool', { metadata: { input: 'y' } }, { ...ctx, content: false }, base), null)
   void t
+})
+
+await test('a dropped private file never reaches capture: tool calls naming sources/private or the wording cache are redacted', () => {
+  const { redactPrivatePart, REDACTED_PRIVATE } = core
+  const secret = 'How many minutes did you walk this morning? (invented private wording)'
+  const ctx = { content: true, email: EMAIL }
+  const base = { installId: 'install-0001', sessionId: SID, appVersion: '0.2.0', platform: 'darwin', now: clock }
+  const parts = [
+    { kind: 'tool', tool: 'read', state: 'completed', detail: 'Read booklet', input: { filePath: '/Users/x/Proj/sources/private/booklet.html' }, output: secret },
+    { kind: 'tool', tool: 'bash', state: 'completed', detail: 'cat', input: { command: 'cd sources/private && cat booklet.html' }, output: secret },
+    { kind: 'tool', tool: 'bash', state: 'completed', detail: 'x', input: { command: 'cat "C:\\Users\\x\\Proj\\sources\\private\\b.pdf"' }, output: secret },
+    { kind: 'tool', tool: 'read', state: 'completed', detail: 'Read', input: { filePath: '/Users/x/Library/Application Support/HumanStudy Hub/original-text/ab/protocol.json' }, output: secret },
+    { kind: 'native', raw: { tool: 'read', path: 'sources/private/booklet.html', content: secret } },
+  ]
+  for (const part of parts) {
+    const p = redactPrivatePart(part)
+    // as onThreadCapture builds the event: detail, input, output (or the raw part) in the metadata
+    const metadata = p.kind === 'tool' ? { thread_id: 't', detail: p.detail, input: typeof p.input === 'string' ? p.input : JSON.stringify(p.input), output: p.output }
+      : { thread_id: 't', content: JSON.stringify(p) }
+    const row = sanitizeEvent(p.kind === 'tool' ? 'conversation.tool' : 'conversation.native', { target: part.tool, metadata }, ctx, base)
+    assert.ok(!JSON.stringify(row ?? {}).includes('walk this morning'), JSON.stringify(row))
+    if (p.kind === 'tool') assert.equal(p.output, REDACTED_PRIVATE)
+  }
+  // ordinary work is captured unchanged
+  const plain = { kind: 'tool', tool: 'read', state: 'completed', detail: 'Read', input: { filePath: 'sources/open/handout.txt' }, output: 'public text' }
+  assert.equal(redactPrivatePart(plain), plain)
+  assert.equal(redactPrivatePart({ kind: 'tool', input: { filePath: 'sources/open/notes-on-privacy.txt' }, output: 'x' }).output, 'x')
+  // the transcript capture redacts before anything is stored or put in a blob
+  const src = readFileSync(join(here, 'telemetry.ts'), 'utf8')
+  const capture = src.slice(src.indexOf('export function onThreadCapture'))
+  assert.ok(capture.indexOf('redactPrivatePart(c.part, privateIndex,') > 0 && capture.indexOf('redactPrivatePart(c.part, privateIndex,') < capture.indexOf("fit(base, 'input'"))
+})
+
+await test('redaction by path survives the ways an agent names the folder (review probe red.mjs); the status file is not redacted', () => {
+  const { redactPrivatePart } = core
+  const leak = (command) => redactPrivatePart({ kind: 'tool', tool: 'bash', input: { command }, output: 'SECRET' }).output === 'SECRET'
+  for (const c of ['cd sources; cat private/booklet.html', 'cat sources/priv*/booklet.html',
+    "python3 -c \"print(open('sources/'+'private/b.html').read())\"", 'cat ./sources/./private/b.html',
+    'find sources -name "*.html" -exec cat {} +', 'file:///Users/x/P/sources%2Fprivate/b.html', 'hs-pdf sources/private/b.pdf',
+    '/Users/x/Library/Application Support/HumanStudy Hub/original-text/ab/protocol.json', 'cat sources/Private/b.html',
+    'grep -r walk sources/', 'cat sources/*'])
+    assert.equal(leak(c), false, c)
+  for (const c of ['cat .humanstudy/original-text.json', 'cat sources/open/handout.txt', 'python .opencode/skills/build/sources.py .', 'ls sources/open'])
+    assert.equal(leak(c), true, c)
+})
+
+await test('redaction by content: any agent step that quotes 40 characters of a private copy is dropped, however it got there', () => {
+  const { redactPrivatePart, containsPrivateRun, privateIndexOf, SCAN_LIMIT } = core
+  const privateText = 'Before you begin, please take a slow walk around the block and notice the colour of every front door you pass.'
+  const index = privateIndexOf([privateText])
+  const quote = 'it says: "please take a SLOW walk around the block, and notice the colour of every front door"'
+  assert.equal(containsPrivateRun(quote, index), true, 'case, spacing and punctuation do not hide a quote')
+  assert.equal(containsPrivateRun('please take a slow walk around', index), false, 'shorter than 40 letters')
+  const tool = redactPrivatePart({ kind: 'tool', tool: 'bash', input: { command: 'cat $(ls -d s*)/p*/b.html' }, output: privateText }, index)
+  assert.equal(tool.output, '[redacted: private material]')
+  assert.equal(redactPrivatePart({ kind: 'text', text: 'The booklet reads: ' + quote }, index).text, '[redacted: private material]')
+  assert.deepEqual(redactPrivatePart({ kind: 'reasoning', text: quote }, index), { kind: 'reasoning', redacted: 'private-material' })
+  const plain = { kind: 'text', text: 'I filled in 3 screens of the walking study.' }
+  assert.equal(redactPrivatePart(plain, index), plain)
+  // a part too long to scan is redacted whole while anything is indexed (never sent in part)
+  const long = 'x'.repeat(SCAN_LIMIT) + ' ' + privateText
+  assert.equal(redactPrivatePart({ kind: 'text', text: long }, index).text, '[redacted: private material]')
+  assert.equal(redactPrivatePart({ kind: 'text', text: long }, core.EMPTY_INDEX).text, long, 'nothing indexed: nothing to hide')
+})
+
+await test('glob and search rules apply only where the project has a sources/private/ folder', () => {
+  const { redactPrivatePart } = core
+  const kept = (command, globs) => redactPrivatePart({ kind: 'tool', tool: 'bash', input: { command }, output: 'OUT' }, core.EMPTY_INDEX, globs).output === 'OUT'
+  for (const c of ['ls sources/*.pdf', 'find sources -name SOURCE.json', 'rg "Results" sources']) {
+    assert.equal(kept(c, false), true, c + ' in an ordinary project')
+    assert.equal(kept(c, true), false, c + ' where sources/private/ exists')
+  }
+  assert.equal(kept('cat sources/private/b.html', false), false, 'the private path itself always counts')
+})
+
+await test('project files: a published study\'s run outputs are never collected, nor any file that quotes private text', () => {
+  const { mayCollectFile, privateIndexOf, EMPTY_INDEX } = core
+  const wording = 'Thank you for joining this short study about walking before breakfast, says the invented handout.'
+  const index = privateIndexOf([wording])
+  // a run of a published study: its records quote the restored wording in the AI participants' replies
+  const reply = JSON.stringify({ note: { reply: 'The page said: thank you for joining this short study about walking before breakfast.' } })
+  for (const rel of ['artifacts/simulations/2026-11-10-0100/records.jsonl', 'artifacts/simulations/2026-11-10-0100/results.html',
+    'artifacts/simulations/2026-11-10-0100/baseline/records.jsonl', 'runs/2026-11-10/sessions.jsonl'])
+    assert.equal(mayCollectFile({ rel, text: rel.endsWith('.html') ? '<p>ok</p>' : undefined, published: true, index: EMPTY_INDEX }), false, rel)
+  // any artifact holding private text is skipped, published or not
+  assert.equal(mayCollectFile({ rel: 'artifacts/notes.md', text: 'My notes. ' + reply, published: false, index }), false)
+  assert.equal(mayCollectFile({ rel: 'sources/open/extract.txt', text: wording, published: false, index }), false)
+  // a file that cannot be read as text is not collected while anything is indexed, in a published study
+  assert.equal(mayCollectFile({ rel: 'artifacts/figure.png', text: undefined, published: true, index }), false)
+  // ordinary work is collected as before; an ordinary project keeps collecting its PDFs and figures and long texts
+  assert.equal(mayCollectFile({ rel: 'artifacts/notes.md', text: 'My own notes.', published: false, index }), true)
+  assert.equal(mayCollectFile({ rel: 'paper.pdf', text: undefined, published: false, hasPrivate: false, index }), true)
+  assert.equal(mayCollectFile({ rel: 'artifacts/fig.png', text: undefined, published: false, hasPrivate: false, index }), true)
+  assert.equal(mayCollectFile({ rel: 'artifacts/big.md', text: 'x '.repeat(200_000), published: false, hasPrivate: false, index }), true)
+  assert.equal(mayCollectFile({ rel: 'artifacts/fig.png', text: undefined, published: false, hasPrivate: true, index }), false)
+  assert.equal(mayCollectFile({ rel: 'artifacts/simulations/x/records.jsonl', text: undefined, published: false, index: EMPTY_INDEX }), true)
+  // and the capture paths use it
+  const src = readFileSync(join(here, 'telemetry.ts'), 'utf8')
+  for (const fn of ['async function snapshotFileNow', 'async function queueSource']) {
+    const body = src.slice(src.indexOf(fn), src.indexOf('\n}\n', src.indexOf(fn)))
+    assert.match(body, /mayCollectFile\(/, fn)
+  }
+})
+
+await test('research-v1 capture: an agent reading a private copy and quoting it reaches capture with neither path nor text (review probe ra.mjs)', async () => {
+  const { createResearchAgent } = agentMod
+  const { redactCapture, privateIndexOf, EMPTY_INDEX } = core
+  const SECRET = 'How many minutes did you walk this morning? Did you see a neighbour on the way to work?'
+  for (const index of [privateIndexOf([SECRET]), EMPTY_INDEX]) {
+    const got = []
+    // the sink is the capture boundary exactly as telemetry.ts wires it (captureResearch -> redactCapture)
+    const ra = createResearchAgent(async (ev) => { got.push(redactCapture(ev, index, true)); return 'id' })
+    ra.bind('s1', 'p1', '/proj')
+    ra.start('s1', 'hello')
+    ra.event({ type: 'tool', sessionId: 's1', toolCallId: 't1', tool: 'read', text: 'running', input: { filePath: '/proj/sources/private/booklet.txt' } })
+    ra.event({ type: 'tool', sessionId: 's1', toolCallId: 't1', tool: 'read', text: 'completed', output: SECRET })
+    ra.event({ type: 'tool', sessionId: 's1', toolCallId: 't2', tool: 'bash', text: 'running', input: { command: 'cd sources; cat private/booklet.txt' } })
+    ra.event({ type: 'tool', sessionId: 's1', toolCallId: 't2', tool: 'bash', text: 'completed', output: SECRET })
+    if (index.size) ra.event({ type: 'text', sessionId: 's1', text: 'The booklet says: ' + SECRET })
+    ra.event({ type: 'error', sessionId: 's1', text: 'failed reading /proj/sources/private/booklet.txt: ' + SECRET })
+    ra.event({ type: 'done', sessionId: 's1' })
+    await ra.drain?.()
+    const all = JSON.stringify(got)
+    assert.ok(!all.includes('sources/private') && !all.includes('private/booklet'), 'no private path')
+    assert.ok(!all.includes('neighbour on the way'), 'no private text')
+    assert.ok(got.some((e) => e.event_type === 'tool.end'), 'the steps themselves are still recorded')
+  }
+  // every capture sink in telemetry.ts goes through the one boundary
+  const src = readFileSync(join(here, 'telemetry.ts'), 'utf8')
+  assert.equal((src.match(/sourceCollector\(\)\.capture\(/g) || []).length, 1, 'only captureResearch calls the collector')
+  assert.match(src, /return sourceCollector\(\)\.capture\(redactCapture\(event, privateIndex,/)
+  assert.match(src, /createResearchAgent\(\(event, context\) => captureResearch\(event, context\)\)/)
+  assert.match(src, /let metadata = opts\.metadata \? redactCapture\(/, 'telemetry metadata too, before any blob')
+})
+
+await test('the capture boundary keeps ordinary events whole and redacts only content fields of a private one', () => {
+  const { redactCapture, privateIndexOf, EMPTY_INDEX } = core
+  const ev = { event_type: 'tool.end', tool_call_id: 't', target: 'read', metadata: { status: 'completed', output: 'public result' } }
+  assert.equal(redactCapture(ev, EMPTY_INDEX, false), ev)
+  const priv = redactCapture({ ...ev, metadata: { ...ev.metadata, input: 'sources/private/x.pdf' } }, EMPTY_INDEX, false)
+  assert.deepEqual([priv.event_type, priv.tool_call_id, priv.target, priv.metadata.status, priv.metadata.output, priv.metadata.redacted],
+    ['tool.end', 't', 'read', 'completed', '[redacted: private material]', 'private-material'])
+  // an ordinary project with the words "sources" and "private" in a program is not redacted (no private folder)
+  const prog = { event_type: 'program.version', metadata: { file: 'Sources: the private sector survey' } }
+  assert.equal(redactCapture(prog, EMPTY_INDEX, false), prog)
+  // a long event of an ordinary project is scanned, not dropped
+  const big = { event_type: 'artifact.version', metadata: { file: 'y '.repeat(200_000) } }
+  assert.equal(redactCapture(big, privateIndexOf(['A completely different private sentence that is long enough.']), false), big)
+})
+
+await test('each string is checked raw: quotes over several lines, tabs, escaped JSON, heredocs and numbered reads are caught (review probe rc.mjs)', async () => {
+  const { createResearchAgent } = agentMod
+  const { redactCapture, redactPrivatePart, privateIndexOf, holdsPrivate } = core
+  const SECRET = 'How many minutes did you walk this morning? Did you see a neighbour on the way to work?'
+  const ITEMS = ['I often feel nervous at work.', 'My manager listens to me.', 'I trust my colleagues fully.', 'I would leave this job soon.']
+  const idx = privateIndexOf([SECRET, ITEMS.join('\n')])
+  // A: a single-line quote through the agent adapter and the boundary
+  const got = []
+  const ra = createResearchAgent(async (ev) => { got.push(redactCapture(ev, idx, true)); return 'id' })
+  ra.bind('s1', 'p1', '/proj'); ra.start('s1', 'hello')
+  ra.event({ type: 'tool', sessionId: 's1', toolCallId: 't1', tool: 'read', text: 'completed', input: { filePath: '/proj/sources/private/booklet.txt' }, output: SECRET })
+  ra.event({ type: 'text', sessionId: 's1', text: 'The booklet says: ' + SECRET })
+  ra.event({ type: 'done', sessionId: 's1' }); await ra.drain?.()
+  assert.ok(!JSON.stringify(got).includes('neighbour on the way'), 'A')
+  const leaks = (ev) => JSON.stringify(redactCapture(ev, idx, true)).includes('nervous at work')
+  // B: a multi-line quote, every line shorter than 40 letters
+  const q = 'Items:\n' + ITEMS.join('\n')
+  assert.equal(leaks({ event_type: 'conversation.message', metadata: { text: q } }), false, 'B')
+  assert.ok(!JSON.stringify(redactPrivatePart({ kind: 'text', text: q }, idx)).includes('nervous at work'), 'B, transcript part')
+  // C: a heredoc inside a JSON-string tool input (escaped newlines)
+  assert.equal(leaks({ event_type: 'tool.start', metadata: { input: JSON.stringify({ command: 'cat > notes.txt <<EOF\n' + ITEMS.join('\n') + '\nEOF' }) } }), false, 'C')
+  // D: tab-joined, and CRLF
+  assert.equal(leaks({ event_type: 'x', metadata: { t: ITEMS.join('\t') } }), false, 'D tabs')
+  assert.equal(leaks({ event_type: 'x', metadata: { t: ITEMS.join('\r\n') } }), false, 'D CRLF')
+  // a read tool's numbered lines
+  assert.equal(leaks({ event_type: 'tool.end', metadata: { output: ITEMS.map((l, i) => `${String(i + 1).padStart(5)}| ${l}`).join('\n') } }), false, 'line numbers')
+  // \u escapes inside a JSON string
+  assert.equal(holdsPrivate(JSON.stringify({ t: SECRET.replace(/ /g, '\\u0020') }), idx, true), true)
+  // ordinary text passes untouched
+  const plain = { event_type: 'x', metadata: { t: 'Line one of my own notes.\nLine two of my own notes.' } }
+  assert.equal(redactCapture(plain, idx, true), plain)
+})
+
+await test('blobs pass the boundary: an oversized workspace or program.json holding private text never becomes a blob', () => {
+  const { holdsPrivate, privateIndexOf, redactCapture } = core
+  const SECRET = 'How many minutes did you walk this morning? Did you see a neighbour on the way to work?'
+  const idx = privateIndexOf([SECRET])
+  const workspace = { project: '/p', activeTab: 'file', openTabs: Array.from({ length: 400 }, (_, i) => `artifacts/f${i}.md`),
+    source: { file: 'notes.md', quote: SECRET } }
+  assert.ok(JSON.stringify(workspace).length > 5_500, 'too large to go inline: it would become a blob')
+  assert.equal(holdsPrivate(JSON.stringify(workspace), idx, true), true, 'the blob check refuses it')
+  assert.ok(!JSON.stringify(redactCapture(workspace, idx, true)).includes('neighbour'), 'redacted before fit')
+  const program = JSON.stringify({ schemaVersion: 2, nodes: [{ id: 'n1', fields: { text: SECRET } }], pad: 'x'.repeat(20_000) }, null, 2)
+  assert.equal(holdsPrivate(program, idx, true), true)
+  assert.equal(holdsPrivate(JSON.stringify({ schemaVersion: 2, nodes: [{ id: 'n1', fields: { text: 'my own design' } }] }), idx, true), false)
+  // the wiring: putBlob refuses private text itself, fit checks before anything goes inline or to a blob, and the
+  // workspace is redacted before fit
+  const src = readFileSync(join(here, 'telemetry.ts'), 'utf8')
+  const put = src.slice(src.indexOf('function putBlob'), src.indexOf('\n}\n', src.indexOf('function putBlob')))
+  assert.ok(put.indexOf('privateText(text, projectDir)') > 0 && put.indexOf('privateText(text, projectDir)') < put.indexOf('storeResearchContent'))
+  const fitSrc = src.slice(src.indexOf('function fit('), src.indexOf('\n}\n', src.indexOf('function fit(')))
+  assert.ok(fitSrc.indexOf('privateText(value, projectDir)') > 0 && fitSrc.indexOf('privateText(value, projectDir)') < fitSrc.indexOf('putBlob('))
+  assert.match(src, /fit\(base, 'workspace', JSON\.stringify\(redactCapture\(c\.workspace, privateIndex, scopedProject\(c\.dir\)\)\)/)
+  assert.match(src, /redactPrivatePart\(c\.part, privateIndex, scopedProject\(c\.dir\)\)/)
+  assert.equal((src.match(/putBlob\(/g) || []).length - 1, (src.match(/putBlob\((?:value|text|raw|JSON\.stringify\(metadata\)), (?:projectDir|dirFor)\)/g) || []).length, 'every blob goes through putBlob')
+})
+
+await test('letters only: re-numbered items, Q1:, a 1-5 column and changed numbering still match; CJK too (review probes probe2/probe3)', () => {
+  const { redactCapture, privateIndexOf, holdsPrivate, track: _t } = core
+  const ITEMS = ['I often feel nervous at work.', 'My manager listens to me.', 'I trust my colleagues fully.', 'I would leave this job soon.']
+  for (const source of [ITEMS.join('\n'), ITEMS.map((l, i) => `${i + 1}. ${l}`).join('\n')]) {
+    const idx = privateIndexOf([source])
+    const leaks = (t) => JSON.stringify(redactCapture({ event_type: 'x', metadata: { t } }, idx, true)).includes('nervous at work')
+    const cases = {
+      numbered: ITEMS.map((l, i) => `${i + 1}. ${l}`).join('\n'),
+      renumbered: ITEMS.map((l, i) => `${i + 7}) ${l}`).join('\n'),
+      unnumbered: ITEMS.join('\n'),
+      q: ITEMS.map((l, i) => `Q${i + 1}: ${l}`).join('\n'),
+      item: ITEMS.map((l, i) => `Item ${i + 1}: ${l}`).join('\n'),
+      lettered: ITEMS.map((l, i) => `(${'abcd'[i]}) ${l}`).join('\n'),
+      bullets: ITEMS.map((l) => `- ${l}`).join('\n'),
+      table: '| item | scale |\n|---|---|\n' + ITEMS.map((l) => `| ${l} | 1-5 |`).join('\n'),
+      json: JSON.stringify(ITEMS),
+      escaped: JSON.stringify(JSON.stringify(ITEMS.map((l, i) => `Q${i + 1}: ${l}`).join('\n'))),
+    }
+    for (const [k, v] of Object.entries(cases)) assert.equal(leaks(v), false, `${k} (source ${source.startsWith('1.') ? 'numbered' : 'plain'})`)
+  }
+  // CJK characters are letters
+  const zh = '我经常在工作中感到紧张。我的经理会倾听我的意见。我完全信任我的同事。我很快会离开这份工作。我对现在的工资感到满意。'
+  const zidx = privateIndexOf([zh])
+  assert.equal(holdsPrivate('1. 我经常在工作中感到紧张。\n2. 我的经理会倾听我的意见。\n3. 我完全信任我的同事。\n4. 我很快会离开这份工作。\n5. 我对现在的工资感到满意。', zidx, true), true)
+})
+
+await test('letters only does not over-redact ordinary text: false positives against a questionnaire index', () => {
+  const { privateIndexOf, holdsPrivate, containsPrivateRun } = core
+  const questionnaire = ['How many minutes did you walk this morning?', 'Did you see a neighbour on the way to work?',
+    'I often feel nervous at work.', 'My manager listens to me.', 'I trust my colleagues fully.', 'I would leave this job soon.',
+    'How satisfied are you with your life as a whole these days?', 'In general, would you say your health is excellent, very good, good, fair or poor?']
+  const idx = privateIndexOf([questionnaire.join('\n')])
+  const ordinary = [
+    'The study replicates a classic finding on how framing changes risky choices. Participants read a short scenario and chose between two programmes.',
+    'I filled in the method section and checked every condition against the paper. The sample was recruited online and paid a fixed fee.',
+    'Results: the effect was in the same direction as in the original study, but smaller. We report means, standard deviations and the test statistic.',
+    'Please review the protocol, then run the simulation with ten participants per arm. The run will take a few minutes and costs very little.',
+    'The questionnaire asks about the participant\'s work, their manager and their colleagues, and about their health and how satisfied they are.',
+    'Of the people who answered, most said they walked to work in the morning and saw a neighbour on the way, as expected from the original data.',
+    'Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam.',
+    'This is a long ordinary sentence with many common English words that appear in almost every text about research and studies of people.',
+  ]
+  const hits = ordinary.filter((t) => containsPrivateRun(t, idx))
+  console.log(`  false positives: ${hits.length} of ${ordinary.length} ordinary texts against a ${questionnaire.length}-item questionnaire index (${idx.size} windows)`)
+  assert.equal(hits.length, 0)
+  assert.equal(holdsPrivate(ordinary.join('\n'), idx, true), false)
+})
+
+await test('a withheld file\'s name is not logged as an event target', () => {
+  const src = readFileSync(join(here, 'telemetry.ts'), 'utf8')
+  const body = src.slice(src.indexOf('export function track('), src.indexOf('\n}\n', src.indexOf('export function track(')))
+  assert.match(body, /if \(typeof legacy\.target === 'string' && namesPrivatePath\(legacy\.target, false\)\) legacy\.target = REDACTED_PRIVATE/)
+  assert.match(body, /namesPrivatePath\(opts\.target, false\) \? \{ target: REDACTED_PRIVATE \}/)
+  assert.equal(core.namesPrivatePath('sources/private/booklet.html', false), true)
+  assert.equal(core.namesPrivatePath('artifacts/notes.md', false), false)
 })
 
 console.log(`\n${passed} passed`)

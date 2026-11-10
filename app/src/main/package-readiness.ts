@@ -3,7 +3,7 @@
 import { readdir, readFile, realpath, lstat, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { join, resolve, sep } from 'node:path'
-import { packageReadiness, type PackageReadiness, type PackageFile } from '../shared/package-readiness'
+import { packageReadiness, type OriginalTextNeed, type PackageReadiness, type PackageFile } from '../shared/package-readiness'
 import { formatTokens, MAX_PER_CONDITION, MAX_RUN_TOKENS, protocolRunLimits, type ProtocolBudget, type RunLimits } from '../shared/run-limits'
 
 export const COMMUNITY_RUN_NOTICE = "This study's code will run on your computer with access to your model key."
@@ -21,7 +21,7 @@ export async function communityRunNotice(projectDir: string): Promise<string | u
   }
 }
 
-export interface ScientificProblem { check: string; reason: string }
+export interface ScientificProblem { check: string; reason: string; text?: OriginalTextNeed }
 type ScientificCheck = (project: string, slug: string) => Promise<ScientificProblem[]>
 const NOT_CONFIGURED: ScientificProblem = { check: 'runtime', reason: 'The build checks are not available yet, so the package cannot be confirmed.' }
 const CHANGED: ScientificProblem = { check: 'changed', reason: 'The study changed while the build checks ran. They run again once edits finish.' }
@@ -173,6 +173,23 @@ export function protocolBudgetOf(project: string): Promise<ProtocolBudget | Scie
   return cachedCheck<ProtocolBudget | ScientificProblem[]>(JSON.stringify(['budget', project]), () => protocolStamp(project), () => protocolVersion, () => budgetCheck(project))
 }
 
+// A published study's original wording (original-text.ts): filled in on this computer before it can run.
+type TextCheck = (project: string) => Promise<ScientificProblem[]>
+let textCheck: TextCheck = async () => []
+/** Install the check that fills in a published study's original wording (index.ts); tests pass stubs. Without
+ *  it, an ordinary protocol.json is unaffected and a published one is refused at run time (app_run). */
+export function configureOriginalText(check: TextCheck): void { textCheck = check; results.clear() }
+/** How long an original-wording answer is kept when no file changes: a failed download may work later (the helper
+ *  itself asks the publisher again only after the same ten minutes; a restored study is answered from its cache). */
+export const TEXT_RECHECK_MS = 10 * 60_000
+/** The original-wording problems of one project, once per input state (protocol.json, sources/ where a dropped
+ *  copy lands, paper.pdf) and at most every TEXT_RECHECK_MS. */
+export function originalTextProblemsOf(project: string, now: () => number = Date.now): Promise<ScientificProblem[]> {
+  return cachedCheck<ScientificProblem[]>(JSON.stringify(['text', project]),
+    async () => (await protocolStamp(project)) + await stampOf([join(resolve(project), 'paper.pdf')]) + ':' + Math.floor(now() / TEXT_RECHECK_MS),
+    () => protocolVersion, () => textCheck(project))
+}
+
 const hasProtocol = (project: string): Promise<boolean> => lstat(join(project, 'protocol.json')).then((s) => s.isFile(), () => false)
 
 export const SIMULATION_APPROVAL = '[Simulation scope approved]'
@@ -205,7 +222,9 @@ export async function protocolArms(projectDir: string): Promise<string[]> {
 
 /** The protocol route alone: protocol.json and the bundled engine's checks. */
 async function protocolRouteReadiness(projectDir: string): Promise<PackageReadiness & { budget?: ProtocolBudget }> {
-  let problems = await protocolProblems(projectDir)
+  // A published study whose screens still lack their original wording opens as a preview but never runs: its
+  // participants would see placeholders. Those problems come first; the engine's checks follow.
+  let problems = [...await originalTextProblemsOf(projectDir), ...await protocolProblems(projectDir)]
   let budget: ProtocolBudget | undefined
   // A run is sized from what it will send the model (review 2, M3): no measured budget, no protocol run.
   if (!problems.length) {
@@ -214,7 +233,7 @@ async function protocolRouteReadiness(projectDir: string): Promise<PackageReadin
     else budget = b
   }
   return { exists: true, ready: !problems.length, slug: null, runNotice: await communityRunNotice(projectDir), budget,
-    problems: problems.map((p) => ({ file: 'protocol.json' as const, kind: 'scientific' as const, check: p.check, reason: p.reason })) }
+    problems: problems.map((p) => ({ file: 'protocol.json' as const, kind: 'scientific' as const, check: p.check, reason: p.reason, ...(p.text ? { text: p.text } : {}) })) }
 }
 
 async function packageRouteReadiness(projectDir: string, studyId?: string): Promise<PackageReadiness> {

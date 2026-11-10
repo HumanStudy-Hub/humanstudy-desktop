@@ -25,8 +25,14 @@ export const PACKAGE_ENTRY_POINTS: Partial<Record<PackageFile, string>> = {
   'evaluation/evaluation.py': 'evaluate',
 }
 
+/** Why some screens of a published study still lack their original wording (main/original-text.ts). */
+export type OriginalTextReason = 'download' | 'file' | 'wrong-file' | 'changed-online' | 'pdf-reader' | 'app-version' | 'reading' | 'picture' | 'held-changed' | 'checks-failed'
+/** One source of a published study whose wording is not filled in yet: what is needed, the source as the
+ *  researcher knows it, its file format and how many screens wait for it. The app words it in the UI language. */
+export interface OriginalTextNeed { need: OriginalTextReason; title: string; format: string; screens: number }
+
 export type PackageProblem =
-  | { file: 'study.json' | 'protocol.json'; kind: 'scientific'; check: string; reason: string }
+  | { file: 'study.json' | 'protocol.json'; kind: 'scientific'; check: string; reason: string; text?: OriginalTextNeed }
   | { file: PackageFile; kind: 'missing' }
   | { file: PackageFile; kind: 'invalid-json' }
   | { file: PackageFile; kind: 'unvalidated' | 'wrong-study' | 'stale-program' | 'bindings' }

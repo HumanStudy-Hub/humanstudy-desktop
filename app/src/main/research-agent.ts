@@ -12,13 +12,14 @@ import type { ResearchCapture } from './research-collector'
 import type { ActionRef } from '../shared/research-operations'
 import { ACTION_VIA, type ActionVia } from '../shared/research-contract'
 import { researchInteraction } from '../shared/research-interactions'
+import { namesPrivatePath, REDACTED_PRIVATE } from './telemetry-core'
 
 type Sink = (event: ResearchCapture, context?: { projectDir?: string }) => Promise<unknown>
 type Turn = { started: number; message: string; text: string; failed: boolean; action: string; userMessage: string; userEvent?: string
   native?: string; nativeUser?: string; parts: Set<string>; partOf: Map<string, number>
   project?: string; dir?: string; model: string; timer?: ReturnType<typeof setTimeout> }
 type Call = { id: string; sid: string; started: number; start?: string; end?: string; ended?: number; input?: unknown
-  inputText: string; action?: string; dir?: string; message?: string; part?: string }
+  inputText: string; action?: string; dir?: string; message?: string; part?: string; private?: boolean }
 /** Causal columns for a record that is not itself produced by the agent adapter. */
 export interface ResearchLink {
   action_id?: string
@@ -212,18 +213,22 @@ export function createResearchAgent(capture: Sink) {
         // complete input. Recording both made two tool.start rows per call; the start is recorded once
         // the input is known (or the call moves past pending without one).
         const placeholder = e.text === 'pending' && emptyInput(e.input)
+        // A call that names private material (a dropped copy in sources/private/, the restored-wording cache) keeps
+        // its input and output out of capture, at start and at end (the end carries the file's content, no path).
+        if (e.input !== undefined && namesPrivatePath(typeof e.input === 'string' ? e.input : JSON.stringify(e.input) ?? '')) call.private = true
         if (!placeholder && (!call.start || (e.input !== undefined && JSON.stringify(e.input) !== JSON.stringify(call.input)))) {
           call.input = e.input
-          call.inputText = inputPaths(e.input)
+          call.inputText = call.private ? '' : inputPaths(e.input)
           call.start = emit(sid, { event_type: 'tool.start', tool_call_id: call.id, target: e.tool ?? 'tool', metadata: {
-            ...(e.input === undefined ? { input_absent: true } : { input: typeof e.input === 'string' ? e.input : JSON.stringify(e.input) }),
+            ...(e.input === undefined ? { input_absent: true } : { input: call.private ? REDACTED_PRIVATE : typeof e.input === 'string' ? e.input : JSON.stringify(e.input) }),
             ...native, state: e.text ?? 'pending' } })
         }
         if ((e.text === 'completed' || e.text === 'error') && !call.ended) {
           call.ended = Date.now()
           call.end = emit(sid, { event_type: 'tool.end', tool_call_id: call.id, target: e.tool ?? 'tool', caused_by: call.start,
             duration_ms: Math.min(86400000, Date.now() - call.started), metadata: { status: e.text, ...native,
-              ...(e.output === undefined ? { output_absent: true } : { output: e.output }) } })
+              ...(e.output === undefined ? { output_absent: true } : { output: call.private ? REDACTED_PRIVATE : e.output }),
+              ...(call.private ? { redacted: 'private-material' } : {}) } })
         }
       } else if (e.type === 'question' && e.question) {
         const q = e.question, by = q.resolved ? replies.get(`${sid}:q:${q.id}`) : undefined

@@ -5,7 +5,7 @@ import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { test } from 'node:test'
@@ -23,7 +23,7 @@ const globPlugin = {
     b.onLoad({ filter: /pack\.ts$/ }, (args) => {
       let src = readFileSync(args.path, 'utf8')
       const included = walk(packDir).map((f) => relative(packDir, f).split('\\').join('/')).filter((r) =>
-        (r === 'AGENTS.md' || r === 'PROJECT_FORMAT.md' || r.startsWith('schema/') || r.startsWith('skills/') || /^artifact-kit\/[^/]+$/.test(r) || r.startsWith('runtime/hsenv/'))
+        (r === 'AGENTS.md' || r === 'PROJECT_FORMAT.md' || r.startsWith('schema/') || r.startsWith('skills/') || /^artifact-kit\/[^/]+$/.test(r) || r.startsWith('runtime/hsenv/') || r === 'runtime/lib/hs_original_text.py')
         && !r.split('/').includes('__pycache__') && !r.endsWith('.pyc'))
       const obj = Object.fromEntries(included.map((r) => ['../../../pack/' + r, readFileSync(join(packDir, r), 'utf8')]))
       src = src.replace(/import\.meta\.glob\([\s\S]*?\)\s*as Record<string, string>/, () => JSON.stringify(obj)) // no $ patterns
@@ -729,7 +729,9 @@ test('review 4 S1: the trusted run copy holds the engine, the run skill, the san
   const send = index.slice(index.indexOf("ipcMain.handle('kernel:send'"))
   assert.match(send, /if \(route === 'protocol'\) await startProtocolRun\(projectDir, approved, binding as ProtocolBinding, relay,/)
   assert.match(send, /await startProtocolRun\(projectDir, approved, binding, undefined,/, 'the pre-relay path too')
-  assert.match(index, /files: trustedRunFiles\(\), codeDir: join\(app\.getPath\('userData'\), 'protocol-runs', binding\.runId\)/, 'code outside the project')
+  assert.match(index, /files: \[\.\.\.trustedRunFiles\(\), \.\.\.restored\], codeDir: join\(app\.getPath\('userData'\), 'protocol-runs', binding\.runId\)/, 'code outside the project')
+  // a published study's restored wording travels with the trusted code (app storage), never through the project
+  assert.match(index, /const restored = await restoredRunFiles\(projectDir, originalTextCache\(\), binding\.protocolSha256\)/)
   const skill = readFileSync(join(packDir, 'skills/run/SKILL.md'), 'utf8')
   assert.match(skill, /Do not start, restart or copy a protocol run yourself/)
 })
@@ -918,4 +920,107 @@ print(json.dumps({
   assert.match(panel, /\.join\(getLang\(\) === 'zh-CN' \? '' : ' '\)/, 'zh sentences without stray spaces')
   assert.match(panel, /disabled=\{!canAsk\} title=\{canAsk \? undefined : t\('sim\.sign_in_to_run'\)\} onClick=\{onAsk\}/, 'Ask about this result while signed out')
   assert.match(panel, /!built && hasProtocolFile \? \(/, 'no "Build the study first" for a protocol project still being checked')
+})
+
+// A published study (hsenv 0.8.1 distribution): protocol.json holds placeholders where wording is held back. The run
+// plays only the copy restored on this computer, read from the code folder (<code>/restored/protocol.json, written by
+// the app beside its trusted code); never the placeholders, never wording that does not hash to the published value,
+// never a copy that changes anything else, and its records keep no screens.
+test('a published study runs only from its restored wording, and its records keep no screens', { skip: !python311 }, async () => {
+  const proj = await protocolProject()
+  const fixture = join(packDir, 'runtime/tests/fixtures/original_text/protocol.json')
+  writeFileSync(join(proj, 'protocol.json'), readFileSync(fixture))
+  const projection = JSON.parse(readFileSync(fixture, 'utf8'))
+  const texts = {
+    '/stages/intro/content/0/value': 'Thank you for joining this short study about walking before breakfast.',
+    '/stages/intro/content/1/value': 'Remember to drink a glass of water first.',
+    '/stages/q/responses/0/prompt': 'How many minutes did you walk this morning?',
+    '/stages/q/responses/1/prompt': 'Did you see a neighbour on the way?',
+  }
+  const fill = (extra = () => undefined) => {
+    const p = structuredClone(projection)
+    delete p.distribution
+    for (const [path, text] of Object.entries(texts)) {
+      const parts = path.split('/').slice(1)
+      const last = parts.pop()
+      parts.reduce((o, k) => o[k], p)[last] = text
+    }
+    extra(p)
+    const file = join(proj, '.opencode/restored/protocol.json')
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify(p))
+    return {}
+  }
+  const run = 'artifacts/simulations/2026-11-10-0100'
+  let r = spawnSync(python311, ['-B', '.opencode/skills/run/app_run.py', 'new', run, '--per-arm', '2', '--protocol-hash', sha(join(proj, 'protocol.json'))], { cwd: proj, encoding: 'utf8' })
+  assert.equal(r.status, 0, r.stderr)
+  const seen = []
+  const go = (env) => spawnSync(python311, ['-B', '-c', `import sys, json; from pathlib import Path
+sys.path.insert(0, '.opencode/skills/run'); import app_run
+seen = []
+def complete(messages):
+    seen.append(messages[-1]['content'])
+    c = messages[-1]['content']
+    if len(seen) == 3:   # one failed call: its f_errors trace must not carry the wording either
+        raise RuntimeError('model call failed: HTTP 500')
+    return '{"r1": 20, "r2": "o1"}' if 'r2' in c else '{"r1": 20}' if 'r1' in c else '{}'
+try:
+    meta = app_run.main_run(Path(sys.argv[1]).resolve(), Path('.').resolve(), complete=complete, model='stub')
+    print(json.dumps({'status': meta.get('status'), 'sha': meta.get('protocol_sha256'), 'seen': seen}))
+except SystemExit as e:
+    print(json.dumps({'refused': str(e)}))`, run], { cwd: proj, encoding: 'utf8', env: { PATH: process.env.PATH, ...env } })
+  const result = (x) => JSON.parse(x.stdout.trim().split('\n').at(-1) || '{}')
+  // no restored copy: refused, in plain words
+  r = go({})
+  assert.match(result(r).refused ?? r.stderr, /original wording has not been filled in on this computer.*\[text not available\]/)
+  // a copy that also changes something outside the held texts: refused
+  r = go(fill((p) => { p.stages.q.responses[1].options[0].label = 'Sure' }))
+  assert.match(result(r).refused ?? r.stderr, /another version of this study/)
+  // a copy that keeps the placeholders (protocol.json minus its distribution block), or with wording someone typed
+  r = go((() => { const file = join(proj, '.opencode/restored/protocol.json'); const p = structuredClone(projection); delete p.distribution; writeFileSync(file, JSON.stringify(p)); return {} })())
+  assert.match(result(r).refused ?? r.stderr, /another version of this study/)
+  r = go(fill((p) => { p.stages.intro.content[0].value = 'FORGED TEXT' }))
+  assert.match(result(r).refused ?? r.stderr, /another version of this study/)
+  r = go(fill((p) => { p.distribution = projection.distribution }))
+  assert.match(result(r).refused ?? r.stderr, /another version of this study/)
+  // the held list removed from protocol.json itself: its placeholders are never played either
+  const saved = readFileSync(join(proj, 'protocol.json'))
+  const stripped = structuredClone(projection); delete stripped.distribution
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(stripped))
+  r = spawnSync(python311, ['-B', '-c', `import sys, json; from pathlib import Path
+sys.path.insert(0, '.opencode/skills/run'); import app_run
+try:
+    app_run.restored_protocol(Path('.').resolve()); print(json.dumps({'ok': True}))
+except SystemExit as e:
+    print(json.dumps({'refused': str(e)}))`], { cwd: proj, encoding: 'utf8' })
+  assert.match(result(r).refused ?? r.stderr, /original wording has not been filled in/)
+  writeFileSync(join(proj, 'protocol.json'), saved)
+  // an environment variable cannot point the run at another copy
+  rmSync(join(proj, '.opencode/restored'), { recursive: true })
+  r = go({ HUMANSTUDY_RUN_RESTORED: join(proj, 'elsewhere.json') })
+  assert.match(result(r).refused ?? r.stderr, /original wording has not been filled in/)
+  // the restored copy: plays the wording, records the published version's hash, keeps no screens in the project
+  r = go(fill())
+  const out = result(r)
+  assert.equal(out.status, 'partial', r.stdout.slice(-800) + r.stderr.slice(-1500))   // the one failed call
+  assert.equal(out.sha, sha(join(proj, 'protocol.json')))
+  assert.ok(out.seen.some((c) => c.includes('walking before breakfast')), 'the model saw the restored wording')
+  assert.ok(!out.seen.some((c) => c.includes('░')), 'never a placeholder')
+  // every file the run left in the project (records, partial.jsonl, baseline/, the f_errors traces, logs, the page)
+  const left = walk(join(proj, 'artifacts'))
+  assert.ok(left.some((f) => f.endsWith('records.jsonl')) && left.some((f) => f.includes('baseline')), left.join('\n'))
+  for (const f of left) {
+    const body = readFileSync(f, 'utf8')
+    for (const text of Object.values(texts)) assert.ok(!body.includes(text), relative(proj, f) + ' holds restored wording')
+  }
+  void seen
+})
+
+test('the preview of a published study says "[text not available]" where wording is held back', { skip: !python311 }, async () => {
+  const proj = await protocolProject()
+  writeFileSync(join(proj, 'protocol.json'), readFileSync(join(packDir, 'runtime/tests/fixtures/original_text/protocol.json')))
+  const r = spawnSync(python311, ['-B', '.opencode/skills/preview/make_preview.py', '--out', 'artifacts/preview.html', '--lang', 'en'], { cwd: proj, encoding: 'utf8' })
+  const page = readFileSync(join(proj, 'artifacts/preview.html'), 'utf8')
+  assert.ok(page.includes('[text not available]'), r.stdout + r.stderr)
+  assert.ok(!page.includes('░'))
 })
