@@ -153,6 +153,7 @@ test('review 5 M1: a plan.json changed after the app wrote it is refused; the ap
     const progress = JSON.parse(readFileSync(join(runDir, 'progress.json'), 'utf8'))
     assert.equal(progress.stage, 'failed', 'the app marks a run that ended without a final stage (review 5, S2)')
     assert.match(progress.message, /The run ended before it finished \(exit 1\)\..*not the approved plan/)
+    assert.ok(!/\r/.test(progress.message), 'a Windows log (CRLF) leaves no carriage return in the message')
     assert.ok(!existsSync(join(runDir, 'records.jsonl')), 'nobody was run')
   } finally { server.close() }
 })

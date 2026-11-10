@@ -51,7 +51,7 @@ export async function markEnded(runDir: string, code: number | null): Promise<vo
   try { progress = JSON.parse(await readFile(join(runDir, 'progress.json'), 'utf8')) } catch { /* none yet */ }
   if (TERMINAL.has(String(progress.stage))) return
   const log = await readFile(join(runDir, 'run.log'), 'utf8').catch(() => '')
-  const tail = log.trim().split('\n').filter(Boolean).slice(-3).join(' ').slice(-300)
+  const tail = log.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(-3).join(' ').slice(-300)   // CRLF on Windows
   const now = new Date().toISOString().slice(0, 19) + 'Z'
   // Written whole and then renamed into place, so a reader never sees a half-written file (Windows readers poll it).
   const tmp = join(runDir, `progress.json.${process.pid}.tmp`)
