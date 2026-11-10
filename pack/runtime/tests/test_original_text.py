@@ -334,6 +334,35 @@ class RedactionIndex(unittest.TestCase):
                          "never from sources/researcher/")
 
 
+class Skeleton(unittest.TestCase):
+    """The helper's skeleton, enumerators and hashes match the app's (telemetry-core.ts)."""
+
+    def test_letters_only(self):
+        self.assertEqual("".join(map(chr, O.skeleton("Q1: I walked 20 minutes - OK?"))), "qiwalkedminutesok")
+        self.assertEqual("".join(map(chr, O.skeleton("第1题：我经常感到紧张。"))), "第题我经常感到紧张")
+        self.assertEqual(O.skeleton("1, 2, 3 | 4-5"), [])
+
+    def test_enumerators_are_removed(self):
+        for text, want in (("1. Walk", "Walk"), ("Q1: Walk", "Walk"), ("(ii) Walk", "Walk"), ("i. Walk", "Walk"),
+                           ("Question 3: Walk", "Walk"), ("Statement 2: Walk", "Walk"), ("S1. Walk", "Walk"),
+                           ("A1) Walk", "Walk"), ("### Q1", ""), ("- Walk", "Walk"), ("  12| Walk", "Walk"),
+                           ("第1题：走路", "走路"), ("**3.** Walk", "Walk")):
+            self.assertEqual(O.strip_enumerators(text).strip(), want, text)
+        self.assertEqual(O.strip_enumerators("Q1: Walk Q2: Run").split(), ["Walk", "Run"])
+        self.assertEqual(O.strip_enumerators("(a) Walk (b) Run").split(), ["Walk", "Run"])
+        self.assertEqual(O.strip_enumerators("a\r\nb"), "a\nb", "split on \\n, \\r dropped, as the app")
+        self.assertEqual(O.strip_enumerators("My manager listens to me. I agree (mostly)."),
+                         "My manager listens to me. I agree (mostly).")
+
+    def test_renumbered_items_share_windows(self):
+        items = ["I often feel nervous at work.", "My manager listens to me.", "I trust my colleagues fully."]
+        src = O.window_pairs("\n".join(items))
+        for shown in ("\n".join("Q%d: %s" % (i + 1, t) for i, t in enumerate(items)),
+                      "\n".join("(%s) %s" % ("abc"[i], t) for i, t in enumerate(items)),
+                      " ".join("Question %d: %s" % (i + 1, t) for i, t in enumerate(items))):
+            self.assertTrue(src & O.window_pairs(shown), shown)
+
+
 class Runtime(unittest.TestCase):
     def test_the_runtime_ships_the_pdf_reader_hsenv_pins(self):
         lock = (RUNTIME / "requirements.lock").read_text(encoding="utf-8")

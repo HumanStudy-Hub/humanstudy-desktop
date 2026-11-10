@@ -403,11 +403,13 @@ computer:
   effects.json, the live protocol.json). Each file's runs are cached by its sha256 (`windows/`). The index is
   written before any download; a drop indexes the copy before importFiles returns (the chip shows "Adding <name>…"),
   and the app merges the sorted files once per session and after each drop.
-  The skeleton is letters only (any script, CJK included; index format v2, older files are rebuilt), and every
-  text is also checked with each line's enumerator removed (`1.`, `Q1:`, `(a)`, `Item 3:`, bullets), so re-numbered
-  items, a 1-5 column or page numbers never break a run. Accepted limit of the beta (telemetry is opt-in research
-  data): a quote whose items, each shorter than 40 letters, are reordered, or separated by inserted HTML tags or
-  Likert labels, is not recognised by content (the path rule still covers reading the file itself).
+  The skeleton is letters only (any script, CJK included; index format v2, older index and cached-window files are
+  deleted and rebuilt), and every text is also checked with enumerators removed, at line start and mid-line (`1.`,
+  `Q1:`, `S1.`, `A1)`, `(a)`, `i.`, `(ii)`, `Question 1:`, `Statement 2:`, `Item 3:`, `### Q1`, `第1题：`, bullets),
+  so re-numbered items, a 1-5 column or page numbers never break a run. Accepted limit of the beta (telemetry is
+  opt-in research data): a quote whose items, each shorter than 40 letters, are reordered, or separated by inserted
+  markup, is not recognised by content: HTML tags, Likert labels, and per-item structured data such as JSON objects
+  with id keys, YAML entries or CSV rows (the path rule still covers reading the file itself).
   Follow-ups: text past the first million letters of a private copy is not indexed; "Export complete conversation"
   and "Export my research data" are explicit local saves and are not redacted.
 - **Downloads** also stop after 90 s each (150 s for all of one check; every socket read waits at most the time
