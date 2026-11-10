@@ -445,7 +445,7 @@ function publishedProjectSync(projectDir: string): boolean {
   if (hit && Date.now() - hit.at < 5_000) return hit.yes
   let yes = false
   try { yes = Boolean(JSON.parse(readFileSync(join(key, 'protocol.json'), 'utf8'))?.distribution) } catch { /* none */ }
-  if (!yes) try { yes = Object.prototype.hasOwnProperty.call(JSON.parse(readFileSync(join(originalTextDir(), 'pins.json'), 'utf8')), realpathSync(key)) } catch { /* none */ }
+  if (!yes) try { yes = Object.prototype.hasOwnProperty.call(JSON.parse(readFileSync(join(originalTextDir(), 'pins.json'), 'utf8')), realpathSync.native(key)) } catch { /* none */ }   // .native: the same form as fs/promises realpath, which keys the pins (Windows short names)
   publishedSeen.set(key, { at: Date.now(), yes })
   return yes
 }

@@ -120,7 +120,11 @@ class OriginalText(unittest.TestCase):
         st = self.run_helper(files=[self.drop("booklet.html"), self.drop("leaflet.pdf")])
         self.assertTrue(st["complete"], st)
         self.assertEqual((st["items"], st["restored"], st["screens"]), (4, 4, 0))
-        restored = json.loads(Path(st["restoredPath"]).read_text(encoding="utf-8"))
+        # the cached copy's bytes are exactly what its record names (no newline translation on Windows)
+        raw = Path(st["restoredPath"]).read_bytes()
+        self.assertEqual(O.sha256(raw), st["restoredSha256"])
+        self.assertNotIn(b"\r\n", raw)
+        restored = json.loads(raw.decode("utf-8"))
         self.assertNotIn("distribution", restored)
         for path, text in TEXTS.items():
             self.assertEqual(get(restored, path), text)

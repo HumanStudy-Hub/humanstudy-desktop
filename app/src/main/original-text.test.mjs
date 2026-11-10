@@ -5,10 +5,10 @@ import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -124,9 +124,11 @@ test('candidate files: sources/private first, then paper.pdf and the rest of sou
   close()
   const outside = mkdtempSync(join(tmpdir(), 'outside-'))
   writeFileSync(join(outside, 'secret.txt'), 'not the project')
-  symlinkSync(join(outside, 'secret.txt'), join(proj, 'sources/linked.txt'))
+  // a link that leads out of the project (Windows may refuse to create one without the privilege: then nothing to test)
+  try { symlinkSync(join(outside, 'secret.txt'), join(proj, 'sources/linked.txt')) } catch { /* no symlink privilege */ }
   writeFileSync(join(proj, 'sources/SOURCE.json'), '{}')
-  const files = (await O.candidateFiles(proj)).map((f) => f.slice(f.indexOf('published-')).split('/').slice(1).join('/'))
+  const root = realpathSync.native(proj)   // the form fs/promises realpath gives (not the JS one: Windows short names)
+  const files = (await O.candidateFiles(proj)).map((f) => relative(root, f).split(sep).join('/'))
   assert.deepEqual(files, ['sources/private/booklet.html', 'paper.pdf', 'sources/open/handout.txt'])
 })
 
