@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { realpath } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, sep } from 'node:path'
@@ -367,5 +368,7 @@ test('concurrent community imports keep both received originals and both held-li
  await Promise.all(dirs.map(dir=>O.repinHeld(cache,dir)))
  const pins=JSON.parse(readFileSync(join(cache,'pins.json'),'utf8'))
  assert.equal(Object.keys(pins).length,2)
- for(const dir of dirs){assert.equal(await O.heldPinProblem(cache,dir),null);assert.ok(existsSync(O.receivedPath(cache,realpathSync(dir))))}
+ // Use the same asynchronous canonicalization as production: Windows' sync JS
+ // fallback can preserve a different drive-letter case than libuv's realpath.
+ for(const dir of dirs){const root=await realpath(dir);assert.ok(pins[root]);assert.equal(await O.heldPinProblem(cache,dir),null);assert.equal(readFileSync(O.receivedPath(cache,root),'utf8'),readFileSync(join(dir,'protocol.json'),'utf8'))}
 })
