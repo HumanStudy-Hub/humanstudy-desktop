@@ -127,7 +127,7 @@ test('candidate files: sources/private first, then paper.pdf and the rest of sou
   // a link that leads out of the project (Windows may refuse to create one without the privilege: then nothing to test)
   try { symlinkSync(join(outside, 'secret.txt'), join(proj, 'sources/linked.txt')) } catch { /* no symlink privilege */ }
   writeFileSync(join(proj, 'sources/SOURCE.json'), '{}')
-  const root = realpathSync(proj)
+  const root = realpathSync.native(proj)   // the form fs/promises realpath gives (not the JS one: Windows short names)
   const files = (await O.candidateFiles(proj)).map((f) => relative(root, f).split(sep).join('/'))
   assert.deepEqual(files, ['sources/private/booklet.html', 'paper.pdf', 'sources/open/handout.txt'])
 })
