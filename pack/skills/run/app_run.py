@@ -278,7 +278,12 @@ MSG = {
            "unfinished": "some participants did not finish",
            "partial": "Partial run: {finished}; {why}. The results page is labelled partial. Press Run simulation to run it again.",
            "page_failed": "{before} The results page could not be written: {error}",
-           "ran": "The run finished ({finished}).", "done": "{finished}; {calls} model calls."},
+           "ran": "The run finished ({finished}).", "done": "{finished}; {calls} model calls.",
+           "text_missing": "This study's original wording has not been filled in on this computer yet, so it was not "
+                           "run (AI participants would have seen \"[text not available]\"). Ask the agent what is "
+                           "missing, then press Run simulation again.",
+           "text_other": "The original wording filled in on this computer belongs to another version of this study, "
+                         "so it was not run. Press Run simulation again."},
     "zh": {"stopped": "已由研究者停止：计划 {planned} 名参与者中完成了 {done} 名；{partial} 名进行中的记为部分完成"
                       "（partial.jsonl）。已停止的运行不做比较。",
            "changed": "运行开始时 protocol.json 被改动，或出现了变体；本次运行不报告任何结果。请重新点击“运行模拟”。",
@@ -288,7 +293,10 @@ MSG = {
            "unfinished": "有参与者没有完成",
            "partial": "部分运行：{finished}；{why}。结果页标为部分运行。点击“运行模拟”可重新运行。",
            "page_failed": "{before}结果页无法生成：{error}",
-           "ran": "运行已完成（{finished}）。", "done": "{finished}；{calls} 次模型调用。"},
+           "ran": "运行已完成（{finished}）。", "done": "{finished}；{calls} 次模型调用。",
+           "text_missing": "这项研究的原始措辞还没有在这台电脑上补全，因此没有运行（否则 AI 参与者会看到“[文字不可用]”）。"
+                           "请问助手还缺什么，补全后再点击“运行模拟”。",
+           "text_other": "这台电脑上补全的原始措辞属于这项研究的另一个版本，因此没有运行。请重新点击“运行模拟”。"},
 }
 
 
@@ -343,6 +351,62 @@ def stopped(run_dir: Path, meta: dict, bound: dict) -> dict:
     return meta
 
 
+PLACEHOLDER = "\u2591"   # hsenv.distribution.PLACEHOLDER: one per character of a held text in a published study
+
+
+def _pointer_parts(path: str) -> list:
+    return [p.replace("~1", "/").replace("~0", "~") for p in path.split("/")[1:]]
+
+
+def _put(doc, path: str, value) -> None:
+    *parents, last = _pointer_parts(path)
+    for p in parents:
+        doc = doc[int(p)] if isinstance(doc, list) else doc[p]
+    if isinstance(doc, list):
+        doc[int(last)] = value
+    else:
+        doc[last] = value
+
+
+def matches_projection(projection: dict, restored: dict) -> bool:
+    """True when `restored` is `projection` with its held texts filled in and nothing else changed: put the
+    placeholders back at every held path and the two must be equal (images: their slots are left out)."""
+    if not isinstance(restored, dict) or "distribution" in restored:
+        return False
+    held = projection["distribution"]["held"]
+    a = {k: v for k, v in projection.items() if k != "distribution"}
+    b = json.loads(json.dumps(restored))
+    a = json.loads(json.dumps(a))
+    try:
+        for h in held.values():
+            if h.get("kind") == "image":
+                _put(a, h["path"], None)
+                _put(b, h["path"], None)
+            else:
+                _put(b, h["path"], PLACEHOLDER * int(h["length"]))
+    except (KeyError, IndexError, ValueError, TypeError, AttributeError):
+        return False
+    return a == b
+
+
+def restored_protocol(project: Path) -> dict | None:
+    """The protocol to play when protocol.json is a published study whose original wording is held back (its
+    `distribution.held` lists placeholders): the restored copy the app filled in on this computer and handed to
+    this run (HUMANSTUDY_RUN_RESTORED, in the app's own code folder, never the project). None for an ordinary
+    protocol.json. A published study without that copy is never played: its screens would show placeholders."""
+    projection = json.loads((project / "protocol.json").read_text(encoding="utf-8"))
+    dist = projection.get("distribution") if isinstance(projection, dict) else None
+    if not (isinstance(dist, dict) and isinstance(dist.get("held"), dict) and dist["held"]):
+        return None
+    given = os.environ.get("HUMANSTUDY_RUN_RESTORED")
+    if not given or not Path(given).is_file():
+        raise Refused(msg("text_missing"))
+    restored = json.loads(Path(given).read_text(encoding="utf-8"))
+    if not matches_projection(projection, restored):
+        raise Refused(msg("text_other"))
+    return restored
+
+
 def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, model: str | None = None) -> dict:
     """Play the approved plan. `complete` (messages -> text) and `model` replace the app's model client in tests.
     A run is `done`, with a results page, only when every planned participant finished without a failed model
@@ -361,6 +425,7 @@ def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, m
 def _main_run(run_dir, project, plan, bound, trial, complete, model):
     import run_study
     from render import make_chat_f, render_state
+    restored = restored_protocol(project)
     out = run_dir / "trial" if trial else run_dir
     if not trial:
         check_not_stopped(run_dir, plan, bound)
@@ -381,16 +446,27 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     # The floor baseline's cache stays inside this run folder (run_study keeps it beside the run folders, which the
     # macOS sandbox does not let the run write, and which the Simulation tab would list as a run).
     original_cache, original_stage = run_study.baseline_cached, run_study.Progress.stage
+    original_load = run_study.load_protocol
     run_study.baseline_cached = lambda E, protocol, plan_, run_dir_, mf: original_cache(E, protocol, plan_, Path(run_dir_) / "baseline", mf)
+    if restored is not None:
+        # A published study: the engine plays the copy restored on this computer. Its recorded hash stays that of
+        # protocol.json as approved (the published version), which the checks below and the results page compare.
+        def load_restored(arg):
+            protocol, psha, sdir, variant = original_load(arg)
+            return run_study.Protocol(restored, protocol.root), psha, sdir, variant
+        run_study.load_protocol = load_restored
     # The app, not run_study, says when a run is done: only after it is judged complete and its page is written
     # (review 3, S6), so a partial run is never shown as done, not even for a moment.
     run_study.Progress.stage = lambda self, name, message=None: original_stage(self, "writing" if name == "done" else name, message)
     try:
         meta = run_study.run(project, spec, n=1 if trial else int(plan["perArm"]), seeds=[1] if trial else plan["seeds"],
                              out=out, host_f=f, arms=plan.get("arms"), quiet=True, baseline=not trial,
-                             top_up=False)   # exactly the approved n: no extra sessions beyond the measured budget
+                             top_up=False,   # exactly the approved n: no extra sessions beyond the measured budget
+                             # a restored study's wording stays out of the project: records keep answers, no screens
+                             **({"states": "none"} if restored is not None else {}))
     finally:
         run_study.baseline_cached, run_study.Progress.stage = original_cache, original_stage
+        run_study.load_protocol = original_load
     # The protocol the engine actually loaded must be the approved one: run_study reads protocol.json again after
     # check_approval hashed it (review 5, S3).
     if meta.get("protocol_sha256") != plan.get("protocolSha256") or (bound and meta.get("variant") is not None):

@@ -9,6 +9,8 @@
 //   runtime/hsenv/**               -> <project>/.opencode/hsenv/**  (the protocol engine that runs protocol.json;
 //                                     vendored by scripts/sync_hsenv.sh, app-owned). skills/run and skills/preview
 //                                     find it there (their sandbox layout: <root>/skills/<name>, <root>/hsenv)
+//   runtime/lib/hs_original_text.py -> not installed: the main process runs it from its own copy to fill in a
+//                                     published study's original wording (original-text.ts)
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import previousHashes from './previous-pack-hashes.json'
@@ -17,7 +19,7 @@ import { dirname, join } from 'node:path'
 const PREFIX = '../../../pack/'
 const files = import.meta.glob(
   ['../../../pack/AGENTS.md', '../../../pack/PROJECT_FORMAT.md', '../../../pack/schema/**/*', '../../../pack/skills/**/*', '../../../pack/artifact-kit/*',
-    '../../../pack/runtime/hsenv/**/*', '!**/__pycache__/**', '!**/*.pyc'],
+    '../../../pack/runtime/hsenv/**/*', '../../../pack/runtime/lib/hs_original_text.py', '!**/__pycache__/**', '!**/*.pyc'],
   { query: '?raw', import: 'default', eager: true }
 ) as Record<string, string>
 
@@ -150,6 +152,14 @@ export async function refreshAppOwned(projectDir: string): Promise<void> {
     await mkdir(dirname(abs), { recursive: true })
     await writeFile(abs, content, 'utf8')
   }
+}
+
+/** What the app runs to fill in a published study's original wording (original-text.ts): the engine under hsenv/
+ *  and the helper, from the shipped copy, never the project's. */
+export function trustedOriginalTextFiles(): [string, string][] {
+  const helper = files[PREFIX + 'runtime/lib/hs_original_text.py']
+  return [...engineFiles().map((rel): [string, string] => ['hsenv/' + rel.slice('runtime/hsenv/'.length), files[PREFIX + rel]]),
+    ...(helper !== undefined ? [['hs_original_text.py', helper] as [string, string]] : [])]
 }
 
 /** What the app runs for an approved protocol run (protocol-run.ts), in the layout launch.py expects: the engine

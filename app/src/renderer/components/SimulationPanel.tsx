@@ -279,10 +279,21 @@ export function SimulationPanel(props: Props) {
                 // A project with protocol.json shows the protocol's problems (the route new studies take).
                 const problems = readiness.protocol ? readiness.protocol.problems : readiness.problems
                 const what = readiness.protocol ? 'protocol.json' : `package/${readiness.slug}`
+                // A published study whose screens still lack their original wording: it previews, but cannot run yet.
+                const wording = problems.filter((p) => p.kind === 'scientific' && p.text)
+                const rest = problems.filter((p) => !(p.kind === 'scientific' && p.text))
                 return (<>
-                  <p>{t('sim.incomplete')}</p>
-                  <ul className="sim-missing">{problems.map((p) => <li key={p.kind === 'scientific' ? `${p.check}:${p.reason}` : `${p.file}:${p.kind}`}>{problemText(p)}</li>)}</ul>
-                  <button className="link" onClick={() => props.onAsk(t('sim.complete_prompt', { pkg: what, what: problems.map(problemText).join(t('sim.list_sep')) }))}>{t('sim.ask_complete')}</button>
+                  {wording.length > 0 && <>
+                    <p>{t('sim.text_needed')}</p>
+                    <ul className="sim-missing">{wording.map((p) => <li key={problemText(p)}>{problemText(p)}</li>)}</ul>
+                  </>}
+                  {rest.length > 0 && <>
+                    <p>{t('sim.incomplete')}</p>
+                    <ul className="sim-missing">{rest.map((p) => <li key={p.kind === 'scientific' ? `${p.check}:${p.reason}` : `${p.file}:${p.kind}`}>{problemText(p)}</li>)}</ul>
+                  </>}
+                  <button className="link" onClick={() => props.onAsk(rest.length
+                    ? t('sim.complete_prompt', { pkg: what, what: problems.map(problemText).join(t('sim.list_sep')) })
+                    : t('sim.text_prompt', { what: wording.map(problemText).join(t('sim.list_sep')) }))}>{t(rest.length ? 'sim.ask_complete' : 'sim.ask_text')}</button>
                 </>)
               })() : <p className="muted small">{t('sim.checking')}</p>}
             </section>
@@ -381,6 +392,12 @@ export function SimulationPanel(props: Props) {
 }
 
 function problemText(p: PackageProblem): string {
+  if (p.kind === 'scientific' && p.text) {
+    const { need, title, format, screens } = p.text
+    const vars = { title, format: t(`sim.text_format.${format}`) === `sim.text_format.${format}` ? format : t(`sim.text_format.${format}`),
+      screens: screens === 1 ? t('sim.text_one_screen') : t('sim.text_screens', { n: screens }) }
+    return t(`sim.text_need.${need}`, vars)
+  }
   if (p.kind === 'scientific') return `${p.check}: ${p.reason}`
   const vars = { what: t(`sim.pkg.${p.file}`), file: p.file }
   if (p.kind === 'unvalidated') return t('sim.pkg_unvalidated', vars)

@@ -6,7 +6,9 @@ editable .opencode folder and never from a script the agent wrote.
     python -I -B <code>/skills/run/launch.py <run folder> <project folder> <code folder>
 
 The code folder holds the engine (<code>/hsenv), the run skill (<code>/skills/run), the sandbox launcher
-(<code>/skills/build/sandbox_run.py) and the artifact kit (<code>/artifact-kit), all written by the app. The run is
+(<code>/skills/build/sandbox_run.py), the artifact kit (<code>/artifact-kit) and, for a published study whose
+original wording was filled in on this computer, the restored protocol (<code>/restored/protocol.json), all
+written by the app. The run is
 `app_run.py run <run folder> <project>` from that folder: its sys.path is the trusted run skill and engine only
 (sandbox_run's boot puts the script's own folder first; -I keeps the working folder, PYTHONPATH and user site out),
 plus the runtime's site-packages (humanstudy_llm). The project and the run folder are data, never code.
@@ -40,6 +42,11 @@ def main():
                  "HUMANSTUDY_RUN_PLAN", "HUMANSTUDY_LLM_MAX_OUTPUT", "HUMANSTUDY_LANG"):
         if os.environ.get(name):
             env[name] = os.environ[name]
+    # A published study whose original wording the app filled in on this computer: the restored copy sits in the
+    # app's code folder (written by the main process with the rest of the trusted code, never in the project).
+    restored = code / "restored" / "protocol.json"
+    if restored.is_file():
+        env["HUMANSTUDY_RUN_RESTORED"] = str(restored)
     base, token = os.environ.get("HS_RELAY_BASEURL", ""), os.environ.get("HS_RELAY_TOKEN", "")
     log = open(run_dir / "run.log", "a", encoding="utf-8")
     log.write("started %s from the app's trusted copy\n" % time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))

@@ -15,6 +15,46 @@ protocol's SHA-256, so every result names what produced it.
 `app_run.py` (the run), `launch.py` (how the app starts it), `protocol_report.py` (results page) and `budget.py`
 (the model budget) are the app's. The app runs its own shipped copy of all of them.
 
+## Original wording (published studies)
+
+A study published through HumanStudy Hub may arrive without some of its participant-facing wording: text whose
+source may not be redistributed (a journal's questionnaire, a publisher's PDF) is held back, and protocol.json
+holds a placeholder (a run of `░`) of the same length where it goes, under a top-level `distribution` block. The
+app fills it in on the researcher's own computer, without you:
+
+- it downloads each source that has a public link from the publisher;
+- it tries every file the researcher dropped into the chat (for such a study they land in `sources/private/`,
+  which stays in this project and is never exported) and `paper.pdf`;
+- it checks every screen's wording against the exact text the study was built with, so a wrong file can only leave
+  a screen empty, never put other words on it.
+
+The restored copy stays in the app's own storage, never in the project. You never see it, and you never write or
+edit the wording yourself: never type, paste or reconstruct held text into protocol.json, `sourcetext/` or any
+file, and never remove the `distribution` block.
+
+What the app found is in `.humanstudy/original-text.json` (read it; never edit it): `complete`, `screensMissing`,
+and per source its `title`, `format`, `screens` still empty and `need`. Tell the researcher in plain words, in
+their language, never with the words "rehydrate", "projection", "placeholder", "hash" or "sha256":
+
+| need | say |
+|---|---|
+| `file` | "Drop in your copy of <title> (<format>) to fill in N screens. It stays on your computer." |
+| `download` | "HumanStudy Hub tried to fetch <title> from the publisher on your computer, but the download did not work (a paywall or a dead link). Drop in your copy of <title> (<format>) to fill in N screens." |
+| `wrong-file` | "Your copy of <title> does not match the version the study was built from. Drop in that version." |
+| `changed-online` | "The copy of <title> online has changed since the study was built. Drop in your copy of the version the study used." |
+| `pdf-reader` | "This computer cannot read PDF files yet: update or reinstall HumanStudy Hub, then open the study again." |
+| `app-version` | "This study was published for a newer HumanStudy Hub: update the app." |
+| `reading` | "Some wording is printed inside a picture and cannot be filled in automatically yet." |
+
+The first line to say is: "The study's original wording comes from the paper; HumanStudy Hub fetches it from the
+publisher on your computer." After the researcher drops a file into the chat, wait a few seconds and read
+`.humanstudy/original-text.json` again; say how many screens are now filled in and what is still needed.
+
+Until `complete` is true the study opens as a preview (`skills/preview` shows "[text not available]" where wording
+is missing) but cannot run: the Simulation tab says why, and the app refuses to start a run whose screens would
+show "[text not available]". Never try to run it some other way. Once it is complete, a run's records keep the
+answers but not the screens, so the restored wording does not end up in the project.
+
 ## Approval
 
 Only a `[Simulation scope approved]` message from the Simulation tab with `"route": "protocol"` approves a run, and

@@ -1,0 +1,456 @@
+{
+ "id": "fixture-walk",
+ "meta": {
+  "title": "An invented morning walk study (not a real paper)",
+  "sources": {
+   "handout": {
+    "title": "Morning Walk Survey handout",
+    "distribution": {
+     "tier": "link",
+     "url": "https://example.org/invented/handout.txt",
+     "licence": "all rights reserved",
+     "format": "text",
+     "sha256": "4faef6972d6c1d79020db13688fe378f9901cda0f06cdb50c188b6b24e621387"
+    }
+   },
+   "booklet": {
+    "title": "Walking booklet",
+    "distribution": {
+     "tier": "user",
+     "format": "html",
+     "sha256": "bef1a213d379bc3d1f952a0076318ed626338a0e1ba40adab432d10293d058f5"
+    }
+   },
+   "leaflet": {
+    "title": "Water leaflet",
+    "distribution": {
+     "tier": "user",
+     "format": "pdf",
+     "sha256": "8c19bfd4660e74cad628a15453a39d2ed92731172cf43e40d6f7c52e10098cb6"
+    }
+   },
+   "paper": {
+    "title": "An invented morning walk study",
+    "distribution": {
+     "tier": "user"
+    }
+   }
+  }
+ },
+ "data": {},
+ "arms": [
+  {
+   "id": "control",
+   "n_paper": 10
+  },
+  {
+   "id": "treatment",
+   "n_paper": 10
+  }
+ ],
+ "stages": {
+  "intro": {
+   "content": [
+    {
+     "id": "t",
+     "value": "░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
+     "cite": {
+      "label": "verbatim",
+      "source": "handout",
+      "page": 1
+     }
+    },
+    {
+     "id": "w",
+     "value": "░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
+     "cite": {
+      "label": "verbatim",
+      "source": "leaflet",
+      "page": 2
+     }
+    }
+   ]
+  },
+  "q": {
+   "responses": [
+    {
+     "id": "minutes",
+     "kind": "number",
+     "range": [
+      0,
+      300
+     ],
+     "prompt": "░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
+     "prompt_cite": {
+      "label": "verbatim",
+      "source": "booklet",
+      "page": 1
+     }
+    },
+    {
+     "id": "pick",
+     "kind": "choice",
+     "prompt": "░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░",
+     "prompt_cite": {
+      "label": "verbatim",
+      "source": "booklet",
+      "page": 1
+     },
+     "options": [
+      {
+       "code": "a",
+       "label": "Yes"
+      },
+      {
+       "code": "b",
+       "label": "No"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "flow": {
+  "seq": [
+   {
+    "stage": "intro"
+   },
+   {
+    "stage": "q"
+   }
+  ]
+ },
+ "units": {
+  "s": {
+   "per": "session",
+   "fields": {
+    "pick": "answer('q.pick')",
+    "picked_a": "None if answer('q.pick') is None else (1 if answer('q.pick') == 'a' else 0)"
+   },
+   "cites": {
+    "picked_a": {
+     "label": "derived",
+     "source": "paper",
+     "page": 1
+    }
+   }
+  }
+ },
+ "analysis": {
+  "effects": [
+   {
+    "id": "saw_neighbour",
+    "unit": "s",
+    "contrast": {
+     "kind": "two_groups",
+     "treatment": "treatment",
+     "reference": "control"
+    },
+    "compute": {
+     "op": "proportion_difference",
+     "field": "picked_a",
+     "success": [
+      1
+     ],
+     "groupBy": "arm"
+    },
+    "reported": {
+     "cells": {
+      "treatment": {
+       "k": 14,
+       "n": 20
+      },
+      "control": {
+       "k": 8,
+       "n": 20
+      }
+     },
+     "cite": {
+      "label": "reported",
+      "source": "paper",
+      "page": 1
+     }
+    }
+   }
+  ]
+ },
+ "keyed": {
+  "answers": {
+   "q.pick": "'a' if arm == 'treatment' else 'b'",
+   "q.minutes": "20"
+  }
+ },
+ "distribution": {
+  "format": "hsenv-projection/1",
+  "hsenv": "0.8.1",
+  "placeholder": "░",
+  "held": {
+   "h1": {
+    "path": "/stages/intro/content/0/value",
+    "source": "handout",
+    "kind": "text",
+    "length": 70,
+    "text_sha256": "a2b4984b72429e8453a703ec508dac17a1303092769e0dabd77303bae10946e7",
+    "locator": {
+     "format": "text",
+     "extractor": "hsenv-text/1",
+     "parts": [
+      {
+       "units": [
+        1,
+        1
+       ],
+       "canon_len": 60,
+       "canon_sha256": "4aa626108f468711860777f2f8390c160d5a862d1e29984daaa0ead0c1d80f63",
+       "unique": true,
+       "before": 0,
+       "after": 0
+      }
+     ],
+     "restore": [
+      [
+       5,
+       0,
+       " "
+      ],
+      [
+       8,
+       0,
+       " "
+      ],
+      [
+       11,
+       0,
+       " "
+      ],
+      [
+       18,
+       0,
+       " "
+      ],
+      [
+       22,
+       0,
+       " "
+      ],
+      [
+       27,
+       0,
+       " "
+      ],
+      [
+       32,
+       0,
+       " "
+      ],
+      [
+       37,
+       0,
+       " "
+      ],
+      [
+       44,
+       0,
+       " "
+      ],
+      [
+       50,
+       0,
+       " "
+      ]
+     ]
+    }
+   },
+   "h2": {
+    "path": "/stages/intro/content/1/value",
+    "source": "leaflet",
+    "kind": "text",
+    "length": 41,
+    "text_sha256": "0c3122323b519257cd2b7e059433fc08aadc5292b51f09c22bc87e9f70c444ec",
+    "locator": {
+     "format": "pdf",
+     "extractor": "pypdfium2/5.14.0+pdfium/156.0.8076.0",
+     "parts": [
+      {
+       "units": [
+        1,
+        1
+       ],
+       "canon_len": 34,
+       "canon_sha256": "7b917cdf0024de33f5ebe97d1f5517398c53154f29196cf1c2059e5192f9a153",
+       "unique": true,
+       "before": 0,
+       "after": 0
+      }
+     ],
+     "restore": [
+      [
+       8,
+       0,
+       " "
+      ],
+      [
+       10,
+       0,
+       " "
+      ],
+      [
+       15,
+       0,
+       " "
+      ],
+      [
+       16,
+       0,
+       " "
+      ],
+      [
+       21,
+       0,
+       " "
+      ],
+      [
+       23,
+       0,
+       " "
+      ],
+      [
+       28,
+       0,
+       " "
+      ]
+     ],
+     "pages": [
+      2,
+      2
+     ],
+     "per_unit": true
+    }
+   },
+   "h3": {
+    "path": "/stages/q/responses/0/prompt",
+    "source": "booklet",
+    "kind": "text",
+    "length": 43,
+    "text_sha256": "28c91b98368068082280f7771b33f879e24ceadba390ac3ec4f1e82d52a43cda",
+    "locator": {
+     "format": "html",
+     "extractor": "hsenv-html/1",
+     "parts": [
+      {
+       "units": [
+        1,
+        1
+       ],
+       "canon_len": 36,
+       "canon_sha256": "a0ea867dbb7464e976a27955c7394e147755794c97638e4a25478997c0396bc4",
+       "unique": true,
+       "before": 0,
+       "after": 0
+      }
+     ],
+     "restore": [
+      [
+       3,
+       0,
+       " "
+      ],
+      [
+       7,
+       0,
+       " "
+      ],
+      [
+       14,
+       0,
+       " "
+      ],
+      [
+       17,
+       0,
+       " "
+      ],
+      [
+       20,
+       0,
+       " "
+      ],
+      [
+       24,
+       0,
+       " "
+      ],
+      [
+       28,
+       0,
+       " "
+      ]
+     ]
+    }
+   },
+   "h4": {
+    "path": "/stages/q/responses/1/prompt",
+    "source": "booklet",
+    "kind": "text",
+    "length": 35,
+    "text_sha256": "b706677e1edbd535ae90aea8657afe2c3944947c3b91f552d8f6c07c4ab99ddb",
+    "locator": {
+     "format": "html",
+     "extractor": "hsenv-html/1",
+     "parts": [
+      {
+       "units": [
+        2,
+        2
+       ],
+       "canon_len": 28,
+       "canon_sha256": "60faf21c9a020f5faf9b725aef0d5616d2ff5dd2614c4f4f37edee572fc36752",
+       "unique": true,
+       "before": 0,
+       "after": 0
+      }
+     ],
+     "restore": [
+      [
+       3,
+       0,
+       " "
+      ],
+      [
+       6,
+       0,
+       " "
+      ],
+      [
+       9,
+       0,
+       " "
+      ],
+      [
+       10,
+       0,
+       " "
+      ],
+      [
+       19,
+       0,
+       " "
+      ],
+      [
+       21,
+       0,
+       " "
+      ],
+      [
+       24,
+       0,
+       " "
+      ]
+     ]
+    }
+   }
+  },
+  "strict": true,
+  "attribution": []
+ }
+}

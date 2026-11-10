@@ -4,7 +4,7 @@
 // folder for every run (never the project's editable .opencode copy), Python runs isolated (-I -B), from an
 // empty home, with no keys or tokens in its environment. The checks make no model calls and fetch nothing.
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, sep } from 'node:path'
 import type { ProtocolBudget } from '../shared/run-limits'
@@ -50,8 +50,12 @@ const show = (v: unknown): string => (typeof v === 'string' ? v : JSON.stringify
 const some = (items: unknown[], n = 3): string => items.slice(0, n).map(show).join('; ') + (items.length > n ? ` (+${items.length - n} more)` : '')
 
 /** The blocking findings of one checks report, one line each: the same conditions that make checks.py fail
- *  (its `fail |= …` lines). A report that does not say PASS: true never passes, whatever else it holds. */
-export function protocolProblems(report: unknown): ProtocolProblem[] {
+ *  (its `fail |= …` lines). A report that does not say PASS: true never passes, whatever else it holds.
+ *  `held`: the sources whose wording a published study holds back (its `distribution.held`). Their texts are
+ *  placeholders here and have no source text to compare against; each is checked instead by its own text hash
+ *  when the app fills it in on this computer (original-text.ts), and an unfilled one blocks the run there. So
+ *  `verbatim.unchecked` blocks only when it names another source. */
+export function protocolProblems(report: unknown, held: ReadonlySet<string> = new Set()): ProtocolProblem[] {
   const r = obj(report)
   if (typeof r.PASS !== 'boolean') throw Error('Invalid protocol checks report')
   const out: ProtocolProblem[] = []
@@ -64,6 +68,8 @@ export function protocolProblems(report: unknown): ProtocolProblem[] {
   const unreached = list(fuzz.unreached_stages)
   if (unreached.length) add('fuzz', `stages no session reached: ${some(unreached, 5)}`)
   if (Number(fuzz.n_unanswerable) > 0) add('fuzz', `${fuzz.n_unanswerable} screen(s) could not be answered`)
+  const spans = list(fuzz.table_spans_unserved)
+  if (spans.length) add('fuzz', `${spans.length} table cell(s) served without their span: ${some(spans)}`)
   const leaks = list(fuzz.leaks)
   if (leaks.length) add('leaks', `${leaks.length} screen(s) show text meant to stay hidden: ${some(leaks)}`)
   const exprLeaks = list(fuzz.state_expr_leaks)
@@ -84,7 +90,8 @@ export function protocolProblems(report: unknown): ProtocolProblem[] {
   if (list(v.not_found).length) add('verbatim', `texts not found in the source: ${some(list(v.not_found))}`)
   if (list(v.image_unconfirmed).length) add('verbatim', `image-read texts without an agreeing blind reading: ${some(list(v.image_unconfirmed))}`)
   if (list(v.bad_source).length) add('verbatim', `texts cite an unknown source: ${some(list(v.bad_source))}`)
-  if (Number(v.unchecked) > 0) add('verbatim', `${v.unchecked} served text(s) have no source text under sourcetext/ to check against`)
+  const onlyHeld = held.size > 0 && list(v.unchecked_sources).length > 0 && list(v.unchecked_sources).every((k) => typeof k === 'string' && held.has(k))
+  if (Number(v.unchecked) > 0 && !onlyHeld) add('verbatim', `${v.unchecked} served text(s) have no source text under sourcetext/ to check against`)
   const annotations = list(r.reading_annotations).filter((a) => obj(a).error !== undefined)
   if (annotations.length) add('verbatim', `printed-annotation rules with errors: ${some(annotations)}`)
   if (r.images !== undefined) {
@@ -94,25 +101,37 @@ export function protocolProblems(report: unknown): ProtocolProblem[] {
   if (r.public === true && list(r.release_hold).length) add('release', `arms on release hold: ${some(list(r.release_hold))}`)
   for (const [id, c] of Object.entries(obj(r.coding)))
     if (list(obj(c).mismatches).length) add('coding', `coding ${id}: ${list(obj(c).mismatches).length} test case(s) coded differently`)
-  if (r.PASS === false && !out.length) add('protocol', 'The protocol checks did not pass.')
+  // Every `fail |=` line of checks.py is parsed above, so a failing report whose only finding is the held
+  // sources' unchecked texts is explained by them; any other failing report without a parsed finding still blocks.
+  if (r.PASS === false && !out.length && !(onlyHeld && Number(v.unchecked) > 0)) add('protocol', 'The protocol checks did not pass.')
   if (r.PASS === true && out.length) return out // a report that contradicts itself is not a pass
-  return r.PASS ? [] : out
+  return out
 }
 
 /** Parse the engine's report (indented JSON on stdout); anything else counts as a failed check, never a pass. */
-export function parseProtocolReport(stdout: string): ProtocolProblem[] {
+export function parseProtocolReport(stdout: string, held: ReadonlySet<string> = new Set()): ProtocolProblem[] {
   const start = stdout.indexOf('{')
   if (start < 0) throw Error('No protocol checks report')
-  return protocolProblems(JSON.parse(stdout.slice(start))).slice(0, 30)
+  return protocolProblems(JSON.parse(stdout.slice(start)), held).slice(0, 30)
 }
 
 /** The checks' answer from what the engine printed: its report, or, when the engine stopped on the protocol
  *  (a traceback, e.g. a flow naming a stage that does not exist), that error as a blocking problem. */
-export function protocolOutcome(stdout: string, stderr: string): ProtocolProblem[] {
-  if (stdout.includes('{')) return parseProtocolReport(stdout)
+export function protocolOutcome(stdout: string, stderr: string, held: ReadonlySet<string> = new Set()): ProtocolProblem[] {
+  if (stdout.includes('{')) return parseProtocolReport(stdout, held)
   const last = stderr.trim().split('\n').at(-1)?.trim()
   if (/Traceback/.test(stderr) && last) return [{ check: 'protocol', reason: `The engine stopped on this protocol: ${last}`.slice(0, 400) }]
   throw Error('No protocol checks report')
+}
+
+/** The sources whose wording a published protocol.json holds back (`distribution.held[*].source`); empty for an
+ *  ordinary protocol.json or one that cannot be read. */
+export async function heldSources(project: string): Promise<Set<string>> {
+  try {
+    const held = JSON.parse(await readFile(join(project, 'protocol.json'), 'utf8'))?.distribution?.held
+    if (!held || typeof held !== 'object' || Array.isArray(held)) return new Set()
+    return new Set(Object.values(held as Record<string, { source?: unknown }>).map((h) => h?.source).filter((k): k is string => typeof k === 'string'))
+  } catch { return new Set() }
 }
 
 /** `--source-text name=path` for every regular sourcetext/*.txt inside the project (links out of it are skipped). */
@@ -130,13 +149,14 @@ export async function sourceTextArgs(project: string): Promise<string[]> {
   return args
 }
 
-interface Limits { cpuSeconds?: number; memoryBytes?: number }
-type Ran = { stdout: string; stderr: string; limit?: boolean }
+export interface Limits { cpuSeconds?: number; memoryBytes?: number }
+export type Ran = { stdout: string; stderr: string; limit?: boolean }
 
 /** Run Python confined: -I -B, an empty home as working folder and temp, no keys in the environment, the CPU and
  *  memory bounds set before any engine code runs, an RSS watch where the OS ignores them, a wall clock. Exit 0/1
  *  resolve with the output; a stop at a bound resolves with `limit`; anything else rejects. */
-async function confinedPython(python: string, code: string, args: string[], home: string, bin: string, timeout: number, limits: Limits): Promise<Ran> {
+export async function confinedPython(python: string, code: string, args: string[], home: string, bin: string, timeout: number, limits: Limits,
+  extraEnv: Record<string, string> = {}): Promise<Ran> {
   const win = process.platform === 'win32'
   const system = win ? `${process.env.SystemRoot || 'C:\\Windows'}\\System32` : '/usr/bin:/bin:/usr/sbin:/sbin'
   const memoryBytes = limits.memoryBytes ?? PROTOCOL_MEMORY_BYTES
@@ -152,6 +172,7 @@ async function confinedPython(python: string, code: string, args: string[], home
         // would otherwise be looked for next to the scratch folder, where anything could plant it.
         HSENV_PRIVATE_CONFIG: '',
         ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+        ...extraEnv,
       },
     }, (error, stdout, stderr) => {
       // checks.py exits 1 when the protocol fails (its report is still the answer) and Python exits 1 on an
@@ -172,7 +193,7 @@ async function confinedPython(python: string, code: string, args: string[], home
   })
 }
 
-async function withScratch<T>(files: [string, string][], body: (work: string, home: string) => Promise<T>): Promise<T> {
+export async function withScratch<T>(files: [string, string][], body: (work: string, home: string) => Promise<T>): Promise<T> {
   const work = await mkdtemp(join(tmpdir(), 'hs-protocol-'))
   const home = await mkdtemp(join(tmpdir(), 'hs-protocol-home-'))
   try {
@@ -198,7 +219,7 @@ export async function protocolReadiness(python: string | null, engine: [string, 
         [work, await realpath(project), '--sessions', String(PROTOCOL_SESSIONS), ...await sourceTextArgs(project)], home, bin, timeout, limits)
       if (run.limit) return [ENGINE_LIMIT]
       if (/\bMemoryError\b/.test(run.stderr) && !run.stdout.includes('{')) return [ENGINE_LIMIT]
-      return protocolOutcome(run.stdout, run.stderr)
+      return protocolOutcome(run.stdout, run.stderr, await heldSources(project))
     })
   } catch { return [ENGINE_FAILED] }
 }

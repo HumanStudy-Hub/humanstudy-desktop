@@ -32,10 +32,11 @@ import { createThreads, threads } from './threads'
 import { saveProjectText } from './program-save'
 import { createPaperBuilds } from './paper-build'
 import { createShutdown } from './shutdown-core'
-import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedRunFiles } from './pack'
+import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedRunFiles } from './pack'
 import { scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
-import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks } from './package-readiness'
+import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf } from './package-readiness'
+import { fillOriginalText, isPublishedStudy, originalTextProblems, restoredRunFiles, writeAgentStatus } from './original-text'
 import { protocolBudget, protocolReadiness } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
@@ -388,6 +389,9 @@ app.on('second-instance', () => {
   win.focus()
 })
 
+/** App storage for published studies' original wording (downloads and restored protocols; never in a project). */
+const originalTextCache = (): string => join(app.getPath('userData'), 'original-text')
+
 app.whenReady().then(() => {
   // Per-run code copies of protocol runs that a quit or a crash left behind.
   void sweepRunCopies(join(app.getPath('userData'), 'protocol-runs'))
@@ -402,6 +406,21 @@ app.whenReady().then(() => {
   configureProtocolChecks(async (project) => protocolReadiness(await readyPython(), engine, project, process.env.HUMANSTUDY_RUNTIME_BIN || ''),
     app.getVersion() + ':' + createHash('sha256').update(JSON.stringify([engine, budgetFiles])).digest('hex').slice(0, 16),
     async (project) => protocolBudget(await readyPython(), budgetFiles, project, process.env.HUMANSTUDY_RUNTIME_BIN || ''))
+  // A published study's original wording, filled in on this computer (original-text.ts): downloads and the restored
+  // protocol stay in app storage; the project gets only a status for the agent.
+  const textFiles = trustedOriginalTextFiles()
+  configureOriginalText(async (project) => {
+    if (!(await isPublishedStudy(project))) return []
+    const python = await readyPython()
+    if (!python) return [{ check: 'runtime', reason: "The research runtime is not installed yet, so the study's original wording cannot be filled in." }]
+    try {
+      const status = await fillOriginalText(python, textFiles, project, originalTextCache(), process.env.HUMANSTUDY_RUNTIME_BIN || '')
+      await writeAgentStatus(project, status).catch(() => undefined)
+      return originalTextProblems(status)
+    } catch {
+      return [{ check: 'runtime', reason: "The study's original wording could not be filled in. Retry; if it persists, reinstall the research runtime." }]
+    }
+  })
   if (!primaryInstance) return
   applyCredentials()
   try {
@@ -444,6 +463,8 @@ app.whenReady().then(() => {
   ipcMain.handle('project:read', async (_e, dir: string) => {
     const snap = await readProject(dir)
     watchProject(snap.dir)
+    // A published study: start fetching its original wording when it opens (cached per input state).
+    void isPublishedStudy(snap.dir).then((yes) => (yes ? originalTextProblemsOf(snap.dir) : undefined)).catch(() => undefined)
     telemetry.noteProjectFiles(snap)
     return snap
   })
@@ -509,8 +530,13 @@ app.whenReady().then(() => {
     const ref = actionRef(action)
     telemetry.noteAction(ref, root)
     if (!Array.isArray(paths) || paths.length > 50) throw new Error('too many files')
+    // A published study: a dropped file is the researcher's copy of a source whose wording fills in the study's
+    // screens. It goes to sources/private/ (this project only: never exported, never collected) and never becomes
+    // paper.pdf.
+    const published = await isPublishedStudy(root)
+    const folder = published ? join('sources', 'private') : 'sources'
     const hasPaper = existsSync(join(root, 'paper.pdf'))
-    let paperTaken = hasPaper
+    let paperTaken = hasPaper || published
     const out: ProjectFile[] = []
     for (const src of paths) {
       if (typeof src !== 'string' || !(await stat(src)).isFile()) continue
@@ -520,11 +546,11 @@ app.whenReady().then(() => {
         target = join(root, 'paper.pdf')
         paperTaken = true
       } else {
-        await mkdir(join(root, 'sources'), { recursive: true })
+        await mkdir(join(root, folder), { recursive: true })
         const ext = extname(name)
         const stem = name.slice(0, name.length - ext.length)
-        target = join(root, 'sources', name)
-        for (let n = 2; existsSync(target); n++) target = join(root, 'sources', `${stem} ${n}${ext}`)
+        target = join(root, folder, name)
+        for (let n = 2; existsSync(target); n++) target = join(root, folder, `${stem} ${n}${ext}`)
         name = basename(target)
       }
       telemetry.noteImport(root, relative(root, target), ref)
@@ -533,6 +559,7 @@ app.whenReady().then(() => {
       telemetry.noteFsChange(root, relative(root, target))
       out.push({ name: basename(target), path: target, url: toUrl(target), ext: extname(target).slice(1).toLowerCase() })
     }
+    if (published && out.length) void originalTextProblemsOf(root).catch(() => undefined)   // fill in what the copy can
     return out
   })
 
@@ -706,8 +733,10 @@ app.whenReady().then(() => {
     const python = await readyPython()
     if (!python) throw Error('The research runtime is not installed yet, so the run cannot start. Try again in a minute.')
     const runDir = newRunFolder(projectDir)
+    // A published study runs from its wording restored on this computer for exactly the approved version.
+    const restored = await restoredRunFiles(projectDir, originalTextCache(), binding.protocolSha256)
     await launchProtocolRun({
-      python, files: trustedRunFiles(), codeDir: join(app.getPath('userData'), 'protocol-runs', binding.runId), project: projectDir, runDir, binding,
+      python, files: [...trustedRunFiles(), ...restored], codeDir: join(app.getPath('userData'), 'protocol-runs', binding.runId), project: projectDir, runDir, binding,
       plan: { perArm: per as number, arms: null, seeds: [1], temperature: 1.0 },
       relay: relay ? { baseURL: relay.baseURL, token: relay.token, model: relay.model, expiresAt: relay.expiresAt } : undefined,
       // Pre-relay path: the same environment the agent's runs get there (the run confirmation said the key is readable).

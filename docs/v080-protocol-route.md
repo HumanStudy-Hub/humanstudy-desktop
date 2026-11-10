@@ -9,7 +9,8 @@ One protocol across all platforms. A study's runnable form is now `protocol.json
 serve,schema_check,distribution}.py`, `schema/{protocol,study,run}.v1.json` and `LICENSE` (MIT) are exact copies of
 the public engine, github.com/HumanStudy-Hub/hsenv at tag v0.8.1 (commit db85a9c82f4c7cedeb808a3d39ae2858605d5a20).
 - `distribution.py` (since v0.8.1) backs `hsenv.rehydrate`, which rebuilds a protocol from a release projection on
-  the user's machine. The app UI does not call it yet.
+  the user's machine. The app calls it through `pack/runtime/lib/hs_original_text.py` (see "Published studies"
+  below).
 - Study pins are not in the code. The engine reads a private sidecar only when `HSENV_PRIVATE_CONFIG` names one, and
   the app sets it empty everywhere.
 - The engine's `tests/` are never vendored.
@@ -334,6 +335,37 @@ or with `--protocol`:
   - the preview build of the fixture, checked in protocol mode.
 - `shared/simulation-run.test.mjs`: records.jsonl counts as a run's participant data.
 - `paper-build` and `ux` tests: the new regexes.
+
+## Published studies: original wording (hsenv 0.8.1 link + hash)
+
+A published protocol.json (a release projection) holds placeholders where wording from a non-redistributable source
+goes (`distribution.held`: path, source, length, `text_sha256`, locator). The app fills it in on the researcher's
+computer:
+- **Where.** `main/original-text.ts` runs `pack/runtime/lib/hs_original_text.py` from the app's own copy, with the
+  bundled engine, isolated like the checks (-I -B, empty home, no keys; proxy settings only), when the project
+  opens, after a file is dropped into it, and as part of readiness (`package-readiness.ts`, lane `text`, cached by
+  protocol.json + sources/ + paper.pdf; a failed download is not cached, and the helper waits ten minutes before
+  asking the publisher again).
+- **How.** Link-tier sources are downloaded (http(s) only, no https→http redirect, no local or private addresses,
+  100 MB cap); the rest are tried from `sources/private/`, `paper.pdf` and `sources/` (best first: named after the
+  source, then the builder's file sha256, then any file of the format). Each item is accepted only when its text
+  hashes to `text_sha256` (hsenv's rule), so a wrong file can only leave a screen empty. PDF needs pypdfium2, which
+  the runtime has (pinned in requirements.lock via pdfplumber); without it PDF sources say so and text, HTML,
+  docx and QSF sources still work.
+- **What stays local.** Downloads and the restored protocol live in `<userData>/original-text/` (per
+  sha256 of protocol.json), never in the project, so neither exports nor research capture see them. A file dropped
+  into a published study goes to `sources/private/` (never exported or collected) and never becomes paper.pdf. The
+  project gets `.humanstudy/original-text.json`: counts, titles, formats and what each source needs, no wording.
+- **Run.** Missing wording is a blocking protocol problem (the Simulation tab words it, en and zh), and the engine
+  checks no longer block on `verbatim.unchecked` when every unchecked source is a held one (each held item is checked
+  by its own hash instead). An approved run copies the restored protocol into its trusted code folder
+  (`restored/protocol.json`); launch.py hands it to app_run (`HUMANSTUDY_RUN_RESTORED`), which plays it only if it is
+  exactly protocol.json with the held texts filled in, records the approved (published) hash, and keeps no screens in
+  records.jsonl (`states="none"`). Without it app_run refuses a published study.
+- **Preview.** make_preview.py shows "[text not available]" (zh: "[文字不可用]") for held texts; it never uses the
+  restored copy.
+- **Agent.** `skills/run` "Original wording" tells the agent how to read the status and what to say; AGENTS.md
+  points to it.
 
 ## Not done (next)
 

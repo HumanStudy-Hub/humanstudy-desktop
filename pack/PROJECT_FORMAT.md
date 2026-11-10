@@ -9,7 +9,9 @@ shows the whole folder as the **Program** explorer and `program.json` as the **S
   sources/                  open materials, supplements, large instruments (never participant data:
                             that goes in human-data/)
     open/                   materials downloaded under an open license (url, version, link to the paper)
-    private/                public materials without an open license: this project only, never exported
+    private/                public materials without an open license: this project only, never exported. In a
+                            published study, a file the researcher drops into the chat lands here (their copy
+                            of a source whose wording the app fills in)
     SOURCE.json             every source file's path, SHA-256, size and license ("unknown" unless
                             stated); written by build/sources.py
     researcher/             materials the researcher supplied (instructions, stimuli); recorded as
@@ -52,8 +54,20 @@ shows the whole folder as the **Program** explorer and `program.json` as the **S
   .opencode/skills/         the pack's skills, installed by the app
   .opencode/hsenv/          the protocol engine (engine, expr, checks, effects_core; VERSION holds the SHA-256 of
                             each file), installed by the app and kept at the shipped version
-  .humanstudy/              app state; the agent does not edit it
+  .humanstudy/              app state; the agent does not edit it. original-text.json: for a published study, how
+                            much of its held-back wording the app filled in on this computer and what each source
+                            still needs (counts and titles only, never the wording)
 ```
+
+Published studies: a protocol.json published through HumanStudy Hub may carry a top-level `distribution` block
+(hsenv 0.8.1, DESIGN §3.6): participant-facing text from a source that may not be redistributed is a placeholder of
+the same length (U+2591 per character), and `distribution.held` lists each one with its source, a locator and the
+SHA-256 of the exact text. The app restores it on the researcher's computer (pack/runtime/lib/hs_original_text.py
+via `hsenv.rehydrate`): link sources are downloaded from their URL, the rest come from files in `sources/private/`,
+`paper.pdf` or `sources/`, and each item is accepted only when its text hashes to the recorded value. Downloads
+and the restored protocol stay in app storage (`<userData>/original-text/<sha256 of protocol.json>/`), never in
+the project. Such a study previews with "[text not available]" in place of missing wording and runs only when
+every item is restored; the run plays the restored copy and keeps no screens in its records.
 
 Runnable forms: the app checks both forms itself, from its own copy of the checkers, never the project's, and
 keeps the two results apart. `package/<slug>/` runs when it passes the package contract and the build checks.
