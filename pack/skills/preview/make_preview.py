@@ -44,9 +44,30 @@ def make(project: Path, out: Path, arms=None, seed: int = 1, tries=None, max_ima
     The participant's screens keep the protocol's own language."""
     sys.path.insert(0, str(HERE))
     import build_preview   # vendored; finds the engine in .opencode/hsenv and the kit in .opencode/artifact-kit
+    # Keep the vendored renderer untouched while preserving complete source passages in the app view.
+    # Its compact CLI cite format clips long notes/quotes; that is unsuitable for source comparison.
+    build_preview.slim_cite = lambda c: ({k: c[k] for k in build_preview.CITE_KEYS
+                                          if c.get(k) not in (None, "")} or None) if isinstance(c, dict) else None
     data = build_preview.build(str(project.resolve()), arms, seed, tries, max_image_kb)
+    def source_passages(value):
+        if isinstance(value, dict):
+            cite = value.get("cite")
+            if isinstance(cite, dict) and cite.get("label") == "verbatim" and not cite.get("quote"):
+                served = next((value[k] for k in ("text", "prompt") if isinstance(value.get(k), str)), None)
+                if served:
+                    cite["quote"] = served
+            for child in value.values():
+                source_passages(child)
+        elif isinstance(value, list):
+            for child in value:
+                source_passages(child)
+    source_passages(data)
     # The same finishing step as the sandbox CLI: the protocol's identity block, then the kit's protocol-mode check.
     html = build_preview.page(data, lang)
+    palette = HERE.parent.parent / "artifact-kit" / "palette.css"
+    if palette.is_file():
+        html = html.replace("</head>", "<style>" + palette.read_text(encoding="utf-8") + "</style></head>", 1)
+    html = html.replace("el.getAttribute('data-quote').slice(0, 2000)", "el.getAttribute('data-quote')")
     if published(project):
         marker = NOT_AVAILABLE["zh-CN" if (lang or os.environ.get("HS_UI_LANG", "")).startswith("zh") else "en"]
         html = PLACEHOLDER_RUN.sub(marker, html)

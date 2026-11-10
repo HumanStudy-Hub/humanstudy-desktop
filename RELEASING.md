@@ -80,3 +80,11 @@ cd app
 npm run dist:mac      # signs with the Developer ID in the login keychain; notarizes if APPLE_API_ISSUER is set
 npm run dist:win      # Windows installer, built on macOS
 ```
+
+## Local disk after release
+
+Installers and unpacked Electron apps in `app/dist/` are generated output, not a second archive.
+After confirming every published asset can be downloaded, remove old local `app/dist/` outputs before
+building the next candidate. Do not delete the current candidate before upload/acceptance, installed user
+apps, projects, runtime data, chats, source materials or uncommitted worktrees. Old inactive `.next/`
+folders are rebuildable too; do not delete dependencies shared through symlinks with active worktrees.

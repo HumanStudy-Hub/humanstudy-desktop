@@ -19,29 +19,31 @@ await build({entryPoints:[join(here,'projects.ts')],bundle:true,platform:'node',
 const {createProject,listProjects,isInside,isWithin}=await import(pathToFileURL(join(temp,'projects.mjs')))
 process.on('exit',()=>{rmSync(temp,{recursive:true,force:true});delete globalThis.__projectTest;if(previous)Object.defineProperty(process,'resourcesPath',previous);else delete process.resourcesPath})
 function check(dir){
- const p=JSON.parse(readFileSync(join(dir,'program.json'),'utf8'))
+ const p=JSON.parse(readFileSync(join(dir,'protocol.json'),'utf8'))
  assert.ok(existsSync(join(dir,'.humanstudy/project.json')))
  assert.equal(readFileSync(join(dir,'paper.pdf')).subarray(0,5).toString(),'%PDF-')
- assert.ok(existsSync(join(dir,p.source.filename)))
- for(const e of p.evidence)assert.equal(JSON.parse(readFileSync(join(dir,e.path),'utf8')).instructions,e.quote)
+ assert.equal(p.schema_version,'1')
+ assert.equal(p.meta.sources.paper.file,'paper.pdf')
+ assert.ok(existsSync(join(dir,'artifacts/preview.html')))
+ assert.equal(existsSync(join(dir,'program.json')),false)
 }
 test('actual project creation produces an editable offline sample and lists its paper and program',async()=>{
  const dir=await createProject({name:'Sample',sample:true});check(dir)
  const list=await listProjects();assert.equal(list[0].hasPaper,true);assert.equal(list[0].hasProgram,true)
- const edited=join(dir,'experiment_1_help.json');const fs=await import('node:fs/promises');await fs.writeFile(edited,'{"myEdit":true}')
+ const edited=join(dir,'protocol.json');const fs=await import('node:fs/promises');await fs.writeFile(edited,'{"myEdit":true}')
  const next=await createProject({name:'Sample',sample:true});assert.notEqual(next,dir);check(next)
  assert.equal(readFileSync(edited,'utf8'),'{"myEdit":true}')
 })
 test('packaged creation reads resources/sample independently of the source checkout',async()=>{
- fixture.packaged=true;cpSync(join(appRoot,'resources/sample'),join(process.resourcesPath,'sample'),{recursive:true})
+ fixture.packaged=true;cpSync(join(appRoot,'resources/protocol-sample'),join(process.resourcesPath,'sample'),{recursive:true})
  const dir=await createProject({name:'Packaged sample',sample:true});check(dir)
- rmSync(join(process.resourcesPath,'sample/experiment_2_help.json'))
+ rmSync(join(process.resourcesPath,'sample/sourcetext/paper.txt'))
  await assert.rejects(createProject({name:'Incomplete package',sample:true}),/required sample asset/)
  assert.equal((await listProjects()).some(p=>p.name==='Incomplete package'),false,'an incomplete project must never be listed as usable')
  fixture.packaged=false
 })
 test('sample cannot replace a user-selected paper',async()=>{
- await assert.rejects(createProject({name:'Conflict',sample:true,pdfPath:join(appRoot,'resources/sample/KNOBE.pdf')}),/sample.*PDF|sample.*paper/i)
+ await assert.rejects(createProject({name:'Conflict',sample:true,pdfPath:join(appRoot,'resources/protocol-sample/paper.pdf')}),/sample.*PDF|sample.*paper/i)
  assert.equal(existsSync(join(fixture.root,'Conflict')),false)
 })
 

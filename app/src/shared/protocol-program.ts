@@ -13,7 +13,7 @@ export function protocolProgram(text: string | null | undefined): HumanProgram |
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const p = raw as { id?: unknown; meta?: { title?: unknown }; arms?: unknown }
   const allArms = (Array.isArray(p.arms) ? p.arms : [])
-    .filter((a): a is { id: string; n_paper?: unknown; runnable?: unknown } => Boolean(a) && typeof a.id === 'string' && a.id !== '')
+    .filter((a): a is { id: string; n_paper?: unknown; runnable?: unknown; label?: unknown } => Boolean(a) && typeof a.id === 'string' && a.id !== '')
   if (!allArms.length) return null
   // Blocked studies still need a preview and an explanation; never add blocked arms to a run.
   const arms = allArms.filter(a => a.runnable !== false)
@@ -26,7 +26,7 @@ export function protocolProgram(text: string | null | undefined): HumanProgram |
     source: { title, authors: '', filename: 'protocol.json' },
     studies: [{ id: PROTOCOL_STUDY_ID, title, type: 'empirical' }],
     nodes: [
-      ...arms.map((a) => ({ id: a.id, kind: 'condition', title: a.id, studyIds: [PROTOCOL_STUDY_ID], fields: [], evidenceIds: [] })),
+      ...arms.map((a) => ({ id: a.id, kind: 'condition', title: typeof a.label === 'string' ? a.label : a.id, studyIds: [PROTOCOL_STUDY_ID], fields: [], evidenceIds: [] })),
       ...(n > 0 ? [{ id: 'participants', kind: 'participants', title: 'Participants', studyIds: [PROTOCOL_STUDY_ID], fields: [field('sample', n)], evidenceIds: [] }] : []),
     ],
     steps: [], relations: [], evidence: [], issues: [],

@@ -174,7 +174,7 @@ test('the build request is an authorization to build, not to simulate', async ()
   for (const prompt of [row[1], row[2]]) {
     assert.equal(approvalRequest(prompt), null, prompt)
     assert.match(prompt, /simulation|模拟/i, 'the prompt says not to simulate')
-    assert.match(prompt, /program_io\.py/)
+    assert.match(prompt, /protocol_io\.py/)
     assert.match(prompt, /missing/)
   }
   for (const key of ['study.paper_no_study', 'study.build_from_paper', 'build.title', 'build.pending', 'build.reading', 'build.writing', 'build.checking', 'build.packaging', 'build.failed_title', 'build.kept', 'build.retry',

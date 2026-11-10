@@ -52,7 +52,7 @@
     ],
     "extraResources": [
       {
-        "from": "resources/sample",
+        "from": "resources/protocol-sample",
         "to": "sample"
       }
     ],

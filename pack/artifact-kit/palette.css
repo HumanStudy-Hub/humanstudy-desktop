@@ -1,0 +1,15 @@
+/* App-owned participant-preview palette. Keep source/vendored CSS untouched. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --hs-bg: #202124; --hs-panel: #26272b; --hs-ink: #e6e6e3;
+    --hs-muted: #aaaead; --hs-faint: #929694;
+    --hs-line: #3a3c40; --hs-line-strong: #56595e;
+    --hs-accent: #adc0af; --hs-accent-soft: #2d3530;
+  }
+}
+:root[data-theme="dark"] {
+  --hs-bg: #202124; --hs-panel: #26272b; --hs-ink: #e6e6e3;
+  --hs-muted: #aaaead; --hs-faint: #929694;
+  --hs-line: #3a3c40; --hs-line-strong: #56595e;
+  --hs-accent: #adc0af; --hs-accent-soft: #2d3530;
+}

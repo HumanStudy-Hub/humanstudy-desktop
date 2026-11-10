@@ -14,7 +14,7 @@ mkdirSync(out, { recursive: true })
 cpSync(join(app, 'out', 'main'), join(out, 'main'), { recursive: true })
 cpSync(join(app, 'out', 'renderer'), join(out, 'renderer'), { recursive: true })
 for (const f of ['server.cjs', 'electron-shim.cjs', 'electron-updater-shim.cjs', 'image/start.sh', 'image/setup.sh']) cpSync(join(app, 'web', f), join(out, f.replace('image/', '')))
-cpSync(join(app, 'resources', 'sample'), join(out, 'resources', 'sample'), { recursive: true })
+cpSync(join(app, 'resources', 'protocol-sample'), join(out, 'resources', 'protocol-sample'), { recursive: true })
 // The main bundle's only runtime dependency besides electron/electron-updater (both shimmed).
 cpSync(join(app, 'node_modules', 'fflate'), join(out, 'node_modules', 'fflate'), { recursive: true, dereference: true })
 await build({

@@ -295,6 +295,7 @@ const errorLine = (err: unknown): string =>
 const seenFiles = new Map<string, Set<string>>()
 /** Emits artifact.created / export.created for files that appear in an open project. */
 export function noteProjectFiles(snap: ProjectSnapshot): void {
+  if (snap.tree.some(entry => entry.rel === 'protocol.json')) noteFsChange(snap.dir, 'protocol.json')
   if (snap.program) noteFsChange(snap.dir, 'program.json') // baseline version when the project opens
   const now = new Set([...snap.artifacts.map((f) => `artifacts/${f.name}`), ...snap.exports.map((f) => `exports/${f.name}`)])
   const before = seenFiles.get(snap.dir)
@@ -523,7 +524,7 @@ export function noteFsChange(projectDir: string, rel: string): void {
   const isProgram = r === 'program.json'
   const isAnnotation = r.endsWith('.annotations.json')
   const isSource = !isAnnotation && (r === 'paper.pdf' || r.startsWith('sources/'))
-  if (!isProgram && !isSource && !isAnnotation && !WATCHED_DIRS.test(r)) return
+  if (!isProgram && r !== 'protocol.json' && r !== 'study.json' && !isSource && !isAnnotation && !WATCHED_DIRS.test(r)) return
   if (r.includes('/.') || isSaveTemp(r)) return
   const key = `${projectDir}\0${r}`
   clearTimeout(fsTimers.get(key))

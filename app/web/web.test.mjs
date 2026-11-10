@@ -77,6 +77,25 @@ test('an uploaded paper becomes a project whose files are served at /hsfile/', a
   assert.equal(outside.status, 403)
 })
 
+test('the shipped example opens as a protocol project with sources and a current view, without building', async () => {
+  const created = await ipc('projects:create', { name: 'Protocol walkthrough', sample: true })
+  assert.equal(created.ok, true, JSON.stringify(created))
+  const snap = (await ipc('project:read', created.value)).value
+  assert.equal(snap.program, null)
+  assert.equal(snap.build, undefined)
+  const text = (await ipc('project:readText', `${created.value}/protocol.json`)).value
+  const p = JSON.parse(text)
+  assert.equal(p.id, 'mazzarella2018politeness')
+  assert.equal(p.schema_version, '1')
+  assert.equal(p.arms.length, 2)
+  assert.ok(snap.pdf)
+  const preview = (await ipc('project:readText', `${created.value}/artifacts/preview.html`)).value
+  assert.match(preview, /hs-protocol/)
+  assert.match(preview, /hs.openSource/)
+  const projects = (await ipc('projects:list')).value
+  assert.equal(projects.find(p => p.dir === created.value).hasProgram, true)
+})
+
 // One pending read per stream: a read abandoned by a timeout would swallow the next chunk.
 function lines(stream) {
   const reader = stream.getReader()

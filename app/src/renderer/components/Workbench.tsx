@@ -1,3 +1,4 @@
+import { ProtocolStudy } from './ProtocolStudy'
 // The right pane: Study (the 12-section document) and Paper, plus any file the researcher or the agent
 // opens as another tab, like an artifact panel. A Files sidebar (hidden by default, ⌘B) lists the folder.
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
@@ -148,7 +149,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const building = build?.status === 'pending' || build?.status === 'running'
   const buildFailed = build?.status === 'error' ? `${t(`build.error.${build.error ?? 'failed'}`)} ${t('build.kept')}` : ''
   // A project from before automatic builds: a paper, no study, never built. Offer it; never start it unasked.
-  const paperOnly = !build && Boolean(project.pdf) && !project.program && !error
+  const paperOnly = !build && Boolean(project.pdf) && !project.program && !flatten(project.tree).some(f => f.rel === 'protocol.json') && !error
   const retryBuild = () => void window.humanstudy.project.retryBuild(project.dir, claimAction('build.retry')).catch((e: unknown) => setEditError(String(e)))
   // Web edition: an online session that ended (its time limit) or was cut off stopped the build, not the
   // researcher, so opening the project again continues it once. On desktop a stopped build waits for Retry.
@@ -160,24 +161,19 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   }, [build?.status, build?.error, project.dir])
   const studies = useMemo(() => (program ? viewStudies(program) : []), [program])
   const files = useMemo(() => flatten(project.tree), [project.tree])
-  // A project with only protocol.json still opens the Simulation tab: a view-only program built from the protocol
-  // (its arms as conditions) feeds the tab; the protocol's own checks decide whether it runs (v0.8).
+  // Protocol is canonical whenever present; legacy program-only projects keep their renderer.
   const protocolEntry = files.find((f) => f.rel === 'protocol.json')
-  const [protocolText, setProtocolText] = useState<string | null>(null)
+  const protocolKey = protocolEntry ? `${protocolEntry.path}:${protocolEntry.version ?? `${protocolEntry.mtime}:${protocolEntry.size}`}` : ''
+  const [loadedProtocol, setLoadedProtocol] = useState<{ key: string; text: string } | null>(null)
+  const protocolText = loadedProtocol?.key === protocolKey ? loadedProtocol.text : null
   useEffect(() => {
-    if (program || !protocolEntry) { setProtocolText(null); return }
+    if (!protocolEntry) { setLoadedProtocol(null); return }
     let live = true
-    window.humanstudy.project.readText(protocolEntry.path).then((text) => { if (live) setProtocolText(text) }, () => { if (live) setProtocolText(null) })
+    window.humanstudy.project.readText(protocolEntry.path).then((text) => { if (live) setLoadedProtocol({key: protocolKey, text}) }, () => { if (live) setLoadedProtocol(null) })
     return () => { live = false }
-  }, [program, protocolEntry?.path, protocolEntry?.mtime, protocolEntry?.size]) // eslint-disable-line react-hooks/exhaustive-deps
-  const simProgram = useMemo(() => program ?? protocolProgram(protocolText), [program, protocolText])
-  // A project with only protocol.json opens on the Simulation tab (its Study tab has nothing to show), once.
-  const openedProtocolOnly = useRef('')
-  useEffect(() => {
-    if (program || !simProgram || openedProtocolOnly.current === project.dir) return
-    openedProtocolOnly.current = project.dir
-    if (layout.active === 'study') update((l) => ({ ...l, active: 'simulation' }))
-  }, [program, simProgram, project.dir]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [protocolKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  const hasProtocol = Boolean(protocolEntry)
+  const simProgram = useMemo(() => hasProtocol ? protocolProgram(protocolText) : program, [program, protocolText, hasProtocol])
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
 
   const [layout, setLayout] = useState<Layout>(() => loadLayout(project.dir))
@@ -423,7 +419,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const active = layout.active
   const activeFile = active.startsWith('file:') ? (fileByPath.get(active.slice(5)) ?? null) : null
   const studyId = studies.find((s) => s.id === layout.study)?.id ?? studies[0]?.id ?? ''
-  const simStudies = program ? studies : simProgram ? [{ id: PROTOCOL_STUDY_ID, title: simProgram.title }] : []
+  const simStudies = protocolEntry ? simProgram ? [{ id: PROTOCOL_STUDY_ID, title: simProgram.title }] : [] : studies
   const simStudyId = program ? studyId : PROTOCOL_STUDY_ID
   const workspaceSnapshot = useMemo<WorkspaceSnapshot>(() => {
     const st = studies.find(s => s.id === studyId)
@@ -513,7 +509,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
             )
           })}
         </div>
-        <button className="wb-compare" aria-pressed={compare} disabled={!program} onClick={() => {
+        <button className="wb-compare" aria-pressed={compare} disabled={!program && !protocolEntry} onClick={() => {
           track('source.compare', { metadata: { open: !compare } })
           if (!compare) rememberHere()
           update(l => ({ ...l, active: 'study', compare: !compare }))
@@ -564,7 +560,12 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
           )}
           {active === 'simulation' && simProgram && editError && <div className="part error edit-error">{editError}</div>}
           {active === 'study' &&
-            (program ? (
+            (protocolEntry ? (
+              protocolText ? <ProtocolStudy text={protocolText} preview={files.find(f => f.rel === 'artifacts/preview.html')}
+                onAsk={docProps.onPrefill}
+                onSource={ref => { rememberHere(); docProps.onSource('protocol', ref); update(l => ({ ...l, active: 'study', compare: true })) }} />
+                : <div className="empty-state">{t('protocol.loading')}</div>
+            ) : program ? (
               <div className="wb-study-host" ref={studyHost} onScrollCapture={(e) => {
                 const el = e.target as HTMLElement
                 if (el.dataset?.studyScroll !== undefined) storePosition({ study: el.scrollTop })

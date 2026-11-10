@@ -46,13 +46,15 @@ const project = () => {
   return dir
 }
 const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex')
-const fakeModel = async () => {
+const fakeModel = async (sample = false) => {
   const server = createServer(async (req, res) => {
     const chunks = []; for await (const c of req) chunks.push(c)
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     const page = body.messages.at(-1).content
     res.setHeader('content-type', 'application/json')
-    res.end(JSON.stringify({ choices: [{ message: { content: page.includes('r1') ? '{"r1": "o1"}' : '{}' }, finish_reason: 'stop' }], usage: { total_tokens: 10 } }))
+    const current = [...page.matchAll(/Question (r[0-9]+) \(/g)].at(-1)?.[1]
+    const reply = sample ? JSON.stringify(current ? { [current]: 'o1' } : {}) : page.includes('r1') ? '{"r1": "o1"}' : '{}'
+    res.end(JSON.stringify({ choices: [{ message: { content: reply }, finish_reason: 'stop' }], usage: { total_tokens: 10 } }))
   })
   await new Promise((res) => server.listen(0, '127.0.0.1', res))
   return server
@@ -227,4 +229,28 @@ test('review 6 S5: on Linux/Windows the budget row is an estimate, not an approv
     assert.ok(!/token|\{tokens\}/i.test(EN[k]), k); assert.ok(!/词元|\{tokens\}/.test(ZH[k]), k)
   }
   assert.match(panel, /t\(readiness\?\.modelAccess === 'relay' \? 'sim\.budget_value' : 'sim\.budget_estimate', \{ minutes: protocolLimits\.minutes \}\)/)
+})
+
+
+test('the real shipped protocol sample finishes both studies and writes a report with a local test responder', { skip: !python }, async () => {
+  const dir=mkdtempSync(join(tmpdir(),'sample-run-project-'))
+  cpSync(join(here,'../../resources/protocol-sample'),dir,{recursive:true})
+  mkdirSync(join(dir,'.humanstudy'),{recursive:true})
+  const server=await fakeModel(true)
+  try {
+    const runDir=R.newRunFolder(dir)
+    const binding={route:'protocol',runId:'sample-acceptance',approvedAt:Date.now(),protocolSha256:sha(join(dir,'protocol.json'))}
+    let ended;const done=new Promise(resolve=>{ended=resolve})
+    await R.launchProtocolRun({python,files:FILES,codeDir:join(out,'sample-code'),project:dir,runDir,binding,onExit:code=>ended(code),
+      plan:{perArm:2,arms:null,seeds:[1],temperature:1},
+      env:{...processEnv(),HUMANSTUDY_HOSTED_BASEURL:`http://127.0.0.1:${server.address().port}/v1`,HUMANSTUDY_DESKTOP_KEY:'test-only',HUMANSTUDY_SIM_MODEL:'local-test-responder'}})
+    assert.equal(await done,0,readFileSync(join(runDir,'run.log'),'utf8'))
+    const progress=JSON.parse(readFileSync(join(runDir,'progress.json'),'utf8'))
+    assert.equal(progress.stage,'done',readFileSync(join(runDir,'run.log'),'utf8'))
+    const summary=JSON.parse(readFileSync(join(runDir,'summary.json'),'utf8'))
+    assert.equal(summary.facts.done,4)
+    assert.equal(summary.partial,false)
+    assert.equal(summary.official,false,'a mechanical four-session test is not a human replication')
+    assert.ok(existsSync(join(runDir,'results.html')))
+  }finally{server.close()}
 })

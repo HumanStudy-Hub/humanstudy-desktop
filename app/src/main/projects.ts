@@ -2,10 +2,9 @@ import { app, shell } from 'electron'
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import sampleProgram from '../shared/sample-program.json'
 import { pendingPaperBuild } from './paper-build'
 import { installPack } from './pack'
-import { installSampleAssets } from './sample-project'
+import { installSampleAssets, SAMPLE_TITLE } from './sample-project'
 import { ensureProjectsRoot, getSettings } from './settings'
 import type { ProjectSummary } from '../preload/types'
 
@@ -74,7 +73,7 @@ async function summarize(dir: string): Promise<ProjectSummary> {
     for (const d of await readdir(join(dir, 'artifacts'), { withFileTypes: true })) {
       if (d.name.startsWith('.')) continue
       latest = Math.max(latest, await mtimeOf(join(dir, 'artifacts', d.name)))
-      if (d.isFile()) artifactCount++
+      if (d.isFile() && d.name !== 'preview.html') artifactCount++
     }
   } catch {
     /* no artifacts yet */
@@ -96,7 +95,7 @@ async function summarize(dir: string): Promise<ProjectSummary> {
     title,
     updatedAt: new Date(latest || Date.now()).toISOString(),
     hasPaper: existsSync(join(dir, 'paper.pdf')),
-    hasProgram: existsSync(join(dir, 'program.json')),
+    hasProgram: existsSync(join(dir, 'protocol.json')) || existsSync(join(dir, 'program.json')),
     artifactCount,
   }
 }
@@ -124,7 +123,7 @@ export async function createProject(input: { name: string; pdfPath?: string; sam
   const root = ensureProjectsRoot()
   let name = (input?.name ?? '').trim()
   const sample = Boolean(input?.sample)
-  if (!name && sample) name = String((sampleProgram as { title?: unknown }).title ?? 'Sample study')
+  if (!name && sample) name = SAMPLE_TITLE
   if (!name && input?.pdfPath) name = basename(input.pdfPath).replace(/\.pdf$/i, '')
   const dir = uniqueDir(root, name)
   await mkdir(dir, { recursive: true })
@@ -135,9 +134,8 @@ export async function createProject(input: { name: string; pdfPath?: string; sam
   if (sample) {
     const sourceDir = app.isPackaged
       ? join(process.resourcesPath, 'sample')
-      : join(app.getAppPath(), 'resources', 'sample')
+      : join(app.getAppPath(), 'resources', 'protocol-sample')
     await installSampleAssets(sourceDir, dir)
-    await writeFile(join(dir, 'program.json'), JSON.stringify(sampleProgram, null, 2) + '\n')
   }
   await installPack(dir)
   if (input?.pdfPath) pendingPaperBuild(dir)

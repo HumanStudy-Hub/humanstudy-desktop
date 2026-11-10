@@ -169,7 +169,7 @@ test('existing projects get the shared lock/checker/policy and old default build
   await P.refreshPack(proj)
   for (const rel of ['.opencode/skills/build/program_io.py', '.opencode/skills/build/program_lock.py', '.opencode/skills/build/check_program.py', 'schema/build-coverage.json'])
     assert.ok(existsSync(join(proj, rel)), rel)
-  assert.match(readFileSync(skill, 'utf8'), /program.json --complete/)
+  assert.match(readFileSync(skill, 'utf8'), /schema_version/); assert.match(readFileSync(skill, 'utf8'), /protocol_io.py/)
   writeFileSync(skill, 'Researcher custom instructions')
   await P.refreshPack(proj)
   assert.equal(readFileSync(skill, 'utf8'), 'Researcher custom instructions')

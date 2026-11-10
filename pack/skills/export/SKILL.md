@@ -5,6 +5,11 @@ description: Export the study protocol, analyses or replay package as .docx, .pd
 
 # Export: files into exports/
 
+## Protocol projects (default)
+
+For a protocol project, export from protocol.json, study.json, its source references and requested derived artifacts. Preserve all studies, missing items, evidence and the precise replay scope. The legacy agent_package.py/community.py/study_core.py instructions below are not protocol exporters: never call them for a protocol or fabricate a program.json to satisfy them. A local requested report may quote permitted materials with citations. A shareable bundle must obey source licences, exclude chats, account/config files, keys, private/researcher source files and restored original wording, and preserve distribution restrictions. Do not call a local file bundle an MCP server or a runnable agent skill unless that interface is actually implemented and tested. Never publish as part of an export.
+
+
 Exports are derived from `program.json` and existing artifacts; they add no facts.
 
 ## Formats

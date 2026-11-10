@@ -503,7 +503,7 @@ test('a project with only protocol.json opens the Simulation tab: readiness from
   assert.deepEqual(PP.protocolProgram(JSON.stringify({ id: 'x', arms: [{ id: 'a', runnable: false }] })).nodes, [], 'blocked protocols remain previewable without inventing runnable conditions')
   // The Workbench shows the tab for that program and the panel gates a protocol run by the protocol, not section 12.
   const bench = readFileSync(join(here, '../renderer/components/Workbench.tsx'), 'utf8')
-  assert.match(bench, /const simProgram = useMemo\(\(\) => program \?\? protocolProgram\(protocolText\)/)
+  assert.match(bench, /const simProgram = useMemo\(\(\) => hasProtocol \? protocolProgram\(protocolText\) : program/)
   assert.match(bench, /\{simProgram && tabBtn\('simulation'/)
   const panel = readFileSync(join(here, '../renderer/components/SimulationPanel.tsx'), 'utf8')
   assert.match(panel, /const scopeReady = route === 'protocol' \|\| scope\.ready/)

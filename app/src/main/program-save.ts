@@ -6,7 +6,7 @@ import { basename, dirname } from 'node:path'
 import { withProgramLock } from './program-lock'
 
 export async function saveProjectText(path: string, text: string, options: { ifUnchanged?: string; beforeWrite?: () => Promise<void> } = {}): Promise<void> {
-  const program = basename(path).toLowerCase() === 'program.json'
+  const program = ['program.json', 'protocol.json'].includes(basename(path).toLowerCase())
   if (program) JSON.parse(text.replace(/^\uFEFF/, ''))
   await mkdir(dirname(path), { recursive: true })
   const save = async () => {

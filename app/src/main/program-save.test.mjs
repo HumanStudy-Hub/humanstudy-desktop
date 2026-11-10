@@ -103,3 +103,14 @@ test('app and agent taking the lock in tight turns never fail each other (Window
   assert.ok(Number(r.stdout) > 0)
   assert.ok(!readdirSync(dir).some(n => n.endsWith('.lock')))
 })
+
+test('protocol saves share the agent lock and reject stale researcher edits', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'protocol-save-')), target = join(dir, 'protocol.json')
+  const before = '{"schema_version":"1","id":"test","meta":{"title":"Before"}}'
+  writeFileSync(target, before)
+  await saveProjectText(target, before.replace('Before', 'Researcher'), { ifUnchanged: before })
+  await assert.rejects(saveProjectText(target, before.replace('Before', 'Stale'), { ifUnchanged: before }), /changed on disk/)
+  assert.match(readFileSync(target, 'utf8'), /Researcher/)
+  await assert.rejects(saveProjectText(target, 'broken'), /JSON/)
+  assert.match(readFileSync(target, 'utf8'), /Researcher/)
+})

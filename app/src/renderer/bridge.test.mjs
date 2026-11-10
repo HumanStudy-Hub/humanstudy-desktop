@@ -21,7 +21,7 @@ test('hs.openSource: valid shapes are normalised', () => {
   assert.deepEqual(B.parseBridgeMessage({ type: 'hs.openSource', page: '14', quote: 'a quote', programId: 'result-s34/effect', file: 'sources/a.pdf' }),
     { type: 'hs.openSource', page: 14, quote: 'a quote', programId: 'result-s34/effect', file: 'sources/a.pdf' })
   assert.deepEqual(B.parseBridgeMessage({ type: 'hs.openSource', programId: 's1-read-story', quote: '  ' }), { type: 'hs.openSource', programId: 's1-read-story' })
-  assert.equal(B.parseBridgeMessage({ type: 'hs.openSource', page: 3, quote: 'x'.repeat(5000) }).quote.length, 2000)
+  assert.equal(B.parseBridgeMessage({ type: 'hs.openSource', page: 3, quote: 'x'.repeat(5000) }).quote.length, 5000)
 })
 
 test('hs.openSource: bad shapes are rejected', () => {

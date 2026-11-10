@@ -58,7 +58,7 @@ def body(skill_md):
 
 
 def build_md():
-    text = body((PACK / "skills/build/SKILL.md").read_text(encoding="utf-8"))
+    text = body((PACK / "skills/build/LEGACY.md").read_text(encoding="utf-8"))
     text = drop(text, "## 4. Views", "## 5. Report")
     text = text.replace(" and the paths written (including the two views)", " and the paths written")
     # Outside the app there is no relay or launcher: reproduce runs study_core.py directly.
@@ -73,7 +73,7 @@ def build_md():
 
 
 def rules_md():
-    text = (PACK / "AGENTS.md").read_text(encoding="utf-8")
+    text = (PACK / "skills/build/LEGACY-RULES.md").read_text(encoding="utf-8")
     rules = section(text, "## Non-negotiable scientific rules", "## Selected items")
     rules = rules.replace("The researcher can also edit files directly in\nthe app; a field they changed",
                           "The researcher can also edit files directly; a field they changed")
