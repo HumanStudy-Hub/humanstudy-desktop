@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 // Automatic paper build after import (issue #15): state machine, restart recovery and the
 // program_io.py checkpoint writer. No kernel, no network.
 //   node src/main/paper-build.test.mjs
@@ -345,4 +346,61 @@ test('normal human edits and later agent rechecks do not leave a completed proje
   builds.event(pass)
   assert.equal(builds.read(dir).status, 'complete')
   assert.equal(builds.read(dir).validationHash, before)
+})
+
+test('protocol-only drafts finish without a program.json or trusting tool PASS, and survive restart', async()=>{
+ const dir=project();let calls=0
+ const certify=async dir=>{calls++;return {hash:createHash('sha256').update(readFileSync(join(dir,'protocol.json'))).digest('hex'),problems:[]}}
+ const builds=P.createPaperBuilds(()=>{},certify);builds.bind('p',dir);builds.start(dir,'p')
+ writeFileSync(join(dir,'protocol.json'),'{"id":"draft","arms":[{"id":"a","runnable":false,"why":"Original material missing"}]}')
+ await builds.event({sessionId:'p',type:'done'})
+ assert.equal(calls,1);assert.equal(builds.read(dir).status,'complete');assert.equal(builds.read(dir).validationRoute,'protocol')
+ assert.equal(existsSync(join(dir,'program.json')),false)
+ assert.equal(P.createPaperBuilds(()=>{},certify).read(dir).status,'complete')
+ writeFileSync(join(dir,'protocol.json'),'{"id":"changed"}')
+ assert.equal(builds.read(dir).status,'error','a stale certificate cannot validate changed bytes')
+})
+test('protocol check failures, edits during checking and shutdown do not falsely complete',async()=>{
+ for(const kind of ['failed','changed','shutdown']){
+  const dir=project();writeFileSync(join(dir,'protocol.json'),'{}')
+  const builds=P.createPaperBuilds(()=>{},async()=>{
+   const hash=createHash('sha256').update(readFileSync(join(dir,'protocol.json'))).digest('hex')
+   if(kind==='changed')writeFileSync(join(dir,'protocol.json'),'{"changed":true}')
+   return {hash,problems:kind==='failed'?['Missing source references']:[]}
+  });builds.bind('p',dir);builds.start(dir,'p')
+  await builds.event({sessionId:'p',type:'tool',input:'python -m hsenv.checks .',output:'{"PASS":true}'})
+  await builds.event({sessionId:'p',type:'done',...(kind==='shutdown'?{detail:'shutdown'}:{})})
+  assert.equal(builds.read(dir).status,'error',kind)
+ }
+})
+
+
+test('protocol snapshots independently recheck persisted status after restart and reject forged completion',async()=>{
+ const dir=project();writeFileSync(join(dir,'protocol.json'),'{}')
+ P.writePaperBuild(dir,{status:'complete',phase:'checking',checked:true,validationRoute:'protocol',validationHash:createHash('sha256').update('{}').digest('hex')})
+ let checks=0
+ const builds=P.createPaperBuilds(()=>{},async()=>{checks++;return {hash:createHash('sha256').update('{}').digest('hex'),problems:['No protocol structure']}})
+ assert.equal((await builds.snapshot(dir)).status,'error')
+ assert.equal(checks,1,'a project status file cannot certify its own protocol')
+})
+
+
+test('a checked legacy program still completes when an unfinished protocol file also exists',async()=>{
+ const dir=project();let calls=0
+ const builds=P.createPaperBuilds(()=>{},async()=>{calls++;return null})
+ builds.bind('p',dir);builds.start(dir,'p')
+ writeFileSync(join(dir,'program.json'),sample);writeFileSync(join(dir,'protocol.json'),'{}')
+ builds.event({sessionId:'p',type:'tool',input:'check_program.py program.json --complete',output:'PASS program.json'})
+ await builds.event({sessionId:'p',type:'done'})
+ assert.equal(builds.read(dir).status,'complete');assert.equal(builds.read(dir).validationRoute,'program');assert.equal(calls,0)
+})
+
+
+test('only the owning build or an explicit build action selects the build model',()=>{
+ const state={status:'running',phase:'writing',sessionId:'build'}
+ assert.equal(P.isBuildTurn(state,'build','composer.send'),true)
+ assert.equal(P.isBuildTurn(state,'other','composer.send'),false)
+ assert.equal(P.isBuildTurn(undefined,'chat','simulation.build'),true)
+ assert.equal(P.isBuildTurn(undefined,'chat','paper.build'),true)
+ assert.equal(P.isBuildTurn({status:'complete',phase:'checking'},'chat','composer.send'),false)
 })

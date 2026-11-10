@@ -61,8 +61,16 @@ export function programComplete(dir: string): boolean {
 }
 const currentCertificate = (dir: string, state: PaperBuildState): boolean => {
   if (!state.checked || !state.validationHash) return false
+  if (state.validationRoute === 'protocol') {
+    try { return createHash('sha256').update(readFileSync(join(dir, 'protocol.json'))).digest('hex') === state.validationHash } catch { return false }
+  }
   const current = programCertificate(dir)
   return current !== null && current.hash === state.validationHash && !current.problems.length
+}
+
+/** Explicit build actions use the build model; ordinary messages never rely on language guessing. */
+export function isBuildTurn(state: PaperBuildState | undefined, sessionId: string, action?: string): boolean {
+  return (state?.status === 'running' && state.sessionId === sessionId) || action === 'paper.build' || action === 'simulation.build'
 }
 
 const WRITE_TOOLS = /^(write|edit|patch|multiedit|apply_patch)$/i
@@ -94,7 +102,11 @@ export function buildPhase(tool: string | undefined, input: unknown): PaperBuild
   return null
 }
 
-export function createPaperBuilds(changed: (dir: string) => void) {
+export function createPaperBuilds(changed: (dir: string) => void, checkProtocol?: (dir: string) => Promise<{ hash: string; problems: string[] } | null>) {
+  const checking = new Map<string, Promise<void>>()
+  // Project status files are editable. Only certificates issued in this app process are trusted
+  // for a protocol snapshot; a restart rechecks it with this build's bundled engine.
+  const protocolProofs = new Map<string, string>()
   const projects = new Map<string, string>() // kernel session -> project dir
   const live = new Set<string>() // sessions running a build in this process
   const lastError = new Map<string, string>()
@@ -129,13 +141,48 @@ export function createPaperBuilds(changed: (dir: string) => void) {
     return state
   }
 
+  function finishProtocol(dir: string, state: PaperBuildState): Promise<void> {
+    const pending = checking.get(dir)
+    if (pending) return pending
+    let before: string
+    try { before = createHash('sha256').update(readFileSync(join(dir, 'protocol.json'))).digest('hex') } catch { fail(dir, state, 'incomplete'); return Promise.resolve() }
+    if (state.status !== 'complete') save(dir, { ...state, phase: 'checking' })
+    const mine = (async () => {
+      let result: { hash: string; problems: string[] } | null = null
+      try { result = await checkProtocol!(dir) } catch { /* failed closed */ }
+      const now = readPaperBuild(dir)
+      if (!now || now.sessionId !== state.sessionId || now.startedAt !== state.startedAt || (now.status !== state.status && !(state.status === 'complete' && now.status === 'error' && now.error === 'incomplete'))) return
+      let after = ''
+      try { after = createHash('sha256').update(readFileSync(join(dir, 'protocol.json'))).digest('hex') } catch { /* removed */ }
+      if (before !== after || result?.hash !== after || result.problems.length) {
+        protocolProofs.delete(dir)
+        return fail(dir, { ...now, checked: false, validationHash: undefined }, 'incomplete')
+      }
+      protocolProofs.set(dir, result.hash)
+      if (state.sessionId) live.delete(state.sessionId)
+      save(dir, { ...now, status: 'complete', error: undefined, checked: true, validationRoute: 'protocol', validationHash: result.hash })
+    })().finally(() => { if (checking.get(dir) === mine) checking.delete(dir) })
+    checking.set(dir, mine)
+    return mine
+  }
+
   return {
     read,
+    async snapshot(dir: string): Promise<PaperBuildState | undefined> {
+      const state = readPaperBuild(dir)
+      if (state?.status === 'complete' && state.validationRoute === 'protocol' && checkProtocol) {
+        let hash = ''
+        try { hash = createHash('sha256').update(readFileSync(join(dir, 'protocol.json'))).digest('hex') } catch { /* read() invalidates it */ }
+        if (hash && protocolProofs.get(dir) !== hash) await finishProtocol(dir, state)
+      }
+      return read(dir)
+    },
     /** A successful app field/file save is independently checked immediately; normal human edits
      * keep a completed extraction completed without a new agent turn. */
     humanSaved(dir: string): void {
       const state = readPaperBuild(dir)
       if (state?.status !== 'complete') return
+      if (state.validationRoute === 'protocol' && checkProtocol) { void finishProtocol(dir, state); return }
       const result = programCertificate(dir)
       if (result && !result.problems.length) save(dir, { ...state, checked: true, validationHash: result.hash })
     },
@@ -164,7 +211,7 @@ export function createPaperBuilds(changed: (dir: string) => void) {
     retry(dir: string): boolean {
       const state = read(dir)
       const firstBuild = !state && existsSync(join(dir, 'paper.pdf')) && !existsSync(join(dir, 'program.json'))
-      if (state?.status !== 'error' && !firstBuild) return false
+      if (checking.has(dir) || (state?.status !== 'error' && !firstBuild)) return false
       save(dir, { status: 'pending', phase: 'reading' })
       return true
     },
@@ -174,7 +221,7 @@ export function createPaperBuilds(changed: (dir: string) => void) {
       const state = dir ? readPaperBuild(dir) : undefined
       if (dir && state?.status === 'running' && state.sessionId === sessionId) fail(dir, state, tooLarge(String(error)) ? 'too_large' : 'failed')
     },
-    event(e: KernelEvent): void {
+    event(e: KernelEvent): void | Promise<void> {
       if (e.type !== 'error' && e.type !== 'tool' && e.type !== 'done') return // text deltas: no file read
       const dir = projects.get(e.sessionId)
       if (!dir) return
@@ -183,11 +230,15 @@ export function createPaperBuilds(changed: (dir: string) => void) {
       // A build that failed and was then finished in the chat by hand counts as built.
       // The program check passing after the last write is what makes a study complete; a first
       // checkpoint already has a study, a node and evidence.
+      // A protocol draft is certified from its bytes by the app's bundled validator, not tool PASS text.
+      if (e.type === 'done' && e.detail !== 'shutdown' && checkProtocol && existsSync(join(dir, 'protocol.json'))
+          && !(state.validationRoute !== 'protocol' && currentCertificate(dir, state))
+          && ((state.status === 'running' && state.sessionId === e.sessionId) || state.status === 'error' || (state.status === 'complete' && !currentCertificate(dir, state)))) return finishProtocol(dir, state)
       const check = e.type === 'tool' ? checkResult(e) : null
       let certificate = state
       if (check !== null && (state.status === 'running' || state.status === 'error' || state.status === 'complete')) {
         const result = check ? programCertificate(dir) : null
-        certificate = { ...state, checked: Boolean(result && !result.problems.length), validationHash: result?.hash }
+        certificate = { ...state, checked: Boolean(result && !result.problems.length), validationRoute: 'program', validationHash: result?.hash }
         save(dir, certificate)
       }
       const checked = currentCertificate(dir, certificate)

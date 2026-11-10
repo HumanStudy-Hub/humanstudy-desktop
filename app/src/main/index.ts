@@ -30,7 +30,7 @@ import * as kernelModule from './kernel'
 import { isVersioned, readVersion, relOf, snapshot, versionsOf } from './versions'
 import { createThreads, threads } from './threads'
 import { saveProjectText } from './program-save'
-import { createPaperBuilds } from './paper-build'
+import { createPaperBuilds, isBuildTurn } from './paper-build'
 import { createShutdown } from './shutdown-core'
 import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedRunFiles } from './pack'
 import { scientificReadiness } from './scientific-readiness'
@@ -38,7 +38,7 @@ import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf } from './package-readiness'
 import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, restoredRunFiles, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
-import { protocolBudget, protocolReadiness, restoredReadiness, sourceTextArgs } from './protocol-readiness'
+import { protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
 import { closeProjectRelays, isRunStop } from './run-stop'
@@ -85,7 +85,8 @@ const sessionKernel = new Map<string, Kernel>()
 const sessionProject = new Map<string, string>()
 const activeTurns = new Set<string>()
 // The automatic paper build; its state file is under .humanstudy, which the project watcher ignores.
-const paperBuilds = createPaperBuilds(dir => broadcast('project:changed', dir))
+const paperBuilds = createPaperBuilds(dir => broadcast('project:changed', dir), async dir => protocolDraftCertificate(
+  await readyPython(), trustedEngineFiles(), dir, process.env.HUMANSTUDY_RUNTIME_BIN || ''))
 let threadsInitialized = false
 const shutdown = createShutdown({
   busy: () => activeTurns.size > 0,
@@ -119,7 +120,7 @@ function currentKernel(): Kernel {
       if (shutdown.closing() && e.type === 'done') e = { ...e, detail: 'shutdown' }
       if (e.type === 'done') activeTurns.delete(e.sessionId)
       else if (e.type === 'text' || e.type === 'tool' || (e.type === 'status' && e.text === 'busy') || (e.type === 'question' && !e.question?.resolved) || (e.type === 'permission' && !e.permission?.resolved)) activeTurns.add(e.sessionId)
-      try { paperBuilds.event(e) } catch (err) { console.error('paper build state', err) } // never blocks events
+      try { void Promise.resolve(paperBuilds.event(e)).catch(err => console.error('paper build check', err)) } catch (err) { console.error('paper build state', err) } // never blocks events
       threads().onEvent(e) // record before the renderer hears about it
       broadcast('kernel:event', e)
     })
@@ -244,7 +245,7 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
     name: basename(dir),
     program,
     programError,
-    build: paperBuilds.read(dir),
+    build: await paperBuilds.snapshot(dir),
     artifacts: await listDir(join(dir, 'artifacts')),
     exports: await listDir(join(dir, 'exports')),
     pdf: pdfPath
@@ -549,6 +550,7 @@ app.whenReady().then(() => {
       telemetry.noteProgramWritten(root, text) // the version actually committed under the lock
       paperBuilds.humanSaved(root)
     }
+    if (basename(q).toLowerCase() === 'protocol.json') paperBuilds.humanSaved(projectRootOf(q))
     telemetry.track('file.edited', { target: extname(q).slice(1) || 'file', ...(ref ? { action: ref } : {}) })
     // The researcher's Stop: the run's model access ends now, not when the relay expires.
     const stopRoot = [...openProjects].find((d) => isInside(d, q))
@@ -844,7 +846,9 @@ app.whenReady().then(() => {
     const prompt = withPrivateCopyNote(threads().beforeSend(id, text, workspace), text, projectDir ? privateImports.get(resolve(projectDir)) ?? [] : [])
     const alreadyActive = activeTurns.has(id)
     activeTurns.add(id)
-    try { await k.send(id, prompt) }
+    const buildState = projectDir ? paperBuilds.read(projectDir) : undefined
+    const purpose = isBuildTurn(buildState, id, actionRef(action)?.target) ? 'build' as const : undefined
+    try { await k.send(id, prompt, { purpose }) }
     catch (error) { if (startedRelay) await closeRunRelay(id); if (!alreadyActive) activeTurns.delete(id); paperBuilds.sendFailed(id, error); throw error }
   })
   ipcMain.handle('kernel:export', async (_e,sid:string) => {

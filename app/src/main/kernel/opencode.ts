@@ -72,6 +72,7 @@ export const BASH_PERMISSION: Record<string, 'ask' | 'allow'> = {
 
 export const DEFAULT_PROVIDER = 'humanstudy'
 export const DEFAULT_MODEL = 'anthropic/claude-haiku-5.5'
+export const BUILD_MODEL = 'anthropic/claude-sonnet-5.5'
 /** Models the HumanStudy edition of opencode already declares under provider.humanstudy
  *  (packages/opencode/src/config/humanstudy.ts in HumanStudy-Hub/opencode). Any other hosted model
  *  the server offers is declared in the inline config. */
@@ -138,6 +139,8 @@ interface SessionState {
   recovery: { epoch: number; attempts: number; pending: boolean; running: boolean; cancelled: boolean; progress: boolean; reason?: 'output_limit' | 'invalid_tool_call'; assistantId?: string }
   expectUserIdentity?: boolean
   selection?: NativeSelection
+  /** Per-turn default; does not change the researcher's model selection for the next chat. */
+  turnModel?: { providerID: string; modelID: string }
   title: string // last session title emitted
 }
 
@@ -318,8 +321,9 @@ export class OpencodeKernel implements Kernel {
     if (this.reportResolved('q:' + questionId)) this.emitter.emit({ sessionId, type: 'question', question: { ...question, resolved: 'rejected' } })
   }
 
-  async send(sessionId: string, text: string): Promise<void> {
+  async send(sessionId: string, text: string, options?: { purpose?: 'build' }): Promise<void> {
     const s = this.session(sessionId)
+    s.turnModel = s.selection?.model ?? (this.provider ? { providerID: this.provider, modelID: options?.purpose === 'build' && this.provider === HOSTED_PROVIDER ? BUILD_MODEL : this.model } : undefined)
     s.turnBaseline = new Set(s.roles.keys())
     s.awaitingAssistant = true
     s.expectUserIdentity = true
@@ -332,7 +336,7 @@ export class OpencodeKernel implements Kernel {
         parts: [{ type: 'text', text }],
         ...(s.selection?.agent ? {agent:s.selection.agent} : {}),
         ...(s.selection?.variant ? {variant:s.selection.variant} : {}),
-        ...(s.selection?.model ? {model:s.selection.model} : this.provider ? { model: { providerID: this.provider, modelID: this.model } } : {}),
+        ...(s.turnModel ? { model: s.turnModel } : {}),
       })
       if (s.server.eventsOnline === false) this.beginCatchup(s.server)
     } catch (err) {
@@ -402,6 +406,7 @@ export class OpencodeKernel implements Kernel {
     const route = nativeRoute(sessionId, request, s.selection ?? {}, defaults)
     const turn = NATIVE_TURNS.has(request.operation)
     if (turn) {
+      s.turnModel = s.selection?.model ?? (this.provider ? { providerID: this.provider, modelID: this.model } : undefined)
       s.turnBaseline = new Set(s.roles.keys()); s.inFlight = true; s.awaitingAssistant = true; s.expectUserIdentity = request.operation!=='compact'; s.failed = false
       s.lastActivity = this.clock(); s.lastProbe = 0; s.idleSince = undefined; s.stalled = false
       s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, pending: false, running: false, cancelled: request.operation === 'compact', progress: false }
@@ -459,7 +464,7 @@ export class OpencodeKernel implements Kernel {
     const r = s.recovery
     const epoch = r.epoch
     const reason = r.reason ?? 'output_limit'
-    const recoveryProvider=s.selection?.model?.providerID??this.provider
+    const recoveryProvider=s.turnModel?.providerID??this.provider
     s.expectUserIdentity=false
     // Defer beyond the idle callback; never submit while the native turn is still active.
     await Promise.resolve()
@@ -468,11 +473,11 @@ export class OpencodeKernel implements Kernel {
     const attempt = ++r.attempts
     r.progress = false
     s.lastActivity = this.clock(); s.idleSince = undefined; s.stalled = false
-    this.emitter.emit({ sessionId, type: 'status', text: 'recovering', detail: `Recovery ${attempt}/2: checking saved work and splitting the remaining task into smaller steps.`, input: { attempt, reason, strategy: 'checkpoints_smaller_units', model: s.selection?.model?.modelID??this.model, ...(recoveryProvider === HOSTED_PROVIDER ? { reasoningEffort: 'low' } : {}) } })
+    this.emitter.emit({ sessionId, type: 'status', text: 'recovering', detail: `Recovery ${attempt}/2: checking saved work and splitting the remaining task into smaller steps.`, input: { attempt, reason, strategy: 'checkpoints_smaller_units', model: s.turnModel?.modelID??this.model, ...(recoveryProvider === HOSTED_PROVIDER ? { reasoningEffort: 'low' } : {}) } })
     s.awaitingAssistant = true
     try {
       await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
-        ...(s.selection?.model ? {model:s.selection.model} : this.provider ? { model: { providerID: this.provider, modelID: this.model } } : {}),
+        ...(s.turnModel ? { model: s.turnModel } : {}),
         ...(s.selection?.agent?{agent:s.selection.agent}:{}),
         ...(recoveryProvider === HOSTED_PROVIDER ? { variant: 'humanstudy-recovery' } : s.selection?.variant?{variant:s.selection.variant}:{}),
         parts: [{ type: 'text', text: `[HumanStudy automatic recovery ${attempt}/2: ${reason === 'invalid_tool_call' ? 'the previous tool call had malformed arguments and may not have executed' : 'the previous model response exhausted its generation budget'}; this is not a new research request.]
@@ -581,10 +586,11 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       permission: { edit: 'ask', bash: BASH_PERMISSION, external_directory: 'ask' },
     }
     if (this.provider === HOSTED_PROVIDER) {
-      cfg.provider = { [HOSTED_PROVIDER]: { ...(transport ? { options: { baseURL: transport.baseURL, apiKey: transport.token } } : {}), models: { [this.model]: {
-        ...(!BAKED_HOSTED_MODELS.includes(this.model) ? { name: this.model, tool_call: true } : {}),
-        variants: { 'humanstudy-recovery': { reasoningEffort: 'low' } },
-      } } } }
+      cfg.provider = { [HOSTED_PROVIDER]: { ...(transport ? { options: { baseURL: transport.baseURL, apiKey: transport.token } } : {}),
+        models: Object.fromEntries([...new Set([this.model, BUILD_MODEL])].map(id => [id, {
+          ...(!BAKED_HOSTED_MODELS.includes(id) ? { name: id, tool_call: true } : {}),
+          variants: { 'humanstudy-recovery': { reasoningEffort: 'low' } },
+        }])) } }
     }
     // Developer path only (HUMANSTUDY_DEV_KEYS=1): the key stays in the env, opencode substitutes it.
     if (this.provider === 'openrouter' && transport) cfg.provider = { openrouter: { options: { apiKey: transport.token, baseURL: transport.baseURL } } }

@@ -407,7 +407,7 @@ function problemText(p: PackageProblem): string {
       screens: screens === 1 ? t('sim.text_one_screen') : t('sim.text_screens', { n: screens }) }
     return t(`sim.text_need.${need}`, vars)
   }
-  if (p.kind === 'scientific') return `${p.check}: ${p.reason}`
+  if (p.kind === 'scientific') return p.reason
   const vars = { what: t(`sim.pkg.${p.file}`), file: p.file }
   if (p.kind === 'unvalidated') return t('sim.pkg_unvalidated', vars)
   if (p.kind === 'wrong-study' || p.kind === 'stale-program' || p.kind === 'bindings') return t('sim.pkg_stale', vars)

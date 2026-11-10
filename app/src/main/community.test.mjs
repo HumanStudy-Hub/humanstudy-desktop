@@ -1,4 +1,4 @@
-import {test} from 'node:test'
+import {test,after} from 'node:test'
 import assert from 'node:assert/strict'
 import {build} from 'esbuild'
 import {mkdtemp,readFile,rm,mkdir} from 'node:fs/promises'
@@ -64,5 +64,34 @@ test('a tampered immutable file fails before a local project is created',async()
  let created=false
  await assert.rejects(lib.forkCommunityStudy(id,async()=>{created=true;return '/not-used'}),/verification failed/)
  assert.equal(created,false)
- await rm(temp,{recursive:true,force:true})
+
+})
+
+after(async()=>{globalThis.fetch=previous;await rm(temp,{recursive:true,force:true})})
+test('a protocol-only revision imports exact files and pins its received held list',async()=>{
+ const protocol={schema_version:'1',id:'fixture',distribution:{format:'hsenv-projection/1',held:{h1:{path:'data.item',text_sha256:'a'.repeat(64)}}},meta:{title:'Fixture'}}
+ const files={'protocol.json':Buffer.from(JSON.stringify(protocol)),'study.json':Buffer.from('{"hsenv": ">=0.8,<0.9"}'),'sourcetext/open.txt':Buffer.from('invented public source'),'review/checks-latest.json':Buffer.from('{"PASS":true}')}
+ const manifest=Object.entries(files).sort(([a],[b])=>a.localeCompare(b)).map(([path,raw])=>({path,sha256:createHash('sha256').update(raw).digest('hex'),bytes:raw.length}))
+ const rev=createHash('sha256').update(JSON.stringify(manifest.map(({path,sha256})=>({path,sha256})))).digest('hex')
+ const entry={...paper,currentRevision:rev,assetRoot:'community/fixture/revisions/'+rev,assetFiles:manifest}
+ const cache=join(temp,'protocol-cache');lib.setCommunityCacheDir(cache)
+ globalThis.fetch=async input=>{
+  const url=String(input)
+  if(url.endsWith('research_index.json'))return new Response(JSON.stringify({papers:[entry]}))
+  if(url.includes('/commits/main'))return new Response(commit)
+  if(url.includes('/commits?'))return new Response('[]')
+  for(const [path,raw] of Object.entries(files))if(url.includes(`/${commit}/${entry.assetRoot}/${path}`))return new Response(raw)
+  throw Error('Unexpected URL '+url)
+ }
+ const dir=await lib.forkCommunityStudy(id,async()=>{const d=join(temp,'protocol-project');await mkdir(d);return d})
+ assert.equal(await readFile(join(dir,'protocol.json'),'utf8'),files['protocol.json'].toString())
+ const pins=JSON.parse(await readFile(join(cache,'original-text/pins.json'),'utf8'))
+ assert.equal(Object.keys(pins).length,1)
+ const root=Object.keys(pins)[0]
+ const received=JSON.parse(await readFile(join(cache,'original-text/received',createHash('sha256').update(root).digest('hex')+'.json'),'utf8'))
+ assert.deepEqual(received,protocol)
+})
+test('protocol allowlist rejects private sources, runs, traversal and app configuration',()=>{
+ for(const path of ['sources/private/x.pdf','sources/researcher/x.txt','artifacts/runs/x.json','artifacts/records.jsonl','runs/a.json','../protocol.json','.opencode/hsenv.py','sources/open/.env','review/raw-chat.json','paper/paper.pdf'])assert.equal(lib.protocolAssetPath(path),false,path)
+ for(const path of ['protocol.json','study.json','sourcetext/a.txt','sources/open/survey.qsf','review/fidelity-review-1.md','review/checks-latest.json','variants/a.json','package/x/study.json'])assert.equal(lib.protocolAssetPath(path),true,path)
 })

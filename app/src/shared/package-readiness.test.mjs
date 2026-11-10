@@ -500,7 +500,7 @@ test('a project with only protocol.json opens the Simulation tab: readiness from
   assert.equal(SR.simulationPlan(program, PP.PROTOCOL_STUDY_ID).paperPerCondition, 10, 'the fixture prints n 10 per arm')
   assert.equal(PP.protocolProgram('{"arms": []}'), null)
   assert.equal(PP.protocolProgram('not json'), null)
-  assert.equal(PP.protocolProgram(JSON.stringify({ id: 'x', arms: [{ id: 'a', runnable: false }] })), null)
+  assert.deepEqual(PP.protocolProgram(JSON.stringify({ id: 'x', arms: [{ id: 'a', runnable: false }] })).nodes, [], 'blocked protocols remain previewable without inventing runnable conditions')
   // The Workbench shows the tab for that program and the panel gates a protocol run by the protocol, not section 12.
   const bench = readFileSync(join(here, '../renderer/components/Workbench.tsx'), 'utf8')
   assert.match(bench, /const simProgram = useMemo\(\(\) => program \?\? protocolProgram\(protocolText\)/)
@@ -509,4 +509,17 @@ test('a project with only protocol.json opens the Simulation tab: readiness from
   assert.match(panel, /const scopeReady = route === 'protocol' \|\| scope\.ready/)
   // And a protocol approval from such a project runs.
   await M.assertRunnablePackage(dir, protocolApproval())
+})
+
+test('a protocol with no runnable arms explains missing material and never sizes a paid run',async()=>{
+ const dir=withProtocol(mkdtempSync(join(tmpdir(),'blocked-protocol-')))
+ const p=JSON.parse(PROTOCOL.toString('utf8'))
+ for(const arm of p.arms){arm.runnable=false;arm.why='The original questionnaire is not available.'}
+ writeFileSync(join(dir,'protocol.json'),JSON.stringify(p))
+ const before=budgetCalls
+ const r=await M.projectPackageReadiness(dir,'protocol')
+ assert.equal(r.protocol.ready,false)
+ assert.deepEqual(r.protocol.arms,[])
+ assert.match(r.protocol.problems.find(p=>p.check==='materials').reason,/original questionnaire/)
+ assert.equal(budgetCalls,before,'blocked study has no model budget request')
 })

@@ -128,7 +128,8 @@ const k = new oc.OpencodeKernel({ binary: '/bin/true', provider: 'humanstudy', m
 let content = JSON.parse(k.configContent())
 assert.equal(content.model, 'humanstudy/anthropic/claude-haiku-5.5')
 assert.equal(content.small_model, content.model)
-assert.deepEqual(content.provider, { humanstudy: { models: { 'anthropic/claude-haiku-5.5': { variants: { 'humanstudy-recovery': { reasoningEffort: 'low' } } } } } })
+assert.deepEqual(Object.keys(content.provider.humanstudy.models).sort(), ['anthropic/claude-haiku-5.5','anthropic/claude-sonnet-5.5'])
+for (const model of Object.values(content.provider.humanstudy.models)) assert.deepEqual(model.variants, { 'humanstudy-recovery': { reasoningEffort: 'low' } })
 assert.equal(JSON.stringify(content).includes('apiKey'), false, 'recovery configuration contains no credential')
 assert.equal(content.permission.edit, 'ask')
 const bash = content.permission.bash
@@ -149,7 +150,7 @@ assert.equal(oc.toolDetail('read', '', { filePath: '/a/b.md' }), '/a/b.md')
 // A hosted model the fork does not know is declared; no key ever appears in the config.
 const k2 = new oc.OpencodeKernel({ binary: '/bin/true', provider: 'humanstudy', model: 'deepseek/deepseek-chat' })
 content = JSON.parse(k2.configContent())
-assert.deepEqual(Object.keys(content.provider.humanstudy.models), ['deepseek/deepseek-chat'])
+assert.deepEqual(Object.keys(content.provider.humanstudy.models), ['deepseek/deepseek-chat','anthropic/claude-sonnet-5.5'])
 assert.ok(!JSON.stringify(content).includes('apiKey'))
 await k2.dispose()
 

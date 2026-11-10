@@ -7,6 +7,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { CommunityStudy, CommunityStudyDetail } from '../preload/types'
 import { catalogSearchFields } from '../shared/research-search'
+import { repinHeld } from './original-text'
 
 const OWNER_REPO = 'HumanStudy-Hub/HumanStudy-Bench'
 const BRANCH = process.env.HUMANSTUDY_COMMUNITY_BRANCH || 'main'
@@ -199,6 +200,19 @@ function safeRelative(path: string): boolean {
   return !!path && !path.includes('\\') && !path.includes('\0') && !path.includes(':') && path.split('/').every(p => p !== '' && p !== '.' && p !== '..')
 }
 
+/** Protocol releases mirror hsenv.release.PUBLIC_PATHS; private run/source material is never imported. */
+export function protocolAssetPath(path: string): boolean {
+  if (!safeRelative(path)) return false
+  const parts = path.split('/'), low = parts.map(p => p.toLowerCase())
+  if (low.some(p => ['.git', '.opencode', '.humanstudy', 'node_modules', 'threads', 'conversations', 'runs'].includes(p) || p.startsWith('.env'))
+      || low.join('/').startsWith('sources/private/') || low.join('/').startsWith('sources/researcher/')
+      || low.at(-1) === 'records.jsonl') return false
+  return ['study.json', 'protocol.json', 'effects.json', 'program.json', 'capabilities.json', 'sources/SOURCE.json'].includes(path)
+    || /^review\/(?:fidelity-review-[^/]+[.]md|checks-latest[.]json)$/.test(path)
+    || /^sources\/open\/.+/.test(path) || /^sourcetext\/[^/]+$/.test(path)
+    || /^variants\/[^/]+[.]json$/.test(path) || /^(?:artifacts|package)\/.+/.test(path)
+}
+
 function assetRoot(id: string, entry: CommunityStudy | null): string {
   const root = entry?.assetRoot || `studies/${entry?.legacyStudyId || id}`
   if (!/^studies\/study_\d{3,}$/.test(root) && !/^community\/[A-Za-z0-9_.-]+\/revisions\/[a-f0-9]{64}$/.test(root))
@@ -322,27 +336,39 @@ export async function forkCommunityStudy(
     const root = assetRoot(id, detail)
     const manifestIdentity = createHash('sha256').update(JSON.stringify((detail.assetFiles || []).map(file => ({ path: file.path, sha256: file.sha256 })))).digest('hex')
     if (manifestIdentity !== detail.currentRevision) throw new Error('The research revision manifest is invalid. No project was created.')
+    const protocolRelease = Boolean(detail.assetFiles?.some(f => f.path === 'protocol.json'))
+    if (protocolRelease && !cacheDir) throw new Error('The study library is not configured yet. Retry after restarting the app.')
+    const paths = (detail.assetFiles || []).map(f => f.path.toLowerCase())
+    if (new Set(paths).size !== paths.length) throw new Error('The research revision contains duplicate file paths.')
     const assets = await Promise.all((detail.assetFiles || []).map(async file => {
       if (!safeRelative(file.path)) throw new Error('Invalid research asset path.')
       const parts = file.path.split('/')
       if (parts.some(p => ['.git','.opencode','.humanstudy','node_modules','threads','conversations'].includes(p.toLowerCase()) || p.toLowerCase().startsWith('.env')))
         throw new Error('A private project path was found in the research assets.')
-      if (file.path !== 'program.json' && !['package','artifacts','sources'].includes(parts[0])) throw new Error('Unsupported research asset.')
+      if (parts.some(p => p.toLowerCase() === 'runs') || /^sources\/(?:private|researcher)\//i.test(file.path) || parts.at(-1)?.toLowerCase() === 'records.jsonl') throw new Error('A private project path was found in the research assets.')
+      if (protocolRelease ? !protocolAssetPath(file.path) : file.path !== 'program.json' && !['package','artifacts','sources'].includes(parts[0])) throw new Error('Unsupported research asset.')
       const url = `https://raw.githubusercontent.com/${OWNER_REPO}/${sha}/${root}/${parts.map(encodeURIComponent).join('/')}`
       const raw = Buffer.from(await (await get(url, '*/*')).arrayBuffer())
       if (raw.length !== file.bytes || createHash('sha256').update(raw).digest('hex') !== file.sha256) throw new Error('Research asset verification failed. No project was created.')
       return { path: file.path, raw }
     }))
-    if (!assets.some(f => f.path === 'program.json')) throw new Error('The recommended program is unavailable.')
+    if (!assets.some(f => f.path === 'program.json' || f.path === 'protocol.json')) throw new Error('The recommended study is unavailable.')
+    // Parse before project creation; malformed JSON must not leave a half-imported project.
+    const programAsset = assets.find(f => f.path === 'program.json')
+    const program = programAsset ? JSON.parse(programAsset.raw.toString('utf8')) : null
+    if (programAsset && (!program || typeof program !== 'object' || Array.isArray(program) || (program.evidence !== undefined && !Array.isArray(program.evidence)))) throw new Error('The study document is invalid.')
+    if (protocolRelease) {
+      const protocol = JSON.parse(assets.find(f => f.path === 'protocol.json')!.raw.toString('utf8'))
+      if (!protocol || typeof protocol !== 'object' || Array.isArray(protocol)) throw new Error('The study protocol is invalid.')
+    }
     const dir = await createProject({ name: detail.title })
     for (const file of assets) {
       const target = join(dir, ...file.path.split('/'))
       await mkdir(join(target, '..'), { recursive: true })
       await writeFile(target, file.raw)
     }
-    const program = JSON.parse(assets.find(f => f.path === 'program.json')!.raw.toString('utf8'))
-    const referenced = new Set<string>((program.evidence || []).map((e: { path?: string }) => e.path).filter((p: unknown): p is string => typeof p === 'string'))
-    if (typeof program.source?.filename === 'string') referenced.add(program.source.filename)
+    const referenced = new Set<string>((program?.evidence || []).map((e: { path?: string }) => e.path).filter((p: unknown): p is string => typeof p === 'string'))
+    if (typeof program?.source?.filename === 'string') referenced.add(program.source.filename)
     for (const original of referenced) {
       const parts = original.split('/')
       if (!safeRelative(original) || !/\.(json|txt|csv|tsv|pdf|png|jpe?g|svg)$/i.test(original)
@@ -352,7 +378,7 @@ export async function forkCommunityStudy(
       if (matches.length === 1) {
         await mkdir(join(dir, original, '..'), { recursive: true })
         await writeFile(join(dir, original), matches[0].raw)
-        if (/\.pdf$/i.test(original) && original === program.source?.filename) await writeFile(join(dir, 'paper.pdf'), matches[0].raw)
+        if (/\.pdf$/i.test(original) && original === program?.source?.filename) await writeFile(join(dir, 'paper.pdf'), matches[0].raw)
       }
     }
     await mkdir(join(dir, 'sources'), { recursive: true })
@@ -360,6 +386,8 @@ export async function forkCommunityStudy(
     await mkdir(join(dir, '.humanstudy'), { recursive: true })
     await writeFile(join(dir, '.humanstudy/community.json'), context)
     if (!assets.some(f => f.path === 'sources/study.json')) await writeFile(join(dir, 'sources/study.json'), context)
+    // Only this verified import boundary may accept a new published held-text list.
+    if (protocolRelease) await repinHeld(join(cacheDir!, 'original-text'), dir)
     return dir
   }
   const dir = await createProject({ name: detail.title || id })

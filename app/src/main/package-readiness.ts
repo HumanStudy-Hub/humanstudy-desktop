@@ -225,6 +225,15 @@ async function protocolRouteReadiness(projectDir: string): Promise<PackageReadin
   // A published study whose screens still lack their original wording opens as a preview but never runs: its
   // participants would see placeholders. Those problems come first; the engine's checks follow.
   let problems = [...await originalTextProblemsOf(projectDir), ...await protocolProblems(projectDir)]
+  if (!(await protocolArms(projectDir)).length) {
+    let why = 'The original materials are not complete enough to run any participant group.'
+    try {
+      const arms = JSON.parse(await readFile(join(projectDir, 'protocol.json'), 'utf8')).arms
+      const reasons = (Array.isArray(arms) ? arms : []).filter(a => a?.runnable === false).map(a => typeof a.why === 'string' ? `${a.id}: ${a.why}` : '').filter(Boolean)
+      if (reasons.length) why = reasons.join('\n')
+    } catch { /* the protocol checker reports invalid files */ }
+    problems.unshift({ check: 'materials', reason: why })
+  }
   let budget: ProtocolBudget | undefined
   // A run is sized from what it will send the model (review 2, M3): no measured budget, no protocol run.
   if (!problems.length) {

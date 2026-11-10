@@ -359,3 +359,13 @@ test('index format upgrade: v1 files are dropped and the project is indexed agai
   assert.ok(readdirSync(redact).some((f) => f.endsWith(`.v${T.INDEX_FORMAT}.bin`)))
   assert.equal(T.containsPrivateRun('How many minutes did you walk this morning? Did you see a neighbour on the way?', index), true)
 })
+
+
+test('concurrent community imports keep both received originals and both held-list pins',async()=>{
+ const cache=mkdtempSync(join(tmpdir(),'pin-concurrent-'))
+ const dirs=[0,1].map(i=>{const dir=mkdtempSync(join(tmpdir(),'published-'+i+'-'));writeFileSync(join(dir,'protocol.json'),JSON.stringify({meta:{title:'Fixture '+i},distribution:{held:{['h'+i]:{text_sha256:String(i).repeat(64)}}}}));return dir})
+ await Promise.all(dirs.map(dir=>O.repinHeld(cache,dir)))
+ const pins=JSON.parse(readFileSync(join(cache,'pins.json'),'utf8'))
+ assert.equal(Object.keys(pins).length,2)
+ for(const dir of dirs){assert.equal(await O.heldPinProblem(cache,dir),null);assert.ok(existsSync(O.receivedPath(cache,realpathSync(dir))))}
+})

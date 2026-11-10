@@ -72,7 +72,7 @@ export interface Kernel {
   /** Human-readable name of the implementation ("opencode" or "mock"). */
   readonly name: string
   startSession(projectDir: string): Promise<string>
-  send(sessionId: string, text: string): Promise<void>
+  send(sessionId: string, text: string, options?: { purpose?: 'build' }): Promise<void>
   abort(sessionId: string): Promise<void>
   /** Answer a `permission` event. Rejects when the request is gone (already answered, session over). */
   reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void>

@@ -186,9 +186,15 @@ export default function App() {
     return true
   }
   const closeOnboarding = useCallback(() => {
-    try { localStorage.setItem('hs.sampleOnboarding.v1', 'done') } catch { /* ignore */ }
+    try { localStorage.setItem('hs.workspaceGuide.v1', 'done'); localStorage.setItem('hs.sampleOnboarding.v1', 'done') } catch { /* ignore */ }
     setShowSampleOnboarding(false)
   }, [])
+  useEffect(() => {
+    if (!project) return
+    let seen = false
+    try { seen = localStorage.getItem('hs.workspaceGuide.v1') === 'done' || localStorage.getItem('hs.sampleOnboarding.v1') === 'done' } catch { /* storage may be unavailable */ }
+    setShowSampleOnboarding(!seen)
+  }, [project?.dir])
   const closeProjectRef = useRef<() => boolean>(() => false)
   const closeProject = (): boolean => {
     if (!confirmLeave()) return false
@@ -430,14 +436,7 @@ export default function App() {
       <div className="app">
         <Home
           ref={home}
-          onOpen={(dir, sample) => {
-            if (sample) {
-              let seen = false
-              try { seen = localStorage.getItem('hs.sampleOnboarding.v1') === 'done' } catch { /* ignore */ }
-              setShowSampleOnboarding(!seen)
-            }
-            void openProject(dir)
-          }}
+          onOpen={(dir) => { void openProject(dir) }}
           onSettings={() => openSettings('general')}
           account={account}
           onAccount={() => openSettings('account')}
@@ -552,7 +551,7 @@ export default function App() {
       </main>
       {dialog}
       {consent}
-      {showSampleOnboarding && <SampleOnboarding onClose={closeOnboarding} />}
+      {showSampleOnboarding && !consent && <SampleOnboarding onClose={closeOnboarding} />}
       <UpdateNotice />
     </div>
   )

@@ -56,7 +56,7 @@ export interface Kernel {
 
   setPermissionMode?(mode: 'ask' | 'project'): void
   startSession(projectDir: string): Promise<string>
-  send(sessionId: string, text: string): Promise<void>
+  send(sessionId: string, text: string, options?: { purpose?: 'build' }): Promise<void>
   abort(sessionId: string): Promise<void>
   reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void>
   answerQuestion(sessionId: string, questionId: string, answers: string[][]): Promise<void>
