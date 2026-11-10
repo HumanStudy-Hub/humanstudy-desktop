@@ -73,12 +73,17 @@ export function parseProgress(text: string | null | undefined): SimProgress | nu
 
 /** summary.json, written by the agent when a run finishes: the plain-language comparison. */
 export interface SimSummary {
-  outcome: 'replicated' | 'partly' | 'not_replicated' | 'not_ready' | 'unknown'
+  /** agree / disagree: a protocol run's engine direction check on an official n (skills/run protocol_report). */
+  /** same / same_ns / mixed / differs: a protocol run's direction headline on the strict official comparison. */
+  outcome: 'replicated' | 'partly' | 'not_replicated' | 'not_ready' | 'unknown' | 'same' | 'same_ns' | 'mixed' | 'differs'
   paragraph: string
   model?: string
   perCondition?: number
   calls?: number
   example?: boolean
+  /** A protocol run's structured summary (skills/run protocol_report.py): the card builds its paragraph from these
+   *  with i18n keys, in the app's language. */
+  facts?: { done: number; planned: number; same: number; compared: number; official: boolean; unverified: boolean; partial: boolean; failedCalls: number; tokenCap: boolean; engineDirection: boolean | null }
 }
 /** `lang` 'zh-CN' prefers `paragraph_zh` when the file carries one (the shipped example does). */
 export function parseSummary(text: string | null | undefined, lang = 'en'): SimSummary | null {
@@ -87,12 +92,17 @@ export function parseSummary(text: string | null | undefined, lang = 'en'): SimS
   try { r = JSON.parse(text) } catch { return null }
   if (!r || typeof r !== 'object') return null
   const o = String(r.outcome ?? r.verdict ?? '').toLowerCase()
-  const outcome: SimSummary['outcome'] = /not[_ -]?ready/.test(o) ? 'not_ready' : /not|fail/.test(o) ? 'not_replicated' : /part|mixed|weak/.test(o) ? 'partly' : /replicat|yes|shown/.test(o) ? 'replicated' : 'unknown'
+  // A direction verdict only on the strict official comparison; an older summary's *_unverified verdict is neutral.
+  const outcome: SimSummary['outcome'] = ['same', 'same_ns', 'mixed', 'differs'].includes(o) ? o as SimSummary['outcome']
+    : o === 'agree' ? 'same' : o === 'disagree' ? 'differs' : /_unverified$/.test(o) ? 'unknown' : /not[_ -]?ready/.test(o) ? 'not_ready' : /not|fail/.test(o) ? 'not_replicated' : /part|mixed|weak/.test(o) ? 'partly' : /replicat|yes|shown/.test(o) ? 'replicated' : 'unknown'
   const zh = lang.startsWith('zh') && typeof r.paragraph_zh === 'string' && r.paragraph_zh.trim() ? r.paragraph_zh : null
   const raw = zh ?? r.paragraph ?? r.summary ?? r.text
   if (!str(raw)) return null
   const per = r.perCondition ?? r.n_per_condition
-  return { outcome, paragraph: String(raw).trim().slice(0, 2000), model: str(r.model), perCondition: typeof per === 'number' ? per : undefined, calls: typeof r.calls === 'number' ? r.calls : undefined, example: r.example === true }
+  const f = r.facts && typeof r.facts === 'object' ? r.facts as Record<string, unknown> : null
+  const int = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0)
+  const facts = f ? { done: int(f.done), planned: int(f.planned), same: int(f.same), compared: int(f.compared), official: f.official === true, unverified: f.unverified === true, partial: f.partial === true, failedCalls: int(f.failedCalls), tokenCap: f.tokenCap === true, engineDirection: typeof f.engineDirection === 'boolean' ? f.engineDirection : null } : undefined
+  return { outcome, paragraph: String(raw).trim().slice(0, 2000), model: str(r.model), perCondition: typeof per === 'number' ? per : undefined, calls: typeof r.calls === 'number' ? r.calls : undefined, example: r.example === true, ...(facts ? { facts } : {}) }
 }
 
 /** One run folder as seen in the project tree. */
@@ -127,7 +137,8 @@ export function runFolders(tree: TreeEntry[]): SimRunFiles[] {
   const root = find(tree, SIM_DIR)
   const runs: SimRunFiles[] = []
   for (const dir of root?.children ?? []) {
-    if (dir.kind !== 'dir') continue
+    // .operator/ (run salts) and .baseline-cache/ beside the runs are the engine's, not runs.
+    if (dir.kind !== 'dir' || dir.name.startsWith('.')) continue
     const files = new Map<string, TreeEntry>()
     const walk = (es: TreeEntry[]) => es.forEach((e) => (e.kind === 'dir' ? walk(e.children ?? []) : files.set(e.rel.slice(dir.rel.length + 1), e)))
     walk(dir.children ?? [])
@@ -135,7 +146,8 @@ export function runFolders(tree: TreeEntry[]): SimRunFiles[] {
     runs.push({
       id: dir.name, rel: dir.rel, path: dir.path,
       progress: pick('progress.json'), summary: pick('summary.json'), results: pick('results.html'), report: pick('report.md'),
-      sessions: pick('sessions.jsonl'), sessionsSize: files.get('sessions.jsonl')?.size, stop: files.has('STOP'),
+      // A protocol run (skills/run) writes records.jsonl: one line per AI participant, like sessions.jsonl.
+      sessions: pick('sessions.jsonl') ?? pick('records.jsonl'), sessionsSize: (files.get('sessions.jsonl') ?? files.get('records.jsonl'))?.size, stop: files.has('STOP'),
       mtime: Math.max(dir.mtime ?? 0, ...[...files.values()].map((f) => f.mtime ?? 0)),
     })
   }
@@ -179,7 +191,8 @@ export function hasParticipantData(run: Pick<SimRunFiles, 'sessions' | 'sessions
 
 /** A result: finished, with a results page, from real participant data. */
 export function isResult(run: Pick<SimRunFiles, 'results' | 'sessions' | 'sessionsSize'>, progress: SimProgress | null, state: RunState | undefined): boolean {
-  return Boolean(run.results) && state === 'done' && hasParticipantData(run, progress)
+  // A partial or failed run that still wrote its (labelled) results page is listed too, so it stays findable.
+  return Boolean(run.results) && (state === 'done' || state === 'failed') && hasParticipantData(run, progress)
 }
 
 /** "Run from 15 Oct, 14:02" needs the stamp folder name as a date. */
@@ -279,4 +292,17 @@ export function costRange([lo, hi]: [number, number]): { kind: 'under' | 'about'
   const f = (v: number) => (v < 1 ? `$${(Math.ceil(v * 20) / 20).toFixed(2)}` : `$${Math.ceil(v)}`)
   const a = f(lo), b = f(hi)
   return a === b ? { kind: 'about', a, b: '' } : { kind: 'range', a, b }
+}
+
+/** The headline a summary may show (UX re-check): a direction verdict only on the strict official comparison
+ *  (official plan, verified human n, complete run); otherwise the neutral "Finished", or "could not be made" for a
+ *  partial run. Summaries without structured facts (package runs) keep their own outcome. */
+export function headline(s: Pick<SimSummary, 'outcome' | 'facts'>): SimSummary['outcome'] {
+  // The same per-comparison direction count as the paragraph (UX round 3), on the strict official comparison only.
+  if (!s.facts) return s.outcome
+  const f = s.facts
+  if (f.partial) return 'not_ready'
+  if (!f.official || f.unverified || !f.compared) return 'unknown'
+  if (f.same === f.compared) return f.engineDirection ? 'same' : 'same_ns'
+  return f.same === 0 ? 'differs' : 'mixed'
 }

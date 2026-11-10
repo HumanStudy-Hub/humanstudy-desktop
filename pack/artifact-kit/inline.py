@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Make an artifact self-contained and check it.
 
-    python .opencode/artifact-kit/inline.py artifacts/<name>.html [--program program.json]
+    python .opencode/artifact-kit/inline.py artifacts/<name>.html [--program program.json | --protocol protocol.json]
 
 Replaces <link href="hs-kit.css">, <script src="hs-kit.js"> and <script src="chart.umd.min.js">
 with the kit's content (re-running refreshes them), embeds a slim copy of program.json as
@@ -9,6 +9,12 @@ with the kit's content (re-running refreshes them), embeds a slim copy of progra
 Content-Security-Policy, then checks: no network references, every static data-program-id exists
 in program.json, data-page values match the item's evidence pages. Prints PASS or the problems
 (exit 1). Standard library only.
+
+Protocol artifacts (v0.8) are checked against protocol.json instead of program.json: a page with
+<meta name="hs-artifact" content="participant-preview|protocol-report"> (or --protocol) gets a slim
+<script id="hs-protocol"> (id, SHA-256 of the file, arms, stages, effects) and its data-program-id values
+must be protocol refs (an arm, a stage, "<stage>.<item>", an effect or a unit). A participant preview carries
+its own styles and script, so the kit is not added to it; everything else is checked the same way.
 """
 from __future__ import annotations
 
@@ -21,6 +27,10 @@ KIT = Path(__file__).resolve().parent
 CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; "
        "font-src data:; media-src data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'")
 MAX_BYTES = 3_000_000
+# Pages built from protocol.json (skills/preview, skills/run's results page) rather than program.json.
+PROTOCOL_ARTIFACTS = ('participant-preview', 'protocol-report')
+SELF_CONTAINED = ('participant-preview',)   # carry their own styles and script: the kit is not added
+ARTIFACT_META = re.compile(r'<meta\b[^>]*name=["\']hs-artifact["\'][^>]*content=["\']([a-z-]+)["\']', re.I)
 
 BLOCK = re.compile(r'<(script|style)\b[^>]*\bdata-hs-kit="([a-z-]+)"[^>]*>.*?</\1>\s*', re.S | re.I)
 LINK_CSS = re.compile(r'<link\b[^>]*href=["\'][^"\']*hs-kit\.css["\'][^>]*>\s*', re.I)
@@ -47,6 +57,34 @@ def slim_program(program: dict) -> dict:
         for e in program.get('evidence') or []
     ]
     return out
+
+
+def artifact_kind(html: str) -> str | None:
+    m = ARTIFACT_META.search(html)
+    return m.group(1).lower() if m else None
+
+
+def slim_protocol(protocol: dict, sha256: str) -> dict:
+    """What a protocol artifact needs to say which protocol it shows: ids only, never screen text."""
+    an = protocol.get('analysis') or {}
+    return {'id': protocol.get('id'), 'sha256': sha256, 'title': (protocol.get('meta') or {}).get('title'),
+            'arms': [a.get('id') for a in protocol.get('arms') or [] if isinstance(a, dict)],
+            'stages': sorted(protocol.get('stages') or {}),
+            'effects': [e.get('id') for e in list(an.get('effects') or []) + list(an.get('effects_means') or [])
+                        if isinstance(e, dict)]}
+
+
+def protocol_refs(protocol: dict) -> set:
+    """Ids a protocol artifact may point at: arms, stages, '<stage>.<item>', effects, units."""
+    refs = set(slim_protocol(protocol, '')['arms']) | set(slim_protocol(protocol, '')['effects'])
+    refs |= set(protocol.get('units') or {})
+    for name, st in (protocol.get('stages') or {}).items():
+        refs.add(name)
+        for key in ('content', 'responses'):
+            for it in (st or {}).get(key) or []:
+                if isinstance(it, dict) and it.get('id'):
+                    refs.add(f'{name}.{it["id"]}')
+    return refs
 
 
 def known_ids(program: dict) -> dict[str, set]:
@@ -94,7 +132,10 @@ def embed_images(html: str, base: Path) -> str:
     return re.sub(r'(<img\b[^>]*\bsrc=["\'])([^"\']+)(["\'])', sub, html, flags=re.I)
 
 
-def inline(html: str, program: dict | None) -> str:
+def inline(html: str, program: dict | None, protocol: tuple[dict, str] | None = None) -> str:
+    """protocol: (protocol.json, its SHA-256) for a protocol artifact; it is embedded instead of the program."""
+    if artifact_kind(html) in SELF_CONTAINED:
+        return _inline_self_contained(html, protocol)
     css = (KIT / 'hs-kit.css').read_text('utf-8')
     js = (KIT / 'hs-kit.js').read_text('utf-8')
     chart = (KIT / 'chart.umd.min.js').read_text('utf-8')
@@ -127,7 +168,9 @@ def inline(html: str, program: dict | None) -> str:
 
     css_block = f'<style data-hs-kit="css">\n{css}</style>\n'
     js_parts = []
-    if program is not None:
+    if protocol is not None:
+        js_parts.append(_protocol_block(protocol))
+    elif program is not None:
         js_parts.append('<script type="application/json" id="hs-program" data-hs-kit="program">'
                         + _js(json.dumps(slim_program(program), ensure_ascii=False)) + '</script>\n')
     if wants_chart:
@@ -154,6 +197,26 @@ def inline(html: str, program: dict | None) -> str:
     html = html.replace(placeholder['css'], css_block, 1).replace(placeholder['css'], '')
     html = html.replace(placeholder['js'], js_block, 1).replace(placeholder['js'], '')
     return html
+
+
+def _protocol_block(protocol: tuple[dict, str]) -> str:
+    return ('<script type="application/json" id="hs-protocol" data-hs-kit="protocol">'
+            + _js(json.dumps(slim_protocol(*protocol), ensure_ascii=False)) + '</script>\n')
+
+
+def _inline_self_contained(html: str, protocol: tuple[dict, str] | None) -> str:
+    """A participant preview: keep its own styles and script; refresh the CSP and the protocol block only."""
+    html = BLOCK.sub('', html)
+    html = CSP_META.sub('', html)
+    head_open = re.search(r'<head\b[^>]*>', html, re.I)
+    if not head_open:
+        raise ValueError('a participant preview needs a <head>')
+    at = re.compile(r'<meta\s+charset=["\']?[\w-]+["\']?\s*/?>', re.I).search(html, head_open.end())
+    at = at.end() if at else head_open.end()
+    block = f'\n<meta http-equiv="Content-Security-Policy" content="{CSP}">'
+    if protocol is not None:
+        block += '\n' + _protocol_block(protocol).rstrip('\n')
+    return html[:at] + block + html[at:]
 
 
 def _calls(script: str, names: tuple[str, ...]) -> list[str]:
@@ -186,7 +249,7 @@ def page_text(html: str) -> str:
     return BLOCK.sub('', html)
 
 
-def check(html: str, program: dict | None) -> tuple[list[str], list[str]]:
+def check(html: str, program: dict | None, protocol: dict | None = None) -> tuple[list[str], list[str]]:
     problems: list[str] = []
     warnings: list[str] = []
     own = page_text(html)
@@ -208,9 +271,20 @@ def check(html: str, program: dict | None) -> tuple[list[str], list[str]]:
         line = own.count('\n', 0, m.start()) + 1
         problems.append(f'line {line}: "{ref}" is a separate file; artifacts must carry everything inline '
                         '(images next to the artifact are embedded automatically when they exist)')
-    if 'data-hs-kit="js"' not in html:
+    kind = artifact_kind(html)
+    if 'data-hs-kit="js"' not in html and kind not in SELF_CONTAINED:
         problems.append('kit script missing after inlining (internal error)')
-    if program is not None:
+    if kind in PROTOCOL_ARTIFACTS and protocol is None:
+        problems.append(f'a {kind} page is checked against protocol.json, and none was found')
+    if protocol is not None:
+        if 'id="hs-protocol"' not in html:
+            problems.append('protocol block missing after inlining (internal error)')
+        refs = protocol_refs(protocol)
+        for m in re.finditer(r'<[^>]*\bdata-program-id\s*=\s*["\']([^"\']+)["\'][^>]*>', no_scripts):
+            if m.group(1) not in refs:
+                problems.append(f'line {own.count(chr(10), 0, m.start()) + 1}: data-program-id="{m.group(1)}" is not '
+                                'a protocol ref (an arm, a stage, "<stage>.<item>", an effect or a unit)')
+    elif program is not None:
         ids = known_ids(program)
         for m in re.finditer(r'<[^>]*\bdata-program-id\s*=\s*["\']([^"\']+)["\'][^>]*>', no_scripts):
             pid = m.group(1)
@@ -241,28 +315,44 @@ def check(html: str, program: dict | None) -> tuple[list[str], list[str]]:
     return problems, warnings
 
 
+def find_upwards(name: str, target: Path) -> Path | None:
+    for base in [Path.cwd(), *target.resolve().parents]:
+        if (base / name).is_file():
+            return base / name
+    return None
+
+
 def main(argv: list[str]) -> int:
     import argparse
+    import hashlib
     ap = argparse.ArgumentParser(description='Inline the HumanStudy artifact kit and check an artifact.')
     ap.add_argument('html', help='artifacts/<name>.html, rewritten in place')
     ap.add_argument('--program', help='program.json (default: found next to the project root)')
+    ap.add_argument('--protocol', help='protocol.json, for a page built from the protocol (default: found next to '
+                                       'the project root when the page is a protocol artifact)')
     a = ap.parse_args(argv)
     target = Path(a.html)
-    prog_path = Path(a.program) if a.program else None
-    if prog_path is None:
-        for base in [Path.cwd(), *target.resolve().parents]:
-            if (base / 'program.json').is_file():
-                prog_path = base / 'program.json'
-                break
+    text = target.read_text('utf-8')
+    protocol = None
+    proto_path = Path(a.protocol) if a.protocol else (
+        find_upwards('protocol.json', target) if artifact_kind(text) in PROTOCOL_ARTIFACTS else None)
+    if proto_path is not None:
+        try:
+            raw = proto_path.read_bytes()
+            protocol = (json.loads(raw.decode('utf-8')), hashlib.sha256(raw).hexdigest())
+        except (OSError, ValueError) as e:
+            print(f'FAIL {target} - protocol.json cannot be read ({e})')
+            return 1
     program = None
+    prog_path = Path(a.program) if a.program else (None if protocol else find_upwards('program.json', target))
     if prog_path and prog_path.is_file():
         try:
             program = json.loads(prog_path.read_text('utf-8'))
         except json.JSONDecodeError as e:
             print(f'program.json is not valid JSON ({e}); ids are not checked')
-    out = inline(embed_images(target.read_text('utf-8'), target.resolve().parent), program)
+    out = inline(embed_images(text, target.resolve().parent), program, protocol)
     target.write_text(out, 'utf-8')
-    problems, warnings = check(out, program)
+    problems, warnings = check(out, program, protocol[0] if protocol else None)
     for w in warnings:
         print('  warning: ' + w)
     if problems:
@@ -271,8 +361,8 @@ def main(argv: list[str]) -> int:
             print('  - ' + p)
         return 1
     version = json.loads((KIT / 'kit.json').read_text('utf-8'))['version']
-    print(f'PASS {target} ({len(out.encode("utf-8")) // 1024} KB, hs-kit {version}'
-          f'{", program embedded" if program is not None else ", no program.json found"})')
+    embedded = ', protocol embedded' if protocol else ', program embedded' if program is not None else ', no program.json found'
+    print(f'PASS {target} ({len(out.encode("utf-8")) // 1024} KB, hs-kit {version}{embedded})')
     return 0
 
 

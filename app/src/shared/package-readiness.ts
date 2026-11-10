@@ -1,3 +1,4 @@
+import type { ProtocolBudget } from './run-limits'
 // Is the replay package under package/<slug>/ complete enough to run? The static part of
 // pack/skills/build/check_package.py (the agent's full check): the required files exist, every
 // required JSON file parses, task/adapter.py defines run_sessions() and evaluation/evaluation.py defines
@@ -25,7 +26,7 @@ export const PACKAGE_ENTRY_POINTS: Partial<Record<PackageFile, string>> = {
 }
 
 export type PackageProblem =
-  | { file: 'study.json'; kind: 'scientific'; check: string; reason: string }
+  | { file: 'study.json' | 'protocol.json'; kind: 'scientific'; check: string; reason: string }
   | { file: PackageFile; kind: 'missing' }
   | { file: PackageFile; kind: 'invalid-json' }
   | { file: PackageFile; kind: 'unvalidated' | 'wrong-study' | 'stale-program' | 'bindings' }
@@ -40,6 +41,11 @@ export interface PackageReadiness {
   modelAccess?: 'relay' | 'key'
   /** At least one folder under package/. */
   exists: boolean
+  /** The protocol route, reported separately when protocol.json exists (v0.8): protocol.json against the
+   *  bundled engine's checks, its runnable arms (the conditions of a protocol run) and the measured model
+   *  budget a run is sized with (shared/run-limits protocolRunLimits). It never makes the
+   *  package ready; `ready` above is the package route alone. */
+  protocol?: { ready: boolean; problems: PackageProblem[]; arms?: string[]; budget?: ProtocolBudget }
   ready: boolean
   /** The package checked (the ready one, else the most complete one). */
   slug: string | null
@@ -123,18 +129,22 @@ export function packageStamp(entries: { rel: string; size?: number; mtime?: numb
   return entries.filter((e) => e.rel === 'package' || e.rel.startsWith('package/')).map((e) => `${e.rel}:${e.size ?? ''}:${e.mtime ?? ''}`).sort().join('|')
 }
 
-/** The same for everything else the build checks read (check_readiness.py), except program.json, which
- *  callers compare by content: sources/, human-data/, the files beside program.json and root-level PDFs. */
+/** The same for everything else the build checks read (check_readiness.py, and hsenv.checks for the protocol
+ *  route), except program.json, which callers compare by content: sources/, human-data/, the files beside
+ *  program.json, root-level PDFs, protocol.json, study.json, sourcetext/ and assets/. */
 export function readinessStamp(entries: { rel: string; size?: number; mtime?: number }[]): string {
-  const read = (rel: string) => rel === 'package' || rel.startsWith('package/') || rel === 'sources' || rel.startsWith('sources/') ||
-    rel === 'human-data' || rel.startsWith('human-data/') || ['effects.json', 'capabilities.json', 'README.md'].includes(rel) || /^[^/]+[.]pdf$/i.test(rel)
+  const under = (rel: string, dir: string) => rel === dir || rel.startsWith(dir + '/')
+  const read = (rel: string) => ['package', 'sources', 'human-data', 'sourcetext', 'assets'].some((dir) => under(rel, dir)) ||
+    ['effects.json', 'capabilities.json', 'README.md', 'protocol.json', 'study.json'].includes(rel) || /^[^/]+[.]pdf$/i.test(rel)
   return entries.filter((e) => read(e.rel)).map((e) => `${e.rel}:${e.size ?? ''}:${e.mtime ?? ''}`).sort().join('|')
 }
 
 /** The i18n keys of the run confirmation text shown next to Run simulation. Without the relay the
  *  confirmation always says that the study's code can read the key; anything but an explicit
  *  'relay' from the main process gets that wording. */
-export function runConfirmation(r: Pick<PackageReadiness, 'modelAccess' | 'runNotice'> | null | undefined): { note: 'sim.note' | 'sim.note_key'; notice: 'sim.run_notice' | 'sim.run_notice_relay' | null } {
+export function runConfirmation(r: Pick<PackageReadiness, 'modelAccess' | 'runNotice'> | null | undefined): { note: 'sim.note' | 'sim.note_key'; notice: 'sim.run_notice' | 'sim.run_notice_relay' | null; detail: 'sim.relay_detail' | null } {
+  // With the relay the visible text states only the time limit; `detail` (the relay and its token cap) sits in a
+  // disclosure for readers who want it. The Linux/Windows key notice is never folded away.
   const relay = r?.modelAccess === 'relay'
-  return { note: relay ? 'sim.note' : 'sim.note_key', notice: r?.runNotice ? (relay ? 'sim.run_notice_relay' : 'sim.run_notice') : null }
+  return { note: relay ? 'sim.note' : 'sim.note_key', notice: r?.runNotice ? (relay ? 'sim.run_notice_relay' : 'sim.run_notice') : null, detail: relay ? 'sim.relay_detail' : null }
 }

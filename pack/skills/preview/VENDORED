@@ -1,0 +1,6 @@
+# Vendored sandbox code. Refresh with scripts/sync_hsenv.sh; never edit by hand.
+source: sandbox skills, 2026-11-09 (engine pass 3)
+synced: 2026-11-09
+42f867dad18a3b6f4ac9a94663b65c0c2440a154fe9324671bfcf1c19cef6f34  build_preview.py
+13dafdd09d147e970d55addcc284289e6b65c0f636743ea157b06637fa09b9ab  preview.css
+14e6ba4d75a165ad6f0da92039887a51786943b43998c801118ec0b9ff282632  preview.js
