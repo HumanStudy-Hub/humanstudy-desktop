@@ -28,7 +28,10 @@ app fills it in on the researcher's own computer, without you:
 - it checks every screen's wording against the exact text the study was built with, so a wrong file can only leave
   a screen empty, never put other words on it.
 
-The restored copy stays in the app's own storage, never in the project. You never see it, and you never write or
+Never move, copy or rename the researcher's copy of a source out of `sources/private/` (into `paper.pdf`,
+`sources/` or anywhere else): only `sources/private/` stays out of exports and research capture. If they mention a
+copy that sits elsewhere in the project, ask before moving it into `sources/private/`. The restored copy stays in
+the app's own storage, never in the project. You never see it, and you never write or
 edit the wording yourself: never type, paste or reconstruct held text into protocol.json, `sourcetext/` or any
 file, and never remove the `distribution` block.
 
@@ -43,7 +46,8 @@ their language, never with the words "rehydrate", "projection", "placeholder", "
 | `wrong-file` | "Your copy of <title> does not match the version the study was built from. Drop in that version." |
 | `changed-online` | "The copy of <title> online has changed since the study was built. Drop in your copy of the version the study used." |
 | `pdf-reader` | "This computer cannot read PDF files yet: update or reinstall HumanStudy Hub, then open the study again." |
-| `app-version` | "This study was published for a newer HumanStudy Hub: update the app." |
+| `app-version` | "This study was published with a different version of HumanStudy Hub's PDF reader: update the app; if that does not help, ask the study's publisher." |
+| `picture` | "Some screens show pictures from <title>, which this version of HumanStudy Hub cannot show yet, so the study cannot run." |
 | `reading` | "Some wording is printed inside a picture and cannot be filled in automatically yet." |
 
 The first line to say is: "The study's original wording comes from the paper; HumanStudy Hub fetches it from the

@@ -368,22 +368,31 @@ def _put(doc, path: str, value) -> None:
         doc[last] = value
 
 
+def _get(doc, path: str):
+    for p in _pointer_parts(path):
+        doc = doc[int(p)] if isinstance(doc, list) else doc[p]
+    return doc
+
+
 def matches_projection(projection: dict, restored: dict) -> bool:
-    """True when `restored` is `projection` with its held texts filled in and nothing else changed: put the
-    placeholders back at every held path and the two must be equal (images: their slots are left out)."""
-    if not isinstance(restored, dict) or "distribution" in restored:
+    """True when `restored` is exactly `projection` with every held text filled in: each held slot holds the text
+    whose sha256 the published study recorded (hsenv's own per-item check), no placeholder is left anywhere, and
+    putting the placeholders back gives the published study unchanged. A held picture is not supported (the app
+    does not restore pictures yet), so a study holding one never matches."""
+    from hsenv import distribution as D
+    if not isinstance(restored, dict) or "distribution" in restored or PLACEHOLDER in json.dumps(restored, ensure_ascii=False):
         return False
     held = projection["distribution"]["held"]
-    a = {k: v for k, v in projection.items() if k != "distribution"}
+    a = json.loads(json.dumps({k: v for k, v in projection.items() if k != "distribution"}))
     b = json.loads(json.dumps(restored))
-    a = json.loads(json.dumps(a))
     try:
         for h in held.values():
             if h.get("kind") == "image":
-                _put(a, h["path"], None)
-                _put(b, h["path"], None)
-            else:
-                _put(b, h["path"], PLACEHOLDER * int(h["length"]))
+                return False
+            text = _get(b, h["path"])
+            if not isinstance(text, str) or D.text_sha256(text) != h["text_sha256"]:
+                return False
+            _put(b, h["path"], PLACEHOLDER * int(h["length"]))
     except (KeyError, IndexError, ValueError, TypeError, AttributeError):
         return False
     return a == b
@@ -393,15 +402,18 @@ def restored_protocol(project: Path) -> dict | None:
     """The protocol to play when protocol.json is a published study whose original wording is held back (its
     `distribution.held` lists placeholders): the restored copy the app filled in on this computer and handed to
     this run (HUMANSTUDY_RUN_RESTORED, in the app's own code folder, never the project). None for an ordinary
-    protocol.json. A published study without that copy is never played: its screens would show placeholders."""
+    protocol.json. A published study without that copy is never played: its screens would show placeholders.
+    The copy is read from the app's code folder next to this file (<code>/restored/protocol.json), never from the
+    environment; and whatever its origin, every held text must hash to the value the published study recorded,
+    so a copy written by anyone else can never put other wording on a screen."""
     projection = json.loads((project / "protocol.json").read_text(encoding="utf-8"))
     dist = projection.get("distribution") if isinstance(projection, dict) else None
     if not (isinstance(dist, dict) and isinstance(dist.get("held"), dict) and dist["held"]):
         return None
-    given = os.environ.get("HUMANSTUDY_RUN_RESTORED")
-    if not given or not Path(given).is_file():
+    given = HERE.parents[1] / "restored" / "protocol.json"
+    if not given.is_file():
         raise Refused(msg("text_missing"))
-    restored = json.loads(Path(given).read_text(encoding="utf-8"))
+    restored = json.loads(given.read_text(encoding="utf-8"))
     if not matches_projection(projection, restored):
         raise Refused(msg("text_other"))
     return restored

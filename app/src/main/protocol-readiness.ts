@@ -54,8 +54,9 @@ const some = (items: unknown[], n = 3): string => items.slice(0, n).map(show).jo
  *  `held`: the sources whose wording a published study holds back (its `distribution.held`). Their texts are
  *  placeholders here and have no source text to compare against; each is checked instead by its own text hash
  *  when the app fills it in on this computer (original-text.ts), and an unfilled one blocks the run there. So
- *  `verbatim.unchecked` blocks only when it names another source. */
-export function protocolProblems(report: unknown, held: ReadonlySet<string> = new Set()): ProtocolProblem[] {
+ *  `verbatim.unchecked` does not block when it names only held sources AND counts no more texts than the study
+ *  holds as placeholders (`heldTexts`): any other unverified text of those sources still blocks. */
+export function protocolProblems(report: unknown, held: ReadonlySet<string> = new Set(), heldTexts = 0): ProtocolProblem[] {
   const r = obj(report)
   if (typeof r.PASS !== 'boolean') throw Error('Invalid protocol checks report')
   const out: ProtocolProblem[] = []
@@ -90,7 +91,8 @@ export function protocolProblems(report: unknown, held: ReadonlySet<string> = ne
   if (list(v.not_found).length) add('verbatim', `texts not found in the source: ${some(list(v.not_found))}`)
   if (list(v.image_unconfirmed).length) add('verbatim', `image-read texts without an agreeing blind reading: ${some(list(v.image_unconfirmed))}`)
   if (list(v.bad_source).length) add('verbatim', `texts cite an unknown source: ${some(list(v.bad_source))}`)
-  const onlyHeld = held.size > 0 && list(v.unchecked_sources).length > 0 && list(v.unchecked_sources).every((k) => typeof k === 'string' && held.has(k))
+  const onlyHeld = held.size > 0 && heldTexts > 0 && Number(v.unchecked) <= heldTexts && list(v.unchecked_sources).length > 0
+    && list(v.unchecked_sources).every((k) => typeof k === 'string' && held.has(k))
   if (Number(v.unchecked) > 0 && !onlyHeld) add('verbatim', `${v.unchecked} served text(s) have no source text under sourcetext/ to check against`)
   const annotations = list(r.reading_annotations).filter((a) => obj(a).error !== undefined)
   if (annotations.length) add('verbatim', `printed-annotation rules with errors: ${some(annotations)}`)
@@ -109,16 +111,16 @@ export function protocolProblems(report: unknown, held: ReadonlySet<string> = ne
 }
 
 /** Parse the engine's report (indented JSON on stdout); anything else counts as a failed check, never a pass. */
-export function parseProtocolReport(stdout: string, held: ReadonlySet<string> = new Set()): ProtocolProblem[] {
+export function parseProtocolReport(stdout: string, held: ReadonlySet<string> = new Set(), heldTexts = 0): ProtocolProblem[] {
   const start = stdout.indexOf('{')
   if (start < 0) throw Error('No protocol checks report')
-  return protocolProblems(JSON.parse(stdout.slice(start)), held).slice(0, 30)
+  return protocolProblems(JSON.parse(stdout.slice(start)), held, heldTexts).slice(0, 30)
 }
 
 /** The checks' answer from what the engine printed: its report, or, when the engine stopped on the protocol
  *  (a traceback, e.g. a flow naming a stage that does not exist), that error as a blocking problem. */
-export function protocolOutcome(stdout: string, stderr: string, held: ReadonlySet<string> = new Set()): ProtocolProblem[] {
-  if (stdout.includes('{')) return parseProtocolReport(stdout, held)
+export function protocolOutcome(stdout: string, stderr: string, held: ReadonlySet<string> = new Set(), heldTexts = 0): ProtocolProblem[] {
+  if (stdout.includes('{')) return parseProtocolReport(stdout, held, heldTexts)
   const last = stderr.trim().split('\n').at(-1)?.trim()
   if (/Traceback/.test(stderr) && last) return [{ check: 'protocol', reason: `The engine stopped on this protocol: ${last}`.slice(0, 400) }]
   throw Error('No protocol checks report')
@@ -132,6 +134,25 @@ export async function heldSources(project: string): Promise<Set<string>> {
     if (!held || typeof held !== 'object' || Array.isArray(held)) return new Set()
     return new Set(Object.values(held as Record<string, { source?: unknown }>).map((h) => h?.source).filter((k): k is string => typeof k === 'string'))
   } catch { return new Set() }
+}
+
+/** The held texts of a published protocol.json that really are placeholders (a string of U+2591 of the recorded
+ *  length at their path), and their sources: what the source-text check may leave to the per-item hash check. */
+export async function heldTexts(project: string): Promise<{ sources: Set<string>; texts: number }> {
+  const out = { sources: new Set<string>(), texts: 0 }
+  try {
+    const p = JSON.parse(await readFile(join(project, 'protocol.json'), 'utf8'))
+    const held = p?.distribution?.held
+    if (!held || typeof held !== 'object' || Array.isArray(held)) return out
+    for (const h of Object.values(held as Record<string, { source?: unknown; path?: unknown; kind?: unknown; length?: unknown }>)) {
+      if (!h || typeof h.source !== 'string' || typeof h.path !== 'string' || h.kind === 'image') continue
+      let v: unknown = p
+      for (const part of h.path.split('/').slice(1).map((x) => x.replace(/~1/g, '/').replace(/~0/g, '~')))
+        v = v && typeof v === 'object' ? (v as Record<string, unknown>)[part] : undefined
+      if (typeof v === 'string' && v.length > 0 && v.length === h.length && /^\u2591+$/.test(v)) { out.texts++; out.sources.add(h.source) }
+    }
+  } catch { /* unreadable: nothing is held */ }
+  return out
 }
 
 /** `--source-text name=path` for every regular sourcetext/*.txt inside the project (links out of it are skipped). */
@@ -219,7 +240,8 @@ export async function protocolReadiness(python: string | null, engine: [string, 
         [work, await realpath(project), '--sessions', String(PROTOCOL_SESSIONS), ...await sourceTextArgs(project)], home, bin, timeout, limits)
       if (run.limit) return [ENGINE_LIMIT]
       if (/\bMemoryError\b/.test(run.stderr) && !run.stdout.includes('{')) return [ENGINE_LIMIT]
-      return protocolOutcome(run.stdout, run.stderr, await heldSources(project))
+      const held = await heldTexts(project)
+      return protocolOutcome(run.stdout, run.stderr, held.sources, held.texts)
     })
   } catch { return [ENGINE_FAILED] }
 }

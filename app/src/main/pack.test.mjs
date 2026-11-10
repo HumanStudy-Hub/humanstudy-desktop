@@ -5,7 +5,7 @@ import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { test } from 'node:test'
@@ -923,8 +923,9 @@ print(json.dumps({
 })
 
 // A published study (hsenv 0.8.1 distribution): protocol.json holds placeholders where wording is held back. The run
-// plays only the copy the app restored on this computer and handed over (HUMANSTUDY_RUN_RESTORED); never the
-// placeholders, never a copy that changes anything but the held texts, and its records keep no screens.
+// plays only the copy restored on this computer, read from the code folder (<code>/restored/protocol.json, written by
+// the app beside its trusted code); never the placeholders, never wording that does not hash to the published value,
+// never a copy that changes anything else, and its records keep no screens.
 test('a published study runs only from its restored wording, and its records keep no screens', { skip: !python311 }, async () => {
   const proj = await protocolProject()
   const fixture = join(packDir, 'runtime/tests/fixtures/original_text/protocol.json')
@@ -945,9 +946,10 @@ test('a published study runs only from its restored wording, and its records kee
       parts.reduce((o, k) => o[k], p)[last] = text
     }
     extra(p)
-    const file = join(mkdtempSync(join(tmpdir(), 'restored-')), 'protocol.json')
+    const file = join(proj, '.opencode/restored/protocol.json')
+    mkdirSync(dirname(file), { recursive: true })
     writeFileSync(file, JSON.stringify(p))
-    return file
+    return {}
   }
   const run = 'artifacts/simulations/2026-11-10-0100'
   let r = spawnSync(python311, ['-B', '.opencode/skills/run/app_run.py', 'new', run, '--per-arm', '2', '--protocol-hash', sha(join(proj, 'protocol.json'))], { cwd: proj, encoding: 'utf8' })
@@ -970,13 +972,21 @@ except SystemExit as e:
   r = go({})
   assert.match(result(r).refused ?? r.stderr, /original wording has not been filled in on this computer.*\[text not available\]/)
   // a copy that also changes something outside the held texts: refused
-  r = go({ HUMANSTUDY_RUN_RESTORED: fill((p) => { p.stages.q.responses[1].options[0].label = 'Sure' }) })
+  r = go(fill((p) => { p.stages.q.responses[1].options[0].label = 'Sure' }))
   assert.match(result(r).refused ?? r.stderr, /another version of this study/)
-  // a copy that keeps a placeholder is not a restored copy either
-  r = go({ HUMANSTUDY_RUN_RESTORED: fill((p) => { p.distribution = projection.distribution }) })
+  // a copy that keeps the placeholders (protocol.json minus its distribution block), or with wording someone typed
+  r = go((() => { const file = join(proj, '.opencode/restored/protocol.json'); const p = structuredClone(projection); delete p.distribution; writeFileSync(file, JSON.stringify(p)); return {} })())
   assert.match(result(r).refused ?? r.stderr, /another version of this study/)
+  r = go(fill((p) => { p.stages.intro.content[0].value = 'FORGED TEXT' }))
+  assert.match(result(r).refused ?? r.stderr, /another version of this study/)
+  r = go(fill((p) => { p.distribution = projection.distribution }))
+  assert.match(result(r).refused ?? r.stderr, /another version of this study/)
+  // an environment variable cannot point the run at another copy
+  rmSync(join(proj, '.opencode/restored'), { recursive: true })
+  r = go({ HUMANSTUDY_RUN_RESTORED: join(proj, 'elsewhere.json') })
+  assert.match(result(r).refused ?? r.stderr, /original wording has not been filled in/)
   // the restored copy: plays the wording, records the published version's hash, keeps no screens in the project
-  r = go({ HUMANSTUDY_RUN_RESTORED: fill() })
+  r = go(fill())
   const out = result(r)
   assert.equal(out.status, 'done', r.stdout.slice(-800) + r.stderr.slice(-1500))
   assert.equal(out.sha, sha(join(proj, 'protocol.json')))

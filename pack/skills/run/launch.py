@@ -42,11 +42,6 @@ def main():
                  "HUMANSTUDY_RUN_PLAN", "HUMANSTUDY_LLM_MAX_OUTPUT", "HUMANSTUDY_LANG"):
         if os.environ.get(name):
             env[name] = os.environ[name]
-    # A published study whose original wording the app filled in on this computer: the restored copy sits in the
-    # app's code folder (written by the main process with the rest of the trusted code, never in the project).
-    restored = code / "restored" / "protocol.json"
-    if restored.is_file():
-        env["HUMANSTUDY_RUN_RESTORED"] = str(restored)
     base, token = os.environ.get("HS_RELAY_BASEURL", ""), os.environ.get("HS_RELAY_TOKEN", "")
     log = open(run_dir / "run.log", "a", encoding="utf-8")
     log.write("started %s from the app's trusted copy\n" % time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))

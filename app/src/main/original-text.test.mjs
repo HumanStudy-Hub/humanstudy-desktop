@@ -58,6 +58,13 @@ test('a published study is recognised by its held wording; an ordinary protocol 
   close()
   assert.equal(await O.isPublishedStudy(proj), true)
   assert.deepEqual([...await R.heldSources(proj)].sort(), ['booklet', 'handout', 'leaflet'])
+  const held = await R.heldTexts(proj)
+  assert.deepEqual([[...held.sources].sort(), held.texts], [['booklet', 'handout', 'leaflet'], 4])
+  // a held entry that points at real text (not a placeholder) is not counted
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.intro.content[0].value = 'x'.repeat(p.distribution.held.h1.length)
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p))
+  assert.equal((await R.heldTexts(proj)).texts, 3)
   const plain = mkdtempSync(join(tmpdir(), 'plain-'))
   writeFileSync(join(plain, 'protocol.json'), JSON.stringify({ id: 'x' }))
   assert.equal(await O.isPublishedStudy(plain), false)
@@ -68,12 +75,13 @@ test('the engine checks block on unchecked texts only when they cite a source th
   const report = (unchecked, sources, extra = {}) => JSON.stringify({ refs: [], fuzz: { problems: [] }, PASS: false, ...extra,
     verbatim: { not_found: [], image_unconfirmed: [], bad_source: [], unchecked, unchecked_sources: sources } })
   const held = new Set(['handout', 'booklet'])
-  assert.deepEqual(R.parseProtocolReport(report(3, ['handout', 'booklet']), held), [], 'held texts are checked by their own hash instead')
-  assert.deepEqual(R.parseProtocolReport(report(3, ['handout', 'survey']), held).map((p) => p.check), ['verbatim'])
+  assert.deepEqual(R.parseProtocolReport(report(3, ['handout', 'booklet']), held, 3), [], 'held texts are checked by their own hash instead')
+  assert.deepEqual(R.parseProtocolReport(report(3, ['handout', 'survey']), held, 3).map((p) => p.check), ['verbatim'])
+  assert.deepEqual(R.parseProtocolReport(report(5, ['handout']), held, 1).map((p) => p.check), ['verbatim'], 'more unverified texts than held placeholders')
   assert.deepEqual(R.parseProtocolReport(report(3, ['handout'])).map((p) => p.check), ['verbatim'], 'an ordinary protocol is unchanged')
   // any other failing finding still blocks, including one the parser lists only since this change
-  assert.deepEqual(R.parseProtocolReport(report(3, ['handout'], { fuzz: { problems: [], table_spans_unserved: ['t1'] } }), held).map((p) => p.check), ['fuzz'])
-  assert.deepEqual(R.parseProtocolReport(report(0, []), held).map((p) => p.check), ['protocol'], 'an unexplained failure is never a pass')
+  assert.deepEqual(R.parseProtocolReport(report(3, ['handout'], { fuzz: { problems: [], table_spans_unserved: ['t1'] } }), held, 3).map((p) => p.check), ['fuzz'])
+  assert.deepEqual(R.parseProtocolReport(report(0, []), held, 3).map((p) => p.check), ['protocol'], 'an unexplained failure is never a pass')
 })
 
 test('problems: one per source, in plain words, with the parts the app translates; none once complete', () => {
@@ -131,12 +139,15 @@ test('readiness: missing wording blocks a protocol run and comes first; a failed
   assert.equal(r.protocol.ready, false)
   assert.deepEqual(r.protocol.problems.map((p) => [p.check, p.text?.need]), [['original-text', 'download']])
   await P.projectPackageReadiness(proj)
-  assert.equal(calls, 2, 'a download failure is not cached')
-  P.configureOriginalText(async () => { calls++; return [{ check: 'original-text', reason: 'r', text: { need: 'file', title: 'T', format: 'html', screens: 1 } }] })
-  await P.projectPackageReadiness(proj); await P.projectPackageReadiness(proj)
-  assert.equal(calls, 3, 'waiting for a file is cached until a file changes')
+  assert.equal(calls, 1, 'kept while nothing changes')
+  let t = 0
+  await P.originalTextProblemsOf(proj, () => t); await P.originalTextProblemsOf(proj, () => t)
+  assert.equal(calls, 2)
+  t += P.TEXT_RECHECK_MS
+  await P.originalTextProblemsOf(proj, () => t)
+  assert.equal(calls, 3, 'asked again after ten minutes (a failed download may work later)')
   writeFileSync(join(proj, 'paper.pdf'), 'dropped')
-  await P.projectPackageReadiness(proj)
+  await P.originalTextProblemsOf(proj, () => t)
   assert.equal(calls, 4, 'a dropped file checks again')
   P.configureOriginalText(async () => [])
   r = await P.projectPackageReadiness(proj)

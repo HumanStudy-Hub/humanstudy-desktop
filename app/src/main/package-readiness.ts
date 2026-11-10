@@ -89,9 +89,7 @@ async function stampOf(paths: string[]): Promise<string> {
 const STAMPED_BESIDE = ['program.json', 'effects.json', 'capabilities.json', 'README.md']
 
 type Outcome = ScientificProblem[] | ProtocolBudget
-// A failed download of a published study's source may succeed later without any study file changing (the
-// helper itself waits ten minutes before asking the publisher again): never kept either.
-const isRuntime = (o: Outcome): boolean => Array.isArray(o) && o.some((p) => p.check === 'runtime' || p.text?.need === 'download')
+const isRuntime = (o: Outcome): boolean => Array.isArray(o) && o.some((p) => p.check === 'runtime')
 
 /** One check run once per input state: `stamp` lists its inputs, `version` names the checker, `run` checks. */
 function cachedCheck<T extends Outcome>(lane: string, stamp: () => Promise<string>, version: () => string, run: () => Promise<T>): Promise<T | ScientificProblem[]> {
@@ -181,10 +179,14 @@ let textCheck: TextCheck = async () => []
 /** Install the check that fills in a published study's original wording (index.ts); tests pass stubs. Without
  *  it, an ordinary protocol.json is unaffected and a published one is refused at run time (app_run). */
 export function configureOriginalText(check: TextCheck): void { textCheck = check; results.clear() }
-/** The original-wording problems of one project, once per input state: protocol.json, sources/ (where a dropped
- *  copy lands) and paper.pdf. */
-export function originalTextProblemsOf(project: string): Promise<ScientificProblem[]> {
-  return cachedCheck<ScientificProblem[]>(JSON.stringify(['text', project]), async () => (await protocolStamp(project)) + await stampOf([join(resolve(project), 'paper.pdf')]),
+/** How long an original-wording answer is kept when no file changes: a failed download may work later (the helper
+ *  itself asks the publisher again only after the same ten minutes; a restored study is answered from its cache). */
+export const TEXT_RECHECK_MS = 10 * 60_000
+/** The original-wording problems of one project, once per input state (protocol.json, sources/ where a dropped
+ *  copy lands, paper.pdf) and at most every TEXT_RECHECK_MS. */
+export function originalTextProblemsOf(project: string, now: () => number = Date.now): Promise<ScientificProblem[]> {
+  return cachedCheck<ScientificProblem[]>(JSON.stringify(['text', project]),
+    async () => (await protocolStamp(project)) + await stampOf([join(resolve(project), 'paper.pdf')]) + ':' + Math.floor(now() / TEXT_RECHECK_MS),
     () => protocolVersion, () => textCheck(project))
 }
 

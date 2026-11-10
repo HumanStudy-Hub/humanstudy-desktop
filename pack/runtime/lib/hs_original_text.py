@@ -38,7 +38,12 @@ RETRY_AFTER = 10 * 60                 # a failed download is not tried again for
 MAX_CANDIDATES = 12                   # project files tried per source
 EXTENSIONS = {"pdf": (".pdf",), "html": (".html", ".htm", ".xhtml"), "text": (".txt", ".text", ".md"),
               "docx": (".docx",), "qsf": (".qsf", ".json")}
-OK = ("ok", "ok_image")
+OK = ("ok",)   # a held picture (or a region rendered as one) is not supported yet: it stays unresolved
+
+
+def restored_ok(entry, item_report) -> bool:
+    """A held text the copy on this computer verified; pictures are never counted (the run could not show them)."""
+    return isinstance(entry, dict) and entry.get("kind") != "image" and (item_report or {}).get("status") in OK
 STATUS_VERSION = 1
 
 
@@ -100,13 +105,26 @@ def _public_host(url: str) -> bool:
         return True   # cannot resolve: the download itself fails and says so
     for info in infos:
         ip = ipaddress.ip_address(info[4][0].split("%")[0])
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+        if not ip.is_global or ip.is_multicast:
             return False
     return True
 
 
+class ChangedOnline(OSError):
+    """The last download of this URL restored none of the study's wording (its name reaches hsenv's report)."""
+
+
+RESTORED_NONE = "the download restored none of the study's wording"
+
+
 class _NoDowngrade(urllib.request.HTTPRedirectHandler):
+    """No https -> http, no other scheme, and (unless local hosts are allowed, in tests) no redirect to this
+    computer or a private network. A DNS answer that changes between this check and the connection is not caught."""
+    allow_local = False
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not self.allow_local and not _public_host(newurl):
+            raise urllib.error.HTTPError(newurl, code, "redirect to a local or private address refused", headers, fp)
         if urllib.parse.urlsplit(req.full_url).scheme == "https" and urllib.parse.urlsplit(newurl).scheme != "https":
             raise urllib.error.HTTPError(newurl, code, "redirect from https to http refused", headers, fp)
         if urllib.parse.urlsplit(newurl).scheme not in ("http", "https"):
@@ -118,7 +136,9 @@ def make_fetch(cache: Path, allow_local: bool = False, offline: bool = False, lo
     """fetch(url) -> bytes for hsenv.rehydrate: http(s) only, at most MAX_BYTES, cached under <cache>/downloads by
     URL; a failure is remembered for RETRY_AFTER seconds so a check that repeats does not hammer the publisher."""
     root = cache / "downloads"
-    opener = urllib.request.build_opener(_NoDowngrade)
+    redirects = _NoDowngrade()
+    redirects.allow_local = allow_local
+    opener = urllib.request.build_opener(redirects)
 
     def fetch(url: str) -> bytes:
         key = sha256(url.encode("utf-8"))
@@ -126,7 +146,8 @@ def make_fetch(cache: Path, allow_local: bool = False, offline: bool = False, lo
         if got.is_file():
             return got.read_bytes()
         if failed.is_file() and time.time() - failed.stat().st_mtime < RETRY_AFTER:
-            raise OSError("download failed recently: " + failed.read_text(encoding="utf-8")[:200])
+            why = failed.read_text(encoding="utf-8")[:200]
+            raise (ChangedOnline if why == RESTORED_NONE else OSError)("download failed recently: " + why)
         if offline:
             raise OSError("offline")
         if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
@@ -155,6 +176,16 @@ def make_fetch(cache: Path, allow_local: bool = False, offline: bool = False, lo
     return fetch
 
 
+def forget_download(cache: Path, url: str, why: str) -> None:
+    """Drop a download that restored nothing (a paywall or login page, a captive portal, a truncated file): it is
+    asked for again after RETRY_AFTER instead of being kept for good."""
+    root = cache / "downloads"
+    key = sha256(url.encode("utf-8"))
+    (root / key).unlink(missing_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / (key + ".failed")).write_text(why, encoding="utf-8")
+
+
 # ------------------------------------------------------------------------------------------- project files
 def candidates_for(fmt: str | None, files: list[Path], key: str, want: str | None) -> list[Path]:
     """The project files worth trying for one source, best first: named after the source, then the file the study
@@ -164,10 +195,8 @@ def candidates_for(fmt: str | None, files: list[Path], key: str, want: str | Non
     named = [f for f in pool if f.stem.lower() == key.lower()]
 
     def same(f):
-        try:
-            return want is not None and sha256(f.read_bytes()) == want
-        except OSError:
-            return False
+        data = read_file(f) if want is not None else None
+        return data is not None and sha256(data) == want
     exact = [f for f in pool if f not in named and same(f)]
     rest = [f for f in pool if f not in named and f not in exact]
     return (named + exact + rest)[:MAX_CANDIDATES]
@@ -210,21 +239,32 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
     chosen: dict[str, Path] = {}
     supplied: dict[str, bytes] = {}
     held = held_of(projection)
+
+    def ok_count(rep_, key):
+        return sum(1 for h, e in held.items() if isinstance(e, dict) and e.get("source") == key
+                   and restored_ok(e, rep_["items"].get(h)))
+    # a link source whose download restored nothing is not kept (see forget_download)
+    for key, src in (report.get("sources") or {}).items():
+        d = distribution_of(projection, key)
+        if d.get("tier") == "link" and src.get("status") == "ok" and isinstance(d.get("url"), str) \
+                and src.get("matches_recorded_sha256") is not True and ok_count(report, key) == 0:
+            forget_download(cache, d["url"], RESTORED_NONE)
     todo = sorted({e.get("source") for h, e in held.items()
                    if isinstance(e, dict) and isinstance(e.get("source"), str)
-                   and report["items"].get(h, {}).get("status") not in OK})
+                   and not restored_ok(e, report["items"].get(h))})
     for key in todo:
         d = distribution_of(projection, key)
         want = d.get("sha256") if isinstance(d.get("sha256"), str) else None
         sub = only_source(projection, key)
         n_items = len(held_of(sub))
-        best, best_ok = None, 0
+        # a file replaces the download only when it restores more of this source than the download did
+        best, best_ok = None, ok_count(report, key)
         for path in candidates_for(d.get("format"), files, key, want):
             data = read_file(path)
             if data is None:
                 continue
             _, rep = D.rehydrate(sub, files={key: data}, extractors=extractors)
-            k = sum(1 for r in rep["items"].values() if r.get("status") in OK)
+            k = sum(1 for h, r in rep["items"].items() if restored_ok(held.get(h), r))
             if k > best_ok:
                 best, best_ok = (path, data), k
             if k == n_items:
@@ -233,12 +273,16 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
             chosen[key], supplied[key] = best
     if supplied:
         out, report = D.rehydrate(projection, fetch=fetch, files=supplied, extractors=extractors)
-    return (out if report.get("complete") else None), report, chosen, extractors, log
+    complete = bool(report.get("complete")) and all(restored_ok(e, report["items"].get(h)) for h, e in held.items())
+    report["complete"] = complete
+    return (out if complete else None), report, chosen, extractors, log
 
 
 def need_of(fmt: str | None, tier: str | None, statuses: list[dict], source_report: dict, had_file: bool,
             extractors: dict) -> str:
     """Why a source's items stay unresolved, as one plain reason the app words for the researcher."""
+    if any(r.get("kind") == "image" or r.get("status") == "ok_image" for r in statuses):
+        return "picture"           # a picture from the source: not shown by this version of the app yet
     details = " ".join(str(r.get("detail") or "") for r in statuses)
     kinds = {r.get("status") for r in statuses}
     if fmt == "pdf" and "pdf" not in extractors:
@@ -251,7 +295,8 @@ def need_of(fmt: str | None, tier: str | None, statuses: list[dict], source_repo
         return "wrong-file"        # the researcher's copy filled some screens, not all: another edition
     if tier == "link":
         # downloaded, but the text differs from the published study (the file changed online), or no download
-        return "changed-online" if source_report.get("status") == "ok" else "download"
+        changed = source_report.get("status") == "ok" or "ChangedOnline" in str(source_report.get("detail") or "")
+        return "changed-online" if changed else "download"
     return "file"
 
 
@@ -267,7 +312,7 @@ def status(projection: dict, report: dict, chosen: dict, extractors: dict, log: 
         fmt = d.get("format") if isinstance(d.get("format"), str) else None
         tier = d.get("tier") if d.get("tier") in ("link", "user", "hosted") else "user"
         items = by_source[key]
-        unresolved = [(h, e) for h, e in items if report["items"].get(h, {}).get("status") not in OK]
+        unresolved = [(h, e) for h, e in items if not restored_ok(e, report["items"].get(h))]
         rec = {"key": key, "title": title_of(projection, key), "tier": tier, "format": fmt or "unknown",
                "items": len(items), "restored": len(items) - len(unresolved),
                "screens": len({screen_of(e.get("path")) for _, e in unresolved}),
@@ -283,7 +328,7 @@ def status(projection: dict, report: dict, chosen: dict, extractors: dict, log: 
     return {"version": STATUS_VERSION, "projection": True, "complete": bool(report.get("complete")),
             "items": total, "restored": restored,
             "screens": len({screen_of(e.get("path")) for h, e in held.items()
-                            if isinstance(e, dict) and report["items"].get(h, {}).get("status") not in OK}),
+                            if isinstance(e, dict) and not restored_ok(e, report["items"].get(h))}),
             "pdfReader": "pdf" in extractors, "sources": sources,
             "downloadsFailed": len(log)}
 
@@ -325,7 +370,9 @@ def main(argv: list[str]) -> int:
         st["restoredSha256"] = sha256(text.encode("utf-8"))
     else:
         done.unlink(missing_ok=True)
-    (here / "status.json").write_text(json.dumps(st, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    tmp = here / ("status.json.%d.tmp" % os.getpid())
+    tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    os.replace(tmp, here / "status.json")
     print(json.dumps(dict(st, restoredPath=str(done) if restored is not None else None)))
     return 0
 

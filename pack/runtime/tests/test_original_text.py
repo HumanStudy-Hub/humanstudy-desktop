@@ -159,6 +159,37 @@ class OriginalText(unittest.TestCase):
         self.assertEqual(self.by_key(st)["handout"]["restored"], 0)
         self.assertEqual(self.by_key(st)["handout"]["need"], "changed-online")
 
+    def test_a_download_that_restores_nothing_is_not_kept(self):
+        server = Server({"/handout.txt": b"<html>Please sign in to read this article</html>"})
+        self.addCleanup(server.close)
+        path = self.published(server.url + "/handout.txt")
+        for _ in range(2):   # the second check says the same, from the remembered failure
+            st = self.run_helper(protocol=path, files=[])
+            self.assertEqual(self.by_key(st)["handout"]["need"], "changed-online")
+        self.assertFalse([f for f in (self.cache / "downloads").iterdir() if not f.name.endswith(".failed")],
+                         "a page that restored nothing is not cached")
+
+    def test_redirects_to_this_computer_are_refused(self):
+        import urllib.error
+        import urllib.request
+        h = O._NoDowngrade()
+        req = urllib.request.Request("https://example.org/a.txt")
+        for target in ("http://127.0.0.1:8080/x", "https://169.254.169.254/latest", "http://10.1.2.3/x", "file:///etc/hosts"):
+            with self.assertRaises(urllib.error.HTTPError, msg=target):
+                h.redirect_request(req, None, 302, "Found", {}, target)
+
+    def test_a_held_picture_keeps_the_study_from_running(self):
+        p = json.loads(self.projection.read_text(encoding="utf-8"))
+        p["stages"]["intro"]["content"].append({"id": "pic", "value": {"src": "assets/walk.png", "sha256": "ab" * 32}})
+        p["distribution"]["held"]["h9"] = {"path": "/stages/intro/content/2/value", "source": "booklet", "kind": "image",
+                                          "sha256": "ab" * 32}
+        path = self.tmp / "picture.json"
+        path.write_text(json.dumps(p), encoding="utf-8")
+        st = self.run_helper(protocol=path, files=[self.drop("booklet.html"), self.drop("leaflet.pdf")])
+        self.assertFalse(st["complete"])
+        self.assertIsNone(st["restoredPath"])
+        self.assertEqual(self.by_key(st)["booklet"]["need"], "picture")
+
     def test_dead_link_then_the_researchers_copy(self):
         dead = self.published(self.server.url + "/gone.txt")
         st = self.run_helper(protocol=dead, files=[])

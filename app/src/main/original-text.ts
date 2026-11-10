@@ -98,8 +98,9 @@ const PLAIN: Record<OriginalTextReason, string> = {
   'wrong-file': 'the copy you added does not match the version the study was built from',
   'changed-online': 'the copy online no longer matches the version the study was built from; drop in your copy',
   'pdf-reader': 'this computer cannot read PDF files yet (update HumanStudy Hub)',
-  'app-version': 'the study was published for a newer version of HumanStudy Hub',
+  'app-version': 'the study was published with a different version of the app\'s PDF reader (update HumanStudy Hub)',
   reading: 'the wording is printed inside a picture and cannot be filled in automatically',
+  picture: 'the study shows pictures from it, which this version of HumanStudy Hub cannot show yet',
 }
 
 /** One problem per source that still has screens without their wording: a run is blocked until there are none.
@@ -111,7 +112,7 @@ export function originalTextProblems(status: OriginalTextStatus): OriginalTextPr
     if (!s.need || s.restored >= s.items) continue
     const screens = Math.max(1, s.screens)
     out.push({ check: 'original-text', text: { need: s.need, title: s.title, format: s.format, screens },
-      reason: `${screens} screen(s) are missing the wording from ${s.title} (${s.format}): ${PLAIN[s.need] ?? 'it could not be filled in'}.` })
+      reason: `${screens === 1 ? '1 screen is' : `${screens} screens are`} missing the wording from ${s.title} (${s.format}): ${PLAIN[s.need] ?? 'it could not be filled in'}.` })
   }
   if (!out.length) out.push({ check: 'original-text', reason: 'Some screens are missing their original wording.' })
   return out
