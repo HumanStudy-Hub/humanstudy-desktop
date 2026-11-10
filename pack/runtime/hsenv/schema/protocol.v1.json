@@ -151,7 +151,10 @@
    ]
   },
   "image_text": {},
-  "licence_missing": {}
+  "licence_missing": {},
+  "distribution": {
+   "$ref": "#/$defs/distribution"
+  }
  },
  "patternProperties": {
   "(^|_)cites?$": {
@@ -288,6 +291,34 @@
     },
     "second_reading": {
      "type": "string"
+    },
+    "region": {
+     "type": "object",
+     "description": "where on the page an image-read text (or a picture) sits: the app renders it from the user's verified copy (DESIGN §3.6)",
+     "properties": {
+      "box": {
+       "type": "array",
+       "minItems": 4,
+       "maxItems": 4,
+       "items": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+       }
+      },
+      "dpi": {
+       "type": "integer",
+       "minimum": 72,
+       "maximum": 600
+      },
+      "page": {
+       "type": "integer",
+       "minimum": 1
+      }
+     },
+     "required": [
+      "box"
+     ]
     }
    },
    "patternProperties": {
@@ -2578,7 +2609,24 @@
     },
     "licence": {},
     "sources": {
-     "type": "object"
+     "type": "object",
+     "additionalProperties": {
+      "anyOf": [
+       {
+        "not": {
+         "type": "object"
+        }
+       },
+       {
+        "type": "object",
+        "properties": {
+         "distribution": {
+          "$ref": "#/$defs/sourceDistribution"
+         }
+        }
+       }
+      ]
+     }
     },
     "sample": {},
     "conflicts": {
@@ -2655,6 +2703,207 @@
    },
    "x-report-unknown": true,
    "description": "analysis-only exclusion (analysis_exclusions): documented, not run by the engine. applies_to is a list of analysis ids; a plain string is accepted here only for prose scopes in 5 legacy studies (REPORT §3, to be moved to scope_note)"
+  },
+  "sourceDistribution": {
+   "type": "object",
+   "description": "how a source's participant-facing text reaches users (DESIGN §3.6): hosted = shipped with attribution (CC-BY, CC0, public domain only); link = URL or DOI, text extracted on the user's machine; user = the user supplies the file. Every item is verified by its own text_sha256; sha256 is the builder's file hash, provenance only",
+   "properties": {
+    "tier": {
+     "enum": [
+      "hosted",
+      "link",
+      "user"
+     ]
+    },
+    "licence": {
+     "type": "string"
+    },
+    "attribution": {
+     "type": "string"
+    },
+    "url": {
+     "type": "string",
+     "pattern": "^https?://"
+    },
+    "sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "format": {
+     "enum": [
+      "pdf",
+      "docx",
+      "html",
+      "qsf",
+      "text"
+     ]
+    },
+    "doi": {
+     "type": "string",
+     "pattern": "^10\\.\\d{4,}/\\S+$"
+    }
+   },
+   "required": [
+    "tier"
+   ],
+   "x-report-unknown": true
+  },
+  "heldItem": {
+   "type": "object",
+   "description": "one participant-facing text or image of a non-hosted source, replaced in a release projection by a same-length placeholder",
+   "properties": {
+    "path": {
+     "type": "string",
+     "description": "JSON pointer of the placeholder string (text) or image object (image)"
+    },
+    "source": {
+     "type": "string"
+    },
+    "kind": {
+     "enum": [
+      "text",
+      "image"
+     ]
+    },
+    "length": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "text_sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$",
+     "description": "sha256 of the NFC-normalised exact served text"
+    },
+    "sha256": {
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "locator": {
+     "type": "object",
+     "properties": {
+      "format": {
+       "enum": [
+        "pdf",
+        "docx",
+        "html",
+        "qsf",
+        "text",
+        "image",
+        "image_reading",
+        "region",
+        null
+       ]
+      },
+      "extractor": {
+       "type": "string"
+      },
+      "parts": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "units": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+           "type": "integer",
+           "minimum": 0
+          }
+         },
+         "canon_len": {
+          "type": "integer",
+          "minimum": 1
+         },
+         "canon_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+         },
+         "literal": {
+          "type": "string"
+         }
+        }
+       }
+      },
+      "restore": {
+       "type": "array",
+       "items": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3
+       }
+      },
+      "pages": {
+       "type": "array"
+      },
+      "page": {},
+      "box": {
+       "type": "array",
+       "minItems": 4,
+       "maxItems": 4,
+       "items": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+       },
+       "description": "crop box [x0, y0, x1, y1], page-relative, origin top left"
+      },
+      "dpi": {
+       "type": "integer",
+       "minimum": 72,
+       "maximum": 600
+      },
+      "source": {
+       "type": "string"
+      }
+     },
+     "x-report-unknown": true
+    }
+   },
+   "required": [
+    "path",
+    "source",
+    "kind"
+   ],
+   "x-report-unknown": true
+  },
+  "distribution": {
+   "type": "object",
+   "description": "present only in a release projection (hsenv.release.project); hsenv.rehydrate removes it once every held item is restored",
+   "properties": {
+    "format": {
+     "const": "hsenv-projection/1"
+    },
+    "hsenv": {
+     "type": "string"
+    },
+    "placeholder": {
+     "type": "string"
+    },
+    "held": {
+     "type": "object",
+     "additionalProperties": {
+      "$ref": "#/$defs/heldItem"
+     }
+    },
+    "attribution": {
+     "type": "array",
+     "items": {
+      "type": "object"
+     }
+    },
+    "strict": {
+     "type": "boolean",
+     "description": "made by a strict projection (the only kind protocol.json may ship as)"
+    }
+   },
+   "required": [
+    "format",
+    "held"
+   ],
+   "x-report-unknown": true
   }
  }
 }
