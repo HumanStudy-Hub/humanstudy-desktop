@@ -98,7 +98,7 @@ def text_report(ev, res):
 
 
 def main(argv=None):
-    if sys.version_info < (3, 11):   # coding rules use Python 3.11+ regex; LESSONS 286
+    if sys.version_info < (3, 11):   # coding rules use Python 3.11+ regex
         sys.exit("hsenv.score needs Python 3.11+ (found %s)" % sys.version.split()[0])
     ap = argparse.ArgumentParser()
     ap.add_argument("study", nargs="?")

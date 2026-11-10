@@ -36,11 +36,26 @@ def _cell_span(v, limit):
 def _state_cell(c):
     """A table cell as served in a State: its text, or {text, mark?, spans?, colspan?, rowspan?} when it has any of
     them (a spanning header covers the columns it spans in the source, not one)."""
-    out = {k: c[k] for k in ("text", "mark", "spans") if c.get(k) is not None}
+    out = {k: _shown(c[k]) for k in ("text", "mark", "spans") if c.get(k) is not None}
     for k in ("colspan", "rowspan"):
         if _cell_span(c.get(k), SPAN_LIMITS[k]) is not None:
             out[k] = c[k]
     return out if (c.get("mark") or c.get("spans") or "colspan" in out or "rowspan" in out) else c.get("text")
+
+# keys a State never shows: cites and notes are operator text (the protocol schema's own cite / note patterns)
+_OPERATOR_KEY = re.compile(r"(^|_)cites?$|(^|_)note(s)?$|_note_|^note_")
+
+
+def _shown(v):
+    """What a participant may see of a value the engine passes through to a State (spans, prefix / suffix,
+    na_option, anchors, columns, widget_params, prefill): the same value with every cite and note key removed,
+    recursively. The one helper for every pass-through."""
+    if isinstance(v, dict):
+        return {k: _shown(x) for k, x in v.items() if not (isinstance(k, str) and _OPERATOR_KEY.search(k))}
+    if isinstance(v, list):
+        return [_shown(x) for x in v]
+    return v
+
 
 class ProtocolError(ValueError):
     pass
@@ -353,7 +368,7 @@ class Session:
                         item["size"] = {k: v for k, v in raw["size"].items() if k in ("width", "height")
                                         and isinstance(v, (int, float)) and not isinstance(v, bool)}
                     # a line is a string, or {text, spans} when part of it is styled (e.g. a bold amount)
-                    lines = [({"text": x["text"], "spans": x["spans"]} if x.get("spans") else x.get("text"))
+                    lines = [({"text": x["text"], "spans": _shown(x["spans"])} if x.get("spans") else x.get("text"))
                              if isinstance(x, dict) else x for x in raw.get("lines", [])]
                     lines = [x for x in lines if isinstance(x, str) or (isinstance(x, dict) and isinstance(x["text"], str))]
                     if lines:
@@ -369,7 +384,7 @@ class Session:
                         self._last_spans = None
                     item = {"id": oid, "type": it.get("type", "text"), "text": text}
                 if self._last_spans:
-                    item["spans"] = self._last_spans
+                    item["spans"] = _shown(self._last_spans)
                 if it.get("style"):
                     item["style"] = it["style"]
                 items.append(item)
@@ -383,13 +398,13 @@ class Session:
                 view = {"id": self._new("r"), "kind": r["kind"], "prompt": prompt,
                         "required": bool(r.get("required", True))}
                 if prompt_spans:
-                    view["prompt_spans"] = prompt_spans
+                    view["prompt_spans"] = _shown(prompt_spans)
                 if r.get("prompt_style"):
                     view["prompt_style"] = r["prompt_style"]
                 if "prefill" in r:   # value already in the box when the page opens (e.g. a retried page)
                     pv = self.ev(r["prefill"], b)
                     if pv is not None:
-                        view["prefill"] = pv
+                        view["prefill"] = _shown(pv)
                 if "instruction" in r:   # shown between the question text and the input (survey layout)
                     view["instruction"], _ = self._text(r["instruction"], b)
                 opts = []
@@ -397,7 +412,7 @@ class Session:
                     label, _ = self._text(o.get("label"), b)
                     opt = {"code": o["code"], "label": label}
                     if self._last_spans:
-                        opt["spans"] = self._last_spans
+                        opt["spans"] = _shown(self._last_spans)
                     if o.get("text_entry"):
                         opt["text_entry"] = True
                     opts.append(opt)
@@ -415,7 +430,7 @@ class Session:
                     "shows_value", "gridlines", "na_option", "prefix", "suffix", "soft_required", "widget_params"):
                     if key in r:
                         val = self.ev(r[key], b) if isinstance(r[key], dict) and "expr" in r[key] else r[key]
-                        view[key] = val
+                        view[key] = _shown(val)
                 hidden_range = None
                 if r.get("range_visible") is False:
                     hidden_range = view.pop("range", None)   # a bound humans did not see never reaches the State

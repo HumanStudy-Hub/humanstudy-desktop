@@ -1172,7 +1172,7 @@ def op_proportion_vs_chance(rows, effect):
     p0 = float(comp.get("chance", 0.5))
     if not 0 < p0 < 1:
         return {"status": "not_ready", "reason": "chance level must be strictly between 0 and 1"}
-    # log-space binomial pmf: exact for large n without overflow (LESSONS 254)
+    # log-space binomial pmf: exact for large n without overflow
     lpk = lambda i: (math.lgamma(n + 1) - math.lgamma(i + 1) - math.lgamma(n - i + 1)
                      + i * math.log(p0) + (n - i) * math.log(1 - p0))
     lobs = lpk(k)

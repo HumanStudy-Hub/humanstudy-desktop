@@ -183,8 +183,8 @@ def check_refs(p):
         for ex in p.exclusions:
             if ex.get("population") and "after_exclusions" not in ex["population"]:
                 problems.append("exclusion %s: population rule without after_exclusions while other exclusions exist; "
-                                "state which run first (cite), or [] if the cutoff uses everyone (LESSONS 203)" % ex["id"])
-    # typed response fields reach the State as plain values: a note written into one is a leak (LESSONS 209)
+                                "state which run first (cite), or [] if the cutoff uses everyone" % ex["id"])
+    # typed response fields reach the State as plain values: a note written into one is a leak
     TYPED = {"start": lambda v: v is None or (isinstance(v, (int, float)) and not isinstance(v, bool)) or v in ("unknown", "hidden"),
              "step": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
              "integer": lambda v: isinstance(v, bool), "shows_value": lambda v: isinstance(v, bool),
@@ -206,7 +206,7 @@ def check_refs(p):
             cd = c.get("coder")
             if not isinstance(cd, dict) or not all(k in cd for k in ("rubric", "input", "output", "provenance")):
                 problems.append("coding %s: needs_coder without a coder block {rubric, input (blind to condition), "
-                                "output, provenance} (LESSONS 216)" % cname)
+                                "output, provenance}" % cname)
     for sname, st in p.stages.items():   # navigation words come from a fixed set
         bk = (st.get("presentation") or {}).get("back")
         bk = bk.get("value") if isinstance(bk, dict) else bk
@@ -536,7 +536,7 @@ def play(p, n, seed, policy="random", explore=None):
                     # a page-level rule (e.g. a single switching point) refused random rows: redraw, as a person would
                     tries += 1
                     # redraw as a person would; optional answers are sometimes left empty, so page rules such as
-                    # "exactly one of these" can be met (LESSONS 284)
+                    # "exactly one of these" can be met
                     ans = random_answers(state, rng, pool=pool, skip=0 if tries % 2 else 0.5)
                     if policy == "keyed":   # keep the keyed answers; redraw only the others
                         ans.update({k: kept[k] for k in keyed_ids if k in kept})
@@ -608,7 +608,7 @@ def play(p, n, seed, policy="random", explore=None):
             if not e.get("compute"):   # reported-only (e.g. a model term): nothing to compute
                 continue
             # as for runnable arms under random answers: whole-session exclusions are ignored (random answers trip
-            # them), but row-level trims still apply (LESSONS 269)
+            # them), but row-level trims still apply
             rows = [r for r in btab.get(e.get("unit"), [])
                     if not (set(r.get("excluded_for") or []) & {e.get("id"), e.get("unit")})]
             b = effects_core.compute({"effects": [e]}, rows)
@@ -653,7 +653,7 @@ def human_sign(e):
 
 
 def same_sign(keyed, human):
-    """Strict sign agreement (LESSONS 301): a keyed value of exactly 0 matches neither a positive nor a negative human
+    """Strict sign agreement: a keyed value of exactly 0 matches neither a positive nor a negative human
     sign (only a human 0); NaN never matches."""
     if not all(isinstance(x, (int, float)) and not isinstance(x, bool) and x == x for x in (keyed, human)):
         return False
@@ -879,7 +879,7 @@ _UNCERTAIN = re.compile(r"\[[^\]]*\b(?:uncertain|unclear|illegible|unreadable|gu
 # element ignores them (they still never confirm a text on their own)
 _SOFT = re.compile(r"\[\s*(?:partial|continued)\s*\]", re.I)
 def _private_config():
-    """Study-specific pins live outside the public engine (owner 2026-11-08: engine code may be public, study data may
+    """Study-specific pins live outside the public engine (engine code is public, study data may
     not): a JSON file named by env HSENV_PRIVATE_CONFIG (unset or empty = none). Absent file = no pins (a public
     install has none). Keys:
     legacy_uncertain_readings {sha256: label}, legacy_cite_sources {protocol id: [sourcetext names]},
@@ -2594,7 +2594,7 @@ def check_verbatim(p, source_texts, public=False):
             v_ = it.get("value", it.get("text"))
             if isinstance(v_, str) and isinstance(it.get("cite"), dict):
                 walk({"text": v_, "cite": it["cite"]})
-            elif isinstance(v_, dict) and "expr" not in v_:   # inline text dicts / images (LESSONS 246)
+            elif isinstance(v_, dict) and "expr" not in v_:   # inline text dicts / images
                 walk(dict(v_, cite=v_.get("cite", it.get("cite"))) if "text" in v_ else v_)
         for r in st.get("responses", []):
             pr_ = r.get("prompt")
@@ -2622,7 +2622,7 @@ def check_verbatim(p, source_texts, public=False):
 
 def unprompted_responses(sessions):
     """Report (not a failure), from rendered pages: an answer box with no prompt on a page that shows almost no text —
-    nothing tells the person what to enter (LESSONS 226)."""
+    nothing tells the person what to enter."""
     out = set()
     for s in sessions:
         for pg in getattr(s, "pages", []):
@@ -2639,7 +2639,7 @@ def unprompted_responses(sessions):
 
 def script_texts_not_served(p, source_texts):
     """Report (not a failure): text that page scripts write onto the screen (document.write, innerHTML, .html(),
-    .text()) in the saved sources, which no served string contains (LESSONS 283)."""
+    .text()) in the saved sources, which no served string contains."""
     served = _norm(json.dumps(p.raw, ensure_ascii=False))
     pat = re.compile(r"""(?:document\.write(?:ln)?\s*\(|innerHTML\s*\+?=|\.html\s*\(|\.text\s*\()\s*(['"])(.*?)(?<!\\)\1""", re.S)
     out = []
@@ -2722,7 +2722,7 @@ def table_spans_unserved(p, sessions):
 
 def constant_images(sessions):
     """Report (not a failure) stages shown 3+ times in a session whose texts change but whose pictures never do —
-    e.g. every product-pair page serving one picture (LESSONS 212). A fixed logo is fine; reviewers look here first."""
+    e.g. every product-pair page serving one picture. A fixed logo is fine; reviewers look here first."""
     out = {}
     for s in sessions:
         visits = {}
@@ -2739,7 +2739,7 @@ def constant_images(sessions):
 
 
 def main(argv=None):
-    if sys.version_info < (3, 11):   # coding rules use Python 3.11+ regex (atomic groups); LESSONS 286
+    if sys.version_info < (3, 11):   # coding rules use Python 3.11+ regex (atomic groups)
         sys.exit("hsenv.checks needs Python 3.11+ (found %s)" % sys.version.split()[0])
     ap = argparse.ArgumentParser()
     ap.add_argument("study")
@@ -2765,7 +2765,7 @@ def main(argv=None):
     n, tries = a.sessions, 0
     # heavy screening (sessions ending early): run more sessions so every effect has data. Exclusions of completed
     # sessions do not count here: effects are computed on all completed sessions, and random answers tripping a
-    # declared exclusion rule is expected (LESSONS 163)
+    # declared exclusion rule is expected
     while sum(1 for r in env.records() if r["status"] == "completed") < 30 and tries < 5:
         n, tries = n * 2, tries + 1
         env, probs, stats = play(p, n, a.seed, "random")

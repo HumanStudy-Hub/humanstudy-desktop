@@ -17,8 +17,9 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 CHECK_ONLY=0
 if [ "${1:-}" = "--check" ]; then CHECK_ONLY=1; shift; fi
-# serve.py: evaldata.code_hash() hashes it. Upstream tests/ name real studies and are never vendored.
-ENGINE=(__init__.py engine.py expr.py checks.py effects_core.py evaldata.py rewards.py score.py serve.py schema_check.py)
+# serve.py: evaldata.code_hash() hashes it. distribution.py: hsenv.rehydrate (v0.8.1) imports it; stdlib only.
+# Upstream tests/ name real studies and are never vendored.
+ENGINE=(__init__.py engine.py expr.py checks.py effects_core.py evaldata.py rewards.py score.py serve.py schema_check.py distribution.py)
 # The frozen v1 schemas schema_check.py validates against (it looks for them in ../schema next to the package).
 SCHEMAS=(protocol.v1.json study.v1.json run.v1.json)
 RUN=(run_study.py fspec.py render.py)

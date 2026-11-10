@@ -6,8 +6,10 @@ One protocol across all platforms. A study's runnable form is now `protocol.json
 ## What changed
 
 **Vendored engine.** `pack/runtime/hsenv/hsenv/{__init__,engine,expr,checks,effects_core,evaldata,rewards,score,
-serve,schema_check}.py`, `schema/{protocol,study,run}.v1.json` and `LICENSE` (MIT) are exact copies of the public
-engine, github.com/HumanStudy-Hub/hsenv at tag v0.8.0 (commit fd38302574260b5876cfeaa6741540c5163ba662).
+serve,schema_check,distribution}.py`, `schema/{protocol,study,run}.v1.json` and `LICENSE` (MIT) are exact copies of
+the public engine, github.com/HumanStudy-Hub/hsenv at tag v0.8.1 (commit db85a9c82f4c7cedeb808a3d39ae2858605d5a20).
+- `distribution.py` (since v0.8.1) backs `hsenv.rehydrate`, which rebuilds a protocol from a release projection on
+  the user's machine. The app UI does not call it yet.
 - Study pins are not in the code. The engine reads a private sidecar only when `HSENV_PRIVATE_CONFIG` names one, and
   the app sets it empty everywhere.
 - The engine's `tests/` are never vendored.
