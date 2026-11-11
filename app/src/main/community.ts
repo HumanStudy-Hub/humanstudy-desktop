@@ -200,6 +200,8 @@ function safeRelative(path: string): boolean {
   return !!path && !path.includes('\\') && !path.includes('\0') && !path.includes(':') && path.split('/').every(p => p !== '' && p !== '.' && p !== '..')
 }
 
+const PROGRAM_ROOT_ASSETS = ['program.json', 'capabilities.json', 'effects.json']
+
 /** Protocol releases mirror hsenv.release.PUBLIC_PATHS; private run/source material is never imported. */
 export function protocolAssetPath(path: string): boolean {
   if (!safeRelative(path)) return false
@@ -207,7 +209,7 @@ export function protocolAssetPath(path: string): boolean {
   if (low.some(p => ['.git', '.opencode', '.humanstudy', 'node_modules', 'threads', 'conversations', 'runs'].includes(p) || p.startsWith('.env'))
       || low.join('/').startsWith('sources/private/') || low.join('/').startsWith('sources/researcher/')
       || low.at(-1) === 'records.jsonl') return false
-  return ['study.json', 'protocol.json', 'effects.json', 'program.json', 'capabilities.json', 'sources/SOURCE.json'].includes(path)
+  return PROGRAM_ROOT_ASSETS.includes(path) || ['study.json', 'protocol.json', 'sources/SOURCE.json'].includes(path)
     || /^review\/(?:fidelity-review-[^/]+[.]md|checks-latest[.]json)$/.test(path)
     || /^sources\/open\/.+/.test(path) || /^sourcetext\/[^/]+$/.test(path)
     || /^variants\/[^/]+[.]json$/.test(path) || /^(?:artifacts|package)\/.+/.test(path)
@@ -346,7 +348,9 @@ export async function forkCommunityStudy(
       if (parts.some(p => ['.git','.opencode','.humanstudy','node_modules','threads','conversations'].includes(p.toLowerCase()) || p.toLowerCase().startsWith('.env')))
         throw new Error('A private project path was found in the research assets.')
       if (parts.some(p => p.toLowerCase() === 'runs') || /^sources\/(?:private|researcher)\//i.test(file.path) || parts.at(-1)?.toLowerCase() === 'records.jsonl') throw new Error('A private project path was found in the research assets.')
-      if (protocolRelease ? !protocolAssetPath(file.path) : file.path !== 'program.json' && !['package','artifacts','sources'].includes(parts[0])) throw new Error('Unsupported research asset.')
+      const allowed = protocolRelease ? protocolAssetPath(file.path)
+        : PROGRAM_ROOT_ASSETS.includes(file.path) || ['package', 'artifacts', 'sources'].includes(parts[0])
+      if (!allowed) throw new Error('Unsupported research asset.')
       const url = `https://raw.githubusercontent.com/${OWNER_REPO}/${sha}/${root}/${parts.map(encodeURIComponent).join('/')}`
       const raw = Buffer.from(await (await get(url, '*/*')).arrayBuffer())
       if (raw.length !== file.bytes || createHash('sha256').update(raw).digest('hex') !== file.sha256) throw new Error('Research asset verification failed. No project was created.')
@@ -374,6 +378,8 @@ export async function forkCommunityStudy(
       if (!safeRelative(original) || !/\.(json|txt|csv|tsv|pdf|png|jpe?g|svg)$/i.test(original)
         || ['package','artifacts','sources','schema','exports'].includes(parts[0])
         || parts.some(p => ['.git','.opencode','.humanstudy','node_modules','program.json','account.json','settings.json'].includes(p.toLowerCase()) || p.startsWith('.env'))) continue
+      // A source alias must never overwrite a file pinned by the release manifest.
+      if (paths.includes(original.toLowerCase())) continue
       const matches = assets.filter(f => f.path.endsWith('/' + original))
       if (matches.length === 1) {
         await mkdir(join(dir, original, '..'), { recursive: true })
