@@ -1,5 +1,10 @@
 # Releasing HumanStudy Desktop
 
+Integrate changes on `dev`. When a release candidate is ready, open a pull request from `dev`
+to `main` for the project owner to review. Keep that pull request unmerged until the owner has
+explicitly approved it. Create release tags and publish public installers only after that approval
+and merge. Use CI artifacts for testing unapproved candidates.
+
 Installed apps update themselves from **published** GitHub Releases of this repository
 (electron-updater, GitHub provider). A release is made in three steps:
 
