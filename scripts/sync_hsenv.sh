@@ -118,7 +118,7 @@ case "${1:?usage: scripts/sync_hsenv.sh /path/to/hsenv/hsenv [label] | skills|ru
       fi
       (cd "$dest" && awk 'NF == 2 && $2 == "AUTHORING.md" { print; found=1 } END { if (!found) exit 1 }' AUTHORING.VENDORED | shasum -a 256 --check)
     else
-      vendor "$studies" "$src" "$dest" AUTHORING.VENDORED "sandbox skills/authoring" AUTHORING.md
+      vendor "$studies" "$src" "$dest" AUTHORING.VENDORED "$(label_for "$src" "sandbox skills/authoring" "${3:-}")" AUTHORING.md
     fi
     ;;
   skills|run|preview)
