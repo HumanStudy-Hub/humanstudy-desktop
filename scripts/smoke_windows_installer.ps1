@@ -5,8 +5,27 @@ $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
 $setup = Join-Path $PWD "dist/HumanStudy-Hub-Setup-$version.exe"
 $installed = Join-Path $env:RUNNER_TEMP 'humanstudy-installed'
 $profile = Join-Path $env:RUNNER_TEMP 'humanstudy-smoke-profile'
-$installer = Start-Process -FilePath $setup -ArgumentList '/S', "/D=$installed" -Wait -PassThru
-if ($installer.ExitCode -ne 0) { throw "NSIS exited $($installer.ExitCode)" }
+# Launch directly, as the app updater does. PowerShell's Start-Process shell path can crash NSIS System.dll.
+$launch = [System.Diagnostics.ProcessStartInfo]::new($setup)
+$launch.UseShellExecute = $false
+$launch.ArgumentList.Add('/S')
+$launch.ArgumentList.Add("/D=$installed")
+$started = Get-Date
+$installer = [System.Diagnostics.Process]::Start($launch)
+try {
+  if (!$installer.WaitForExit(90000)) {
+    $installer.Kill($true)
+    throw 'The silent installer did not exit within 90 seconds.'
+  }
+  if ($installer.ExitCode -ne 0) {
+    Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'Application Error'; StartTime = $started } -ErrorAction SilentlyContinue |
+      Where-Object { $_.Message.Contains((Split-Path $setup -Leaf)) } |
+      Select-Object -First 1 -ExpandProperty Message | Write-Output
+    throw ('NSIS exited 0x{0:X8}' -f $installer.ExitCode)
+  }
+} finally {
+  $installer.Dispose()
+}
 $exe = Join-Path $installed 'HumanStudy Hub.exe'
 if ((Get-Item $exe).VersionInfo.ProductVersion -notlike "$version*") {
   throw 'The installed app version does not match the candidate.'
