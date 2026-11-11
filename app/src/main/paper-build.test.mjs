@@ -163,12 +163,23 @@ test('a build left running by an earlier app process reads as interrupted, never
   assert.equal(next.builds.start(dir, 's1'), true)
 })
 
+test('read-only project snapshots show interruption without writing project state', () => {
+  const dir = project(), first = tracker()
+  first.builds.bind('s1', dir)
+  first.builds.start(dir, 's1')
+  const path = join(dir, '.humanstudy/paper-build.json')
+  const before = readFileSync(path, 'utf8')
+  const reopened = tracker().builds
+  assert.equal(reopened.readOnly(dir).error, 'interrupted')
+  assert.equal(readFileSync(path, 'utf8'), before)
+})
+
 test('the build request is an authorization to build, not to simulate', async () => {
   const out2 = mkdtempSync(join(tmpdir(), 'paper-build-i18n-'))
-  await build({ entryPoints: [join(here, '../shared/simulation-scope.ts')], bundle: true, platform: 'node', format: 'esm', outdir: out2, logLevel: 'error' })
+  await build({ entryPoints: [join(here, '../shared/simulation-scope.ts')], bundle: true, platform: 'node', format: 'esm', outdir: out2, logLevel: 'error', outExtension: { '.js': '.mjs' } })
   const dict = readFileSync(join(here, '../renderer/i18n-dict.ts'), 'utf8')
   // Chat text never starts a simulation (#22); only a Run-button approval does.
-  const { approvalRequest } = await import(pathToFileURL(join(out2, 'simulation-scope.js')).href)
+  const { approvalRequest } = await import(pathToFileURL(join(out2, 'simulation-scope.mjs')).href)
   const row = /\['build\.prompt', '([^']+)', '([^']+)'\]/.exec(dict)
   assert.ok(row, 'build.prompt has English and Chinese')
   for (const prompt of [row[1], row[2]]) {

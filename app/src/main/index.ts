@@ -256,6 +256,17 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
   }
   const tree = await listTree(dir, dir, 0, { n: 0 })
   const paper = tree.find((entry) => entry.rel === 'paper.pdf' && entry.kind === 'file')
+  let pdf: ProjectFile | null = paper?.url ? { ...paper, url: paper.url } : null
+  if (!pdf) {
+    // Existing projects can have a linked paper.pdf, which isn't a regular tree entry.
+    const path = join(dir, 'paper.pdf')
+    const info = await stat(path).catch(() => null)
+    if (info?.isFile()) {
+      const version = fileVersion(info)
+      pdf = { name: 'paper.pdf', path, url: toUrl(path), ext: 'pdf', size: info.size,
+        mtime: Math.round(info.mtimeMs), version, sha256: await pdfHash(path, version) }
+    }
+  }
   const [manifestDigests, protocolDigests] = await Promise.all([
     readFile(join(dir, 'sources', 'SOURCE.json'), 'utf8').then(manifestSourceDigests).catch(() => undefined),
     readFile(join(dir, 'protocol.json'), 'utf8').then(protocolSourceDigests).catch(() => undefined),
@@ -268,7 +279,7 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
     build: paperBuilds.readOnly(dir),
     artifacts: await listDir(join(dir, 'artifacts')),
     exports: await listDir(join(dir, 'exports')),
-    pdf: paper?.url ? { ...paper, url: paper.url } : null,
+    pdf,
     sourceDigests: { ...manifestDigests, ...protocolDigests },
     tree,
   }
