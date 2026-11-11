@@ -96,6 +96,38 @@ jobs:
       - name: Unsigned NSIS test installer (never published)
         run: node scripts/dist.mjs --win nsis --x64 --unsigned --publish never
 
+      - name: Install and launch the packaged app
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $setup = Join-Path $PWD "dist/HumanStudy-Hub-Setup-$version.exe"
+          $installed = Join-Path $env:RUNNER_TEMP 'humanstudy-installed'
+          $profile = Join-Path $env:RUNNER_TEMP 'humanstudy-smoke-profile'
+          $installer = Start-Process -FilePath $setup -ArgumentList '/S', "/D=$installed" -Wait -PassThru
+          if ($installer.ExitCode -ne 0) { throw "NSIS exited $($installer.ExitCode)" }
+          $exe = Join-Path $installed 'HumanStudy Hub.exe'
+          if ((Get-Item $exe).VersionInfo.ProductVersion -notlike "$version*") {
+            throw 'The installed app version does not match the candidate.'
+          }
+          $env:APPDATA = $profile
+          New-Item -Path $profile -ItemType Directory -Force | Out-Null
+          $app = Start-Process -FilePath $exe -ArgumentList '--disable-gpu' -PassThru
+          try {
+            for ($attempt = 0; $attempt -lt 45; $attempt++) {
+              $app.Refresh()
+              if ($app.HasExited) { throw "The packaged app exited $($app.ExitCode) before showing a window." }
+              if ($app.MainWindowHandle -ne 0) {
+                Get-FileHash $setup -Algorithm SHA256 | Format-List
+                Write-Output "Windows $([System.Environment]::OSVersion.Version): opened $($app.MainWindowTitle) ($version)."
+                exit 0
+              }
+              Start-Sleep -Seconds 1
+            }
+            throw 'The packaged app did not show a window within 45 seconds.'
+          } finally {
+            if (!$app.HasExited) { Stop-Process -Id $app.Id -Force }
+          }
+
       - uses: actions/upload-artifact@v4
         with:
           name: HumanStudy-Hub-Setup-windows-x64-unsigned
