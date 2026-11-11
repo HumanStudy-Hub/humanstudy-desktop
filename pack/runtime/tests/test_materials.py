@@ -553,19 +553,28 @@ class Materials(unittest.TestCase):
         self.supply()
         self.check()
         self.write("sources/open/si.txt", "Open supplement text.")
+        source_record = check_materials.source_record(self.root)
+        source_record["files"].append({"path": "sources/open/si.txt", "license": "CC-BY-4.0",
+                                       "sha256": check_materials.sha(self.root / "sources/open/si.txt")})
+        self.write("sources/SOURCE.json", json.dumps(source_record))
         result = community.export(self.root, self.root / "exports/community.zip")
         names = zipfile.ZipFile(result["file"]).namelist()
         self.assertIn("sources/open/si.txt", names)
         self.assertFalse([n for n in names if "researcher" in n], names)
         record = json.loads(zipfile.ZipFile(result["file"]).read("sources/SOURCE.json"))
         self.assertFalse([f for f in record["files"] if "researcher" in f["path"]], "not even their records")
-        # a simulation log that copies the text is left out and listed
-        self.write("artifacts/simulations/r1/sessions.jsonl", json.dumps({"prompt": INSTRUCTIONS}) + "\n")
+        # Both raw outputs and a report that copies private text stay out.
+        self.write("artifacts/simulations/r1/sessions.jsonl", json.dumps({"prompt": "ordinary log entry"}) + "\n")
+        self.write("artifacts/copied-report.md", INSTRUCTIONS)
+        self.write("artifacts/public-report.md", "A public reconstruction report with no local wording.")
         result = community.export(self.root, self.root / "exports/community-2.zip")
         archive = zipfile.ZipFile(result["file"])
         self.assertNotIn("artifacts/simulations/r1/sessions.jsonl", archive.namelist())
-        self.assertEqual([o["path"] for o in json.loads(archive.read("CONTRIBUTION.json"))["omitted"]],
-                         ["artifacts/simulations/r1/sessions.jsonl"])
+        self.assertNotIn("artifacts/copied-report.md", archive.namelist())
+        self.assertIn("artifacts/public-report.md", archive.namelist())
+        self.assertEqual({o["path"] for o in result["omitted"] if o["path"].startswith("artifacts/")},
+                         {"artifacts/copied-report.md", "artifacts/simulations/r1/sessions.jsonl"})
+        self.assertNotIn("copied-report.md", archive.read("CONTRIBUTION.json").decode("utf-8"))
         # a copy in the program or the package stops the export
         self.write("package/p/materials/materials.json", json.dumps({"intro": INSTRUCTIONS}))
         with self.assertRaises(ValueError):

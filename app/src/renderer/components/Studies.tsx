@@ -238,15 +238,17 @@ function Contributors({ people, compact }: { people: CommunityStudy['contributor
           {c.github ? (
             <button className="person" onClick={() => open(`https://github.com/${encodeURIComponent(c.github!)}`)}>
               <Avatar name={c.name} src={contributorAvatar(c)} size={26} />
-              <span>{c.name}</span>
+              <span>{c.name}{c.affiliation && <span className="muted small"> · {c.affiliation}</span>}</span>
               <span className="muted small">@{c.github}</span>
             </button>
           ) : (
             <span className="person">
               <Avatar name={c.name} size={26} />
-              <span>{c.name}</span>
+              <span>{c.name}{c.affiliation && <span className="muted small"> · {c.affiliation}</span>}</span>
             </span>
           )}
+          {c.orcid && <button className="link small" aria-label={`ORCID profile for ${c.name}`}
+            onClick={() => open(`https://orcid.org/${encodeURIComponent(c.orcid!)}`)}>ORCID ↗</button>}
         </li>
       ))}
     </ul>
@@ -378,7 +380,7 @@ function StudyPage({
             ) : (
               <p className="muted">No description.</p>
             )}
-            <h2 className="home-label">Contributors</h2>
+            <h2 className="home-label">Reconstruction contributors</h2>
             {head && <Contributors people={head.contributors} />}
           </div>
         ) : !detail ? (

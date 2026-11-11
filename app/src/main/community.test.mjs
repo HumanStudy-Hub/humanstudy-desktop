@@ -27,7 +27,8 @@ const fixtureFiles = {
 }
 const assetFiles=Object.entries(fixtureFiles).sort(([a],[b])=>a.localeCompare(b)).map(([path,raw])=>({path,sha256:createHash('sha256').update(raw).digest('hex'),bytes:raw.length}))
 const revision=createHash('sha256').update(JSON.stringify(assetFiles.map(({path,sha256})=>({path,sha256})))).digest('hex')
-const paper={id,title:'Decision framing',authors:['Researcher'],year:2026,description:'',aliases:['doi:10.1234/test'],conceptIds:['phenomenon:framing'],currentRevision:revision,
+const paper={id,title:'Decision framing',authors:['Original paper author'],year:2026,
+ contributors:[{name:'Reconstruction contributor',affiliation:'University',orcid:'https://orcid.org/0000-0002-1825-0097'}],description:'',aliases:['doi:10.1234/test'],conceptIds:['phenomenon:framing'],currentRevision:revision,
  assetRoot:`community/doi_10.1234_test/revisions/${revision}`,assetFiles,resources:[]}
 const catalog={schemaVersion:1,papers:[paper],taxonomy:{concepts:[{id:'phenomenon:framing',label:'Framing effect',aliases:['框架效应'],status:'reviewed'}]}}
 const previous=globalThis.fetch
@@ -62,6 +63,10 @@ test('community index retains searchable aliases and forks exact verified files 
  lib.setCommunityCacheDir(join(temp,'cache'))
  const studies=await lib.communityStudies()
  assert.equal(studies.length,1);assert.ok(matchesResearch(studies[0],'框架效应'))
+ assert.deepEqual(studies[0].authors,['Original paper author'])
+ assert.deepEqual(studies[0].contributors,[{name:'Reconstruction contributor',affiliation:'University',orcid:'0000-0002-1825-0097'}])
+ assert.ok(lib.isAllowedExternal('https://orcid.org/0000-0002-1825-0097'))
+ assert.ok(!lib.isAllowedExternal('https://orcid.org/0000-0002-1825-0097?redirect=https://example.com'))
  const project=await lib.forkCommunityStudy(id,async()=>{created++;const dir=join(temp,'project');await mkdir(dir);return dir})
  assert.equal(created,1);assert.equal((await readFile(join(project,'program.json'))).toString(),content.toString())
  const metadata=JSON.parse(await readFile(join(project,'.humanstudy/community.json'),'utf8'))

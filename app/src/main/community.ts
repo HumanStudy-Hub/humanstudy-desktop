@@ -87,6 +87,8 @@ const getJson = async (url: string): Promise<unknown> => (await get(url)).json()
 // ---- normalization --------------------------------------------------------------------
 const str = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : String(v))
 
+const ORCID_ID = /^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/i
+
 function normContributors(v: unknown): CommunityStudy['contributors'] {
   if (!Array.isArray(v)) return []
   const out: CommunityStudy['contributors'] = []
@@ -106,7 +108,10 @@ function normContributors(v: unknown): CommunityStudy['contributors'] {
           .split(/[/?#]/)[0] || undefined
       const name = str(o.name).trim() || github
       if (!name) continue
-      out.push(github ? { name, github } : { name })
+      const affiliation = str(o.affiliation).trim()
+      const orcid = str(o.orcid).trim().replace(/^https:\/\/orcid[.]org\//i, '').toUpperCase()
+      out.push({ name, ...(github ? { github } : {}), ...(affiliation ? { affiliation } : {}),
+        ...(ORCID_ID.test(orcid) ? { orcid } : {}) })
     }
   }
   return out
@@ -464,7 +469,9 @@ export function isAllowedExternal(url: unknown): url is string {
   if (typeof url !== 'string') return false
   try {
     const u = new URL(url)
-    return u.protocol === 'https:' && EXTERNAL_HOSTS.has(u.hostname) && !u.username && !u.password
+    if (u.protocol !== 'https:' || u.username || u.password) return false
+    if (u.hostname === 'orcid.org') return !u.port && !u.search && !u.hash && ORCID_ID.test(u.pathname.slice(1))
+    return EXTERNAL_HOSTS.has(u.hostname)
   } catch {
     return false
   }

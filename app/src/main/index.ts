@@ -681,7 +681,7 @@ app.whenReady().then(() => {
     return dir
   })
   ipcMain.handle('community:openExternal', async (_e, url: string) => {
-    if (!isAllowedExternal(url)) throw new Error('refusing to open a URL outside github.com / humanstudy-hub.com')
+    if (!isAllowedExternal(url)) throw new Error('refusing to open an unsupported community link')
     await shell.openExternal(url)
   })
 
