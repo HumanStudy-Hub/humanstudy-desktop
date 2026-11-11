@@ -23,6 +23,7 @@ const skipNotarize = args.includes('--no-notarize')
 const passthrough = args.filter((a) => a !== '--unsigned' && a !== '--no-notarize')
 const env = { ...process.env }
 const extra = []
+const buildsWindows = passthrough.some((a) => a === '--win' || a === '-w') || (!passthrough.some((a) => /^(--mac|-m|--linux|-l)$/.test(a)) && process.platform === 'win32')
 const buildsMac = passthrough.some((a) => a === '--mac' || a === '-m') || (!passthrough.some((a) => /^(--win|-w|--linux|-l)$/.test(a)) && process.platform === 'darwin')
 
 if (unsigned) {
@@ -66,5 +67,8 @@ function hasProfile(name) {
 }
 
 const bin = join(process.cwd(), 'node_modules', '.bin', process.platform === 'win32' ? 'electron-builder.cmd' : 'electron-builder')
-const r = spawnSync(bin, [...passthrough, ...extra], { stdio: 'inherit', env, shell: process.platform === 'win32' })
+const r = buildsWindows
+  ? spawnSync(process.execPath, ['--require', join(process.cwd(), 'scripts', 'prepare-windows-nsis.cjs'),
+    join(process.cwd(), 'node_modules', 'electron-builder', 'cli.js'), ...passthrough, ...extra], { stdio: 'inherit', env })
+  : spawnSync(bin, [...passthrough, ...extra], { stdio: 'inherit', env, shell: process.platform === 'win32' })
 process.exit(r.status ?? 1)
