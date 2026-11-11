@@ -21,7 +21,12 @@ export function isExtracted(study: Pick<CommunityStudy, 'id' | 'currentRevision'
   return Boolean(study.currentRevision || study.legacyStudyId || /^study_\d+$/.test(study.id))
 }
 
+export function isUserSubmission(study: Pick<CommunityStudy, 'assetRoot' | 'currentRevision'>): boolean {
+  return Boolean(study.currentRevision && study.assetRoot?.startsWith('community/'))
+}
+
 export function researchAvailability(study: CommunityStudy): string {
+  if (isUserSubmission(study)) return 'User submitted'
   return study.currentRevision ? 'Human Program available' : study.legacyStudyId || /^study_\d+$/.test(study.id)
     ? 'Study materials' : 'Not yet extracted'
 }

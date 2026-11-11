@@ -251,7 +251,7 @@ export interface CommunityStudy {
   authors: string[]
   year: number | null
   description: string
-  contributors: { name: string; github?: string }[]
+  contributors: { name: string; github?: string; affiliation?: string; orcid?: string }[]
   aliases?: string[]
   legacyStudyId?: string
   searchText?: string
