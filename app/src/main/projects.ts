@@ -125,12 +125,16 @@ export async function createProject(input: { name: string; pdfPath?: string; sam
   const sample = Boolean(input?.sample)
   if (!name && sample) name = SAMPLE_TITLE
   if (!name && input?.pdfPath) name = basename(input.pdfPath).replace(/\.pdf$/i, '')
-  const dir = uniqueDir(root, name)
-  await mkdir(dir, { recursive: true })
+  let dir: string
+  for (;;) {
+    dir = uniqueDir(root, name)
+    try { await mkdir(dir); break }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+  }
   await mkdir(join(dir, 'artifacts'), { recursive: true })
   await mkdir(join(dir, 'exports'), { recursive: true })
   await mkdir(join(dir, '.humanstudy'), { recursive: true })
-  if (input?.pdfPath) await copyFile(resolve(input.pdfPath), join(dir, 'paper.pdf'))
+  if (input?.pdfPath) await copyFile(resolve(input.pdfPath), join(dir, 'paper.pdf'), 1) // COPYFILE_EXCL
   if (sample) {
     const sourceDir = app.isPackaged
       ? join(process.resourcesPath, 'sample')

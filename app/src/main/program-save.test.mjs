@@ -1,7 +1,7 @@
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const out = mkdtempSync(join(tmpdir(), 'program-save-tests-'))
 for (const name of ['program-save', 'program-lock']) await build({ entryPoints: [join(here, `${name}.ts`)], bundle: true, platform: 'node', format: 'esm', outfile: join(out, `${name}.mjs`), logLevel: 'error' })
-const { saveProjectText } = await import(pathToFileURL(join(out, 'program-save.mjs')))
+const { saveProjectCopy, saveProjectText } = await import(pathToFileURL(join(out, 'program-save.mjs')))
 const { withProgramLock } = await import(pathToFileURL(join(out, 'program-lock.mjs')))
 const python = ['python3', 'python'].find(p => spawnSync(p, ['--version']).status === 0)
 const helper = join(here, '../../../pack/skills/build/program_io.py')
@@ -113,4 +113,37 @@ test('protocol saves share the agent lock and reject stale researcher edits', as
   assert.match(readFileSync(target, 'utf8'), /Researcher/)
   await assert.rejects(saveProjectText(target, 'broken'), /JSON/)
   assert.match(readFileSync(target, 'utf8'), /Researcher/)
+})
+
+test('ordinary saves detach hard links, preserve prior bytes on failure and respect conflicts', async () => {
+  const { dir } = project()
+  const external = join(dir, 'external.txt')
+  const target = join(dir, 'editor.txt')
+  writeFileSync(external, 'original')
+  linkSync(external, target)
+  await assert.rejects(saveProjectText(target, 'stale', { ifUnchanged: 'other' }), /changed on disk/)
+  await assert.rejects(saveProjectText(target, 'failure', { beforeWrite: async () => { throw Error('disk failure') } }), /disk failure/)
+  assert.equal(readFileSync(target, 'utf8'), 'original')
+  assert.equal(statSync(external).nlink, 2)
+  await saveProjectText(target, 'local edit')
+  assert.equal(readFileSync(target, 'utf8'), 'local edit')
+  assert.equal(readFileSync(external, 'utf8'), 'original')
+  assert.equal(statSync(external).nlink, 1)
+  await saveProjectText(target, 'second edit', { ifUnchanged: 'local edit' })
+  assert.equal(readFileSync(target, 'utf8'), 'second edit')
+})
+
+test('export copy replaces a linked destination without changing the other file', async () => {
+  const { dir } = project()
+  const source = join(dir, 'study.pdf')
+  const external = join(dir, 'external.pdf')
+  const target = join(dir, 'copy.pdf')
+  writeFileSync(source, 'study')
+  writeFileSync(external, 'external')
+  linkSync(external, target)
+  await assert.rejects(saveProjectCopy(join(dir, 'missing'), target), { code: 'ENOENT' })
+  assert.equal(readFileSync(target, 'utf8'), 'external')
+  await saveProjectCopy(source, target)
+  assert.equal(readFileSync(target, 'utf8'), 'study')
+  assert.equal(readFileSync(external, 'utf8'), 'external')
 })

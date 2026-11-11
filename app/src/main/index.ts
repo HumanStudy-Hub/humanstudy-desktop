@@ -23,13 +23,13 @@ import { checkForUpdates, installUpdate, startUpdates, stopUpdates, updateStatus
 import { existsSync } from 'node:fs'
 import { watchFolder, type FolderWatch } from './project-watch'
 import { fileVersion } from '../shared/file-version'
-import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { copyFile, lstat, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
 import { isVersioned, readVersion, relOf, snapshot, versionsOf } from './versions'
 import { createThreads, threads } from './threads'
-import { saveProjectText } from './program-save'
+import { saveProjectCopy, saveProjectText } from './program-save'
 import { createPaperBuilds, isBuildTurn } from './paper-build'
 import { createShutdown } from './shutdown-core'
 import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedRunFiles } from './pack'
@@ -221,6 +221,21 @@ function ownedPath(p: string): string {
   if (!isAllowed(q)) throw new Error('that file is outside the opened projects')
   if (q.split(sep).includes('.humanstudy')) throw new Error('app state is not editable')
   return q
+}
+
+// Editor and import paths must not traverse a linked directory or junction in the project.
+async function assertProjectWritePath(root: string, target: string): Promise<void> {
+  if (!isWithin(root, target)) throw Error('The write target is outside the project.')
+  let current = root
+  for (const part of relative(root, target).split(sep).filter(Boolean)) {
+    current = join(current, part)
+    const info = await lstat(current).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error
+      return null
+    })
+    if (!info) break
+    if (info.isSymbolicLink()) throw Error('The write target crosses a linked project path.')
+  }
 }
 
 async function readProject(dir: string): Promise<ProjectSnapshot> {
@@ -526,7 +541,7 @@ app.whenReady().then(() => {
     const opts = { defaultPath: join(app.getPath('downloads'), basename(q)) }
     const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
     if (r.canceled || !r.filePath) return null
-    await copyFile(q, r.filePath)
+    await saveProjectCopy(q, r.filePath)
     return r.filePath
   })
   ipcMain.handle('project:packageReadiness', async (_e, dir: string, studyId: string) => ({ ...await projectPackageReadiness(ownedPath(dir), studyId), modelAccess: RELAY ? 'relay' as const : 'key' as const }))
@@ -536,6 +551,7 @@ app.whenReady().then(() => {
     return readFile(q, 'utf8')
   })
   ipcMain.handle('project:writeText', async (_e, p: string, text: string, ifUnchanged?: string, action?: unknown) => {
+    await assertProjectWritePath(projectRootOf(q), q)
     const q = ownedPath(p)
     const ref = actionRef(action)
     if (typeof text !== 'string' || text.length > TEXT_LIMIT) throw new Error('text is too large')
@@ -577,6 +593,7 @@ app.whenReady().then(() => {
       if (!paperTaken && extname(name).toLowerCase() === '.pdf') {
         target = join(root, 'paper.pdf')
         paperTaken = true
+        await assertProjectWritePath(root, join(root, folder))
       } else {
         await mkdir(join(root, folder), { recursive: true })
         const ext = extname(name)
@@ -584,6 +601,7 @@ app.whenReady().then(() => {
         target = join(root, folder, name)
         for (let n = 2; existsSync(target); n++) target = join(root, folder, `${stem} ${n}${ext}`)
         name = basename(target)
+      await assertProjectWritePath(root, target)
       }
       telemetry.noteImport(root, relative(root, target), ref)
       await copyFile(src, target, 1) // COPYFILE_EXCL: never overwrite
