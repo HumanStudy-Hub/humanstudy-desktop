@@ -61,6 +61,25 @@ jobs:
 
       - run: npm ci
 
+      - run: npm run typecheck
+        if: ${{ !cancelled() }}
+      - run: npx electron-vite build
+        if: ${{ !cancelled() }}
+
+      - name: Unsigned NSIS test installer (never published)
+        run: node scripts/dist.mjs --win nsis --x64 --unsigned --publish never
+
+      - name: Install and launch the packaged app
+        shell: pwsh
+        run: "& ../scripts/smoke_windows_installer.ps1"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HumanStudy-Hub-Setup-windows-x64-unsigned
+          path: app/dist/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Pack Python tests
         working-directory: .
         run: |
@@ -73,13 +92,24 @@ jobs:
           files=$(ls src/main/*.test.mjs src/main/kernel/*.test.mjs src/renderer/*.test.mjs src/shared/*.test.mjs scripts/*.test.mjs \
             | grep -v '\.live\.test\.mjs$' | grep -v 'native-live\.test\.mjs$')
           echo "$files"
+          # Pack Python tests already ran above with this interpreter. The managed-runtime step repeats them with the installed interpreter.
           node --test --test-concurrency=2 --test-reporter=spec --test-reporter-destination=stdout \
-            --test-reporter=junit --test-reporter-destination=../windows-tests.xml $files
+            --test-reporter=junit --test-reporter-destination=../windows-tests.xml \
+            --test-skip-pattern='^python unit tests \(' $files
         env:
           HUMANSTUDY_TEST_PYTHON: python
 
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: windows-test-report
+          path: windows-tests.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Managed runtime install (python-build-standalone + .cmd shims)
         if: ${{ !cancelled() }}
+        timeout-minutes: 15
         run: |
           rt="$RUNNER_TEMP/hs-rt"
           node scripts/install-runtime.mjs "$rt"
@@ -87,58 +117,3 @@ jobs:
           cmd //c "$(cygpath -w "$rt/bin/python.cmd")" -c "import numpy, scipy, pandas, pypdf, pdfplumber; print('runtime ok')"
           cmd //c "$(cygpath -w "$rt/bin/hs-pdf.cmd")" --help
           HUMANSTUDY_TEST_PYTHON="$(cygpath -w "$rt/python/python.exe")" node --test src/main/runtime.test.mjs
-
-      - run: npm run typecheck
-        if: ${{ !cancelled() }}
-      - run: npx electron-vite build
-        if: ${{ !cancelled() }}
-
-      - name: Unsigned NSIS test installer (never published)
-        run: node scripts/dist.mjs --win nsis --x64 --unsigned --publish never
-
-      - name: Install and launch the packaged app
-        shell: pwsh
-        run: |
-          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $setup = Join-Path $PWD "dist/HumanStudy-Hub-Setup-$version.exe"
-          $installed = Join-Path $env:RUNNER_TEMP 'humanstudy-installed'
-          $profile = Join-Path $env:RUNNER_TEMP 'humanstudy-smoke-profile'
-          $installer = Start-Process -FilePath $setup -ArgumentList '/S', "/D=$installed" -Wait -PassThru
-          if ($installer.ExitCode -ne 0) { throw "NSIS exited $($installer.ExitCode)" }
-          $exe = Join-Path $installed 'HumanStudy Hub.exe'
-          if ((Get-Item $exe).VersionInfo.ProductVersion -notlike "$version*") {
-            throw 'The installed app version does not match the candidate.'
-          }
-          $env:APPDATA = $profile
-          New-Item -Path $profile -ItemType Directory -Force | Out-Null
-          $app = Start-Process -FilePath $exe -ArgumentList '--disable-gpu' -PassThru
-          try {
-            for ($attempt = 0; $attempt -lt 45; $attempt++) {
-              $app.Refresh()
-              if ($app.HasExited) { throw "The packaged app exited $($app.ExitCode) before showing a window." }
-              if ($app.MainWindowHandle -ne 0) {
-                Get-FileHash $setup -Algorithm SHA256 | Format-List
-                Write-Output "Windows $([System.Environment]::OSVersion.Version): opened $($app.MainWindowTitle) ($version)."
-                exit 0
-              }
-              Start-Sleep -Seconds 1
-            }
-            throw 'The packaged app did not show a window within 45 seconds.'
-          } finally {
-            if (!$app.HasExited) { Stop-Process -Id $app.Id -Force }
-          }
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: HumanStudy-Hub-Setup-windows-x64-unsigned
-          path: app/dist/*.exe
-          if-no-files-found: error
-          retention-days: 7
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: windows-test-report
-          path: windows-tests.xml
-          if-no-files-found: ignore
-          retention-days: 7

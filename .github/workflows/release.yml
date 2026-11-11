@@ -33,6 +33,10 @@ jobs:
       run:
         working-directory: app
     steps:
+      - name: Preserve the exact source bytes on Windows
+        if: runner.os == 'Windows'
+        working-directory: .
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -64,6 +68,11 @@ jobs:
       - name: Build and publish (Windows preview)
         if: runner.os == 'Windows'
         run: node scripts/dist.mjs ${{ matrix.target }} --unsigned --publish always
+
+      - name: Verify the release installer opens
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: "& ../scripts/smoke_windows_installer.ps1"
 
   # The standalone humanstudy skill (no app needed: Codex, Claude Code, OpenCode), generated from the
   # same pack, attached to the same release as humanstudy-skill.zip.
