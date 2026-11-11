@@ -562,7 +562,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
                   throw e
                 }
               }}
-              onBuild={() => onSendAgent?.(t('sim.build_prompt'))}
+              onBuild={() => onSendAgent?.(t('sim.build_prompt', { studyId: simStudyId }))}
               onStop={(runs, ownTurn) => {
                 if (ownTurn) onStopAgent?.()
                 // The run itself is a background process; simkit ends it after the participants in flight.

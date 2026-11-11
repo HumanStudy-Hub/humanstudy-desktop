@@ -571,3 +571,28 @@ test('legacy warnings survive reinitializing the cache and do not block runnable
   writeFileSync(join(dir, 'effects.json'), '{}')
   assert.equal((await F.projectPackageReadiness(dir, undefined, false)).scientificReport, undefined)
 })
+
+test('program-only and unsupported legacy projects can prepare a protocol without executing package code', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'windows-protocol-route-'))
+  await build({ entryPoints: [join(here, '../main/package-readiness.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'readiness.mjs'), logLevel: 'error' })
+  const F = await import(pathToFileURL(join(out, 'readiness.mjs')).href)
+  F.configureScientificChecks(async () => assert.fail('legacy code cannot run without file isolation'), 'windows', false)
+  F.configureProtocolChecks(async () => [], 'windows', async () => BUDGET)
+  const programOnly = project({})
+  const legacy = project({ knobe: COMMENT_ONLY })
+  assert.equal((await F.projectPackageReadiness(programOnly, 's1', false, true)).exists, false)
+  assert.ok((await F.projectPackageReadiness(legacy, 's1', false, true)).problems.some(p => p.check === 'isolation'))
+  for (const dir of [programOnly, legacy]) {
+    const program = readFileSync(join(dir, 'program.json'))
+    withProtocol(dir)
+    assert.equal((await F.projectPackageReadiness(dir, undefined, false, true)).protocol.ready, false)
+    const checked = await F.projectPackageReadiness(dir, undefined, true, true)
+    assert.equal(checked.ready, false)
+    assert.equal(checked.protocol.ready, true)
+    await F.assertRunnablePackage(dir, protocolApproval())
+    assert.deepEqual(readFileSync(join(dir, 'program.json')), program)
+  }
+  const messages = readFileSync(join(here, '../renderer/i18n-dict.ts'), 'utf8')
+  const prompt = messages.split('\n').find(line => line.includes("'sim.build_prompt'"))
+  assert.match(prompt, /\{studyId\}.*protocol[.]json.*existing program[.]json/)
+})

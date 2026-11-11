@@ -308,6 +308,8 @@ async function packageRouteReadiness(projectDir: string, studyId?: string, execu
       if (science.length) r.problems = science.map((p) => ({ file: 'study.json' as const, kind: 'scientific' as const, check: p.check, reason: p.reason }))
       r.ready = r.problems.length === 0
       if (r.ready) return { ...r, runNotice }
+    } else if (!legacyExecutionAvailable) {
+      r.problems.push({ file: 'study.json', kind: 'scientific', ...NO_FILE_ISOLATION })
     }
     checked.push(r)
   }

@@ -188,6 +188,7 @@ const HIDDEN_DIRS = new Set(['.humanstudy', '.opencode', 'node_modules', '__pyca
 // Engineering files the pack installs for the agent. The agent reads them from disk; researchers never need to see them.
 const HIDDEN_TOP = new Set(['AGENTS.md', 'PROJECT_FORMAT.md', 'schema'])
 const TREE_LIMIT = 3000
+// Local viewer identity only. Reuse the digest across refreshes while the file version matches.
 const pdfHashes = new Map<string, { version: string; digest: Promise<string | undefined> }>()
 function pdfHash(path: string, version: string): Promise<string | undefined> {
   const cached = pdfHashes.get(path)
@@ -222,7 +223,7 @@ async function listTree(root: string, dir: string, depth: number, count: { n: nu
         size = st.size
         mtime = Math.round(st.mtimeMs)
         version = fileVersion(st)
-        if (/\.pdf$/i.test(d.name) && !/^sources\/private\//i.test(rel)) sha256 = await pdfHash(path, version)
+        if (/\.pdf$/i.test(d.name)) sha256 = await pdfHash(path, version)
       } catch {
         /* unreadable */
       }
