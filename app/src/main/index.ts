@@ -33,7 +33,7 @@ import { saveProjectCopy, saveProjectText } from './program-save'
 import { createPaperBuilds, isBuildTurn } from './paper-build'
 import { createShutdown } from './shutdown-core'
 import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedRunFiles } from './pack'
-import { scientificReadiness } from './scientific-readiness'
+import { legacyFileIsolationAvailable, scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf } from './package-readiness'
 import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, restoredRunFiles, writeAgentStatus } from './original-text'
@@ -260,7 +260,7 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
     name: basename(dir),
     program,
     programError,
-    build: await paperBuilds.snapshot(dir),
+    build: paperBuilds.readOnly(dir),
     artifacts: await listDir(join(dir, 'artifacts')),
     exports: await listDir(join(dir, 'exports')),
     pdf: pdfPath
@@ -423,11 +423,12 @@ const studyTitle = (restored: string): string => { try { const t = JSON.parse(re
 app.whenReady().then(() => {
   // Per-run code copies of protocol runs that a quit or a crash left behind.
   void sweepRunCopies(join(app.getPath('userData'), 'protocol-runs'))
+  process.env.HUMANSTUDY_DESKTOP_APP = '1'
   process.env.HUMANSTUDY_RELAY_DIR = join(app.getPath('userData'), 'run-relays')
   // `ready` needs every build check (pack/skills/build/check_readiness.py), run from the app's own copy.
   const checkFiles = trustedCheckFiles()
   configureScientificChecks(async (project, slug) => scientificReadiness(await readyPython(), checkFiles, project, slug, process.env.HUMANSTUDY_RUNTIME_BIN || ''),
-    app.getVersion() + ':' + createHash('sha256').update(JSON.stringify(checkFiles)).digest('hex').slice(0, 16))
+    app.getVersion() + ':' + createHash('sha256').update(JSON.stringify(checkFiles)).digest('hex').slice(0, 16), RELAY && legacyFileIsolationAvailable())
   // The protocol route: protocol.json checked by the bundled engine (pack/runtime/hsenv), never the project's copy.
   const engine = trustedEngineFiles()
   const budgetFiles = trustedBudgetFiles()
@@ -509,8 +510,6 @@ app.whenReady().then(() => {
   ipcMain.handle('project:read', async (_e, dir: string) => {
     const snap = await readProject(dir)
     watchProject(snap.dir)
-    // A published study: start fetching its original wording when it opens (cached per input state).
-    void isPublishedStudy(snap.dir).then((yes) => (yes ? originalTextProblemsOf(snap.dir) : undefined)).catch(() => undefined)
     telemetry.noteProjectFiles(snap)
     return snap
   })
@@ -544,15 +543,15 @@ app.whenReady().then(() => {
     await saveProjectCopy(q, r.filePath)
     return r.filePath
   })
-  ipcMain.handle('project:packageReadiness', async (_e, dir: string, studyId: string) => ({ ...await projectPackageReadiness(ownedPath(dir), studyId), modelAccess: RELAY ? 'relay' as const : 'key' as const }))
+  ipcMain.handle('project:packageReadiness', async (_e, dir: string, studyId: string, execute?: boolean) => ({ ...await projectPackageReadiness(ownedPath(dir), studyId, execute === true, true), modelAccess: RELAY ? 'relay' as const : 'key' as const }))
   ipcMain.handle('project:readText', async (_e, p: string) => {
     const q = ownedPath(p)
     if ((await stat(q)).size > TEXT_LIMIT) throw new Error('file is larger than 4 MB')
     return readFile(q, 'utf8')
   })
   ipcMain.handle('project:writeText', async (_e, p: string, text: string, ifUnchanged?: string, action?: unknown) => {
-    await assertProjectWritePath(projectRootOf(q), q)
     const q = ownedPath(p)
+    await assertProjectWritePath(projectRootOf(q), q)
     const ref = actionRef(action)
     if (typeof text !== 'string' || text.length > TEXT_LIMIT) throw new Error('text is too large')
     telemetry.noteAction(ref, [...openProjects].find((d) => isInside(d, q))) // the save operation, with its project
@@ -593,16 +592,16 @@ app.whenReady().then(() => {
       if (!paperTaken && extname(name).toLowerCase() === '.pdf') {
         target = join(root, 'paper.pdf')
         paperTaken = true
-        await assertProjectWritePath(root, join(root, folder))
       } else {
+        await assertProjectWritePath(root, join(root, folder))
         await mkdir(join(root, folder), { recursive: true })
         const ext = extname(name)
         const stem = name.slice(0, name.length - ext.length)
         target = join(root, folder, name)
         for (let n = 2; existsSync(target); n++) target = join(root, folder, `${stem} ${n}${ext}`)
         name = basename(target)
-      await assertProjectWritePath(root, target)
       }
+      await assertProjectWritePath(root, target)
       telemetry.noteImport(root, relative(root, target), ref)
       await copyFile(src, target, 1) // COPYFILE_EXCL: never overwrite
       // Import is a known completed action; don't rely on fs.watch reporting a filename on Windows.

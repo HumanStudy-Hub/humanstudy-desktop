@@ -2,6 +2,7 @@
 // readiness gate. The checker is written fresh from the files bundled in the app into a private scratch
 // folder for every run, so neither the project's editable copy nor an earlier written copy decides the
 // result. Package code is never run here: check_readiness.py runs it only through sandbox_run.py.
+import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -12,6 +13,8 @@ export interface ScientificProblem { check: string; reason: string }
 /** Longer than check_readiness.py's own limits run one after another: check_package.py --no-validity
  *  (PACKAGE_TIMEOUT 700 s: the smoke tests and the recorded-answers check), check_validity's prompt capture (300 s)
  *  and analysis run (360 s), and the effects field check (300 s), with margin. */
+export const legacyFileIsolationAvailable = (): boolean => process.platform === 'darwin' && existsSync('/usr/bin/sandbox-exec')
+
 export const SCIENTIFIC_TIMEOUT_MS = 40 * 60_000
 
 export const RUNTIME_MISSING: ScientificProblem = { check: 'runtime', reason: 'The research runtime is not installed, so the build checks cannot run yet.' }
@@ -28,6 +31,7 @@ export function parseScientificReport(stdout: string): ScientificProblem[] {
 
 export async function scientificReadiness(python: string | null, files: [string, string][], project: string, slug: string, bin: string,
   timeout = SCIENTIFIC_TIMEOUT_MS): Promise<ScientificProblem[]> {
+  if (!legacyFileIsolationAvailable()) return [{ check: 'isolation', reason: 'Legacy package execution requires file isolation.' }]
   if (!python) return [RUNTIME_MISSING]
   // Two separate folders: package code (confined by sandbox_run, which only confines files on macOS) works
   // under `home`, never in the folder that holds the checker.
@@ -47,7 +51,7 @@ export async function scientificReadiness(python: string | null, files: [string,
         // No keys or tokens: only a path, a home and a temp folder in the scratch space.
         env: {
           PATH: (bin ? bin + (win ? ';' : ':') : '') + system,
-          HOME: home, USERPROFILE: home, TMPDIR: home, TEMP: home, TMP: home, LANG: 'C.UTF-8',
+          HOME: home, USERPROFILE: home, TMPDIR: home, TEMP: home, TMP: home, LANG: 'C.UTF-8', HUMANSTUDY_REQUIRE_FILE_ISOLATION: '1',
           ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
         },
       }, (error, output) => error ? reject(error) : resolve(output))

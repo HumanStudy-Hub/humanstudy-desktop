@@ -102,6 +102,8 @@ const ROWS: Row[] = [
   ['sim.resolve_prompt', 'Help me get “{study}” ready to simulate: explain in plain words what still needs deciding and settle it with me. Do not run a simulation yet.', '请帮我让“{study}”可以模拟：用简单的话说明还需要确定什么，并和我一起解决。先不要运行模拟。'],
   ['sim.not_built', 'Before AI participants can take part, the agent turns the study document into a runnable study (the materials, the questions and how answers are scored).', '在 AI 参与者参加之前，助手需要先把研究文档做成可运行的研究（材料、问题以及答案的计分方式）。'],
   ['sim.build', 'Build the study first', '先构建可运行的研究'],
+  ['sim.check_readiness', 'Check readiness', '检查运行条件'],
+  ['sim.check_failed', 'The study checks could not complete. Try again.', '未能完成研究检查。请重试。'],
   ['sim.checking', 'Checking the runnable study…', '正在检查可运行的研究…'],
   ['sim.incomplete', 'This study cannot run yet. Here is what is needed before it can be run or priced:', '这项研究暂时不能运行或估算费用。还需要：'],
   ['sim.ask_complete', 'Ask the agent to complete it', '让助手补全'],

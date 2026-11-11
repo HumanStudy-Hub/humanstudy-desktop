@@ -523,3 +523,32 @@ test('a protocol with no runnable arms explains missing material and never sizes
  assert.match(r.protocol.problems.find(p=>p.check==='materials').reason,/original questionnaire/)
  assert.equal(budgetCalls,before,'blocked study has no model budget request')
 })
+
+test('read-only readiness never starts checks and exposes only results for the current files', async () => {
+  const legacy = project({ knobe: COMPLETE })
+  const protocol = withProtocol(mkdtempSync(join(tmpdir(), 'protocol-status-')))
+  const before = protocolCalls
+  let legacyCalls = 0
+  const out = mkdtempSync(join(tmpdir(), 'readiness-read-only-'))
+  await build({ entryPoints: [join(here, '../main/package-readiness.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'readiness.mjs'), logLevel: 'error' })
+  const F = await import(pathToFileURL(join(out, 'readiness.mjs')).href)
+  F.configureScientificChecks(async () => { legacyCalls++; return [] }, 'read-only')
+  for (let i = 0; i < 2; i++) {
+    const status = await F.projectPackageReadiness(legacy, undefined, false)
+    assert.equal(status.ready, false)
+    assert.equal(status.problems[0].check, 'unchecked')
+    assert.equal((await M.projectPackageReadiness(protocol, undefined, false)).protocol.ready, false)
+  }
+  assert.equal(legacyCalls, 0)
+  assert.equal(protocolCalls, before)
+  assert.equal((await F.projectPackageReadiness(legacy)).ready, true)
+  assert.equal((await F.projectPackageReadiness(legacy, undefined, false)).ready, true)
+  writeFileSync(join(legacy, 'notes.pdf'), 'new source')
+  assert.equal((await F.projectPackageReadiness(legacy, undefined, false)).ready, false)
+  assert.equal(legacyCalls, 1)
+  assert.equal((await M.projectPackageReadiness(protocol)).protocol.ready, true)
+  assert.equal((await M.projectPackageReadiness(protocol, undefined, false)).protocol.ready, true)
+  assert.equal(protocolCalls, before + 1)
+  F.configureScientificChecks(async () => assert.fail('platform isolation required'), 'read-only', false)
+  assert.equal((await F.projectPackageReadiness(legacy)).problems[0].check, 'isolation')
+})

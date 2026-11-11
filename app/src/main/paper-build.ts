@@ -126,22 +126,22 @@ export function createPaperBuilds(changed: (dir: string) => void, checkProtocol?
   }
 
   /** The state as the app should show it now (an orphaned `running` build becomes an interrupted error). */
-  function read(dir: string): PaperBuildState | undefined {
+  function read(dir: string, persist = true): PaperBuildState | undefined {
     const state = readPaperBuild(dir)
     if (state?.status === 'running' && !live.has(state.sessionId ?? '')) {
       const next: PaperBuildState = { status: 'error', phase: state.phase, sessionId: state.sessionId, error: 'interrupted' }
-      try { writePaperBuild(dir, next) } catch { /* shown either way */ }
+      if (persist) try { writePaperBuild(dir, next) } catch { /* shown either way */ }
       return next
     }
     if (state?.status === 'complete' && !currentCertificate(dir, state)) {
       const next: PaperBuildState = { ...state, status: 'error', checked: false, error: 'incomplete' }
-      try { writePaperBuild(dir, next) } catch { /* shown either way */ }
+      if (persist) try { writePaperBuild(dir, next) } catch { /* shown either way */ }
       return next
     }
     // Finished by hand after a failure (in the chat or another conversation): nothing is left to retry.
     if (state?.status === 'error' && currentCertificate(dir, state)) {
       const next: PaperBuildState = { ...state, status: 'complete', error: undefined }
-      try { writePaperBuild(dir, next) } catch { /* shown either way */ }
+      if (persist) try { writePaperBuild(dir, next) } catch { /* shown either way */ }
       return next
     }
     return state
@@ -185,6 +185,7 @@ export function createPaperBuilds(changed: (dir: string) => void, checkProtocol?
 
   return {
     read,
+    readOnly: (dir: string) => read(dir, false),
     async snapshot(dir: string): Promise<PaperBuildState | undefined> {
       const state = readPaperBuild(dir)
       if (state?.status === 'complete' && state.validationRoute === 'protocol' && checkProtocol) {
