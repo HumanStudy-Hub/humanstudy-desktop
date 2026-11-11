@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import type { CommunityStudy, CommunityStudyDetail } from '../../preload/types'
-import { isExtracted, matchesResearch, researchAvailability, researchRank } from '../../shared/research-search'
+import { isExtracted, isUserSubmission, matchesResearch, researchAvailability, researchRank } from '../../shared/research-search'
 import { relativeTime } from './Home'
 import { track } from '../telemetry'
 import { remember } from '../nav'
@@ -324,6 +324,7 @@ function StudyPage({
         <div className="repo-id">
           <h1 className="repo-title">{head?.title ?? 'Loading…'}</h1>
           {head && <p className="muted repo-byline">{byline(head)}</p>}
+          {head && isUserSubmission(head) && <p className="small research-availability">User submitted</p>}
           <Topics topics={head?.topics} onSelect={onTopic} />
         </div>
         <div className="repo-actions">
@@ -339,7 +340,7 @@ function StudyPage({
             </button>
           </div>
           <p className="muted small repo-note">
-              {head?.currentRevision ? 'Copies the Human Program, materials and artifacts into your projects.' : head?.legacyStudyId || /^study_\d+$/.test(id) ? 'Copies the study materials; the agent can build its Human Program.' : 'Only the source is indexed. A Human Program has not been validated yet.'}
+              {head?.currentRevision ? 'Copies the Human Program, materials and artifacts into your projects.' : head?.legacyStudyId || /^study_\d+$/.test(id) ? 'Copies the study materials; the agent can build its Human Program.' : 'Only the source is indexed. A Human Program is unavailable.'}
           </p>
           {forkError && <p className="home-error repo-error">{forkError}</p>}
         </div>

@@ -147,6 +147,9 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
 - [ ] **Simulation results view** — the agent's `report.md` + `results.png` opened automatically
       when a simulation finishes. (R3)
 - [ ] **Import my project from the Hub** (web first build → app). (M3 + web)
+- [ ] **Community ratings and ranking** — after attribution, submission, and credit display, add a
+      simple user rating and use ratings to order eligible community contributions. Keep ratings
+      separate from the “User submitted” label.
 - [ ] **Publish to the community** — one folder per contribution under `community/<paper-key>/`,
       same paper by several people is never a conflict, GitHub users author their own PR and
       everyone else publishes through the Hub bot with full attribution; see
