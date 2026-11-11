@@ -72,6 +72,32 @@ class TextCoverage(unittest.TestCase):
         found = problems(pages, program([table_field(bare)]))
         self.assertTrue(any("exact p values" in m for m in found), found)
 
+    def test_p_comparators_keep_the_source_and_accept_equivalent_typography(self):
+        source = [INTRO, "Results\n\nParticipants rated the target higher, t(40) = 2.1, p ≤ .025."]
+        def run(value):
+            evidence = program([{"id": "test", "label": "Test", "value": value}])
+            return cr.text_problems(cr.text_coverage(source, evidence, {}, []), "sources/attachment.pdf")
+        for equivalent in ["t(40) = 2.1, p <= 0.025", "t(40) = 2.1, p ⩽ .0250"]:
+            self.assertEqual(run(equivalent), [])
+        report = run("t(40) = 2.1, p > 0.025")
+        self.assertEqual(len(report), 1)
+        self.assertIn("sources/attachment.pdf, p. 2", report[0][0])
+        self.assertIn("source prints p <= .025", report[0][0])
+        self.assertIn("recorded operator at that value is >", report[0][0])
+
+    @unittest.skipUnless(shutil.which("pdftotext"), "requires Poppler")
+    def test_four_knobe_fixture_findings_keep_the_pdf_comparator(self):
+        sample = REPO / "app/resources/sample/KNOBE.pdf"
+        fixture = REPO / "app/src/shared/fixtures/knobe-e2e.json"
+        fields = json.loads(fixture.read_text(encoding="utf-8"))["nodes"]
+        recorded = [m for node in fields for field in node.get("fields", [])
+                    if isinstance(field.get("value"), str) for m in cr.P_COMPARE.finditer(field["value"])]
+        source = subprocess.check_output(["pdftotext", str(sample), "-"], text=True)
+        printed = list(cr.P_COMPARE.finditer(cr._norm(source)))
+        token = lambda m: (cr.p_operator(m["operator"]), cr.p_number(m["number"]))
+        self.assertEqual(len(recorded), 4)
+        self.assertEqual([token(m) for m in recorded], [token(m) for m in printed])
+
     def test_effects_reported_counts_as_recorded(self):
         doc = {"effects": [{"id": "e%d" % i, "reported": {"estimates": [{"metric": "regression_coefficient", "value": b,
                                                                           "p": p}], "evidenceIds": ["x"]}}

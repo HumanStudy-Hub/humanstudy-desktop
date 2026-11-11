@@ -74,6 +74,7 @@ import re
 import shutil
 import subprocess
 import sys
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -480,7 +481,29 @@ def impossible_values(result_fields):
 # findings and the supplement's tables. Recorded means: a number in a result node's field, or in effects.json
 # `reported` (sex and age also in a participants node).
 
-P_EXACT = re.compile(r"(?<![\w.])[pP](?:'s)?\s*=\s*(0?\.\d+|1\.0+|\d\.\d+\s*[x×]\s*10\s*-\s*\d+)")
+P_OPERATOR = r"(?:[<＞>＜][ \t]*[=＝]|[=<>≤≥≦≧⩽⩾＝＜＞])"
+P_NUMBER = r"(?:0?\.[ \t]*\d+|[01](?:\.[ \t]*\d+)?)(?:[eE][+-]?\d+|\s*[x×]\s*10\s*-\s*\d+)?(?![\d.]\d|\d)"
+P_COMPARE = re.compile(r"(?i)(?<![\w.])p(?:'s|[- ]values?)?\s*(?P<operator>" + P_OPERATOR
+                       + r")\s*(?P<number>" + P_NUMBER + ")")
+P_CELL = re.compile(r"\s*(?P<operator>" + P_OPERATOR + r")?\s*(?P<number>" + P_NUMBER + r")\s*")
+P_OPERATORS = dict.fromkeys(("≤", "≦", "⩽", "<="), "<=") | dict.fromkeys(("≥", "≧", "⩾", ">="), ">=")
+
+
+def p_operator(operator):
+    operator = re.sub(r"\s+", "", operator or "=").translate(str.maketrans("＝＜＞", "=<>"))
+    return P_OPERATORS.get(operator, operator)
+
+
+def p_number(number):
+    text = re.sub(r"\s+", "", str(number)).lower()
+    text = re.sub(r"[x×]10-", "e-", text)
+    try:
+        value = Decimal(text)
+        return value if value.is_finite() and 0 <= value <= 1 else None
+    except InvalidOperation:
+        return None
+
+
 STAT_NUMBER = r"-?(?:\d+\.\d+|\.\d+|\d+)"
 STATISTICS = [
     # coefficients and effect sizes: "coeff = 0.25", "b = -0.18", "OR = 4.30", "d = 0.42", "h = 0.71"
@@ -589,7 +612,6 @@ NOT_OWN_REASON = re.compile(r"(?i)design (?:value|probabilit)|pay-?offs?\b|power
                             r"\b[A-Z][A-Za-z'\-]+ et al\b")
 P_KEY = re.compile(r"(?i)^p$|^p[_\-. ]|[_\- ]p$|[_\- ]p[_\- ]|p_?val|pvalue|^p\d$|p_printed|^ptext$|^sig(nif\w*)?\.?$|"
                    r"^pr$|^pr\s*\(|^pr_|_sig$")
-P_TEXT = re.compile(r"(?i)(?<![\w.])p(?:'s)?(?:\s*(?:=|<|>|≤|≥|<=|>=)|[\- ]values?\s*(?:=|<|>|:)?)\s*(0?\.\d+|1(?:\.0+)?)")
 SEX_WORDS = re.compile(r"(?i)sex|gender|male|female|\bm[ae]n\b|wom[ae]n|girls?|boys?")
 AGE_WORDS = re.compile(r"(?i)(?<![a-z])age(?![a-z])|_age|age_|years? old")
 TOKEN = re.compile(r"-?(?:\d+\.\d+|\.\d+|\d+)")
@@ -745,15 +767,14 @@ def statistics_in(text):
     together ("26% vs 18%")."""
     found, seen = [], set()
     design_end = None
-    for m in P_EXACT.finditer(text):
+    for m in P_COMPARE.finditer(text):
         if _design_p(text, m, design_end):
             design_end = m.end()
             continue
-        if "x" in m.group(1) or "×" in m.group(1):
-            continue
-        if _own(text, m.start()):
-            found.append({"kind": "p", "value": m.group(1), "at": m.start(1), "group": None})
-            seen.add(m.start(1))
+        if _own(text, m.start()) and p_number(m["number"]) is not None:
+            found.append({"kind": "p", "value": m["number"], "operator": p_operator(m["operator"]),
+                          "at": m.start("number"), "group": None})
+            seen.add(m.start("number"))
     for kind, pattern in [("sex", SEX_STAT), ("age", AGE_STAT)] + STATISTICS:
         for m in pattern.finditer(text):
             if not _own(text, m.start()):
@@ -876,15 +897,18 @@ def recorded_p_keys(values):
                                 stack.append((str(column).split("/")[-1].strip(), cells[i + offset]))
         elif isinstance(item, list):
             stack.extend((key, v) for v in item)
-        elif _plain(item):
-            if P_KEY.search(key):
-                _add(keys, float(item))
+        elif _plain(item) and P_KEY.search(key):
+            value = p_number(item)
+            if value is not None:
+                keys.add(("=", value))
         elif isinstance(item, str):
-            if P_KEY.search(key):
-                for token in re.findall(r"(?:\d+\.\d+|\.\d+|\d+)", item):
-                    _add(keys, float(token))
-            for m in P_TEXT.finditer(_norm(item)):
-                _add(keys, float(m.group(1)))
+            normalized = _norm(item)
+            cell = P_CELL.fullmatch(normalized) if P_KEY.search(key) else None
+            matches = [cell] if cell else P_COMPARE.finditer(normalized)
+            for m in matches:
+                value = p_number(m["number"])
+                if value is not None:
+                    keys.add((p_operator(m["operator"]), value))
     return keys
 
 
@@ -1030,13 +1054,18 @@ def text_coverage(pages, program, effects, spans, material="", table_pages=()):
         if passage["page"] in table_pages and (len(TOKEN.findall(passage["text"])) * 3 >= word_count or
                                                CAPTION.search(passage["text"])):
             continue
-        stats = [s for s in statistics_in(passage["text"]) if _nonzero(s["value"]) and not _in_skipped(passage, s, spans)]
+        stats = [s for s in statistics_in(passage["text"]) if (s["kind"] == "p" or _nonzero(s["value"])) and not _in_skipped(passage, s, spans)]
         if material:
             stats = [s for s in stats if not (s["kind"] == "pair" and _in_material(passage["text"], s, stats, material))]
         if not stats:
             continue
         for s in stats:
-            s["recorded"] = is_recorded(s["value"], p_keys if s["kind"] == "p" else sample_keys.get(s["kind"], keys))
+            if s["kind"] == "p":
+                value = p_number(s["value"])
+                s["recorded"] = (s["operator"], value) in p_keys
+                s["other_operators"] = sorted(op for op, n in p_keys if n == value and op != s["operator"])
+            else:
+                s["recorded"] = is_recorded(s["value"], sample_keys.get(s["kind"], keys))
             s["page"], s["context"] = passage["page"], _snippet(passage["text"][max(0, s["at"] - 30):s["at"] + 40])
         by_group = {}
         for s in stats:
@@ -1085,14 +1114,20 @@ def _one_per_group(stats):
     return out
 
 
-def text_problems(report):
+def text_problems(report, source=None):
     out = []
     ps = report["p"]
     absent = [p for p in ps if not p["recorded"]]
+    for p in absent:
+        if p["other_operators"]:
+            locator = "%s, p. %d" % (source, p["page"]) if source else "p. %d" % p["page"]
+            out.append(("%s: source prints p %s %s, but the recorded operator at that value is %s (%s)" %
+                        (locator, p["operator"], p["value"], ", ".join(p["other_operators"]), p["context"]),
+                        "use the comparison operator printed in the source"))
     if len(ps) >= 6 and len(absent) > len(ps) * P_SHARE:
         out.append(("only %d of the %d exact p values the paper's text prints are recorded in result fields or "
                     "effects.json (missing e.g. %s)" % (len(ps) - len(absent), len(ps), ", ".join(
-                        "p = %s (p. %d)" % (p["value"], p["page"]) for p in absent[:6])),
+                        "p %s %s (p. %d)" % (p["operator"], p["value"], p["page"]) for p in absent[:6])),
                     "record each text statistic with its p value (coefficient, test, effect size, SE, n), not only "
                     "the tables; " + COVERAGE_FIX))
     pairs = report["pairs"]
@@ -1374,7 +1409,8 @@ def coverage_problems(root, pdf_path, program, effects, record, table_pages=()):
     out = []
     if pages:
         spans, out = _skipped(record, pages)
-        out += text_problems(text_coverage(pages, program, effects, spans, material_text(root), set(table_pages)))
+        source = pdf_path.relative_to(root).as_posix() if pdf_path.is_relative_to(root) else pdf_path.name
+        out += text_problems(text_coverage(pages, program, effects, spans, material_text(root), set(table_pages)), source)
         out += abstract_problems(pages, program, effects, record)
     out += supplement_problems(root, pdf_path, program, record)
     return out
