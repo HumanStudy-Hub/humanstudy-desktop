@@ -15,12 +15,12 @@ import { SourceDrawer, type PassageSelection, type SourceRef } from './SourceDra
 import { getLang, t } from '../i18n'
 import { BuildProgress } from './BuildProgress'
 import { WEB_EDITION } from '../edition'
-import { sourceTarget } from '../../shared/source-target'
+import { pdfAnnotationPath, resolveSource } from '../../shared/source-target'
 import { simulationScope } from '../../shared/simulation-scope'
 import { simulationPlan } from '../../shared/simulation-run'
 import { SimulationPanel } from './SimulationPanel'
 import { sourceFocus } from '../../shared/workspace-context'
-import { passageSupport } from '../../shared/program-view'
+import { passageSupport, type SourceRef as ProgramSourceRef } from '../../shared/program-view'
 import { quoteKey } from '../../shared/source-anchor'
 import { clearDraft, draftsIn } from '../drafts'
 import { forget, remember } from '../nav'
@@ -184,8 +184,11 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const [editError, setEditError] = useState('')
   const [changed, setChanged] = useState<Set<string>>(() => new Set())
   const [paperSeen, setPaperSeen] = useState(false)
-  const sourceFile = source ? sourceTarget(project, source) : project.pdf
+  const sourceResolution = useMemo(() => source ? resolveSource(project, source) : null, [project, source])
+  const drawerSource = useMemo(() => source ? { ...source, pending: sourceResolution?.pending } : null, [source, sourceResolution?.pending])
+  const sourceFile = sourceResolution ? sourceResolution.file : project.pdf
   const sourcePdf = sourceFile?.ext === 'pdf' && sourceFile.url ? sourceFile as import('../../preload/types').ProjectFile : null
+  const notesPath = useMemo(() => sourcePdf ? pdfAnnotationPath(project, sourcePdf, source) : undefined, [project, sourcePdf, source])
   const [sourcePage, setSourcePage] = useState<{ path: string; page: number } | null>(null)
   // The Study scroll and the paper page, saved per project so a tab switch or a reopen keeps them.
   const position = useRef<Position>(loadPosition(project.dir))
@@ -212,13 +215,23 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   }, [project.dir])
   // What the paper found for each citation it opened, and the passage the reader selected there.
   const [quoteStatus, setQuoteStatus] = useState<ReadonlyMap<string, QuoteStatus>>(() => new Map())
+  const citationKey = (ref: Pick<ProgramSourceRef, 'file' | 'sourceId' | 'sourceSha256' | 'page'> & { quote?: string },
+    file: Pick<ProjectEntry, 'path' | 'sha256' | 'version'> | null) =>
+    quoteKey(ref.page, ref.quote, JSON.stringify([ref.file, ref.sourceId, ref.sourceSha256, file?.path, file?.sha256 ?? file?.version]))
+  const reviewSource = (ref: ProgramSourceRef) => {
+    const { file, pending } = resolveSource(project, ref)
+    return { pending, key: citationKey(ref, file) }
+  }
   const [passage, setPassage] = useState<PassageSelection | null>(null)
   // Items citing the selected passage: those citing this file first; the same words cited from another
   // file are listed apart, with that file's name, never as support for this one.
   const sourceLabel = sourceFile ? ('rel' in sourceFile ? sourceFile.rel : sourceFile.name) : undefined
   const support = useMemo(() => {
     if (!passage || !program) return null
-    const found = passageSupport(program, { ...passage, source: sourceFile?.path ?? null }, (ref) => sourceTarget(project, ref)?.path ?? null)
+    const found = passageSupport(program, { ...passage, source: sourceFile?.path ?? null }, (ref) => {
+      const resolved = resolveSource(project, ref)
+      return resolved.changed ? null : resolved.file?.path ?? null
+    })
     return { page: passage.page, file: sourceLabel, ids: found.same, other: found.other }
   }, [passage, program, project, sourceFile?.path, sourceLabel])
 
@@ -587,6 +600,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
                   support={compare ? support : null}
                   onClearSupport={() => { window.getSelection()?.removeAllRanges(); setPassage(null) }}
                   quoteStatus={quoteStatus}
+                  reviewSource={reviewSource}
                   onClearSelection={onClearSelection}
                   onAskSelection={onAskSelection}
                   editError={editError}
@@ -655,14 +669,14 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
             <div className="wb-paper" hidden={active !== 'paper' && !compare}>
               {sourceFile && sourceFile.ext !== 'pdf' && 'rel' in sourceFile
                 ? <FileView key={sourceFile.path} file={sourceFile} dir={project.dir} version={project.tree} onDirty={markDirty} />
-                : <SourceDrawer key={sourcePdf?.path ?? 'no-source'} pdf={sourcePdf} source={source ?? startSource} active={active === 'paper' || compare} closeLabel={compare ? t('wb.close_source') : undefined}
+                : <SourceDrawer key={sourcePdf?.path ?? 'no-source'} pdf={sourcePdf} notesPath={notesPath} source={drawerSource ?? startSource} active={active === 'paper' || compare} closeLabel={compare ? t('wb.close_source') : undefined}
                     onClose={() => update(l => ({ ...l, active: 'study', compare: false }))}
                     onPageChange={page => {
                       if (!sourceFile) return
                       setSourcePage({ path: sourceFile.path, page })
                       storePosition({ paper: { path: sourceFile.path, page } })
                     }}
-                    onQuote={(ref, result) => setQuoteStatus(m => new Map(m).set(quoteKey(ref.page, ref.quote, ref.file ?? ref.sourceId), result))}
+                    onQuote={(ref, result, file) => setQuoteStatus(m => new Map(m).set(citationKey(ref, file), result))}
                     onSelect={setPassage}
                     supportCount={program && passage ? support?.ids.length ?? 0 : null}
                     onAskPassage={sel => docProps.onPrefill?.(`${sourceFile && 'rel' in sourceFile ? sourceFile.rel : sourceFile?.path ?? ''}\n${t('paper.passage_draft', { n: sel.page, q: sel.text })}`)} />}

@@ -62,7 +62,7 @@ export function ProtocolStudy({ text, preview, program, onSource, onAsk }: { tex
     </details>
     <iframe ref={frame} className="artifact-frame" title={typeof p.meta?.title === 'string' ? p.meta.title : String(p.id ?? '')} sandbox="allow-scripts" src={versionedUrl(preview.url, preview.version)} />
   </section>
-  const sources = Object.entries(p.meta?.sources && typeof p.meta.sources === 'object' ? p.meta.sources : {}) as [string, { file?: string; title?: string }][]
+  const sources = Object.entries(p.meta?.sources && typeof p.meta.sources === 'object' ? p.meta.sources : {}) as [string, { file?: string; title?: string; sha256?: string }][]
   return <article className="protocol-study">
     {research}
     {!research && <>
@@ -70,7 +70,7 @@ export function ProtocolStudy({ text, preview, program, onSource, onAsk }: { tex
     <p>{typeof p.meta?.citation === 'string' ? p.meta.citation : ''}</p>
     {typeof p.meta?.scope === 'string' && <p>{p.meta.scope}</p>}
     </>}
-    <div className="row">{sources.map(([id, source]) => <button key={id} className="link" onClick={() => onSource({ file: source?.file, sourceId: id, page: 1, quote: '', verified: false })}>{typeof source?.title === 'string' ? source.title : id}</button>)}</div>
+    <div className="row">{sources.map(([id, source]) => <button key={id} className="link" onClick={() => onSource({ file: source?.file, sourceId: id, sourceSha256: source?.sha256, page: 1, quote: '', verified: false })}>{typeof source?.title === 'string' ? source.title : id}</button>)}</div>
     <ol>{(Array.isArray(p.arms) ? p.arms : []).filter(a => a && typeof a.id === 'string').map((arm: any) => <li key={arm.id}><strong>{typeof arm.label === 'string' ? arm.label : arm.id}</strong>{arm.runnable === false && <div>{detail(arm.why ?? arm.not_runnable_reason)}</div>}</li>)}</ol>
     <p className="muted">{t('protocol.preview_missing')}</p>
     {onAsk && <button className="link" onClick={() => onAsk(t('protocol.preview_request'))}>{t('protocol.preview_action')}</button>}

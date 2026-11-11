@@ -3,7 +3,9 @@
 import { readdir, readFile, realpath, lstat, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { join, resolve, sep } from 'node:path'
-import { packageReadiness, type OriginalTextNeed, type PackageReadiness, type PackageFile } from '../shared/package-readiness'
+import { packageReadiness, type OriginalTextNeed, type PackageReadiness, type PackageFile, type ScientificReport } from '../shared/package-readiness'
+import { parseScientificReport } from './scientific-readiness'
+import { saveProjectText } from './program-save'
 import { formatTokens, MAX_PER_CONDITION, MAX_RUN_TOKENS, protocolRunLimits, type ProtocolBudget, type RunLimits } from '../shared/run-limits'
 
 export const COMMUNITY_RUN_NOTICE = "This study's code will run on your computer with access to your model key."
@@ -22,11 +24,12 @@ export async function communityRunNotice(projectDir: string): Promise<string | u
 }
 
 export interface ScientificProblem { check: string; reason: string; text?: OriginalTextNeed }
-type ScientificCheck = (project: string, slug: string) => Promise<ScientificProblem[]>
+type ScientificCheck = (project: string, slug: string) => Promise<ScientificReport | ScientificProblem[]>
 const NOT_CONFIGURED: ScientificProblem = { check: 'runtime', reason: 'The build checks are not available yet, so the package cannot be confirmed.' }
 const PENDING: ScientificProblem = { check: 'unchecked', reason: 'Check the current study files before running.' }
 const NO_FILE_ISOLATION: ScientificProblem = { check: 'isolation', reason: 'Legacy package execution requires file isolation, which is unavailable on this computer.' }
 let legacyExecutionAvailable = true
+let scientificReportCache: string | undefined
 const CHANGED: ScientificProblem = { check: 'changed', reason: 'The study changed while the build checks ran. They run again once edits finish.' }
 const UNREADABLE: ScientificProblem = { check: 'runtime', reason: 'The study files could not be listed for the build checks. Retry.' }
 // Fails closed until the app configures the real checker (index.ts): nothing is ready unchecked.
@@ -38,8 +41,8 @@ const results = new Map<string, Outcome>()
 const lanes = new Map<string, Promise<unknown>>()
 
 /** Install the checker the gate runs (the app's bundled check_readiness.py). Tests pass a stub. */
-export function configureScientificChecks(check: ScientificCheck, version: string, available = true): void {
-  scientificCheck = check; checkVersion = version; legacyExecutionAvailable = available; results.clear()
+export function configureScientificChecks(check: ScientificCheck, version: string, available = true, reportCache?: string): void {
+  scientificCheck = check; checkVersion = version; legacyExecutionAvailable = available; scientificReportCache = reportCache; results.clear()
 }
 
 /** What the build checks read, as metadata: package/, sources/, human-data/, the files beside program.json,
@@ -91,13 +94,32 @@ async function stampOf(paths: string[]): Promise<string> {
 /** Files beside program.json that the checks read or copy next to the package (check_package BESIDE_PROGRAM). */
 const STAMPED_BESIDE = ['program.json', 'effects.json', 'capabilities.json', 'README.md']
 
-type Outcome = ScientificProblem[] | ProtocolBudget
-const isRuntime = (o: Outcome): boolean => Array.isArray(o) && o.some((p) => p.check === 'runtime')
+type Outcome = ScientificProblem[] | ScientificReport | ProtocolBudget
+const isRuntime = (o: Outcome): boolean => (Array.isArray(o) ? o : 'problems' in o ? o.problems : []).some((p) => p.check === 'runtime')
+type ReportStore<T> = { read(key: string): Promise<T | undefined>; write(key: string, value: T): Promise<void> }
+const digest = (s: string) => createHash('sha256').update(s).digest('hex')
+
+function reportStore(lane: string): ReportStore<ScientificReport> | undefined {
+  if (!scientificReportCache) return undefined
+  const path = join(scientificReportCache, digest(lane) + '.json')
+  return {
+    async read(key) {
+      try {
+        const cached = JSON.parse(await readFile(path, 'utf8'))
+        if (cached.key === digest(key)) return parseScientificReport(JSON.stringify(cached.report))
+      } catch { /* an absent or invalid report needs a new explicit check */ }
+    },
+    async write(key, report) {
+      await saveProjectText(path, JSON.stringify({ key: digest(key), report })).catch(() => undefined)
+    },
+  }
+}
 
 /** One check run once per input state: `stamp` lists its inputs, `version` names the checker, `run` checks. */
-async function cachedCheck<T extends Outcome>(lane: string, stamp: () => Promise<string>, version: () => string, run: () => Promise<T>, execute = true): Promise<T | ScientificProblem[]> {
+async function cachedCheck<T extends Outcome>(lane: string, stamp: () => Promise<string>, version: () => string, run: () => Promise<T>, execute = true, store?: ReportStore<T>): Promise<T | ScientificProblem[]> {
+  const knownResult = async (key: string) => (results.get(key) as T | undefined) ?? await store?.read(key)
   if (!execute) {
-    try { return results.get(JSON.stringify([lane, version(), await stamp()])) as T | undefined ?? [PENDING] }
+    try { return await knownResult(JSON.stringify([lane, version(), await stamp()])) ?? [PENDING] }
     catch { return [UNREADABLE] }
   }
   const previous = lanes.get(lane) ?? Promise.resolve()
@@ -108,7 +130,7 @@ async function cachedCheck<T extends Outcome>(lane: string, stamp: () => Promise
       try { before = await stamp() } catch { return [UNREADABLE] }
       const checker = version()
       const key = JSON.stringify([lane, checker, before])
-      const known = results.get(key) as T | ScientificProblem[] | undefined
+      const known = await knownResult(key)
       if (known) return known
       let outcome: T | ScientificProblem[]
       try { outcome = await run() } catch { outcome = [{ check: 'runtime', reason: 'The build checks could not complete. Retry.' }] }
@@ -119,6 +141,7 @@ async function cachedCheck<T extends Outcome>(lane: string, stamp: () => Promise
       if (checker === version() && !isRuntime(outcome)) {
         if (results.size > 200) results.clear()
         results.set(key, outcome)
+        if (!Array.isArray(outcome)) await store?.write(key, outcome)
       }
       return outcome
     }
@@ -130,8 +153,13 @@ async function cachedCheck<T extends Outcome>(lane: string, stamp: () => Promise
 }
 
 /** The build checks for one package, run once per input state. */
-export function scientificProblems(project: string, slug: string, execute = true): Promise<ScientificProblem[]> {
-  return cachedCheck<ScientificProblem[]>(JSON.stringify(['package', project, slug]), () => scientificStamp(project), () => checkVersion, () => scientificCheck(project, slug), execute)
+export async function scientificReportFor(project: string, slug: string, execute = true): Promise<ScientificReport> {
+  const lane = JSON.stringify(['package', project, slug])
+  const report = await cachedCheck<ScientificReport>(lane, () => scientificStamp(project), () => checkVersion, async () => {
+    const result = await scientificCheck(project, slug)
+    return Array.isArray(result) ? { problems: result, warnings: [], checks: {} } : result
+  }, execute, reportStore(lane))
+  return Array.isArray(report) ? { problems: report, warnings: [], checks: {} } : report
 }
 
 // The protocol route (v0.8): protocol.json run by the bundled engine (protocol-readiness.ts, hsenv.checks).
@@ -272,7 +300,11 @@ async function packageRouteReadiness(projectDir: string, studyId?: string, execu
   for (const slug of [...slugs].sort()) {
     const r = await packageReadiness([slug], read, studyId ? { studyId, program } : undefined)
     if (r.ready) {
-      const science = legacyExecutionAvailable ? await scientificProblems(projectDir, slug, execute) : [NO_FILE_ISOLATION]
+      const report = legacyExecutionAvailable || scientificReportCache ?
+        await scientificReportFor(projectDir, slug, execute) : { problems: [], warnings: [], checks: {} }
+      const science = !legacyExecutionAvailable && !report.problems.some(p => p.check === 'isolation') ?
+        [NO_FILE_ISOLATION, ...report.problems] : report.problems
+      if (Object.keys(report.checks).length || report.warnings.length) r.scientificReport = report
       if (science.length) r.problems = science.map((p) => ({ file: 'study.json' as const, kind: 'scientific' as const, check: p.check, reason: p.reason }))
       r.ready = r.problems.length === 0
       if (r.ready) return { ...r, runNotice }

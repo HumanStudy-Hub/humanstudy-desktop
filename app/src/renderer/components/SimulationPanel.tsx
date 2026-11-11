@@ -289,6 +289,17 @@ export function SimulationPanel(props: Props) {
               <button className="link" onClick={() => { setPending(null); setBuildProblem(false); setRunProblem(false); props.onAsk(failedRun ? t('sim.fix_prompt', { run: failedRun.rel }) : t(buildProblem ? 'sim.why_build_prompt' : 'sim.why_prompt')) }}>{t('sim.ask_fix')}</button>
             </section>
           )}
+          {readiness?.scientificReport && <section className="sim-card">
+            {readiness.scientificReport.warnings.length > 0 && <>
+              <h3>{t('sim.review_findings')}</h3>
+              <ul className="sim-missing">{readiness.scientificReport.warnings.map((finding, index) =>
+                <li key={index}>{finding.check}: {finding.reason}</li>)}</ul>
+            </>}
+            <details>
+              <summary>{t('sim.scientific_report')}</summary>
+              <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(readiness.scientificReport, null, 2)}</pre>
+            </details>
+          </section>}
           {(slugs.length > 0 || readiness?.protocol) && !built ? (
             <section className="sim-card" aria-live="polite">
               {readiness ? (() => {

@@ -25,7 +25,7 @@ export function ResearchOverview({ program, text, onSource, onAsk }: { program: 
       {field.origin === 'derived' && <span className="muted">Interpretation · {field.derivation}</span>}
       {[...new Set(field.evidenceIds)].map(id => {
         const e = program.evidence.find(item => item.id === id)
-        return e ? <button key={id} className="link research-cite" onClick={() => onSource({ file: e.path, page: e.locator.page ?? 1, quote: e.quote ?? '', verified: false })}>p. {e.locator.page ?? '—'}</button> : null
+        return e ? <button key={id} className="link research-cite" onClick={() => onSource({ file: e.path, sourceId: e.sourceId, sourceSha256: e.sourceSha256, page: e.locator.page ?? 1, quote: e.quote ?? '', verified: e.verification === 'verified' })}>p. {e.locator.page ?? '—'}</button> : null
       })}
     </div>)}
   </section>

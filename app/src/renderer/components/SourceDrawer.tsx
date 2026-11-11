@@ -10,7 +10,7 @@ import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import type { ProjectFile } from '../../preload/types'
 import { findQuote, type Rect, type Word } from '../../shared/source-anchor'
 import type { TokenDiff, TokenPart } from '../../shared/significant-tokens'
-import { readPdfAnnotations, type PdfAnnotation } from '../../shared/pdf-annotations'
+import { annotationApplies, readPdfAnnotations, type PdfAnnotation } from '../../shared/pdf-annotations'
 import { observeSettledWidth } from '../settled-width'
 import { replacedOnDisk, versionedUrl } from '../../shared/file-version'
 import { makeWords } from './pdf-words'
@@ -24,6 +24,8 @@ export interface SourceRef {
   quote?: string
   nodeId?: string
   sourceId?: string
+  sourceSha256?: string
+  pending?: boolean
   file?: string
   verified?: boolean
 }
@@ -35,11 +37,12 @@ export type PassageSelection = { page: number; text: string }
 interface Props {
   pdf: ProjectFile | null
   source: SourceRef | null
+  notesPath?: string
   closeLabel?: string
   onClose(): void
   onPageChange?(page: number): void
   /** Where the cited quote was found: its page, another page, or nowhere. */
-  onQuote?(ref: SourceRef, result: QuoteResult): void
+  onQuote?(ref: SourceRef, result: QuoteResult, file: ProjectFile): void
   /** The passage the reader selected; null once the selection is gone. */
   onSelect?(selection: PassageSelection | null): void
   /** How many study items cite the selected passage (null: not known). */
@@ -53,6 +56,7 @@ type PageInfo = { n: number; w: number; h: number; words: Word[] }
 export function SourceDrawer({
   pdf,
   source,
+  notesPath,
   onClose,
   onPageChange,
   closeLabel,
@@ -63,17 +67,22 @@ export function SourceDrawer({
   active = true,
 }: Props) {
   const open = source !== null
+  const annotationPath = notesPath ?? (pdf ? pdf.path + '.annotations.json' : undefined)
   const [selecting, setSelecting] = useState(false)
   const callbacks = useRef({ onQuote, onPageChange })
   callbacks.current = { onQuote, onPageChange }
   const host = useRef<HTMLDivElement>(null)
   const [zoom, setZoom] = useState(1)
-  const [annotations, setAnnotations] = useState<PdfAnnotation[]>([])
+  const [notes, setNotes] = useState<PdfAnnotation[]>([])
+  const annotations = useMemo(() => notes.filter(note => annotationApplies(note, pdf?.sha256)), [notes, pdf?.sha256])
+  const pendingNotes = notes.filter(note => !annotationApplies(note, pdf?.sha256))
   const [annotationError, setAnnotationError] = useState('')
   const [annotationsReady, setAnnotationsReady] = useState(false)
   const [saving, setSaving] = useState(false)
   const annotationRaw = useRef<string | null>(null)
-  const [doc, setDoc] = useState<pdfjs.PDFDocumentProxy | null>(null)
+  const documentKey = JSON.stringify([pdf?.path, pdf?.version, pdf?.sha256])
+  const [loaded, setLoaded] = useState<{ key: string; doc: pdfjs.PDFDocumentProxy } | null>(null)
+  const doc = loaded?.key === documentKey ? loaded.doc : null
   const [pages, setPages] = useState<PageInfo[]>([])
   const [err, setErr] = useState<string | null>(null)
   const [hit, setHit] = useState<{ page: number; rects: Rect[] } | null>(null)
@@ -87,20 +96,20 @@ export function SourceDrawer({
 
   useEffect(() => {
     let live = true
-    setAnnotations([])
+    setNotes([])
     setAnnotationsReady(false)
     setAnnotationError('')
     setSelection(null)
     setZoom(1)
     annotationRaw.current = null
-    if (!pdf) return
+    if (!annotationPath) return
     void window.humanstudy.project
-      .readText(`${pdf.path}.annotations.json`)
+      .readText(annotationPath)
       .then((raw) => {
         const parsed = readPdfAnnotations(raw)
         if (live) {
           annotationRaw.current = raw
-          setAnnotations(parsed.annotations)
+          setNotes(parsed.annotations)
           setAnnotationsReady(true)
         }
       })
@@ -112,39 +121,32 @@ export function SourceDrawer({
     return () => {
       live = false
     }
-  }, [pdf?.path])
+  }, [annotationPath, pdf?.sha256])
 
   async function saveAnnotation(remove = false) {
-    if (!pdf || !selection || !annotationsReady || saving) return
+    if (!pdf?.sha256 || !annotationPath || !selection || !annotationsReady || saving) return
     const action = claimAction(remove ? 'source.annotation_remove' : 'source.annotate')
     setSaving(true)
     setAnnotationError('')
     try {
-      // Refuse to overwrite changes made by the agent or another open window.
-      let current: string | null = null
-      try {
-        current = await window.humanstudy.project.readText(`${pdf.path}.annotations.json`)
-      } catch (e) {
-        if (!/ENOENT|no such file/i.test(String(e))) throw e
-      }
-      if (current !== annotationRaw.current) throw new Error(t('paper.notes_changed'))
       const annotationId = remove ? (selection.annotationId ?? 'not-reported') : crypto.randomUUID()
       const next = remove
-        ? annotations.filter((a) => a.id !== selection.annotationId)
+        ? notes.filter((a) => a.id !== selection.annotationId)
         : [
-            ...annotations,
+            ...notes,
             {
               id: annotationId,
               text: selection.text,
               pages: selection.pages,
               createdAt: new Date().toISOString(),
+              sourceSha256: pdf.sha256,
             },
           ]
       const raw = JSON.stringify({ version: 1, annotations: next }, null, 2) + '\n'
       readPdfAnnotations(raw)
-      await window.humanstudy.project.writeText(`${pdf.path}.annotations.json`, raw, undefined, action)
+      await window.humanstudy.project.writeText(annotationPath, raw, annotationRaw.current, action)
       annotationRaw.current = raw
-      setAnnotations(next)
+      setNotes(next)
       setSelection(null)
       onSelect?.(null)
       window.getSelection()?.removeAllRanges()
@@ -171,7 +173,9 @@ export function SourceDrawer({
     } else if (shownFile.current?.path !== now?.path) setReplaced(null)
     shownFile.current = now
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdf?.path, pdf?.version])
+    setHit(null)
+    setVerdict(null)
+  }, [pdf?.path, pdf?.version, pdf?.sha256])
   // The notice is brief, but only counts down while the pane is in view.
   useEffect(() => {
     if (!replaced || !active) return
@@ -180,7 +184,7 @@ export function SourceDrawer({
   }, [replaced, active])
 
   useEffect(() => {
-    setDoc(null)
+    setLoaded(null)
     setPages([])
     setErr(null)
     if (!open || !pdf) return
@@ -189,7 +193,7 @@ export function SourceDrawer({
     const base = new URL('pdfjs/', document.baseURI).href
     const task = pdfjs.getDocument({
       // A new version is a new URL: a replaced file is fetched again, never served from cache.
-      url: versionedUrl(pdf.url, pdf.version),
+      url: versionedUrl(pdf.url, pdf.sha256 ?? pdf.version),
       standardFontDataUrl: `${base}standard_fonts/`,
       cMapUrl: `${base}cmaps/`,
       cMapPacked: true,
@@ -198,7 +202,7 @@ export function SourceDrawer({
     })
     task.promise.then(
       (d) => {
-        if (live) setDoc(d)
+        if (live) setLoaded({ key: documentKey, doc: d })
       },
       (e: unknown) => {
         if (live) setErr(String(e))
@@ -208,7 +212,7 @@ export function SourceDrawer({
       live = false
       void task.destroy()
     }
-  }, [open, pdf?.url, pdf?.version])
+  }, [open, pdf?.url, documentKey])
 
   // Only visible pages and explicitly requested citations extract text.
   const loadPage = useMemo(
@@ -285,11 +289,12 @@ export function SourceDrawer({
   // A citation: find the quote (cited page first), box it, scroll to it, report what was found.
   // Each citation is followed once. Showing the paper again (a tab switch, Compare) keeps the
   // reader's place instead of jumping back to the last citation.
-  const handled = useRef<SourceRef | null>(null)
+  const handled = useRef<{ source: SourceRef; doc: pdfjs.PDFDocumentProxy } | null>(null)
   useEffect(() => {
-    if (!source || !doc || !loadPage || !pages.length || !active) return
-    if (handled.current === source) return
-    handled.current = source
+    if (!source || !pdf || !doc || !loadPage || !pages.length || !active) return
+    if (handled.current?.source === source && handled.current.doc === doc) return
+    const request = { source, doc }
+    handled.current = request
     setHit(null)
     setVerdict(null)
     let cancelled = false
@@ -319,7 +324,7 @@ export function SourceDrawer({
       setVerdict(result)
       scrollTo(found?.page ?? page, found?.rects[0])
       noteShown(found?.page ?? page, 'citation')
-      callbacks.current.onQuote?.(source, result)
+      callbacks.current.onQuote?.(source, result, pdf)
       if (!result.found || result.page !== source.page || result.differs)
         track('source.quote_check', {
           target: source.nodeId,
@@ -334,7 +339,7 @@ export function SourceDrawer({
     return () => {
       cancelled = true
       // Interrupted before the quote was located: look again when the paper is shown next.
-      if (!finished && handled.current === source) handled.current = null
+      if (!finished && handled.current === request) handled.current = null
     }
   }, [source, doc, loadPage, pages.length, active])
   function scrollTo(page: number, rect?: Rect) {
@@ -464,9 +469,13 @@ export function SourceDrawer({
           {annotationError}
         </p>
       )}
+      {pendingNotes.length > 0 && <details className="paper-cite warn">
+        <summary>{t('paper.notes_pending', { n: pendingNotes.length })}</summary>
+        <ul>{pendingNotes.map(note => <li key={note.id}>{note.text}</li>)}</ul>
+      </details>}
       {cited && (
         <div
-          className={`paper-cite ${verdict && (!verdict.found || verdict.page !== cited.page || verdict.differs) ? 'warn' : ''}`}
+          className={`paper-cite ${cited.pending || (verdict && (!verdict.found || verdict.page !== cited.page || verdict.differs)) ? 'warn' : ''}`}
           role="status"
         >
           <span className="paper-cite-page">{t('doc.cite_page', { n: cited.page })}</span>
@@ -475,6 +484,7 @@ export function SourceDrawer({
             <span>{t('model.quote_moved', { n: cited.page, m: verdict.page ?? '' })}</span>
           )}
           {verdict?.differs && <TokenMismatch differs={verdict.differs} />}
+          {cited.pending && <span>{t('paper.source_review_pending')}</span>}
           {verdict?.found && !verdict.differs && <span className="paper-located">{t('paper.located')}</span>}
           {cited.quote && (!verdict || !verdict.found) && <q>{cited.quote}</q>}
           {!cited.quote && <span className="muted">{t('paper.page_only', { page: cited.page })}</span>}
@@ -542,7 +552,7 @@ export function SourceDrawer({
               <span>{supportCount ? t('paper.cited_by', { n: supportCount }) : t('paper.cited_none')}</span>
             )}
             <button
-              disabled={!annotationsReady || saving}
+              disabled={!pdf?.sha256 || !annotationsReady || saving}
               onClick={() => void saveAnnotation(Boolean(selection.annotationId))}
             >
               {selection.annotationId ? t('paper.unmark') : t('paper.highlight')}

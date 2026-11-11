@@ -143,6 +143,7 @@ export interface ProjectFile {
   mtime?: number
   /** Changes whenever the file is rewritten or replaced (shared/file-version.ts). */
   version?: string
+  sha256?: string
 }
 
 /** One entry of the project file tree (the Program tab). Folders carry children; files carry a url. */
@@ -160,6 +161,7 @@ export interface ProjectEntry {
   mtime?: number
   /** Changes whenever the file is rewritten or replaced (shared/file-version.ts). */
   version?: string
+  sha256?: string
   children?: ProjectEntry[]
 }
 
@@ -202,6 +204,7 @@ export interface ProjectSnapshot {
   artifacts: ProjectFile[]
   exports: ProjectFile[]
   pdf: ProjectFile | null
+  sourceDigests?: Record<string, string>
   /** Everything in the project folder except app/kernel internals (.humanstudy, .opencode, caches). */
   tree: ProjectEntry[]
 }
@@ -415,7 +418,7 @@ export interface HumanStudyApi {
      *  With `ifUnchanged`, the write happens only if the file still holds exactly that text (a patch read
      *  from disk is not written over a newer save, e.g. the agent's checkpoint); otherwise it rejects
      *  with an error whose message starts with "changed on disk". */
-    writeText(path: string, text: string, ifUnchanged?: string, action?: ActionRef): Promise<void>
+    writeText(path: string, text: string, ifUnchanged?: string | null, action?: ActionRef): Promise<void>
     /** Copies files into the project (sources/, or paper.pdf for a first PDF). Never overwrites; returns the copies. */
     importFiles(dir: string, paths: string[], action?: ActionRef): Promise<ProjectFile[]>
     onChanged(cb: (dir: string) => void): () => void

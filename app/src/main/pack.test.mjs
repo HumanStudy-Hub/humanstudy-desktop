@@ -5,7 +5,7 @@ import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { test } from 'node:test'
@@ -104,6 +104,19 @@ test('refreshPack always upgrades the app-owned simulation security entry point'
   assert.equal(readFileSync(dest, 'utf8'), readFileSync(join(packDir, 'skills/simulate/simkit.py'), 'utf8'))
 })
 
+test('opening a project refreshes app-owned files without changing a linked original', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pack-hardlink-'))
+  const proj = join(dir, 'project')
+  const original = join(dir, 'original.py')
+  const dest = join(proj, '.opencode/skills/build/program_io.py')
+  mkdirSync(dirname(dest), { recursive: true })
+  writeFileSync(original, '# previous helper')
+  linkSync(original, dest)
+  await P.refreshPack(proj)
+  assert.equal(readFileSync(original, 'utf8'), '# previous helper')
+  assert.equal(readFileSync(dest, 'utf8'), readFileSync(join(packDir, 'skills/build/program_io.py'), 'utf8'))
+})
+
 test('every shipped human-program schema is upgraded in existing projects (evidence note, #65)', async () => {
   const log = spawnSync('git', ['log', '--format=%H', '--', 'schema/human-program.schema.json'], { cwd: packDir, encoding: 'utf8' })
   const commits = log.status === 0 ? log.stdout.split('\n').filter(Boolean) : []
@@ -194,12 +207,12 @@ test('T11: the trusted checker set holds every script check_readiness.py needs',
 })
 
 test('T11: no runtime or an unreadable report never passes', async () => {
-  assert.deepEqual(await SR.scientificReadiness(null, P.trustedCheckFiles(), '/nowhere', 'k', ''), [SR.RUNTIME_MISSING])
+  assert.deepEqual((await SR.scientificReadiness(null, P.trustedCheckFiles(), '/nowhere', 'k', '')).problems, [SR.RUNTIME_MISSING])
   assert.throws(() => SR.parseScientificReport('PASS'))
   assert.throws(() => SR.parseScientificReport('{"problems": [{"check": 1}]}'))
-  assert.deepEqual(SR.parseScientificReport('noise\n{"problems": []}\n'), [])
+  assert.deepEqual(SR.parseScientificReport('noise\n{"problems": []}\n'), { problems: [], warnings: [], checks: {} })
   const fake = process.platform === 'win32' ? 'C:\\nonexistent\\python.exe' : '/nonexistent/python3'
-  assert.deepEqual(await SR.scientificReadiness(fake, P.trustedCheckFiles(), '/nowhere', 'k', ''), [SR.CHECKS_FAILED])
+  assert.deepEqual((await SR.scientificReadiness(fake, P.trustedCheckFiles(), '/nowhere', 'k', '')).problems, [SR.CHECKS_FAILED])
 })
 
 test('T11: end to end, a good package passes and a failed check blocks, whatever the project\'s own checker says', { skip: !sciencePython, timeout: 600_000 }, async () => {
@@ -210,13 +223,13 @@ test('T11: end to end, a good package passes and a failed check blocks, whatever
     return r.stdout.trim()
   }
   const good = fixture({})
-  assert.deepEqual(await SR.scientificReadiness(sciencePython, P.trustedCheckFiles(), good, 'fixture', ''), [])
+  assert.deepEqual((await SR.scientificReadiness(sciencePython, P.trustedCheckFiles(), good, 'fixture', '')).problems, [])
   const bad = fixture({ effects: false })
   mkdirSync(join(bad, '.opencode/skills/build'), { recursive: true })
   writeFileSync(join(bad, '.opencode/skills/build/check_readiness.py'), 'print(\'{"problems": []}\')\n')
   writeFileSync(join(bad, '.opencode/skills/build/effects.py'), 'def build_rules(*a):\n    return []\n')
   const problems = await SR.scientificReadiness(sciencePython, P.trustedCheckFiles(), bad, 'fixture', '')
-  assert.deepEqual(problems, [{ check: 'effects', reason: 'effects.json is missing' }])
+  assert.deepEqual(problems.problems, [{ check: 'effects', reason: 'effects.json is missing' }])
 })
 
 // v0.8 protocol route: skills/run plays protocol.json with an f; skills/preview renders it. Python 3.11+ (the app

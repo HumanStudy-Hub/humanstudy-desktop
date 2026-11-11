@@ -20,16 +20,17 @@ import {
 import { createProject, isInside, isWithin, listProjects, renameProject, trashProject } from './projects'
 import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
 import { checkForUpdates, installUpdate, startUpdates, stopUpdates, updateStatus } from './updates'
-import { existsSync } from 'node:fs'
+import { createReadStream, existsSync } from 'node:fs'
 import { watchFolder, type FolderWatch } from './project-watch'
 import { fileVersion } from '../shared/file-version'
-import { copyFile, lstat, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { manifestSourceDigests, protocolSourceDigests } from '../shared/source-target'
+import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
 import { isVersioned, readVersion, relOf, snapshot, versionsOf } from './versions'
 import { createThreads, threads } from './threads'
-import { saveProjectCopy, saveProjectText } from './program-save'
+import { assertProjectWritePath, saveProjectCopy, saveProjectText } from './program-save'
 import { createPaperBuilds, isBuildTurn } from './paper-build'
 import { createShutdown } from './shutdown-core'
 import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedRunFiles } from './pack'
@@ -187,6 +188,20 @@ const HIDDEN_DIRS = new Set(['.humanstudy', '.opencode', 'node_modules', '__pyca
 // Engineering files the pack installs for the agent. The agent reads them from disk; researchers never need to see them.
 const HIDDEN_TOP = new Set(['AGENTS.md', 'PROJECT_FORMAT.md', 'schema'])
 const TREE_LIMIT = 3000
+const pdfHashes = new Map<string, { version: string; digest: Promise<string | undefined> }>()
+function pdfHash(path: string, version: string): Promise<string | undefined> {
+  const cached = pdfHashes.get(path)
+  if (cached?.version === version) return cached.digest
+  const digest = (async () => {
+    const hash = createHash('sha256')
+    for await (const chunk of createReadStream(path)) hash.update(chunk)
+    return fileVersion(await stat(path)) === version ? hash.digest('hex') : undefined
+  })().catch(() => undefined)
+  if (pdfHashes.size >= TREE_LIMIT) pdfHashes.clear()
+  pdfHashes.set(path, { version, digest })
+  return digest
+}
+
 async function listTree(root: string, dir: string, depth: number, count: { n: number }): Promise<ProjectEntry[]> {
   if (!existsSync(dir) || depth > 8) return []
   const entries = (await readdir(dir, { withFileTypes: true })).filter((d) => !HIDDEN_DIRS.has(d.name) && !d.name.startsWith('.') && !(depth === 0 && HIDDEN_TOP.has(d.name)))
@@ -201,15 +216,17 @@ async function listTree(root: string, dir: string, depth: number, count: { n: nu
       let size: number | undefined
       let mtime: number | undefined
       let version: string | undefined
+      let sha256: string | undefined
       try {
         const st = await stat(path)
         size = st.size
         mtime = Math.round(st.mtimeMs)
         version = fileVersion(st)
+        if (/\.pdf$/i.test(d.name) && !/^sources\/private\//i.test(rel)) sha256 = await pdfHash(path, version)
       } catch {
         /* unreadable */
       }
-      out.push({ name: d.name, path, rel, kind: 'file', ext: extname(d.name).slice(1).toLowerCase(), url: toUrl(path), size, mtime, version })
+      out.push({ name: d.name, path, rel, kind: 'file', ext: extname(d.name).slice(1).toLowerCase(), url: toUrl(path), size, mtime, version, sha256 })
     }
   }
   return out
@@ -221,21 +238,6 @@ function ownedPath(p: string): string {
   if (!isAllowed(q)) throw new Error('that file is outside the opened projects')
   if (q.split(sep).includes('.humanstudy')) throw new Error('app state is not editable')
   return q
-}
-
-// Editor and import paths must not traverse a linked directory or junction in the project.
-async function assertProjectWritePath(root: string, target: string): Promise<void> {
-  if (!isWithin(root, target)) throw Error('The write target is outside the project.')
-  let current = root
-  for (const part of relative(root, target).split(sep).filter(Boolean)) {
-    current = join(current, part)
-    const info = await lstat(current).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== 'ENOENT') throw error
-      return null
-    })
-    if (!info) break
-    if (info.isSymbolicLink()) throw Error('The write target crosses a linked project path.')
-  }
 }
 
 async function readProject(dir: string): Promise<ProjectSnapshot> {
@@ -252,9 +254,12 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
       programError = String(e)
     }
   }
-  const pdfPath = [join(dir, 'paper.pdf')].find(existsSync)
-  // The version stamp lets the paper pane notice paper.pdf replaced at the same path.
-  const pdfStat = pdfPath ? await stat(pdfPath).catch(() => null) : null
+  const tree = await listTree(dir, dir, 0, { n: 0 })
+  const paper = tree.find((entry) => entry.rel === 'paper.pdf' && entry.kind === 'file')
+  const [manifestDigests, protocolDigests] = await Promise.all([
+    readFile(join(dir, 'sources', 'SOURCE.json'), 'utf8').then(manifestSourceDigests).catch(() => undefined),
+    readFile(join(dir, 'protocol.json'), 'utf8').then(protocolSourceDigests).catch(() => undefined),
+  ])
   return {
     dir,
     name: basename(dir),
@@ -263,16 +268,9 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
     build: paperBuilds.readOnly(dir),
     artifacts: await listDir(join(dir, 'artifacts')),
     exports: await listDir(join(dir, 'exports')),
-    pdf: pdfPath
-      ? {
-          name: 'paper.pdf',
-          path: pdfPath,
-          url: toUrl(pdfPath),
-          ext: 'pdf',
-          ...(pdfStat ? { size: pdfStat.size, mtime: Math.round(pdfStat.mtimeMs), version: fileVersion(pdfStat) } : {}),
-        }
-      : null,
-    tree: await listTree(dir, dir, 0, { n: 0 }),
+    pdf: paper?.url ? { ...paper, url: paper.url } : null,
+    sourceDigests: { ...manifestDigests, ...protocolDigests },
+    tree,
   }
 }
 
@@ -427,8 +425,11 @@ app.whenReady().then(() => {
   process.env.HUMANSTUDY_RELAY_DIR = join(app.getPath('userData'), 'run-relays')
   // `ready` needs every build check (pack/skills/build/check_readiness.py), run from the app's own copy.
   const checkFiles = trustedCheckFiles()
-  configureScientificChecks(async (project, slug) => scientificReadiness(await readyPython(), checkFiles, project, slug, process.env.HUMANSTUDY_RUNTIME_BIN || ''),
-    app.getVersion() + ':' + createHash('sha256').update(JSON.stringify(checkFiles)).digest('hex').slice(0, 16), RELAY && legacyFileIsolationAvailable())
+  const legacyExecution = RELAY && legacyFileIsolationAvailable()
+  configureScientificChecks(async (project, slug) => scientificReadiness(await readyPython(), checkFiles, project, slug,
+    process.env.HUMANSTUDY_RUNTIME_BIN || '', undefined, !legacyExecution),
+    app.getVersion() + ':' + createHash('sha256').update(JSON.stringify(checkFiles)).digest('hex').slice(0, 16) + ':' + legacyExecution,
+    legacyExecution, join(app.getPath('userData'), 'scientific-readiness'))
   // The protocol route: protocol.json checked by the bundled engine (pack/runtime/hsenv), never the project's copy.
   const engine = trustedEngineFiles()
   const budgetFiles = trustedBudgetFiles()
@@ -549,7 +550,7 @@ app.whenReady().then(() => {
     if ((await stat(q)).size > TEXT_LIMIT) throw new Error('file is larger than 4 MB')
     return readFile(q, 'utf8')
   })
-  ipcMain.handle('project:writeText', async (_e, p: string, text: string, ifUnchanged?: string, action?: unknown) => {
+  ipcMain.handle('project:writeText', async (_e, p: string, text: string, ifUnchanged?: string | null, action?: unknown) => {
     const q = ownedPath(p)
     await assertProjectWritePath(projectRootOf(q), q)
     const ref = actionRef(action)

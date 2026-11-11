@@ -788,7 +788,7 @@ def intentional(harm: float, help_: float) -> float:
         return t
       },
       writeText: async (path, text, ifUnchanged) => {
-        if (ifUnchanged !== undefined && texts.get(path) !== ifUnchanged) throw new Error('changed on disk')
+        if (ifUnchanged !== undefined && (texts.get(path) ?? null) !== ifUnchanged) throw new Error('changed on disk')
         if (path.endsWith('program.json')) {
           JSON.parse(text)
           snapshot.program = JSON.parse(text)

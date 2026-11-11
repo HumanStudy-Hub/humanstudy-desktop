@@ -11,10 +11,11 @@
 //                                     find it there (their sandbox layout: <root>/skills/<name>, <root>/hsenv)
 //   runtime/lib/hs_original_text.py -> not installed: the main process runs it from its own copy to fill in a
 //                                     published study's original wording (original-text.ts)
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
+import { assertProjectWritePath, saveProjectText } from './program-save'
 import previousHashes from './previous-pack-hashes.json'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 
 const PREFIX = '../../../pack/'
 const files = import.meta.glob(
@@ -41,14 +42,18 @@ export const engineFiles = (): string[] =>
 export const kitFiles = (): string[] =>
   Object.keys(files).filter((k) => k.startsWith(PREFIX + 'artifact-kit/')).map((k) => k.slice(PREFIX.length))
 
+async function savePackFile(projectDir: string, path: string, content: string): Promise<void> {
+  await assertProjectWritePath(projectDir, path)
+  await saveProjectText(path, content)
+}
+
 export async function installPack(projectDir: string): Promise<void> {
   for (const [key, content] of Object.entries(files)) {
     if (!key.startsWith(PREFIX)) continue
     const dest = target(key.slice(PREFIX.length))
     if (!dest) continue
     const abs = join(projectDir, dest)
-    await mkdir(dirname(abs), { recursive: true })
-    await writeFile(abs, content, 'utf8')
+    await savePackFile(projectDir, abs, content)
   }
 }
 
@@ -83,8 +88,7 @@ export async function refreshPack(projectDir: string): Promise<void> {
     if (!dest) continue
     const abs = join(projectDir, dest)
     if (await readFile(abs, 'utf8').then(() => true).catch(() => false)) continue
-    await mkdir(dirname(abs), { recursive: true })
-    await writeFile(abs, content, 'utf8')
+    await savePackFile(projectDir, abs, content)
   }
   for (const [rel, hash] of Object.entries(previousHashes)) {
     const dest = target(rel)
@@ -93,8 +97,7 @@ export async function refreshPack(projectDir: string): Promise<void> {
     const abs = join(projectDir, dest)
     const old = await readFile(abs, 'utf8').catch(() => null)
     if (old === null || (Array.isArray(hash) ? hash : [hash]).includes(createHash('sha256').update(old).digest('hex'))) {
-      await mkdir(dirname(abs), { recursive: true })
-      await writeFile(abs, content, 'utf8')
+      await savePackFile(projectDir, abs, content)
     }
   }
   // App-owned helper scripts the skills call: kept at the shipped version, also in projects made before them.
@@ -102,8 +105,7 @@ export async function refreshPack(projectDir: string): Promise<void> {
     const abs = join(projectDir, target(rel)!)
     const content = files[PREFIX + rel]
     if (content === undefined || (await readFile(abs, 'utf8').catch(() => null)) === content) continue
-    await mkdir(dirname(abs), { recursive: true })
-    await writeFile(abs, content, 'utf8')
+    await savePackFile(projectDir, abs, content)
   }
   // The artifact kit is vendored code, not researcher instructions: install or update it as shipped.
   for (const rel of kitFiles()) {
@@ -111,8 +113,7 @@ export async function refreshPack(projectDir: string): Promise<void> {
     const content = files[PREFIX + rel]
     const old = await readFile(abs, 'utf8').catch(() => null)
     if (old === content) continue
-    await mkdir(dirname(abs), { recursive: true })
-    await writeFile(abs, content, 'utf8')
+    await savePackFile(projectDir, abs, content)
   }
 }
 
@@ -149,8 +150,7 @@ export async function refreshAppOwned(projectDir: string): Promise<void> {
     if (content === undefined || !dest) continue
     const abs = join(projectDir, dest)
     if ((await readFile(abs, 'utf8').catch(() => null)) === content) continue
-    await mkdir(dirname(abs), { recursive: true })
-    await writeFile(abs, content, 'utf8')
+    await savePackFile(projectDir, abs, content)
   }
 }
 

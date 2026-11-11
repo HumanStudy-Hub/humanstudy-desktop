@@ -12,7 +12,7 @@ const out = mkdtempSync(join(tmpdir(), 'passage-support-'))
 process.on('exit', () => rmSync(out, { recursive: true, force: true }))
 await build({ entryPoints: [join(here, 'program-view.ts'), join(here, 'source-target.ts')], bundle: true, platform: 'node', format: 'esm', outdir: out, logLevel: 'error', outExtension: { '.js': '.mjs' } })
 const { passageSupport, supportedBy } = await import(pathToFileURL(join(out, 'program-view.mjs')).href)
-const { sourceTarget } = await import(pathToFileURL(join(out, 'source-target.mjs')).href)
+const { pdfAnnotationPath, resolveSource, sourceTarget } = await import(pathToFileURL(join(out, 'source-target.mjs')).href)
 
 const shared = 'Participants were told that the wheel had been spun before the estimate was made.'
 const program = {
@@ -56,11 +56,34 @@ test('a different page or too short a run is no support at all; old callers keep
   assert.equal(supportedBy(program, selection).length, 4)
 })
 
-test('paths compare without case or separator differences; an unresolvable source falls back to its id', () => {
+test('Windows paths compare without case or separator differences; unresolved evidence never matches a displayed source', () => {
   const upper = (p) => p.replace('/p/sources/document-a.pdf', 'C:\\P\\Sources\\Document-A.pdf')
   const winResolve = (ref) => { const p = resolve(ref); return p && upper(p) }
   assert.deepEqual(passageSupport(program, { ...selection, source: 'c:/p/sources/document-a.pdf' }, winResolve).same, ['source-a-only', 'both'])
-  // An opaque sourceId that names no file cannot be placed in another file: it is not "another source".
   const r = passageSupport(program, { ...selection, source: a.path }, (ref) => (ref.file || ref.sourceId ? resolve(ref) : null))
-  assert.ok(r.same.includes('paper-only'), 'evidence whose source cannot be resolved was labelled as another file')
+  assert.ok(!r.same.includes('paper-only'), 'unresolved evidence must not support the displayed file')
+})
+
+test('a named attachment stays missing, and only a unique matching digest restores a renamed file', () => {
+  const digest = 'a'.repeat(64)
+  const old = 'sources/old-name.pdf'
+  const reference = { file: old, sourceSha256: digest }
+  assert.equal(sourceTarget(project, { file: old, sourceId: 'paper' }), null)
+  const renamed = { ...a, sha256: digest }
+  const changed = { ...file(old), sha256: 'b'.repeat(64) }
+  assert.deepEqual(resolveSource({ ...project, tree: [renamed] }, reference), { file: renamed, pending: false, changed: false })
+  assert.deepEqual(resolveSource({ ...project, tree: [changed] }, reference), { file: changed, pending: true, changed: true })
+  assert.equal(resolveSource({ ...project, tree: [renamed, { ...b, sha256: digest }] }, reference).file, null)
+  const legacy = resolveSource({ ...project, tree: [renamed], sourceDigests: { [old]: digest } }, { file: old })
+  assert.deepEqual(legacy, { file: renamed, pending: true, changed: false })
+})
+
+test('a renamed PDF can retain its uniquely identified notes sidecar', () => {
+  const digest = 'a'.repeat(64)
+  const renamed = { ...a, sha256: digest }
+  const sidecar = file('sources/old.pdf.annotations.json')
+  const snap = { ...project, tree: [renamed, sidecar], sourceDigests: { 'sources/old.pdf': digest } }
+  assert.equal(pdfAnnotationPath(snap, renamed), sidecar.path)
+  assert.equal(pdfAnnotationPath({ ...snap, tree: [renamed, sidecar, { ...b, sha256: digest }] }, renamed), renamed.path + '.annotations.json')
+  assert.equal(pdfAnnotationPath(snap, { ...renamed, sha256: 'b'.repeat(64) }), renamed.path + '.annotations.json')
 })

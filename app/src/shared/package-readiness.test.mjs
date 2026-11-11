@@ -552,3 +552,22 @@ test('read-only readiness never starts checks and exposes only results for the c
   F.configureScientificChecks(async () => assert.fail('platform isolation required'), 'read-only', false)
   assert.equal((await F.projectPackageReadiness(legacy)).problems[0].check, 'isolation')
 })
+
+test('legacy warnings survive reinitializing the cache and do not block runnable packages', async () => {
+  const dir = project({ knobe: COMPLETE })
+  const store = mkdtempSync(join(tmpdir(), 'legacy-report-'))
+  const out = mkdtempSync(join(tmpdir(), 'legacy-review-'))
+  await build({ entryPoints: [join(here, '../main/package-readiness.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'readiness.mjs'), logLevel: 'error' })
+  const F = await import(pathToFileURL(join(out, 'readiness.mjs')).href)
+  const report = { problems: [], warnings: [{ check: 'results', reason: 'p=1.2 is outside 0..1' }], checks: { results: 'pass' } }
+  F.configureScientificChecks(async () => report, 'legacy-review', true, store)
+  const checked = await F.projectPackageReadiness(dir)
+  assert.equal(checked.ready, true)
+  assert.deepEqual(checked.scientificReport, report)
+  F.configureScientificChecks(async () => assert.fail('opening cannot start a checker'), 'legacy-review', true, store)
+  const reopened = await F.projectPackageReadiness(dir, undefined, false)
+  assert.equal(reopened.ready, true)
+  assert.deepEqual(reopened.scientificReport, report)
+  writeFileSync(join(dir, 'effects.json'), '{}')
+  assert.equal((await F.projectPackageReadiness(dir, undefined, false)).scientificReport, undefined)
+})

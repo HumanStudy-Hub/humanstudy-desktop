@@ -2,15 +2,34 @@
 // from Electron so a real Python writer can be exercised against the exact app save path in tests.
 import { randomUUID } from 'node:crypto'
 import { copyFile, lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises'
-import { basename, dirname } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { withProgramLock } from './program-lock'
 
-export async function saveProjectText(path: string, text: string, options: { ifUnchanged?: string; beforeWrite?: () => Promise<void> } = {}): Promise<void> {
+// Editor and import paths must not traverse a linked directory or junction in the project.
+export async function assertProjectWritePath(root: string, target: string): Promise<void> {
+  const rel = relative(root, target)
+  if (isAbsolute(rel) || rel === '..' || rel.startsWith('..' + sep)) throw Error('The write target is outside the project.')
+  let current = root
+  for (const part of rel.split(sep).filter(Boolean)) {
+    current = join(current, part)
+    const info = await lstat(current).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error
+      return null
+    })
+    if (!info) break
+    if (info.isSymbolicLink()) throw Error('The write target crosses a linked project path.')
+  }
+}
+
+export async function saveProjectText(path: string, text: string, options: { ifUnchanged?: string | null; beforeWrite?: () => Promise<void> } = {}): Promise<void> {
   const program = ['program.json', 'protocol.json'].includes(basename(path).toLowerCase())
   if (program) JSON.parse(text.replace(/^\uFEFF/, ''))
   await mkdir(dirname(path), { recursive: true })
   const save = async () => {
-    if (options.ifUnchanged !== undefined && await readFile(path, 'utf8').catch(() => null) !== options.ifUnchanged)
+    if (options.ifUnchanged !== undefined && await readFile(path, 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error
+      return null
+    }) !== options.ifUnchanged)
       throw new Error('changed on disk while saving; try again')
     await options.beforeWrite?.()
     await replaceFile(path, async (tmp) => {

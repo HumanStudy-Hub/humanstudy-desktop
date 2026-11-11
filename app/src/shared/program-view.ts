@@ -17,7 +17,7 @@ export type FlowItem = {
  /** Explicit edges that do not lead to the item directly below: joins further on and loops back. */
  jumps:{to:string;title:string;back:boolean;when?:string}[];
 };
-export type SourceRef = { sourceId?:string; page?:number; file?:string; quote:string; verified:boolean };
+export type SourceRef = { sourceId?:string; sourceSha256?:string; page?:number; file?:string; quote:string; verified:boolean };
 export type PresentationPlan = { open:string[]; collapsed:string[] };
 
 const isRecord=(v:unknown):v is Record<string,JsonValue>=>Boolean(v)&&typeof v==='object'&&!Array.isArray(v);
@@ -94,7 +94,7 @@ export function flowActors(program:HumanProgram,items:FlowItem[]):ProgramNode[] 
 /** Source locations for evidence ids, verified first. */
 export function sourceRefs(program:HumanProgram,ids:string[]):SourceRef[] {
  return ids.map(id=>program.evidence.find(e=>e.id===id)).filter((e):e is HumanProgram['evidence'][number]=>Boolean(e&&(e.sourceId||e.path)))
-  .map(e=>({...(e.sourceId?{sourceId:e.sourceId}:{}),...(e.locator.page&&e.locator.page<=10000?{page:e.locator.page}:{}),...(e.path?{file:e.path}:{}),quote:e.quote??'',verified:e.verification==='verified'}))
+  .map(e=>({...(e.sourceId?{sourceId:e.sourceId}:{}),...(e.sourceSha256?{sourceSha256:e.sourceSha256}:{}),...(e.locator.page&&e.locator.page<=10000?{page:e.locator.page}:{}),...(e.path?{file:e.path}:{}),quote:e.quote??'',verified:e.verification==='verified'}))
   .sort((a,b)=>Number(b.verified)-Number(a.verified));
 }
 const entityEvidence=(program:HumanProgram,id:string)=>{
@@ -116,7 +116,7 @@ export function supportedBy(program:HumanProgram,selection:{sourceId?:string;pag
  * same kind of key, null when it names no file in the project) only evidence from that file counts as
  * `same`; matching evidence from any other file is `other`, labelled with the file it cites. */
 export function passageSupport(program:HumanProgram,selection:{sourceId?:string;page:number;text:string;source?:string|null},
- resolve?:(ref:{file?:string;sourceId?:string})=>string|null):{same:string[];other:{id:string;file:string}[]} {
+ resolve?:(ref:{file?:string;sourceId?:string;sourceSha256?:string})=>string|null):{same:string[];other:{id:string;file:string}[]} {
  const picked=words(selection.text);if(picked.length<3)return {same:[],other:[]};
  const hits=new Map<string,{same:boolean}|null>();
  const hit=(id:string)=>{
@@ -124,11 +124,10 @@ export function passageSupport(program:HumanProgram,selection:{sourceId?:string;
   const e=program.evidence.find(e=>e.id===id),quote=words(e?.quote??'');
   let out:{same:boolean}|null=null;
   if(e&&quote.length&&e.locator.page===selection.page&&sharedRun(quote,picked)>=Math.min(6,quote.length,picked.length)){
-   const ref={...(e.path?{file:e.path}:{}),...(e.sourceId?{sourceId:e.sourceId}:{})};
-   // Paths compare without case or separator differences (Windows and macOS folders ignore case). An
-   // evidence source that does not resolve to a file (an opaque sourceId) falls back to the id rule.
+   const ref={file:e.path,sourceId:e.sourceId,sourceSha256:e.sourceSha256};
    const target=resolve&&selection.source?resolve(ref):null;
-   const same=target!==null?samePath(target,selection.source!):(!selection.sourceId||!e.sourceId||e.sourceId===selection.sourceId);
+   const same=resolve&&selection.source ? target!==null&&samePath(target,selection.source) :
+    (!selection.sourceId||!e.sourceId||e.sourceId===selection.sourceId);
    out={same};
   }
   hits.set(id,out);return out;
@@ -143,7 +142,13 @@ export function passageSupport(program:HumanProgram,selection:{sourceId?:string;
  }
  return {same,other};
 }
-const samePath=(a:string,b:string)=>a.replace(/\\/g,'/').toLowerCase()===b.replace(/\\/g,'/').toLowerCase();
+const samePath = (a: string, b: string) => {
+ const path = (value: string) => {
+  const normalized = value.replace(/\\/g, '/');
+  return /^[a-z]:\//i.test(normalized) || normalized.startsWith('//') ? normalized.toLowerCase() : normalized;
+ };
+ return path(a) === path(b);
+};
 function sharedRun(a:string[],b:string[]):number {
  let best=0;const prev=new Uint16Array(b.length+1),cur=new Uint16Array(b.length+1);
  for(let i=1;i<=a.length;i++){for(let j=1;j<=b.length;j++){cur[j]=a[i-1]===b[j-1]?prev[j-1]+1:0;if(cur[j]>best)best=cur[j];}prev.set(cur);cur.fill(0);}

@@ -182,7 +182,7 @@ def materials_problems(root, slug):
     return report["problems"], report.get("warnings") or []
 
 
-def effects_problems(root, slug):
+def effects_problems(root, slug, static_only=False):
     import effects
     doc = effects.effects_core.load(root)
     if doc is None:
@@ -196,9 +196,10 @@ def effects_problems(root, slug):
     rules, hints = effects.contract_rules(root, doc, program)
     (found if effects.strict_contract(root) else warned).extend(rules)
     warned += hints
-    if not found:  # as effects.py: the field check runs the adapter (confined) only on an otherwise clean file
-        gaps, _, warned = effects.field_report(root, doc, package=root / "package" / slug)
+    if not found and not static_only:  # as effects.py: the field check runs the adapter (confined) only on an otherwise clean file
+        gaps, _, field_warnings = effects.field_report(root, doc, package=root / "package" / slug)
         found += gaps
+        warned += field_warnings
     return found, warned
 
 
@@ -239,7 +240,7 @@ def drop_checker_paths():
             sys.path.remove(folder)
 
 
-def run_checks(root, slug):
+def run_checks(root, slug, static_only=False):
     root = Path(root).resolve()
     load_checkers()
     checks = [
@@ -249,11 +250,16 @@ def run_checks(root, slug):
         ("validity", lambda: validity_problems(root, slug)),
         ("verbatim", lambda: verbatim_problems(root)),
         ("results", lambda: results_problems(root, slug)),
-        ("effects", lambda: effects_problems(root, slug)),
+        ("effects", lambda: effects_problems(root, slug, static_only)),
         ("materials", lambda: materials_problems(root, slug)),
     ]
     problems, status, warnings = [], {}, []
+    if static_only:
+        problems.append({"check": "isolation", "reason": "Legacy package execution requires verified file isolation."})
     for name, fn in checks:
+        if static_only and name in ("package", "validity"):
+            status[name] = "skipped"
+            continue
         warned = []
         try:
             # Helpers may print diagnostics; this script's stdout stays one JSON document.
@@ -287,15 +293,16 @@ def run_checks(root, slug):
 
 
 def main(argv):
-    if len(argv) != 2 or not argv[1] or Path(argv[1]).name != argv[1] or argv[1] in (".", ".."):
-        print("usage: check_readiness.py PROJECT PACKAGE_SLUG", file=sys.stderr)
+    static_only = len(argv) == 3 and argv[2] == "--static-only"
+    if not (len(argv) == 2 or static_only) or not argv[1] or Path(argv[1]).name != argv[1] or argv[1] in (".", ".."):
+        print("usage: check_readiness.py PROJECT PACKAGE_SLUG [--static-only]", file=sys.stderr)
         return 1
     root = Path(argv[0]).resolve()
     if not (root / "package" / argv[1]).is_dir():
         report = {"problems": [{"check": "package", "reason": "package/%s is not a folder" % argv[1]}], "checks": {},
                   "warnings": []}
     else:
-        report = run_checks(root, argv[1])
+        report = run_checks(root, argv[1], static_only)
     sys.stdout.write(json.dumps(report) + "\n")  # ASCII: safe on any console encoding
     return 0
 
