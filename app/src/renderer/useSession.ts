@@ -1,7 +1,7 @@
 import { NATIVE_TURNS, NATIVE_SESSION_MUTATIONS, type NativeRequest } from '../shared/native'
 import { createTextBatcher } from './text-batcher'
 import { updateQuestion, type QuestionPart } from '../shared/question'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { claimAction, lap, track } from './telemetry'
 import type { ActionRef, KernelEvent, KernelUsage, PermissionReply, Thread, ThreadMessage, ThreadSummary, WorkspaceContext } from '../preload/types'
 
@@ -65,6 +65,7 @@ export interface Session {
   /** Answer a pending permission card. */
   reply(permissionId: string, response: PermissionReply): void
   /** True while a permission card waits for an answer. */
+  pendingPermissions: PermissionPart[]
   waitingForPermission: boolean
   waitingForQuestion: boolean
   answerQuestion(id: string, answers: string[][]): Promise<void>
@@ -340,10 +341,10 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     const asked = messagesRef.current.flatMap((m) => m.parts).find((x) => x.kind === 'permission' && x.id === permissionId)
     track('permission.reply', { target: asked?.kind === 'permission' ? asked.type : undefined, metadata: { type: asked?.kind === 'permission' ? asked.type : null, reply: response } })
     const action = claimAction('permission.reply')
-    // Collapse the card at once; the follow-up event with `resolved` is idempotent.
-    setMessages((ms) => resolvePermission(ms, permissionId, response))
-    window.humanstudy.kernel.reply(sid, permissionId, response, action).catch((e: unknown) => {
-      setMessages((ms) => appendEvent(ms, { sessionId: sid, type: 'error', text: `Could not answer the permission request: ${String(e)}` }))
+    void window.humanstudy.kernel.reply(sid, permissionId, response, action).then(() => {
+      if (idRef.current === sid) setMessages((ms) => resolvePermission(ms, permissionId, response))
+    }).catch((e: unknown) => {
+      if (idRef.current === sid) setMessages((ms) => appendEvent(ms, { sessionId: sid, type: 'error', text: `Could not answer the permission request: ${String(e)}` }))
     })
   }, [])
 
@@ -412,13 +413,16 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     [activate],
   )
 
-  const waitingForPermission = messages.some((m) => m.parts.some((p) => p.kind === 'permission' && !p.resolved && !p.expired))
+  const pendingPermissions = useMemo(() => messages.flatMap(m => m.parts.filter(
+    (p): p is PermissionPart => p.kind === 'permission' && !p.automatic && !p.resolved && !p.expired
+  )), [messages])
+  const waitingForPermission = pendingPermissions.length > 0
 
   const waitingForQuestion = messages.some(m => m.parts.some(p => p.kind === 'question' && !p.resolved && !p.expired))
 
   return {
     id, startPaperBuild, messages, busy, status, error, queue, send, enqueue, editQueued, removeQueued, interruptAndSend, abort,
-    reply, waitingForPermission, answerQuestion, rejectQuestion, waitingForQuestion, threadId, threads, usage, resumedWithContext: resumed, native, adoptThread: activate, newThread, openThread, renameThread, deleteThread,
+    reply, pendingPermissions, waitingForPermission, answerQuestion, rejectQuestion, waitingForQuestion, threadId, threads, usage, resumedWithContext: resumed, native, adoptThread: activate, newThread, openThread, renameThread, deleteThread,
   }
 }
 const ZERO: SessionUsage = { input: 0, output: 0, reasoning: 0, cost: 0 }

@@ -1,8 +1,9 @@
 import { validateHumanProgram, type HumanProgram } from './human-program'
+import coverage from './build-coverage.json'
 
 /** A scholarly view of a protocol, not a second definition of its executable flow. */
 export const SCHOLARLY_PROFILE = 'scholarly-v1'
-export const scholarlyKinds = ['background', 'hypothesis', 'design', 'participants', 'material', 'procedure', 'variable', 'analysis', 'result', 'finding', 'limitation'] as const
+export const scholarlyKinds = coverage.scholarly
 export type ScholarlyProfile = { profile: typeof SCHOLARLY_PROFILE; protocol: { path: 'protocol.json'; id: string; sha256: string }; studyArms?: Record<string, string[]> }
 
 export function scholarlyProfile(p: HumanProgram | null): ScholarlyProfile | null {
@@ -33,13 +34,20 @@ export function scholarlyProblems(value: unknown, protocol: any, hash: string): 
   }
   const evidence = new Set(p.evidence.filter(e => (e.path || e.sourceId || e.url) && (e.locator.page || e.locator.pointer) && e.quote?.trim()).map(e => e.id))
   for (const kind of scholarlyKinds) if (!p.nodes.some(n => n.kind === kind && n.fields.length)) out.push(`Research coverage is missing ${kind}.`)
-  const effects = new Set([...(protocol?.analysis?.effects ?? []), ...(protocol?.analysis?.targets ?? [])].map((e: any) => e.id))
+  const effects = new Set(['effects', 'effects_means', 'targets', 'blocked_arm_effects', 'blocked_arm_targets']
+    .flatMap(key => protocol?.analysis?.[key] ?? []).map((e: any) => e.id))
+  const resultStudies = new Set<string>()
   for (const n of p.nodes) {
     const refs = n.extensions?.effectRefs ?? []
     if (!Array.isArray(refs)) out.push(`${n.id}: result references must be a list.`)
     else for (const id of refs) if (!effects.has(id)) out.push(`${n.id}: result reference ${id} does not exist.`)
     for (const f of n.fields) {
       const gap = f.extensions?.gapReason
+      if (n.kind === 'result' && (f.state === 'missing' || ['reported', 'verbatim'].includes(f.origin))) {
+        for (const studyId of f.studyIds ?? n.studyIds) {
+          if (!n.studyIds.length || n.studyIds.includes(studyId)) resultStudies.add(studyId)
+        }
+      }
       if (f.state !== 'missing' && (f.value === null || typeof f.value === 'string' && !f.value.trim())) out.push(`${n.id}.${f.id}: provide supported content or an explicit source gap.`)
       if (gap === 'not_extracted') out.push(`${n.id}.${f.id}: extraction is not finished.`)
       if (f.state === 'missing') {
@@ -48,6 +56,9 @@ export function scholarlyProblems(value: unknown, protocol: any, hash: string): 
       } else if (!f.evidenceIds.some(id => evidence.has(id))) out.push(`${n.id}.${f.id}: include original-source evidence.`)
       if (f.origin === 'derived' && !f.derivation?.trim()) out.push(`${n.id}.${f.id}: explain the interpretation.`)
     }
+  }
+  for (const study of p.studies) {
+    if (!resultStudies.has(study.id)) out.push(`${study.id}: include an original human result or document why it is unavailable.`)
   }
   return out
 }

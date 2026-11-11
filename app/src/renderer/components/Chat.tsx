@@ -247,6 +247,12 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
         )}
       </div>
 
+      {session.pendingPermissions.length > 0 && (
+        <div className="permission-requests">
+          {session.pendingPermissions.map(part => <PermissionCard key={part.id} part={part} onReply={session.reply} />)}
+        </div>
+      )}
+
       {account?.modelAccess === 'none' && (
         <div className="signin-card" role="note">
           <strong>{t(account.signedIn ? 'chat.need_code' : 'chat.need_signin')}</strong>
@@ -536,7 +542,7 @@ function PartView({ part, role, onReply, onAnswer, onReject }: { part: Part; rol
   if (part.kind === 'native') return <NativeValue value={part.data} label={part.type}/>
   if (part.kind === 'error') return <div className="part error">{part.text}</div>
   if (part.kind === 'question') return <QuestionCard part={part} onAnswer={onAnswer} onReject={onReject} />
-  if (part.kind === 'permission') return <PermissionCard part={part} onReply={onReply} />
+  if (part.kind === 'permission' && (part.resolved || part.expired)) return <PermissionCard part={part} onReply={onReply} />
   return null
 }
 

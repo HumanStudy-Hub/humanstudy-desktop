@@ -223,13 +223,16 @@ test('T11: end to end, a good package passes and a failed check blocks, whatever
     return r.stdout.trim()
   }
   const good = fixture({})
-  assert.deepEqual((await SR.scientificReadiness(sciencePython, P.trustedCheckFiles(), good, 'fixture', '')).problems, [])
+  const isolated = SR.legacyFileIsolationAvailable()
+  const report = await SR.scientificReadiness(sciencePython, P.trustedCheckFiles(), good, 'fixture', '')
+  assert.deepEqual(report.problems.map(problem => problem.check), isolated ? [] : ['isolation'])
+  if (!isolated) assert.equal(report.checks.package, 'skipped')
   const bad = fixture({ effects: false })
   mkdirSync(join(bad, '.opencode/skills/build'), { recursive: true })
   writeFileSync(join(bad, '.opencode/skills/build/check_readiness.py'), 'print(\'{"problems": []}\')\n')
   writeFileSync(join(bad, '.opencode/skills/build/effects.py'), 'def build_rules(*a):\n    return []\n')
   const problems = await SR.scientificReadiness(sciencePython, P.trustedCheckFiles(), bad, 'fixture', '')
-  assert.deepEqual(problems.problems, [{ check: 'effects', reason: 'effects.json is missing' }])
+  assert.deepEqual(problems.problems.filter(problem => problem.check !== 'isolation'), [{ check: 'effects', reason: 'effects.json is missing' }])
 })
 
 // v0.8 protocol route: skills/run plays protocol.json with an f; skills/preview renders it. Python 3.11+ (the app

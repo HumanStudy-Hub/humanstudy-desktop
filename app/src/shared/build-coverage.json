@@ -1,4 +1,5 @@
 {
+  "scholarly": ["background", "hypothesis", "design", "participants", "material", "procedure", "variable", "analysis", "result", "finding", "limitation"],
   "empirical": {
     "participants": ["participants"],
     "design": ["design"],

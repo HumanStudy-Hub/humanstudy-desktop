@@ -195,12 +195,19 @@ export async function startRequestTransport(options: { project: string; upstream
       res.writeHead(response.status, headers)
       if (response.body) await pipeline(Readable.fromWeb(response.body as any), res)
       else res.end()
-    } catch {
+    } catch (error) {
       if (!abort.signal.aborted) {
         if (res.headersSent) res.destroy()
         else {
+          const cause = error instanceof Error ? error.cause : undefined
+          const code = cause && typeof cause === 'object' && 'code' in cause ? cause.code : undefined
+          const reason = code === 'UND_ERR_CONNECT_TIMEOUT' ? ' The connection timed out.'
+            : code === 'UND_ERR_HEADERS_TIMEOUT' ? ' The gateway did not respond in time.'
+              : code === 'UND_ERR_SOCKET' || code === 'ECONNRESET' ? ' The connection closed before a response.'
+                : code === 'EAI_AGAIN' || code === 'ENOTFOUND' ? ' The gateway address could not be resolved.'
+                  : ''
           res.writeHead(502, { 'content-type': 'application/json' })
-          res.end(JSON.stringify({ error: { message: 'The model gateway connection failed. Saved work is intact.', type: 'api_error', code: 'humanstudy_transport_error' } }))
+          res.end(JSON.stringify({ error: { message: `The model gateway connection failed.${reason} Saved work is intact.`, type: 'api_error', code: 'humanstudy_transport_error' } }))
         }
       }
     } finally { active.delete(abort) }

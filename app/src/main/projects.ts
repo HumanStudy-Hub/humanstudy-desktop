@@ -142,7 +142,7 @@ export async function createProject(input: { name: string; pdfPath?: string; sam
     await installSampleAssets(sourceDir, dir)
   }
   await installPack(dir)
-  if (input?.pdfPath) pendingPaperBuild(dir)
+  if (input?.pdfPath) pendingPaperBuild(dir, true)
   await writeFile(join(dir, MARKER), JSON.stringify({ format: 1, createdAt: new Date().toISOString() }, null, 2) + '\n')
   return dir
 }

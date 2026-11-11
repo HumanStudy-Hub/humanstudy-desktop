@@ -41,8 +41,8 @@ export function writePaperBuild(dir: string, state: PaperBuildState): void {
 }
 
 /** Mark a freshly imported paper for its automatic first build. */
-export function pendingPaperBuild(dir: string): void {
-  writePaperBuild(dir, { status: 'pending', phase: 'reading' })
+export function pendingPaperBuild(dir: string, requiresPairedDelivery?: boolean): void {
+  writePaperBuild(dir, { status: 'pending', phase: 'reading', requiresPairedDelivery })
 }
 
 
@@ -67,9 +67,10 @@ const currentCertificate = (dir: string, state: PaperBuildState): boolean => {
   if (state.validationRoute === 'protocol') {
     try {
       const raw = readFileSync(join(dir, 'protocol.json'), 'utf8')
-      return createHash('sha256').update(raw).digest('hex') === state.validationHash && scholarlyDeliveryHash(dir, raw) === state.deliveryHash && !scholarlyDeliveryProblems(dir, raw).length
+      return (!state.requiresPairedDelivery || Boolean(state.deliveryHash)) && createHash('sha256').update(raw).digest('hex') === state.validationHash && scholarlyDeliveryHash(dir, raw) === state.deliveryHash && !scholarlyDeliveryProblems(dir, raw).length
     } catch { return false }
   }
+  if (state.requiresPairedDelivery) return false
   const current = programCertificate(dir)
   return current !== null && current.hash === state.validationHash && !current.problems.length
 }
@@ -129,7 +130,7 @@ export function createPaperBuilds(changed: (dir: string) => void, checkProtocol?
   function read(dir: string, persist = true): PaperBuildState | undefined {
     const state = readPaperBuild(dir)
     if (state?.status === 'running' && !live.has(state.sessionId ?? '')) {
-      const next: PaperBuildState = { status: 'error', phase: state.phase, sessionId: state.sessionId, error: 'interrupted' }
+      const next: PaperBuildState = { ...state, status: 'error', checked: false, error: 'interrupted' }
       if (persist) try { writePaperBuild(dir, next) } catch { /* shown either way */ }
       return next
     }
@@ -171,7 +172,7 @@ export function createPaperBuilds(changed: (dir: string) => void, checkProtocol?
         deliveryAfter = scholarlyDeliveryHash(dir, raw)
         deliveryProblems = scholarlyDeliveryProblems(dir, raw)
       } catch { /* fail closed */ }
-      if (before !== after || deliveryBefore !== deliveryAfter || result?.hash !== after || result.problems.length || deliveryProblems.length) {
+      if ((now.requiresPairedDelivery && !deliveryAfter) || before !== after || deliveryBefore !== deliveryAfter || result?.hash !== after || result.problems.length || deliveryProblems.length) {
         protocolProofs.delete(dir)
         return fail(dir, { ...now, checked: false, validationHash: undefined }, 'incomplete')
       }
@@ -213,10 +214,11 @@ export function createPaperBuilds(changed: (dir: string) => void, checkProtocol?
     start(dir: string, sessionId: string): boolean {
       dir = resolve(dir)
       if (projects.get(sessionId) !== dir) throw new Error('This conversation belongs to a different project.')
-      if (read(dir)?.status !== 'pending') return false
+      const state = read(dir)
+      if (state?.status !== 'pending') return false
       live.add(sessionId)
       lastError.delete(sessionId)
-      save(dir, { status: 'running', phase: 'reading', sessionId, startedAt: Date.now() })
+      save(dir, { status: 'running', phase: 'reading', sessionId, startedAt: Date.now(), requiresPairedDelivery: state.requiresPairedDelivery })
       return true
     },
     /** The caller could not send after start() (project or conversation changed): back to pending. */
@@ -224,7 +226,7 @@ export function createPaperBuilds(changed: (dir: string) => void, checkProtocol?
       const state = readPaperBuild(dir)
       if (state?.status !== 'running' || state.sessionId !== sessionId) return
       live.delete(sessionId)
-      save(dir, { status: 'pending', phase: 'reading' })
+      save(dir, { status: 'pending', phase: 'reading', requiresPairedDelivery: state.requiresPairedDelivery })
     },
     /** The researcher asked to build: again after a failure, or for the first time in a project that has
      *  a paper but no study and was made before automatic builds (those never start on their own). */
@@ -232,7 +234,7 @@ export function createPaperBuilds(changed: (dir: string) => void, checkProtocol?
       const state = read(dir)
       const firstBuild = !state && existsSync(join(dir, 'paper.pdf')) && !existsSync(join(dir, 'program.json'))
       if (checking.has(dir) || (state?.status !== 'error' && !firstBuild)) return false
-      save(dir, { status: 'pending', phase: 'reading' })
+      save(dir, { status: 'pending', phase: 'reading', requiresPairedDelivery: state?.requiresPairedDelivery ?? (firstBuild || undefined) })
       return true
     },
     /** Sending the build request itself failed. */
@@ -256,7 +258,7 @@ export function createPaperBuilds(changed: (dir: string) => void, checkProtocol?
           && ((state.status === 'running' && state.sessionId === e.sessionId) || state.status === 'error' || (state.status === 'complete' && !currentCertificate(dir, state)))) return finishProtocol(dir, state)
       const check = e.type === 'tool' ? checkResult(e) : null
       let certificate = state
-      if (check !== null && (state.status === 'running' || state.status === 'error' || state.status === 'complete')) {
+      if (!state.requiresPairedDelivery && check !== null && (state.status === 'running' || state.status === 'error' || state.status === 'complete')) {
         const result = check ? programCertificate(dir) : null
         certificate = { ...state, checked: Boolean(result && !result.problems.length), validationRoute: 'program', validationHash: result?.hash }
         save(dir, certificate)

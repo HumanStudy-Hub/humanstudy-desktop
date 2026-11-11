@@ -47,10 +47,10 @@ import { validateAnswers, type KernelQuestion } from '../../shared/question'
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdirSync, realpathSync } from 'node:fs'
+import { lstatSync, mkdirSync, realpathSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join, relative, isAbsolute, resolve, sep } from 'node:path'
+import { basename, dirname, join, relative, isAbsolute, resolve, sep } from 'node:path'
 import { kernelRuntimeEnv } from '../runtime-core'
 import { Emitter } from './types'
 import type { Kernel, KernelEvent, KernelPermission, PermissionReply } from './types'
@@ -1185,11 +1185,25 @@ export function toKernelPermission(p: {
 
 /** Tool permissions that are safe to auto-approve when "inside the project": edit/write patterns that
  *  resolve under `dir`, and bash commands that name no path outside it. Anything else is asked. */
+function permissionPath(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || lstatSync(path, { throwIfNoEntry: false })) throw error
+    // A write can create a file or directory. Resolve the nearest existing ancestor first.
+    return join(permissionPath(dirname(path)), basename(path))
+  }
+}
+
 export function isInsideProject(dir: string, perm: KernelPermission): boolean {
   const inside = (p: string): boolean => {
     const abs = isAbsolute(p) ? p : resolve(dir, p)
-    const rel = relative(dir, abs)
-    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+    try {
+      const rel = relative(permissionPath(resolve(dir)), permissionPath(abs))
+      return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+    } catch {
+      return false
+    }
   }
   if (perm.type === 'edit' || perm.type === 'write') {
     // patterns are relative to opencode's worktree root ("/" outside git), so prefer the absolute filepath.

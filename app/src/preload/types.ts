@@ -181,6 +181,8 @@ export interface PaperBuildState {
   status: 'pending' | 'running' | 'complete' | 'error'
   phase: 'reading' | 'writing' | 'checking' | 'packaging'
   error?: PaperBuildError
+  /** Fresh paper imports require the research document, protocol and current preview. */
+  requiresPairedDelivery?: boolean
   /** The conversation that runs (or ran) the build. */
   sessionId?: string
   /** The program check printed PASS after the last write to program.json. */

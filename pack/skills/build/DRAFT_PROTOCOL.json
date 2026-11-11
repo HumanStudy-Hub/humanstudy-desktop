@@ -1,0 +1,50 @@
+{
+  "schema_version": "1",
+  "id": "example-study",
+  "meta": {
+    "citation": "Source paper citation",
+    "licence": "unknown",
+    "sample": "Reported sample summary",
+    "scope": "Execution is not prepared.",
+    "delivery": "research-program-v1",
+    "sources": {
+      "paper": {
+        "file": "paper.pdf",
+        "text": "sourcetext/paper.txt"
+      }
+    }
+  },
+  "arms": [
+    {
+      "id": "study1",
+      "label": "Study 1",
+      "runnable": false,
+      "why": "Original participant materials are unavailable.",
+      "n_paper": null
+    }
+  ],
+  "stages": {
+    "unprepared": {
+      "id": "unprepared",
+      "content": [],
+      "responses": []
+    }
+  },
+  "flow": {
+    "seq": [
+      {
+        "stage": "unprepared"
+      }
+    ]
+  },
+  "units": {},
+  "exclusions": [],
+  "analysis": {
+    "targets": [],
+    "effects": [],
+    "unsupported": []
+  },
+  "keyed": {
+    "answers": {}
+  }
+}
