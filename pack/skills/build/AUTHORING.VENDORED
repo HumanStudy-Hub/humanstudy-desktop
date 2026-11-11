@@ -1,0 +1,4 @@
+# Vendored sandbox code. Refresh with scripts/sync_hsenv.sh; never edit by hand.
+source: sandbox skills/authoring
+synced: 2026-11-11
+3443f9122945416e2c0e3f7739fe7fca17d9242665fb1292dcad38207c090250  AUTHORING.md
