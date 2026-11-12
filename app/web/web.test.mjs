@@ -2,7 +2,7 @@
 // project files. Build first:  npx electron-vite build && node scripts/build-web.mjs && node --test web/web.test.mjs
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { after, before, test } from 'node:test'
@@ -35,6 +35,10 @@ before(async () => {
 after(() => server?.kill())
 
 test('everything but the health check needs the token', async () => {
+  const health = await (await fetch(`${B}/healthz`)).json()
+  const manifest = JSON.parse(readFileSync(join(app, 'out/web/build-manifest.json'), 'utf8'))
+  assert.deepEqual(health.build, manifest)
+  assert.notEqual(health.build.version, '0.0.0-test', 'health must identify built payload, not runtime env override')
   assert.equal((await fetch(`${B}/`)).status, 401)
   assert.equal((await fetch(`${B}/ipc/projects:list`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401)
   // Not JSON, or another site's page: refused before anything else.
