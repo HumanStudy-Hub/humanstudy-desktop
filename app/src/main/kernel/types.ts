@@ -79,6 +79,7 @@ export interface Kernel {
   answerQuestion(sessionId: string, questionId: string, answers: string[][]): Promise<void>
   rejectQuestion(sessionId: string, questionId: string): Promise<void>
   questions(sessionId: string): Promise<KernelQuestion[]>
+  permissions(sessionId: string): KernelPermission[]
   /**
    * Re-attach to a session started earlier (possibly by a previous run of the app). Resolves with the
    * session id when the kernel still has it, null when it is gone and a new one must be started.

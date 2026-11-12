@@ -264,8 +264,11 @@ export class OpencodeKernel implements Kernel {
 
   async reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void> {
     const s = this.session(sessionId)
+    const permission = s.pendingPermissions.get(permissionId)
+    if (!s.inFlight || !permission) throw new Error('This permission request is no longer pending in this session.')
     await this.replyTo(s.server, sessionId, permissionId, response)
     s.pendingPermissions.delete(permissionId)
+    if (this.reportResolved(permissionId)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...permission, resolved: response } })
     if (response === 'reject') { s.recovery.cancelled = true; s.recovery.pending = false }
   }
 
@@ -285,6 +288,12 @@ export class OpencodeKernel implements Kernel {
         res = await post(`/session/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}`, { response })
     }
     if (!res.ok) throw new Error(`opencode permission reply -> ${res.status} ${(await res.text().catch(() => ''))}`)
+  }
+
+  permissions(sessionId: string): KernelPermission[] {
+    const s = this.session(sessionId)
+    if (!s.inFlight) return []
+    return [...s.pendingPermissions.values()].filter(perm => !this.autoReplies.has(perm.id) && !this.resolvedReported.has(perm.id))
   }
 
   async questions(sessionId: string): Promise<KernelQuestion[]> {
@@ -440,7 +449,14 @@ export class OpencodeKernel implements Kernel {
     s.recovery.cancelled = true
     s.recovery.pending = false
     s.awaitingAssistant = false
+    const permissions = new Set(s.pendingPermissions.keys())
     await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/abort`)
+    for (const id of s.pendingPermissions.keys()) permissions.add(id)
+    s.pendingPermissions.clear()
+    // Native abort may already have removed these requests. Tombstone them before
+    // cleanup so a late snapshot or rejection cannot reopen a stopped prompt.
+    const unresolved = [...permissions].filter(id => this.reportResolved(id))
+    await Promise.allSettled(unresolved.map(id => this.replyTo(s.server, sessionId, id, 'reject')))
     // Native abort can leave a question in the server's pending list. Explicitly dismiss
     // those requests, otherwise reopening this conversation resurrects a stopped turn.
     const pending = await this.listQuestions(sessionId)
@@ -862,7 +878,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         this.handle({ type: 'message.updated', properties: { info: { ...info, sessionID: sessionId } } })
         if (info.error && !s.failed) this.handle({ type: 'session.error', properties: { sessionID: sessionId, error: info.error } })
       }
-      const pendingPermissions = permissions.filter(p => p.sessionID === sessionId)
+      const pendingPermissions = permissions.filter(p => p.sessionID === sessionId && !this.resolvedReported.has(String(p.id)))
       for (const p of pendingPermissions) if (!s.pendingPermissions.has(String(p.id))) this.handle({ type: 'permission.asked', properties: p })
       const pendingQuestions = questions.filter(q => q.sessionID === sessionId)
       for (const q of pendingQuestions) this.handle({ type: 'question.asked', properties: q })
@@ -1141,7 +1157,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
       case 'permission.asked': {
         const perm = toKernelPermission(p)
-        if (!perm) return
+        if (!perm || !s.inFlight || this.resolvedReported.has(perm.id)) return
         s.pendingPermissions.set(perm.id, perm)
         if (this.permissionMode() === 'project' && isInsideProject(s.server.dir, perm)) {
           this.autoApprove(sessionId, s, perm)

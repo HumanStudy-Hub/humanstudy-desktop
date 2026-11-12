@@ -20,6 +20,7 @@ await new Promise(r => api.listen(0,'127.0.0.1',r))
 try {
   const k = new OpencodeKernel({ binary:'/bin/true', permission:'ask' })
   k.register('s',{dir:out,base:`http://127.0.0.1:${api.address().port}`,auth:'Basic fixture',exited:false})
+  k.sessions.get('s').inFlight = true
   const events=[]; k.onEvent(e=>events.push(e))
   const approved = id => new Promise((resolve, reject) => {
     const timer = setTimeout(() => { off(); reject(new Error('Automatic permission reply timed out')) }, 5000)
@@ -44,6 +45,26 @@ try {
   k.handle({type:'permission.asked',properties:{sessionID:'s',id:'outside',permission:'edit',patterns:['/etc/fixture'],metadata:{filepath:'/etc/fixture'}}})
   await new Promise(r=>setTimeout(r,30))
   assert.equal(replies.length,2,'out-of-project edits still require a user answer')
+  k.setPermissionMode('ask')
+  const original = k.sessions.get('s')
+  k.register('other', original.server)
+  k.sessions.get('other').inFlight = true
+  assert.deepEqual(k.permissions('s').map(p => p.id), ['outside'])
+  await assert.rejects(k.reply('other', 'outside', 'once'), /no longer pending/)
+  await k.reply('s', 'outside', 'once')
+  ask('outside') // A captured GET /permission snapshot can arrive after the reply.
+  assert.deepEqual(k.permissions('s'), [])
+  assert.equal(events.filter(e => e.permission?.id === 'outside' && !e.permission.resolved).length, 1)
+  ask('stopped')
+  k.handle({type:'permission.asked',properties:{sessionID:'other',id:'kept',permission:'bash',patterns:['echo fixture']}})
+  k.request = async () => new Response('[]')
+  await k.abort('s')
+  assert.deepEqual(replies.at(-1), { reply: 'reject' })
+  assert.deepEqual(k.permissions('s'), [])
+  assert.deepEqual(k.permissions('other').map(p => p.id), ['kept'])
+  original.inFlight = true // A new turn must still ignore an old request replay.
+  ask('stopped')
+  assert.deepEqual(k.permissions('s'), [])
   await k.dispose()
   console.log('Auto current-session toggle, pending requests, one-call grants and project boundary passed')
 } finally { await new Promise(r=>api.close(r)) }

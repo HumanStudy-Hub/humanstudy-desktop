@@ -114,6 +114,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   dirRef.current = projectDir
   const busyRef = useRef(false)
   const questionEpoch = useRef(0)
+  const permissionRestore = useRef<Set<string> | null>(null)
   const queueRef = useRef<QueuedMessage[]>([])
   const sendRef = useRef<(text: string, workspace?: WorkspaceContext, action?: ActionRef) => void>(() => undefined)
   const setBusyBoth = (v: boolean) => {
@@ -132,7 +133,8 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     threadRef.current = t.id
     setId(t.kernelSessionId)
     setThreadId(t.id)
-    setMessages(t.messages.map(fromStored))
+    const restoredMessages = t.messages.map(fromStored)
+    setMessages(restoredMessages)
     setUsage({ input: t.usage.input, output: t.usage.output, reasoning: 0, cost: t.usage.cost })
     setResumed(Boolean(t.resumedWithContext))
     setQueueBoth(() => [])
@@ -141,6 +143,27 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     setStatus('')
     const sid = t.kernelSessionId
     const epoch = ++questionEpoch.current
+    const project = dirRef.current
+    const resolvedWhileLoading = new Set<string>()
+    for (const message of restoredMessages) {
+      for (const part of message.parts) {
+        if (part.kind === 'permission' && part.resolved) resolvedWhileLoading.add(part.id)
+      }
+    }
+    permissionRestore.current = resolvedWhileLoading
+    void window.humanstudy.kernel.permissions(sid).then(requests => {
+      if (idRef.current !== sid || dirRef.current !== project || permissionRestore.current !== resolvedWhileLoading) return
+      permissionRestore.current = null
+      const pending = requests.filter(permission => !permission.resolved && !permission.automatic && !resolvedWhileLoading.has(permission.id))
+      if (!pending.length) return
+      setMessages(ms => pending.reduce((next, permission) => appendEvent(next, { sessionId: sid, type: 'permission', permission }), ms))
+      setBusyBoth(true)
+    }).catch((e: unknown) => {
+      if (idRef.current === sid && dirRef.current === project && permissionRestore.current === resolvedWhileLoading) {
+        permissionRestore.current = null
+        setError(`Could not restore agent permissions: ${String(e)}`)
+      }
+    })
     void window.humanstudy.kernel.questions(sid).then(requests => {
       if (idRef.current !== sid || questionEpoch.current !== epoch) return
       setMessages(ms => requests.reduce((next, question) => appendEvent(next, { sessionId: sid, type: 'question', question }), ms))
@@ -200,6 +223,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     setThreads([])
     idRef.current = null
     threadRef.current = null
+    permissionRestore.current = null
     setMessages([])
     setUsage(ZERO)
     setResumed(false)
@@ -243,7 +267,12 @@ export function useSession(projectDir: string | null, enabled = true): Session {
         questionEpoch.current++
         if (!e.question?.resolved) setBusyBoth(true)
       }
+      if (e.type === 'permission' && e.permission) {
+        if (e.permission.resolved) permissionRestore.current?.add(e.permission.id)
+        else if (!e.permission.automatic) setBusyBoth(true)
+      }
       if (e.type === 'done') {
+        permissionRestore.current = null
         questionEpoch.current++
         // A turn that was stopped by hand has already cleared busy; its queue waits for the user.
         const wasRunning = busyRef.current && e.detail !== 'shutdown'
@@ -266,6 +295,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
       if (e.type === 'title') return void refreshThreads()
       setMessages((ms) => appendEvent(ms, e))
       if (e.type === 'error') {
+        permissionRestore.current = null
         questionEpoch.current++
         setBusyBoth(false)
         setMessages(expirePermissions)
@@ -302,6 +332,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
       if (idRef.current === sid) setError(`Could not stop the agent: ${String(e)}`)
     })
     questionEpoch.current++
+    permissionRestore.current = null
     setMessages(expirePermissions)
     setBusy(false)
     setStatus('')
@@ -322,15 +353,25 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const interruptAndSend = useCallback(
     (text: string, workspace?: WorkspaceContext) => {
       const sid = idRef.current
+      const project = dirRef.current
       if (!sid) return
+      permissionRestore.current = null
+      questionEpoch.current++
       busyRef.current = false
       // One operation: it stops the running turn and sends the new message.
       const action = claimAction('composer.interrupt')
       // Wait for the abort to be acknowledged so its `done` cannot end the new turn.
       void window.humanstudy.kernel
         .abort(sid, action)
-        .catch(() => undefined)
-        .then(() => sendRef.current(text, workspace, action))
+        .then(() => {
+          if (idRef.current === sid && dirRef.current === project) sendRef.current(text, workspace, action)
+        })
+        .catch((e: unknown) => {
+          if (idRef.current === sid && dirRef.current === project) {
+            busyRef.current = true
+            setError(`Could not stop the agent: ${String(e)}`)
+          }
+        })
     },
     [],
   )
@@ -342,7 +383,10 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     track('permission.reply', { target: asked?.kind === 'permission' ? asked.type : undefined, metadata: { type: asked?.kind === 'permission' ? asked.type : null, reply: response } })
     const action = claimAction('permission.reply')
     void window.humanstudy.kernel.reply(sid, permissionId, response, action).then(() => {
-      if (idRef.current === sid) setMessages((ms) => resolvePermission(ms, permissionId, response))
+      if (idRef.current === sid) {
+        permissionRestore.current?.add(permissionId)
+        setMessages((ms) => resolvePermission(ms, permissionId, response))
+      }
     }).catch((e: unknown) => {
       if (idRef.current === sid) setMessages((ms) => appendEvent(ms, { sessionId: sid, type: 'error', text: `Could not answer the permission request: ${String(e)}` }))
     })
@@ -459,6 +503,21 @@ function appendEvent(ms: Message[], e: KernelEvent): Message[] {
     if (updated) return updated
     if (!e.question.questions.length && e.question.resolved) return ms
   }
+  if (e.type === 'permission' && e.permission) {
+    const permission = e.permission
+    if (ms.some(message => message.parts.some(part => part.kind === 'permission' && part.id === permission.id))) {
+      return mapPermission(ms, permission.id, previous => ({
+        ...previous,
+        automatic: permission.automatic ?? previous.automatic,
+        type: previous.type || permission.type,
+        title: permission.title ?? previous.title,
+        metadata: permission.metadata ?? previous.metadata,
+        resolved: previous.resolved ?? permission.resolved,
+        expired: false,
+      }))
+    }
+    if (!permission.type && permission.resolved) return ms
+  }
   const last = ms[ms.length - 1]
   const msg: Message =
     last && last.role === 'assistant'
@@ -481,22 +540,7 @@ function appendEvent(ms: Message[], e: KernelEvent): Message[] {
   } else if (e.type === 'question' && e.question) {
     msg.parts.push({ kind: 'question', ...e.question })
   } else if (e.type === 'permission' && e.permission) {
-    const pe = e.permission
-    if (!pe.type && pe.resolved && !ms.some(m => m.parts.some(p => p.kind === 'permission' && p.id === pe.id))) return ms
-    const at = msg.parts.findIndex((x) => x.kind === 'permission' && x.id === pe.id)
-    const prev = at >= 0 ? (msg.parts[at] as PermissionPart) : null
-    // The follow-up (possibly twice) only adds `resolved`; keep what the first event told us.
-    const merged: PermissionPart = {
-      kind: 'permission',
-      automatic: pe.automatic ?? prev?.automatic,
-      id: pe.id,
-      type: prev?.type || pe.type,
-      title: pe.title ?? prev?.title,
-      metadata: pe.metadata ?? prev?.metadata,
-      resolved: pe.resolved ?? prev?.resolved,
-    }
-    if (at >= 0) msg.parts[at] = merged
-    else msg.parts.push(merged)
+    msg.parts.push({ kind: 'permission', ...e.permission })
   } else if (e.type === 'error') {
     msg.parts.push({ kind: 'error', text: e.text ?? e.detail ?? 'Unknown error' })
   }

@@ -436,6 +436,7 @@ export interface HumanStudyApi {
     answerQuestion(sessionId: string, questionId: string, answers: string[][], action?: ActionRef): Promise<void>
     rejectQuestion(sessionId: string, questionId: string, action?: ActionRef): Promise<void>
     questions(sessionId: string): Promise<KernelQuestion[]>
+    permissions(sessionId: string): Promise<KernelPermission[]>
     onEvent(cb: (e: KernelEvent) => void): () => void
     install: {
       status(): Promise<KernelInstallStatus>
