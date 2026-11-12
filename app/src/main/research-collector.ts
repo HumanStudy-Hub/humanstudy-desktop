@@ -9,10 +9,11 @@ import { CONTENT_BUCKET, EVENTS, LIMITS, MANIFEST_FORMAT, scrubResearchString, s
 
 export const SOURCE_CONSENT_VERSION = 3
 export interface ResearchAuth { supabaseUrl: string; supabaseKey: string; accessToken: string; userId: string }
-type Surface = 'desktop' | 'headless'
 interface Options {
   root: string
-  surface: Surface
+  surface: ResearchEvent['surface']
+  /** A prior queue retained for account export without sending it from the new configuration. */
+  previousRoot?: string
   appVersion: string
   auth(): Promise<ResearchAuth | null>
   allowed(): boolean
@@ -113,7 +114,7 @@ export function createResearchCollector(options: Options) {
       id: randomUUID(), contract_version: '1.0.0', surface: options.surface, install_id: session.install,
       research_session_id: session.id, client_seq: session.seq + 1, occurred_at: new Date().toISOString(),
       metadata: {}, content_refs: [], app_version: options.appVersion, collector_version: 'research-collector/1.0.0',
-      consent_version: SOURCE_CONSENT_VERSION, platform: process.platform as 'darwin' | 'win32' | 'linux', ...fields,
+      consent_version: SOURCE_CONSENT_VERSION, platform: options.surface === 'web' ? 'browser' : process.platform as 'darwin' | 'win32' | 'linux', ...fields,
     }
     const errors = validateResearchEvent(row)
     if (errors.length) throw new Error(`Invalid research event: ${errors.join('; ')}`)
@@ -314,7 +315,13 @@ export function createResearchCollector(options: Options) {
     const root = await ownerDir(owner)
     const rejected = (await readdir(join(root, 'rejected'))).filter(f => f.endsWith('.json')).length
     if (rejected) lastError = 'A rejected research record is retained locally for review.'
-    return (await readdir(join(root, 'events'))).filter(f => f.endsWith('.json')).length + rejected
+    const previous = options.previousRoot ? await localEvents(join(options.previousRoot, owner)) : 0
+    if (previous && !lastError) lastError = 'Earlier research records are retained locally for review and export.'
+    return (await readdir(join(root, 'events'))).filter(f => f.endsWith('.json')).length + rejected + previous
+  }
+  async function localEvents(root: string): Promise<number> {
+    const dirs = await Promise.all(['events', 'rejected'].map(dir => readdir(join(root, dir)).catch(() => [])))
+    return dirs.flat().filter(file => file.endsWith('.json')).length
   }
   async function exportFiles(): Promise<Record<string, Uint8Array>> {
     if (flushing) await flushing
@@ -322,8 +329,16 @@ export function createResearchCollector(options: Options) {
     if (!owner || !uuid.test(owner)) return {}
     const root = await ownerDir(owner), files: Record<string, Uint8Array> = {}
     await run(async () => {
-      for (const dir of ['events', 'content', 'rejected']) for (const f of await readdir(join(root, dir)))
-        if (/^[a-f0-9-]+\.(json|bin)$/.test(f)) files[`research-v1/local/${dir}/${f}`] = await readFile(join(root, dir, f))
+      const roots = [['local', root]]
+      if (options.previousRoot) roots.push(['previous-local', join(options.previousRoot, owner)])
+      for (const [label, path] of roots) for (const dir of ['events', 'content', 'rejected']) {
+        const entries = await readdir(join(path, dir)).catch(error => {
+          if (error.code === 'ENOENT' && label === 'previous-local') return []
+          throw error
+        })
+        for (const f of entries) if (/^[a-f0-9-]+\.(json|bin)$/.test(f))
+          files[`research-v1/${label}/${dir}/${f}`] = await readFile(join(path, dir, f))
+      }
     })
     const auth = await identity(false); if (!auth || auth.userId !== owner) throw new Error('Sign in to the original account before exporting research data.')
     const who = await request(auth, '/auth/v1/user')
