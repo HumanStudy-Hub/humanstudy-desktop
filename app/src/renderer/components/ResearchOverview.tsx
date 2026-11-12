@@ -61,7 +61,7 @@ export function ResearchOverview({ program, text, onSource, onAsk }: { program: 
         .map(id => evidenceById.get(id))
         .filter((item): item is ProgramEvidence => Boolean(item))
       return <div key={field.id} className="research-claim">
-        <strong>{field.label}</strong>
+        {(node.fields.length !== 1 || field.label.trim() !== node.title.trim()) && <strong>{field.label}</strong>}
         {field.value !== null && <p>{programText(field.value)}</p>}
         {field.state === 'missing' && <span className="muted">{field.extensions?.gapReason === 'source_unavailable' ? 'Source needed' : 'Not reported in the available source'}</span>}
         {field.origin === 'derived' && <span className="muted">Interpretation · {field.derivation}</span>}
