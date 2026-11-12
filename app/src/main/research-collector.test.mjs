@@ -11,11 +11,11 @@ const {createResearchCollector}=await import(pathToFileURL(join(temp,'collector.
 const OWNER='11111111-1111-4111-8111-111111111111',OTHER='22222222-2222-4222-8222-222222222222',PROJECT='33333333-3333-4333-8333-333333333333'
 async function setup(){
  const root=await mkdtemp(join(temp,'case-')), state={owner:OWNER,allowed:true,offline:false,failObject:false,afterObject:null,objectPosts:0,rejectEvent:null},objects=new Map(),rows=new Map(),events=new Map(),consents=[]
- const auth=async()=>{if(state.offline)throw Error('offline');return {supabaseUrl:'https://db.test',supabaseKey:'public-test',accessToken:state.owner,userId:state.owner}}
+ const auth=async()=>{if(state.offline)throw Error('offline');if(state.missingAuth)return null;return {supabaseUrl:'https://db.test',supabaseKey:'public-test',accessToken:state.owner,userId:state.owner}}
  const fetcher=async(url,init={})=>{
   if(state.offline)throw Error('offline')
   const u=new URL(url),owner=init.headers.Authorization.slice(7),p=u.pathname
-  if(p==='/auth/v1/user')return Response.json({id:owner})
+  if(p==='/auth/v1/user')return state.authStatus ? new Response(null,{status:state.authStatus}) : Response.json({id:owner})
   if(p==='/rest/v1/research_consents'){
    if(init.method==='POST'){consents.push(JSON.parse(init.body));return new Response(null,{status:201})}
    return Response.json([{owner_id:owner,surface:'desktop',version:3}])
@@ -62,6 +62,26 @@ test('offline expired credentials: original bytes survive restart and upload onc
  const restarted=f.make();f.state.offline=false;await restarted.flush();assert.equal(await restarted.pending(),0);assert.equal(f.state.objectPosts,1)
  assert.deepEqual([...f.objects.values()][0],await readFile(f.source));await restarted.queueSource(f.source,PROJECT);await restarted.queueSource(f.source,'44444444-4444-4444-8444-444444444444');await restarted.flush();assert.equal(f.state.objectPosts,1)
  assert.equal([...f.events.values()].filter(e=>e.event_type==='source.import').length,2)
+})
+test('unavailable and revoked sessions surface status and keep web events for same-owner retry', async () => {
+ const f = await setup(), collector = f.make({surface:'web'})
+ const id = await collector.capture({event_type:'action.invoke',view:'study',target:'saved',metadata:{via:'pointer'}})
+ f.state.missingAuth = true
+ await collector.flush()
+ assert.match(collector.error(), /valid sign-in/)
+ assert.equal(await collector.pending(), 2)
+ f.state.missingAuth = false
+ f.state.authStatus = 403
+ await collector.flush()
+ assert.match(collector.error(), /403.*Sign in again/)
+ assert.equal(await collector.pending(), 2)
+ assert.equal(f.events.size, 0)
+ f.state.authStatus = undefined
+ await collector.flush()
+ assert.equal(collector.error(), undefined)
+ assert.equal(f.events.get(id).surface, 'web')
+ assert.equal(f.events.get(id).owner_id, OWNER)
+ assert.equal(await collector.pending(), 0)
 })
 test('multi-part source reassembles byte-for-byte and pending events survive failed Storage upload',async()=>{
  const f=await setup(),raw=Buffer.alloc(4*1024*1024+237,97);raw[raw.length-1]=122;await writeFile(f.source,raw);const c=f.make();await c.queueSource(f.source,PROJECT);f.state.failObject=true;await c.flush();assert.ok(await c.pending()>0)

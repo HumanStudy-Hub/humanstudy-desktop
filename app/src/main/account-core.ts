@@ -173,13 +173,23 @@ export function createAccount(deps: AccountDeps) {
     const s = getSession()
     if (!s) return null
     if (s.expiresAt - REFRESH_MARGIN_MS > now()) return s.accessToken
+    // The launcher or another refresh may replace the stored session during this request.
+    const replacementAccessToken = (): string | null | undefined => {
+      const current = getSession()
+      if (current?.refreshToken === s.refreshToken) return undefined
+      return current && current.expiresAt > now() ? current.accessToken : null
+    }
     try {
       const json = await supabase('token?grant_type=refresh_token', { refresh_token: s.refreshToken })
       const next = sessionFrom(json, s.email)
       if (!next) throw new AccountError('Refresh returned no session.')
+      const replacement = replacementAccessToken()
+      if (replacement !== undefined) return replacement
       writeSecret('session', next)
       return next.accessToken
     } catch (err) {
+      const replacement = replacementAccessToken()
+      if (replacement !== undefined) return replacement
       // A rejected refresh token means the session is gone; a network error keeps it for later.
       if (err instanceof AccountError && err.code !== 'offline') writeSecret('session', null)
       return null

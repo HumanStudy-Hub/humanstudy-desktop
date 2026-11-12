@@ -26,6 +26,7 @@ const SB = 'https://sb.test'
 let clock = 1_000_000_000_000
 const calls = []
 let refreshOk = true
+let holdRefresh
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 const stubFetch = async (url, init = {}) => {
   const u = String(url)
@@ -41,6 +42,7 @@ const stubFetch = async (url, init = {}) => {
   }
   if (u === `${SB}/auth/v1/token?grant_type=refresh_token`) {
     assert.ok(['RT1', 'RT2'].includes(body.refresh_token))
+    if (holdRefresh) return holdRefresh()
     if (!refreshOk) return json(400, { error: 'invalid_grant', error_description: 'Invalid Refresh Token' })
     return json(200, { access_token: 'AT2', refresh_token: 'RT2', expires_in: 3600, user: { email: 'a@b.org' } })
   }
@@ -122,6 +124,27 @@ assert.equal(st.signedIn, false)
 assert.ok(calls.some((c) => c.url.endsWith('/auth/v1/logout') && c.headers.authorization === 'Bearer AT1'))
 assert.equal(store.session, undefined)
 assert.equal(store.desktopKey, undefined)
+
+// A new workspace seed survives both an old refresh success and an old refresh rejection.
+for (const reply of [
+  json(200, { access_token: 'AT2', refresh_token: 'RT2', expires_in: 3600 }),
+  json(400, { error: 'invalid_grant', error_description: 'Invalid Refresh Token' }),
+]) {
+  await acct.signIn('a@b.org', 'pw')
+  clock += 2 * 3600_000
+  let settle
+  let requested
+  const requestStarted = new Promise(resolve => { requested = resolve })
+  holdRefresh = () => new Promise(resolve => { settle = resolve; requested() })
+  const pending = acct.restAuth()
+  await requestStarted
+  const seeded = 'fixture.' + Buffer.from(JSON.stringify({ sub: 'workspace-owner' })).toString('base64url') + '.fixture'
+  store.session = enc(JSON.stringify({ accessToken: seeded, refreshToken: 'fresh-workspace-refresh', expiresAt: clock + 3600_000, email: 'a@b.org' }))
+  settle(reply)
+  assert.equal((await pending).accessToken, seeded)
+  assert.equal((await acct.restAuth()).accessToken, seeded)
+  holdRefresh = undefined
+}
 
 // Kernel inline config adds recovery controls without redefining provider credentials.
 const k = new oc.OpencodeKernel({ binary: '/bin/true', provider: 'humanstudy', model: 'anthropic/claude-haiku-5.5' })
