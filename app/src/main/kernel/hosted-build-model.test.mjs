@@ -27,7 +27,7 @@ test('automatic hosted Builds use the account model list and retain allowed resu
   const fixture = createServer((req, res) => {
     if (req.url === '/session/resumed') return res.writeHead(200).end('{}')
     lookups.push({ method: req.method, url: req.url, auth: req.headers.authorization })
-    if (holdLookup) return holdLookup()
+    if (holdLookup) return holdLookup(res)
     res.writeHead(listStatus, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ object: 'list', data: quota.map(id => ({ id })) }))
   })
@@ -83,4 +83,16 @@ test('automatic hosted Builds use the account model list and retain allowed resu
   await kernel.abort(stopped)
   await rejected
   assert.equal(prompts.length, 4, 'a Stop during account lookup never starts inference')
+
+  const selectionReached = new Promise(resolve => { holdLookup = resolve })
+  const changed = await kernel.startSession(root)
+  const select = modelID => kernel.native(changed, { operation: 'select', input: { model: { providerID: 'humanstudy', modelID } } })
+  await select(haiku)
+  const stale = assert.rejects(sendBuild(changed), /model selection changed/)
+  const response = await selectionReached
+  await select(sonnet)
+  response.writeHead(200, { 'Content-Type': 'application/json' })
+  response.end(JSON.stringify({ data: [{ id: haiku }, { id: sonnet }] }))
+  await stale
+  assert.equal(prompts.length, 4, 'a selection change during account lookup never sends a stale model')
 })
