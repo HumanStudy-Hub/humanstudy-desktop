@@ -18,7 +18,7 @@ export async function matchingPreview(text: string, html: string): Promise<boole
   } catch { return false }
 }
 
-export function ProtocolStudy({ text, preview, program, onSource, onAsk }: { text: string; preview?: ProjectEntry; program?: HumanProgram | null; onSource(ref: SourceRef): void; onAsk?(text: string): void }) {
+export function ProtocolStudy({ text, preview, program, problems = [], onSource, onAsk }: { text: string; preview?: ProjectEntry; program?: HumanProgram | null; problems?: string[]; onSource(ref: SourceRef): void; onAsk?(text: string): void }) {
   const frame = useRef<HTMLIFrameElement>(null)
   const [about, setAbout] = useState(false)
   const [view, setView] = useState<{ text: string; html: string } | null>(null)
@@ -40,7 +40,7 @@ export function ProtocolStudy({ text, preview, program, onSource, onAsk }: { tex
     window.addEventListener('message', listener)
     return () => window.removeEventListener('message', listener)
   }, [onSource])
-  const research = program ? <ResearchOverview program={program} text={text} onSource={onSource} onAsk={onAsk} /> : null
+  const research = program ? <ResearchOverview program={program} problems={problems} text={text} onSource={onSource} onAsk={onAsk} /> : null
   let p: Record<string, any>
   try { p = JSON.parse(text); if (!p || typeof p !== 'object' || Array.isArray(p)) throw Error() }
   catch { return research ? <section className="protocol-research-document">{research}<p className="research-overview muted">{t('protocol.invalid')}</p></section> : <div className="empty-state">{t('protocol.invalid')}</div> }

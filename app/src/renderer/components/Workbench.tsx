@@ -4,7 +4,7 @@ import { scholarlyProfile, scholarlyDeclarationProblems } from '../../shared/sch
 // opens as another tab, like an artifact panel. A Files sidebar (hidden by default, ⌘B) lists the folder.
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 import StudyModel, { viewStudies, type QuoteStatus, type StudyModelProps } from '../program/StudyModel'
-import { readHumanProgram, type HumanProgram } from '../../shared/human-program'
+import { inspectHumanProgram, readHumanProgram, type HumanProgram } from '../../shared/human-program'
 import { protocolProgram, PROTOCOL_STUDY_ID } from '../../shared/protocol-program'
 import { patchProgramField } from '../../shared/program-patch'
 import type { ProjectEntry, ProjectSnapshot, WorkspaceContext } from '../../preload/types'
@@ -139,7 +139,8 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
     try {
-      const read = readHumanProgram(project.program)
+      const read = flatten(project.tree).some(f => f.rel === 'protocol.json')
+        ? inspectHumanProgram(project.program) : readHumanProgram(project.program)
       const declaration = scholarlyDeclarationProblems(read.program)
       if (!declaration.length && scholarlyProfile(read.program) && !flatten(project.tree).some(f => f.rel === 'protocol.json'))
         declaration.push('This scholarly view requires its protocol.json. Restore the actual paired protocol, or omit extensions.scholarly for Program-only conversion; do not invent a protocol.')
@@ -178,8 +179,8 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
     return () => { live = false }
   }, [protocolKey]) // eslint-disable-line react-hooks/exhaustive-deps
   const hasProtocol = Boolean(protocolEntry)
-  const scholarlyProgram = scholarlyProfile(program) ? program : null
-  const showResearchDespiteReadError = Boolean(scholarlyProgram && loadedProtocol?.key === protocolKey && loadedProtocol.error)
+  const researchProgram = program // Reading does not require the optional protocol-bound profile.
+  const showResearchDespiteReadError = Boolean(researchProgram && loadedProtocol?.key === protocolKey && loadedProtocol.error)
   const simProgram = useMemo(() => hasProtocol ? protocolProgram(protocolText) : program, [program, protocolText, hasProtocol])
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
 
@@ -584,10 +585,11 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
               <div className="wb-protocol-host">
                 {building && build && <BuildProgress build={build} waiting={agentWaiting} />}
                 {buildFailed && <div className="part error edit-error" role="alert">{buildFailed} <button className="link" onClick={retryBuild}>{t('build.retry')}</button></div>}
+                {error && <p className="part error" role="alert">Research notes cannot be displayed: {error}. Showing the experiment file below.</p>}
                 {!building && problems.length > 0 && <p className="muted small program-notice" role="status" title={problems.join('\n')}>
                   {t('study.problems', { n: problems.length })} · <button className="link" onClick={fixProgram}>{t('study.fix')}</button>
                 </p>}
-                {protocolText || showResearchDespiteReadError ? <ProtocolStudy text={protocolText ?? ''} program={scholarlyProgram} preview={files.find(f => f.rel === 'artifacts/preview.html')}
+                {protocolText || showResearchDespiteReadError ? <ProtocolStudy text={protocolText ?? ''} program={researchProgram} problems={problems} preview={files.find(f => f.rel === 'artifacts/preview.html')}
                   onAsk={docProps.onPrefill}
                   onSource={ref => { rememberHere(); docProps.onSource('protocol', ref); update(l => ({ ...l, active: 'study', compare: true })) }} />
                   : <div className="empty-state">{loadedProtocol?.key === protocolKey && loadedProtocol.error ? loadedProtocol.error : t('protocol.loading')}</div>}
