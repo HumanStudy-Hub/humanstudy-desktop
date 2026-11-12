@@ -33,7 +33,7 @@ export function ResearchOverview({ program, text, problems: documentProblems = [
     return () => { live = false }
   }, [program, protocol, text])
   const problems = [...new Set([...documentProblems, ...(check?.text === text && check.program === program ? check.problems : [])])]
-  const bound = Boolean(scholarlyProfile(program))
+  const bound = Boolean(scholarlyProfile(program) && check?.text === text && check.program === program && !check.problems.length && !documentProblems.length)
   const evidenceCounts = new Map<string, number>()
   for (const item of program.evidence) evidenceCounts.set(item.id, (evidenceCounts.get(item.id) ?? 0) + 1)
   const evidenceById = new Map(program.evidence.filter(item => evidenceCounts.get(item.id) === 1).map(item => [item.id, item]))
