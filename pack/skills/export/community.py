@@ -14,7 +14,7 @@ import check_materials  # noqa: E402  (researcher-supplied and not-openly-licens
 PRIVATE = {
     ".env", ".git", ".opencode", ".humanstudy", "node_modules", "__pycache__", "threads", "conversations",
     "chat", "chats", "credentials", "account.json", "settings.json", "human-data", "runs",
-    "original-text", "rehydrated", "restored", "researcher", "private",
+    "original-text", "rehydrated", "restored", "researcher", "private", "quarantine",
 }
 RAW_NAMES = {"sessions", "records", "responses", "participant-data", "llm-usage", "progress", "run", "heartbeat", "stop"}
 RAW_SUFFIXES = {".jsonl", ".ndjson", ".log"}
@@ -64,12 +64,167 @@ def recorded_license(record):
     return license
 
 
+def json_bytes(value):
+    return json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def paired_sources(protocol):
+    sources = (protocol.get("meta") or {}).get("sources")
+    if not isinstance(sources, dict) or not sources:
+        raise ValueError("Paired contributions need declared public sources.")
+    paths = {}
+    for key, source in sources.items():
+        name = source.get("file") if isinstance(source, dict) else None
+        if not isinstance(name, str) or not name.startswith("sources/open/") or "\\" in name or any(
+                part in {"", ".", ".."} for part in name.split("/")) or private_payload(name):
+            raise ValueError("Every paired source must be a public file under sources/open/.")
+        paths[key] = name
+    return paths
+
+
+def research_sources(program):
+    source = program["source"]
+    paths = [source.get("filename"), *(e.get("path") for e in program.get("evidence", []))]
+    return {name for name in paths if isinstance(name, str) and name}
+
+
+def normalized_title(value):
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split()) if isinstance(value, str) else ""
+
+
+def normalized_doi(value):
+    if not isinstance(value, str):
+        return ""
+    value = value.strip().lower()
+    for prefix in ("https://doi.org/", "http://doi.org/", "doi:"):
+        if value.startswith(prefix):
+            return value[len(prefix):].strip()
+    return value
+
+
+def has_private_reference(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {"file", "filename", "path", "src"} and isinstance(item, str):
+                name = item.replace("\\", "/")
+                if not name.startswith(("https://", "http://")) and (
+                        name.startswith(("/", "file:")) or len(name) > 1 and name[1] == ":" or private_payload(name)):
+                    return True
+            if has_private_reference(item):
+                return True
+    elif isinstance(value, list):
+        return any(has_private_reference(item) for item in value)
+    return False
+
+
+def paired_projection(protocol, study, program, payload, licensed):
+    # In an installed project the engine is beside skills/. The second path is for repository tests.
+    here = Path(__file__).resolve()
+    candidates = (here.parents[2] / "hsenv", here.parents[2] / "runtime/hsenv")
+    engine = next((p for p in candidates if (p / "hsenv/release.py").is_file()), None)
+    if engine is None:
+        raise ValueError("Paired export needs the current Desktop protocol engine.")
+    sys.path.insert(0, str(engine))
+    from hsenv import release, schema_check, distribution
+    sys.path.pop(0)
+
+    if protocol.get("schema_version") != "1" or study.get("schema_version") != "1":
+        raise ValueError("Paired export needs the v1 protocol and study card.")
+    if (protocol.get("distribution") or {}).get("held") or "░" in json.dumps(protocol, ensure_ascii=False):
+        raise ValueError("Paired export cannot carry held or locally restored wording.")
+    if any(has_private_reference(doc) for doc in (protocol, study, program)):
+        raise ValueError("The pair refers to a private or local file.")
+    if study.get("release_hold") or any(a.get("release_hold") for a in protocol.get("arms", [])):
+        raise ValueError("Resolve the public release holds before exporting this pair.")
+    binding = program.get("extensions", {}).get("scholarly", {})
+    expected = {"path": "protocol.json", "id": protocol.get("id"), "sha256": digest(payload["protocol.json"][0])}
+    if program.get("schemaVersion") != 2 or binding.get("profile") != "scholarly-v1" or binding.get("protocol") != expected:
+        raise ValueError("program.json does not bind to this protocol version.")
+    if study.get("id") != protocol.get("id") or study.get("protocol") != {
+            "path": "protocol.json", "sha256": schema_check.canonical_sha256(protocol), "schema_version": "1"}:
+        raise ValueError("study.json does not bind to this protocol version.")
+
+    paper = program["source"]
+    title, doi = normalized_title(paper.get("title")), normalized_doi(paper.get("doi"))
+    if not title or title != normalized_title(study.get("title")) or (
+            doi and normalized_doi(study.get("doi")) != doi):
+        raise ValueError("study.json and program.json describe different paper identities.")
+    protocol_sources = paired_sources(protocol)
+    for name in research_sources(program):
+        if name not in payload or not release.hosted_licence_ok(payload[name][1]):
+            raise ValueError("A source cited by program.json is missing from the licensed public files.")
+        record = licensed.get(name, {})
+        sha = record.get("sha256")
+        if not isinstance(sha, str) or sha.lower() != digest(payload[name][0]):
+            raise ValueError("A source cited by program.json needs a matching recorded SHA-256.")
+        if name not in protocol_sources.values() and not str(record.get("attribution") or "").strip():
+            raise ValueError("A source cited by program.json needs recorded attribution.")
+
+    tiers, sources = {}, {}
+    for key, name in protocol_sources.items():
+        declared = protocol["meta"]["sources"][key].get("distribution") or {}
+        if declared.get("tier", "hosted") != "hosted":
+            raise ValueError("Paired contributions currently need redistributable hosted sources.")
+        data, license = payload.get(name, (None, None))
+        record = licensed.get(name, {})
+        attribution = record.get("attribution") or declared.get("attribution")
+        if data is None or not release.hosted_licence_ok(license) or not isinstance(attribution, str) or not attribution.strip():
+            raise ValueError(f"Paired source {name} needs licensed bytes and attribution.")
+        sha = digest(data)
+        recorded_sha = record.get("sha256")
+        if not isinstance(recorded_sha, str) or recorded_sha.lower() != sha or declared.get("sha256", sha) != sha:
+            raise ValueError(f"Paired source {name} needs a matching recorded SHA-256.")
+        tiers[key] = {"tier": "hosted", "licence": license, "attribution": attribution, "sha256": sha,
+                      "format": distribution.sniff(data)}
+        sources[key] = data
+
+    bare = {key: value for key, value in protocol.items() if key != "distribution"}
+    extractors = {"pdf": distribution.pdfium_extractor()} if any(d["format"] == "pdf" for d in tiers.values()) else {}
+    try:
+        projected, _ = release.project(bare, tiers=tiers, sources=sources, extractors=extractors, strict=True)
+    except release.ProjectionError as exc:
+        raise ValueError("The protocol could not be projected from the supplied public sources. Check its source citations.") from exc
+    if projected["distribution"]["held"]:
+        raise ValueError("The projected protocol still contains held wording.")
+    schema = schema_check.validate(projected, "protocol")
+    if not schema["valid"]:
+        paths = ", ".join(path or "/" for path, _ in schema["errors"][:5])
+        raise ValueError(f"The public protocol has schema errors at {paths}.")
+
+    projected_bytes = json_bytes(projected)
+    binding["protocol"]["sha256"] = digest(projected_bytes)
+    card = {key: value for key, value in study.items() if key in
+            {"schema_version", "id", "title", "authors", "year", "doi", "version", "licence", "tags", "protocol"}}
+    card["quality"] = "draft"
+    card["protocol"] = {**card["protocol"], "sha256": schema_check.canonical_sha256(projected)}
+    if not schema_check.validate(card, "study")["valid"]:
+        raise ValueError("The study card has invalid public metadata.")
+    payload.update({"protocol.json": (projected_bytes, None), "program.json": (json_bytes(program), None),
+                    "study.json": (json_bytes(card), None)})
+    for name, (data, _) in payload.items():
+        if not release.distributable(name, projected, content=data, sources=sources, extractors=extractors):
+            raise ValueError(f"{name} is not part of the public protocol projection.")
+    return card
+
+
 def export(root, output, include_paper=False):
     root, output = Path(root).resolve(), Path(output).resolve()
     if not output.is_relative_to(root) or output.exists():
         raise ValueError("Choose a new export path inside the research project")
-    if (root / "protocol.json").exists():
-        raise ValueError("This community ZIP format carries legacy programs. A paired study needs its verified public protocol projection.")
+    protocol_path = root / "protocol.json"
+    paired = protocol_path.exists() or protocol_path.is_symlink()
+    study_path = root / "study.json"
+    protocol = study = None
+    if paired:
+        if not safe_candidate(root, protocol_path) or not safe_candidate(root, study_path):
+            raise ValueError("A paired contribution needs both protocol.json and study.json.")
+        protocol, study = read_json(protocol_path), read_json(study_path)
+        if not isinstance(protocol, dict) or not isinstance(study, dict):
+            raise ValueError("protocol.json and study.json must be JSON objects.")
     program_path = root / "program.json"
     if not safe_candidate(root, program_path):
         raise ValueError("The project has no readable program.json")
@@ -97,7 +252,15 @@ def export(root, output, include_paper=False):
                       "doi": paper.get("doi") or bibliography.get("doi") or next((a[4:] for a in original.get("aliases", []) if a.startswith("doi:")), None)},
             "checks": {"schema": False, "package": None, "simulation": None}}
     candidates = {program_path: "program.json"}
-    for top in ("package", "artifacts", "sources"):
+    if paired:
+        candidates.update({protocol_path: "protocol.json", study_path: "study.json"})
+        paths = set(paired_sources(protocol).values()) | research_sources(program)
+        for name in sorted(paths):
+            if not name.startswith("sources/open/") or "\\" in name or any(
+                    part in {"", ".", ".."} for part in name.split("/")) or private_payload(name):
+                raise ValueError("A source cited by the pair is missing from the licensed public sources/open/ files.")
+            candidates[root / name] = name
+    for top in (("artifacts",) if paired else ("package", "artifacts", "sources")):
         folder = root / top
         if folder.is_symlink():
             raise ValueError("Symlinked source folders cannot be published")
@@ -109,7 +272,7 @@ def export(root, output, include_paper=False):
         referenced.add(paper["filename"])
     if include_paper:
         referenced.add("paper.pdf")
-    for name in sorted(referenced):
+    for name in sorted(referenced) if not paired else ():
         relative = Path(name)
         if relative.is_absolute() or "\\" in name or ":" in name or ".." in relative.parts:
             continue
@@ -130,6 +293,9 @@ def export(root, output, include_paper=False):
             continue
         if rel in {"sources/SOURCE.json", "sources/study.json"}:
             continue
+        if paired and rel in {"artifacts/preview.html", "artifacts/participant-preview.html"}:
+            omitted.append({"path": rel, "reason": "preview must be generated against the public protocol"})
+            continue
         suffix = path.suffix.lower()
         if suffix == ".pdf" and not include_paper:
             omitted.append({"path": rel, "reason": "PDF redistribution was not selected"})
@@ -145,10 +311,10 @@ def export(root, output, include_paper=False):
             continue
         if path.stat().st_size > MAX_FILE_BYTES:
             raise ValueError(f"{rel} exceeds the Hub's 25 MB per-file limit.")
-        if rel != "program.json" and check_materials.looks_like_data(path):
+        if rel not in {"program.json", "protocol.json", "study.json"} and check_materials.looks_like_data(path):
             omitted.append({"path": rel, "reason": "possible raw participant data"})
             continue
-        before = hashlib.sha256(program_bytes).hexdigest() if path == program_path else check_materials.sha(path)
+        before = digest(program_bytes) if path == program_path else check_materials.sha(path)
         declared = record.get("sha256") if is_source else None
         if declared is not None and (not isinstance(declared, str) or declared.lower() != before):
             raise ValueError(f"The bytes of {rel} no longer match sources/SOURCE.json. Verify its source licence again.")
@@ -181,6 +347,15 @@ def export(root, output, include_paper=False):
             info = licensed[path.relative_to(root).as_posix()]
             credits = {key: info[key] for key in ("title", "attribution", "licenseEvidence") if isinstance(info.get(key), str)}
             public_sources.append({"path": name, "bytes": len(data), "sha256": before, "license": license, **credits})
+    if paired:
+        # Re-read from the same frozen bytes that will be archived.
+        if "protocol.json" not in payload or "study.json" not in payload:
+            raise ValueError("The paired contribution is missing a public protocol or study card.")
+        card = paired_projection(json.loads(payload["protocol.json"][0]), json.loads(payload["study.json"][0]),
+                                 program, payload, licensed)
+        meta["kind"] = "protocol"
+        meta["paper"] = {"title": card["title"], "authors": card["authors"], "firstAuthor": card["authors"][0],
+                         "year": card["year"], "doi": card.get("doi")}
     if public_sources:
         source_manifest = {"schemaVersion": 1, "files": public_sources}
         payload["sources/SOURCE.json"] = (json.dumps(source_manifest, ensure_ascii=False, indent=2).encode("utf-8") + b"\n", None)
