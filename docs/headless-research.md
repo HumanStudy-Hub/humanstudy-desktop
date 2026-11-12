@@ -36,8 +36,9 @@ without generation or source upload. Its account check needs the web identity en
 research-collection PR to be deployed first.
 
 Before generation, sources are copied into the private durable queue under
-`<project>/.humanstudy/asset-agent/research-data/<owner-id>/`. Upload failures leave them there;
+`<project>/.humanstudy/asset-agent/research-data/filtered/<owner-id>/`. Upload failures leave them there;
 there is no age/count pruning. The next run retries; duplicate events/content do not multiply.
 A pending-delivery notice at exit is not a claim that data reached the server. Keep `.humanstudy/`
-out of exported/public asset bundles. This change adds source collection and account attribution;
-the full headless conversation/tool adapter remains part of issue #27.
+out of exported/public asset bundles. The worker also records commands, conversations, tools, and generated research versions. Projects
+with private or held wording must be opened in Desktop, where the private index is available. The
+guarded worker keeps earlier local queues available for review. See [research source collection](research-source-collection.md).
