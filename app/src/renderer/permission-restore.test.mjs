@@ -35,13 +35,16 @@ try {
           questions: async () => [],
           onEvent: listener => { listeners.add(listener); return () => listeners.delete(listener) },
           reply: async (sid, id, response) => emit({ sessionId: sid, type: 'permission', permission: { id, type: '', resolved: response } }),
-          abort: async sid => { stopped.push(sid) },
+          abort: async sid => {
+            stopped.push(sid)
+            await new Promise(resolve => { window.fixture.acknowledgeStop = resolve })
+          },
         },
       }
       function Conversation({ dir }) {
         const session = useSession(dir)
         return <>
-          <output>{session.id}</output>
+          <output data-stopping={session.stopping}>{session.id}</output>
           {session.pendingPermissions.map(part => <PermissionCard key={part.id} part={part} onReply={session.reply} />)}
           {session.busy && <button id="stop" onClick={session.abort}>Stop</button>}
         </>
@@ -107,7 +110,9 @@ try {
         await js(stop + '.click()')
         await hydrate('A', '[fixture.permission]')
         await waitFor("fixture.stopped.join(',') === 'A' && !" + card + ' && !' + stop)
-        await js("fixture.emit({ sessionId: 'A', type: 'done' })")
+        await waitFor("document.querySelector('output').dataset.stopping === 'true'")
+        await js("fixture.emit({ sessionId: 'A', type: 'done' }); fixture.acknowledgeStop()")
+        await waitFor("document.querySelector('output').dataset.stopping === 'false'")
         console.log('Permission card restores on remount and stays cleared after reply, project switch or Stop')
       } catch (error) {
         console.error(error)

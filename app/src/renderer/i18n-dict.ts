@@ -398,6 +398,7 @@ const ROWS: Row[] = [
   ['chat.chip_missing', 'What is missing to reproduce it?', '要复现它还缺什么？'],
   ['chat.chip_prereg', 'Draft a preregistration', '起草预注册'],
   ['chat.unavailable', 'Agent unavailable: {error}', '助手暂不可用：{error}'],
+  ['chat.stopping', 'Stopping the agent…', '正在停止代理…'],
   ['chat.waiting_perm', 'Waiting for your permission', '等待你的许可'],
   ['chat.resumed', 'Resumed; the agent will be reminded of the earlier conversation on your next message.', '已恢复；你发下一条消息时，助手会重新了解之前的对话。'],
   ['chat.drop', 'Drop to add to the project (PDF, data, images)', '松开即可加入项目（PDF、数据、图片）'],

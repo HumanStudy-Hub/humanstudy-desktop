@@ -50,6 +50,7 @@ export interface Session {
   startPaperBuild(prompt: string): Promise<void>
   messages: Message[]
   busy: boolean
+  stopping: boolean
   status: string
   error: string | null
   /** Messages waiting for the current turn to finish; sent in order after `done`. */
@@ -115,6 +116,13 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const busyRef = useRef(false)
   const questionEpoch = useRef(0)
   const permissionRestore = useRef<Set<string> | null>(null)
+  const stoppingSessions = useRef(new Set<string>())
+  const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set())
+  const markStopping = useCallback((sid: string, active: boolean) => {
+    if (active) stoppingSessions.current.add(sid)
+    else stoppingSessions.current.delete(sid)
+    setStopping(new Set(stoppingSessions.current))
+  }, [])
   const queueRef = useRef<QueuedMessage[]>([])
   const sendRef = useRef<(text: string, workspace?: WorkspaceContext, action?: ActionRef) => void>(() => undefined)
   const setBusyBoth = (v: boolean) => {
@@ -311,7 +319,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const send = useCallback((text: string, workspace?: WorkspaceContext, action?: ActionRef) => {
     textBatch.current?.flush()
     const sid = idRef.current
-    if (!sid || !text.trim()) return
+    if (!sid || !text.trim() || stoppingSessions.current.has(sid)) return
     const ref = action ?? claimAction('composer.send')
     setMessages((ms) => [...ms, { id: nextId++, role: 'user', parts: [{ kind: 'text', text }], at: Date.now() }])
     setBusyBoth(true)
@@ -325,18 +333,20 @@ export function useSession(projectDir: string | null, enabled = true): Session {
 
   const abort = useCallback(() => {
     textBatch.current?.flush()
-    busyRef.current = false
     const sid = idRef.current
+    if (!sid || stoppingSessions.current.has(sid)) return
+    busyRef.current = false
+    markStopping(sid, true)
     const ref = claimAction('agent.stop')
-    if (sid) void window.humanstudy.kernel.abort(sid, ref).catch((e: unknown) => {
-      if (idRef.current === sid) setError(`Could not stop the agent: ${String(e)}`)
-    })
+    void window.humanstudy.kernel.abort(sid, ref).catch((e: unknown) => {
+      if (idRef.current === sid) setError(`Could not stop the agent: ${String(e)}. Reopen this conversation to check its state.`)
+    }).finally(() => markStopping(sid, false))
     questionEpoch.current++
     permissionRestore.current = null
     setMessages(expirePermissions)
     setBusy(false)
     setStatus('')
-  }, [])
+  }, [markStopping])
 
   const enqueue = useCallback((text: string, workspace?: WorkspaceContext) => {
     if (!text.trim()) return
@@ -354,7 +364,8 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     (text: string, workspace?: WorkspaceContext) => {
       const sid = idRef.current
       const project = dirRef.current
-      if (!sid) return
+      if (!sid || stoppingSessions.current.has(sid)) return
+      markStopping(sid, true)
       permissionRestore.current = null
       questionEpoch.current++
       busyRef.current = false
@@ -364,16 +375,18 @@ export function useSession(projectDir: string | null, enabled = true): Session {
       void window.humanstudy.kernel
         .abort(sid, action)
         .then(() => {
+          markStopping(sid, false)
           if (idRef.current === sid && dirRef.current === project) sendRef.current(text, workspace, action)
         })
         .catch((e: unknown) => {
+          markStopping(sid, false)
           if (idRef.current === sid && dirRef.current === project) {
             busyRef.current = true
             setError(`Could not stop the agent: ${String(e)}`)
           }
         })
     },
-    [],
+    [markStopping],
   )
 
   const reply = useCallback((permissionId: string, response: PermissionReply) => {
@@ -465,7 +478,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const waitingForQuestion = messages.some(m => m.parts.some(p => p.kind === 'question' && !p.resolved && !p.expired))
 
   return {
-    id, startPaperBuild, messages, busy, status, error, queue, send, enqueue, editQueued, removeQueued, interruptAndSend, abort,
+    id, startPaperBuild, messages, busy, stopping: id !== null && stopping.has(id), status, error, queue, send, enqueue, editQueued, removeQueued, interruptAndSend, abort,
     reply, pendingPermissions, waitingForPermission, answerQuestion, rejectQuestion, waitingForQuestion, threadId, threads, usage, resumedWithContext: resumed, native, adoptThread: activate, newThread, openThread, renameThread, deleteThread,
   }
 }

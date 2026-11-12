@@ -188,6 +188,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
     return selectionContext(selected) + prefix + text
   }
   const submit = () => {
+    if (session.stopping) return
     if(draft.trim().startsWith('!')&&draft.trim().length>1){void session.native({operation:'shell',input:{command:draft.trim().slice(1)}}).catch(()=>undefined);setDraft('');return}
     if(parseSlash(draft)){void native.execute(draft);setDraft('');return}
     const full = compose()
@@ -204,12 +205,12 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
     if(!message.nativeId)return
     try{await session.native({operation:'undo',input:{messageID:message.nativeId}});setDraft(message.parts.filter(p=>p.kind==='text').map(p=>p.text).join('\n'));requestAnimationFrame(()=>input.current?.focus())}catch(error){setAttachError(String(error))}
   },[session.native])
-  const canSend = (draft.trim().length > 0 || attached.length > 0) && Boolean(session.id)
+  const canSend = !session.stopping && (draft.trim().length > 0 || attached.length > 0) && Boolean(session.id)
   const settingUp = kernel.status != null && kernel.status.state !== 'ready'
   const tools = useMemo(()=>session.messages.filter(m => m.role === 'assistant').at(-1)?.parts.filter((p): p is Extract<Part, { kind: 'tool' }> => p.kind === 'tool') ?? [],[session.messages])
   const activity = useMemo(()=>researchActivity(tools,projectDir),[tools,projectDir])
   const runningTool = tools.some(p => p.state === 'pending' || p.state === 'running')
-  const statusLine = session.status==='compacting'?'Organizing conversation context…':session.waitingForQuestion ? t('question.waiting') : session.waitingForPermission ? t('chat.waiting_perm') : session.busy ? (session.status === 'stalled' ? t('activity.stalled') : session.status === 'recovering' ? t('activity.recovery') : session.status === 'reconnecting' ? t('activity.reconnecting') : runningTool ? '' : t(activity.key, activity.vars)) : session.status === 'aborted' ? '' : session.status
+  const statusLine = session.stopping ? t('chat.stopping') : session.status==='compacting'?'Organizing conversation context…':session.waitingForQuestion ? t('question.waiting') : session.waitingForPermission ? t('chat.waiting_perm') : session.busy ? (session.status === 'stalled' ? t('activity.stalled') : session.status === 'recovering' ? t('activity.recovery') : session.status === 'reconnecting' ? t('activity.reconnecting') : runningTool ? '' : t(activity.key, activity.vars)) : session.status === 'aborted' ? '' : session.status
   const u = session.usage
   const lastAssistant = session.messages.length ? session.messages[session.messages.length - 1].id : -1
 

@@ -55,16 +55,35 @@ try {
   ask('outside') // A captured GET /permission snapshot can arrive after the reply.
   assert.deepEqual(k.permissions('s'), [])
   assert.equal(events.filter(e => e.permission?.id === 'outside' && !e.permission.resolved).length, 1)
-  ask('stopped')
   k.handle({type:'permission.asked',properties:{sessionID:'other',id:'kept',permission:'bash',patterns:['echo fixture']}})
-  k.request = async () => new Response('[]')
-  await k.abort('s')
-  assert.deepEqual(replies.at(-1), { reply: 'reject' })
+  let acknowledge
+  const stopRequest = new Promise(resolve => { acknowledge = resolve })
+  k.request = async (_server, _method, path) => path.endsWith('/abort') ? stopRequest : new Response('[]')
+  original.recovery.running = true
+  original.recovery.cancelled = false
+  const recovery = k.recover('s', original)
+  const stop = k.abort('s')
+  await recovery
+  assert.equal(original.recovery.attempts, 0, 'a scheduled recovery cannot send during Stop')
+  ask('stopped')
+  ask('late')
+  assert.deepEqual(k.permissions('s'), [])
+  assert.ok(!events.some(e => e.permission?.id === 'late'))
+  await assert.rejects(k.reply('s', 'stopped', 'once'), /no longer pending/)
+  await assert.rejects(k.send('s', 'start early'), /Wait for this conversation/)
+  acknowledge(new Response('true'))
+  await stop
+  assert.deepEqual(replies.slice(-2), [{ reply: 'reject' }, { reply: 'reject' }])
   assert.deepEqual(k.permissions('s'), [])
   assert.deepEqual(k.permissions('other').map(p => p.id), ['kept'])
   original.inFlight = true // A new turn must still ignore an old request replay.
   ask('stopped')
+  ask('late')
   assert.deepEqual(k.permissions('s'), [])
+  ask('after-stop')
+  k.request = async () => { throw new Error('Stop unavailable') }
+  await assert.rejects(k.abort('s'), /Stop unavailable/)
+  assert.deepEqual(k.permissions('s').map(p => p.id), ['after-stop'])
   await k.dispose()
   console.log('Auto current-session toggle, pending requests, one-call grants and project boundary passed')
 } finally { await new Promise(r=>api.close(r)) }
