@@ -19,7 +19,7 @@ import { join, resolve } from 'node:path'
 import type { KernelEvent } from './kernel-types'
 import { validateHumanProgram } from '../shared/human-program'
 import { scholarlyDeliveryHash, scholarlyDeliveryProblems } from './scholarly-delivery'
-import { scholarlyProfile } from '../shared/scholarly-program'
+import { scholarlyProfile, scholarlyDeclarationProblems } from '../shared/scholarly-program'
 import type { PaperBuildError, PaperBuildState } from '../preload/types'
 
 const file = (dir: string): string => join(dir, '.humanstudy', 'paper-build.json')
@@ -54,7 +54,11 @@ export function programCertificate(dir: string): { hash: string; problems: strin
   try {
     const bytes = readFileSync(join(dir, 'program.json'))
     const program = validateHumanProgram(JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/, '')))
-    if (scholarlyProfile(program)) return null // paired research completes through the protocol route only
+    const declaration = scholarlyDeclarationProblems(program)
+    if (declaration.length || scholarlyProfile(program)) return {
+      hash: createHash('sha256').update(bytes).digest('hex'),
+      problems: declaration.length ? declaration : ['scholarly-v1 requires paired protocol verification; run the protocol delivery checks. It cannot complete through the Program-only route.'],
+    }
     return { hash: createHash('sha256').update(bytes).digest('hex'), problems: buildCoverageProblems(program) }
   } catch { return null }
 }

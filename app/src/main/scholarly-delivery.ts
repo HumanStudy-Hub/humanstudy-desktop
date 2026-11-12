@@ -8,7 +8,7 @@ export function scholarlyDeliveryHash(dir: string, raw: string): string | undefi
   let program = ''
   try { program = readFileSync(join(dir, 'program.json'), 'utf8') } catch { /* reported below */ }
   let paired = protocol.meta?.delivery === 'research-program-v1'
-  try { paired ||= JSON.parse(program.replace(/^\uFEFF/, '')).extensions?.scholarly?.profile === 'scholarly-v1' } catch { /* marker remains authoritative */ }
+  try { paired ||= Object.prototype.hasOwnProperty.call(JSON.parse(program.replace(/^\uFEFF/, '')).extensions ?? {}, 'scholarly') } catch { /* marker remains authoritative */ }
   if (!paired) return undefined
   let preview = ''
   try { preview = readFileSync(join(dir, 'artifacts', 'preview.html'), 'utf8') } catch { /* missing is a distinct stamp */ }

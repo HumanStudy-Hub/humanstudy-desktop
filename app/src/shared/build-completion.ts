@@ -2,10 +2,11 @@
 // source information is a valid outcome when represented by a missing field and a targeted issue.
 import type { HumanProgram, ProgramNode } from './human-program'
 import policy from './build-coverage.json'
+import { scholarlyDeclarationProblems } from './scholarly-program'
 
 const meaningful = (v: unknown): boolean => typeof v === 'string' ? v.trim().length > 0 : Array.isArray(v) ? v.length > 0 : v !== null && v !== undefined && (typeof v !== 'object' || Object.keys(v).length > 0)
 export function buildCoverageProblems(program: HumanProgram): string[] {
-  const problems: string[] = []
+  const problems: string[] = scholarlyDeclarationProblems(program)
   if (!program.studies.length) problems.push('Identify the studies before completing the build.')
   if (!program.evidence.length) problems.push('Add the source evidence before completing the build.')
   const content = (n: ProgramNode, studyId: string): boolean => {

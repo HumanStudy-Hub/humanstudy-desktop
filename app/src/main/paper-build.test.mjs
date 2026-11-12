@@ -454,3 +454,45 @@ test('scholarly checkpoint writer refuses stale bytes and keeps the researcher e
  const stale=save({title:'Agent patch'},base);assert.notEqual(stale.status,0);assert.match(stale.stderr,/changed/)
  assert.equal(JSON.parse(readFileSync(file,'utf8')).title,'Researcher title')
 })
+
+test('Program-only certificates explain invalid scholarly declarations without waiving paired checks', () => {
+  const dir = project(), p = JSON.parse(sample)
+  for (const scholarly of [{profile:'scholarly-v1',status:'draft',note:'Program-only conversion'}, {profile:'unknown'}, null]) {
+    p.extensions = {scholarly}
+    writeFileSync(join(dir,'program.json'), JSON.stringify(p))
+    const c = P.programCertificate(dir)
+    assert.ok(c, 'readable JSON gets an actionable contract error')
+    assert.match(c.problems.join(' '), /Program-only conversion.*omit extensions.scholarly/)
+    assert.equal(P.programComplete(dir), false)
+    if (python) {
+      const checked = spawnSync(python,[join(here,'../../../pack/skills/build/check_program.py'),join(dir,'program.json'),'--complete'],{encoding:'utf8'})
+      assert.notEqual(checked.status,0)
+      assert.match(checked.stdout,/omit extensions.scholarly/)
+    }
+  }
+  p.extensions = {scholarly:{profile:'scholarly-v1',protocol:{path:'protocol.json',id:'real',sha256:'a'.repeat(64)}}}
+  writeFileSync(join(dir,'program.json'),JSON.stringify(p))
+  assert.match(P.programCertificate(dir).problems.join(' '),/paired protocol verification/)
+  assert.equal(P.programComplete(dir),false)
+  delete p.extensions
+  writeFileSync(join(dir,'program.json'),JSON.stringify(p))
+  assert.equal(P.programComplete(dir),true)
+})
+
+
+test('Python scholarly completion verifies the actual protocol pin, not just a plausible hash', {skip: !python}, () => {
+  const dir = project(), source = join(here,'../../resources/protocol-sample')
+  const p = JSON.parse(readFileSync(join(source,'program.json'),'utf8'))
+  const raw = readFileSync(join(source,'protocol.json'))
+  const check = () => spawnSync(python,[join(here,'../../../pack/skills/build/check_program.py'),join(dir,'program.json'),'--complete'],{encoding:'utf8'})
+  writeFileSync(join(dir,'program.json'),JSON.stringify(p))
+  assert.match(check().stdout,/requires a readable protocol.json/)
+  writeFileSync(join(dir,'protocol.json'),raw)
+  assert.equal(check().status,0)
+  writeFileSync(join(dir,'protocol.json'),Buffer.concat([raw,Buffer.from('\n')]))
+  assert.match(check().stdout,/does not match/)
+  p.extensions.scholarly.protocol.sha256 = createHash('sha256').update(readFileSync(join(dir,'protocol.json'))).digest('hex')
+  p.extensions.scholarly.protocol.id = 'wrong'
+  writeFileSync(join(dir,'program.json'),JSON.stringify(p))
+  assert.match(check().stdout,/does not match/)
+})

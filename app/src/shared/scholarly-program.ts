@@ -11,6 +11,18 @@ export function scholarlyProfile(p: HumanProgram | null): ScholarlyProfile | nul
   return x?.profile === SCHOLARLY_PROFILE ? x : null
 }
 
+/** A declared paired view must carry a real binding, even before protocol verification. */
+export function scholarlyDeclarationProblems(p: HumanProgram): string[] {
+  const x = p.extensions?.scholarly as any
+  if (x === undefined) return []
+  const repair = 'For Program-only conversion, omit extensions.scholarly; do not invent a protocol binding. For paired delivery, bind the actual protocol.json and verify it.'
+  if (!x || typeof x !== 'object' || x.profile !== SCHOLARLY_PROFILE)
+    return [`Unsupported scholarly profile. ${repair}`]
+  if (x.protocol?.path !== 'protocol.json' || typeof x.protocol.id !== 'string' || !x.protocol.id.trim() || typeof x.protocol.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(x.protocol.sha256))
+    return [`scholarly-v1 requires protocol.path, protocol.id and the actual protocol SHA-256. ${repair}`]
+  return []
+}
+
 /** A paper's experiment can cover several engine arms; do not turn conditions into studies. */
 export function scholarlyArmIds(p: HumanProgram, studyId: string): string[] {
   const mapped = scholarlyProfile(p)?.studyArms?.[studyId]
@@ -21,8 +33,8 @@ export function scholarlyArmIds(p: HumanProgram, studyId: string): string[] {
 export function scholarlyProblems(value: unknown, protocol: any, hash: string): string[] {
   let p: HumanProgram
   try { p = validateHumanProgram(value) } catch (e) { return [String(e)] }
-  const profile = scholarlyProfile(p), out: string[] = []
-  if (!profile) return ['Declare the scholarly-v1 profile.']
+  const profile = scholarlyProfile(p), out: string[] = scholarlyDeclarationProblems(p)
+  if (!profile) return out.length ? out : ['Declare the scholarly-v1 profile.']
   if (profile.protocol?.path !== 'protocol.json' || profile.protocol.id !== protocol?.id || profile.protocol.sha256 !== hash)
     out.push('The research document needs to be checked against the current experiment version.')
   if (p.steps.length) out.push('The scholarly profile references the protocol; it must not duplicate executable steps.')

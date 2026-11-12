@@ -1,5 +1,5 @@
 import { ProtocolStudy } from './ProtocolStudy'
-import { scholarlyProfile } from '../../shared/scholarly-program'
+import { scholarlyProfile, scholarlyDeclarationProblems } from '../../shared/scholarly-program'
 // The right pane: Study (the 12-section document) and Paper, plus any file the researcher or the agent
 // opens as another tab, like an artifact panel. A Files sidebar (hidden by default, ⌘B) lists the folder.
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
@@ -139,11 +139,15 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
     try {
-      return { ...readHumanProgram(project.program), error: undefined }
+      const read = readHumanProgram(project.program)
+      const declaration = scholarlyDeclarationProblems(read.program)
+      if (!declaration.length && scholarlyProfile(read.program) && !flatten(project.tree).some(f => f.rel === 'protocol.json'))
+        declaration.push('This scholarly view requires its protocol.json. Restore the actual paired protocol, or omit extensions.scholarly for Program-only conversion; do not invent a protocol.')
+      return { ...read, problems: [...read.problems, ...declaration], error: undefined }
     } catch (e) {
       return { program: null, error: t('study.invalid', { error: String(e) }), problems: [] as string[] }
     }
-  }, [project.program, project.programError])
+  }, [project.program, project.programError, project.tree])
   const fixProgram = () => onFixProgram?.(fixProgramMessage(problems, error))
   // The automatic build after a paper import: one status line while it runs, one retry when it stops.
   const build = project.build
@@ -580,6 +584,9 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
               <div className="wb-protocol-host">
                 {building && build && <BuildProgress build={build} waiting={agentWaiting} />}
                 {buildFailed && <div className="part error edit-error" role="alert">{buildFailed} <button className="link" onClick={retryBuild}>{t('build.retry')}</button></div>}
+                {!building && problems.length > 0 && <p className="muted small program-notice" role="status" title={problems.join('\n')}>
+                  {t('study.problems', { n: problems.length })} · <button className="link" onClick={fixProgram}>{t('study.fix')}</button>
+                </p>}
                 {protocolText || showResearchDespiteReadError ? <ProtocolStudy text={protocolText ?? ''} program={scholarlyProgram} preview={files.find(f => f.rel === 'artifacts/preview.html')}
                   onAsk={docProps.onPrefill}
                   onSource={ref => { rememberHere(); docProps.onSource('protocol', ref); update(l => ({ ...l, active: 'study', compare: true })) }} />
@@ -726,7 +733,7 @@ function findRunning(tree: ProjectEntry[]): string | null {
 
 function fixProgramMessage(problems: string[], error?: string): string {
   const list = problems.length ? problems.slice(0, 30).map((x) => `- ${x}`).join('\n') : `- ${error ?? 'program.json could not be read'}`
-  return `program.json has formatting problems that the app set aside:\n${list}\n\nPlease fix program.json, then run \`python .opencode/skills/build/check_program.py program.json\` until it prints PASS.`
+  return `program.json has validation problems:\n${list}\n\nPlease fix program.json, then run \`python .opencode/skills/build/check_program.py program.json --complete\` until it prints PASS. Preserve scientific content and source gaps. If this is a paired delivery, also run the existing protocol and delivery checks; a Program check alone does not approve an experiment.`
 }
 
 function Empty({ title, body, children }: { title: string; body: string; children?: React.ReactNode }) {
