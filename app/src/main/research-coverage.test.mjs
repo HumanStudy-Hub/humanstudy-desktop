@@ -5,7 +5,7 @@
 import { build } from 'esbuild'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { realpathSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -23,7 +23,7 @@ await build({
   bundle: true, platform: 'node', format: 'esm', outfile: join(temp, 'bundle.mjs'), logLevel: 'error',
 })
 const R = await import(pathToFileURL(join(temp, 'bundle.mjs')).href)
-const { startHeadlessResearch } = await import(new URL('../../scripts/headless-research.mjs', import.meta.url).href)
+const { createHeadlessResearchGuard, startHeadlessResearch } = await import(new URL('../../scripts/headless-research.mjs', import.meta.url).href)
 const { controlAssets } = await import(new URL('../../scripts/asset-control.mjs', import.meta.url).href)
 const MAP = JSON.parse(await readFile(new URL('../../../docs/research-coverage-map.json', import.meta.url), 'utf8'))
 
@@ -275,7 +275,8 @@ test('headless: commands are the primary actions and drive the same linked recor
   await writeFile(join(project, 'CONVERT.md'), 'Build the program from paper.pdf.')
   await writeFile(join(project, 'program.json'), '{"nodes":[]}')
   const c = collector(join(root, 'queue'), 'headless', net)
-  const hr = await startHeadlessResearch({ research: c, createResearchAgent: R.createResearchAgent, privacy: R, project, projectId: PROJECT, model: 'test-model', provider: 'humanstudy', auto: 'off' })
+  const guard = createHeadlessResearchGuard({ project, PRIVATE_MATERIAL: R.PRIVATE_MATERIAL })
+  const hr = await startHeadlessResearch({ research: c, createResearchAgent: R.createResearchAgent, privacy: R, guard, project, projectId: PROJECT, model: 'test-model', provider: 'humanstudy', auto: 'off' })
   const sid = 'ses_headless'
   class Kernel {
     listeners = new Set(); onEvent(cb) { this.listeners.add(cb); return () => this.listeners.delete(cb) }
@@ -353,37 +354,102 @@ test('a version links to the tool call that named its file, for Windows paths to
   assert.equal(link.metadata.writer_link, 'tool-input')
 })
 
-test('headless protects private and held sources before capture and stops if they appear mid-run', async () => {
+test('headless refuses protected, held and unreadable projects before capture', async () => {
   const root = realpathSync(await mkdtemp(join(temp, 'headless-restricted-')))
   const project = join(root, 'project')
   const net = network()
   const c = collector(join(root, 'queue'), 'headless', net)
   const base = { research: c, createResearchAgent: R.createResearchAgent, privacy: R, project, projectId: PROJECT, model: 'test-model', provider: 'humanstudy', auto: 'off' }
-  await mkdir(join(project, 'sources', 'researcher'), { recursive: true })
-  await writeFile(join(project, 'sources', 'researcher', 'fixture.txt'), 'Private synthetic fixture')
-  await assert.rejects(startHeadlessResearch(base), /cannot verify private or held wording/)
-  assert.equal(await c.pending(), 0)
-  await rm(join(project, 'sources', 'researcher'), { recursive: true })
-  await writeFile(join(project, 'protocol.json'), JSON.stringify({ distribution: { held: { synthetic: {} } } }))
-  await assert.rejects(startHeadlessResearch(base), /cannot verify private or held wording/)
-  assert.equal(await c.pending(), 0)
-  await writeFile(join(project, 'protocol.json'), JSON.stringify({ distribution: { held: {} } }))
+  const start = () => startHeadlessResearch({ ...base, guard: createHeadlessResearchGuard({ project, PRIVATE_MATERIAL: R.PRIVATE_MATERIAL }) })
+  const refuse = async () => {
+    await assert.rejects(start(), /cannot verify private or held wording/)
+    assert.equal(await c.pending(), 0)
+  }
+  const nested = join(project, 'sources', 'open', 'original-text')
+  await mkdir(nested, { recursive: true })
+  await writeFile(join(nested, 'fixture.txt'), 'Private synthetic fixture')
+  await refuse()
+  await rm(nested, { recursive: true })
+  const protocol = join(project, 'protocol.json')
+  for (const raw of ['{', 'null', '{"distribution":{"held":[]}}', '{"distribution":{"held":{"synthetic":{}}}}']) {
+    await writeFile(protocol, raw)
+    await refuse()
+  }
+  await rm(protocol)
+  await mkdir(protocol)
+  await refuse()
+  await rm(root, { recursive: true, force: true })
+})
+
+test('headless redacts artifacts and freezes its queue when protection interrupts delivery', async () => {
+  const root = realpathSync(await mkdtemp(join(temp, 'headless-delivery-')))
+  const project = join(root, 'project'), queue = join(root, 'queue'), marker = join(root, 'privacy-stop')
+  const net = network(), warnings = []
+  const guardOptions = { project, PRIVATE_MATERIAL: R.PRIVATE_MATERIAL, marker, onRestricted: reason => warnings.push(reason) }
+  const guard = createHeadlessResearchGuard(guardOptions)
+  let blockUpload = false, attemptedUpload = 0, requestWasAborted = false
+  let entered
+  const reachedUpload = new Promise(resolve => { entered = resolve })
+  const wrappedFetch = (url, init) => {
+    if (blockUpload && new URL(url).pathname.startsWith('/storage/v1/object/') && init.method === 'POST') {
+      attemptedUpload++
+      entered()
+      return new Promise((resolve, reject) => {
+        init.signal.addEventListener('abort', () => {
+          requestWasAborted = true
+          reject(init.signal.reason)
+        }, { once: true })
+      })
+    }
+    return net.fetch(url, init)
+  }
+  const options = { root: queue, surface: 'headless', appVersion: 'test', ownerId: () => OWNER,
+    auth: async () => ({ supabaseUrl: 'https://fixture.test', supabaseKey: 'fixture', accessToken: TOKEN, userId: OWNER }),
+    fetch: wrappedFetch }
+  const c = R.createResearchCollector({ ...options, allowed: () => Boolean(guard.scope()), deliverySignal: guard.signal })
   await mkdir(join(project, 'artifacts', 'simulations'), { recursive: true })
+  await mkdir(join(project, 'sources', 'open'), { recursive: true })
+  await writeFile(join(project, 'protocol.json'), JSON.stringify({ distribution: { held: {} } }))
   await writeFile(join(project, 'artifacts', 'simulations', 'run.txt'), 'Synthetic run output that must remain local')
   await writeFile(join(project, 'artifacts', 'notes.txt'), 'Synthetic output mentioning sources/private/booklet.pdf')
-  const warnings = []
-  const hr = await startHeadlessResearch({ ...base, onRestricted: reason => warnings.push(reason) })
-  hr.onSession('session-headless')
-  await mkdir(join(project, 'sources', 'private'))
-  hr.onRequest('session-headless', { op: 'send', text: 'Synthetic text that must remain local' })
-  await hr.close()
+  const hr = await startHeadlessResearch({ research: c, createResearchAgent: R.createResearchAgent, privacy: R, guard, project, projectId: PROJECT, model: 'test-model', provider: 'humanstudy', auto: 'off' })
   await c.flush()
-  assert.equal(warnings.length, 1)
-  assert.ok([...net.events.values()].every(event => event.event_type !== 'conversation.message'))
   assert.ok([...net.events.values()].some(event => event.artifact_id === 'protocol.json'))
   assert.ok([...net.events.values()].every(event => event.artifact_id !== 'artifacts/simulations/run.txt'))
   const note = [...net.events.values()].find(event => event.artifact_id === 'artifacts/notes.txt')
-  const bytes = net.objects.get(note.content_refs[0].sha256)
-  assert.equal(gunzipSync(bytes).toString('utf8'), '[redacted: private material]')
+  assert.equal(gunzipSync(net.objects.get(note.content_refs[0].sha256)).toString('utf8'), '[redacted: private material]')
+
+  const openFile = join(project, 'sources', 'open', 'fixture.txt')
+  await writeFile(openFile, 'Synthetic eligible bytes queued before the privacy stop')
+  await c.queueSource(openFile, PROJECT)
+  blockUpload = true
+  const flush = c.flush()
+  await reachedUpload
+  await mkdir(join(project, 'sources', 'open', 'original-text'))
+  assert.equal(guard.scope(), null)
+  await flush
+  assert.equal(requestWasAborted, true)
+  const ownerQueue = join(queue, OWNER)
+  const retained = await readdir(join(ownerQueue, 'events'))
+  const staged = await readdir(join(ownerQueue, 'content'))
+  assert.ok(retained.length > 0 && staged.length > 0)
+
+  hr.onSession('session-headless')
+  hr.onRequest('session-headless', { op: 'send', text: 'Synthetic text that must remain local' })
+  await hr.close()
+  await c.end('worker-exit')
+  await c.flush()
+  assert.equal(warnings.length, 1)
+  assert.equal(attemptedUpload, 1)
+  assert.ok([...net.events.values()].every(event => event.event_type !== 'conversation.message' && event.event_type !== 'source.import'))
+  assert.deepEqual(await readdir(join(ownerQueue, 'events')), retained)
+  assert.deepEqual(await readdir(join(ownerQueue, 'content')), staged)
+
+  await rm(join(project, 'sources', 'open', 'original-text'), { recursive: true })
+  const restarted = createHeadlessResearchGuard(guardOptions)
+  assert.equal(restarted.scope(), null)
+  await R.createResearchCollector({ ...options, allowed: () => Boolean(restarted.scope()), deliverySignal: restarted.signal }).flush()
+  assert.equal(attemptedUpload, 1)
+  assert.deepEqual(await readdir(join(ownerQueue, 'events')), retained)
   await rm(root, { recursive: true, force: true })
 })

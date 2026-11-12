@@ -9,12 +9,12 @@ import { parseArgs, promisify } from 'node:util'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { controlAssets, packPath } from './asset-control.mjs'
 import { openResearchAccount } from './research-auth.mjs'
-import { startHeadlessResearch } from './headless-research.mjs'
+import { createHeadlessResearchGuard, startHeadlessResearch } from './headless-research.mjs'
 
 const exec=promisify(execFile),here=dirname(fileURLToPath(import.meta.url)),repo=resolve(here,'../..')
 const {values:o}=parseArgs({options:{project:{type:'string'},binary:{type:'string'},'runtime-bin':{type:'string'},provider:{type:'string',default:'humanstudy'},model:{type:'string'},auto:{type:'string',default:'on'},session:{type:'string'},'timeout-minutes':{type:'string',default:'30'},'stall-minutes':{type:'string',default:'5'},'research-auth':{type:'string'},doctor:{type:'boolean'},help:{type:'boolean'}}})
 if(o.help){console.log('node app/scripts/opencode-assets.mjs --project <prepared project> --binary <HumanStudy opencode> --runtime-bin <managed runtime/bin> --research-auth <private-profile> [--provider humanstudy|openrouter] [--model <id>] [--auto on|off] [--session <id>] [--doctor]\nJSON-lines stdin: build, send, permission, answer, reject-question, questions, native, auto, abort, quit. See the Codex skill.');process.exit(0)}
-let lock, ownsLock=false, ownedKernel, bridge, interrupted=false, research, headlessResearch
+let lock, ownsLock=false, ownedKernel, bridge, interrupted=false, research, headlessResearch, privacyMonitor
 const stopOwned=()=>{interrupted=true;void (bridge?bridge.stop('interrupted'):ownedKernel?.dispose())}
 try{
   if(!o['research-auth'])throw Error('Supply --research-auth with your own private account profile. Read docs/headless-research.md; another person’s desktop key is not a research identity.')
@@ -56,18 +56,20 @@ try{
   if(o.doctor){console.log(JSON.stringify({status:'ready',...provenance},null,2));process.exit(0)}
   lock=join(cache,'running.lock');writeFileSync(lock,JSON.stringify({pid:process.pid,startedAt:new Date().toISOString()})+'\n',{flag:'wx'});ownsLock=true
   const previousRoot=join(cache,'research-data')
-  research=createResearchCollector({root:join(previousRoot,'filtered'),previousRoot,surface:'headless',appVersion:'headless/1.0.0',auth:account.auth,ownerId:()=>account.userId,allowed:account.allowed})
+  const guard=createHeadlessResearchGuard({project,PRIVATE_MATERIAL,marker:join(cache,'research-privacy-stop'),onRestricted:reason=>{
+    console.error(JSON.stringify({type:'research_capture_stopped',reason}))
+    process.exitCode=2
+    stopOwned()
+  }})
+  if(!guard.scope())throw Error(guard.reason)
+  privacyMonitor=setInterval(()=>guard.scope(),500).unref()
+  research=createResearchCollector({root:join(previousRoot,'filtered'),previousRoot,surface:'headless',appVersion:'headless/1.0.0',auth:account.auth,ownerId:()=>account.userId,allowed:()=>account.allowed()&&Boolean(guard.scope()),deliverySignal:guard.signal})
   const identityFile=join(cache,'research-project.json')
   const projectId=existsSync(identityFile)?JSON.parse(readFileSync(identityFile,'utf8')).id:randomUUID()
   writeFileSync(identityFile,JSON.stringify({id:projectId}),{mode:0o600})
   // Launch and each command are the primary actions; UI actions are not applicable (headless-research.mjs).
-  const privacy={EMPTY_INDEX,PRIVATE_MATERIAL,mayCollectFile,redactCapture}
-  const onRestricted=reason=>{
-    console.error(JSON.stringify({type:'research_capture_stopped',reason}))
-    process.exitCode=2
-    stopOwned()
-  }
-  headlessResearch=await startHeadlessResearch({research,createResearchAgent,privacy,project,projectId,model:o.model??DEFAULT_MODEL,provider:o.provider,auto:o.auto,onRestricted})
+  const privacy={EMPTY_INDEX,mayCollectFile,redactCapture}
+  headlessResearch=await startHeadlessResearch({research,createResearchAgent,privacy,guard,project,projectId,model:o.model??DEFAULT_MODEL,provider:o.provider,auto:o.auto})
   if(interrupted)throw Error('Private materials appeared during headless research setup.')
   void research.flush()
   process.env.HUMANSTUDY_RUNTIME_BIN=runtime
@@ -88,4 +90,4 @@ try{
   const result=await bridge.exited
   if(!['closed'].includes(result))process.exitCode=2
 }catch(error){console.error(JSON.stringify({type:'fatal',error:String(error.message??error)}));process.exitCode=1}
-finally{await ownedKernel?.dispose();if(headlessResearch)await headlessResearch.close();if(research){await research.end('worker-exit');await research.flush();const pending=await research.pending();if(pending||research.error())console.error(JSON.stringify({type:'research_delivery_pending',pending,error:research.error()??null}));}for(const signal of ['SIGINT','SIGTERM'])process.removeListener(signal,stopOwned);if(ownsLock&&existsSync(lock))unlinkSync(lock)}
+finally{await ownedKernel?.dispose();if(headlessResearch)await headlessResearch.close();if(research){await research.end('worker-exit');await research.flush();const pending=await research.pending();if(pending||research.error())console.error(JSON.stringify({type:'research_delivery_pending',pending,error:research.error()??null}));}clearInterval(privacyMonitor);for(const signal of ['SIGINT','SIGTERM'])process.removeListener(signal,stopOwned);if(ownsLock&&existsSync(lock))unlinkSync(lock)}

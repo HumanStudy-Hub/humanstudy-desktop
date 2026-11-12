@@ -3,45 +3,87 @@
 // The worker launch and each JSON-lines command are the primary actions; the turn, answers, tool calls
 // and versions they cause link to them exactly as on desktop. Used by opencode-assets.mjs and its tests.
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync, lstatSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'node:path'
 
 export const HEADLESS_NOT_APPLICABLE = ['interaction:ui-click', 'interaction:ui-shortcut', 'interaction:ui-menu', 'navigation', 'selection_layout']
 
-export async function startHeadlessResearch({ research, createResearchAgent, privacy, project, projectId, model, provider, auto, onRestricted }) {
-  const { EMPTY_INDEX, PRIVATE_MATERIAL, mayCollectFile, redactCapture } = privacy
+/** One guard owns both capture and delivery. A privacy stop latches across restarts of the project. */
+export function createHeadlessResearchGuard({ project, PRIVATE_MATERIAL, marker, onRestricted }) {
+  const abort = new AbortController()
+  const reason = 'The headless worker cannot verify private or held wording. Capture and delivery are paused for this project. Open it in HumanStudy Desktop.'
   let protocolStamp = '', distribution
-  function scope() {
-    const dir = join(project, 'sources')
-    let restricted = false
-    try { restricted = readdirSync(dir).some(name => PRIVATE_MATERIAL.test('sources/' + name)) } catch (error) {
-      if (error.code !== 'ENOENT') restricted = true
+  function protectedTree(dir, rel) {
+    let entries
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch (error) {
+      if (error.code === 'ENOENT') return false
+      throw error
+    }
+    for (const entry of entries) {
+      const path = rel + '/' + entry.name
+      if (PRIVATE_MATERIAL.test(path + '/')) return true
+      if (entry.isDirectory() && protectedTree(join(dir, entry.name), path)) return true
+    }
+    return false
+  }
+  function inspect() {
+    if (marker) {
+      try { lstatSync(marker); return null } catch (error) {
+        if (error.code !== 'ENOENT') return null
+      }
+    }
+    const sources = join(project, 'sources')
+    try {
+      if (lstatSync(sources).isSymbolicLink() || protectedTree(sources, 'sources')) return null
+    } catch (error) {
+      if (error.code !== 'ENOENT') return null
     }
     const protocol = join(project, 'protocol.json')
-    try {
-      const stat = statSync(protocol)
+    let stat
+    try { stat = lstatSync(protocol) } catch (error) {
+      if (error.code !== 'ENOENT') return null
+    }
+    if (!stat) {
+      protocolStamp = ''
+      distribution = undefined
+    } else {
+      if (!stat.isFile()) return null
       const stamp = `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`
       if (stamp !== protocolStamp) {
-        distribution = JSON.parse(readFileSync(protocol, 'utf8')).distribution
-        protocolStamp = stamp
+        try {
+          const parsed = JSON.parse(readFileSync(protocol, 'utf8'))
+          const object = value => value && typeof value === 'object' && !Array.isArray(value)
+          if (!object(parsed)) return null
+          distribution = parsed.distribution
+          if (distribution !== undefined && (!object(distribution) ||
+              (distribution.held !== undefined && !object(distribution.held)))) return null
+          protocolStamp = stamp
+        } catch { return null }
       }
-    } catch (error) {
-      if (error.code === 'ENOENT') { protocolStamp = ''; distribution = undefined }
-      // A half-written draft may settle. If we already know of held wording, keep that restriction.
     }
-    return { published: Boolean(distribution), restricted: restricted || Boolean(Object.keys(distribution?.held ?? {}).length) }
+    return Object.keys(distribution?.held ?? {}).length ? null : { published: Boolean(distribution) }
   }
-  const restrictedReason = 'The headless worker cannot verify private or held wording. Open this project in HumanStudy Desktop.'
-  if (scope().restricted) throw Error(restrictedReason)
-  let stopped = false
-  function captureScope() {
-    if (stopped) return null
-    const current = scope()
-    if (!current.restricted) return current
-    stopped = true
-    onRestricted?.(restrictedReason)
+  function scope() {
+    if (abort.signal.aborted) return null
+    const current = inspect()
+    if (current) return current
+    abort.abort(new Error(reason))
+    let notice = reason
+    try {
+      if (marker) writeFileSync(marker, 'Research capture and delivery stopped for privacy review.\n', { mode: 0o600, flag: 'wx' })
+    } catch (error) {
+      if (error.code !== 'EEXIST') notice += ' The local stop marker could not be saved.'
+    }
+    onRestricted?.(notice)
     return null
   }
+  return { scope, signal: abort.signal, reason }
+}
+
+export async function startHeadlessResearch({ research, createResearchAgent, privacy, guard, project, projectId, model, provider, auto }) {
+  const { EMPTY_INDEX, mayCollectFile, redactCapture } = privacy
+  const captureScope = guard.scope
+  if (!captureScope()) throw Error(guard.reason)
   function allowedFile(rel) {
     const current = captureScope()
     return current && mayCollectFile({ rel, published: current.published, index: EMPTY_INDEX })
