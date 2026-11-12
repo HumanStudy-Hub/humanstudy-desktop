@@ -61,7 +61,7 @@ test('the protocol engine is vendored as listed in VERSION and installed, app-ow
   assert.ok(!/(^|\s)\/(Users|home)\/|[A-Z]:\\/m.test(version), 'VERSION records hashes and a label, no local paths')
   const listed = [...version.matchAll(/^([0-9a-f]{64}) {2}(\S+)$/gm)].map((m) => [m[2], m[1]])
   assert.deepEqual(listed.map(([f]) => f).sort(), ['hsenv/__init__.py', 'hsenv/checks.py', 'hsenv/distribution.py', 'hsenv/effects_core.py', 'hsenv/engine.py',
-    'hsenv/evaldata.py', 'hsenv/expr.py', 'hsenv/rewards.py', 'hsenv/schema_check.py', 'hsenv/score.py', 'hsenv/serve.py',
+    'hsenv/evaldata.py', 'hsenv/expr.py', 'hsenv/release.py', 'hsenv/rewards.py', 'hsenv/schema_check.py', 'hsenv/score.py', 'hsenv/serve.py',
     'schema/protocol.v1.json', 'schema/run.v1.json', 'schema/study.v1.json'])
   assert.ok(!existsSync(join(packDir, 'runtime/hsenv/tests')), 'upstream tests name real studies: never vendored')
   assert.match(readFileSync(join(packDir, 'runtime/hsenv/LICENSE'), 'utf8'), /^MIT License/)

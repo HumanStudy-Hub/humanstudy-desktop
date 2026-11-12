@@ -68,6 +68,86 @@ test('community export includes finished research artifacts and the real baselin
   writeFileSync(join(root,'protocol.json'),'{}')
   const paired=spawnSync('python3',[script,'--output','exports/paired.zip'],{cwd:root,encoding:'utf8'})
   assert.equal(paired.status,1)
-  assert.match(paired.stderr,/verified public protocol projection/)
+  assert.match(paired.stderr,/needs both protocol[.]json and study[.]json/)
+ }finally{rmSync(root,{recursive:true,force:true})}
+})
+
+test('paired export projects hosted sources and binds both documents to the frozen public protocol',()=>{
+ const root=mkdtempSync(join(tmpdir(),'community-pair-'))
+ try{
+  const write=(rel,bytes)=>{const path=join(root,rel);mkdirSync(dirname(path),{recursive:true});writeFileSync(path,bytes)}
+  const hash=data=>createHash('sha256').update(data).digest('hex')
+  const source='Would you choose the brighter lamp?'
+  const privateText='The private copy supplied to this project is intentionally kept outside public material.'
+  const protocol={schema_version:'1',id:'lamp',meta:{citation:'Example (2026)',licence:{survey:'CC0-1.0'},sample:{n:1},sources:{survey:{file:'sources/open/survey.txt'}}},
+   arms:[{id:'main',runnable:true,n_paper:1,cite:{label:'reported',source:'survey',page:1}},{id:'missing',runnable:false,n_paper:null,why:'Original instructions unavailable'}],
+   stages:{q:{content:[{id:'prompt',text:source,cite:{label:'verbatim',source:'survey',page:1}}]}},flow:{stage:'q'},units:{},exclusions:[],analysis:{targets:[],effects:[],unsupported:[]},keyed:{answers:{}}}
+  const raw=JSON.stringify(protocol)
+  const rawHash=hash(raw)
+  const engine=join(dirname(script),'../../runtime/hsenv')
+  const canonical=spawnSync('python3',['-c','import json,sys;sys.path.insert(0,sys.argv[1]);from hsenv.schema_check import canonical_sha256;print(canonical_sha256(json.loads(sys.argv[2])))',engine,raw],{encoding:'utf8'})
+  assert.equal(canonical.status,0,canonical.stderr)
+  const study={schema_version:'1',id:'lamp',title:'Lamp study',authors:['A. Example'],year:2026,version:'1.2.3',quality:'high_fidelity',
+   licence:{paper:'CC0-1.0',materials:'CC0-1.0'},protocol:{path:'protocol.json',sha256:canonical.stdout.trim(),schema_version:'1'}}
+  const program={schemaVersion:2,id:'lamp',title:'Lamp study',intent:'reconstruct',
+   source:{title:'Lamp study',authors:'A. Example',filename:'sources/open/survey.txt'},
+   studies:[{id:'main',title:'Lamp preference',type:'empirical'}],nodes:[],steps:[],relations:[],evidence:[],
+   issues:[{id:'missing',title:'Missing instructions',severity:'blocking',reason:'Original instructions unavailable',impact:'The missing arm cannot run.',suggestedAction:'Provide the original instructions.',evidenceIds:[]}],
+   extensions:{scholarly:{profile:'scholarly-v1',protocol:{path:'protocol.json',id:'lamp',sha256:rawHash}}}}
+  write('protocol.json',raw);write('study.json',JSON.stringify(study));write('program.json',JSON.stringify(program))
+  write('sources/open/survey.txt',source)
+  write('sources/private/never-disclose.txt',privateText)
+  write('sources/SOURCE.json',JSON.stringify({files:[{path:'sources/open/survey.txt',sha256:hash(source),license:'CC0-1.0',attribution:'A. Example'}]}))
+  write('artifacts/report.md','A finished public report.')
+  write('artifacts/private-copy.md',privateText)
+  write('artifacts/simulations/run/records.jsonl','private simulation records')
+  const run=(name)=>spawnSync('python3',[script,'--output',`exports/${name}.zip`],{cwd:root,encoding:'utf8'})
+  const exported=run('pair')
+  assert.equal(exported.status,0,exported.stderr)
+  const zip=readFileSync(join(root,'exports/pair.zip'))
+  const entries=unzipSync(zip)
+  const json=name=>JSON.parse(strFromU8(entries[name]))
+  const metadata=json('CONTRIBUTION.json')
+  assert.equal(metadata.kind,'protocol')
+  assert.equal(json('study.json').version,'1.2.3')
+  assert.equal(json('study.json').quality,'draft')
+  assert.equal(json('protocol.json').distribution.strict,true)
+  assert.deepEqual(json('protocol.json').distribution.held,{})
+  assert.equal(json('protocol.json').arms[1].why,protocol.arms[1].why)
+  assert.deepEqual(json('program.json').issues,program.issues)
+  assert.equal(json('program.json').extensions.scholarly.protocol.sha256,hash(entries['protocol.json']))
+  assert.deepEqual(metadata.files.map(f=>f.path),['artifacts/report.md','program.json','protocol.json','sources/SOURCE.json','sources/open/survey.txt','study.json'])
+  assert.ok(!JSON.stringify(metadata).includes('never-disclose'))
+  assert.equal(readFileSync(join(root,'protocol.json'),'utf8'),raw)
+  assert.deepEqual(JSON.parse(readFileSync(join(root,'study.json'),'utf8')),study)
+  assert.deepEqual(JSON.parse(readFileSync(join(root,'program.json'),'utf8')),program)
+  // A downloaded open-source projection carries a placeholder marker in metadata, not held text.
+  const imported=join(root,'imported')
+  for(const [name,data] of Object.entries(entries)){
+   const file=join(imported,name);mkdirSync(dirname(file),{recursive:true});writeFileSync(file,data)
+  }
+  const reexport=spawnSync('python3',[script,'--output','exports/reexport.zip'],{cwd:imported,encoding:'utf8'})
+  assert.equal(reexport.status,0,reexport.stderr)
+  const again=unzipSync(readFileSync(join(imported,'exports/reexport.zip')))
+  assert.deepEqual(JSON.parse(strFromU8(again['protocol.json'])).distribution.held,{})
+  for(const name of ['program.json','protocol.json','study.json'])assert.equal(readFileSync(join(imported,name),'utf8'),strFromU8(entries[name]))
+  const concealed=json('protocol.json')
+  concealed.stages.q.content[0].text+=' ░'
+  writeFileSync(join(imported,'protocol.json'),JSON.stringify(concealed))
+  const heldContent=spawnSync('python3',[script,'--output','exports/held.zip'],{cwd:imported,encoding:'utf8'})
+  assert.match(heldContent.stderr,/held or locally restored wording/)
+  if(process.env.HUMANSTUDY_TEST_PAIRED_ZIP) writeFileSync(process.env.HUMANSTUDY_TEST_PAIRED_ZIP,zip)
+  write('program.json',JSON.stringify({...program,notes:privateText}))
+  assert.match(run('leak').stderr,/Private materials appear in program[.]json/)
+  write('program.json',JSON.stringify({...program,evidence:[{path:'sources/open/missing.txt'}]}))
+  assert.match(run('missing-source').stderr,/missing from the licensed public files/)
+  write('program.json',JSON.stringify(program))
+  write('study.json',JSON.stringify({...study,title:'Another paper'}))
+  assert.match(run('paper-mismatch').stderr,/different paper identities/)
+  write('study.json',JSON.stringify(study))
+  write('protocol.json',JSON.stringify({...protocol,distribution:{held:{h1:{}}}}))
+  assert.match(run('held').stderr,/held or locally restored wording/)
+  write('protocol.json',JSON.stringify({...protocol,meta:{...protocol.meta,citation:'Changed'}}))
+  assert.match(run('stale').stderr,/does not bind/)
  }finally{rmSync(root,{recursive:true,force:true})}
 })
