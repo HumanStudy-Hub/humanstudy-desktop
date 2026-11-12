@@ -132,6 +132,8 @@ function payloadError(status: number, headers: Headers, text: string): boolean {
 }
 
 export async function startRequestTransport(options: { project: string; upstream: string; key: string; bypass?: string; onAdjust?: (count: number) => void }) {
+  const upstream = options.upstream.replace(/\/$/, '')
+  const upstreamHeaders = { authorization: `Bearer ${options.key}`, ...(options.bypass ? { 'x-vercel-protection-bypass': options.bypass } : {}) }
   const token = randomBytes(24).toString('base64url')
   const active = new Set<AbortController>()
   const server = createServer(async (req, res) => {
@@ -160,8 +162,8 @@ export async function startRequestTransport(options: { project: string; upstream
       try { fitted = fitRequest(raw, options.project) }
       catch (error) { fail(error instanceof Error ? error.message : 'Could not prepare source context.'); return }
       if (fitted.archived) options.onAdjust?.(fitted.archived)
-      const send = (body: string) => fetch(options.upstream.replace(/\/$/, '') + '/chat/completions', {
-        method: 'POST', headers: { authorization: `Bearer ${options.key}`, 'content-type': 'application/json', ...(options.bypass ? { 'x-vercel-protection-bypass': options.bypass } : {}) }, body, signal: abort.signal,
+      const send = (body: string) => fetch(upstream + '/chat/completions', {
+        method: 'POST', headers: { ...upstreamHeaders, 'content-type': 'application/json' }, body, signal: abort.signal,
       })
       let response = await send(fitted.body)
       if (response.status === 413) {
@@ -218,6 +220,15 @@ export async function startRequestTransport(options: { project: string; upstream
   if (!address || typeof address === 'string') throw new Error('Local model transport failed to bind.')
   return {
     baseURL: `http://127.0.0.1:${address.port}/v1`, token,
+    async models(signal: AbortSignal): Promise<string[]> {
+      const response = await fetch(upstream + '/models', {
+        headers: upstreamHeaders, redirect: 'error', cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+      })
+      if (!response.ok) throw new Error('Hosted model availability is unavailable.')
+      const body: { data?: Array<{ id?: unknown }> } = await response.json()
+      if (!Array.isArray(body.data)) throw new Error('Hosted model availability is unavailable.')
+      return body.data.flatMap(model => typeof model?.id === 'string' ? [model.id] : [])
+    },
     close: () => { for (const abort of active) abort.abort(); server.closeAllConnections(); server.close() },
   }
 }
