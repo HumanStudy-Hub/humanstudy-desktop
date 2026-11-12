@@ -584,6 +584,9 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
               <div className="wb-protocol-host">
                 {building && build && <BuildProgress build={build} waiting={agentWaiting} />}
                 {buildFailed && <div className="part error edit-error" role="alert">{buildFailed} <button className="link" onClick={retryBuild}>{t('build.retry')}</button></div>}
+                {!building && problems.length > 0 && <p className="muted small program-notice" role="status" title={problems.join('\n')}>
+                  {t('study.problems', { n: problems.length })} · <button className="link" onClick={fixProgram}>{t('study.fix')}</button>
+                </p>}
                 {protocolText || showResearchDespiteReadError ? <ProtocolStudy text={protocolText ?? ''} program={scholarlyProgram} preview={files.find(f => f.rel === 'artifacts/preview.html')}
                   onAsk={docProps.onPrefill}
                   onSource={ref => { rememberHere(); docProps.onSource('protocol', ref); update(l => ({ ...l, active: 'study', compare: true })) }} />
@@ -730,7 +733,7 @@ function findRunning(tree: ProjectEntry[]): string | null {
 
 function fixProgramMessage(problems: string[], error?: string): string {
   const list = problems.length ? problems.slice(0, 30).map((x) => `- ${x}`).join('\n') : `- ${error ?? 'program.json could not be read'}`
-  return `program.json has formatting problems that the app set aside:\n${list}\n\nPlease fix program.json, then run \`python .opencode/skills/build/check_program.py program.json\` until it prints PASS.`
+  return `program.json has validation problems:\n${list}\n\nPlease fix program.json, then run \`python .opencode/skills/build/check_program.py program.json --complete\` until it prints PASS. Preserve scientific content and source gaps. If this is a paired delivery, also run the existing protocol and delivery checks; a Program check alone does not approve an experiment.`
 }
 
 function Empty({ title, body, children }: { title: string; body: string; children?: React.ReactNode }) {

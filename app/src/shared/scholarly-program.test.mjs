@@ -67,3 +67,22 @@ test('paired delivery requires both program and a current preview; legacy import
  research.nodes=research.nodes.filter(n=>n.kind!=='finding');writeFileSync(join(project,'program.json'),JSON.stringify(research))
  assert.ok(D.scholarlyDeliveryProblems(project,text).length)
 })
+
+
+test('an explicit unsupported scholarly declaration cannot bypass legacy protocol delivery checks', () => {
+ const root=mkdtempSync(join(tmpdir(),'unsupported-paired-'))
+ try {
+  const q=structuredClone(protocol);delete q.meta.delivery
+  const text=JSON.stringify(q)
+  const p=structuredClone(program);p.extensions.scholarly={profile:'unsupported'}
+  writeFileSync(join(root,'program.json'),JSON.stringify(p))
+  mkdirSync(join(root,'artifacts'))
+  writeFileSync(join(root,'artifacts/preview.html'),`<script id="hs-protocol">${JSON.stringify({id:q.id,sha256:hash(text)})}</script>`)
+  assert.ok(D.scholarlyDeliveryHash(root,text))
+  assert.match(D.scholarlyDeliveryProblems(root,text).join(' '),/Unsupported scholarly profile/)
+  delete p.extensions.scholarly
+  writeFileSync(join(root,'program.json'),JSON.stringify(p))
+  assert.equal(D.scholarlyDeliveryHash(root,text),undefined)
+  assert.deepEqual(D.scholarlyDeliveryProblems(root,text),[])
+ } finally {rmSync(root,{recursive:true,force:true})}
+})
