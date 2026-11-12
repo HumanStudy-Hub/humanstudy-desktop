@@ -97,6 +97,27 @@ test('the shipped example opens with research and experiment files without build
   assert.equal(projects.find(p => p.dir === created.value).hasProgram, true)
 })
 
+test('annotation saves retain conflict protection and browser exports preserve the file', async () => {
+  const created = await ipc('projects:create', { name: 'Saved annotations', sample: true })
+  assert.equal(created.ok, true)
+  await ipc('project:read', created.value)
+  const path = `${created.value}/paper.pdf.annotations.json`
+  const original = JSON.stringify({ version: 1, notes: [{ page: 2, text: 'Review this source' }] })
+  assert.equal((await ipc('project:writeText', path, original, null)).ok, true)
+  assert.equal((await ipc('project:readText', path)).value, original)
+  const changed = JSON.stringify({ version: 1, notes: [] })
+  assert.equal((await ipc('project:writeText', path, changed, original)).ok, true)
+  const stale = await ipc('project:writeText', path, original, original)
+  assert.equal(stale.ok, false, 'a stale browser editor must not overwrite newer content')
+  assert.equal((await ipc('project:readText', path)).value, changed)
+  const saved = await ipc('project:saveCopy', path)
+  assert.equal(saved.ok, true)
+  const downloaded = await fetch(`${B}/download/${encodeURIComponent(saved.value)}`, { headers: auth })
+  assert.match(downloaded.headers.get('content-disposition'), /attachment/)
+  assert.equal(await downloaded.text(), changed)
+  assert.equal((await fetch(`${B}/download/${encodeURIComponent('/etc/passwd')}`, { headers: auth })).status, 404)
+})
+
 // One pending read per stream: a read abandoned by a timeout would swallow the next chunk.
 function lines(stream) {
   const reader = stream.getReader()
