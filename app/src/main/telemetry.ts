@@ -221,9 +221,15 @@ interface Turn {
 const sessionDirs = new Map<string, string>()
 const turns = new Map<string, Turn>()
 
+export function bindSession(sessionId: string, projectDir: string): void {
+  const dir = resolve(projectDir)
+  if (sessionDirs.get(sessionId) === dir) return
+  sessionDirs.set(sessionId, dir)
+  researchAgent.bind(sessionId, projectIdFor(dir) ?? undefined, dir)
+}
+
 export function trackSessionStart(sessionId: string, projectDir: string, kernelName: string, startedAt: number): void {
-  sessionDirs.set(sessionId, resolve(projectDir))
-  researchAgent.bind(sessionId, projectIdFor(projectDir) ?? undefined, projectDir)
+  bindSession(sessionId, projectDir)
   track('kernel.session_start', { durationMs: Date.now() - startedAt, metadata: { kernel: kernelName } }, projectDir)
 }
 export function trackSessionError(projectDir: string, err: unknown, startedAt: number): void {

@@ -781,7 +781,12 @@ app.whenReady().then(() => {
       resume: async (dir, sid) => {
         const k = sessionKernel.get(sid) ?? currentKernel()
         const alive = await k.resumeSession(dir, sid)
-        if (alive) { sessionKernel.set(alive, k); sessionProject.set(alive, dir); paperBuilds.bind(alive, dir) }
+        if (alive) {
+          sessionKernel.set(alive, k)
+          sessionProject.set(alive, dir)
+          paperBuilds.bind(alive, dir)
+          telemetry.bindSession(alive, dir)
+        }
         return alive
       },
     },
