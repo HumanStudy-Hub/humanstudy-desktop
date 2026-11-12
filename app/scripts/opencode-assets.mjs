@@ -41,8 +41,8 @@ try{
   for(const name of ['python','python3','hs-pdf'])if(!existsSync(join(runtime,name))&&!existsSync(join(runtime,name+'.cmd')))throw Error(`Managed runtime is missing ${name}.`)
   const cache=join(project,'.humanstudy/asset-agent');mkdirSync(cache,{recursive:true})
   const compiled=join(cache,'desktop-kernel.mjs')
-  await build({stdin:{contents:"export {createResearchAgent} from '../src/main/research-agent.ts'; export {createResearchCollector} from '../src/main/research-collector.ts'; export {OpencodeKernel,DEFAULT_MODEL} from '../src/main/kernel/opencode.ts'; export {KERNEL_VERSION} from '../src/main/opencode-install-core.ts'; export {runtimeVersion,runtimePaths} from '../src/main/runtime-core.ts'; export {programCertificate} from '../src/main/paper-build.ts';",resolveDir:here,loader:'ts'},bundle:true,platform:'node',format:'esm',target:'node20',outfile:compiled,logLevel:'error'})
-  const {createResearchAgent,createResearchCollector,OpencodeKernel,DEFAULT_MODEL,KERNEL_VERSION,runtimeVersion:versionForLock,runtimePaths,programCertificate}=await import(pathToFileURL(compiled).href)
+  await build({stdin:{contents:"export {createResearchAgent} from '../src/main/research-agent.ts'; export {createResearchCollector} from '../src/main/research-collector.ts'; export {EMPTY_INDEX,PRIVATE_MATERIAL,mayCollectFile,redactCapture} from '../src/main/telemetry-core.ts'; export {OpencodeKernel,DEFAULT_MODEL} from '../src/main/kernel/opencode.ts'; export {KERNEL_VERSION} from '../src/main/opencode-install-core.ts'; export {runtimeVersion,runtimePaths} from '../src/main/runtime-core.ts'; export {programCertificate} from '../src/main/paper-build.ts';",resolveDir:here,loader:'ts'},bundle:true,platform:'node',format:'esm',target:'node20',outfile:compiled,logLevel:'error'})
+  const {createResearchAgent,createResearchCollector,EMPTY_INDEX,PRIVATE_MATERIAL,mayCollectFile,redactCapture,OpencodeKernel,DEFAULT_MODEL,KERNEL_VERSION,runtimeVersion:versionForLock,runtimePaths,programCertificate}=await import(pathToFileURL(compiled).href)
   // Read the same version constants and runtime marker used by desktop.
   const version=(await exec(binary,['--version'],{timeout:15_000})).stdout.trim()
   if(!version.includes('opencode-humanstudy')||!version.split(/\s+/).includes(KERNEL_VERSION))throw Error(`Expected the desktop HumanStudy OpenCode ${KERNEL_VERSION}; got ${version}.`)
@@ -55,12 +55,20 @@ try{
   const provenance={researchOwner:account.userId,researchConsentVersion:3,kernelVersion:version,runtimeVersion,model:o.model??DEFAULT_MODEL,provider:o.provider,packFiles:Object.keys(manifest.files).length}
   if(o.doctor){console.log(JSON.stringify({status:'ready',...provenance},null,2));process.exit(0)}
   lock=join(cache,'running.lock');writeFileSync(lock,JSON.stringify({pid:process.pid,startedAt:new Date().toISOString()})+'\n',{flag:'wx'});ownsLock=true
-  research=createResearchCollector({root:join(cache,'research-data'),surface:'headless',appVersion:'headless/1.0.0',auth:account.auth,ownerId:()=>account.userId,allowed:account.allowed})
+  const previousRoot=join(cache,'research-data')
+  research=createResearchCollector({root:join(previousRoot,'filtered'),previousRoot,surface:'headless',appVersion:'headless/1.0.0',auth:account.auth,ownerId:()=>account.userId,allowed:account.allowed})
   const identityFile=join(cache,'research-project.json')
   const projectId=existsSync(identityFile)?JSON.parse(readFileSync(identityFile,'utf8')).id:randomUUID()
   writeFileSync(identityFile,JSON.stringify({id:projectId}),{mode:0o600})
   // Launch and each command are the primary actions; UI actions are not applicable (headless-research.mjs).
-  headlessResearch=await startHeadlessResearch({research,createResearchAgent,project,projectId,model:o.model??DEFAULT_MODEL,provider:o.provider,auto:o.auto})
+  const privacy={EMPTY_INDEX,PRIVATE_MATERIAL,mayCollectFile,redactCapture}
+  const onRestricted=reason=>{
+    console.error(JSON.stringify({type:'research_capture_stopped',reason}))
+    process.exitCode=2
+    stopOwned()
+  }
+  headlessResearch=await startHeadlessResearch({research,createResearchAgent,privacy,project,projectId,model:o.model??DEFAULT_MODEL,provider:o.provider,auto:o.auto,onRestricted})
+  if(interrupted)throw Error('Private materials appeared during headless research setup.')
   void research.flush()
   process.env.HUMANSTUDY_RUNTIME_BIN=runtime
   const kernel=ownedKernel=new OpencodeKernel({binary,home:join(cache,'kernel-home'),provider:o.provider,model:o.model??DEFAULT_MODEL,permission:o.auto==='on'?'project':'ask'})

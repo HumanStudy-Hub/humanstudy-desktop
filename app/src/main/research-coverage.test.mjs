@@ -17,6 +17,7 @@ const here = fileURLToPath(new URL('.', import.meta.url))
 const temp = await mkdtemp(join(tmpdir(), 'research-coverage-'))
 await build({
   stdin: { contents: `export {createResearchCollector} from './research-collector.ts'; export {createResearchAgent} from './research-agent.ts';
+    export {EMPTY_INDEX,PRIVATE_MATERIAL,mayCollectFile,redactCapture} from './telemetry-core.ts';
     export {createOperations, actionRef} from '../shared/research-operations.ts'; export {createWriteAttribution} from './write-capture.ts';
     export {EVENTS, DATA_TYPES, PROHIBITED_EVENT_RE, validateResearchEvent} from '../shared/research-contract.ts'`, resolveDir: here, loader: 'ts' },
   bundle: true, platform: 'node', format: 'esm', outfile: join(temp, 'bundle.mjs'), logLevel: 'error',
@@ -274,7 +275,7 @@ test('headless: commands are the primary actions and drive the same linked recor
   await writeFile(join(project, 'CONVERT.md'), 'Build the program from paper.pdf.')
   await writeFile(join(project, 'program.json'), '{"nodes":[]}')
   const c = collector(join(root, 'queue'), 'headless', net)
-  const hr = await startHeadlessResearch({ research: c, createResearchAgent: R.createResearchAgent, project, projectId: PROJECT, model: 'test-model', provider: 'humanstudy', auto: 'off' })
+  const hr = await startHeadlessResearch({ research: c, createResearchAgent: R.createResearchAgent, privacy: R, project, projectId: PROJECT, model: 'test-model', provider: 'humanstudy', auto: 'off' })
   const sid = 'ses_headless'
   class Kernel {
     listeners = new Set(); onEvent(cb) { this.listeners.add(cb); return () => this.listeners.delete(cb) }
@@ -350,4 +351,32 @@ test('a version links to the tool call that named its file, for Windows paths to
   const link = agent.versionLink(dir, 'artifacts/materials.md', 'agent-or-external')
   assert.equal(link.tool_call_id, 'call_w_write')
   assert.equal(link.metadata.writer_link, 'tool-input')
+})
+
+test('headless protects private and held sources before capture and stops if they appear mid-run', async () => {
+  const root = realpathSync(await mkdtemp(join(temp, 'headless-restricted-')))
+  const project = join(root, 'project')
+  const net = network()
+  const c = collector(join(root, 'queue'), 'headless', net)
+  const base = { research: c, createResearchAgent: R.createResearchAgent, privacy: R, project, projectId: PROJECT, model: 'test-model', provider: 'humanstudy', auto: 'off' }
+  await mkdir(join(project, 'sources', 'researcher'), { recursive: true })
+  await writeFile(join(project, 'sources', 'researcher', 'fixture.txt'), 'Private synthetic fixture')
+  await assert.rejects(startHeadlessResearch(base), /cannot verify private or held wording/)
+  assert.equal(await c.pending(), 0)
+  await rm(join(project, 'sources', 'researcher'), { recursive: true })
+  await writeFile(join(project, 'protocol.json'), JSON.stringify({ distribution: { held: { synthetic: {} } } }))
+  await assert.rejects(startHeadlessResearch(base), /cannot verify private or held wording/)
+  assert.equal(await c.pending(), 0)
+  await writeFile(join(project, 'protocol.json'), '{}')
+  const warnings = []
+  const hr = await startHeadlessResearch({ ...base, onRestricted: reason => warnings.push(reason) })
+  hr.onSession('session-headless')
+  await mkdir(join(project, 'sources', 'private'))
+  hr.onRequest('session-headless', { op: 'send', text: 'Synthetic text that must remain local' })
+  await hr.close()
+  await c.flush()
+  assert.equal(warnings.length, 1)
+  assert.ok([...net.events.values()].every(event => event.event_type !== 'conversation.message'))
+  assert.ok([...net.events.values()].some(event => event.artifact_id === 'protocol.json'))
+  await rm(root, { recursive: true, force: true })
 })
