@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { HumanProgram, ProgramEvidence, ProgramNode } from '../../shared/human-program'
 import { programText } from '../../shared/human-program'
-import { prepareExperimentPrompt, scholarlyArmIds, scholarlyProblems } from '../../shared/scholarly-program'
+import { prepareExperimentPrompt, scholarlyArmIds, scholarlyProblems, scholarlyProfile } from '../../shared/scholarly-program'
 import type { SourceRef } from '../../shared/program-view'
 import './research-overview.css'
 
@@ -16,7 +16,7 @@ const sectionGroups = [
 
 type ProtocolArm = { id: string; runnable?: boolean; why?: string }
 
-export function ResearchOverview({ program, text, onSource, onAsk }: { program: HumanProgram; text: string; onSource(ref: SourceRef): void; onAsk?(text: string): void }) {
+export function ResearchOverview({ program, text, problems: documentProblems = [], onSource, onAsk }: { program: HumanProgram; text: string; problems?: string[]; onSource(ref: SourceRef): void; onAsk?(text: string): void }) {
   const protocol = useMemo(() => {
     try { return JSON.parse(text) } catch { return null }
   }, [text])
@@ -25,15 +25,18 @@ export function ResearchOverview({ program, text, onSource, onAsk }: { program: 
     let live = true
     void crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)).then(bytes => {
       const hash = Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, '0')).join('')
-      const problems = protocol ? scholarlyProblems(program, protocol, hash) : ['The experiment file cannot be read.']
+      const problems = !scholarlyProfile(program) ? [] : protocol ? scholarlyProblems(program, protocol, hash) : ['The experiment file cannot be read.']
       if (live) setCheck({ text, program, problems })
     }).catch(() => {
       if (live) setCheck({ text, program, problems: ['The experiment file could not be checked.'] })
     })
     return () => { live = false }
   }, [program, protocol, text])
-  const problems = check?.text === text && check.program === program ? check.problems : []
-  const evidenceById = new Map(program.evidence.map(item => [item.id, item]))
+  const problems = [...new Set([...documentProblems, ...(check?.text === text && check.program === program ? check.problems : [])])]
+  const bound = Boolean(scholarlyProfile(program) && check?.text === text && check.program === program && !check.problems.length && !documentProblems.length)
+  const evidenceCounts = new Map<string, number>()
+  for (const item of program.evidence) evidenceCounts.set(item.id, (evidenceCounts.get(item.id) ?? 0) + 1)
+  const evidenceById = new Map(program.evidence.filter(item => evidenceCounts.get(item.id) === 1).map(item => [item.id, item]))
 
   const drawEvidence = (evidence: ProgramEvidence) => {
     const { id, locator, path, quote, sourceId, url } = evidence
@@ -82,15 +85,21 @@ export function ResearchOverview({ program, text, onSource, onAsk }: { program: 
     })
   }
 
-  const paperScope = (ids: string[]) => !ids.length || program.studies.every(study => ids.includes(study.id))
+  const studyIds = new Set(program.studies.map(study => study.id))
+  const knownScope = (ids: string[]) => ids.every(id => studyIds.has(id))
+  const paperScope = (ids: string[]) => knownScope(ids) && (!ids.length || program.studies.every(study => ids.includes(study.id)))
   const overview = program.nodes.filter(node => overviewKinds.includes(node.kind) && paperScope(node.studyIds)
     && node.fields.every(field => !field.studyIds?.length || paperScope(field.studyIds)))
   const remaining = program.nodes.filter(node => !overview.includes(node))
   const scoped = (studyId: string | null) => remaining.flatMap(node => {
     const fields = node.fields.filter(field => {
       const ids = field.studyIds?.length ? field.studyIds : node.studyIds
-      return studyId ? ids.includes(studyId) : ids.length === 0
+      return studyId ? knownScope(ids) && ids.includes(studyId) : ids.length === 0
     })
+    return fields.length ? [{ ...node, fields }] : []
+  })
+  const unassigned = remaining.flatMap(node => {
+    const fields = node.fields.filter(field => !knownScope(field.studyIds?.length ? field.studyIds : node.studyIds))
     return fields.length ? [{ ...node, fields }] : []
   })
   const arms: ProtocolArm[] = Array.isArray(protocol?.arms) ? protocol.arms.filter((arm: ProtocolArm | null) => typeof arm?.id === 'string') : []
@@ -98,12 +107,13 @@ export function ResearchOverview({ program, text, onSource, onAsk }: { program: 
   return <article className="research-overview">
     <h1>{program.title}</h1>
     {program.source.authors && <p className="muted research-citation">{program.source.authors}</p>}
+    {!bound && <p className="research-notice" role="status">Research notes are readable, but have not been checked against this experiment.</p>}
     {problems.length > 0 && <details className="research-notice"><summary>Research notes need checking</summary><ul>{problems.map(problem => <li key={problem}>{problem}</li>)}</ul></details>}
     {overview.map(draw)}
     <section className="research-experiments">
       <h2>Experiments</h2>
       {program.studies.map(study => {
-        const ids = scholarlyArmIds(program, study.id)
+        const ids = bound ? scholarlyArmIds(program, study.id) : []
         const matchedArms = arms.filter(arm => ids.includes(arm.id))
         const blocked = matchedArms.length > 0 && matchedArms.every(arm => arm.runnable === false)
         const reasons = [...new Set(matchedArms.flatMap(arm => arm.runnable === false && typeof arm.why === 'string'
@@ -120,5 +130,6 @@ export function ResearchOverview({ program, text, onSource, onAsk }: { program: 
       })}
     </section>
     {drawGroups(scoped(null))}
+    {unassigned.length > 0 && <section className="research-group"><h2>Notes with unresolved study references</h2>{unassigned.map(draw)}</section>}
   </article>
 }

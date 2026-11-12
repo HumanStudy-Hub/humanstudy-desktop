@@ -117,6 +117,12 @@ export function validateHumanProgram(value:unknown):HumanProgram {
  if(first)throw new Error(first.message);
  return structuredClone(p);
 }
+/** Read-only scientific document: shape must be safe, but broken references remain visible as warnings.
+ * Unlike the editing loader, this never repairs, synthesizes or drops scientific records. */
+export function inspectHumanProgram(value: unknown): { program: HumanProgram; problems: string[] } {
+ const program = structuredClone(prepare(value));
+ return { program, problems: collectProblems(program).map(describe) };
+}
 /** Tolerant: repairs what is unambiguous, sets the rest aside and reports each as a plain-English problem. Throws only when the file is not a Human Program at all. */
 export function readHumanProgram(value:unknown):{program:HumanProgram;problems:string[]} {
  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('program.json must be a JSON object');
