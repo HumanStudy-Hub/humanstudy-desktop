@@ -100,18 +100,22 @@ export function ResearchOverview({ program, text, problems: documentProblems = [
       {drawSources(field.evidenceIds.length ? field.evidenceIds : fallbackEvidence)}
     </div>
 
-  const draw = (node: ProgramNode, showScope = false) => <section key={node.id} className="research-section">
-    <h4>{node.title}</h4>
-    {showScope && node.studyIds.length > 1 && (!node.fields.length || node.summary || node.description) && <p className="muted">Applies to {studyNames(node.studyIds)}</p>}
-    {node.summary && <p>{node.summary}</p>}
-    {node.description && node.description !== node.summary && <p>{node.description}</p>}
-    {node.fields.map(field => {
-      const ids = field.studyIds?.length ? field.studyIds : node.studyIds
-      return drawField(field, node.evidenceIds, node.fields.length !== 1 || field.label.trim() !== node.title.trim(),
-        showScope && ids.length > 1 ? studyNames(ids) : undefined)
-    })}
-    {!node.fields.length && drawSources(node.evidenceIds)}
-  </section>
+  const draw = (node: ProgramNode, showScope = false) => {
+    const sharedScope = showScope && node.studyIds.length > 1
+      && (!node.fields.length || node.summary || node.description || node.fields.every(field => !field.studyIds?.length))
+    return <section key={node.id} className="research-section">
+      <h4>{node.title}</h4>
+      {sharedScope && <p className="muted">Applies to {studyNames(node.studyIds)}</p>}
+      {node.summary && <p>{node.summary}</p>}
+      {node.description && node.description !== node.summary && <p>{node.description}</p>}
+      {node.fields.map(field => {
+        const ids = field.studyIds?.length ? field.studyIds : node.studyIds
+        return drawField(field, node.evidenceIds, node.fields.length !== 1 || field.label.trim() !== node.title.trim(),
+          showScope && ids.length > 1 && (!sharedScope || field.studyIds?.length) ? studyNames(ids) : undefined)
+      })}
+      {!node.fields.length && drawSources(node.evidenceIds)}
+    </section>
+  }
 
   const drawOverview = (nodes: ProgramNode[], showScope = false) => overviewGroups.map(group => {
     const entries = nodes.filter(node => group.kinds.includes(node.kind))
