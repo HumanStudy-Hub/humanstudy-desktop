@@ -46,7 +46,10 @@ For an absent value use state missing, value null and a review issue pointing to
 what is needed). `not_extracted` is a checkpoint, not completion. Never infer an a-priori hypothesis backwards
 from the reported results. Do not turn uncertainty into an invented rule.
 
-Save with `program_io.py <patch> --expected-hash <current raw SHA-256 or absent>`; the hash is checked under the shared lock. Re-read after conflicts. It merges records by id and protects confirmed researcher fields. Run
+Save with `program_io.py <patch> --expected-hash <raw SHA-256 of the version you read, or absent>`.
+Use the literal digest from the checkpoint helper or record the digest when reading the version you will edit.
+Do not recompute it at save time or put shell substitution in the save command. The helper checks the digest
+under the shared lock, merges records by id and protects confirmed researcher fields. Re-read after conflicts. Run
 `python .opencode/skills/build/check_program.py program.json --complete`. New paired drafts also declare
 `protocol.meta.delivery: research-program-v1`; the app independently checks scholarly coverage, references,
 current protocol pin and preview before marking the build complete. Hashes establish identity, not fidelity.

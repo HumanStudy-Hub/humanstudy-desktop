@@ -171,3 +171,26 @@ test('the launcher can sign the app in (seed), and only with the token', async (
   assert.equal(status.signedIn, true)
   assert.equal(status.email, 'test@example.org')
 })
+
+test('reopening a live thread restores only its outstanding permission, and Stop clears it', async () => {
+  const dir = (await ipc('projects:create', { name: 'Permission reconnect', sample: true })).value
+  const other = (await ipc('projects:create', { name: 'Other permission project', sample: true })).value
+  const thread = (await ipc('threads:create', dir)).value
+  const otherThread = (await ipc('threads:create', other)).value
+  const id = thread.kernelSessionId
+  assert.equal((await ipc('kernel:send', id, 'Run the mock permission fixture.')).ok, true)
+  const pending = (await ipc('kernel:permissions', id)).value
+  assert.equal(pending.length, 1)
+  assert.equal(pending[0].title, 'python run_simulation.py')
+  assert.deepEqual((await ipc('kernel:permissions', otherThread.kernelSessionId)).value, [])
+  const reopened = (await ipc('threads:resume', dir, thread.id)).value
+  assert.equal(reopened.kernelSessionId, id, 'reopen must retain the live kernel session')
+  assert.deepEqual((await ipc('kernel:permissions', reopened.kernelSessionId)).value, pending)
+  assert.equal((await ipc('kernel:reply', id, pending[0].id, 'once')).ok, true)
+  assert.deepEqual((await ipc('kernel:permissions', id)).value, [])
+  const fresh = (await ipc('threads:create', dir)).value
+  assert.equal((await ipc('kernel:send', fresh.kernelSessionId, 'Run another mock permission fixture.')).ok, true)
+  assert.equal((await ipc('kernel:permissions', fresh.kernelSessionId)).value.length, 1)
+  assert.equal((await ipc('kernel:abort', fresh.kernelSessionId)).ok, true)
+  assert.deepEqual((await ipc('kernel:permissions', fresh.kernelSessionId)).value, [])
+})

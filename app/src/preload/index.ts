@@ -69,6 +69,7 @@ const api: HumanStudyApi = {
     abort: (id, action) => ipcRenderer.invoke('kernel:abort', id, action),
     reply: (id, permissionId, response, action) => ipcRenderer.invoke('kernel:reply', id, permissionId, response, action),
     questions: (id) => ipcRenderer.invoke('kernel:questions', id),
+    permissions: (id) => ipcRenderer.invoke('kernel:permissions', id),
     answerQuestion: (id, questionId, answers, action) => ipcRenderer.invoke('kernel:answerQuestion', id, questionId, answers, action),
     rejectQuestion: (id, questionId, action) => ipcRenderer.invoke('kernel:rejectQuestion', id, questionId, action),
     onEvent: (cb) => listen<KernelEvent>('kernel:event', cb),

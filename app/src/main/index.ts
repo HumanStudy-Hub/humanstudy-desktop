@@ -951,6 +951,7 @@ app.whenReady().then(() => {
     telemetry.notePermission(id, permissionId, actionRef(action))
     return kernelFor(id).reply(id, permissionId, response)
   })
+  ipcMain.handle('kernel:permissions', (_e, id: string) => kernelFor(id).permissions(id))
   ipcMain.handle('kernel:questions', async (_e, id: string) => {
     const pending = await kernelFor(id).questions(id)
     if (pending.length) activeTurns.add(id)

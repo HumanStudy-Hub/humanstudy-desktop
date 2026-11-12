@@ -1,7 +1,7 @@
 import { validateAnswers, type KernelQuestion } from '../../shared/question'
 // Mock kernel: streams a plausible reply with one tool step, for UI work without opencode.
 import { Emitter } from './types'
-import type { Kernel, KernelEvent, PermissionReply } from './types'
+import type { Kernel, KernelEvent, KernelPermission, PermissionReply } from './types'
 
 export interface MockOptions {
   /** Delay between streamed chunks in ms (default 40). Tests pass 0. */
@@ -15,7 +15,7 @@ export class MockKernel implements Kernel {
   private emitter = new Emitter()
   private sessions = new Map<
     string,
-    { dir: string; timers: Set<NodeJS.Timeout>; busy: boolean; pending?: { id: string; rest: Step[] }; question?: { request: KernelQuestion; rest: Step[] } }
+    { dir: string; timers: Set<NodeJS.Timeout>; busy: boolean; pending?: { request: KernelPermission; rest: Step[] }; question?: { request: KernelQuestion; rest: Step[] } }
   >()
   private counter = 0
   private tickMs: number
@@ -71,11 +71,9 @@ export class MockKernel implements Kernel {
       // Pause for approval, like a bash call under opencode's "ask" permission.
       const head = steps.splice(0, steps.findIndex((e) => e.type === 'tool'))
       const id = `mockperm_${++this.counter}`
-      s.pending = { id, rest: [...steps, ...tail] }
-      head.push({
-        type: 'permission',
-        permission: { id, type: 'bash', title: 'python run_simulation.py', patterns: ['python run_simulation.py'] },
-      })
+      const request: KernelPermission = { id, type: 'bash', title: 'python run_simulation.py', patterns: ['python run_simulation.py'] }
+      s.pending = { request, rest: [...steps, ...tail] }
+      head.push({ type: 'permission', permission: request })
       this.play(sessionId, head)
       return
     }
@@ -84,7 +82,7 @@ export class MockKernel implements Kernel {
 
   async reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void> {
     const s = this.sessions.get(sessionId)
-    if (!s?.pending || s.pending.id !== permissionId) throw new Error(`no pending permission ${permissionId}`)
+    if (!s?.pending || s.pending.request.id !== permissionId) throw new Error(`no pending permission ${permissionId}`)
     const { rest } = s.pending
     s.pending = undefined
     const steps: Step[] = [{ type: 'permission', permission: { id: permissionId, type: 'bash', resolved: response } }]
@@ -98,6 +96,11 @@ export class MockKernel implements Kernel {
       steps.push(...rest)
     }
     this.play(sessionId, steps)
+  }
+
+  permissions(sessionId: string): KernelPermission[] {
+    const pending = this.sessions.get(sessionId)?.pending
+    return pending ? [pending.request] : []
   }
 
   async questions(sessionId: string): Promise<KernelQuestion[]> {

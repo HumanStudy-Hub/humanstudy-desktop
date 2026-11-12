@@ -120,6 +120,7 @@ interface Server {
 interface SessionState {
   server: Server
   inFlight: boolean
+  stopping?: boolean
   roles: Map<string, string> // messageID -> role
   partTypes: Map<string, string> // partID -> part type
   emitted: Map<string, number> // text partID -> chars already emitted
@@ -264,8 +265,11 @@ export class OpencodeKernel implements Kernel {
 
   async reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void> {
     const s = this.session(sessionId)
+    const permission = s.pendingPermissions.get(permissionId)
+    if (s.stopping || !s.inFlight || !permission) throw new Error('This permission request is no longer pending in this session.')
     await this.replyTo(s.server, sessionId, permissionId, response)
     s.pendingPermissions.delete(permissionId)
+    if (this.reportResolved(permissionId)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...permission, resolved: response } })
     if (response === 'reject') { s.recovery.cancelled = true; s.recovery.pending = false }
   }
 
@@ -285,6 +289,12 @@ export class OpencodeKernel implements Kernel {
         res = await post(`/session/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}`, { response })
     }
     if (!res.ok) throw new Error(`opencode permission reply -> ${res.status} ${(await res.text().catch(() => ''))}`)
+  }
+
+  permissions(sessionId: string): KernelPermission[] {
+    const s = this.session(sessionId)
+    if (!s.inFlight || s.stopping) return []
+    return [...s.pendingPermissions.values()].filter(perm => !this.autoReplies.has(perm.id) && !this.resolvedReported.has(perm.id))
   }
 
   async questions(sessionId: string): Promise<KernelQuestion[]> {
@@ -323,6 +333,7 @@ export class OpencodeKernel implements Kernel {
 
   async send(sessionId: string, text: string, options?: { purpose?: 'build' }): Promise<void> {
     const s = this.session(sessionId)
+    if (s.stopping) throw new Error('Wait for this conversation to stop before starting another turn.')
     s.turnModel = s.selection?.model ?? (this.provider ? { providerID: this.provider, modelID: options?.purpose === 'build' && this.provider === HOSTED_PROVIDER ? BUILD_MODEL : this.model } : undefined)
     s.turnBaseline = new Set(s.roles.keys())
     s.awaitingAssistant = true
@@ -406,6 +417,7 @@ export class OpencodeKernel implements Kernel {
     const route = nativeRoute(sessionId, request, s.selection ?? {}, defaults)
     const turn = NATIVE_TURNS.has(request.operation)
     if (turn) {
+      if (s.stopping) throw new Error('Wait for this conversation to stop before starting another turn.')
       s.turnModel = s.selection?.model ?? (this.provider ? { providerID: this.provider, modelID: this.model } : undefined)
       s.turnBaseline = new Set(s.roles.keys()); s.inFlight = true; s.awaitingAssistant = true; s.expectUserIdentity = request.operation!=='compact'; s.failed = false
       s.lastActivity = this.clock(); s.lastProbe = 0; s.idleSince = undefined; s.stalled = false
@@ -437,22 +449,37 @@ export class OpencodeKernel implements Kernel {
 
   async abort(sessionId: string): Promise<void> {
     const s = this.session(sessionId)
-    s.recovery.cancelled = true
-    s.recovery.pending = false
-    s.awaitingAssistant = false
-    await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/abort`)
-    // Native abort can leave a question in the server's pending list. Explicitly dismiss
-    // those requests, otherwise reopening this conversation resurrects a stopped turn.
-    const pending = await this.listQuestions(sessionId)
-    s.pendingQuestions.clear()
-    for (const q of pending) {
-      await this.request(s.server, 'POST', `/question/${encodeURIComponent(q.id)}/reject`)
-      if (this.reportResolved('q:' + q.id)) this.emitter.emit({ sessionId, type: 'question', question: { ...q, resolved: 'rejected' } })
-    }
-    // session.idle normally emits done; clearing a leftover request must not mark it busy again.
-    if (s.inFlight) {
-      s.inFlight = false
-      this.emitter.emit({ sessionId, type: 'done' })
+    if (s.stopping) throw new Error('This conversation is already stopping.')
+    s.stopping = true
+    let stopped = false
+    try {
+      await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/abort`)
+      stopped = true
+      s.recovery.cancelled = true
+      s.recovery.pending = false
+      s.awaitingAssistant = false
+      // Native abort can leave requests behind. Hide them during Stop and
+      // tombstone them before cleanup so a stale snapshot cannot restore them.
+      const unresolved = [...s.pendingPermissions.keys()].filter(id => this.reportResolved(id))
+      s.pendingPermissions.clear()
+      await Promise.allSettled(unresolved.map(id => this.replyTo(s.server, sessionId, id, 'reject')))
+      const pending = await this.listQuestions(sessionId)
+      s.pendingQuestions.clear()
+      for (const q of pending) {
+        await this.request(s.server, 'POST', `/question/${encodeURIComponent(q.id)}/reject`)
+        if (this.reportResolved('q:' + q.id)) this.emitter.emit({ sessionId, type: 'question', question: { ...q, resolved: 'rejected' } })
+      }
+    } finally {
+      s.stopping = false
+      if (stopped) {
+        // Capture late asks during cleanup too. A stopped turn cannot be resumed.
+        for (const id of s.pendingPermissions.keys()) this.reportResolved(id)
+        s.pendingPermissions.clear()
+        if (s.inFlight) {
+          s.inFlight = false
+          this.emitter.emit({ sessionId, type: 'done' })
+        }
+      }
     }
   }
 
@@ -469,7 +496,7 @@ export class OpencodeKernel implements Kernel {
     // Defer beyond the idle callback; never submit while the native turn is still active.
     await Promise.resolve()
     if (this.disposed || r.cancelled || s.recovery.epoch !== epoch || !r.running) { r.running = false; return }
-    if (s.pendingPermissions.size || s.pendingQuestions.size) { r.pending = true; r.running = false; return }
+    if (s.stopping || s.pendingPermissions.size || s.pendingQuestions.size) { r.pending = true; r.running = false; return }
     const attempt = ++r.attempts
     r.progress = false
     s.lastActivity = this.clock(); s.idleSince = undefined; s.stalled = false
@@ -543,14 +570,14 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     }
   }
   private autoApprove(sessionId: string, s: SessionState, perm: KernelPermission): void {
-    if (this.autoReplies.has(perm.id)) return
+    if (s.stopping || this.autoReplies.has(perm.id)) return
     this.autoReplies.add(perm.id)
     // One call only: an Auto approval must not become a permanent native permission
     // grant that would silently survive switching Auto off.
     this.replyTo(s.server, sessionId, perm.id, 'once').then(() => {
       s.pendingPermissions.delete(perm.id)
       if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'once' } })
-    }, () => this.emitter.emit({ sessionId, type: 'permission', permission: perm }))
+    }, () => { if (s.inFlight && !s.stopping && !this.resolvedReported.has(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: perm }) })
       .finally(() => this.autoReplies.delete(perm.id))
   }
 
@@ -862,7 +889,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         this.handle({ type: 'message.updated', properties: { info: { ...info, sessionID: sessionId } } })
         if (info.error && !s.failed) this.handle({ type: 'session.error', properties: { sessionID: sessionId, error: info.error } })
       }
-      const pendingPermissions = permissions.filter(p => p.sessionID === sessionId)
+      const pendingPermissions = permissions.filter(p => p.sessionID === sessionId && !this.resolvedReported.has(String(p.id)))
       for (const p of pendingPermissions) if (!s.pendingPermissions.has(String(p.id))) this.handle({ type: 'permission.asked', properties: p })
       const pendingQuestions = questions.filter(q => q.sessionID === sessionId)
       for (const q of pendingQuestions) this.handle({ type: 'question.asked', properties: q })
@@ -1104,7 +1131,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       }
 
       case 'session.idle':
-        if (!s.inFlight) return // opencode repeats idle; only one `done` per turn
+        if (!s.inFlight || s.stopping) return // opencode repeats idle; only one `done` per turn
         if (s.recovery.running && !s.recovery.cancelled) return
         if (s.recovery.pending && !s.recovery.cancelled) {
           // Waiting for a researcher is not a model failure. Never auto-answer or bypass it.
@@ -1141,8 +1168,9 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
       case 'permission.asked': {
         const perm = toKernelPermission(p)
-        if (!perm) return
+        if (!perm || !s.inFlight || this.resolvedReported.has(perm.id)) return
         s.pendingPermissions.set(perm.id, perm)
+        if (s.stopping) return
         if (this.permissionMode() === 'project' && isInsideProject(s.server.dir, perm)) {
           this.autoApprove(sessionId, s, perm)
           return

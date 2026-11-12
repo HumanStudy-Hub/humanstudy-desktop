@@ -62,6 +62,7 @@ export interface Kernel {
   answerQuestion(sessionId: string, questionId: string, answers: string[][]): Promise<void>
   rejectQuestion(sessionId: string, questionId: string): Promise<void>
   questions(sessionId: string): Promise<KernelQuestion[]>
+  permissions(sessionId: string): KernelPermission[]
   resumeSession(projectDir: string, sessionId: string): Promise<string | null>
   onEvent(cb: (e: KernelEvent) => void): void | (() => void)
 }

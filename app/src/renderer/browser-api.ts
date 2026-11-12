@@ -822,6 +822,10 @@ def intentional(harm: float, help_: float) -> float:
     export: async () => null,
     native: async () => { throw Error('Native OpenCode functions are unavailable in browser preview.') },
       questions: async (sid) => pendingQuestion.has(sid) ? [pendingQuestion.get(sid)!] : [],
+      permissions: async (sid) => {
+        const pending = pendingPermission.get(sid)
+        return pending ? [{ id: pending.id, type: 'bash', title: 'python run_simulation.py', patterns: ['python run_simulation.py'] }] : []
+      },
       answerQuestion: async (sid, id, answers) => {
         const q = pendingQuestion.get(sid)
         if (!q || q.id !== id) throw new Error('This question is no longer pending.')
