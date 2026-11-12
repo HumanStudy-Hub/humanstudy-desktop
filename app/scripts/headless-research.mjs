@@ -21,7 +21,8 @@ export function createHeadlessResearchGuard({ project, PRIVATE_MATERIAL, marker,
     }
     for (const entry of entries) {
       const path = rel + '/' + entry.name
-      if (PRIVATE_MATERIAL.test(path + '/')) return true
+      // An alias can hide a protected target from path checks. Never follow it in headless.
+      if (entry.isSymbolicLink() || PRIVATE_MATERIAL.test(path + '/')) return true
       if (entry.isDirectory() && protectedTree(join(dir, entry.name), path)) return true
     }
     return false

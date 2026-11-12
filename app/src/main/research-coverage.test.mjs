@@ -5,7 +5,7 @@
 import { build } from 'esbuild'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { realpathSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -370,6 +370,14 @@ test('headless refuses protected, held and unreadable projects before capture', 
   await writeFile(join(nested, 'fixture.txt'), 'Private synthetic fixture')
   await refuse()
   await rm(nested, { recursive: true })
+  const alias = join(project, 'sources', 'open', 'public-looking')
+  for (const target of [join(project, 'original-text'), join(root, 'external-source')]) {
+    await mkdir(target)
+    await writeFile(join(target, 'fixture.txt'), 'Synthetic source behind an alias')
+    await symlink(target, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    await refuse()
+    await rm(alias)
+  }
   const protocol = join(project, 'protocol.json')
   for (const raw of ['{', 'null', '{"distribution":{"held":[]}}', '{"distribution":{"held":{"synthetic":{}}}}']) {
     await writeFile(protocol, raw)
