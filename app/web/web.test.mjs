@@ -2,7 +2,7 @@
 // project files. Build first:  npx electron-vite build && node scripts/build-web.mjs && node --test web/web.test.mjs
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { after, before, test } from 'node:test'
@@ -164,9 +164,37 @@ test('events stream to the browser and resume after a dropped connection', async
 test('the launcher can sign the app in (seed), and only with the token', async () => {
   const denied = await fetch(`${B}/__seed`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
   assert.equal(denied.status, 401)
-  const session = { accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() + 3_600_000, email: 'test@example.org' }
-  const ok = await fetch(`${B}/__seed`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ session }) })
-  assert.equal(ok.status, 200)
+  const owner = '11111111-1111-4111-8111-111111111111'
+  const otherOwner = '22222222-2222-4222-8222-222222222222'
+  const session = sub => ({
+    accessToken: 'fixture.' + Buffer.from(JSON.stringify({ sub })).toString('base64url') + '.fixture',
+    refreshToken: 'refresh-fixture', expiresAt: Date.now() + 3_600_000, email: 'test@example.org',
+  })
+  const seed = body => fetch(`${B}/__seed`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  assert.equal((await seed({ session: session(owner), desktopKey: { key: 'fixture' } })).status, 200)
+  const file = join(home, 'userData', 'account.json')
+  const stored = readFileSync(file)
+  const checkRefusal = async (body, status = 409) => {
+    const before = readFileSync(file)
+    assert.equal((await seed(body)).status, status)
+    assert.deepEqual(readFileSync(file), before)
+  }
+  await checkRefusal({ session: session(otherOwner), desktopKey: { key: 'foreign' } })
+  await checkRefusal({ desktopKey: { key: 'missing-session' } }, 400)
+
+  // Simulate the account switching inside the isolated workspace while the launcher mints the
+  // owner's replacement. The stored session changes after the launcher's earlier email check.
+  writeFileSync(file, '{}')
+  assert.equal((await seed({ session: session(otherOwner) })).status, 200)
+  const foreignSession = JSON.parse(readFileSync(file, 'utf8')).session
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(stored), session: foreignSession }))
+  await checkRefusal({ session: session(owner), desktopKey: { key: 'racing-update' } })
+
+  const signedOut = JSON.parse(stored)
+  delete signedOut.session
+  writeFileSync(file, JSON.stringify(signedOut))
+  await checkRefusal({ session: session(otherOwner), desktopKey: { key: 'foreign-after-logout' } })
+  assert.equal((await seed({ session: { ...session(owner), refreshToken: 'renewed-fixture' } })).status, 200)
   const status = (await ipc('account:status')).value
   assert.equal(status.signedIn, true)
   assert.equal(status.email, 'test@example.org')

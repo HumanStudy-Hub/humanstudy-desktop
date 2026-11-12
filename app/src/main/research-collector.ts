@@ -279,9 +279,13 @@ export function createResearchCollector(options: Options) {
       // Network waits never occupy the capture queue. A slow upload must not leave new user
       // interactions only in memory until a 20-second request timeout finishes.
       await chain
-      let auth = await identity(); if (!auth) return
+      if (!options.allowed()) return
+      let auth = await identity()
+      if (!auth) throw new Error('Research upload needs a valid sign-in. Saved records are kept on this device.')
       const root = await ownerDir(auth.userId)
       const who = await deliveryRequest(auth, '/auth/v1/user')
+      if (who.status === 401 || who.status === 403)
+        throw new Error(`Research sign-in could not be verified (${who.status}). Sign in again to send saved records.`)
       if (!who.ok || (await who.json()).id !== auth.userId) throw new Error('Could not verify the research account.')
       // allowed() is only true after the current explicit agreement. Never migrate older consent.
       const agreed = await deliveryRequest(auth, '/rest/v1/research_consents?on_conflict=owner_id,surface,version', { method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: JSON.stringify({ surface: options.surface, version: SOURCE_CONSENT_VERSION, usage: true, content: true, sources: true }) })
