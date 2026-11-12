@@ -5,6 +5,11 @@ description: Make an interactive, self-contained HTML view of the study in artif
 
 # Visualize: an interactive view in artifacts/
 
+## Protocol projects (default)
+
+For a paired project, program.json holds scholarly claims and protocol.json is canonical for execution. Use skills/preview to show actual participant pages and condition comparisons; use the artifact kit in protocol mode for other requested views, bound to the current protocol bytes. Cite the correct source file/page. Show flow operators and conditions only as specified; never flatten a repeat, interaction or conditional path into a made-up linear design. Use the scholarly program for paper-level understanding; never duplicate executable flow in it solely to render a view. The program-specific procedure below is for legacy projects only.
+
+
 A view arranges `program.json` (and, for simulations, a run's own outputs) so a researcher sees it
 at a glance. It never decides or adds study facts. Build every view on the kit in
 `.opencode/artifact-kit/` (charts, flow diagrams, citation chips, amber gaps, light/dark, the click

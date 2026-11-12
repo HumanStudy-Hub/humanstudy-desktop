@@ -2,7 +2,7 @@
 // project files. Build first:  npx electron-vite build && node scripts/build-web.mjs && node --test web/web.test.mjs
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { after, before, test } from 'node:test'
@@ -35,6 +35,10 @@ before(async () => {
 after(() => server?.kill())
 
 test('everything but the health check needs the token', async () => {
+  const health = await (await fetch(`${B}/healthz`)).json()
+  const manifest = JSON.parse(readFileSync(join(app, 'out/web/build-manifest.json'), 'utf8'))
+  assert.deepEqual(health.build, manifest)
+  assert.notEqual(health.build.version, '0.0.0-test', 'health must identify built payload, not runtime env override')
   assert.equal((await fetch(`${B}/`)).status, 401)
   assert.equal((await fetch(`${B}/ipc/projects:list`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401)
   // Not JSON, or another site's page: refused before anything else.
@@ -75,6 +79,47 @@ test('an uploaded paper becomes a project whose files are served at /hsfile/', a
   assert.match(served.headers.get('content-security-policy') ?? '', /sandbox/)
   const outside = await fetch(`${B}/hsfile/${encodeURIComponent('/etc/passwd')}`, { headers: auth })
   assert.equal(outside.status, 403)
+})
+
+test('the shipped example opens with research and experiment files without building', async () => {
+  const created = await ipc('projects:create', { name: 'Protocol walkthrough', sample: true })
+  assert.equal(created.ok, true, JSON.stringify(created))
+  const snap = (await ipc('project:read', created.value)).value
+  assert.equal(snap.program.extensions.scholarly.profile, 'scholarly-v1')
+  assert.deepEqual(snap.program.studies.map(s => s.id), ['s1', 's2'])
+  assert.equal(snap.build, undefined)
+  const text = (await ipc('project:readText', `${created.value}/protocol.json`)).value
+  const p = JSON.parse(text)
+  assert.equal(p.id, 'mazzarella2018politeness')
+  assert.equal(p.schema_version, '1')
+  assert.equal(p.arms.length, 2)
+  assert.ok(snap.pdf)
+  const preview = (await ipc('project:readText', `${created.value}/artifacts/preview.html`)).value
+  assert.match(preview, /hs-protocol/)
+  assert.match(preview, /hs.openSource/)
+  const projects = (await ipc('projects:list')).value
+  assert.equal(projects.find(p => p.dir === created.value).hasProgram, true)
+})
+
+test('annotation saves retain conflict protection and browser exports preserve the file', async () => {
+  const created = await ipc('projects:create', { name: 'Saved annotations', sample: true })
+  assert.equal(created.ok, true)
+  await ipc('project:read', created.value)
+  const path = `${created.value}/paper.pdf.annotations.json`
+  const original = JSON.stringify({ version: 1, notes: [{ page: 2, text: 'Review this source' }] })
+  assert.equal((await ipc('project:writeText', path, original, null)).ok, true)
+  assert.equal((await ipc('project:readText', path)).value, original)
+  const changed = JSON.stringify({ version: 1, notes: [] })
+  assert.equal((await ipc('project:writeText', path, changed, original)).ok, true)
+  const stale = await ipc('project:writeText', path, original, original)
+  assert.equal(stale.ok, false, 'a stale browser editor must not overwrite newer content')
+  assert.equal((await ipc('project:readText', path)).value, changed)
+  const saved = await ipc('project:saveCopy', path)
+  assert.equal(saved.ok, true)
+  const downloaded = await fetch(`${B}/download/${encodeURIComponent(saved.value)}`, { headers: auth })
+  assert.match(downloaded.headers.get('content-disposition'), /attachment/)
+  assert.equal(await downloaded.text(), changed)
+  assert.equal((await fetch(`${B}/download/${encodeURIComponent('/etc/passwd')}`, { headers: auth })).status, 404)
 })
 
 // One pending read per stream: a read abandoned by a timeout would swallow the next chunk.
@@ -119,10 +164,61 @@ test('events stream to the browser and resume after a dropped connection', async
 test('the launcher can sign the app in (seed), and only with the token', async () => {
   const denied = await fetch(`${B}/__seed`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
   assert.equal(denied.status, 401)
-  const session = { accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() + 3_600_000, email: 'test@example.org' }
-  const ok = await fetch(`${B}/__seed`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ session }) })
-  assert.equal(ok.status, 200)
+  const owner = '11111111-1111-4111-8111-111111111111'
+  const otherOwner = '22222222-2222-4222-8222-222222222222'
+  const session = sub => ({
+    accessToken: 'fixture.' + Buffer.from(JSON.stringify({ sub })).toString('base64url') + '.fixture',
+    refreshToken: 'refresh-fixture', expiresAt: Date.now() + 3_600_000, email: 'test@example.org',
+  })
+  const seed = body => fetch(`${B}/__seed`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  assert.equal((await seed({ session: session(owner), desktopKey: { key: 'fixture' } })).status, 200)
+  const file = join(home, 'userData', 'account.json')
+  const stored = readFileSync(file)
+  const checkRefusal = async (body, status = 409) => {
+    const before = readFileSync(file)
+    assert.equal((await seed(body)).status, status)
+    assert.deepEqual(readFileSync(file), before)
+  }
+  await checkRefusal({ session: session(otherOwner), desktopKey: { key: 'foreign' } })
+  await checkRefusal({ desktopKey: { key: 'missing-session' } }, 400)
+
+  // Simulate the account switching inside the isolated workspace while the launcher mints the
+  // owner's replacement. The stored session changes after the launcher's earlier email check.
+  writeFileSync(file, '{}')
+  assert.equal((await seed({ session: session(otherOwner) })).status, 200)
+  const foreignSession = JSON.parse(readFileSync(file, 'utf8')).session
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(stored), session: foreignSession }))
+  await checkRefusal({ session: session(owner), desktopKey: { key: 'racing-update' } })
+
+  const signedOut = JSON.parse(stored)
+  delete signedOut.session
+  writeFileSync(file, JSON.stringify(signedOut))
+  await checkRefusal({ session: session(otherOwner), desktopKey: { key: 'foreign-after-logout' } })
+  assert.equal((await seed({ session: { ...session(owner), refreshToken: 'renewed-fixture' } })).status, 200)
   const status = (await ipc('account:status')).value
   assert.equal(status.signedIn, true)
   assert.equal(status.email, 'test@example.org')
+})
+
+test('reopening a live thread restores only its outstanding permission, and Stop clears it', async () => {
+  const dir = (await ipc('projects:create', { name: 'Permission reconnect', sample: true })).value
+  const other = (await ipc('projects:create', { name: 'Other permission project', sample: true })).value
+  const thread = (await ipc('threads:create', dir)).value
+  const otherThread = (await ipc('threads:create', other)).value
+  const id = thread.kernelSessionId
+  assert.equal((await ipc('kernel:send', id, 'Run the mock permission fixture.')).ok, true)
+  const pending = (await ipc('kernel:permissions', id)).value
+  assert.equal(pending.length, 1)
+  assert.equal(pending[0].title, 'python run_simulation.py')
+  assert.deepEqual((await ipc('kernel:permissions', otherThread.kernelSessionId)).value, [])
+  const reopened = (await ipc('threads:resume', dir, thread.id)).value
+  assert.equal(reopened.kernelSessionId, id, 'reopen must retain the live kernel session')
+  assert.deepEqual((await ipc('kernel:permissions', reopened.kernelSessionId)).value, pending)
+  assert.equal((await ipc('kernel:reply', id, pending[0].id, 'once')).ok, true)
+  assert.deepEqual((await ipc('kernel:permissions', id)).value, [])
+  const fresh = (await ipc('threads:create', dir)).value
+  assert.equal((await ipc('kernel:send', fresh.kernelSessionId, 'Run another mock permission fixture.')).ok, true)
+  assert.equal((await ipc('kernel:permissions', fresh.kernelSessionId)).value.length, 1)
+  assert.equal((await ipc('kernel:abort', fresh.kernelSessionId)).ok, true)
+  assert.deepEqual((await ipc('kernel:permissions', fresh.kernelSessionId)).value, [])
 })

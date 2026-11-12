@@ -30,6 +30,7 @@ export type StudyModelProps = {
   changedIds?: ReadonlySet<string>;
   /** What the paper pane found for each citation it opened (quoteKey). */
   quoteStatus?: ReadonlyMap<string, QuoteStatus>;
+  reviewSource?(ref: SourceRef): { pending: boolean; key: string };
   onPick(id: string, extend: boolean): void;
   onClearSelection?(): void;
   onAskSelection?(): void;
@@ -311,10 +312,12 @@ function Cite({ id, refs, ctx }: { id: string; refs: SourceRef[]; ctx: Ctx }) {
   useEffect(()=>{if(!expanded)return;const close=(e:MouseEvent)=>{if(!anchor.current?.contains(e.target as Node)&&!list.current?.contains(e.target as Node))setExpanded(false)};const key=(e:KeyboardEvent)=>{if(e.key==='Escape'){e.stopPropagation();setExpanded(false);anchor.current?.focus()}};window.addEventListener('mousedown',close);window.addEventListener('keydown',key);return()=>{window.removeEventListener('mousedown',close);window.removeEventListener('keydown',key)}},[expanded]);
   const ref=refs[0];if(!ref)return null;
   const label=(r:SourceRef)=>r.page?t('doc.cite_page',{n:r.page}):t('doc.cite_file');
-  const status=ref.page?ctx.quoteStatus?.get(quoteKey(ref.page,ref.quote,ref.file??ref.sourceId)):undefined;
+  const review=ctx.reviewSource?.(ref);
+  const status=ref.page?ctx.quoteStatus?.get(review?.key??quoteKey(ref.page,ref.quote,ref.file??ref.sourceId)):undefined;
+  const verified=ref.verified&&!review?.pending;
   const missing=status&&!status.found,moved=status?.found&&status.page!==ref.page,differs=Boolean(status?.found&&status.differs);
   return <span className={s.citeGroup}>
-    <button ref={anchor} className={`${s.cite} ${missing||moved||differs||!ref.verified?s.citeWarn:''}`} title={`${missing?t('model.quote_missing',{n:ref.page??''}):differs?t('model.quote_differs',{n:status!.page!}):moved?t('model.quote_moved',{n:ref.page??'',m:status!.page!}):t(ref.verified?'doc.cite_open':'doc.cite_unmatched')}\n${ref.quote??''}`} aria-expanded={refs.length>1?expanded:undefined} onClick={e=>{e.stopPropagation();if(refs.length>1){const r=e.currentTarget.getBoundingClientRect();setPoint({left:Math.max(8,Math.min(r.right-380,window.innerWidth-396)),top:Math.max(8,Math.min(r.bottom+4,window.innerHeight-340))});setExpanded(v=>!v)}else ctx.onSource(id,ref)}}>{label(ref)}{refs.length>1?` +${refs.length-1}`:''}{moved?` → ${status!.page}`:''}{missing||differs?' ?':''} <span aria-hidden>↗</span></button>
+    <button ref={anchor} className={`${s.cite} ${missing||moved||differs||!verified?s.citeWarn:''}`} title={`${missing?t('model.quote_missing',{n:ref.page??''}):differs?t('model.quote_differs',{n:status!.page!}):moved?t('model.quote_moved',{n:ref.page??'',m:status!.page!}):t(review?.pending?'paper.source_review_pending':verified?'doc.cite_open':'doc.cite_unmatched')}\n${ref.quote??''}`} aria-expanded={refs.length>1?expanded:undefined} onClick={e=>{e.stopPropagation();if(refs.length>1){const r=e.currentTarget.getBoundingClientRect();setPoint({left:Math.max(8,Math.min(r.right-380,window.innerWidth-396)),top:Math.max(8,Math.min(r.bottom+4,window.innerHeight-340))});setExpanded(v=>!v)}else ctx.onSource(id,ref)}}>{label(ref)}{refs.length>1?` +${refs.length-1}`:''}{moved?` → ${status!.page}`:''}{missing||differs?' ?':''} <span aria-hidden>↗</span></button>
     {expanded&&createPortal(<span ref={list} className={s.citeList} style={point}>{refs.map((r,i)=><button key={i} onClick={e=>{e.stopPropagation();setExpanded(false);ctx.onSource(id,r)}}><strong>{label(r)}{r.file?` · ${r.file}`:''}</strong><q>{r.quote}</q></button>)}</span>,document.body)}
   </span>;
 

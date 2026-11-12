@@ -500,13 +500,99 @@ test('a project with only protocol.json opens the Simulation tab: readiness from
   assert.equal(SR.simulationPlan(program, PP.PROTOCOL_STUDY_ID).paperPerCondition, 10, 'the fixture prints n 10 per arm')
   assert.equal(PP.protocolProgram('{"arms": []}'), null)
   assert.equal(PP.protocolProgram('not json'), null)
-  assert.equal(PP.protocolProgram(JSON.stringify({ id: 'x', arms: [{ id: 'a', runnable: false }] })), null)
+  assert.deepEqual(PP.protocolProgram(JSON.stringify({ id: 'x', arms: [{ id: 'a', runnable: false }] })).nodes, [], 'blocked protocols remain previewable without inventing runnable conditions')
   // The Workbench shows the tab for that program and the panel gates a protocol run by the protocol, not section 12.
   const bench = readFileSync(join(here, '../renderer/components/Workbench.tsx'), 'utf8')
-  assert.match(bench, /const simProgram = useMemo\(\(\) => program \?\? protocolProgram\(protocolText\)/)
+  assert.match(bench, /const simProgram = useMemo\(\(\) => hasProtocol \? protocolProgram\(protocolText\) : program/)
   assert.match(bench, /\{simProgram && tabBtn\('simulation'/)
   const panel = readFileSync(join(here, '../renderer/components/SimulationPanel.tsx'), 'utf8')
   assert.match(panel, /const scopeReady = route === 'protocol' \|\| scope\.ready/)
   // And a protocol approval from such a project runs.
   await M.assertRunnablePackage(dir, protocolApproval())
+})
+
+test('a protocol with no runnable arms explains missing material and never sizes a paid run',async()=>{
+ const dir=withProtocol(mkdtempSync(join(tmpdir(),'blocked-protocol-')))
+ const p=JSON.parse(PROTOCOL.toString('utf8'))
+ for(const arm of p.arms){arm.runnable=false;arm.why='The original questionnaire is not available.'}
+ writeFileSync(join(dir,'protocol.json'),JSON.stringify(p))
+ const before=budgetCalls
+ const r=await M.projectPackageReadiness(dir,'protocol')
+ assert.equal(r.protocol.ready,false)
+ assert.deepEqual(r.protocol.arms,[])
+ assert.match(r.protocol.problems.find(p=>p.check==='materials').reason,/original questionnaire/)
+ assert.equal(budgetCalls,before,'blocked study has no model budget request')
+})
+
+test('read-only readiness never starts checks and exposes only results for the current files', async () => {
+  const legacy = project({ knobe: COMPLETE })
+  const protocol = withProtocol(mkdtempSync(join(tmpdir(), 'protocol-status-')))
+  const before = protocolCalls
+  let legacyCalls = 0
+  const out = mkdtempSync(join(tmpdir(), 'readiness-read-only-'))
+  await build({ entryPoints: [join(here, '../main/package-readiness.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'readiness.mjs'), logLevel: 'error' })
+  const F = await import(pathToFileURL(join(out, 'readiness.mjs')).href)
+  F.configureScientificChecks(async () => { legacyCalls++; return [] }, 'read-only')
+  for (let i = 0; i < 2; i++) {
+    const status = await F.projectPackageReadiness(legacy, undefined, false)
+    assert.equal(status.ready, false)
+    assert.equal(status.problems[0].check, 'unchecked')
+    assert.equal((await M.projectPackageReadiness(protocol, undefined, false)).protocol.ready, false)
+  }
+  assert.equal(legacyCalls, 0)
+  assert.equal(protocolCalls, before)
+  assert.equal((await F.projectPackageReadiness(legacy)).ready, true)
+  assert.equal((await F.projectPackageReadiness(legacy, undefined, false)).ready, true)
+  writeFileSync(join(legacy, 'notes.pdf'), 'new source')
+  assert.equal((await F.projectPackageReadiness(legacy, undefined, false)).ready, false)
+  assert.equal(legacyCalls, 1)
+  assert.equal((await M.projectPackageReadiness(protocol)).protocol.ready, true)
+  assert.equal((await M.projectPackageReadiness(protocol, undefined, false)).protocol.ready, true)
+  assert.equal(protocolCalls, before + 1)
+  F.configureScientificChecks(async () => assert.fail('platform isolation required'), 'read-only', false)
+  assert.equal((await F.projectPackageReadiness(legacy)).problems[0].check, 'isolation')
+})
+
+test('legacy warnings survive reinitializing the cache and do not block runnable packages', async () => {
+  const dir = project({ knobe: COMPLETE })
+  const store = mkdtempSync(join(tmpdir(), 'legacy-report-'))
+  const out = mkdtempSync(join(tmpdir(), 'legacy-review-'))
+  await build({ entryPoints: [join(here, '../main/package-readiness.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'readiness.mjs'), logLevel: 'error' })
+  const F = await import(pathToFileURL(join(out, 'readiness.mjs')).href)
+  const report = { problems: [], warnings: [{ check: 'results', reason: 'p=1.2 is outside 0..1' }], checks: { results: 'pass' } }
+  F.configureScientificChecks(async () => report, 'legacy-review', true, store)
+  const checked = await F.projectPackageReadiness(dir)
+  assert.equal(checked.ready, true)
+  assert.deepEqual(checked.scientificReport, report)
+  F.configureScientificChecks(async () => assert.fail('opening cannot start a checker'), 'legacy-review', true, store)
+  const reopened = await F.projectPackageReadiness(dir, undefined, false)
+  assert.equal(reopened.ready, true)
+  assert.deepEqual(reopened.scientificReport, report)
+  writeFileSync(join(dir, 'effects.json'), '{}')
+  assert.equal((await F.projectPackageReadiness(dir, undefined, false)).scientificReport, undefined)
+})
+
+test('program-only and unsupported legacy projects can prepare a protocol without executing package code', async () => {
+  const out = mkdtempSync(join(tmpdir(), 'windows-protocol-route-'))
+  await build({ entryPoints: [join(here, '../main/package-readiness.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'readiness.mjs'), logLevel: 'error' })
+  const F = await import(pathToFileURL(join(out, 'readiness.mjs')).href)
+  F.configureScientificChecks(async () => assert.fail('legacy code cannot run without file isolation'), 'windows', false)
+  F.configureProtocolChecks(async () => [], 'windows', async () => BUDGET)
+  const programOnly = project({})
+  const legacy = project({ knobe: COMMENT_ONLY })
+  assert.equal((await F.projectPackageReadiness(programOnly, 's1', false, true)).exists, false)
+  assert.ok((await F.projectPackageReadiness(legacy, 's1', false, true)).problems.some(p => p.check === 'isolation'))
+  for (const dir of [programOnly, legacy]) {
+    const program = readFileSync(join(dir, 'program.json'))
+    withProtocol(dir)
+    assert.equal((await F.projectPackageReadiness(dir, undefined, false, true)).protocol.ready, false)
+    const checked = await F.projectPackageReadiness(dir, undefined, true, true)
+    assert.equal(checked.ready, false)
+    assert.equal(checked.protocol.ready, true)
+    await F.assertRunnablePackage(dir, protocolApproval())
+    assert.deepEqual(readFileSync(join(dir, 'program.json')), program)
+  }
+  const messages = readFileSync(join(here, '../renderer/i18n-dict.ts'), 'utf8')
+  const prompt = messages.split('\n').find(line => line.includes("'sim.build_prompt'"))
+  assert.match(prompt, /\{studyId\}.*protocol[.]json.*existing program[.]json/)
 })

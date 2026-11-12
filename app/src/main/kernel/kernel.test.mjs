@@ -6,7 +6,7 @@
 //        HUMANSTUDY_DESKTOP_KEY (+ HUMANSTUDY_HOSTED_BASEURL, HUMANSTUDY_SERVER_BYPASS) a real reply.
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -123,6 +123,18 @@ console.log('mock permission ok')
   assert.ok(!k.isInsideProject(proj, P('edit', ['x'], { filepath: '/home/u/proj/../other/x' })))
   assert.ok(!k.isInsideProject(proj, P('external_directory', ['/tmp/*'], { filepath: '/tmp/x' })))
   assert.ok(!k.isInsideProject(proj, P('webfetch', ['https://x.org'])))
+  if (process.platform !== 'win32') {
+    const project = join(out, 'project')
+    const alias = join(out, 'project-alias')
+    mkdirSync(project)
+    symlinkSync(project, alias)
+    const destination = join(realpathSync(project), 'new', 'draft.json')
+    assert.ok(k.isInsideProject(alias, P('edit', [destination], { filepath: destination })))
+    const external = join(project, 'external')
+    symlinkSync(out, external)
+    assert.ok(!k.isInsideProject(alias, P('edit', [join(external, 'draft.json')])))
+    assert.ok(!k.isInsideProject(alias, P('external_directory', [destination])))
+  }
   console.log('permission helpers ok')
 }
 

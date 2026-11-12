@@ -143,6 +143,7 @@ export interface ProjectFile {
   mtime?: number
   /** Changes whenever the file is rewritten or replaced (shared/file-version.ts). */
   version?: string
+  sha256?: string
 }
 
 /** One entry of the project file tree (the Program tab). Folders carry children; files carry a url. */
@@ -160,6 +161,7 @@ export interface ProjectEntry {
   mtime?: number
   /** Changes whenever the file is rewritten or replaced (shared/file-version.ts). */
   version?: string
+  sha256?: string
   children?: ProjectEntry[]
 }
 
@@ -179,12 +181,18 @@ export interface PaperBuildState {
   status: 'pending' | 'running' | 'complete' | 'error'
   phase: 'reading' | 'writing' | 'checking' | 'packaging'
   error?: PaperBuildError
+  /** Fresh paper imports require the research document, protocol and current preview. */
+  requiresPairedDelivery?: boolean
   /** The conversation that runs (or ran) the build. */
   sessionId?: string
   /** The program check printed PASS after the last write to program.json. */
   checked?: boolean
   /** SHA-256 of the independently validated program bytes; any later write invalidates it. */
   validationHash?: string
+  /** Paired scholarly document and preview bytes; independent of the execution protocol hash. */
+  deliveryHash?: string
+  /** Draft structure was independently checked; never grants simulation permission. */
+  validationRoute?: 'program' | 'protocol'
   /** When the build started (epoch ms), so the Study view can say how long it has run. */
   startedAt?: number
 }
@@ -198,6 +206,7 @@ export interface ProjectSnapshot {
   artifacts: ProjectFile[]
   exports: ProjectFile[]
   pdf: ProjectFile | null
+  sourceDigests?: Record<string, string>
   /** Everything in the project folder except app/kernel internals (.humanstudy, .opencode, caches). */
   tree: ProjectEntry[]
 }
@@ -242,7 +251,7 @@ export interface CommunityStudy {
   authors: string[]
   year: number | null
   description: string
-  contributors: { name: string; github?: string }[]
+  contributors: { name: string; github?: string; affiliation?: string; orcid?: string }[]
   aliases?: string[]
   legacyStudyId?: string
   searchText?: string
@@ -406,12 +415,12 @@ export interface HumanStudyApi {
     saveCopy(path: string): Promise<string | null>
     /** Text of a file inside an opened project (UTF-8, at most 4 MB). */
     readText(path: string): Promise<string>
-    packageReadiness(dir: string, studyId: string): Promise<import('../shared/package-readiness').PackageReadiness>
+    packageReadiness(dir: string, studyId: string, execute?: boolean): Promise<import('../shared/package-readiness').PackageReadiness>
     /** Writes a file inside an opened project, creating folders as needed. program.json must stay valid JSON.
      *  With `ifUnchanged`, the write happens only if the file still holds exactly that text (a patch read
      *  from disk is not written over a newer save, e.g. the agent's checkpoint); otherwise it rejects
      *  with an error whose message starts with "changed on disk". */
-    writeText(path: string, text: string, ifUnchanged?: string, action?: ActionRef): Promise<void>
+    writeText(path: string, text: string, ifUnchanged?: string | null, action?: ActionRef): Promise<void>
     /** Copies files into the project (sources/, or paper.pdf for a first PDF). Never overwrites; returns the copies. */
     importFiles(dir: string, paths: string[], action?: ActionRef): Promise<ProjectFile[]>
     onChanged(cb: (dir: string) => void): () => void
@@ -427,6 +436,7 @@ export interface HumanStudyApi {
     answerQuestion(sessionId: string, questionId: string, answers: string[][], action?: ActionRef): Promise<void>
     rejectQuestion(sessionId: string, questionId: string, action?: ActionRef): Promise<void>
     questions(sessionId: string): Promise<KernelQuestion[]>
+    permissions(sessionId: string): Promise<KernelPermission[]>
     onEvent(cb: (e: KernelEvent) => void): () => void
     install: {
       status(): Promise<KernelInstallStatus>

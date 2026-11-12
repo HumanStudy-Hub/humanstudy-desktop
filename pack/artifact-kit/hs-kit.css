@@ -17,8 +17,8 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --hs-bg: #1b2922; --hs-panel: #213129; --hs-ink: #e5ede2; --hs-muted: #b0c1ae; --hs-faint: #889a87;
-    --hs-line: #354a3c; --hs-line-strong: #4b6250; --hs-accent: #b1d0ad; --hs-accent-soft: #304a39;
+    --hs-bg: #202124; --hs-panel: #26272b; --hs-ink: #e6e6e3; --hs-muted: #aaaead; --hs-faint: #929694;
+    --hs-line: #3a3c40; --hs-line-strong: #56595e; --hs-accent: #adc0af; --hs-accent-soft: #2d3530;
     --hs-human: #56b4e9; --hs-s2: #2c5f80; --hs-s3: #3cc19a; --hs-s4: #e08fc0; --hs-sim: #f08a3c; --hs-sim-soft: #3a2616;
     --hs-amber: #f2c86b; --hs-amber-bg: #3a2f14; --hs-amber-line: #7a6124;
     --hs-diff: #5a4710; --hs-diff-ink: #ffe9a8; --hs-ok: #6cc596; --hs-shadow: none;

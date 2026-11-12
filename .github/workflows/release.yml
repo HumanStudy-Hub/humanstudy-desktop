@@ -33,6 +33,10 @@ jobs:
       run:
         working-directory: app
     steps:
+      - name: Preserve the exact source bytes on Windows
+        if: runner.os == 'Windows'
+        working-directory: .
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -64,6 +68,47 @@ jobs:
       - name: Build and publish (Windows preview)
         if: runner.os == 'Windows'
         run: node scripts/dist.mjs ${{ matrix.target }} --unsigned --publish always
+
+      - name: Verify the release installer opens
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: "& ../scripts/smoke_windows_installer.ps1"
+
+  # Attach the browser payload from the same tag, without publishing the release or updating /try.
+  web:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - run: node --test scripts/web-manifest.test.mjs web/browser-electron.test.mjs
+      - run: node scripts/build-web.mjs
+      - run: node --test web/web.test.mjs
+      - name: Package the exact tagged web build
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          test "$GITHUB_REF_NAME" = "v$version"
+          mkdir -p dist
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -czf "dist/humanstudy-web-$version.tgz" -C out/web .
+          cp out/web/build-manifest.json "dist/humanstudy-web-$version.manifest.json"
+          cd dist
+          sha256sum "humanstudy-web-$version.tgz" > "humanstudy-web-$version.tgz.sha256"
+      - name: Attach browser assets to the existing draft
+        run: |
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true
+          version="$(node -p 'require("./package.json").version')"
+          gh release upload "$GITHUB_REF_NAME" "dist/humanstudy-web-$version.tgz" "dist/humanstudy-web-$version.tgz.sha256" "dist/humanstudy-web-$version.manifest.json" --clobber
 
   # The standalone humanstudy skill (no app needed: Codex, Claude Code, OpenCode), generated from the
   # same pack, attached to the same release as humanstudy-skill.zip.

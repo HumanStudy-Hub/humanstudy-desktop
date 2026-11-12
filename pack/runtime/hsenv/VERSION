@@ -1,6 +1,6 @@
 # Vendored hsenv engine. Refresh with scripts/sync_hsenv.sh; never edit by hand.
-source: github.com/HumanStudy-Hub/hsenv tag v0.8.1, commit db85a9c82f4c7cedeb808a3d39ae2858605d5a20
-synced: 2026-11-10
+source: github.com/HumanStudy-Hub/hsenv dev commit 433fd3fb06ad86a89b91f0bb61fe2e197a52fad8 (API compatible with tag v0.8.1)
+synced: 2026-11-12
 9c4ed34960789fb18351512d30b9c5879f36a33a0f7206bcbf89172eee541291  hsenv/__init__.py
 d1ffc33b229aefe93890cda541481a5d5796ed33692baf75e89de21bca13d6f2  hsenv/engine.py
 1ab2b19da24a40c17c4a9e32b9c95f59e0f76e883bc9991bad6738ca0f55150b  hsenv/expr.py
@@ -12,6 +12,7 @@ e2d266af52ff23402630f2082dd8f314c7a9c7332f508f32d68962e1d9b81bda  hsenv/effects_
 9463c50ebfdcd42b5c004306b37e80134df65f5b6405b7aec5298afada08640f  hsenv/serve.py
 6f07a843bb19dfd91d31b78bd4d64594540ed39ca3b009037f4bcad3eb85516c  hsenv/schema_check.py
 e57be2220d6388f782c096b4aedf333211c73cf9f8fbe5c67dcc8dbd990d359f  hsenv/distribution.py
+035c56aa465bee95da4cfa9ae92cd6268a1ba25e4a5143672559b3c501cf5ac7  hsenv/release.py
 7ce1305eef5bda311567592b79bae7c2a1eb047f81f3464f8a08078228ca0cee  schema/protocol.v1.json
 555f8b33b70e2a1ff463ca451b028624d4ad9de464a2c967b172530a1ffc74b2  schema/study.v1.json
 26625424ba394ec176c66ae375017ebb1e68bee456aaf941046e5f47f7c282fe  schema/run.v1.json

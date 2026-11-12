@@ -1,9 +1,8 @@
 """Trusted entry point: confine the complete run script before any package imports.
 
 macOS desktop runs (the app sets HUMANSTUDY_RELAY_REQUIRED=1) use the app's per-approval relay
-capability inside sandbox-exec; no real credential is inherited. On Linux and Windows the app does
-not set it: the script runs as before, unconfined, and can read the key in its environment (the
-run confirmation tells the researcher). Hand-run study_core.py keeps using the researcher's own key.
+capability inside sandbox-exec; no real credential is inherited. Desktop legacy runs require
+verified file isolation. Hand-run study_core.py keeps using the researcher's own key.
 """
 import json
 import os
@@ -40,6 +39,8 @@ def main():
         raise SystemExit(USAGE)
     script = Path(args[0]).resolve()
     if os.environ.get('HUMANSTUDY_RELAY_REQUIRED') != '1':
+        if os.environ.get('HUMANSTUDY_DESKTOP_APP') == '1':
+            raise SystemExit('Legacy package execution requires verified file isolation. Use a supported protocol to run this study.')
         raise SystemExit(run_unconfined(script, args[1:]))
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'build'))
     from sandbox_run import run_python

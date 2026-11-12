@@ -53,11 +53,9 @@ resends its history. If that exceeds 40,000 (or the run would pass 16,000,000), 
 confirmation, with how many participants fit, instead of letting the cap stop the run halfway.
 Real upstream credentials stay in the app process.
 
-On Linux and Windows the variable is not set: there is no relay and no sandbox, and
-`run_confined.py` runs the script exactly as `python run.py` would. The study's code can read the
-signed-in key in its environment there; the run confirmation tells the researcher. Do not try to
-work around either mode. Researchers may still invoke standalone study_core.py manually with their
-own credentials.
+Desktop execution of legacy packages requires verified file isolation. On computers without that
+isolation, the researcher can review and export the project or run a supported protocol through the
+bundled engine. Preserve the legacy package when preparing a protocol.
 
 Use the runtime's `humanstudy_llm` module. It is importable as is from the bundled `python` (never
 add a `sys.path` entry for it), and needs no key handling and no package install:

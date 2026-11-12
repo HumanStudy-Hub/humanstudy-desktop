@@ -20,25 +20,26 @@ import {
 import { createProject, isInside, isWithin, listProjects, renameProject, trashProject } from './projects'
 import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
 import { checkForUpdates, installUpdate, startUpdates, stopUpdates, updateStatus } from './updates'
-import { existsSync } from 'node:fs'
+import { createReadStream, existsSync } from 'node:fs'
 import { watchFolder, type FolderWatch } from './project-watch'
 import { fileVersion } from '../shared/file-version'
+import { manifestSourceDigests, protocolSourceDigests } from '../shared/source-target'
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
 import { isVersioned, readVersion, relOf, snapshot, versionsOf } from './versions'
 import { createThreads, threads } from './threads'
-import { saveProjectText } from './program-save'
-import { createPaperBuilds } from './paper-build'
+import { assertProjectWritePath, saveProjectCopy, saveProjectText } from './program-save'
+import { createPaperBuilds, isBuildTurn } from './paper-build'
 import { createShutdown } from './shutdown-core'
 import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedRunFiles } from './pack'
-import { scientificReadiness } from './scientific-readiness'
+import { legacyFileIsolationAvailable, scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf } from './package-readiness'
 import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, restoredRunFiles, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
-import { protocolBudget, protocolReadiness, restoredReadiness, sourceTextArgs } from './protocol-readiness'
+import { protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
 import { closeProjectRelays, isRunStop } from './run-stop'
@@ -85,7 +86,8 @@ const sessionKernel = new Map<string, Kernel>()
 const sessionProject = new Map<string, string>()
 const activeTurns = new Set<string>()
 // The automatic paper build; its state file is under .humanstudy, which the project watcher ignores.
-const paperBuilds = createPaperBuilds(dir => broadcast('project:changed', dir))
+const paperBuilds = createPaperBuilds(dir => broadcast('project:changed', dir), async dir => protocolDraftCertificate(
+  await readyPython(), trustedEngineFiles(), dir, process.env.HUMANSTUDY_RUNTIME_BIN || ''))
 let threadsInitialized = false
 const shutdown = createShutdown({
   busy: () => activeTurns.size > 0,
@@ -119,7 +121,7 @@ function currentKernel(): Kernel {
       if (shutdown.closing() && e.type === 'done') e = { ...e, detail: 'shutdown' }
       if (e.type === 'done') activeTurns.delete(e.sessionId)
       else if (e.type === 'text' || e.type === 'tool' || (e.type === 'status' && e.text === 'busy') || (e.type === 'question' && !e.question?.resolved) || (e.type === 'permission' && !e.permission?.resolved)) activeTurns.add(e.sessionId)
-      try { paperBuilds.event(e) } catch (err) { console.error('paper build state', err) } // never blocks events
+      try { void Promise.resolve(paperBuilds.event(e)).catch(err => console.error('paper build check', err)) } catch (err) { console.error('paper build state', err) } // never blocks events
       threads().onEvent(e) // record before the renderer hears about it
       broadcast('kernel:event', e)
     })
@@ -186,6 +188,21 @@ const HIDDEN_DIRS = new Set(['.humanstudy', '.opencode', 'node_modules', '__pyca
 // Engineering files the pack installs for the agent. The agent reads them from disk; researchers never need to see them.
 const HIDDEN_TOP = new Set(['AGENTS.md', 'PROJECT_FORMAT.md', 'schema'])
 const TREE_LIMIT = 3000
+// Local viewer identity only. Reuse the digest across refreshes while the file version matches.
+const pdfHashes = new Map<string, { version: string; digest: Promise<string | undefined> }>()
+function pdfHash(path: string, version: string): Promise<string | undefined> {
+  const cached = pdfHashes.get(path)
+  if (cached?.version === version) return cached.digest
+  const digest = (async () => {
+    const hash = createHash('sha256')
+    for await (const chunk of createReadStream(path)) hash.update(chunk)
+    return fileVersion(await stat(path)) === version ? hash.digest('hex') : undefined
+  })().catch(() => undefined)
+  if (pdfHashes.size >= TREE_LIMIT) pdfHashes.clear()
+  pdfHashes.set(path, { version, digest })
+  return digest
+}
+
 async function listTree(root: string, dir: string, depth: number, count: { n: number }): Promise<ProjectEntry[]> {
   if (!existsSync(dir) || depth > 8) return []
   const entries = (await readdir(dir, { withFileTypes: true })).filter((d) => !HIDDEN_DIRS.has(d.name) && !d.name.startsWith('.') && !(depth === 0 && HIDDEN_TOP.has(d.name)))
@@ -200,15 +217,17 @@ async function listTree(root: string, dir: string, depth: number, count: { n: nu
       let size: number | undefined
       let mtime: number | undefined
       let version: string | undefined
+      let sha256: string | undefined
       try {
         const st = await stat(path)
         size = st.size
         mtime = Math.round(st.mtimeMs)
         version = fileVersion(st)
+        if (/\.pdf$/i.test(d.name)) sha256 = await pdfHash(path, version)
       } catch {
         /* unreadable */
       }
-      out.push({ name: d.name, path, rel, kind: 'file', ext: extname(d.name).slice(1).toLowerCase(), url: toUrl(path), size, mtime, version })
+      out.push({ name: d.name, path, rel, kind: 'file', ext: extname(d.name).slice(1).toLowerCase(), url: toUrl(path), size, mtime, version, sha256 })
     }
   }
   return out
@@ -236,27 +255,34 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
       programError = String(e)
     }
   }
-  const pdfPath = [join(dir, 'paper.pdf')].find(existsSync)
-  // The version stamp lets the paper pane notice paper.pdf replaced at the same path.
-  const pdfStat = pdfPath ? await stat(pdfPath).catch(() => null) : null
+  const tree = await listTree(dir, dir, 0, { n: 0 })
+  const paper = tree.find((entry) => entry.rel === 'paper.pdf' && entry.kind === 'file')
+  let pdf: ProjectFile | null = paper?.url ? { ...paper, url: paper.url } : null
+  if (!pdf) {
+    // Existing projects can have a linked paper.pdf, which isn't a regular tree entry.
+    const path = join(dir, 'paper.pdf')
+    const info = await stat(path).catch(() => null)
+    if (info?.isFile()) {
+      const version = fileVersion(info)
+      pdf = { name: 'paper.pdf', path, url: toUrl(path), ext: 'pdf', size: info.size,
+        mtime: Math.round(info.mtimeMs), version, sha256: await pdfHash(path, version) }
+    }
+  }
+  const [manifestDigests, protocolDigests] = await Promise.all([
+    readFile(join(dir, 'sources', 'SOURCE.json'), 'utf8').then(manifestSourceDigests).catch(() => undefined),
+    readFile(join(dir, 'protocol.json'), 'utf8').then(protocolSourceDigests).catch(() => undefined),
+  ])
   return {
     dir,
     name: basename(dir),
     program,
     programError,
-    build: paperBuilds.read(dir),
+    build: paperBuilds.readOnly(dir),
     artifacts: await listDir(join(dir, 'artifacts')),
     exports: await listDir(join(dir, 'exports')),
-    pdf: pdfPath
-      ? {
-          name: 'paper.pdf',
-          path: pdfPath,
-          url: toUrl(pdfPath),
-          ext: 'pdf',
-          ...(pdfStat ? { size: pdfStat.size, mtime: Math.round(pdfStat.mtimeMs), version: fileVersion(pdfStat) } : {}),
-        }
-      : null,
-    tree: await listTree(dir, dir, 0, { n: 0 }),
+    pdf,
+    sourceDigests: { ...manifestDigests, ...protocolDigests },
+    tree,
   }
 }
 
@@ -407,11 +433,15 @@ const studyTitle = (restored: string): string => { try { const t = JSON.parse(re
 app.whenReady().then(() => {
   // Per-run code copies of protocol runs that a quit or a crash left behind.
   void sweepRunCopies(join(app.getPath('userData'), 'protocol-runs'))
+  process.env.HUMANSTUDY_DESKTOP_APP = '1'
   process.env.HUMANSTUDY_RELAY_DIR = join(app.getPath('userData'), 'run-relays')
   // `ready` needs every build check (pack/skills/build/check_readiness.py), run from the app's own copy.
   const checkFiles = trustedCheckFiles()
-  configureScientificChecks(async (project, slug) => scientificReadiness(await readyPython(), checkFiles, project, slug, process.env.HUMANSTUDY_RUNTIME_BIN || ''),
-    app.getVersion() + ':' + createHash('sha256').update(JSON.stringify(checkFiles)).digest('hex').slice(0, 16))
+  const legacyExecution = RELAY && legacyFileIsolationAvailable()
+  configureScientificChecks(async (project, slug) => scientificReadiness(await readyPython(), checkFiles, project, slug,
+    process.env.HUMANSTUDY_RUNTIME_BIN || '', undefined, !legacyExecution),
+    app.getVersion() + ':' + createHash('sha256').update(JSON.stringify(checkFiles)).digest('hex').slice(0, 16) + ':' + legacyExecution,
+    legacyExecution, join(app.getPath('userData'), 'scientific-readiness'))
   // The protocol route: protocol.json checked by the bundled engine (pack/runtime/hsenv), never the project's copy.
   const engine = trustedEngineFiles()
   const budgetFiles = trustedBudgetFiles()
@@ -493,8 +523,6 @@ app.whenReady().then(() => {
   ipcMain.handle('project:read', async (_e, dir: string) => {
     const snap = await readProject(dir)
     watchProject(snap.dir)
-    // A published study: start fetching its original wording when it opens (cached per input state).
-    void isPublishedStudy(snap.dir).then((yes) => (yes ? originalTextProblemsOf(snap.dir) : undefined)).catch(() => undefined)
     telemetry.noteProjectFiles(snap)
     return snap
   })
@@ -525,17 +553,18 @@ app.whenReady().then(() => {
     const opts = { defaultPath: join(app.getPath('downloads'), basename(q)) }
     const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
     if (r.canceled || !r.filePath) return null
-    await copyFile(q, r.filePath)
+    await saveProjectCopy(q, r.filePath)
     return r.filePath
   })
-  ipcMain.handle('project:packageReadiness', async (_e, dir: string, studyId: string) => ({ ...await projectPackageReadiness(ownedPath(dir), studyId), modelAccess: RELAY ? 'relay' as const : 'key' as const }))
+  ipcMain.handle('project:packageReadiness', async (_e, dir: string, studyId: string, execute?: boolean) => ({ ...await projectPackageReadiness(ownedPath(dir), studyId, execute === true, true), modelAccess: RELAY ? 'relay' as const : 'key' as const }))
   ipcMain.handle('project:readText', async (_e, p: string) => {
     const q = ownedPath(p)
     if ((await stat(q)).size > TEXT_LIMIT) throw new Error('file is larger than 4 MB')
     return readFile(q, 'utf8')
   })
-  ipcMain.handle('project:writeText', async (_e, p: string, text: string, ifUnchanged?: string, action?: unknown) => {
+  ipcMain.handle('project:writeText', async (_e, p: string, text: string, ifUnchanged?: string | null, action?: unknown) => {
     const q = ownedPath(p)
+    await assertProjectWritePath(projectRootOf(q), q)
     const ref = actionRef(action)
     if (typeof text !== 'string' || text.length > TEXT_LIMIT) throw new Error('text is too large')
     telemetry.noteAction(ref, [...openProjects].find((d) => isInside(d, q))) // the save operation, with its project
@@ -549,6 +578,7 @@ app.whenReady().then(() => {
       telemetry.noteProgramWritten(root, text) // the version actually committed under the lock
       paperBuilds.humanSaved(root)
     }
+    if (basename(q).toLowerCase() === 'protocol.json') paperBuilds.humanSaved(projectRootOf(q))
     telemetry.track('file.edited', { target: extname(q).slice(1) || 'file', ...(ref ? { action: ref } : {}) })
     // The researcher's Stop: the run's model access ends now, not when the relay expires.
     const stopRoot = [...openProjects].find((d) => isInside(d, q))
@@ -576,6 +606,7 @@ app.whenReady().then(() => {
         target = join(root, 'paper.pdf')
         paperTaken = true
       } else {
+        await assertProjectWritePath(root, join(root, folder))
         await mkdir(join(root, folder), { recursive: true })
         const ext = extname(name)
         const stem = name.slice(0, name.length - ext.length)
@@ -583,6 +614,7 @@ app.whenReady().then(() => {
         for (let n = 2; existsSync(target); n++) target = join(root, folder, `${stem} ${n}${ext}`)
         name = basename(target)
       }
+      await assertProjectWritePath(root, target)
       telemetry.noteImport(root, relative(root, target), ref)
       await copyFile(src, target, 1) // COPYFILE_EXCL: never overwrite
       // Import is a known completed action; don't rely on fs.watch reporting a filename on Windows.
@@ -649,7 +681,7 @@ app.whenReady().then(() => {
     return dir
   })
   ipcMain.handle('community:openExternal', async (_e, url: string) => {
-    if (!isAllowedExternal(url)) throw new Error('refusing to open a URL outside github.com / humanstudy-hub.com')
+    if (!isAllowedExternal(url)) throw new Error('refusing to open an unsupported community link')
     await shell.openExternal(url)
   })
 
@@ -749,7 +781,12 @@ app.whenReady().then(() => {
       resume: async (dir, sid) => {
         const k = sessionKernel.get(sid) ?? currentKernel()
         const alive = await k.resumeSession(dir, sid)
-        if (alive) { sessionKernel.set(alive, k); sessionProject.set(alive, dir); paperBuilds.bind(alive, dir) }
+        if (alive) {
+          sessionKernel.set(alive, k)
+          sessionProject.set(alive, dir)
+          paperBuilds.bind(alive, dir)
+          telemetry.bindSession(alive, dir)
+        }
         return alive
       },
     },
@@ -844,7 +881,9 @@ app.whenReady().then(() => {
     const prompt = withPrivateCopyNote(threads().beforeSend(id, text, workspace), text, projectDir ? privateImports.get(resolve(projectDir)) ?? [] : [])
     const alreadyActive = activeTurns.has(id)
     activeTurns.add(id)
-    try { await k.send(id, prompt) }
+    const buildState = projectDir ? paperBuilds.read(projectDir) : undefined
+    const purpose = isBuildTurn(buildState, id, actionRef(action)?.target) ? 'build' as const : undefined
+    try { await k.send(id, prompt, { purpose }) }
     catch (error) { if (startedRelay) await closeRunRelay(id); if (!alreadyActive) activeTurns.delete(id); paperBuilds.sendFailed(id, error); throw error }
   })
   ipcMain.handle('kernel:export', async (_e,sid:string) => {
@@ -917,6 +956,7 @@ app.whenReady().then(() => {
     telemetry.notePermission(id, permissionId, actionRef(action))
     return kernelFor(id).reply(id, permissionId, response)
   })
+  ipcMain.handle('kernel:permissions', (_e, id: string) => kernelFor(id).permissions(id))
   ipcMain.handle('kernel:questions', async (_e, id: string) => {
     const pending = await kernelFor(id).questions(id)
     if (pending.length) activeTurns.add(id)

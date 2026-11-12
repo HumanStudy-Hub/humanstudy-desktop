@@ -47,10 +47,10 @@ import { validateAnswers, type KernelQuestion } from '../../shared/question'
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdirSync, realpathSync } from 'node:fs'
+import { lstatSync, mkdirSync, realpathSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join, relative, isAbsolute, resolve, sep } from 'node:path'
+import { basename, dirname, join, relative, isAbsolute, resolve, sep } from 'node:path'
 import { kernelRuntimeEnv } from '../runtime-core'
 import { Emitter } from './types'
 import type { Kernel, KernelEvent, KernelPermission, PermissionReply } from './types'
@@ -72,6 +72,7 @@ export const BASH_PERMISSION: Record<string, 'ask' | 'allow'> = {
 
 export const DEFAULT_PROVIDER = 'humanstudy'
 export const DEFAULT_MODEL = 'anthropic/claude-haiku-5.5'
+export const BUILD_MODEL = 'anthropic/claude-sonnet-5.5'
 /** Models the HumanStudy edition of opencode already declares under provider.humanstudy
  *  (packages/opencode/src/config/humanstudy.ts in HumanStudy-Hub/opencode). Any other hosted model
  *  the server offers is declared in the inline config. */
@@ -119,6 +120,8 @@ interface Server {
 interface SessionState {
   server: Server
   inFlight: boolean
+  stopping?: boolean
+  buildLookup?: AbortController
   roles: Map<string, string> // messageID -> role
   partTypes: Map<string, string> // partID -> part type
   emitted: Map<string, number> // text partID -> chars already emitted
@@ -138,6 +141,8 @@ interface SessionState {
   recovery: { epoch: number; attempts: number; pending: boolean; running: boolean; cancelled: boolean; progress: boolean; reason?: 'output_limit' | 'invalid_tool_call'; assistantId?: string }
   expectUserIdentity?: boolean
   selection?: NativeSelection
+  /** Per-turn default; does not change the researcher's model selection for the next chat. */
+  turnModel?: { providerID: string; modelID: string }
   title: string // last session title emitted
 }
 
@@ -172,6 +177,7 @@ export class OpencodeKernel implements Kernel {
   private home: string
   private provider: string
   private model: string
+  private hostedModels: string[]
   private readyTimeoutMs: number
   private permission: 'ask' | 'project' | undefined
   /** Fixed at construction: whether simulations use the per-run relay (see OpencodeOptions.relay). */
@@ -191,6 +197,11 @@ export class OpencodeKernel implements Kernel {
     // An empty provider means "do not force a model" (no hosted access and no dev key).
     this.provider = opts.provider ?? process.env.HUMANSTUDY_PROVIDER ?? DEFAULT_PROVIDER
     this.model = opts.model ?? process.env.HUMANSTUDY_MODEL ?? DEFAULT_MODEL
+    let offers: unknown
+    try { offers = JSON.parse(process.env.HUMANSTUDY_HOSTED_MODELS ?? '[]') } catch { /* use known models */ }
+    this.hostedModels = [...new Set([this.model, BUILD_MODEL,
+      ...(Array.isArray(offers) ? offers.filter((id): id is string => typeof id === 'string' && /^[\w./:-]+$/.test(id)) : []),
+    ])]
     // Own OpenRouter keys are a developer path only.
     if (this.provider === 'openrouter' && !(process.env.HUMANSTUDY_DEV_KEYS === '1' && process.env.OPENROUTER_API_KEY)) this.provider = ''
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 30_000
@@ -261,8 +272,11 @@ export class OpencodeKernel implements Kernel {
 
   async reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void> {
     const s = this.session(sessionId)
+    const permission = s.pendingPermissions.get(permissionId)
+    if (s.stopping || !s.inFlight || !permission) throw new Error('This permission request is no longer pending in this session.')
     await this.replyTo(s.server, sessionId, permissionId, response)
     s.pendingPermissions.delete(permissionId)
+    if (this.reportResolved(permissionId)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...permission, resolved: response } })
     if (response === 'reject') { s.recovery.cancelled = true; s.recovery.pending = false }
   }
 
@@ -282,6 +296,12 @@ export class OpencodeKernel implements Kernel {
         res = await post(`/session/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(permissionId)}`, { response })
     }
     if (!res.ok) throw new Error(`opencode permission reply -> ${res.status} ${(await res.text().catch(() => ''))}`)
+  }
+
+  permissions(sessionId: string): KernelPermission[] {
+    const s = this.session(sessionId)
+    if (!s.inFlight || s.stopping) return []
+    return [...s.pendingPermissions.values()].filter(perm => !this.autoReplies.has(perm.id) && !this.resolvedReported.has(perm.id))
   }
 
   async questions(sessionId: string): Promise<KernelQuestion[]> {
@@ -318,8 +338,36 @@ export class OpencodeKernel implements Kernel {
     if (this.reportResolved('q:' + questionId)) this.emitter.emit({ sessionId, type: 'question', question: { ...question, resolved: 'rejected' } })
   }
 
-  async send(sessionId: string, text: string): Promise<void> {
+  private hostedBuildModel(allowed: string[], explicit?: string): { providerID: string; modelID: string } {
+    if (explicit && !allowed.includes(explicit)) throw new Error('This account cannot use the selected hosted model. Choose an available model and retry the Build.')
+    const modelID = explicit ?? [BUILD_MODEL, ...this.hostedModels, ...BAKED_HOSTED_MODELS].find(model => allowed.includes(model))
+    if (!modelID) throw new Error('No hosted Build model is available for this account. Check your hosted allowance and try again.')
+    return { providerID: HOSTED_PROVIDER, modelID }
+  }
+
+  async send(sessionId: string, text: string, options?: { purpose?: 'build' }): Promise<void> {
     const s = this.session(sessionId)
+    if (s.stopping) throw new Error('Wait for this conversation to stop before starting another turn.')
+    if (s.buildLookup) throw new Error('The Build is already checking available models.')
+    const selected = s.selection?.model
+    let model = selected ?? (this.provider ? { providerID: this.provider, modelID: this.model } : undefined)
+    if (options?.purpose === 'build' && (selected?.providerID ?? this.provider) === HOSTED_PROVIDER) {
+      const lookup = new AbortController()
+      s.buildLookup = lookup
+      let allowed: string[]
+      try {
+        allowed = await s.server.transport?.models(lookup.signal) ?? []
+      } catch {
+        if (lookup.signal.aborted) throw new Error('The Build was stopped.')
+        throw new Error('Could not check hosted models. Check your connection and try the Build again.')
+      } finally {
+        s.buildLookup = undefined
+      }
+      if (lookup.signal.aborted || s.stopping || this.disposed) throw new Error('The Build was stopped.')
+      if (s.selection?.model !== selected) throw new Error('The model selection changed. Retry the Build with the selected model.')
+      model = this.hostedBuildModel(allowed, selected?.modelID)
+    }
+    s.turnModel = model
     s.turnBaseline = new Set(s.roles.keys())
     s.awaitingAssistant = true
     s.expectUserIdentity = true
@@ -332,7 +380,7 @@ export class OpencodeKernel implements Kernel {
         parts: [{ type: 'text', text }],
         ...(s.selection?.agent ? {agent:s.selection.agent} : {}),
         ...(s.selection?.variant ? {variant:s.selection.variant} : {}),
-        ...(s.selection?.model ? {model:s.selection.model} : this.provider ? { model: { providerID: this.provider, modelID: this.model } } : {}),
+        ...(s.turnModel ? { model: s.turnModel } : {}),
       })
       if (s.server.eventsOnline === false) this.beginCatchup(s.server)
     } catch (err) {
@@ -402,6 +450,9 @@ export class OpencodeKernel implements Kernel {
     const route = nativeRoute(sessionId, request, s.selection ?? {}, defaults)
     const turn = NATIVE_TURNS.has(request.operation)
     if (turn) {
+      if (s.stopping) throw new Error('Wait for this conversation to stop before starting another turn.')
+      if (s.buildLookup) throw new Error('The Build is already checking available models.')
+      s.turnModel = s.selection?.model ?? (this.provider ? { providerID: this.provider, modelID: this.model } : undefined)
       s.turnBaseline = new Set(s.roles.keys()); s.inFlight = true; s.awaitingAssistant = true; s.expectUserIdentity = request.operation!=='compact'; s.failed = false
       s.lastActivity = this.clock(); s.lastProbe = 0; s.idleSince = undefined; s.stalled = false
       s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, pending: false, running: false, cancelled: request.operation === 'compact', progress: false }
@@ -432,22 +483,38 @@ export class OpencodeKernel implements Kernel {
 
   async abort(sessionId: string): Promise<void> {
     const s = this.session(sessionId)
-    s.recovery.cancelled = true
-    s.recovery.pending = false
-    s.awaitingAssistant = false
-    await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/abort`)
-    // Native abort can leave a question in the server's pending list. Explicitly dismiss
-    // those requests, otherwise reopening this conversation resurrects a stopped turn.
-    const pending = await this.listQuestions(sessionId)
-    s.pendingQuestions.clear()
-    for (const q of pending) {
-      await this.request(s.server, 'POST', `/question/${encodeURIComponent(q.id)}/reject`)
-      if (this.reportResolved('q:' + q.id)) this.emitter.emit({ sessionId, type: 'question', question: { ...q, resolved: 'rejected' } })
-    }
-    // session.idle normally emits done; clearing a leftover request must not mark it busy again.
-    if (s.inFlight) {
-      s.inFlight = false
-      this.emitter.emit({ sessionId, type: 'done' })
+    if (s.stopping) throw new Error('This conversation is already stopping.')
+    s.stopping = true
+    s.buildLookup?.abort()
+    let stopped = false
+    try {
+      await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/abort`)
+      stopped = true
+      s.recovery.cancelled = true
+      s.recovery.pending = false
+      s.awaitingAssistant = false
+      // Native abort can leave requests behind. Hide them during Stop and
+      // tombstone them before cleanup so a stale snapshot cannot restore them.
+      const unresolved = [...s.pendingPermissions.keys()].filter(id => this.reportResolved(id))
+      s.pendingPermissions.clear()
+      await Promise.allSettled(unresolved.map(id => this.replyTo(s.server, sessionId, id, 'reject')))
+      const pending = await this.listQuestions(sessionId)
+      s.pendingQuestions.clear()
+      for (const q of pending) {
+        await this.request(s.server, 'POST', `/question/${encodeURIComponent(q.id)}/reject`)
+        if (this.reportResolved('q:' + q.id)) this.emitter.emit({ sessionId, type: 'question', question: { ...q, resolved: 'rejected' } })
+      }
+    } finally {
+      s.stopping = false
+      if (stopped) {
+        // Capture late asks during cleanup too. A stopped turn cannot be resumed.
+        for (const id of s.pendingPermissions.keys()) this.reportResolved(id)
+        s.pendingPermissions.clear()
+        if (s.inFlight) {
+          s.inFlight = false
+          this.emitter.emit({ sessionId, type: 'done' })
+        }
+      }
     }
   }
 
@@ -459,20 +526,20 @@ export class OpencodeKernel implements Kernel {
     const r = s.recovery
     const epoch = r.epoch
     const reason = r.reason ?? 'output_limit'
-    const recoveryProvider=s.selection?.model?.providerID??this.provider
+    const recoveryProvider=s.turnModel?.providerID??this.provider
     s.expectUserIdentity=false
     // Defer beyond the idle callback; never submit while the native turn is still active.
     await Promise.resolve()
     if (this.disposed || r.cancelled || s.recovery.epoch !== epoch || !r.running) { r.running = false; return }
-    if (s.pendingPermissions.size || s.pendingQuestions.size) { r.pending = true; r.running = false; return }
+    if (s.stopping || s.pendingPermissions.size || s.pendingQuestions.size) { r.pending = true; r.running = false; return }
     const attempt = ++r.attempts
     r.progress = false
     s.lastActivity = this.clock(); s.idleSince = undefined; s.stalled = false
-    this.emitter.emit({ sessionId, type: 'status', text: 'recovering', detail: `Recovery ${attempt}/2: checking saved work and splitting the remaining task into smaller steps.`, input: { attempt, reason, strategy: 'checkpoints_smaller_units', model: s.selection?.model?.modelID??this.model, ...(recoveryProvider === HOSTED_PROVIDER ? { reasoningEffort: 'low' } : {}) } })
+    this.emitter.emit({ sessionId, type: 'status', text: 'recovering', detail: `Recovery ${attempt}/2: checking saved work and splitting the remaining task into smaller steps.`, input: { attempt, reason, strategy: 'checkpoints_smaller_units', model: s.turnModel?.modelID??this.model, ...(recoveryProvider === HOSTED_PROVIDER ? { reasoningEffort: 'low' } : {}) } })
     s.awaitingAssistant = true
     try {
       await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
-        ...(s.selection?.model ? {model:s.selection.model} : this.provider ? { model: { providerID: this.provider, modelID: this.model } } : {}),
+        ...(s.turnModel ? { model: s.turnModel } : {}),
         ...(s.selection?.agent?{agent:s.selection.agent}:{}),
         ...(recoveryProvider === HOSTED_PROVIDER ? { variant: 'humanstudy-recovery' } : s.selection?.variant?{variant:s.selection.variant}:{}),
         parts: [{ type: 'text', text: `[HumanStudy automatic recovery ${attempt}/2: ${reason === 'invalid_tool_call' ? 'the previous tool call had malformed arguments and may not have executed' : 'the previous model response exhausted its generation budget'}; this is not a new research request.]
@@ -493,6 +560,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     this.disposed = true
     clearInterval(this.livenessTimer)
     process.removeListener('exit', this.exitHook)
+    for (const session of this.sessions.values()) session.buildLookup?.abort()
     const procs = [...this.live]
     this.killAll('SIGTERM')
     await Promise.all(
@@ -538,14 +606,14 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     }
   }
   private autoApprove(sessionId: string, s: SessionState, perm: KernelPermission): void {
-    if (this.autoReplies.has(perm.id)) return
+    if (s.stopping || this.autoReplies.has(perm.id)) return
     this.autoReplies.add(perm.id)
     // One call only: an Auto approval must not become a permanent native permission
     // grant that would silently survive switching Auto off.
     this.replyTo(s.server, sessionId, perm.id, 'once').then(() => {
       s.pendingPermissions.delete(perm.id)
       if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'once' } })
-    }, () => this.emitter.emit({ sessionId, type: 'permission', permission: perm }))
+    }, () => { if (s.inFlight && !s.stopping && !this.resolvedReported.has(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: perm }) })
       .finally(() => this.autoReplies.delete(perm.id))
   }
 
@@ -581,10 +649,11 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       permission: { edit: 'ask', bash: BASH_PERMISSION, external_directory: 'ask' },
     }
     if (this.provider === HOSTED_PROVIDER) {
-      cfg.provider = { [HOSTED_PROVIDER]: { ...(transport ? { options: { baseURL: transport.baseURL, apiKey: transport.token } } : {}), models: { [this.model]: {
-        ...(!BAKED_HOSTED_MODELS.includes(this.model) ? { name: this.model, tool_call: true } : {}),
-        variants: { 'humanstudy-recovery': { reasoningEffort: 'low' } },
-      } } } }
+      cfg.provider = { [HOSTED_PROVIDER]: { ...(transport ? { options: { baseURL: transport.baseURL, apiKey: transport.token } } : {}),
+        models: Object.fromEntries(this.hostedModels.map(id => [id, {
+          ...(!BAKED_HOSTED_MODELS.includes(id) ? { name: id, tool_call: true } : {}),
+          variants: { 'humanstudy-recovery': { reasoningEffort: 'low' } },
+        }])) } }
     }
     // Developer path only (HUMANSTUDY_DEV_KEYS=1): the key stays in the env, opencode substitutes it.
     if (this.provider === 'openrouter' && transport) cfg.provider = { openrouter: { options: { apiKey: transport.token, baseURL: transport.baseURL } } }
@@ -856,7 +925,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         this.handle({ type: 'message.updated', properties: { info: { ...info, sessionID: sessionId } } })
         if (info.error && !s.failed) this.handle({ type: 'session.error', properties: { sessionID: sessionId, error: info.error } })
       }
-      const pendingPermissions = permissions.filter(p => p.sessionID === sessionId)
+      const pendingPermissions = permissions.filter(p => p.sessionID === sessionId && !this.resolvedReported.has(String(p.id)))
       for (const p of pendingPermissions) if (!s.pendingPermissions.has(String(p.id))) this.handle({ type: 'permission.asked', properties: p })
       const pendingQuestions = questions.filter(q => q.sessionID === sessionId)
       for (const q of pendingQuestions) this.handle({ type: 'question.asked', properties: q })
@@ -1098,7 +1167,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       }
 
       case 'session.idle':
-        if (!s.inFlight) return // opencode repeats idle; only one `done` per turn
+        if (!s.inFlight || s.stopping) return // opencode repeats idle; only one `done` per turn
         if (s.recovery.running && !s.recovery.cancelled) return
         if (s.recovery.pending && !s.recovery.cancelled) {
           // Waiting for a researcher is not a model failure. Never auto-answer or bypass it.
@@ -1135,8 +1204,9 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
       case 'permission.asked': {
         const perm = toKernelPermission(p)
-        if (!perm) return
+        if (!perm || !s.inFlight || this.resolvedReported.has(perm.id)) return
         s.pendingPermissions.set(perm.id, perm)
+        if (s.stopping) return
         if (this.permissionMode() === 'project' && isInsideProject(s.server.dir, perm)) {
           this.autoApprove(sessionId, s, perm)
           return
@@ -1179,11 +1249,25 @@ export function toKernelPermission(p: {
 
 /** Tool permissions that are safe to auto-approve when "inside the project": edit/write patterns that
  *  resolve under `dir`, and bash commands that name no path outside it. Anything else is asked. */
+function permissionPath(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || lstatSync(path, { throwIfNoEntry: false })) throw error
+    // A write can create a file or directory. Resolve the nearest existing ancestor first.
+    return join(permissionPath(dirname(path)), basename(path))
+  }
+}
+
 export function isInsideProject(dir: string, perm: KernelPermission): boolean {
   const inside = (p: string): boolean => {
     const abs = isAbsolute(p) ? p : resolve(dir, p)
-    const rel = relative(dir, abs)
-    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+    try {
+      const rel = relative(permissionPath(resolve(dir)), permissionPath(abs))
+      return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+    } catch {
+      return false
+    }
   }
   if (perm.type === 'edit' || perm.type === 'write') {
     // patterns are relative to opencode's worktree root ("/" outside git), so prefer the absolute filepath.

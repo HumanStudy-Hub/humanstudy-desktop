@@ -14,7 +14,7 @@ import { createSerial, createWriteAttribution, isSaveTemp } from './write-captur
 import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
 import { loadPrivateIndexDir } from './private-index'
-import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, namesPrivatePath, mayCollectFile, programDiff, REDACTED_PRIVATE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
+import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, namesPrivatePath, mayCollectFile, programDiff, PRIVATE_MATERIAL, REDACTED_PRIVATE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
 import { createReplay, REPLAY_FLUSH_MS, type Replay, type ReplayFile, type ReplayFs } from './replay-core'
 import type { Capture } from './threads-core'
 import type { KernelEvent } from './kernel-types'
@@ -39,6 +39,7 @@ const write = (p: string, s: string): void => {
 }
 
 let telemetry: Telemetry | null = null
+const webResearchClient = (): boolean => process.env.HUMANSTUDY_RESEARCH_SURFACE === 'web'
 export function getTelemetry(): Telemetry {
   if (telemetry) return telemetry
   const acct = getAccount()
@@ -66,17 +67,23 @@ export function getTelemetry(): Telemetry {
     auth: () => acct.restAuth(),
     appVersion: app.getVersion(),
     platform: process.platform,
+    ...(webResearchClient() ? { clientSurface: 'web' as const } : {}),
   })
   return telemetry
 }
 
 let sources: ReturnType<typeof createResearchCollector> | null = null
 function sourceCollector() {
-  if (!sources) sources = createResearchCollector({
-    root: join(dir(), 'research-v1'), surface: 'desktop', appVersion: app.getVersion(),
-    auth: () => getAccount().restAuth(), ownerId: () => getAccount().researchOwner(),
-    allowed: () => { const s = getTelemetry().status(); return s.consentVersion === 3 && s.usage && s.content },
-  })
+  if (!sources) {
+    const root = join(dir(), 'research-v1')
+    const web = webResearchClient()
+    sources = createResearchCollector({
+      root: web ? join(root, 'web') : root, surface: web ? 'web' : 'desktop', appVersion: app.getVersion(),
+      ...(web ? { previousRoot: root } : {}),
+      auth: () => getAccount().restAuth(), ownerId: () => getAccount().researchOwner(),
+      allowed: () => { const s = getTelemetry().status(); return s.consentVersion === 3 && s.usage && s.content },
+    })
+  }
   return sources
 }
 /** The one way a research event reaches the collector: through the private-material boundary (redactCapture). */
@@ -114,7 +121,7 @@ export function noteBuildClaim(dir: string, sessionId: string, ref?: ActionRef):
 }
 /** Private study materials (build skill): supplied by the researcher, or public without an open license. Never
  *  collected, as they are never exported. */
-const isResearcherMaterial = (rel: string): boolean => /^sources\/(researcher|private)(\/|$)/i.test(rel.split('\\').join('/'))
+const isResearcherMaterial = (rel: string): boolean => PRIVATE_MATERIAL.test(rel)
 async function queueSource(projectDir: string, rel: string, trigger: 'baseline' | 'external' = 'external'): Promise<void> {
   if (isResearcherMaterial(rel)) return
   const projectId = projectIdFor(projectDir)
@@ -214,9 +221,15 @@ interface Turn {
 const sessionDirs = new Map<string, string>()
 const turns = new Map<string, Turn>()
 
+export function bindSession(sessionId: string, projectDir: string): void {
+  const dir = resolve(projectDir)
+  if (sessionDirs.get(sessionId) === dir) return
+  sessionDirs.set(sessionId, dir)
+  researchAgent.bind(sessionId, projectIdFor(dir) ?? undefined, dir)
+}
+
 export function trackSessionStart(sessionId: string, projectDir: string, kernelName: string, startedAt: number): void {
-  sessionDirs.set(sessionId, resolve(projectDir))
-  researchAgent.bind(sessionId, projectIdFor(projectDir) ?? undefined, projectDir)
+  bindSession(sessionId, projectDir)
   track('kernel.session_start', { durationMs: Date.now() - startedAt, metadata: { kernel: kernelName } }, projectDir)
 }
 export function trackSessionError(projectDir: string, err: unknown, startedAt: number): void {
@@ -295,6 +308,7 @@ const errorLine = (err: unknown): string =>
 const seenFiles = new Map<string, Set<string>>()
 /** Emits artifact.created / export.created for files that appear in an open project. */
 export function noteProjectFiles(snap: ProjectSnapshot): void {
+  if (snap.tree.some(entry => entry.rel === 'protocol.json')) noteFsChange(snap.dir, 'protocol.json')
   if (snap.program) noteFsChange(snap.dir, 'program.json') // baseline version when the project opens
   const now = new Set([...snap.artifacts.map((f) => `artifacts/${f.name}`), ...snap.exports.map((f) => `exports/${f.name}`)])
   const before = seenFiles.get(snap.dir)
@@ -523,7 +537,7 @@ export function noteFsChange(projectDir: string, rel: string): void {
   const isProgram = r === 'program.json'
   const isAnnotation = r.endsWith('.annotations.json')
   const isSource = !isAnnotation && (r === 'paper.pdf' || r.startsWith('sources/'))
-  if (!isProgram && !isSource && !isAnnotation && !WATCHED_DIRS.test(r)) return
+  if (!isProgram && r !== 'protocol.json' && r !== 'study.json' && !isSource && !isAnnotation && !WATCHED_DIRS.test(r)) return
   if (r.includes('/.') || isSaveTemp(r)) return
   const key = `${projectDir}\0${r}`
   clearTimeout(fsTimers.get(key))

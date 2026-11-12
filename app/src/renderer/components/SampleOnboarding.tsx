@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { t } from '../i18n'
 
-/** One short, skippable introduction shown after creating the editable sample project. */
+/** One short, skippable introduction shown in the first workspace, after consent. */
 export function SampleOnboarding({ onClose }: { onClose(): void }) {
   const dialog = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -20,7 +20,7 @@ export function SampleOnboarding({ onClose }: { onClose(): void }) {
         <h2 id="sample-guide-title">{t('sampleGuide.title')}</h2>
         <p className="muted sample-guide-lead">{t('sampleGuide.intro')}</p>
         <ol className="sample-guide-steps">
-          {[1, 2, 3, 4, 5].map((step) => <li key={step}>{t(`sampleGuide.step${step}`)}</li>)}
+          {[1, 2, 3].map((step) => <li key={step}>{t(`sampleGuide.step${step}`)}</li>)}
         </ol>
         <div className="row-end sample-guide-actions">
           <button className="ghost" onClick={onClose}>{t('sampleGuide.skip')}</button>

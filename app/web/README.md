@@ -30,7 +30,7 @@ key path (`relaySupported()` is macOS-only), inside the user's own sandbox.
 ## Build and run locally
 
 ```sh
-npx electron-vite build && node scripts/build-web.mjs        # -> out/web
+node scripts/build-web.mjs        # rebuilds desktop bundles, then -> out/web
 HS_WEB_INSECURE=1 HUMANSTUDY_KERNEL=mock PORT=5310 node out/web/server.cjs
 node --test web/web.test.mjs
 ```
@@ -38,30 +38,43 @@ node --test web/web.test.mjs
 ## The sandbox image
 
 ```sh
-COPYFILE_DISABLE=1 tar -czf web.tgz -C out/web .
+# Use the web archive from the approved Desktop release tag.
+web_archive='humanstudy-web-<version>.tgz'
+# Linux x64, baseline x64 and arm64 were verified on hs-v1.19.0-2.
+linux_kernel_tag=hs-v1.19.0-2
 vercel sandbox create --name hs-web-img --runtime node24 --vcpus 2 --timeout 30m --non-persistent
-vercel sandbox copy web.tgz hs-web-img:/vercel/sandbox/web.tgz
-vercel sandbox exec hs-web-img -- bash -lc 'mkdir -p /vercel/sandbox/hs/app && tar -xzf /vercel/sandbox/web.tgz -C /vercel/sandbox/hs/app && bash /vercel/sandbox/hs/app/setup.sh hs-v1.19.0-2'
+vercel sandbox copy "$web_archive" hs-web-img:/vercel/sandbox/web.tgz
+vercel sandbox exec hs-web-img -- bash -lc 'mkdir -p /vercel/sandbox/hs/app && tar -xzf /vercel/sandbox/web.tgz -C /vercel/sandbox/hs/app && bash /vercel/sandbox/hs/app/setup.sh "$1"' _ "$linux_kernel_tag"
 vercel sandbox snapshot hs-web-img --stop --expiration 0      # -> TRY_SNAPSHOT_ID on humanstudy-hub-web
 ```
 
-`setup.sh` installs the Linux kernel from the HumanStudy-Hub/opencode release (checked against its
-`SHA256SUMS.txt`; tag `hs-v1.19.0-2` is the first with Linux builds) and starts the app once so it installs
+`setup.sh` installs the Linux kernel from the HumanStudy-Hub/opencode release, verifies its
+`SHA256SUMS.txt` and starts the app once so it installs
 the research runtime (`PYTHON_ASSETS` has Linux entries for this). The image holds nothing user- or
 install-specific.
 
-Each user's sandbox is **persistent**: Vercel snapshots its filesystem when it stops and restores it on
-the next visit, so a new image reaches only users created after it. To update everyone's app, attach the
-build to a desktop release and point the launcher at it:
+Check the kernel tag's published Linux assets and `SHA256SUMS.txt` before using it for a new
+image. The browser image uses the matching Linux kernel build, whose release tag can differ
+from the Desktop installer tag.
 
-```sh
-COPYFILE_DISABLE=1 tar -czf humanstudy-web-0.7.3.tgz -C out/web .
-gh release upload v0.7.3 humanstudy-web-0.7.3.tgz            # electron-updater ignores it
-# humanstudy-hub-web env: TRY_APP_URL=<asset URL>  TRY_APP_SHA256=<sha256 of the file>
-```
+Each user's sandbox is persistent. To update existing sandboxes, set the launcher's
+`TRY_APP_URL` and `TRY_APP_SHA256` from the approved release assets. The startup script verifies
+the digest and installs the app on the next start. Projects, accounts and conversations live
+outside the app folder.
 
-`start.sh` installs it (checked against the digest) the next time a user's app starts; projects, account
-and conversations are outside the app folder and stay.
+## Release identity
 
-Limits (Hobby): 45-minute sessions, 10 at a time, 5 active-CPU hours a month. A session that ends shows
-"This online session has ended … Reopen"; nothing is lost.
+Every web build includes `build-manifest.json`: `version`, `gitsha`, `packhash`, and
+`dirty`. The pack hash covers sorted `[relative path, SHA-256]` pairs for the raw
+pack files bundled by `pack.ts`; no timestamps, machine paths, or account data.
+The builder rebuilds main/renderer first, so old output cannot be stamped as new.
+Tagged CI builds reject a package-version mismatch or a dirty source tree.
+
+`GET /healthz` exposes `{ok, ready, build}` with this public identity. Older builds
+without a manifest report `build: null`; the launcher must treat missing identity
+as unknown, not current. Runtime environment version overrides do not change it.
+
+The [tagged release workflow](../../.github/workflows/release.yml) attaches `humanstudy-web-<version>.tgz`, its `.tgz.sha256`, and
+`.manifest.json` to the existing draft for the same tag after installer jobs pass.
+This does not publish the draft, change a sandbox image, or update `/try` configuration.
+Before rollout, compare the archive checksum and health identity with the approved tag.

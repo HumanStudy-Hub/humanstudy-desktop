@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 // node --test src/main/protocol-readiness.test.mjs — the protocol route's gate (v0.8): hsenv.checks from the
 // app's bundled engine, run confined, on a project's protocol.json. Fail-closed: no report, no pass.
 import { build } from 'esbuild'
@@ -146,4 +147,33 @@ test('review 2 M3: the budget is measured from the protocol with the bundled run
   writeFileSync(join(longer, 'protocol.json'), JSON.stringify(p))
   const b2 = await R.protocolBudget(python, BUDGET_FILES, longer, '')
   assert.ok(b2.arms.control.tokens_per_member > b.arms.control.tokens_per_member)
+})
+
+test('engine requirements accept documented ranges and refuse incompatible or unknown syntax',()=>{
+ assert.equal(R.engineRangeProblem('>=0.8,<0.9','0.8.1'),null)
+ assert.equal(R.engineRangeProblem('0.8.1','0.8.1'),null)
+ for(const [range,version] of [['>=0.9','0.8.1'],['<0.8','0.8.1'],['unrecognised','0.8.1'],['>=0.8','']])assert.equal(R.engineRangeProblem(range,version).check,'app-version')
+})
+
+test('draft certificate checks exact bytes and accepts declared missing material without granting a run',{skip:!python},async()=>{
+ const dir=fixture(),p=JSON.parse(readFileSync(join(here,'fixtures/protocol-draft.json'),'utf8'))
+ for(const a of p.arms){a.runnable=false;a.why='Original handout is not available.'}
+ writeFileSync(join(dir,'protocol.json'),JSON.stringify(p))
+ const r=await R.protocolDraftCertificate(python,ENGINE,dir,'')
+ assert.ok(r,'the independent check must run');assert.deepEqual(r.problems,[])
+ assert.equal(r.hash,createHash('sha256').update(readFileSync(join(dir,'protocol.json'))).digest('hex'))
+ p.flow={seq:[{stage:'does-not-exist'}]};writeFileSync(join(dir,'protocol.json'),JSON.stringify(p))
+ assert.ok((await R.protocolDraftCertificate(python,ENGINE,dir,'')).problems.length,'broken references cannot certify completion')
+ assert.equal(await R.protocolDraftCertificate(null,ENGINE,dir,''),null)
+})
+
+test('the shipped blocked draft example satisfies the app draft certificate', { skip: !python }, async () => {
+  const dir = fixture()
+  const example = readFileSync(join(here, '../../../pack/skills/build/DRAFT_PROTOCOL.json'), 'utf8')
+  writeFileSync(join(dir, 'protocol.json'), example)
+
+  const certificate = await R.protocolDraftCertificate(python, ENGINE, dir, '')
+  assert.ok(certificate, 'the independent check must run')
+  assert.deepEqual(certificate.problems, [])
+  assert.equal(certificate.hash, createHash('sha256').update(example).digest('hex'))
 })

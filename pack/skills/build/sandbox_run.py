@@ -198,9 +198,9 @@ RELAY_SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 def wrapper(work, read=(), relay_port=None, system_sandbox=False):
     """(argv prefix, confinement label) for this platform. A relay run (relay_port) or system_sandbox
     needs the system /usr/bin/sandbox-exec and refuses to run without it."""
-    strict = relay_port is not None or system_sandbox
+    strict = relay_port is not None or system_sandbox or os.environ.get("HUMANSTUDY_REQUIRE_FILE_ISOLATION") == "1"
     if strict and sys.platform != "darwin":
-        raise RuntimeError("Relay simulations require macOS sandbox-exec; Linux/Windows cannot enforce relay-only access.")
+        raise RuntimeError("This operation requires verified file isolation through macOS sandbox-exec.")
     if already_confined():
         if os.environ.get(MARK) == "1":  # our own confinement (the variable alone switches nothing off)
             return [], "inherited"
@@ -215,7 +215,7 @@ def wrapper(work, read=(), relay_port=None, system_sandbox=False):
             return [exe, "-p", macos_profile(work, read, relay_port)], \
                 "sandbox-exec (no network, writes only in the work folder, home folder unreadable)"
         if strict:
-            raise RuntimeError("Relay simulations require sandbox-exec.")
+            raise RuntimeError("This operation requires sandbox-exec.")
         _warn("darwin", "sandbox-exec is unavailable: package code runs with a clean environment but without "
                         "network or file confinement")
         return [], "environment only"

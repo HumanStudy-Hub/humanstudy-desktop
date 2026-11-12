@@ -1,7 +1,7 @@
 # Project folder format
 
 One folder per study project, by default `~/Documents/HumanStudy Projects/<project>/`. The app
-shows the whole folder as the **Program** explorer and `program.json` as the **Study** document.
+shows the whole folder as the **Program** explorer and a current protocol-bound participant preview as the **Study** document. New studies use protocol.json; legacy program/package projects remain supported.
 
 ```text
 <project>/
@@ -16,7 +16,7 @@ shows the whole folder as the **Program** explorer and `program.json` as the **S
                             stated); written by build/sources.py
     researcher/             materials the researcher supplied (instructions, stimuli); recorded as
                             `researcher-supplied`, read by the package at run time, never exported
-  program.json              Human Program v2 (canonical design; schema/human-program.schema.json)
+  program.json              Scholarly Human Program v2 for paired projects; full execution graph only in legacy projects. ( schema/human-program.schema.json)
   effects.json              hypotheses -> computable effects: outcome, contrast, predicted direction,
                             the paper's reported numbers (each quoted) and how each is computed from
                             sessions (schema/effects.schema.json; checked by build/effects.py);
@@ -79,7 +79,7 @@ package route is kept so community studies built before v0.8 still run.
 
 Rules:
 
-- `program.json` is the single source of study facts. Artifacts, the package and exports are
+- `protocol.json` is canonical for execution in new studies; scholarly program.json holds source-linked research claims without duplicate executable steps. Legacy projects keep their original full program. Artifacts, the package and exports are
   derived from it and from `paper.pdf`/`sources/`; they never introduce facts of their own.
 - The package refers to `program.json` (`study.json.programRef`) and never copies it; the evidence
   and the missing information are read from `program.json`. Older packages with a program copy,

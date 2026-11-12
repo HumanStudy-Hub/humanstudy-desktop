@@ -26,6 +26,8 @@ const SB = 'https://sb.test'
 let clock = 1_000_000_000_000
 const calls = []
 let refreshOk = true
+let holdRefresh
+let holdLogout
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 const stubFetch = async (url, init = {}) => {
   const u = String(url)
@@ -41,6 +43,7 @@ const stubFetch = async (url, init = {}) => {
   }
   if (u === `${SB}/auth/v1/token?grant_type=refresh_token`) {
     assert.ok(['RT1', 'RT2'].includes(body.refresh_token))
+    if (holdRefresh) return holdRefresh()
     if (!refreshOk) return json(400, { error: 'invalid_grant', error_description: 'Invalid Refresh Token' })
     return json(200, { access_token: 'AT2', refresh_token: 'RT2', expires_in: 3600, user: { email: 'a@b.org' } })
   }
@@ -48,7 +51,7 @@ const stubFetch = async (url, init = {}) => {
     assert.equal(decodeURIComponent(u.split('redirect_to=')[1]), `${SERVER}/auth/confirm`)
     return json(200, { id: 'u1', email: body.email }) // confirmation required: no session
   }
-  if (u === `${SB}/auth/v1/logout`) return new Response(null, { status: 204 })
+  if (u === `${SB}/auth/v1/logout?scope=local`) return holdLogout ? holdLogout() : new Response(null, { status: 204 })
   if (u === `${SERVER}/api/desktop/key`) {
     if (h.authorization !== 'Bearer AT2') return json(401, { error: 'not_signed_in' })
     if (body.code !== 'GOOD') return json(403, { error: 'invalid_code' })
@@ -119,16 +122,58 @@ refreshOk = true
 await acct.signIn('a@b.org', 'pw')
 st = await acct.signOut()
 assert.equal(st.signedIn, false)
-assert.ok(calls.some((c) => c.url.endsWith('/auth/v1/logout') && c.headers.authorization === 'Bearer AT1'))
+assert.ok(calls.some((c) => c.url.endsWith('/auth/v1/logout?scope=local') && c.headers.authorization === 'Bearer AT1'))
 assert.equal(store.session, undefined)
 assert.equal(store.desktopKey, undefined)
+
+// Late refresh responses cannot overwrite a workspace seed or authorize the caller as another user.
+const fixtureToken = (sub, revision) => 'fixture.' + Buffer.from(JSON.stringify({ sub, revision })).toString('base64url') + '.fixture'
+for (const { reply, owner, refreshToken = 'fresh-workspace-refresh' } of [
+  { reply: json(200, { access_token: 'AT2', refresh_token: 'RT2', expires_in: 3600 }), owner: 'workspace-owner' },
+  { reply: json(400, { error: 'invalid_grant', error_description: 'Invalid Refresh Token' }), owner: 'workspace-owner' },
+  { reply: json(400, { error: 'invalid_grant', error_description: 'Invalid Refresh Token' }), owner: 'different-owner' },
+  { reply: json(200, { access_token: 'AT2', refresh_token: 'RT2', expires_in: 3600 }), owner: 'workspace-owner', refreshToken: 'RT1' },
+]) {
+  store.session = enc(JSON.stringify({ accessToken: fixtureToken('workspace-owner'), refreshToken: 'RT1', expiresAt: clock - 1, email: 'a@b.org' }))
+  let settle
+  let requested
+  const requestStarted = new Promise(resolve => { requested = resolve })
+  holdRefresh = () => new Promise(resolve => { settle = resolve; requested() })
+  const pending = acct.restAuth()
+  await requestStarted
+  const seeded = fixtureToken(owner, 2)
+  store.session = enc(JSON.stringify({ accessToken: seeded, refreshToken, expiresAt: clock + 3600_000, email: 'a@b.org' }))
+  settle(reply)
+  assert.equal((await pending)?.accessToken, owner === 'workspace-owner' ? seeded : undefined)
+  assert.equal((await acct.restAuth()).accessToken, seeded)
+  holdRefresh = undefined
+}
+
+// A sign-out affects its original local session even if the network acknowledgement is late.
+await acct.signIn('a@b.org', 'pw')
+let logoutRequested
+let releaseLogout
+const logoutStarted = new Promise(resolve => { logoutRequested = resolve })
+holdLogout = () => new Promise(resolve => { releaseLogout = resolve; logoutRequested() })
+const signingOut = acct.signOut()
+await logoutStarted
+assert.equal(acct.status().signedIn, false)
+const replacement = fixtureToken('workspace-owner', 3)
+store.session = enc(JSON.stringify({ accessToken: replacement, refreshToken: 'new-login-refresh', expiresAt: clock + 3600_000, email: 'a@b.org' }))
+store.desktopKey = enc(JSON.stringify({ key: 'replacement-key', expiresAt: new Date(clock + 3600_000).toISOString() }))
+releaseLogout(new Response(null, { status: 204 }))
+await signingOut
+assert.equal((await acct.restAuth()).accessToken, replacement)
+assert.equal(acct.hostedAccess('anthropic/claude-haiku-5.5').key, 'replacement-key')
+holdLogout = undefined
 
 // Kernel inline config adds recovery controls without redefining provider credentials.
 const k = new oc.OpencodeKernel({ binary: '/bin/true', provider: 'humanstudy', model: 'anthropic/claude-haiku-5.5' })
 let content = JSON.parse(k.configContent())
 assert.equal(content.model, 'humanstudy/anthropic/claude-haiku-5.5')
 assert.equal(content.small_model, content.model)
-assert.deepEqual(content.provider, { humanstudy: { models: { 'anthropic/claude-haiku-5.5': { variants: { 'humanstudy-recovery': { reasoningEffort: 'low' } } } } } })
+assert.deepEqual(Object.keys(content.provider.humanstudy.models).sort(), ['anthropic/claude-haiku-5.5','anthropic/claude-sonnet-5.5'])
+for (const model of Object.values(content.provider.humanstudy.models)) assert.deepEqual(model.variants, { 'humanstudy-recovery': { reasoningEffort: 'low' } })
 assert.equal(JSON.stringify(content).includes('apiKey'), false, 'recovery configuration contains no credential')
 assert.equal(content.permission.edit, 'ask')
 const bash = content.permission.bash
@@ -149,7 +194,7 @@ assert.equal(oc.toolDetail('read', '', { filePath: '/a/b.md' }), '/a/b.md')
 // A hosted model the fork does not know is declared; no key ever appears in the config.
 const k2 = new oc.OpencodeKernel({ binary: '/bin/true', provider: 'humanstudy', model: 'deepseek/deepseek-chat' })
 content = JSON.parse(k2.configContent())
-assert.deepEqual(Object.keys(content.provider.humanstudy.models), ['deepseek/deepseek-chat'])
+assert.deepEqual(Object.keys(content.provider.humanstudy.models), ['deepseek/deepseek-chat','anthropic/claude-sonnet-5.5'])
 assert.ok(!JSON.stringify(content).includes('apiKey'))
 await k2.dispose()
 

@@ -6,15 +6,17 @@ import type { HumanProgram, ProgramField } from './human-program'
 
 export const PROTOCOL_STUDY_ID = 'protocol'
 
-/** null when the text is not a protocol with at least one runnable arm. */
+/** null when the text has no identifiable arms. Blocked arms still get a preview. */
 export function protocolProgram(text: string | null | undefined): HumanProgram | null {
   let raw: unknown
   try { raw = JSON.parse(text ?? '') } catch { return null }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const p = raw as { id?: unknown; meta?: { title?: unknown }; arms?: unknown }
-  const arms = (Array.isArray(p.arms) ? p.arms : [])
-    .filter((a): a is { id: string; n_paper?: unknown; runnable?: unknown } => Boolean(a) && typeof a.id === 'string' && a.id !== '' && a.runnable !== false)
-  if (!arms.length) return null
+  const allArms = (Array.isArray(p.arms) ? p.arms : [])
+    .filter((a): a is { id: string; n_paper?: unknown; runnable?: unknown; label?: unknown } => Boolean(a) && typeof a.id === 'string' && a.id !== '')
+  if (!allArms.length) return null
+  // Blocked studies still need a preview and an explanation; never add blocked arms to a run.
+  const arms = allArms.filter(a => a.runnable !== false)
   const id = typeof p.id === 'string' && p.id ? p.id : 'protocol'
   const title = typeof p.meta?.title === 'string' && p.meta.title ? p.meta.title : id
   const n = arms.reduce((sum, a) => sum + (typeof a.n_paper === 'number' && a.n_paper > 0 ? a.n_paper : 0), 0)
@@ -24,7 +26,7 @@ export function protocolProgram(text: string | null | undefined): HumanProgram |
     source: { title, authors: '', filename: 'protocol.json' },
     studies: [{ id: PROTOCOL_STUDY_ID, title, type: 'empirical' }],
     nodes: [
-      ...arms.map((a) => ({ id: a.id, kind: 'condition', title: a.id, studyIds: [PROTOCOL_STUDY_ID], fields: [], evidenceIds: [] })),
+      ...arms.map((a) => ({ id: a.id, kind: 'condition', title: typeof a.label === 'string' ? a.label : a.id, studyIds: [PROTOCOL_STUDY_ID], fields: [], evidenceIds: [] })),
       ...(n > 0 ? [{ id: 'participants', kind: 'participants', title: 'Participants', studyIds: [PROTOCOL_STUDY_ID], fields: [field('sample', n)], evidenceIds: [] }] : []),
     ],
     steps: [], relations: [], evidence: [], issues: [],

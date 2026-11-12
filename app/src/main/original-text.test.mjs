@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { realpath } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, sep } from 'node:path'
@@ -358,4 +359,16 @@ test('index format upgrade: v1 files are dropped and the project is indexed agai
   index = await PI.loadPrivateIndexDir(redact)
   assert.ok(readdirSync(redact).some((f) => f.endsWith(`.v${T.INDEX_FORMAT}.bin`)))
   assert.equal(T.containsPrivateRun('How many minutes did you walk this morning? Did you see a neighbour on the way?', index), true)
+})
+
+
+test('concurrent community imports keep both received originals and both held-list pins',async()=>{
+ const cache=mkdtempSync(join(tmpdir(),'pin-concurrent-'))
+ const dirs=[0,1].map(i=>{const dir=mkdtempSync(join(tmpdir(),'published-'+i+'-'));writeFileSync(join(dir,'protocol.json'),JSON.stringify({meta:{title:'Fixture '+i},distribution:{held:{['h'+i]:{text_sha256:String(i).repeat(64)}}}}));return dir})
+ await Promise.all(dirs.map(dir=>O.repinHeld(cache,dir)))
+ const pins=JSON.parse(readFileSync(join(cache,'pins.json'),'utf8'))
+ assert.equal(Object.keys(pins).length,2)
+ // Use the same asynchronous canonicalization as production: Windows' sync JS
+ // fallback can preserve a different drive-letter case than libuv's realpath.
+ for(const dir of dirs){const root=await realpath(dir);assert.ok(pins[root]);assert.equal(await O.heldPinProblem(cache,dir),null);assert.equal(readFileSync(O.receivedPath(cache,root),'utf8'),readFileSync(join(dir,'protocol.json'),'utf8'))}
 })

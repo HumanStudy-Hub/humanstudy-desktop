@@ -166,11 +166,23 @@ export async function restoredRunFiles(project: string, cacheDir: string, protoc
 /** The held-back list of a published study is pinned the first time this computer sees it (app storage, keyed by
  *  the project folder): an edited `distribution.held` could select another span of the real source under a new hash,
  *  and a removed one would leave placeholders on screen. Either change blocks the run until protocol.json is put back
- *  as received. This build has no import path for a published protocol.json yet (the community library forks
- *  program.json, package/, artifacts/ and sources/ only); when one lands, it calls `repinHeld` after writing the new
- *  version, which is how a legitimate update is accepted. An ordinary protocol.json that still holds runs of
+ *  as received. The community library calls `repinHeld` only after writing a hash-verified published
+ *  revision. Ordinary project writes cannot accept a changed list. An ordinary protocol.json that still holds runs of
  *  placeholders is refused the same way. */
-export async function heldPinProblem(cacheDir: string, project: string): Promise<OriginalTextProblem | null> {
+const pinWrites = new Map<string, Promise<unknown>>()
+function withPinLock<T>(cacheDir: string, work: () => Promise<T>): Promise<T> {
+  const previous = pinWrites.get(cacheDir) ?? Promise.resolve()
+  const next = previous.catch(() => undefined).then(work)
+  pinWrites.set(cacheDir, next)
+  void next.finally(() => { if (pinWrites.get(cacheDir) === next) pinWrites.delete(cacheDir) }).catch(() => undefined)
+  return next
+}
+
+export function heldPinProblem(cacheDir: string, project: string): Promise<OriginalTextProblem | null> {
+  return withPinLock(cacheDir, () => updateHeldPin(cacheDir, project))
+}
+
+async function updateHeldPin(cacheDir: string, project: string): Promise<OriginalTextProblem | null> {
   let raw: string
   try { raw = await readFile(join(project, 'protocol.json'), 'utf8') } catch { return null }
   let p: { distribution?: unknown; meta?: { title?: unknown } }
@@ -201,7 +213,8 @@ export const receivedPath = (cacheDir: string, root: string): string => join(cac
 
 /** Accept the protocol.json now in the project as the published version (for an import path that writes a new
  *  published version on the researcher's behalf): its held list becomes the pinned one. */
-export async function repinHeld(cacheDir: string, project: string): Promise<void> {
+export function repinHeld(cacheDir: string, project: string): Promise<void> {
+  return withPinLock(cacheDir, async () => {
   const file = join(cacheDir, 'pins.json')
   let pins: Record<string, string> = {}
   try { pins = JSON.parse(await readFile(file, 'utf8')) } catch { /* none yet */ }
@@ -210,7 +223,9 @@ export async function repinHeld(cacheDir: string, project: string): Promise<void
   const tmp = `${file}.${process.pid}.tmp`
   await writeFile(tmp, JSON.stringify(pins, null, 1), 'utf8')
   await rename(tmp, file)
-  await heldPinProblem(cacheDir, project)
+  const problem = await updateHeldPin(cacheDir, project)
+  if (problem) throw new Error(problem.reason)
+  })
 }
 
 /** The problem shown when the engine's checks fail on the restored copy: plain words, no check names and no source

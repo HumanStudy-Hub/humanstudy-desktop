@@ -38,6 +38,12 @@ export type PackageProblem =
   | { file: PackageFile; kind: 'unvalidated' | 'wrong-study' | 'stale-program' | 'bindings' }
   | { file: PackageFile; kind: 'no-entry'; entry: string }
 
+export interface ScientificReport {
+  problems: { check: string; reason: string }[]
+  warnings: { check: string; reason: string }[]
+  checks: Record<string, string>
+}
+
 export interface PackageReadiness {
   /** Community revisions currently have no authenticated maintainer-review attestation. */
   runNotice?: string
@@ -56,6 +62,7 @@ export interface PackageReadiness {
   /** The package checked (the ready one, else the most complete one). */
   slug: string | null
   problems: PackageProblem[]
+  scientificReport?: ScientificReport
 }
 
 /** File text, `null` when the file does not exist, `undefined` when it exists but was not read

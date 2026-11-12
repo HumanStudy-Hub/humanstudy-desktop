@@ -72,13 +72,14 @@ export interface Kernel {
   /** Human-readable name of the implementation ("opencode" or "mock"). */
   readonly name: string
   startSession(projectDir: string): Promise<string>
-  send(sessionId: string, text: string): Promise<void>
+  send(sessionId: string, text: string, options?: { purpose?: 'build' }): Promise<void>
   abort(sessionId: string): Promise<void>
   /** Answer a `permission` event. Rejects when the request is gone (already answered, session over). */
   reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void>
   answerQuestion(sessionId: string, questionId: string, answers: string[][]): Promise<void>
   rejectQuestion(sessionId: string, questionId: string): Promise<void>
   questions(sessionId: string): Promise<KernelQuestion[]>
+  permissions(sessionId: string): KernelPermission[]
   /**
    * Re-attach to a session started earlier (possibly by a previous run of the app). Resolves with the
    * session id when the kernel still has it, null when it is gone and a new one must be started.

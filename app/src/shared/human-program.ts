@@ -7,7 +7,7 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | {[key:s
 export type ProgramField = {id:string;label:string;value:JsonValue;origin:'verbatim'|'reported'|'derived'|'researcher'|'implementation'|'unknown';state:'confirmed'|'check'|'decision'|'missing';evidenceIds:string[];derivation?:string;studyIds?:string[];extensions?:Record<string,JsonValue>};
 export type ProgramNode = {id:string;kind:string;title:string;summary?:string;description?:string;studyIds:string[];fields:ProgramField[];evidenceIds:string[];conditionIds?:string[];extensions?:Record<string,JsonValue>};
 export type ProgramStep = {id:string;studyId:string;kind:'action'|'sequence'|'repeat'|'branch'|'parallel'|'interaction'|'custom';title:string;actorIds:string[];inputIds:string[];outputIds:string[];visibleIds:string[];children:string[];next:{to:string;when?:string}[];rule?:ProgramField;evidenceIds:string[];conditionIds?:string[];extensions?:Record<string,JsonValue>};
-export type ProgramEvidence = {id:string;note?:string;verification?:"verified"|"unverified";sourceId?:string;path?:string;url?:string;locator:{page?:number;pointer?:string;start?:number;end?:number;sheet?:string;cell?:string;region?:string};quote?:string};
+export type ProgramEvidence = {id:string;note?:string;verification?:"verified"|"unverified";sourceId?:string;sourceSha256?:string;path?:string;url?:string;locator:{page?:number;pointer?:string;start?:number;end?:number;sheet?:string;cell?:string;region?:string};quote?:string};
 export type HumanProgram = {schemaVersion:2;id:string;title:string;intent:'reconstruct'|'codesign';source:ProgramSource;studies:{id:string;title:string;type:'empirical'|'analysis'|'unspecified';description?:string;dependsOn?:string[]}[];nodes:ProgramNode[];steps:ProgramStep[];relations:{id:string;from:string;to:string;type:string;label?:string}[];evidence:ProgramEvidence[];issues:{id:string;title:string;severity:'blocking'|'decision'|'check';reason:string;impact:string;suggestedAction:string;studyId?:string;nodeId?:string;fieldId?:string;stepId?:string;evidenceIds:string[]}[];extensions?:Record<string,JsonValue>};
 
 type Rule = { $ref?:string; const?:unknown; enum?:unknown[]; type?:string; minLength?:number; maxLength?:number; pattern?:string; minimum?:number; maximum?:number; maxItems?:number; items?:Rule; properties?:Record<string,Rule>;required?:string[];additionalProperties?:boolean };
@@ -116,6 +116,12 @@ export function validateHumanProgram(value:unknown):HumanProgram {
  const p=prepare(value),first=collectProblems(p)[0];
  if(first)throw new Error(first.message);
  return structuredClone(p);
+}
+/** Read-only scientific document: shape must be safe, but broken references remain visible as warnings.
+ * Unlike the editing loader, this never repairs, synthesizes or drops scientific records. */
+export function inspectHumanProgram(value: unknown): { program: HumanProgram; problems: string[] } {
+ const program = structuredClone(prepare(value));
+ return { program, problems: collectProblems(program).map(describe) };
 }
 /** Tolerant: repairs what is unambiguous, sets the rest aside and reports each as a plain-English problem. Throws only when the file is not a Human Program at all. */
 export function readHumanProgram(value:unknown):{program:HumanProgram;problems:string[]} {

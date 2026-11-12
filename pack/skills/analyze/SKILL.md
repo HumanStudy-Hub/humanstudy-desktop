@@ -5,6 +5,11 @@ description: Run a Python analysis of the study (reported statistics, effect siz
 
 # Analyze: Python to artifacts/
 
+## Protocol projects (default)
+
+For a protocol project, read protocol.json as the source of design, units, exclusions, reported targets and effects; read completed protocol run outputs for observed results. The legacy program/package input instructions below apply only when no protocol exists. Read the paired scholarly program for research questions/hypotheses/conclusions; do not rebuild a legacy execution graph to analyze a protocol. Distinguish reported statistics, arithmetic derived from them, and actual run measurements. Missing/unsupported analyses stay explicit; a request for analysis is not simulation approval.
+
+
 ## Inputs
 
 Use only `program.json`, `paper.pdf`, files in `sources/`, and run outputs present in the

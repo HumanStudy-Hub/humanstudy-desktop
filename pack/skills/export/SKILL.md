@@ -5,6 +5,11 @@ description: Export the study protocol, analyses or replay package as .docx, .pd
 
 # Export: files into exports/
 
+## Protocol projects (default)
+
+For a protocol project, export from the paired scholarly program.json (if present), protocol.json, study.json, its source references and requested derived artifacts. Preserve all studies, missing items, evidence and the precise replay scope. Use the paired contribution ZIP below for a public proposal. The legacy agent_package.py and study_core.py workflows require a legacy package. A local requested report may quote permitted materials with citations. A shareable bundle must obey source licences, exclude chats, account/config files, keys, private/researcher source files and restored original wording, and preserve distribution restrictions. Do not call a local file bundle an MCP server or a runnable agent skill unless that interface is actually implemented and tested. Never publish as part of an export.
+
+
 Exports are derived from `program.json` and existing artifacts; they add no facts.
 
 ## Formats
@@ -20,14 +25,31 @@ Exports are derived from `program.json` and existing artifacts; they add no fact
 - **Package (.zip)**: zip `artifacts/package/<paper-slug>/` plus `program.json`. Exclude
   `.humanstudy/`, caches, `__pycache__`, `sources/researcher/` and `sources/private/`.
 - **Community contribution (.zip)**: run `python .opencode/skills/export/community.py --output exports/community-<date>.zip`.
-  This includes the complete program, `package/`, research `artifacts/` and `sources/`, records
-  the original paper ID and baseline revision, and excludes chat, credentials and local state.
-  Never manufacture a new baseline or substitute the current recommendation for the version
-  actually forked. PDF redistribution is off by default; `--include-paper` requires the researcher's
-  explicit permission and the right to redistribute it. Private materials (`sources/researcher/`,
-  supplied by the researcher, and `sources/private/`, public without an open license) are never included;
-  the export stops while their text is in the program or the package, and leaves out (and lists) an
-  artifact that copies it. Before export run the build checks.
+  The legacy community ZIP contains the program, package, shareable finished artifacts and
+  redistributable source files. Keep the exact original paper ID and fork baseline. Preserve the
+  paper's author credit. The Hub credits reconstruction contributors from their submission profile.
+  PDFs require explicit selection and a recorded redistribution license. A source's recorded digest,
+  when present, must match its bytes. Private and researcher materials, annotations, raw runs,
+  chat, credentials and local state stay local. The export blocks known copies of private material
+  in program/package files and omits artifacts with known copies.
+  Before submitting, review the exact public file list and the local-only omission list returned by
+  the exporter. Ask the researcher to inspect any content that may include personal or unpublished
+  information. Upload only via the Hub contribution flow after their approval. A local ZIP is a
+  draft for review and does not certify a study, anonymous data or redistribution rights.
+
+  A paired contribution ZIP uses the same command. It needs the saved scholarly program, matching
+  v1 protocol and study card, and all declared sources under `sources/open/` with recorded licenses,
+  SHA-256 and attribution. The exporter rebuilds the public projection, retains blocked arms and
+  missing items, and binds both documents to the exported protocol. Held wording and local copies
+  are excluded from this route. Review the ZIP before submitting it as **User submitted**.
+
+  If the protocol or its materials cannot be shared, offer to share just the Program with
+  `--program-only`. Use this option when the researcher requests the Program by itself or chooses
+  it after hearing why the pair is unavailable. The ZIP keeps the Program's missing items and
+  source locators. It excludes runtime files and exact evidence quotes without verified
+  redistribution permission. Report any withheld evidence quotes from the export result and
+  show the exact public file list. Explain that the experiment needs its protocol and any missing
+  materials to run. The export leaves the saved project intact.
 
 - **Agent skill (folder)**: for using the study in another AI agent (Claude Code, Codex,
   OpenCode, anything that reads skills). Run

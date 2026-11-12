@@ -1,8 +1,10 @@
+import { ProtocolStudy } from './ProtocolStudy'
+import { scholarlyProfile, scholarlyDeclarationProblems } from '../../shared/scholarly-program'
 // The right pane: Study (the 12-section document) and Paper, plus any file the researcher or the agent
 // opens as another tab, like an artifact panel. A Files sidebar (hidden by default, ⌘B) lists the folder.
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 import StudyModel, { viewStudies, type QuoteStatus, type StudyModelProps } from '../program/StudyModel'
-import { readHumanProgram, type HumanProgram } from '../../shared/human-program'
+import { inspectHumanProgram, readHumanProgram, type HumanProgram } from '../../shared/human-program'
 import { protocolProgram, PROTOCOL_STUDY_ID } from '../../shared/protocol-program'
 import { patchProgramField } from '../../shared/program-patch'
 import type { ProjectEntry, ProjectSnapshot, WorkspaceContext } from '../../preload/types'
@@ -13,12 +15,12 @@ import { SourceDrawer, type PassageSelection, type SourceRef } from './SourceDra
 import { getLang, t } from '../i18n'
 import { BuildProgress } from './BuildProgress'
 import { WEB_EDITION } from '../edition'
-import { sourceTarget } from '../../shared/source-target'
+import { pdfAnnotationPath, resolveSource } from '../../shared/source-target'
 import { simulationScope } from '../../shared/simulation-scope'
 import { simulationPlan } from '../../shared/simulation-run'
 import { SimulationPanel } from './SimulationPanel'
 import { sourceFocus } from '../../shared/workspace-context'
-import { passageSupport } from '../../shared/program-view'
+import { passageSupport, type SourceRef as ProgramSourceRef } from '../../shared/program-view'
 import { quoteKey } from '../../shared/source-anchor'
 import { clearDraft, draftsIn } from '../drafts'
 import { forget, remember } from '../nav'
@@ -137,18 +139,23 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
     try {
-      return { ...readHumanProgram(project.program), error: undefined }
+      const read = flatten(project.tree).some(f => f.rel === 'protocol.json')
+        ? inspectHumanProgram(project.program) : readHumanProgram(project.program)
+      const declaration = scholarlyDeclarationProblems(read.program)
+      if (!declaration.length && scholarlyProfile(read.program) && !flatten(project.tree).some(f => f.rel === 'protocol.json'))
+        declaration.push('This scholarly view requires its protocol.json. Restore the actual paired protocol, or omit extensions.scholarly for Program-only conversion; do not invent a protocol.')
+      return { ...read, problems: [...read.problems, ...declaration], error: undefined }
     } catch (e) {
       return { program: null, error: t('study.invalid', { error: String(e) }), problems: [] as string[] }
     }
-  }, [project.program, project.programError])
+  }, [project.program, project.programError, project.tree])
   const fixProgram = () => onFixProgram?.(fixProgramMessage(problems, error))
   // The automatic build after a paper import: one status line while it runs, one retry when it stops.
   const build = project.build
   const building = build?.status === 'pending' || build?.status === 'running'
   const buildFailed = build?.status === 'error' ? `${t(`build.error.${build.error ?? 'failed'}`)} ${t('build.kept')}` : ''
   // A project from before automatic builds: a paper, no study, never built. Offer it; never start it unasked.
-  const paperOnly = !build && Boolean(project.pdf) && !project.program && !error
+  const paperOnly = !build && Boolean(project.pdf) && !project.program && !flatten(project.tree).some(f => f.rel === 'protocol.json') && !error
   const retryBuild = () => void window.humanstudy.project.retryBuild(project.dir, claimAction('build.retry')).catch((e: unknown) => setEditError(String(e)))
   // Web edition: an online session that ended (its time limit) or was cut off stopped the build, not the
   // researcher, so opening the project again continues it once. On desktop a stopped build waits for Retry.
@@ -160,24 +167,21 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   }, [build?.status, build?.error, project.dir])
   const studies = useMemo(() => (program ? viewStudies(program) : []), [program])
   const files = useMemo(() => flatten(project.tree), [project.tree])
-  // A project with only protocol.json still opens the Simulation tab: a view-only program built from the protocol
-  // (its arms as conditions) feeds the tab; the protocol's own checks decide whether it runs (v0.8).
+  // Protocol is canonical whenever present; legacy program-only projects keep their renderer.
   const protocolEntry = files.find((f) => f.rel === 'protocol.json')
-  const [protocolText, setProtocolText] = useState<string | null>(null)
+  const protocolKey = protocolEntry ? `${protocolEntry.path}:${protocolEntry.version ?? `${protocolEntry.mtime}:${protocolEntry.size}`}` : ''
+  const [loadedProtocol, setLoadedProtocol] = useState<{ key: string; text?: string; error?: string } | null>(null)
+  const protocolText = loadedProtocol?.key === protocolKey ? loadedProtocol.text ?? null : null
   useEffect(() => {
-    if (program || !protocolEntry) { setProtocolText(null); return }
+    if (!protocolEntry) { setLoadedProtocol(null); return }
     let live = true
-    window.humanstudy.project.readText(protocolEntry.path).then((text) => { if (live) setProtocolText(text) }, () => { if (live) setProtocolText(null) })
+    window.humanstudy.project.readText(protocolEntry.path).then((text) => { if (live) setLoadedProtocol({key: protocolKey, text}) }, (error: unknown) => { if (live) setLoadedProtocol({key: protocolKey, error: String(error)}) })
     return () => { live = false }
-  }, [program, protocolEntry?.path, protocolEntry?.mtime, protocolEntry?.size]) // eslint-disable-line react-hooks/exhaustive-deps
-  const simProgram = useMemo(() => program ?? protocolProgram(protocolText), [program, protocolText])
-  // A project with only protocol.json opens on the Simulation tab (its Study tab has nothing to show), once.
-  const openedProtocolOnly = useRef('')
-  useEffect(() => {
-    if (program || !simProgram || openedProtocolOnly.current === project.dir) return
-    openedProtocolOnly.current = project.dir
-    if (layout.active === 'study') update((l) => ({ ...l, active: 'simulation' }))
-  }, [program, simProgram, project.dir]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [protocolKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  const hasProtocol = Boolean(protocolEntry)
+  const researchProgram = program // Reading does not require the optional protocol-bound profile.
+  const showResearchDespiteReadError = Boolean(researchProgram && loadedProtocol?.key === protocolKey && loadedProtocol.error)
+  const simProgram = useMemo(() => hasProtocol ? protocolProgram(protocolText) : program, [program, protocolText, hasProtocol])
   const fileByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
 
   const [layout, setLayout] = useState<Layout>(() => loadLayout(project.dir))
@@ -185,8 +189,11 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const [editError, setEditError] = useState('')
   const [changed, setChanged] = useState<Set<string>>(() => new Set())
   const [paperSeen, setPaperSeen] = useState(false)
-  const sourceFile = source ? sourceTarget(project, source) : project.pdf
+  const sourceResolution = useMemo(() => source ? resolveSource(project, source) : null, [project, source])
+  const drawerSource = useMemo(() => source ? { ...source, pending: sourceResolution?.pending } : null, [source, sourceResolution?.pending])
+  const sourceFile = sourceResolution ? sourceResolution.file : project.pdf
   const sourcePdf = sourceFile?.ext === 'pdf' && sourceFile.url ? sourceFile as import('../../preload/types').ProjectFile : null
+  const notesPath = useMemo(() => sourcePdf ? pdfAnnotationPath(project, sourcePdf, source) : undefined, [project, sourcePdf, source])
   const [sourcePage, setSourcePage] = useState<{ path: string; page: number } | null>(null)
   // The Study scroll and the paper page, saved per project so a tab switch or a reopen keeps them.
   const position = useRef<Position>(loadPosition(project.dir))
@@ -213,13 +220,23 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   }, [project.dir])
   // What the paper found for each citation it opened, and the passage the reader selected there.
   const [quoteStatus, setQuoteStatus] = useState<ReadonlyMap<string, QuoteStatus>>(() => new Map())
+  const citationKey = (ref: Pick<ProgramSourceRef, 'file' | 'sourceId' | 'sourceSha256' | 'page'> & { quote?: string },
+    file: Pick<ProjectEntry, 'path' | 'sha256' | 'version'> | null) =>
+    quoteKey(ref.page, ref.quote, JSON.stringify([ref.file, ref.sourceId, ref.sourceSha256, file?.path, file?.sha256 ?? file?.version]))
+  const reviewSource = (ref: ProgramSourceRef) => {
+    const { file, pending } = resolveSource(project, ref)
+    return { pending, key: citationKey(ref, file) }
+  }
   const [passage, setPassage] = useState<PassageSelection | null>(null)
   // Items citing the selected passage: those citing this file first; the same words cited from another
   // file are listed apart, with that file's name, never as support for this one.
   const sourceLabel = sourceFile ? ('rel' in sourceFile ? sourceFile.rel : sourceFile.name) : undefined
   const support = useMemo(() => {
     if (!passage || !program) return null
-    const found = passageSupport(program, { ...passage, source: sourceFile?.path ?? null }, (ref) => sourceTarget(project, ref)?.path ?? null)
+    const found = passageSupport(program, { ...passage, source: sourceFile?.path ?? null }, (ref) => {
+      const resolved = resolveSource(project, ref)
+      return resolved.changed ? null : resolved.file?.path ?? null
+    })
     return { page: passage.page, file: sourceLabel, ids: found.same, other: found.other }
   }, [passage, program, project, sourceFile?.path, sourceLabel])
 
@@ -423,7 +440,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const active = layout.active
   const activeFile = active.startsWith('file:') ? (fileByPath.get(active.slice(5)) ?? null) : null
   const studyId = studies.find((s) => s.id === layout.study)?.id ?? studies[0]?.id ?? ''
-  const simStudies = program ? studies : simProgram ? [{ id: PROTOCOL_STUDY_ID, title: simProgram.title }] : []
+  const simStudies = protocolEntry ? simProgram ? [{ id: PROTOCOL_STUDY_ID, title: simProgram.title }] : [] : studies
   const simStudyId = program ? studyId : PROTOCOL_STUDY_ID
   const workspaceSnapshot = useMemo<WorkspaceSnapshot>(() => {
     const st = studies.find(s => s.id === studyId)
@@ -513,7 +530,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
             )
           })}
         </div>
-        <button className="wb-compare" aria-pressed={compare} disabled={!program} onClick={() => {
+        <button className="wb-compare" aria-pressed={compare} disabled={!program && !protocolEntry} onClick={() => {
           track('source.compare', { metadata: { open: !compare } })
           if (!compare) rememberHere()
           update(l => ({ ...l, active: 'study', compare: !compare }))
@@ -550,7 +567,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
                   throw e
                 }
               }}
-              onBuild={() => onSendAgent?.(t('sim.build_prompt'))}
+              onBuild={() => onSendAgent?.(t('sim.build_prompt', { studyId: simStudyId }))}
               onStop={(runs, ownTurn) => {
                 if (ownTurn) onStopAgent?.()
                 // The run itself is a background process; simkit ends it after the participants in flight.
@@ -564,7 +581,20 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
           )}
           {active === 'simulation' && simProgram && editError && <div className="part error edit-error">{editError}</div>}
           {active === 'study' &&
-            (program ? (
+            (protocolEntry ? (
+              <div className="wb-protocol-host">
+                {building && build && <BuildProgress build={build} waiting={agentWaiting} />}
+                {buildFailed && <div className="part error edit-error" role="alert">{buildFailed} <button className="link" onClick={retryBuild}>{t('build.retry')}</button></div>}
+                {error && <p className="part error" role="alert">Research notes cannot be displayed: {error}. Showing the experiment file below.</p>}
+                {!building && problems.length > 0 && <p className="muted small program-notice" role="status" title={problems.join('\n')}>
+                  {t('study.problems', { n: problems.length })} · <button className="link" onClick={fixProgram}>{t('study.fix')}</button>
+                </p>}
+                {protocolText || showResearchDespiteReadError ? <ProtocolStudy text={protocolText ?? ''} program={researchProgram} problems={problems} preview={files.find(f => f.rel === 'artifacts/preview.html')}
+                  onAsk={docProps.onPrefill}
+                  onSource={ref => { rememberHere(); docProps.onSource('protocol', ref); update(l => ({ ...l, active: 'study', compare: true })) }} />
+                  : <div className="empty-state">{loadedProtocol?.key === protocolKey && loadedProtocol.error ? loadedProtocol.error : t('protocol.loading')}</div>}
+              </div>
+            ) : program ? (
               <div className="wb-study-host" ref={studyHost} onScrollCapture={(e) => {
                 const el = e.target as HTMLElement
                 if (el.dataset?.studyScroll !== undefined) storePosition({ study: el.scrollTop })
@@ -579,6 +609,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
                   support={compare ? support : null}
                   onClearSupport={() => { window.getSelection()?.removeAllRanges(); setPassage(null) }}
                   quoteStatus={quoteStatus}
+                  reviewSource={reviewSource}
                   onClearSelection={onClearSelection}
                   onAskSelection={onAskSelection}
                   editError={editError}
@@ -647,14 +678,14 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
             <div className="wb-paper" hidden={active !== 'paper' && !compare}>
               {sourceFile && sourceFile.ext !== 'pdf' && 'rel' in sourceFile
                 ? <FileView key={sourceFile.path} file={sourceFile} dir={project.dir} version={project.tree} onDirty={markDirty} />
-                : <SourceDrawer key={sourcePdf?.path ?? 'no-source'} pdf={sourcePdf} source={source ?? startSource} active={active === 'paper' || compare} closeLabel={compare ? t('wb.close_source') : undefined}
+                : <SourceDrawer key={sourcePdf?.path ?? 'no-source'} pdf={sourcePdf} notesPath={notesPath} source={drawerSource ?? startSource} active={active === 'paper' || compare} closeLabel={compare ? t('wb.close_source') : undefined}
                     onClose={() => update(l => ({ ...l, active: 'study', compare: false }))}
                     onPageChange={page => {
                       if (!sourceFile) return
                       setSourcePage({ path: sourceFile.path, page })
                       storePosition({ paper: { path: sourceFile.path, page } })
                     }}
-                    onQuote={(ref, result) => setQuoteStatus(m => new Map(m).set(quoteKey(ref.page, ref.quote, ref.file ?? ref.sourceId), result))}
+                    onQuote={(ref, result, file) => setQuoteStatus(m => new Map(m).set(citationKey(ref, file), result))}
                     onSelect={setPassage}
                     supportCount={program && passage ? support?.ids.length ?? 0 : null}
                     onAskPassage={sel => docProps.onPrefill?.(`${sourceFile && 'rel' in sourceFile ? sourceFile.rel : sourceFile?.path ?? ''}\n${t('paper.passage_draft', { n: sel.page, q: sel.text })}`)} />}
@@ -675,8 +706,15 @@ type StudyViewProps = StudyModelProps & {
 
 /** The study model, with the notices about program.json that sit above it. */
 function StudyView({ editError, problems, onFix, ...modelProps }: StudyViewProps) {
+  const exported = modelProps.program.extensions?.communityExport
+  const programOnly = exported && typeof exported === 'object' && !Array.isArray(exported) && exported.scope === 'program-only'
+  const quotes = programOnly ? exported.withheldEvidenceQuotes : null
+  const quoteIds = quotes && typeof quotes === 'object' && !Array.isArray(quotes) && Array.isArray(quotes.ids) ? quotes.ids : []
   return (
     <>
+      {programOnly && <p className="muted small program-notice" role="status">
+        {t('study.program_only')} {quoteIds.length > 0 && t('study.withheld_quotes', { n: quoteIds.length })}
+      </p>}
       {problems.length > 0 && (
         <p className="muted small program-notice" role="status" title={problems.join('\n')}>
           {t('study.problems', { n: problems.length })} · <button className="link" onClick={onFix}>{t('study.fix')}</button>
@@ -697,7 +735,7 @@ function findRunning(tree: ProjectEntry[]): string | null {
 
 function fixProgramMessage(problems: string[], error?: string): string {
   const list = problems.length ? problems.slice(0, 30).map((x) => `- ${x}`).join('\n') : `- ${error ?? 'program.json could not be read'}`
-  return `program.json has formatting problems that the app set aside:\n${list}\n\nPlease fix program.json, then run \`python .opencode/skills/build/check_program.py program.json\` until it prints PASS.`
+  return `program.json has validation problems:\n${list}\n\nPlease fix program.json, then run \`python .opencode/skills/build/check_program.py program.json --complete\` until it prints PASS. Preserve scientific content and source gaps. If this is a paired delivery, also run the existing protocol and delivery checks; a Program check alone does not approve an experiment.`
 }
 
 function Empty({ title, body, children }: { title: string; body: string; children?: React.ReactNode }) {

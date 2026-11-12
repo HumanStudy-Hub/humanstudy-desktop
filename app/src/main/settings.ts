@@ -22,7 +22,7 @@ const RETIRED_ROOTS = [join(homedir(), 'HumanStudy'), join(homedir(), 'Documents
 
 function defaults(): Settings {
   return {
-    theme: 'system',
+    theme: 'light',
     busyEnter: 'queue',
     permission: 'project',
     model: 'anthropic/claude-haiku-5.5',

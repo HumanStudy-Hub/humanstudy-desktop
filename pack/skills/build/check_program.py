@@ -12,6 +12,7 @@ Exit 0 when clean, 1 when any problem is found.
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from pathlib import Path
 
@@ -191,6 +192,18 @@ def coverage_problems(p):
     if policy_path is None:
         return [("build coverage policy is unavailable", "restore the build skill files")]
     policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    scholarly = (p.get("extensions") or {}).get("scholarly")
+    if "scholarly" in (p.get("extensions") or {}):
+        hint = "For Program-only conversion, omit extensions.scholarly; do not invent a protocol binding. For paired delivery, bind the actual protocol.json and verify it."
+        if not isinstance(scholarly, dict) or scholarly.get("profile") != "scholarly-v1":
+            return [("Unsupported scholarly profile.", hint)]
+        binding = scholarly.get("protocol")
+        if (not isinstance(binding, dict) or binding.get("path") != "protocol.json"
+                or not isinstance(binding.get("id"), str) or not binding["id"].strip()
+                or not isinstance(binding.get("sha256"), str)
+                or len(binding["sha256"]) != 64 or any(c not in "0123456789abcdef" for c in binding["sha256"])):
+            return [("scholarly-v1 requires protocol.path, protocol.id and the actual protocol SHA-256.", hint)]
+        return scholarly_coverage_problems(p, policy["scholarly"])
     out = []
     nodes, steps, issues = p.get("nodes", []), p.get("steps", []), p.get("issues", [])
     def meaningful(v):
@@ -217,6 +230,43 @@ def coverage_problems(p):
                 out.append((f"{sid}: {area} has not been extracted or explicitly marked missing.", "add source-supported content, or a missing field with a targeted issue; never invent it"))
     return out
 
+def scholarly_coverage_problems(p, kinds):
+    """Check scholarly content before the desktop validates the paired delivery."""
+    nodes = p.get("nodes", [])
+    out = [(f"Research coverage is missing {kind}.", "add a source-supported field or an explicit source gap")
+           for kind in kinds if not any(n.get("kind") == kind and n.get("fields") for n in nodes)]
+    evidence = {e["id"] for e in p.get("evidence", [])
+                if (e.get("path") or e.get("sourceId") or e.get("url"))
+                and (e["locator"].get("page") or e["locator"].get("pointer"))
+                and (e.get("quote") or "").strip()}
+    result_studies = set()
+    for node in nodes:
+        scope = node.get("studyIds", [])
+        for field in node.get("fields", []):
+            label = f"{node['id']}.{field['id']}"
+            missing = field.get("state") == "missing"
+            gap = (field.get("extensions") or {}).get("gapReason")
+            has_evidence = any(ref in evidence for ref in field.get("evidenceIds", []))
+            value = field.get("value")
+            if gap == "not_extracted":
+                out.append((f"{label}: extraction is not finished.", "finish extraction from the sources"))
+            if missing:
+                if gap not in ("not_reported", "source_unavailable"):
+                    out.append((f"{label}: explain the missing source information.", "set extensions.gapReason"))
+                if gap == "not_reported" and not has_evidence:
+                    out.append((f"{label}: cite what was checked before declaring this unreported.", ""))
+            else:
+                if value is None or isinstance(value, str) and not value.strip():
+                    out.append((f"{label}: provide supported content or an explicit source gap.", ""))
+                if not has_evidence:
+                    out.append((f"{label}: include original-source evidence.", ""))
+            if node.get("kind") == "result" and (missing or field.get("origin") in ("reported", "verbatim")):
+                result_studies.update(study for study in field.get("studyIds", scope) if not scope or study in scope)
+    for study in p.get("studies", []):
+        if study["id"] not in result_studies:
+            out.append((f"{study['id']}: include an original human result or document why it is unavailable.", ""))
+    return out
+
 def main() -> None:
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     path = Path(args[0] if args else "program.json")
@@ -228,6 +278,16 @@ def main() -> None:
     found = (check(data) if isinstance(data, dict) and data.get("schemaVersion") != 2 else schema_problems(data, path) + check(data))
     if "--complete" in sys.argv and not found:
         found += coverage_problems(data)
+        scholarly = (data.get("extensions") or {}).get("scholarly")
+        if not found and isinstance(scholarly, dict) and scholarly.get("profile") == "scholarly-v1":
+            try:
+                raw = (path.parent / "protocol.json").read_bytes()
+                protocol = json.loads(raw)
+                binding = scholarly["protocol"]
+                if protocol.get("id") != binding["id"] or hashlib.sha256(raw).hexdigest() != binding["sha256"]:
+                    found.append(("The scholarly protocol binding does not match the actual protocol.json.", "bind the actual unchanged protocol; then run paired delivery checks"))
+            except (OSError, ValueError, AttributeError):
+                found.append(("scholarly-v1 requires a readable protocol.json for paired verification.", "for Program-only conversion omit extensions.scholarly; never invent a protocol"))
     for msg, hint in found:
         print(f"PROBLEM {msg}" + (f"\n        fix: {hint}" if hint else ""))
     if found:

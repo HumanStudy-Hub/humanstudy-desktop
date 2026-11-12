@@ -42,7 +42,7 @@ function encode(v: unknown): unknown {
 }
 
 // ---- uploads: a picked or dropped file gets its sandbox path at once; calls wait for the upload ------
-const uploads = new Set<Promise<unknown>>()
+const uploads = new Map<string, Promise<unknown>>()
 const failedUploads = new Map<string, Error>()
 function upload(file: File): string {
   const id = crypto.randomUUID()
@@ -51,8 +51,8 @@ function upload(file: File): string {
   const p = fetch(`/upload/${id}/${encodeURIComponent(name)}`, { method: 'POST', body: file, credentials: 'same-origin' })
     .then((r) => { if (!r.ok) throw new Error(`Upload of ${name} failed (${r.status}).`) })
     .catch((e: Error) => { failedUploads.set(path, e); throw e })
-  uploads.add(p)
-  void p.finally(() => uploads.delete(p)).catch(() => undefined)
+  uploads.set(path, p)
+  void p.finally(() => uploads.delete(path)).catch(() => undefined)
   return path
 }
 function pick(accept: string): Promise<string | null> {
@@ -84,10 +84,16 @@ const SAVES = new Set(['project:saveCopy', 'kernel:export', 'telemetry:saveExpor
 
 async function call(channel: string, args: unknown[]): Promise<unknown> {
   // A call that names a picked file waits for its upload; a failed upload fails only the calls that use it.
-  if (uploads.size) await Promise.allSettled([...uploads])
+  const paths = new Set<string>()
+  const collect = (value: unknown): void => {
+    if (typeof value === 'string') paths.add(value)
+    else if (Array.isArray(value)) value.forEach(collect)
+    else if (value && typeof value === 'object') Object.values(value).forEach(collect)
+  }
+  collect(args)
+  await Promise.allSettled([...uploads].filter(([path]) => paths.has(path)).map(([, pending]) => pending))
   if (failedUploads.size) {
-    const named = JSON.stringify(args)
-    for (const [path, error] of failedUploads) if (named.includes(JSON.stringify(path).slice(1, -1))) throw new Error(`Error invoking remote method '${channel}': Error: ${error.message}`)
+    for (const [path, error] of failedUploads) if (paths.has(path)) throw new Error(`Error invoking remote method '${channel}': Error: ${error.message}`)
   }
   let res: Response
   try {
@@ -138,6 +144,31 @@ async function checkAlive(): Promise<void> {
 
 // ---- events -------------------------------------------------------------------------------------
 const handlers = new Map<string, Set<Handler>>()
+let externalNotice: HTMLElement | null = null
+function openExternal(value: unknown): void {
+  if (typeof value !== 'string' || !/^(https?:|mailto:)/i.test(value)) return
+  // SSE arrives after the original click, outside the browser's popup activation window.
+  // Keep a real, user-clickable link: even a successful noopener open may return null.
+  window.open(value, '_blank', 'noopener')
+  externalNotice?.remove()
+  externalNotice = document.createElement('div')
+  externalNotice.setAttribute('role', 'status')
+  externalNotice.style.cssText = 'position:fixed;right:20px;bottom:20px;z-index:2147483646;max-width:calc(100vw - 40px);padding:12px 16px;background:var(--bg,#fff);color:var(--fg,#263d46);border:1px solid #a8b5bd;border-radius:8px;font:14px/1.5 system-ui'
+  externalNotice.appendChild(document.createTextNode('If the new tab did not open: '))
+  const link = document.createElement('a')
+  link.href = value
+  link.target = '_blank'
+  link.rel = 'noopener noreferrer'
+  link.textContent = 'Open link'
+  link.addEventListener('click', () => externalNotice?.remove())
+  externalNotice.appendChild(link)
+  const close = document.createElement('button')
+  close.textContent = 'Dismiss'
+  close.style.marginLeft = '12px'
+  close.addEventListener('click', () => externalNotice?.remove())
+  externalNotice.appendChild(close)
+  document.body.appendChild(externalNotice)
+}
 const connection = {
   source: null as EventSource | null,
   ended() { this.source?.close(); this.source = null; showEnded() },
@@ -149,7 +180,7 @@ function connect(): void {
   es.onmessage = (m) => {
     let msg: { c: string; p: unknown }
     try { msg = JSON.parse(m.data) } catch { return }
-    if (msg.c === 'web:openExternal') { window.open(String(msg.p), '_blank', 'noopener'); return }
+    if (msg.c === 'web:openExternal') { openExternal(msg.p); return }
     const payload = decode(msg.p)
     for (const h of handlers.get(msg.c) ?? []) {
       try { h({ sender: null }, payload) } catch (e) { console.error(e) }

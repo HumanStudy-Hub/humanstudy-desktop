@@ -56,12 +56,13 @@ export interface Kernel {
 
   setPermissionMode?(mode: 'ask' | 'project'): void
   startSession(projectDir: string): Promise<string>
-  send(sessionId: string, text: string): Promise<void>
+  send(sessionId: string, text: string, options?: { purpose?: 'build' }): Promise<void>
   abort(sessionId: string): Promise<void>
   reply(sessionId: string, permissionId: string, response: PermissionReply): Promise<void>
   answerQuestion(sessionId: string, questionId: string, answers: string[][]): Promise<void>
   rejectQuestion(sessionId: string, questionId: string): Promise<void>
   questions(sessionId: string): Promise<KernelQuestion[]>
+  permissions(sessionId: string): KernelPermission[]
   resumeSession(projectDir: string, sessionId: string): Promise<string | null>
   onEvent(cb: (e: KernelEvent) => void): void | (() => void)
 }

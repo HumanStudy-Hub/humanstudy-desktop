@@ -86,6 +86,7 @@ export interface TelemetryDeps {
   auth(): Promise<TelemetryAuth | null>
   appVersion: string
   platform: string
+  clientSurface?: 'web'
   now?(): number
 }
 
@@ -172,7 +173,7 @@ export interface RowBase {
  *  (…/original-text/…, a folder: `.humanstudy/original-text.json`, a status without wording, is not one). Matched
  *  on the text URL-decoded and with `./` segments removed; a command that names both `sources` and `private`, or
  *  globs or searches under sources/, counts too (the agent may build the path in pieces). */
-export const PRIVATE_MATERIAL = /(?:^|[^A-Za-z0-9_-])sources[\\/]+private(?:[\\/]|\b)|[\\/]original-text[\\/]/i
+export const PRIVATE_MATERIAL = /(?:^|[^A-Za-z0-9_-])sources[\\/]+(?:private|researcher|quarantine)(?=$|[^A-Za-z0-9_.-])|(?:^|[\\/])original-text[\\/]/i
 export const REDACTED_PRIVATE = '[redacted: private material]'
 
 function decoded(s: string): string {
@@ -370,6 +371,7 @@ export function redactPrivatePart<T extends { kind: string }>(part: T, index: Pr
 export function mayCollectFile(o: { rel: string; text?: string; published: boolean; index: PrivateIndex; hasPrivate?: boolean }): boolean {
   const rel = o.rel.split('\\').join('/')
   const strict = o.published || Boolean(o.hasPrivate)
+  if (PRIVATE_MATERIAL.test(decoded(rel))) return false
   if (o.published && /^(?:artifacts\/simulations|runs)(?:\/|$)/.test(rel)) return false
   // an ordinary project (not published, no sources/private/) keeps collecting its PDFs and figures
   if (o.text === undefined) return !strict || o.index.size === 0
@@ -572,7 +574,7 @@ export function createTelemetry(deps: TelemetryDeps) {
   function build(type: string, opts: TelemetryTrackOptions, ctx: { projectDir?: string }, content: boolean): TelemetryRow | null {
     return sanitizeEvent(
       type,
-      opts,
+      deps.clientSurface === 'web' ? { ...opts, metadata: { ...opts.metadata, surface: 'web', client_platform: 'browser' } } : opts,
       { projectDir: ctx.projectDir, email: deps.accountEmail(), content },
       { installId: state.installId, sessionId, appVersion: deps.appVersion, platform: deps.platform, now: now() }
     )

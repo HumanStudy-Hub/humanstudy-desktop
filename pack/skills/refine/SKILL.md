@@ -1,11 +1,21 @@
 ---
 name: refine
-description: Change an existing artifact or program.json through a reviewable proposal (corrections, researcher decisions, codesign changes, view edits). Use when the researcher asks to fix, change, update, edit or redesign something that already exists.
+description: Change an existing artifact or protocol.json (legacy program.json remains supported) through a reviewable proposal (corrections, researcher decisions, codesign changes, view edits). Use when the researcher asks to fix, change, update, edit or redesign something that already exists.
 ---
 
 # Refine: reviewable changes
 
 Never edit the accepted file in place. Write a proposal beside it and let the researcher accept.
+
+## Protocol changes (default)
+
+Read protocol.json and the selected evidence. Write protocol.proposed.json and a plain change note; keep
+unaffected fields and source wording identical. A researcher variant is distinct from an original-paper
+reconstruction and must say so. Validate the proposal with the bundled protocol schema and mechanical
+checks; never remove missing items or distribution restrictions to pass. When the researcher accepts,
+re-read the current file, refuse a stale overwrite, save under the shared protocol lock, update the study
+card hash and regenerate the participant preview. Never run a simulation just because an edit was accepted.
+Preserve the paired scholarly program. After protocol changes, review its affected claims/effect references and update its version pin only after reconciling them; never just change a hash to conceal stale research notes. The scholarly program never duplicates execution steps.
 
 ## Program changes
 

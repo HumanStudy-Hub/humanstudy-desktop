@@ -65,6 +65,17 @@ def ai_side(block: dict | None) -> tuple[float | None, str]:
     return float(block["value"]), " vs ".join(parts) or f"n {block.get('n', '?')}"
 
 
+def citations(value):
+    """The protocol schema permits a cite, a list, or a named map. Keep every reference."""
+    if isinstance(value, list):
+        return [cite for child in value for cite in citations(child)]
+    if isinstance(value, dict):
+        if "source" in value or "page" in value:
+            return [value]
+        return [cite for child in value.values() for cite in citations(child)]
+    return []
+
+
 def rows(protocol: dict, effects: dict) -> list[dict]:
     an = protocol.get("analysis") or {}
     defs = list(an.get("effects") or []) + list(an.get("effects_means") or [])
@@ -86,7 +97,8 @@ def rows(protocol: dict, effects: dict) -> list[dict]:
         out.append({"effect": e.get("id"), "metric": block.get("metric") or (e.get("compute") or {}).get("op"),
                     "human_metric": hmetric, "human": h, "human_from": hwhy, "ai": a, "ai_from": awhy,
                     "same_direction": same, "not_compared": why,
-                    "page": ((e.get("reported") or {}).get("cite") or {}).get("page")})
+                    "cites": citations((e.get("reported") or {}).get("cite")),
+                    "page": None})
     return out
 
 
@@ -332,11 +344,21 @@ def page(protocol: dict, run: dict, table: list[dict], rewards: dict | None, par
         mark = ((T["different"] if r["not_compared"] else T["not_compared"]) if r["same_direction"] is None
                 else T["same"] if r["same_direction"] else T["nodiff"] if r["ai"] == 0 else T["opposite"])
         page_ = f' data-page="{r["page"]}"' if isinstance(r["page"], int) else ""
+        refs = []
+        for cite in r.get("cites", []):
+            pg = cite.get("page")
+            if not isinstance(pg, int) or pg < 1:
+                continue
+            source = ((protocol.get("meta") or {}).get("sources") or {}).get(cite.get("source"))
+            file = source.get("file") if isinstance(source, dict) else None
+            file_attr = f' data-file="{html.escape(file, quote=True)}"' if isinstance(file, str) else ""
+            refs.append(f'<button type="button" data-page="{pg}"{file_attr}>p. {pg}</button>')
+        references = " ".join(refs)
         name = labels.get(r["effect"]) or str(r["effect"]).replace("_", " ")
         trs.append(
             f'<tr><td data-program-id="{html.escape(str(r["effect"]))}"{page_}><b>{html.escape(str(name))}</b>'
             f'<br><span class="hs-sub">{html.escape(_plain_metric(r["metric"], T))}</span></td>'
-            f'<td>{_num(r["human"])}<br><span class="hs-sub">{html.escape(_plain_from(r["human_from"], T))}</span></td>'
+            f'<td>{_num(r["human"])}<br><span class="hs-sub">{html.escape(_plain_from(r["human_from"], T))}</span> {references}</td>'
             f'<td>{_num(r["ai"])}<br><span class="hs-sub">{html.escape(_plain_from(r["ai_from"], T))}</span></td>'
             f'<td>{mark}</td></tr>')
     rew = scores_card(run, rewards, partial, L)

@@ -82,10 +82,43 @@ def apply(program: dict, batch: dict, conflicts=None) -> dict:
     return merged
 
 
+def bind_new_pdf_evidence(root, prior, merged):
+    """Bind freshly verified evidence to its local PDF, while retaining every old record."""
+    root = root.resolve()
+    previous = {e["id"]: e for e in prior.get("evidence", []) if isinstance(e, dict) and "id" in e}
+    digests = {}
+    for evidence in merged["evidence"]:
+        if not isinstance(evidence, dict) or evidence.get("verification") != "verified" or evidence.get("sourceSha256"):
+            continue
+        if previous.get(evidence.get("id"), {}).get("verification") == "verified":
+            continue
+        source = evidence.get("path") or evidence.get("sourceId")
+        if not isinstance(source, str):
+            continue
+        if source in ("paper", merged["source"].get("filename")) and (root / "paper.pdf").is_file():
+            source = "paper.pdf"
+        path = (root / source).resolve()
+        if not path.is_relative_to(root) or path.suffix.lower() != ".pdf":
+            continue
+        if path.relative_to(root).as_posix().lower().startswith("sources/private/"):
+            continue
+        try:
+            if path not in digests:
+                digest = hashlib.sha256()
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                digests[path] = digest.hexdigest()
+            evidence["sourceSha256"] = digests[path]
+        except OSError:
+            pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("batch", help="JSON batch file, or - for stdin")
     parser.add_argument("--program", default="program.json")
+    parser.add_argument('--expected-hash', help='Expected raw program bytes hash, or absent for a new document')
     args = parser.parse_args()
     target = Path(args.program)
     tmp = target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
@@ -93,9 +126,14 @@ def main() -> int:
         text = sys.stdin.buffer.read().decode("utf-8-sig") if args.batch == "-" else Path(args.batch).read_text(encoding="utf-8-sig")
         batch = json.loads(text)
         with program_lock(target):
-            prior = json.loads(target.read_text(encoding="utf-8-sig")) if target.exists() else {}
+            raw_prior = target.read_bytes() if target.exists() else None
+            actual = hashlib.sha256(raw_prior).hexdigest() if raw_prior is not None else 'absent'
+            if args.expected_hash is not None and args.expected_hash != actual:
+                raise ValueError('program.json changed; re-read it and review your patch before saving')
+            prior = json.loads(raw_prior.decode('utf-8-sig')) if raw_prior is not None else {}
             conflicts = []
             merged = apply(prior, batch, conflicts)
+            bind_new_pdf_evidence(target.parent, prior, merged)
             if conflicts:
                 # Retain the whole proposal locally and surface targeted review issues in the Study.
                 report_dir = target.parent / ".humanstudy" / "program-conflicts"

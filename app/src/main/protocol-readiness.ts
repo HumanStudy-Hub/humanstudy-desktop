@@ -237,10 +237,38 @@ export async function withScratch<T>(files: [string, string][], body: (work: str
   }
 }
 
+/** Conservative support for study.json's documented comma-separated engine range. Unknown range
+ * syntax fails closed: a newer protocol can still be previewed, but cannot run on an unverified engine. */
+export function engineRangeProblem(required: unknown, version: string): ProtocolProblem | null {
+  if (required === undefined) return null
+  const current = version.match(/^(\d+)[.](\d+)(?:[.](\d+))?$/)
+  const clauses = typeof required === 'string' ? required.split(',').map(s => s.trim()) : []
+  const good = current && clauses.length && clauses.every(clause => {
+    const m = clause.match(/^(>=|<=|>|<|==|=)?\s*(\d+)[.](\d+)(?:[.](\d+))?$/)
+    if (!m) return false
+    const a = current.slice(1).map(x => Number(x || 0)), b = m.slice(2).map(x => Number(x || 0))
+    const i = a.findIndex((x, i) => x !== b[i]), cmp = i < 0 ? 0 : a[i] < b[i] ? -1 : 1
+    return m[1] === '>=' ? cmp >= 0 : m[1] === '<=' ? cmp <= 0 : m[1] === '>' ? cmp > 0 : m[1] === '<' ? cmp < 0 : cmp === 0
+  })
+  return good ? null : { check: 'app-version', reason: `This study needs research engine ${String(required)}. Update HumanStudy Hub before running it (installed engine: ${version || 'unknown'}).` }
+}
+
+async function requiredEngine(project: string, engine: [string, string][]): Promise<ProtocolProblem | null> {
+  try {
+    const meta = JSON.parse(await readFile(join(project, 'study.json'), 'utf8'))
+    const version = engine.find(([path]) => path === 'VERSION')?.[1].match(/tag v([0-9]+[.][0-9]+[.][0-9]+)/)?.[1] || ''
+    return engineRangeProblem(meta?.hsenv, version)
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : { check: 'app-version', reason: 'The study version information could not be read. Restore study.json from the published study before running it.' }
+  }
+}
+
 export async function protocolReadiness(python: string | null, engine: [string, string][], project: string, bin: string,
   timeout = PROTOCOL_TIMEOUT_MS, limits: Limits = {}): Promise<ProtocolProblem[]> {
   if (!python) return [ENGINE_MISSING]
   if (!engine.some(([rel]) => rel === 'hsenv/checks.py')) return [ENGINE_FAILED]
+  const incompatible = await requiredEngine(project, engine)
+  if (incompatible) return [incompatible]
   try {
     return await withScratch(engine, async (work, home) => {
       const held: string[] = []
@@ -324,4 +352,37 @@ export async function protocolBudget(python: string | null, files: [string, stri
       }
     })
   } catch { return [ENGINE_FAILED] }
+}
+
+/** Certify a saved draft, not permission to run it. The bundled schema/reference validator accepts
+ * explicitly blocked arms; full mechanical/source checks remain required by protocolReadiness. */
+export async function protocolDraftCertificate(python: string | null, engine: [string, string][], project: string, bin: string): Promise<{ hash: string; problems: string[] } | null> {
+  if (!python || !engine.some(([rel]) => rel === 'hsenv/schema_check.py')) return null
+  try {
+    return await withScratch(engine, async (work, home) => {
+      const code = [
+        'import sys, json, hashlib',
+        'from pathlib import Path',
+        'sys.path.insert(0, sys.argv[1])',
+        'from hsenv.schema_check import validate',
+        'from hsenv.engine import Protocol',
+        'from hsenv.checks import check_refs',
+        'raw = Path(sys.argv[2]).read_bytes()',
+        'p = json.loads(raw.decode("utf-8-sig"))',
+        'r = validate(p, "protocol")',
+        'errors = [str(path) + ": " + str(reason) for path, reason in r["errors"]]',
+        'if not errors: errors.extend(check_refs(Protocol(p)))',
+        'if p.get("schema_version") != "1": errors.append("Declare protocol schema_version 1.")',
+        'if not p.get("meta", {}).get("title") or not p.get("meta", {}).get("sources"): errors.append("Identify the paper and its sources.")',
+        'if not p.get("stages") and any(a.get("runnable", True) for a in p.get("arms", [])): errors.append("The participant flow is empty.")',
+        'if any(a.get("runnable") is False and not a.get("why") for a in p.get("arms", [])): errors.append("Explain why each blocked arm cannot run.")',
+        'print(json.dumps({"hash": hashlib.sha256(raw).hexdigest(), "problems": errors}))',
+      ].join('\n')
+      const result = await confinedPython(python, code, [work, join(await realpath(project), 'protocol.json')], home, bin, 30_000, { cpuSeconds: 20 })
+      if (result.limit) return null
+      const parsed = JSON.parse(result.stdout)
+      if (!/^[a-f0-9]{64}$/.test(parsed.hash) || !Array.isArray(parsed.problems) || parsed.problems.some((p: unknown) => typeof p !== 'string')) return null
+      return parsed
+    })
+  } catch { return null }
 }

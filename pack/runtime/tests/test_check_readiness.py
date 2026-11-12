@@ -93,6 +93,25 @@ class ReadinessTest(unittest.TestCase):
         self.roots.append(root)
         return root
 
+    def test_static_legacy_review_retains_results_warning_and_never_runs_the_adapter(self):
+        program = json.loads(json.dumps(PROGRAM))
+        node = next(n for n in program["nodes"] if n["kind"] == "result")
+        node["fields"].append({"id": "p", "label": "p", "origin": "reported", "state": "check",
+                               "value": {"p": 1.2}, "evidenceIds": ["e1"]})
+        root = self.project(program=program)
+        sentinel = root / "ran-adapter"
+        (root / "package/fixture/task/adapter.py").write_text(
+            "from pathlib import Path\nPath(%r).touch()" % str(sentinel), encoding="utf-8")
+        run = subprocess.run([sys.executable, "-I", "-B", str(READINESS), str(root), "fixture", "--static-only"],
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        report = json.loads(run.stdout)
+        self.assertEqual(report["checks"]["package"], "skipped")
+        self.assertEqual(report["checks"]["validity"], "skipped")
+        self.assertIn("isolation", [finding["check"] for finding in report["problems"]])
+        self.assertTrue(any(w["check"] == "results" and "1.2" in w["reason"] for w in report["warnings"]), report)
+        self.assertFalse(sentinel.exists())
+
     def test_a_package_passing_every_check_is_ready(self):
         report, problems = readiness(self.project())
         self.assertEqual(problems, {})

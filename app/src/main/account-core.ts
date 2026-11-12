@@ -173,13 +173,24 @@ export function createAccount(deps: AccountDeps) {
     const s = getSession()
     if (!s) return null
     if (s.expiresAt - REFRESH_MARGIN_MS > now()) return s.accessToken
+    // The launcher or another refresh may replace the stored session during this request.
+    const replacementAccessToken = (): string | null | undefined => {
+      const current = getSession()
+      if (current?.refreshToken === s.refreshToken && current.accessToken === s.accessToken) return undefined
+      const owner = jwtSub(s.accessToken)
+      return current && owner && jwtSub(current.accessToken) === owner && current.expiresAt > now() ? current.accessToken : null
+    }
     try {
       const json = await supabase('token?grant_type=refresh_token', { refresh_token: s.refreshToken })
       const next = sessionFrom(json, s.email)
       if (!next) throw new AccountError('Refresh returned no session.')
+      const replacement = replacementAccessToken()
+      if (replacement !== undefined) return replacement
       writeSecret('session', next)
       return next.accessToken
     } catch (err) {
+      const replacement = replacementAccessToken()
+      if (replacement !== undefined) return replacement
       // A rejected refresh token means the session is gone; a network error keeps it for later.
       if (err instanceof AccountError && err.code !== 'offline') writeSecret('session', null)
       return null
@@ -273,15 +284,15 @@ export function createAccount(deps: AccountDeps) {
 
   async function signOut(): Promise<AccountStatus> {
     const s = getSession()
-    if (s) {
-      try {
-        if (s.expiresAt > now()) await supabase('logout', undefined, s.accessToken)
-      } catch {
-        /* best effort: the local session is cleared regardless */
-      }
-    }
     writeSecret('session', null)
     writeSecret('desktopKey', null)
+    if (s && s.expiresAt > now()) {
+      try {
+        await supabase('logout?scope=local', undefined, s.accessToken)
+      } catch {
+        /* best effort after clearing the local session */
+      }
+    }
     return status()
   }
 

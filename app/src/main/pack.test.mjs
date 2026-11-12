@@ -5,7 +5,7 @@ import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { test } from 'node:test'
@@ -42,6 +42,7 @@ test('installPack puts the artifact kit in .opencode/artifact-kit', async () => 
   for (const f of ['hs-kit.js', 'hs-kit.css', 'inline.py', 'chart.umd.min.js', 'kit.json', 'LICENSE.chartjs.md'])
     assert.ok(existsSync(join(proj, '.opencode/artifact-kit', f)), f)
   assert.ok(existsSync(join(proj, '.opencode/skills/visualize/SKILL.md')))
+  assert.equal(sha(join(proj, '.opencode/skills/build/AUTHORING.md')), sha(join(packDir, 'skills/build/AUTHORING.md')))
   assert.equal(sha(join(proj, '.opencode/artifact-kit/chart.umd.min.js')), kit.files['chart.umd.min.js'].sha256)
   assert.deepEqual(P.kitFiles().sort(), readdirSync(join(packDir, 'artifact-kit')).filter((f) => f !== '__pycache__').map((f) => 'artifact-kit/' + f).sort())
 })
@@ -60,7 +61,7 @@ test('the protocol engine is vendored as listed in VERSION and installed, app-ow
   assert.ok(!/(^|\s)\/(Users|home)\/|[A-Z]:\\/m.test(version), 'VERSION records hashes and a label, no local paths')
   const listed = [...version.matchAll(/^([0-9a-f]{64}) {2}(\S+)$/gm)].map((m) => [m[2], m[1]])
   assert.deepEqual(listed.map(([f]) => f).sort(), ['hsenv/__init__.py', 'hsenv/checks.py', 'hsenv/distribution.py', 'hsenv/effects_core.py', 'hsenv/engine.py',
-    'hsenv/evaldata.py', 'hsenv/expr.py', 'hsenv/rewards.py', 'hsenv/schema_check.py', 'hsenv/score.py', 'hsenv/serve.py',
+    'hsenv/evaldata.py', 'hsenv/expr.py', 'hsenv/release.py', 'hsenv/rewards.py', 'hsenv/schema_check.py', 'hsenv/score.py', 'hsenv/serve.py',
     'schema/protocol.v1.json', 'schema/run.v1.json', 'schema/study.v1.json'])
   assert.ok(!existsSync(join(packDir, 'runtime/hsenv/tests')), 'upstream tests name real studies: never vendored')
   assert.match(readFileSync(join(packDir, 'runtime/hsenv/LICENSE'), 'utf8'), /^MIT License/)
@@ -102,6 +103,19 @@ test('refreshPack always upgrades the app-owned simulation security entry point'
   writeFileSync(dest, '# my own runner')
   await P.refreshPack(proj)
   assert.equal(readFileSync(dest, 'utf8'), readFileSync(join(packDir, 'skills/simulate/simkit.py'), 'utf8'))
+})
+
+test('opening a project refreshes app-owned files without changing a linked original', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pack-hardlink-'))
+  const proj = join(dir, 'project')
+  const original = join(dir, 'original.py')
+  const dest = join(proj, '.opencode/skills/build/program_io.py')
+  mkdirSync(dirname(dest), { recursive: true })
+  writeFileSync(original, '# previous helper')
+  linkSync(original, dest)
+  await P.refreshPack(proj)
+  assert.equal(readFileSync(original, 'utf8'), '# previous helper')
+  assert.equal(readFileSync(dest, 'utf8'), readFileSync(join(packDir, 'skills/build/program_io.py'), 'utf8'))
 })
 
 test('every shipped human-program schema is upgraded in existing projects (evidence note, #65)', async () => {
@@ -169,7 +183,11 @@ test('existing projects get the shared lock/checker/policy and old default build
   await P.refreshPack(proj)
   for (const rel of ['.opencode/skills/build/program_io.py', '.opencode/skills/build/program_lock.py', '.opencode/skills/build/check_program.py', 'schema/build-coverage.json'])
     assert.ok(existsSync(join(proj, rel)), rel)
-  assert.match(readFileSync(skill, 'utf8'), /program.json --complete/)
+  assert.match(readFileSync(skill, 'utf8'), /schema_version/); assert.match(readFileSync(skill, 'utf8'), /protocol_io.py/)
+  const authoring = join(proj, '.opencode/skills/build/AUTHORING.md')
+  writeFileSync(authoring, 'Previous packaged reference')
+  await P.refreshPack(proj)
+  assert.equal(sha(authoring), sha(join(packDir, 'skills/build/AUTHORING.md')))
   writeFileSync(skill, 'Researcher custom instructions')
   await P.refreshPack(proj)
   assert.equal(readFileSync(skill, 'utf8'), 'Researcher custom instructions')
@@ -194,12 +212,12 @@ test('T11: the trusted checker set holds every script check_readiness.py needs',
 })
 
 test('T11: no runtime or an unreadable report never passes', async () => {
-  assert.deepEqual(await SR.scientificReadiness(null, P.trustedCheckFiles(), '/nowhere', 'k', ''), [SR.RUNTIME_MISSING])
+  assert.deepEqual((await SR.scientificReadiness(null, P.trustedCheckFiles(), '/nowhere', 'k', '')).problems, [SR.RUNTIME_MISSING])
   assert.throws(() => SR.parseScientificReport('PASS'))
   assert.throws(() => SR.parseScientificReport('{"problems": [{"check": 1}]}'))
-  assert.deepEqual(SR.parseScientificReport('noise\n{"problems": []}\n'), [])
+  assert.deepEqual(SR.parseScientificReport('noise\n{"problems": []}\n'), { problems: [], warnings: [], checks: {} })
   const fake = process.platform === 'win32' ? 'C:\\nonexistent\\python.exe' : '/nonexistent/python3'
-  assert.deepEqual(await SR.scientificReadiness(fake, P.trustedCheckFiles(), '/nowhere', 'k', ''), [SR.CHECKS_FAILED])
+  assert.deepEqual((await SR.scientificReadiness(fake, P.trustedCheckFiles(), '/nowhere', 'k', '')).problems, [SR.CHECKS_FAILED])
 })
 
 test('T11: end to end, a good package passes and a failed check blocks, whatever the project\'s own checker says', { skip: !sciencePython, timeout: 600_000 }, async () => {
@@ -210,13 +228,16 @@ test('T11: end to end, a good package passes and a failed check blocks, whatever
     return r.stdout.trim()
   }
   const good = fixture({})
-  assert.deepEqual(await SR.scientificReadiness(sciencePython, P.trustedCheckFiles(), good, 'fixture', ''), [])
+  const isolated = SR.legacyFileIsolationAvailable()
+  const report = await SR.scientificReadiness(sciencePython, P.trustedCheckFiles(), good, 'fixture', '')
+  assert.deepEqual(report.problems.map(problem => problem.check), isolated ? [] : ['isolation'])
+  if (!isolated) assert.equal(report.checks.package, 'skipped')
   const bad = fixture({ effects: false })
   mkdirSync(join(bad, '.opencode/skills/build'), { recursive: true })
   writeFileSync(join(bad, '.opencode/skills/build/check_readiness.py'), 'print(\'{"problems": []}\')\n')
   writeFileSync(join(bad, '.opencode/skills/build/effects.py'), 'def build_rules(*a):\n    return []\n')
   const problems = await SR.scientificReadiness(sciencePython, P.trustedCheckFiles(), bad, 'fixture', '')
-  assert.deepEqual(problems, [{ check: 'effects', reason: 'effects.json is missing' }])
+  assert.deepEqual(problems.problems.filter(problem => problem.check !== 'isolation'), [{ check: 'effects', reason: 'effects.json is missing' }])
 })
 
 // v0.8 protocol route: skills/run plays protocol.json with an f; skills/preview renders it. Python 3.11+ (the app

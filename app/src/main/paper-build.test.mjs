@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 // Automatic paper build after import (issue #15): state machine, restart recovery and the
 // program_io.py checkpoint writer. No kernel, no network.
 //   node src/main/paper-build.test.mjs
@@ -162,18 +163,29 @@ test('a build left running by an earlier app process reads as interrupted, never
   assert.equal(next.builds.start(dir, 's1'), true)
 })
 
+test('read-only project snapshots show interruption without writing project state', () => {
+  const dir = project(), first = tracker()
+  first.builds.bind('s1', dir)
+  first.builds.start(dir, 's1')
+  const path = join(dir, '.humanstudy/paper-build.json')
+  const before = readFileSync(path, 'utf8')
+  const reopened = tracker().builds
+  assert.equal(reopened.readOnly(dir).error, 'interrupted')
+  assert.equal(readFileSync(path, 'utf8'), before)
+})
+
 test('the build request is an authorization to build, not to simulate', async () => {
   const out2 = mkdtempSync(join(tmpdir(), 'paper-build-i18n-'))
-  await build({ entryPoints: [join(here, '../shared/simulation-scope.ts')], bundle: true, platform: 'node', format: 'esm', outdir: out2, logLevel: 'error' })
+  await build({ entryPoints: [join(here, '../shared/simulation-scope.ts')], bundle: true, platform: 'node', format: 'esm', outdir: out2, logLevel: 'error', outExtension: { '.js': '.mjs' } })
   const dict = readFileSync(join(here, '../renderer/i18n-dict.ts'), 'utf8')
   // Chat text never starts a simulation (#22); only a Run-button approval does.
-  const { approvalRequest } = await import(pathToFileURL(join(out2, 'simulation-scope.js')).href)
+  const { approvalRequest } = await import(pathToFileURL(join(out2, 'simulation-scope.mjs')).href)
   const row = /\['build\.prompt', '([^']+)', '([^']+)'\]/.exec(dict)
   assert.ok(row, 'build.prompt has English and Chinese')
   for (const prompt of [row[1], row[2]]) {
     assert.equal(approvalRequest(prompt), null, prompt)
     assert.match(prompt, /simulation|模拟/i, 'the prompt says not to simulate')
-    assert.match(prompt, /program_io\.py/)
+    assert.match(prompt, /protocol_io\.py/)
     assert.match(prompt, /missing/)
   }
   for (const key of ['study.paper_no_study', 'study.build_from_paper', 'build.title', 'build.pending', 'build.reading', 'build.writing', 'build.checking', 'build.packaging', 'build.failed_title', 'build.kept', 'build.retry',
@@ -345,4 +357,142 @@ test('normal human edits and later agent rechecks do not leave a completed proje
   builds.event(pass)
   assert.equal(builds.read(dir).status, 'complete')
   assert.equal(builds.read(dir).validationHash, before)
+})
+
+test('protocol-only drafts finish without a program.json or trusting tool PASS, and survive restart', async()=>{
+ const dir=project();let calls=0
+ const certify=async dir=>{calls++;return {hash:createHash('sha256').update(readFileSync(join(dir,'protocol.json'))).digest('hex'),problems:[]}}
+ const builds=P.createPaperBuilds(()=>{},certify);builds.bind('p',dir);builds.start(dir,'p')
+ writeFileSync(join(dir,'protocol.json'),'{"id":"draft","arms":[{"id":"a","runnable":false,"why":"Original material missing"}]}')
+ await builds.event({sessionId:'p',type:'done'})
+ assert.equal(calls,1);assert.equal(builds.read(dir).status,'complete');assert.equal(builds.read(dir).validationRoute,'protocol')
+ assert.equal(existsSync(join(dir,'program.json')),false)
+ assert.equal(P.createPaperBuilds(()=>{},certify).read(dir).status,'complete')
+ writeFileSync(join(dir,'protocol.json'),'{"id":"changed"}')
+ assert.equal(builds.read(dir).status,'error','a stale certificate cannot validate changed bytes')
+})
+test('protocol check failures, edits during checking and shutdown do not falsely complete',async()=>{
+ for(const kind of ['failed','changed','shutdown']){
+  const dir=project();writeFileSync(join(dir,'protocol.json'),'{}')
+  const builds=P.createPaperBuilds(()=>{},async()=>{
+   const hash=createHash('sha256').update(readFileSync(join(dir,'protocol.json'))).digest('hex')
+   if(kind==='changed')writeFileSync(join(dir,'protocol.json'),'{"changed":true}')
+   return {hash,problems:kind==='failed'?['Missing source references']:[]}
+  });builds.bind('p',dir);builds.start(dir,'p')
+  await builds.event({sessionId:'p',type:'tool',input:'python -m hsenv.checks .',output:'{"PASS":true}'})
+  await builds.event({sessionId:'p',type:'done',...(kind==='shutdown'?{detail:'shutdown'}:{})})
+  assert.equal(builds.read(dir).status,'error',kind)
+ }
+})
+
+
+test('protocol snapshots independently recheck persisted status after restart and reject forged completion',async()=>{
+ const dir=project();writeFileSync(join(dir,'protocol.json'),'{}')
+ P.writePaperBuild(dir,{status:'complete',phase:'checking',checked:true,validationRoute:'protocol',validationHash:createHash('sha256').update('{}').digest('hex')})
+ let checks=0
+ const builds=P.createPaperBuilds(()=>{},async()=>{checks++;return {hash:createHash('sha256').update('{}').digest('hex'),problems:['No protocol structure']}})
+ assert.equal((await builds.snapshot(dir)).status,'error')
+ assert.equal(checks,1,'a project status file cannot certify its own protocol')
+})
+
+
+test('a checked legacy program still completes when an unfinished protocol file also exists',async()=>{
+ const dir=project();let calls=0
+ const builds=P.createPaperBuilds(()=>{},async()=>{calls++;return null})
+ builds.bind('p',dir);builds.start(dir,'p')
+ writeFileSync(join(dir,'program.json'),sample);writeFileSync(join(dir,'protocol.json'),'{}')
+ builds.event({sessionId:'p',type:'tool',input:'check_program.py program.json --complete',output:'PASS program.json'})
+ await builds.event({sessionId:'p',type:'done'})
+ assert.equal(builds.read(dir).status,'complete');assert.equal(builds.read(dir).validationRoute,'program');assert.equal(calls,0)
+})
+
+
+test('only the owning build or an explicit build action selects the build model',()=>{
+ const state={status:'running',phase:'writing',sessionId:'build'}
+ assert.equal(P.isBuildTurn(state,'build','composer.send'),true)
+ assert.equal(P.isBuildTurn(state,'other','composer.send'),false)
+ assert.equal(P.isBuildTurn(undefined,'chat','simulation.build'),true)
+ assert.equal(P.isBuildTurn(undefined,'chat','paper.build'),true)
+ assert.equal(P.isBuildTurn({status:'complete',phase:'checking'},'chat','composer.send'),false)
+})
+
+test('paired builds wait for complete research and preview, then bind both without changing run readiness',async()=>{
+ const dir=project(), assets=join(here,'../../resources/protocol-sample')
+ P.pendingPaperBuild(dir,true)
+ const builds=P.createPaperBuilds(()=>{},async()=>({hash,problems:[]}))
+ builds.bind('paired',dir);builds.start(dir,'paired')
+ writeFileSync(join(dir,'program.json'),sample)
+ builds.event({sessionId:'paired',type:'tool',input:'check_program.py program.json --complete',output:'PASS program.json'})
+ await builds.event({sessionId:'paired',type:'done'})
+ assert.equal(builds.read(dir).status,'error','a fresh paper cannot complete on a legacy program certificate')
+ assert.equal(builds.retry(dir),true)
+ assert.equal(builds.read(dir).requiresPairedDelivery,true)
+ builds.start(dir,'paired')
+ const protocol=JSON.parse(readFileSync(join(assets,'protocol.json'),'utf8'));protocol.meta.delivery='research-program-v1'
+ const raw=JSON.stringify(protocol),hash=createHash('sha256').update(raw).digest('hex')
+ writeFileSync(join(dir,'protocol.json'),raw)
+ await builds.event({sessionId:'paired',type:'done'})
+ assert.equal(builds.read(dir).status,'error','a protocol-only success is not a complete paired build')
+ const research=JSON.parse(readFileSync(join(assets,'program.json'),'utf8'));research.extensions.scholarly.protocol.sha256=hash
+ writeFileSync(join(dir,'program.json'),JSON.stringify(research))
+ assert.equal(P.programComplete(dir),false,'a scholarly document cannot pass the legacy executable-program route')
+ mkdirSync(join(dir,'artifacts'),{recursive:true})
+ writeFileSync(join(dir,'artifacts/preview.html'),`<script id="hs-protocol">${JSON.stringify({id:protocol.id,sha256:hash})}</script>`)
+ await builds.event({sessionId:'paired',type:'done'})
+ assert.equal(builds.read(dir).status,'complete')
+ assert.match(builds.read(dir).deliveryHash,/^[a-f0-9]{64}$/)
+ research.nodes[0].fields[0].value='A researcher edit';writeFileSync(join(dir,'program.json'),JSON.stringify(research))
+ assert.equal(builds.read(dir).status,'error','old completion cannot certify changed scholarly bytes')
+})
+
+test('scholarly checkpoint writer refuses stale bytes and keeps the researcher edit', {skip: !python},()=>{
+ const dir=project(), file=join(dir,'program.json'), io=join(here,'../../../pack/skills/build/program_io.py')
+ const save=(patch,expected)=>spawnSync(python,[io,'-','--expected-hash',expected],{cwd:dir,input:JSON.stringify(patch),encoding:'utf8'})
+ const original=save(JSON.parse(sample),'absent');assert.equal(original.status,0,original.stderr)
+ const base=createHash('sha256').update(readFileSync(file)).digest('hex')
+ const changed=JSON.parse(readFileSync(file,'utf8'));changed.title='Researcher title';writeFileSync(file,JSON.stringify(changed))
+ const stale=save({title:'Agent patch'},base);assert.notEqual(stale.status,0);assert.match(stale.stderr,/changed/)
+ assert.equal(JSON.parse(readFileSync(file,'utf8')).title,'Researcher title')
+})
+
+test('Program-only certificates explain invalid scholarly declarations without waiving paired checks', () => {
+  const dir = project(), p = JSON.parse(sample)
+  for (const scholarly of [{profile:'scholarly-v1',status:'draft',note:'Program-only conversion'}, {profile:'unknown'}, null]) {
+    p.extensions = {scholarly}
+    writeFileSync(join(dir,'program.json'), JSON.stringify(p))
+    const c = P.programCertificate(dir)
+    assert.ok(c, 'readable JSON gets an actionable contract error')
+    assert.match(c.problems.join(' '), /Program-only conversion.*omit extensions.scholarly/)
+    assert.equal(P.programComplete(dir), false)
+    if (python) {
+      const checked = spawnSync(python,[join(here,'../../../pack/skills/build/check_program.py'),join(dir,'program.json'),'--complete'],{encoding:'utf8'})
+      assert.notEqual(checked.status,0)
+      assert.match(checked.stdout,/omit extensions.scholarly/)
+    }
+  }
+  p.extensions = {scholarly:{profile:'scholarly-v1',protocol:{path:'protocol.json',id:'real',sha256:'a'.repeat(64)}}}
+  writeFileSync(join(dir,'program.json'),JSON.stringify(p))
+  assert.match(P.programCertificate(dir).problems.join(' '),/paired protocol verification/)
+  assert.equal(P.programComplete(dir),false)
+  delete p.extensions
+  writeFileSync(join(dir,'program.json'),JSON.stringify(p))
+  assert.equal(P.programComplete(dir),true)
+})
+
+
+test('Python scholarly completion verifies the actual protocol pin, not just a plausible hash', {skip: !python}, () => {
+  const dir = project(), source = join(here,'../../resources/protocol-sample')
+  const p = JSON.parse(readFileSync(join(source,'program.json'),'utf8'))
+  const raw = readFileSync(join(source,'protocol.json'))
+  const check = () => spawnSync(python,[join(here,'../../../pack/skills/build/check_program.py'),join(dir,'program.json'),'--complete'],{encoding:'utf8'})
+  writeFileSync(join(dir,'program.json'),JSON.stringify(p))
+  assert.match(check().stdout,/requires a readable protocol.json/)
+  writeFileSync(join(dir,'protocol.json'),raw)
+  assert.equal(check().status,0)
+  writeFileSync(join(dir,'protocol.json'),Buffer.concat([raw,Buffer.from('\n')]))
+  assert.match(check().stdout,/does not match/)
+  p.extensions.scholarly.protocol.sha256 = createHash('sha256').update(readFileSync(join(dir,'protocol.json'))).digest('hex')
+  p.extensions.scholarly.protocol.id = 'wrong'
+  writeFileSync(join(dir,'program.json'),JSON.stringify(p))
+  assert.match(check().stdout,/does not match/)
 })

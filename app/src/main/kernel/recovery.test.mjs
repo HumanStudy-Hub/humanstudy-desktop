@@ -12,7 +12,7 @@ const { OpencodeKernel } = await import(pathToFileURL(join(out, 'k.mjs')).href)
 const tick = () => new Promise(r => setImmediate(r))
 async function scenario(name, run) {
   const k = new OpencodeKernel({ binary: '/bin/true', provider: 'humanstudy' })
-  k.register('s', { dir: out, exited: false })
+  k.register('s', { dir: out, exited: false, transport: { models: async () => ['anthropic/claude-sonnet-5.5'] } })
   const events = [], requests = []
   k.onEvent(e => events.push(e))
   k.request = async (_server, method, path, body) => {
@@ -267,4 +267,14 @@ if (process.env.HUMANSTUDY_KERNEL_BIN) {
     console.log('Real installed OpenCode malformed JSON → native stop → automatic repair → complete 50 KB program.json saved and check_program.py PASS')
   } finally { await k.dispose(); await new Promise(r => model.close(r)); rmSync(project, { recursive: true, force: true }) }
 }
+await scenario('build-model-is-per-turn', async ({ k, requests, finish, idle }) => {
+  await k.send('s', 'Build the study', { purpose: 'build' })
+  assert.equal(requests[0].body.model.modelID, 'anthropic/claude-sonnet-5.5')
+  finish(); idle(); await tick()
+  assert.equal(requests[1].body.model.modelID, 'anthropic/claude-sonnet-5.5', 'recovery keeps the build model')
+  finish('stop', 10); idle()
+  await k.send('s', 'Explain what is missing')
+  assert.equal(requests.at(-1).body.model.modelID, 'anthropic/claude-haiku-5.5', 'the next chat returns to Haiku')
+})
+
 rmSync(out, { recursive: true, force: true })

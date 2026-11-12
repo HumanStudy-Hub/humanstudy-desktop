@@ -1,0 +1,30 @@
+{
+ "schema_version": "1",
+ "id": "mazzarella2018politeness",
+ "title": "Believing what you're told: Politeness and scalar inferences",
+ "authors": [
+  "Diana Mazzarella",
+  "Emmanuel Trouche",
+  "Hugo Mercier",
+  "Ira Noveck"
+ ],
+ "year": 2018,
+ "doi": "10.3389/fpsyg.2018.00908",
+ "version": "1.0.0",
+ "quality": "high_fidelity",
+ "quality_evidence": [
+  "review/fidelity-review-1.md",
+  "review/resolutions-1.md",
+  "review/checks-latest.json"
+ ],
+ "licence": {
+  "paper": "CC-BY-4.0",
+  "materials": "CC-BY-4.0"
+ },
+ "protocol": {
+  "path": "protocol.json",
+  "sha256": "27878bda721d8468257e84670d8a87b608552c15d1e74902db098ed14849e502",
+  "schema_version": "1"
+ },
+ "hsenv": ">=0.8,<0.9"
+}

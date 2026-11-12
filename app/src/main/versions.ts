@@ -19,7 +19,7 @@ export function isVersioned(rel: string): boolean {
   // A run's progress.json is live status (its heartbeat moves every 15 s), not a document; keeping
   // each beat would push real versions out of the history. Temporary files are never versions.
   if (/^artifacts\/simulations\/.+\/progress\.json$/.test(rel) || rel.endsWith('.tmp')) return false
-  return rel === 'program.json' || rel.startsWith('artifacts/') || rel.startsWith('exports/')
+  return rel === 'program.json' || rel === 'protocol.json' || rel === 'study.json' || rel.startsWith('artifacts/') || rel.startsWith('exports/')
 }
 
 const stamp = (ms: number) => new Date(ms).toISOString().replace(/[-:]/g, '').replace('.', '')

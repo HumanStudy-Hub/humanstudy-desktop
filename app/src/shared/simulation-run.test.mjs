@@ -123,7 +123,7 @@ const panelSrc = readFileSync(join(here, '../renderer/components/SimulationPanel
 assert.match(panelSrc, /summary\.facts \? factsParagraph\(summary\.facts\) : summary\.paragraph/)
 assert.match(panelSrc, /t\('sim\.stopped_line', \{ done: latestStopped\.done, total: latestStopped\.total \}\)/)
 const benchSrc = readFileSync(join(here, '../renderer/components/Workbench.tsx'), 'utf8')
-assert.match(benchSrc, /if \(layout\.active === 'study'\) update\(\(l\) => \(\{ \.\.\.l, active: 'simulation' \}\)\)/, 'a protocol-only project opens on the Simulation tab')
+assert.match(benchSrc, /<ProtocolStudy/, 'protocol-only projects keep a readable Study view')
 assert.equal(S.isResult(runs[1], S.parseProgress(readFileSync(join(here, '../../resources/sample/example-simulation/progress.json'), 'utf8')), 'done'), true, 'the shipped example (participant counts in progress.json) is still a result')
 assert.equal(S.isResult(runs[1], null, 'done'), false)
 

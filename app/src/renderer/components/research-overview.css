@@ -1,0 +1,13 @@
+.research-overview h2 { margin: 0 0 12px; font: 500 21px/1.3 var(--font-serif); }
+.research-overview .research-experiments { padding-top: 18px; }
+.research-overview .research-experiment { border-bottom: 1px solid var(--line); padding: 12px 0; }
+.research-overview .research-experiment > summary { color: var(--text); font-weight: 600; }
+.research-overview .research-group { padding: 8px 0; }
+.research-overview .research-group > summary { font-weight: 500; }
+.research-overview .research-claim { margin: 12px 0; }
+.research-overview .research-claim > strong { font-size: 13px; }
+.research-overview .research-evidence { font-size: 12px; margin-top: 5px; }
+.research-overview .research-evidence ul { padding-left: 22px; }
+.research-overview .research-evidence li { margin: 8px 0; }
+.research-overview .research-evidence blockquote { border-left: 2px solid var(--line); margin: 4px 0; padding-left: 10px; white-space: pre-wrap; }
+.research-overview .research-prepare { margin-top: 12px; }

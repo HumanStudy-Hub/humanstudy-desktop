@@ -63,12 +63,15 @@ const packageEntries = (tree: ProjectEntry[]): ProjectEntry[] => {
   const pkg = tree.find((e) => e.kind === 'dir' && e.rel === 'package')
   return pkg ? [pkg, ...allEntries(pkg.children ?? [])] : []
 }
-function usePackageReadiness(dir: string, tree: ProjectEntry[], studyId: string, program: HumanProgram): { slugs: string[]; readiness: PackageReadiness | null; checking: boolean } {
+function usePackageReadiness(dir: string, tree: ProjectEntry[], studyId: string, program: HumanProgram) {
   const entries = useMemo(() => packageEntries(tree), [tree])
   const slugs = useMemo(() => entries.filter((e) => e.kind === 'dir' && /^package\/[^/]+$/.test(e.rel) && !e.name.startsWith('.') && e.name !== '__pycache__').map((e) => e.name), [entries])
   // The build checks also read sources/, effects.json and the paper, so a change there rechecks too.
   const inputs = useMemo(() => readinessStamp(allEntries(tree)), [tree])
   const stamp = JSON.stringify([dir, studyId, packageStamp(entries), inputs, program])
+  const [executing, setExecuting] = useState<string | null>(null)
+  const latest = useRef(stamp)
+  latest.current = stamp
   const [checked, setChecked] = useState<{ stamp: string; readiness: PackageReadiness } | null>(null)
   useEffect(() => {
     let live = true
@@ -77,7 +80,20 @@ function usePackageReadiness(dir: string, tree: ProjectEntry[], studyId: string,
     }).catch(() => { if (live) setChecked({ stamp, readiness: { exists: slugs.length > 0, ready: false, slug: null, problems: [] } }) })
     return () => { live = false }
   }, [dir, stamp, studyId]) // eslint-disable-line react-hooks/exhaustive-deps
-  return { slugs, readiness: checked?.stamp === stamp ? checked.readiness : null, checking: checked?.stamp !== stamp }
+  async function check() {
+    setExecuting(stamp)
+    try {
+      const readiness = await window.humanstudy.project.packageReadiness(dir, studyId, true)
+      if (latest.current === stamp) setChecked({ stamp, readiness })
+    } catch {
+      if (latest.current === stamp) setChecked({ stamp, readiness: { exists: slugs.length > 0, ready: false, slug: null,
+        problems: [{ file: 'study.json', kind: 'scientific', check: 'runtime', reason: t('sim.check_failed') }] } })
+    } finally {
+      setExecuting((current) => current === stamp ? null : current)
+    }
+  }
+  return { slugs, readiness: checked?.stamp === stamp ? checked.readiness : null,
+    checking: checked?.stamp !== stamp, executing: executing === stamp, check }
 }
 const fileUrl = (tree: ProjectEntry[], path?: string): string | undefined => {
   if (!path) return undefined
@@ -97,7 +113,7 @@ export function SimulationPanel(props: Props) {
   const plan = useMemo(() => simulationPlan(program, studyId), [program, studyId])
   const scope = useMemo(() => simulationScope(program, studyId), [program, studyId])
   const limits = useMemo(() => simulationLimits(program, studyId), [program, studyId])
-  const { slugs, readiness, checking } = usePackageReadiness(dir, project.tree, studyId, program)
+  const { slugs, readiness, checking, executing, check } = usePackageReadiness(dir, project.tree, studyId, program)
   // Two runnable forms, checked separately by the main process: protocol.json (the engine) wins when it passes.
   const route: 'protocol' | 'package' | null = readiness?.protocol?.ready ? 'protocol' : readiness?.ready ? 'package' : null
   const built = route !== null
@@ -176,8 +192,9 @@ export function SimulationPanel(props: Props) {
     const notStarted = !pending.turn && !requestBusy && now - pending.at > 8_000
     if (pending.kind === 'build' && (turnEnded || notStarted)) {
       // The package check is still reading the files the build just wrote: decide once it is done.
-      if (checking && slugs.length > 0) return
-      setBuildProblem(!built && (!pending.turn || pending.turn === agentTurnKey))
+      if (checking && (slugs.length > 0 || hasProtocolFile)) return
+      const awaitingProtocolCheck = readiness?.protocol?.problems.some(p => p.kind === 'scientific' && p.check === 'unchecked')
+      setBuildProblem(!built && !awaitingProtocolCheck && (!pending.turn || pending.turn === agentTurnKey))
       setPending(null)
     }
     if (pending.kind === 'run' && quietMiss && !newRun) { setRunProblem(true); setPending(null) }
@@ -273,11 +290,26 @@ export function SimulationPanel(props: Props) {
               <button className="link" onClick={() => { setPending(null); setBuildProblem(false); setRunProblem(false); props.onAsk(failedRun ? t('sim.fix_prompt', { run: failedRun.rel }) : t(buildProblem ? 'sim.why_build_prompt' : 'sim.why_prompt')) }}>{t('sim.ask_fix')}</button>
             </section>
           )}
+          {readiness?.scientificReport && <section className="sim-card">
+            {readiness.scientificReport.warnings.length > 0 && <>
+              <h3>{t('sim.review_findings')}</h3>
+              <ul className="sim-missing">{readiness.scientificReport.warnings.map((finding, index) =>
+                <li key={index}>{finding.check}: {finding.reason}</li>)}</ul>
+            </>}
+            <details>
+              <summary>{t('sim.scientific_report')}</summary>
+              <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(readiness.scientificReport, null, 2)}</pre>
+            </details>
+          </section>}
           {(slugs.length > 0 || readiness?.protocol) && !built ? (
             <section className="sim-card" aria-live="polite">
               {readiness ? (() => {
                 // A project with protocol.json shows the protocol's problems (the route new studies take).
-                const problems = readiness.protocol ? readiness.protocol.problems : readiness.problems
+                const activeProblems = readiness.protocol ? readiness.protocol.problems : readiness.problems
+                const unchecked = activeProblems.some((p) => p.kind === 'scientific' && p.check === 'unchecked')
+                const canCheck = unchecked || activeProblems.some((p) => p.kind === 'scientific' && p.check === 'runtime')
+                const needsSupportedProtocol = !readiness.protocol && activeProblems.some(p => p.kind === 'scientific' && p.check === 'isolation')
+                const problems = activeProblems.filter((p) => p.kind !== 'scientific' || p.check !== 'unchecked')
                 const what = readiness.protocol ? 'protocol.json' : `package/${readiness.slug}`
                 // A published study whose screens still lack their original wording: it previews, but cannot run yet.
                 // A published study that cannot run as it stands (its held list was changed, or it fails its checks
@@ -298,10 +330,12 @@ export function SimulationPanel(props: Props) {
                     <p>{t('sim.incomplete')}</p>
                     <ul className="sim-missing">{rest.map((p) => <li key={p.kind === 'scientific' ? `${p.check}:${p.reason}` : `${p.file}:${p.kind}`}>{problemText(p)}</li>)}</ul>
                   </>}
-                  <button className="link" onClick={() => props.onAsk(rest.length
+                  {needsSupportedProtocol && <button className="primary" onClick={build} disabled={agentBusy}>{t('sim.prepare_protocol')}</button>}
+                  {canCheck && <button className={needsSupportedProtocol ? 'ghost' : 'primary'} disabled={executing} onClick={() => void check()}>{t(executing ? 'sim.checking' : needsSupportedProtocol ? 'sim.check_legacy_findings' : 'sim.check_readiness')}</button>}
+                  {problems.length > 0 && !rest.some((p) => p.kind === 'scientific' && ['isolation', 'runtime'].includes(p.check)) && <button className="link" onClick={() => props.onAsk(rest.length
                     ? t('sim.complete_prompt', { pkg: what, what: problems.map(problemText).join(t('sim.list_sep')) })
                     : stuck.length ? t('sim.text_blocked_prompt', { what: stuck.map(problemText).join(t('sim.list_sep')) })
-                    : t('sim.text_prompt', { what: wording.map(problemText).join(t('sim.list_sep')) }))}>{t(rest.length ? 'sim.ask_complete' : stuck.length ? 'sim.ask_text_blocked' : 'sim.ask_text')}</button>
+                    : t('sim.text_prompt', { what: wording.map(problemText).join(t('sim.list_sep')) }))}>{t(rest.length ? 'sim.ask_complete' : stuck.length ? 'sim.ask_text_blocked' : 'sim.ask_text')}</button>}
                 </>)
               })() : <p className="muted small">{t('sim.checking')}</p>}
             </section>
@@ -407,7 +441,7 @@ function problemText(p: PackageProblem): string {
       screens: screens === 1 ? t('sim.text_one_screen') : t('sim.text_screens', { n: screens }) }
     return t(`sim.text_need.${need}`, vars)
   }
-  if (p.kind === 'scientific') return `${p.check}: ${p.reason}`
+  if (p.kind === 'scientific') return p.reason
   const vars = { what: t(`sim.pkg.${p.file}`), file: p.file }
   if (p.kind === 'unvalidated') return t('sim.pkg_unvalidated', vars)
   if (p.kind === 'wrong-study' || p.kind === 'stale-program' || p.kind === 'bindings') return t('sim.pkg_stale', vars)

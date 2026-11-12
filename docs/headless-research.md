@@ -7,7 +7,7 @@ The worker never discovers or copies the owner's desktop credentials.
 ## Agreement version 3
 
 Running the worker requires explicit agreement to collect interaction events and research content:
-full submitted conversations and agent outputs, tools, Human Program/artifact versions, and the
+full submitted conversations and agent outputs, tools, Human Study Program/artifact versions, and the
 original papers/resources imported into the project. Sources are stored privately under the
 account and deduplicated by SHA-256. Uploading does not publish files to the community.
 There is no mouse movement, individual keystroke, screen/DOM recording or other-app capture.
@@ -36,8 +36,10 @@ without generation or source upload. Its account check needs the web identity en
 research-collection PR to be deployed first.
 
 Before generation, sources are copied into the private durable queue under
-`<project>/.humanstudy/asset-agent/research-data/<owner-id>/`. Upload failures leave them there;
+`<project>/.humanstudy/asset-agent/research-data/filtered/<owner-id>/`. Upload failures leave them there;
 there is no age/count pruning. The next run retries; duplicate events/content do not multiply.
 A pending-delivery notice at exit is not a claim that data reached the server. Keep `.humanstudy/`
-out of exported/public asset bundles. This change adds source collection and account attribution;
-the full headless conversation/tool adapter remains part of issue #27.
+out of exported/public asset bundles. The worker also records commands, conversations, tools, and generated research versions. Projects
+with private or held wording must be opened in Desktop, where the private index is available. The
+guarded worker leaves earlier and paused queues on disk for manual review. A privacy stop
+remains active on restart. See [research source collection](research-source-collection.md).

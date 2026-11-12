@@ -9,7 +9,7 @@ export interface AskRequest { text: string }
 export type BridgeMessage = ({ type: 'hs.openSource' } & OpenSourceRequest) | ({ type: 'hs.ask' } & AskRequest)
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}(\/[A-Za-z0-9][A-Za-z0-9._:-]{0,99})?$/
-const MAX_QUOTE = 2000
+const MAX_QUOTE = 4 * 1024 * 1024 // reject oversized messages; never shorten a source passage
 const MAX_ASK = 4000
 
 /** A project-relative source path: no absolute paths, no "..", no URL schemes. */
@@ -36,8 +36,8 @@ export function parseBridgeMessage(data: unknown): BridgeMessage | null {
       out.page = page
     }
     if (d.quote !== undefined && d.quote !== null) {
-      if (typeof d.quote !== 'string') return null
-      if (d.quote.trim()) out.quote = d.quote.slice(0, MAX_QUOTE)
+      if (typeof d.quote !== 'string' || d.quote.length > MAX_QUOTE) return null
+      if (d.quote.trim()) out.quote = d.quote
     }
     if (d.programId !== undefined && d.programId !== null) {
       if (typeof d.programId !== 'string' || !ID.test(d.programId)) return null

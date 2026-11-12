@@ -1,0 +1,81 @@
+{
+ "schema_version": "1",
+ "id": "invented-draft",
+ "meta": {
+  "title": "Invented protocol fixture",
+  "citation": "Invented CC0 test fixture; not a real paper",
+  "licence": "CC0",
+  "sample": "Invented test participants",
+  "sources": {
+   "survey": {
+    "title": "Invented survey",
+    "file": "sources/open/survey.txt"
+   }
+  }
+ },
+ "arms": [
+  {
+   "id": "main",
+   "n_paper": 2,
+   "cite": {
+    "label": "reported",
+    "source": "survey",
+    "page": 1
+   }
+  }
+ ],
+ "data": {},
+ "stages": {
+  "question": {
+   "responses": [
+    {
+     "id": "choice",
+     "kind": "choice",
+     "prompt": "Which option do you prefer?",
+     "options": [
+      {
+       "code": "a",
+       "label": "Option A"
+      },
+      {
+       "code": "b",
+       "label": "Option B"
+      }
+     ],
+     "cite": {
+      "label": "verbatim",
+      "source": "survey",
+      "page": 1
+     }
+    }
+   ]
+  }
+ },
+ "flow": {
+  "stage": "question"
+ },
+ "units": {
+  "participant": {
+   "per": "session",
+   "fields": {
+    "choice": "answer('question.choice')"
+   }
+  }
+ },
+ "exclusions": [],
+ "analysis": {
+  "targets": [],
+  "effects": [],
+  "unsupported": [
+   {
+    "what": "Human outcome comparison",
+    "why": "This is an invented fixture, not a published experiment."
+   }
+  ]
+ },
+ "keyed": {
+  "answers": {
+   "question.choice": "a"
+  }
+ }
+}

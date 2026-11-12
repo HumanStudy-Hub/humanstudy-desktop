@@ -6,20 +6,22 @@
 #   scripts/sync_hsenv.sh /path/to/hsenv/hsenv [label]            the engine   -> pack/runtime/hsenv/ (VERSION)
 #   scripts/sync_hsenv.sh skills /path/to/sandbox/skills [label]  run + preview -> pack/skills/{run,preview}/ (VENDORED)
 #   scripts/sync_hsenv.sh run|preview /path/to/sandbox/skills [label]   one of the two skills
+#   scripts/sync_hsenv.sh authoring /path/to/sandbox/skills             shared authoring reference
 #
 # Refuses code that carries study-specific data (protocols are private): non-empty LEGACY_* tables, study ids
 # such as author2024topic, the name of any folder in the upstream studies/ folder (read at sync time,
 # case-insensitive: hsenv/studies next to the engine; STUDIES_DIR overrides), or absolute home-folder paths.
 # Without a readable studies/ folder the sync refuses. The skills' SKILL.md files are app-owned (they describe the
 # app's paths and approval), not vendored.
-#   scripts/sync_hsenv.sh --check <any of the above>             run the guard only; copy and write nothing
+#   scripts/sync_hsenv.sh --check authoring /path/to/sandbox/skills    guard and verify the copy and manifest
+#   scripts/sync_hsenv.sh --check <other mode>                         run the guard only
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 CHECK_ONLY=0
 if [ "${1:-}" = "--check" ]; then CHECK_ONLY=1; shift; fi
 # serve.py: evaldata.code_hash() hashes it. distribution.py: hsenv.rehydrate (v0.8.1) imports it; stdlib only.
 # Upstream tests/ name real studies and are never vendored.
-ENGINE=(__init__.py engine.py expr.py checks.py effects_core.py evaldata.py rewards.py score.py serve.py schema_check.py distribution.py)
+ENGINE=(__init__.py engine.py expr.py checks.py effects_core.py evaldata.py rewards.py score.py serve.py schema_check.py distribution.py release.py)
 # The frozen v1 schemas schema_check.py validates against (it looks for them in ../schema next to the package).
 SCHEMAS=(protocol.v1.json study.v1.json run.v1.json)
 RUN=(run_study.py fspec.py render.py)
@@ -102,7 +104,23 @@ label_for() {  # label_for <src> <default name> [label]
   echo "${3:-$2${commit:+@$commit}}"
 }
 
-case "${1:?usage: scripts/sync_hsenv.sh /path/to/hsenv/hsenv [label] | skills|run|preview /path/to/sandbox/skills [label]}" in
+case "${1:?usage: scripts/sync_hsenv.sh /path/to/hsenv/hsenv [label] | skills|run|preview|authoring /path/to/sandbox/skills [label]}" in
+  authoring)
+    skills="${2:?the sandbox skills folder}"
+    studies="${STUDIES_DIR:-$skills/../hsenv/studies}"
+    src="$skills/authoring"
+    dest="$here/pack/skills/build"
+    if [ "$CHECK_ONLY" = 1 ]; then
+      guard "$studies" "$src" AUTHORING.md
+      if ! cmp -s "$src/AUTHORING.md" "$dest/AUTHORING.md"; then
+        echo "Shared authoring reference is out of sync. Run sync_hsenv.sh authoring." >&2
+        exit 1
+      fi
+      (cd "$dest" && awk 'NF == 2 && $2 == "AUTHORING.md" { print; found=1 } END { if (!found) exit 1 }' AUTHORING.VENDORED | shasum -a 256 --check)
+    else
+      vendor "$studies" "$src" "$dest" AUTHORING.VENDORED "$(label_for "$src" "sandbox skills/authoring" "${3:-}")" AUTHORING.md
+    fi
+    ;;
   skills|run|preview)
     skills="${2:?the sandbox skills folder}"
     studies="${STUDIES_DIR:-$skills/../hsenv/studies}"
