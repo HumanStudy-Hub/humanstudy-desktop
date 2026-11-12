@@ -32,6 +32,15 @@ Module._resolveFilename = function (request, ...rest) {
 const electron = require(SHIM)
 const { bus, invoke, emitSend, protocols, contentType, paths } = electron.__web
 
+// Both sessions originate in the launcher's authenticated Supabase exchange.
+function sessionOwner(session) {
+  if (typeof session?.accessToken !== 'string') return null
+  try {
+    const { sub } = JSON.parse(Buffer.from(session.accessToken.split('.')[1] || '', 'base64url').toString('utf8'))
+    return typeof sub === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sub) ? sub.toLowerCase() : null
+  } catch { return null }
+}
+
 const PORT = Number(process.env.PORT || 3000)
 const TOKEN = process.env.HS_WEB_TOKEN || ''
 if (!TOKEN && process.env.HS_WEB_INSECURE !== '1') throw new Error('HS_WEB_TOKEN is required (or HS_WEB_INSECURE=1 for local tests)')
@@ -176,11 +185,29 @@ const server = http.createServer(async (req, res) => {
       const h = req.headers.authorization || ''
       if (!TOKEN || !h.startsWith('Bearer ') || !same(h.slice(7), TOKEN)) return json(res, 401, { ok: false })
       const seed = JSON.parse((await body(req, 64 << 10)).toString('utf8') || '{}')
+      const owner = sessionOwner(seed?.session)
+      if (!owner || typeof seed.session.refreshToken !== 'string' || !seed.session.refreshToken
+        || typeof seed.session.email !== 'string' || !Number.isFinite(seed.session.expiresAt))
+        return json(res, 400, { ok: false, error: 'workspace_session_invalid' })
       const file = join(paths.userData, 'account.json')
+      const mismatch = () => json(res, 409, { ok: false, error: 'workspace_account_mismatch' })
+      // This read/check/write must stay synchronous. A sign-in can replace the account
+      // after the launcher has checked its email while awaiting the new Auth session.
       let store = {}
-      try { store = JSON.parse(readFileSync(file, 'utf8')) } catch { /* first run */ }
+      try { store = JSON.parse(readFileSync(file, 'utf8')) } catch (error) {
+        if (error.code !== 'ENOENT') return mismatch()
+      }
+      if (!store || typeof store !== 'object' || Array.isArray(store)) return mismatch()
+      if (store.workspaceOwner !== undefined && store.workspaceOwner !== owner) return mismatch()
+      if (store.session !== undefined) {
+        try {
+          const current = JSON.parse(electron.safeStorage.decryptString(Buffer.from(store.session, 'base64')))
+          if (sessionOwner(current) !== owner) return mismatch()
+        } catch { return mismatch() }
+      }
       const seal = (v) => electron.safeStorage.encryptString(JSON.stringify(v)).toString('base64')
-      if (seed.session) store.session = seal(seed.session)
+      store.workspaceOwner = owner
+      store.session = seal(seed.session)
       if (seed.desktopKey) store.desktopKey = seal(seed.desktopKey)
       writeFileSync(file, JSON.stringify(store, null, 2), { mode: 0o600 })
       bus.emit('send', 'web:account', {})

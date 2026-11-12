@@ -176,7 +176,7 @@ export function createAccount(deps: AccountDeps) {
     // The launcher or another refresh may replace the stored session during this request.
     const replacementAccessToken = (): string | null | undefined => {
       const current = getSession()
-      if (current?.refreshToken === s.refreshToken) return undefined
+      if (current?.refreshToken === s.refreshToken && current.accessToken === s.accessToken) return undefined
       const owner = jwtSub(s.accessToken)
       return current && owner && jwtSub(current.accessToken) === owner && current.expiresAt > now() ? current.accessToken : null
     }
@@ -284,15 +284,15 @@ export function createAccount(deps: AccountDeps) {
 
   async function signOut(): Promise<AccountStatus> {
     const s = getSession()
-    if (s) {
-      try {
-        if (s.expiresAt > now()) await supabase('logout', undefined, s.accessToken)
-      } catch {
-        /* best effort: the local session is cleared regardless */
-      }
-    }
     writeSecret('session', null)
     writeSecret('desktopKey', null)
+    if (s && s.expiresAt > now()) {
+      try {
+        await supabase('logout?scope=local', undefined, s.accessToken)
+      } catch {
+        /* best effort after clearing the local session */
+      }
+    }
     return status()
   }
 
