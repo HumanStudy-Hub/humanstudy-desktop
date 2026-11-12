@@ -278,6 +278,8 @@ process.on('SIGTERM', () => {
   setTimeout(() => process.exit(0), 8000).unref()
 })
 
+// Set by this trusted host, never by renderer IPC or user settings.
+process.env.HUMANSTUDY_RESEARCH_SURFACE = 'web'
 require(process.env.HS_MAIN || join(HERE, 'main', 'index.js'))
 ready.main = true
 server.listen(PORT, '0.0.0.0', () => console.log(`humanstudy web: listening on ${PORT}`))
