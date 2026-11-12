@@ -167,6 +167,7 @@ test('paired export projects hosted sources and binds both documents to the froz
   const partial=unzipSync(readFileSync(join(root,'exports/program-only.zip')))
   assert.deepEqual(Object.keys(partial).sort(),['CONTRIBUTION.json','program.json'])
   const shared=JSON.parse(strFromU8(partial['program.json']))
+  assert.equal(JSON.parse(strFromU8(partial['CONTRIBUTION.json'])).paper.year,2026)
   assert.equal(shared.extensions.scholarly.protocol,undefined)
   assert.deepEqual(shared.issues,program.issues)
   assert.deepEqual(shared.evidence,[{id:reference.id,path:reference.path,sourceSha256:reference.sourceSha256,
@@ -184,5 +185,8 @@ test('paired export projects hosted sources and binds both documents to the froz
   write('protocol.json',JSON.stringify({...protocol,distribution:{held:{h1:{text_sha256:hash(held)}}}}))
   write('program.json',JSON.stringify({...localProgram,notes:held}))
   assert.match(standalone('held-copy').stderr,/Held source wording appears in program[.]json/)
+  write('program.json',JSON.stringify(localProgram))
+  write('study.json',JSON.stringify({...study,title:'Unrelated study'}))
+  assert.match(standalone('missing-identity').stderr,/Add the paper title, first author and publication year/)
  }finally{rmSync(root,{recursive:true,force:true})}
 })

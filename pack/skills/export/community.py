@@ -39,6 +39,14 @@ def read_json(path):
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
+def optional_document(root, path):
+    try:
+        document = read_json(path) if safe_candidate(root, path) else {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return document if isinstance(document, dict) else {}
+
+
 def source_licenses(root):
     record = check_materials.source_record(root)
     files = {check_materials.norm_rel(f["path"]): f for f in (record.get("files") or [])
@@ -138,13 +146,7 @@ def projection_engine():
 def program_only_projection(root, program, licensed):
     """Keep the scholarly document independent of its local execution files."""
     release, _, _ = projection_engine()
-    protocol_path = root / "protocol.json"
-    try:
-        protocol = read_json(protocol_path) if safe_candidate(root, protocol_path) else {}
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        protocol = {}
-    if not isinstance(protocol, dict):
-        protocol = {}
+    protocol = optional_document(root, root / "protocol.json")
     binding = (program.get("extensions") or {}).get("scholarly")
     if isinstance(binding, dict):
         binding.pop("protocol", None)
@@ -154,10 +156,12 @@ def program_only_projection(root, program, licensed):
     restricted = {name for name, record in licensed.items() if not release.hosted_licence_ok(recorded_license(record))}
     private = {name for name, record in licensed.items()
                if record.get("private") is True or str(record.get("license")).lower() == check_materials.RESEARCHER_LICENSE}
-    for entry in sources.values() if isinstance(sources, dict) else ():
+    source_files = {}
+    for source_id, entry in sources.items() if isinstance(sources, dict) else ():
         if not isinstance(entry, dict) or not isinstance(entry.get("file"), str):
             continue
         name = entry["file"]
+        source_files[source_id] = name
         tier = (entry.get("distribution") or {}).get("tier")
         if tier in {"user", "link"} or not release.hosted_licence_ok(recorded_license(licensed.get(name, {}))):
             restricted.add(name)
@@ -178,9 +182,15 @@ def program_only_projection(root, program, licensed):
     withheld_quotes = []
     for evidence in evidence_records:
         # Keep the source identifier, URL and locator even when its exact quote stays local.
-        name = evidence.get("path") or paper.get("filename")
+        source_id = evidence.get("sourceId")
+        linked_name = source_files.get(source_id) if isinstance(source_id, str) else None
+        name = evidence.get("path") or (linked_name if source_id else paper.get("filename"))
+        recorded_hash = licensed.get(name, {}).get("sha256") if isinstance(name, str) else None
+        cited_hash = evidence.get("sourceSha256")
+        matching_hash = cited_hash is None or (isinstance(cited_hash, str) and isinstance(recorded_hash, str)
+                                               and cited_hash.lower() == recorded_hash.lower())
         if evidence.get("quote"):
-            if shareable_quote(name):
+            if matching_hash and (linked_name is None or linked_name == name) and shareable_quote(name):
                 permitted_quotes.add(evidence["id"])
             else:
                 evidence.pop("quote")
@@ -470,6 +480,19 @@ def export(root, output, include_paper=False, *, program_only=False):
     if program_only:
         if "program.json" not in payload:
             raise ValueError("The project does not have a shareable program.json.")
+        card = optional_document(root, study_path)
+        paper_meta = meta["paper"]
+        if normalized_title(card.get("title")) == normalized_title(paper_meta["title"]) and (
+                not card.get("doi") or not paper_meta["doi"] or normalized_doi(card["doi"]) == normalized_doi(paper_meta["doi"])):
+            if not paper_meta["year"]:
+                paper_meta["year"] = card.get("year")
+            if not paper_meta["authors"] and isinstance(card.get("authors"), list):
+                paper_meta["authors"] = [author.strip() for author in card["authors"] if isinstance(author, str) and author.strip()]
+                paper_meta["firstAuthor"] = next(iter(paper_meta["authors"]), "")
+        year = paper_meta["year"]
+        if not normalized_title(paper_meta["title"]) or not normalized_title(paper_meta["firstAuthor"]) or (
+                type(year) is not int or not 1800 <= year <= 2200):
+            raise ValueError("Add the paper title, first author and publication year to the project before exporting a Program for the Hub.")
         shared_program, withheld_quotes = program_only_projection(root, program, licensed)
         payload["program.json"] = (shared_program, None)
     if public_sources:
