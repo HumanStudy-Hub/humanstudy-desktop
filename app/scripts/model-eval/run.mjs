@@ -28,19 +28,23 @@ const privateProfile=JSON.parse(readFileSync(config.researchAuth,'utf8'))
 privateProfile.server=relay.baseURL.replace(/\/v1$/, '')
 const sessionProfile=config.researchAuth+'.relay'
 writeFileSync(sessionProfile,JSON.stringify(privateProfile),{mode:0o600})
+const durationMs=Math.min(config.maxDurationMs??900000,1200000)
+if(!Number.isFinite(durationMs)||durationMs<1000)throw Error("Invalid remaining trial time")
 let child,timer
 try{
  const provider='bounded-eval',home=join(config.project,'.humanstudy/asset-agent/kernel-home/config/opencode');mkdirSync(home,{recursive:true})
  writeFileSync(join(home,'opencode.json'),JSON.stringify({provider:{[provider]:{npm:'@ai-sdk/openai-compatible',options:{baseURL:relay.baseURL,apiKey:'local-evaluation'},models:{[config.model]:{name:config.model,tool_call:true,limit:{context:200000,output:16384}}}}}}))
  const started=Date.now(),events=[]
- child=spawn(process.execPath,[join(repo,'app/scripts/opencode-assets.mjs'),'--project',config.project,'--binary',config.binary,'--runtime-bin',config.runtimeBin,'--provider',provider,'--model',config.model,'--research-auth',sessionProfile,'--timeout-minutes','15','--stall-minutes','3',...(config.session?['--session',config.session]:[])],{stdio:['pipe','pipe','pipe'],env:{...process.env,OPENROUTER_API_KEY:'',HUMANSTUDY_DESKTOP_KEY:''}})
+ child=spawn(process.execPath,[join(repo,'app/scripts/opencode-assets.mjs'),'--project',config.project,'--binary',config.binary,'--runtime-bin',config.runtimeBin,'--provider',provider,'--model',config.model,'--research-auth',sessionProfile,'--timeout-minutes',String(durationMs/60000),'--stall-minutes','3',...(config.session?['--session',config.session]:[])],{stdio:['pipe','pipe','pipe'],env:{...process.env,OPENROUTER_API_KEY:'',HUMANSTUDY_DESKTOP_KEY:''}})
  const lines=createInterface({input:child.stdout})
  let startedBuild=false
  lines.on('line',line=>{let m;try{m=JSON.parse(line)}catch{return}events.push({type:m.type,eventType:m.eventType,...(m.type==='completion'?{status:m.status,problems:m.problems,programSha256:m.programSha256}:{}),at:Date.now()-started});if(m.type==='ready'&&!startedBuild){startedBuild=true;child.stdin.write(JSON.stringify(config.session?{op:'send',id:'eval-resume',text:'The evaluation request-count guard interrupted this build. Continue from the files already saved in this project, finish the remaining program.json content and run the required schema/minimum-coverage checks. Preserve exact source wording and missing items; do not restart extraction or invent absent materials.'}:{op:'build',id:'eval-build'})+'\n')}if(m.eventType==='done')child.stdin.write('{"op":"quit","id":"eval-quit"}\n')})
  // Keep raw agent output private in project; the evaluation report contains metadata only.
- child.stderr.on('data',()=>{})
- timer=setTimeout(()=>child.kill('SIGTERM'),15*60*1000)
+ const workerErrors=[]
+ child.stderr.on('data',data=>workerErrors.push(String(data)))
+ timer=setTimeout(()=>child.kill('SIGTERM'),durationMs)
  const code=await new Promise(r=>child.on('exit',r))
+ writeFileSync(join(config.project,'evaluation-worker-stderr.log'),workerErrors.join(''),{mode:0o600})
  const program=join(config.project,'program.json')
  const check=existsSync(program)?spawnSync(join(config.runtimeBin,'python'),[join(config.project,'.opencode/skills/build/check_program.py'),program],{encoding:'utf8'}):null
  const report={model:config.model,continuationOf:config.session??null,sourceSha256:createHash('sha256').update(readFileSync(config.paper)).digest('hex'),desktopCommit:spawnSync('git',['rev-parse','HEAD'],{cwd:repo,encoding:'utf8'}).stdout.trim(),elapsedMs:Date.now()-started,exitCode:code,programSaved:existsSync(program),schemaCheckExit:check?.status??null,programSha256:existsSync(program)?createHash('sha256').update(readFileSync(program)).digest('hex'):null,events,budget:relay.budget.snapshot(),quoteReview:'pending independent exact-source verification; schema success is not scientific acceptance'}
