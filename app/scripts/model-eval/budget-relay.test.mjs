@@ -33,3 +33,7 @@ test('relay pins model, forwards complete input, records real usage and refuses 
   const blocked=await fetch(relay.baseURL+'/chat/completions',{method:'POST',body:JSON.stringify({model:'fixture',messages:[{content:[{image_url:'private-image'}]}]})});assert.equal(blocked.status,429);assert.equal(calls,1)
  }finally{await relay.close();rmSync(dir,{recursive:true,force:true})}
 })
+test('provider cost above preflight bound halts subsequent requests',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'budget-overrun-'))
+ try{const b=budgetLedger(join(dir,'ledger.json'),{budgetUsd:1,maxCalls:3,inputUsdPerMillion:1,outputUsdPerMillion:1});const id=b.reserve(1,1);b.finish(id,'completed-reserved',{cost:.1});assert.throws(()=>b.reserve(1,1),/exceeded/);b.close()}finally{rmSync(dir,{recursive:true,force:true})}
+})

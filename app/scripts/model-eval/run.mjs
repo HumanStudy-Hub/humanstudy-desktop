@@ -35,7 +35,7 @@ try{
  child=spawn(process.execPath,[join(repo,'app/scripts/opencode-assets.mjs'),'--project',config.project,'--binary',config.binary,'--runtime-bin',config.runtimeBin,'--provider',provider,'--model',config.model,'--research-auth',sessionProfile,'--timeout-minutes','15','--stall-minutes','3'],{stdio:['pipe','pipe','pipe'],env:{...process.env,OPENROUTER_API_KEY:'',HUMANSTUDY_DESKTOP_KEY:''}})
  const lines=createInterface({input:child.stdout})
  let startedBuild=false
- lines.on('line',line=>{let m;try{m=JSON.parse(line)}catch{return}events.push({type:m.type,eventType:m.eventType,at:Date.now()-started});if(m.type==='ready'&&!startedBuild){startedBuild=true;child.stdin.write('{"op":"build","id":"eval-build"}\n')}if(m.eventType==='done')child.stdin.write('{"op":"quit","id":"eval-quit"}\n')})
+ lines.on('line',line=>{let m;try{m=JSON.parse(line)}catch{return}events.push({type:m.type,eventType:m.eventType,...(m.type==='completion'?{status:m.status,problems:m.problems,programSha256:m.programSha256}:{}),at:Date.now()-started});if(m.type==='ready'&&!startedBuild){startedBuild=true;child.stdin.write('{"op":"build","id":"eval-build"}\n')}if(m.eventType==='done')child.stdin.write('{"op":"quit","id":"eval-quit"}\n')})
  // Keep raw agent output private in project; the evaluation report contains metadata only.
  child.stderr.on('data',()=>{})
  timer=setTimeout(()=>child.kill('SIGTERM'),15*60*1000)
