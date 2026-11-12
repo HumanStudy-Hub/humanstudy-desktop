@@ -10,10 +10,11 @@ const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..')
 if(process.env.HUMANSTUDY_EVAL_AUTHORIZED!=='1')throw Error('No paid calls authorized. Root must allocate budget and set explicit execution flag.')
 const config=JSON.parse(readFileSync(process.argv[2],'utf8'))
 for(const k of ['project','paper','binary','runtimeBin','researchAuth','upstream','model','credentialFile','credentialField','ledger','budgetUsd','maxCalls','inputUsdPerMillion','outputUsdPerMillion'])if(config[k]===undefined)throw Error(`Missing ${k}`)
-if(existsSync(config.project))throw Error('Evaluation requires a fresh project')
+if(existsSync(config.project)&&!config.session)throw Error('Evaluation requires a fresh project or an explicitly identified continuation session')
+if(config.session&&(!existsSync(join(config.project,'paper.pdf'))||!readFileSync(join(config.project,'paper.pdf')).equals(readFileSync(config.paper))))throw Error('Continuation source changed')
 const secret=JSON.parse(readFileSync(config.credentialFile,'utf8'))[config.credentialField]
 if(typeof secret!=='string'||!secret)throw Error('Missing explicit disposable credential')
-const prepared=spawnSync(join(config.runtimeBin,'python'),[join(repo,'scripts/prepare_conversion.py'),'--engine','opencode','--project',config.project,'--paper',config.paper],{encoding:'utf8'})
+const prepared=config.session?{status:0}:spawnSync(join(config.runtimeBin,'python'),[join(repo,'scripts/prepare_conversion.py'),'--engine','opencode','--project',config.project,'--paper',config.paper],{encoding:'utf8'})
 if(prepared.status!==0)throw Error('Project preparation failed')
 let cookie
 if(config.cookieFile){
@@ -32,16 +33,17 @@ try{
  const provider='bounded-eval',home=join(config.project,'.humanstudy/asset-agent/kernel-home/config/opencode');mkdirSync(home,{recursive:true})
  writeFileSync(join(home,'opencode.json'),JSON.stringify({provider:{[provider]:{npm:'@ai-sdk/openai-compatible',options:{baseURL:relay.baseURL,apiKey:'local-evaluation'},models:{[config.model]:{name:config.model,tool_call:true,limit:{context:200000,output:16384}}}}}}))
  const started=Date.now(),events=[]
- child=spawn(process.execPath,[join(repo,'app/scripts/opencode-assets.mjs'),'--project',config.project,'--binary',config.binary,'--runtime-bin',config.runtimeBin,'--provider',provider,'--model',config.model,'--research-auth',sessionProfile,'--timeout-minutes','15','--stall-minutes','3'],{stdio:['pipe','pipe','pipe'],env:{...process.env,OPENROUTER_API_KEY:'',HUMANSTUDY_DESKTOP_KEY:''}})
+ child=spawn(process.execPath,[join(repo,'app/scripts/opencode-assets.mjs'),'--project',config.project,'--binary',config.binary,'--runtime-bin',config.runtimeBin,'--provider',provider,'--model',config.model,'--research-auth',sessionProfile,'--timeout-minutes','15','--stall-minutes','3',...(config.session?['--session',config.session]:[])],{stdio:['pipe','pipe','pipe'],env:{...process.env,OPENROUTER_API_KEY:'',HUMANSTUDY_DESKTOP_KEY:''}})
  const lines=createInterface({input:child.stdout})
  let startedBuild=false
- lines.on('line',line=>{let m;try{m=JSON.parse(line)}catch{return}events.push({type:m.type,eventType:m.eventType,...(m.type==='completion'?{status:m.status,problems:m.problems,programSha256:m.programSha256}:{}),at:Date.now()-started});if(m.type==='ready'&&!startedBuild){startedBuild=true;child.stdin.write('{"op":"build","id":"eval-build"}\n')}if(m.eventType==='done')child.stdin.write('{"op":"quit","id":"eval-quit"}\n')})
+ lines.on('line',line=>{let m;try{m=JSON.parse(line)}catch{return}events.push({type:m.type,eventType:m.eventType,...(m.type==='completion'?{status:m.status,problems:m.problems,programSha256:m.programSha256}:{}),at:Date.now()-started});if(m.type==='ready'&&!startedBuild){startedBuild=true;child.stdin.write(JSON.stringify(config.session?{op:'send',id:'eval-resume',text:'The evaluation request-count guard interrupted this build. Continue from the files already saved in this project, finish the remaining program.json content and run the required schema/minimum-coverage checks. Preserve exact source wording and missing items; do not restart extraction or invent absent materials.'}:{op:'build',id:'eval-build'})+'\n')}if(m.eventType==='done')child.stdin.write('{"op":"quit","id":"eval-quit"}\n')})
  // Keep raw agent output private in project; the evaluation report contains metadata only.
  child.stderr.on('data',()=>{})
  timer=setTimeout(()=>child.kill('SIGTERM'),15*60*1000)
  const code=await new Promise(r=>child.on('exit',r))
  const program=join(config.project,'program.json')
  const check=existsSync(program)?spawnSync(join(config.runtimeBin,'python'),[join(config.project,'.opencode/skills/build/check_program.py'),program],{encoding:'utf8'}):null
- const report={model:config.model,sourceSha256:createHash('sha256').update(readFileSync(config.paper)).digest('hex'),desktopCommit:spawnSync('git',['rev-parse','HEAD'],{cwd:repo,encoding:'utf8'}).stdout.trim(),elapsedMs:Date.now()-started,exitCode:code,programSaved:existsSync(program),schemaCheckExit:check?.status??null,programSha256:existsSync(program)?createHash('sha256').update(readFileSync(program)).digest('hex'):null,events,budget:relay.budget.snapshot(),quoteReview:'pending independent exact-source verification; schema success is not scientific acceptance'}
+ const report={model:config.model,continuationOf:config.session??null,sourceSha256:createHash('sha256').update(readFileSync(config.paper)).digest('hex'),desktopCommit:spawnSync('git',['rev-parse','HEAD'],{cwd:repo,encoding:'utf8'}).stdout.trim(),elapsedMs:Date.now()-started,exitCode:code,programSaved:existsSync(program),schemaCheckExit:check?.status??null,programSha256:existsSync(program)?createHash('sha256').update(readFileSync(program)).digest('hex'):null,events,budget:relay.budget.snapshot(),quoteReview:'pending independent exact-source verification; schema success is not scientific acceptance'}
+ if(existsSync(join(config.project,'evaluation-report.json')))writeFileSync(join(config.project,`evaluation-report-${Date.now()}.json`),readFileSync(join(config.project,'evaluation-report.json')),{mode:0o600})
  writeFileSync(join(config.project,'evaluation-report.json'),JSON.stringify(report,null,2),{mode:0o600})
 }finally{clearTimeout(timer);if(child&&child.exitCode===null)child.kill('SIGTERM');await relay.close()}
