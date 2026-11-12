@@ -30,7 +30,7 @@ key path (`relaySupported()` is macOS-only), inside the user's own sandbox.
 ## Build and run locally
 
 ```sh
-npx electron-vite build && node scripts/build-web.mjs        # -> out/web
+node scripts/build-web.mjs        # rebuilds desktop bundles, then -> out/web
 HS_WEB_INSECURE=1 HUMANSTUDY_KERNEL=mock PORT=5310 node out/web/server.cjs
 node --test web/web.test.mjs
 ```
@@ -65,3 +65,20 @@ and conversations are outside the app folder and stay.
 
 Limits (Hobby): 45-minute sessions, 10 at a time, 5 active-CPU hours a month. A session that ends shows
 "This online session has ended … Reopen"; nothing is lost.
+
+## Release identity
+
+Every web build includes `build-manifest.json`: `version`, `gitsha`, `packhash`, and
+`dirty`. The pack hash covers sorted `[relative path, SHA-256]` pairs for the raw
+pack files bundled by `pack.ts`; no timestamps, machine paths, or account data.
+The builder rebuilds main/renderer first, so old output cannot be stamped as new.
+Tagged CI builds reject a package-version mismatch or a dirty source tree.
+
+`GET /healthz` exposes `{ok, ready, build}` with this public identity. Older builds
+without a manifest report `build: null`; the launcher must treat missing identity
+as unknown, not current. Runtime environment version overrides do not change it.
+
+The release workflow attaches `humanstudy-web-<version>.tgz`, its `.tgz.sha256`, and
+`.manifest.json` to the existing draft for the same tag after installer jobs pass.
+This does not publish the draft, change a sandbox image, or update `/try` configuration.
+Before rollout, compare the archive checksum and health identity with the approved tag.

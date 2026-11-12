@@ -36,6 +36,16 @@ const PORT = Number(process.env.PORT || 3000)
 const TOKEN = process.env.HS_WEB_TOKEN || ''
 if (!TOKEN && process.env.HS_WEB_INSECURE !== '1') throw new Error('HS_WEB_TOKEN is required (or HS_WEB_INSECURE=1 for local tests)')
 const RENDERER = process.env.HS_RENDERER_DIR || join(HERE, 'renderer')
+// Only expose public build identity. Never report tokens, settings, environment or user paths.
+let buildIdentity = null
+try {
+  const manifest = JSON.parse(readFileSync(join(HERE, 'build-manifest.json'), 'utf8'))
+  if (typeof manifest.version !== 'string' || !/^[0-9a-f]{40}$/.test(manifest.gitsha)
+      || !/^[0-9a-f]{64}$/.test(manifest.packhash) || typeof manifest.dirty !== 'boolean') throw new Error('Invalid build manifest')
+  buildIdentity = { version: manifest.version, gitsha: manifest.gitsha, packhash: manifest.packhash, dirty: manifest.dirty }
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error
+}
 const UPLOADS = join(paths.userData, 'uploads')
 mkdirSync(UPLOADS, { recursive: true })
 
@@ -138,7 +148,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://local')
   const path = url.pathname
   try {
-    if (path === '/healthz') return json(res, 200, { ok: true, ready: ready.main })
+    if (path === '/healthz') return json(res, 200, { ok: true, ready: ready.main, build: buildIdentity })
     // First visit: /?t=<token> sets the cookie and drops the token from the address bar.
     const t = url.searchParams.get('t')
     if (TOKEN && t && same(t, TOKEN)) {
