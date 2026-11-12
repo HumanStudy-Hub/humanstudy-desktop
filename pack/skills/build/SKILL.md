@@ -57,7 +57,9 @@ Simulation's explicit scope/model/cost approval. A request to prepare or run is 
 ## 3. Save a protocol in checkpoints
 
 Start a blocked draft from [DRAFT_PROTOCOL.json](DRAFT_PROTOCOL.json). Replace its example metadata and
-arms with the source-backed study map. Keep `schema_version: "1"` and use the empty stage only for an
+arms with the source-backed study map. Set `meta.title` to the exact title printed on the paper and
+record the source files under `meta.sources`. The app's draft completion check requires both.
+Keep `schema_version: "1"` and use the empty stage only for an
 unprepared draft. Consult `.opencode/hsenv/schema/protocol.v1.json` for schema questions. Include every
 blocked study.
 Save small JSON object patches in `.humanstudy/tmp/`, then apply:

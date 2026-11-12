@@ -166,3 +166,14 @@ test('draft certificate checks exact bytes and accepts declared missing material
  assert.ok((await R.protocolDraftCertificate(python,ENGINE,dir,'')).problems.length,'broken references cannot certify completion')
  assert.equal(await R.protocolDraftCertificate(null,ENGINE,dir,''),null)
 })
+
+test('the shipped blocked draft example satisfies the app draft certificate', { skip: !python }, async () => {
+  const dir = fixture()
+  const example = readFileSync(join(here, '../../../pack/skills/build/DRAFT_PROTOCOL.json'), 'utf8')
+  writeFileSync(join(dir, 'protocol.json'), example)
+
+  const certificate = await R.protocolDraftCertificate(python, ENGINE, dir, '')
+  assert.ok(certificate, 'the independent check must run')
+  assert.deepEqual(certificate.problems, [])
+  assert.equal(certificate.hash, createHash('sha256').update(example).digest('hex'))
+})

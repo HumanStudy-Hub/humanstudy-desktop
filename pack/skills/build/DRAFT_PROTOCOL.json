@@ -2,6 +2,7 @@
   "schema_version": "1",
   "id": "example-study",
   "meta": {
+    "title": "Exact title printed on the source paper",
     "citation": "Source paper citation",
     "licence": "unknown",
     "sample": "Reported sample summary",
