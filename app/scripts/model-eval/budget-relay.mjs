@@ -76,6 +76,6 @@ export async function startRelay({ledger,upstream,model,authorization,cookie,tim
     }catch(e){if(id)budget.finish(id,'uncertain-reserved');if(!res.headersSent)res.writeHead(429,{'Content-Type':'application/json'});res.end(JSON.stringify({error:{message:'Bounded evaluation request stopped; inspect local budget status.'}}))}
     finally{if(controller)controllers.delete(controller)}
   })
-  await new Promise(r=>server.listen(0,'127.0.0.1',r))
+  try{await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve)})}catch(e){budget.close();throw e}
   return {baseURL:`http://127.0.0.1:${server.address().port}/v1`,budget,async close(){for(const c of controllers)c.abort();await new Promise(r=>server.close(r));budget.close()}}
 }

@@ -24,3 +24,12 @@ test('only confirmed costs settle; missing usage retains reservation',()=>{
  const next=b.reserve(2000,2000);b.finish(next,'uncertain-reserved',{cost:0});assert.equal(b.snapshot().calls[1].chargedUsd,undefined);b.close()
  }finally{rmSync(dir,{recursive:true,force:true})}
 })
+test('relay pins model, forwards complete input, records real usage and refuses images',async()=>{
+ const {startRelay}=await import('./budget-relay.mjs')
+ const dir=mkdtempSync(join(tmpdir(),'relay-test-'));let calls=0
+ const relay=await startRelay({ledger:join(dir,'ledger.json'),upstream:'https://example-preview.vercel.app/api/desktop/v1/chat/completions',model:'fixture',authorization:'Bearer disposable-test',budgetUsd:1,scopeBudgetUsd:1,maxCalls:3,inputUsdPerMillion:1,outputUsdPerMillion:2,reasoningEffort:'medium',fetchImpl:async(url,init)=>{calls++;const body=JSON.parse(Buffer.from(init.body));assert.equal(body.messages[0].content,'complete uncut input');assert.equal(body.max_tokens,16384);assert.equal(body.reasoning.effort,'medium');return new Response('data: {"usage":{"prompt_tokens":5,"completion_tokens":2,"cost":0.001}}\n\ndata: [DONE]\n\n',{headers:{'Content-Type':'text/event-stream'}})}})
+ try{
+  const r=await fetch(relay.baseURL+'/chat/completions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'fixture',max_tokens:20000,messages:[{role:'user',content:'complete uncut input'}]})});assert.equal(r.status,200);assert.match(await r.text(),/DONE/);assert.equal(relay.budget.snapshot().calls[0].chargedUsd,.002)
+  const blocked=await fetch(relay.baseURL+'/chat/completions',{method:'POST',body:JSON.stringify({model:'fixture',messages:[{content:[{image_url:'private-image'}]}]})});assert.equal(blocked.status,429);assert.equal(calls,1)
+ }finally{await relay.close();rmSync(dir,{recursive:true,force:true})}
+})
