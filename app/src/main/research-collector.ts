@@ -9,10 +9,13 @@ import { CONTENT_BUCKET, EVENTS, LIMITS, MANIFEST_FORMAT, scrubResearchString, s
 
 export const SOURCE_CONSENT_VERSION = 3
 export interface ResearchAuth { supabaseUrl: string; supabaseKey: string; accessToken: string; userId: string }
-type Surface = 'desktop' | 'headless'
 interface Options {
   root: string
-  surface: Surface
+  surface: ResearchEvent['surface']
+  /** A prior queue retained for account export without sending it from the new configuration. */
+  previousRoot?: string
+  /** Aborts requests when a headless project enters a protected state. */
+  deliverySignal?: AbortSignal
   appVersion: string
   auth(): Promise<ResearchAuth | null>
   allowed(): boolean
@@ -113,7 +116,7 @@ export function createResearchCollector(options: Options) {
       id: randomUUID(), contract_version: '1.0.0', surface: options.surface, install_id: session.install,
       research_session_id: session.id, client_seq: session.seq + 1, occurred_at: new Date().toISOString(),
       metadata: {}, content_refs: [], app_version: options.appVersion, collector_version: 'research-collector/1.0.0',
-      consent_version: SOURCE_CONSENT_VERSION, platform: process.platform as 'darwin' | 'win32' | 'linux', ...fields,
+      consent_version: SOURCE_CONSENT_VERSION, platform: options.surface === 'web' ? 'browser' : process.platform as 'darwin' | 'win32' | 'linux', ...fields,
     }
     const errors = validateResearchEvent(row)
     if (errors.length) throw new Error(`Invalid research event: ${errors.join('; ')}`)
@@ -170,7 +173,8 @@ export function createResearchCollector(options: Options) {
    * earlier ones, so without it a quick second write can replace the file before it is read and
    * the earlier version is never recorded.
    */
-  function queueArtifact(path: string, projectId: string, artifactId: string, by: string, link?: CaptureLink | (() => CaptureLink), snapshot?: string): Promise<void> {
+  function queueArtifact(path: string, projectId: string, artifactId: string, by: string, link?: CaptureLink | (() => CaptureLink), snapshot?: string,
+    filter?: (text: string | undefined) => string | undefined | null): Promise<void> {
     const capturedOwner = localOwner()
     return run(async () => {
       const owner = await capturedOwner; if (!owner || await localOwner() !== owner) return
@@ -179,11 +183,12 @@ export function createResearchCollector(options: Options) {
       const textFile = /\.(json|md|txt|csv|tsv|html?|py|r|js|ts|tex|bib|ya?ml|xml|svg|qmd|rmd|css|sql|jl|do|sps|ipynb|log|toml|ini)$/i.test(artifactId)
       const role = artifactId === 'program.json' ? 'program' : 'file'
       const projectDir = path.slice(0, -artifactId.length).replace(/[\\/]+$/, '')
-      const ref = snapshot !== undefined
-        ? await stageBytes(root, Buffer.from(scrubResearchString(snapshot, { projectDir })), role)
-        : textFile
-          ? await stageBytes(root, Buffer.from(scrubResearchString(await readFile(path, 'utf8'), { projectDir })), role)
-          : await stageFile(root, path, 'application/octet-stream')
+      const original = snapshot ?? (textFile ? await readFile(path, 'utf8') : undefined)
+      const text = filter ? filter(original) : original
+      if (text === null) return
+      const ref = text === undefined
+        ? await stageFile(root, path, 'application/octet-stream')
+        : await stageBytes(root, Buffer.from(scrubResearchString(text, { projectDir })), role)
       if (before) {
         const after = await stat(path)
         if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ino !== after.ino) return
@@ -220,8 +225,20 @@ export function createResearchCollector(options: Options) {
     })
   }
   async function request(auth: ResearchAuth, path: string, init: RequestInit = {}) {
-    return fetcher(auth.supabaseUrl.replace(/\/$/, '') + path, { ...init, signal: AbortSignal.timeout(20_000),
+    const timeout = AbortSignal.timeout(20_000)
+    const signal = init.signal ? AbortSignal.any([timeout, init.signal]) : timeout
+    return fetcher(auth.supabaseUrl.replace(/\/$/, '') + path, { ...init, signal,
       headers: { apikey: auth.supabaseKey, Authorization: `Bearer ${auth.accessToken}`, ...init.headers } })
+  }
+  function ensureDelivery(): void {
+    if (!options.allowed()) throw new Error('Research delivery is paused; pending records remain local.')
+    options.deliverySignal?.throwIfAborted()
+  }
+  async function deliveryRequest(auth: ResearchAuth, path: string, init: RequestInit = {}) {
+    ensureDelivery()
+    const response = await request(auth, path, { ...init, signal: options.deliverySignal })
+    ensureDelivery()
+    return response
   }
   async function fresh(auth: ResearchAuth, requireAgreement = true): Promise<ResearchAuth> {
     const next = await identity(requireAgreement)
@@ -235,25 +252,25 @@ export function createResearchCollector(options: Options) {
     if (!row) throw new Error('Pending research content is missing locally.')
     if (row.kind === 'manifest') for (const part of row.parts ?? []) await upload(auth, root, part, new Set(visiting))
     auth = await fresh(auth)
-    const seen = await request(auth, `/rest/v1/research_content?sha256=eq.${sha}&owner_id=eq.${auth.userId}&select=sha256&limit=1`)
+    const seen = await deliveryRequest(auth, `/rest/v1/research_content?sha256=eq.${sha}&owner_id=eq.${auth.userId}&select=sha256&limit=1`)
     if (!seen.ok) throw new Error(`Research content check failed (${seen.status}).`)
     if ((await seen.json()).length) return
     const bytes = await readFile(join(root, 'content', sha + '.bin'))
     const raw = row.encoding === 'gzip' ? gunzipSync(bytes, { maxOutputLength: LIMITS.partBytes }) : bytes
     if (row.kind !== 'manifest' && (hash(raw) !== sha || raw.length !== row.bytes)) throw new Error('Local research content failed its hash check.')
     const url = `/storage/v1/object/${CONTENT_BUCKET}/${auth.userId}/${sha}`
-    const uploaded = await request(auth, url, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'x-upsert': 'false' }, body: new Uint8Array(bytes) })
+    const uploaded = await deliveryRequest(auth, url, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'x-upsert': 'false' }, body: new Uint8Array(bytes) })
     if (!uploaded.ok) {
       const error = await uploaded.json().catch(() => ({}))
       if (!(uploaded.status === 409 || error.statusCode === '409' || error.error === 'Duplicate')) throw new Error(`Research content upload failed (${uploaded.status}).`)
       // A duplicate is only accepted when this exact private object is readable.
-      const existing = await request(auth, `/storage/v1/object/authenticated/${CONTENT_BUCKET}/${auth.userId}/${sha}`, { method: 'GET' })
+      const existing = await deliveryRequest(auth, `/storage/v1/object/authenticated/${CONTENT_BUCKET}/${auth.userId}/${sha}`, { method: 'GET' })
       if (!existing.ok) throw new Error('Duplicate research object could not be confirmed.')
       const stored = Buffer.from(await existing.arrayBuffer())
       if (!stored.equals(bytes)) throw new Error('Existing research object has different bytes.')
     }
     auth = await fresh(auth)
-    const saved = await request(auth, '/rest/v1/research_content?on_conflict=owner_id,sha256', { method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: JSON.stringify(row) })
+    const saved = await deliveryRequest(auth, '/rest/v1/research_content?on_conflict=owner_id,sha256', { method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: JSON.stringify(row) })
     if (!saved.ok) throw new Error(`Research content receipt failed (${saved.status}).`)
   }
   async function flush(): Promise<void> {
@@ -264,10 +281,10 @@ export function createResearchCollector(options: Options) {
       await chain
       let auth = await identity(); if (!auth) return
       const root = await ownerDir(auth.userId)
-      const who = await request(auth, '/auth/v1/user')
+      const who = await deliveryRequest(auth, '/auth/v1/user')
       if (!who.ok || (await who.json()).id !== auth.userId) throw new Error('Could not verify the research account.')
       // allowed() is only true after the current explicit agreement. Never migrate older consent.
-      const agreed = await request(auth, '/rest/v1/research_consents?on_conflict=owner_id,surface,version', { method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: JSON.stringify({ surface: options.surface, version: SOURCE_CONSENT_VERSION, usage: true, content: true, sources: true }) })
+      const agreed = await deliveryRequest(auth, '/rest/v1/research_consents?on_conflict=owner_id,surface,version', { method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: JSON.stringify({ surface: options.surface, version: SOURCE_CONSENT_VERSION, usage: true, content: true, sources: true }) })
       if (!agreed.ok) throw new Error(`Could not record the source agreement (${agreed.status}).`)
       let files = (await readdir(join(root, 'events'))).filter(f => f.endsWith('.json'))
       if (files.length) await run(async () => {
@@ -286,24 +303,30 @@ export function createResearchCollector(options: Options) {
         if (!row) { rejection = 'A corrupt event was retained for local recovery.'; continue }
         for (const ref of row.content_refs) await upload(auth, root, ref.sha256)
         auth = await fresh(auth)
-        const stored = await request(auth, '/rest/v1/research_events?on_conflict=id', { method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: JSON.stringify(row) })
+        const stored = await deliveryRequest(auth, '/rest/v1/research_events?on_conflict=id', { method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: JSON.stringify(row) })
         if (!stored.ok) {
           if ([400, 413, 422].includes(stored.status)) {
             // Isolate exactly one rejected record; preserve its complete original and report the gap.
             await atomic(join(root, 'rejected', file), JSON.stringify({ row, status: stored.status, rejected_at: new Date().toISOString() }))
             await enqueue(auth, root, { event_type: 'delivery.rejected', data_type: 'session', metadata: {
               rejected_event_id: row.id, rejected_seq: row.client_seq, rejected_session_id: row.research_session_id, status: stored.status } })
+            ensureDelivery()
             await unlink(join(root, 'events', file)); rejection = 'A rejected research record is retained locally for review.'
             continue
           }
           throw new Error(`Research event delivery failed (${stored.status}); retained locally.`)
         }
+        ensureDelivery()
         await unlink(join(root, 'events', file))
       }
       // Only acknowledged content is eligible for local cleanup. Unsent bytes are never pruned.
       await run(async () => {
+        ensureDelivery()
         if (!(await readdir(join(root, 'events'))).some(f => f.endsWith('.json')) && !(await readdir(join(root, 'rejected'))).length)
-          for (const f of await readdir(join(root, 'content'))) await unlink(join(root, 'content', f))
+          for (const f of await readdir(join(root, 'content'))) {
+            ensureDelivery()
+            await unlink(join(root, 'content', f))
+          }
       })
       lastError = rejection
     })().catch(e => { lastError = e instanceof Error ? e.message : 'Research upload failed.' }).finally(() => { flushing = null })
@@ -314,7 +337,13 @@ export function createResearchCollector(options: Options) {
     const root = await ownerDir(owner)
     const rejected = (await readdir(join(root, 'rejected'))).filter(f => f.endsWith('.json')).length
     if (rejected) lastError = 'A rejected research record is retained locally for review.'
-    return (await readdir(join(root, 'events'))).filter(f => f.endsWith('.json')).length + rejected
+    const previous = options.previousRoot ? await localEvents(join(options.previousRoot, owner)) : 0
+    if (previous && !lastError) lastError = 'Earlier research records are retained locally for review and export.'
+    return (await readdir(join(root, 'events'))).filter(f => f.endsWith('.json')).length + rejected + previous
+  }
+  async function localEvents(root: string): Promise<number> {
+    const dirs = await Promise.all(['events', 'rejected'].map(dir => readdir(join(root, dir)).catch(() => [])))
+    return dirs.flat().filter(file => file.endsWith('.json')).length
   }
   async function exportFiles(): Promise<Record<string, Uint8Array>> {
     if (flushing) await flushing
@@ -322,8 +351,16 @@ export function createResearchCollector(options: Options) {
     if (!owner || !uuid.test(owner)) return {}
     const root = await ownerDir(owner), files: Record<string, Uint8Array> = {}
     await run(async () => {
-      for (const dir of ['events', 'content', 'rejected']) for (const f of await readdir(join(root, dir)))
-        if (/^[a-f0-9-]+\.(json|bin)$/.test(f)) files[`research-v1/local/${dir}/${f}`] = await readFile(join(root, dir, f))
+      const roots = [['local', root]]
+      if (options.previousRoot) roots.push(['previous-local', join(options.previousRoot, owner)])
+      for (const [label, path] of roots) for (const dir of ['events', 'content', 'rejected']) {
+        const entries = await readdir(join(path, dir)).catch(error => {
+          if (error.code === 'ENOENT' && label === 'previous-local') return []
+          throw error
+        })
+        for (const f of entries) if (/^[a-f0-9-]+\.(json|bin)$/.test(f))
+          files[`research-v1/${label}/${dir}/${f}`] = await readFile(join(path, dir, f))
+      }
     })
     const auth = await identity(false); if (!auth || auth.userId !== owner) throw new Error('Sign in to the original account before exporting research data.')
     const who = await request(auth, '/auth/v1/user')

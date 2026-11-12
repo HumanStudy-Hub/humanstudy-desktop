@@ -10,13 +10,16 @@ await build({entryPoints:[fileURLToPath(new URL('./research-collector.ts',import
 const {createResearchCollector}=await import(pathToFileURL(join(temp,'collector.mjs')))
 const OWNER='11111111-1111-4111-8111-111111111111',OTHER='22222222-2222-4222-8222-222222222222',PROJECT='33333333-3333-4333-8333-333333333333'
 async function setup(){
- const root=await mkdtemp(join(temp,'case-')), state={owner:OWNER,allowed:true,offline:false,failObject:false,afterObject:null,objectPosts:0,rejectEvent:null},objects=new Map(),rows=new Map(),events=new Map()
+ const root=await mkdtemp(join(temp,'case-')), state={owner:OWNER,allowed:true,offline:false,failObject:false,afterObject:null,objectPosts:0,rejectEvent:null},objects=new Map(),rows=new Map(),events=new Map(),consents=[]
  const auth=async()=>{if(state.offline)throw Error('offline');return {supabaseUrl:'https://db.test',supabaseKey:'public-test',accessToken:state.owner,userId:state.owner}}
  const fetcher=async(url,init={})=>{
   if(state.offline)throw Error('offline')
   const u=new URL(url),owner=init.headers.Authorization.slice(7),p=u.pathname
   if(p==='/auth/v1/user')return Response.json({id:owner})
-  if(p==='/rest/v1/research_consents')return init.method==='POST'?new Response(null,{status:201}):Response.json([{owner_id:owner,surface:'desktop',version:3}])
+  if(p==='/rest/v1/research_consents'){
+   if(init.method==='POST'){consents.push(JSON.parse(init.body));return new Response(null,{status:201})}
+   return Response.json([{owner_id:owner,surface:'desktop',version:3}])
+  }
   if(p==='/rest/v1/research_content'){
    if(init.method==='POST'){const row=JSON.parse(init.body);rows.set(owner+'/'+row.sha256,row);return new Response(null,{status:201})}
    const q=u.searchParams.get('sha256');if(!q)return Response.json([...rows.entries()].filter(([k])=>k.startsWith(owner+'/')).map(([,r])=>r))
@@ -30,10 +33,26 @@ async function setup(){
   if(p==='/rest/v1/research_events'){if(init.method!=='POST')return Response.json([...events.values()].filter(e=>e.owner_id===owner));if(state.holdEvent)await state.holdEvent;const row=JSON.parse(init.body);if(row.id===state.rejectEvent)return new Response(null,{status:400});events.set(row.id,{...row,owner_id:owner});return new Response(null,{status:201})}
   throw Error('Unexpected fixture route '+p)
  }
- const make=()=>createResearchCollector({root:join(root,'queue'),surface:'desktop',appVersion:'test',ownerId:()=>state.owner,auth,allowed:()=>state.allowed,fetch:fetcher})
+ const make=(options={})=>createResearchCollector({root:join(root,'queue'),surface:'desktop',appVersion:'test',ownerId:()=>state.owner,auth,allowed:()=>state.allowed,fetch:fetcher,...options})
  const source=join(root,'paper.pdf');await writeFile(source,Buffer.from('Original source: αβγ\n'))
- return {root,state,objects,rows,events,make,source}
+ return {root,state,objects,rows,events,consents,make,source}
 }
+test('browser sandbox records use web consent and attribution while the previous queue remains exportable',async()=>{
+ const f=await setup(), previousRoot=join(f.root,'queue'), previous=f.make()
+ const previousId=await previous.capture({event_type:'action.invoke',target:'sample',view:'workspace',metadata:{via:'pointer'}})
+ const browser=f.make({surface:'web',root:join(previousRoot,'web'),previousRoot})
+ await browser.queueSource(f.source,PROJECT)
+ await browser.flush()
+ assert.equal(f.events.has(previousId),false)
+ assert.equal((await browser.pending()),2)
+ assert.deepEqual(f.consents.map(consent=>consent.surface),['web'])
+ assert.ok([...f.events.values()].every(row=>row.surface==='web'&&row.platform==='browser'))
+ assert.ok([...f.rows.values()].every(row=>row.surface==='web'))
+ const files=await browser.exportFiles()
+ const archived=JSON.parse(Buffer.from(files[`research-v1/previous-local/events/${previousId}.json`]).toString())
+ assert.equal(archived.surface,'desktop')
+ assert.equal(archived.target,'sample')
+})
 test('older/no agreement captures nothing; explicit source consent gates capture and upload',async()=>{
  const f=await setup();f.state.allowed=false;const c=f.make();await c.queueSource(f.source,PROJECT);await c.flush();assert.equal(await c.pending(),0);assert.equal(f.objects.size,0)
  f.state.allowed=true;await c.queueSource(f.source,PROJECT);await c.flush();assert.equal(await c.pending(),0);assert.equal([...f.events.values()].filter(e=>e.event_type==='source.import').length,1)
