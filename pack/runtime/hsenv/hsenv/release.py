@@ -195,6 +195,8 @@ def _slots(p):
             if isinstance(r.get("validate"), dict):
                 vd = r["validate"]
                 for key in [k for k in vd if "message" in k]:
+                    if key == "message_label" and vd[key] == "missing" and vd.get("message") is None:
+                        continue   # explicit absence of feedback, not participant wording
                     text_at(vd, key, rp + ["validate"], _own(vd, key) or _own(vd) or rc)
                 for key in ("equals", "contains", "pattern"):   # the answer the screen accepted: source text?
                     text_at(vd, key, rp + ["validate"], _own(vd) or rc, "maybe")
@@ -354,6 +356,7 @@ def project(protocol, tiers=None, sources=None, extractors=None, strict=True,
         return sc is not None and _d.make_locator(text, fmt, sc.units, extractors, scope=sc) is not None
 
     hosted_unconfirmed, low_cache, hosted_missing, non_nfc, uncited_images = [], {}, set(), [], []
+    verified_hosted_slots = set()
     any_non_hosted = any(d.get("tier") != "hosted" for d in dists.values())
     for path, cont, key, cf, kind in _slots(p):
         if computed(path):
@@ -364,7 +367,16 @@ def project(protocol, tiers=None, sources=None, extractors=None, strict=True,
         if not cs:
             continue   # uncited / missing: it ships (uncited source text is caught below)
         value = cont.get("src") if kind == "image" else cont[key]
-        if any(hosted_prints(c, value) for c in cs):
+        hosted_matches = [c for c in cs if hosted_prints(c, value)]
+        if hosted_matches:
+            # Remember only this exact text slot, with verified original bytes. A
+            # matching restricted reference must not override a licensed source.
+            for c in hosted_matches:
+                src = c.get("source")
+                declared = msrc.get(src) or {}
+                sha = (dists.get(src) or {}).get("sha256") or declared.get("sha256")
+                if kind != "image" and src in sources and sha == _d.sha256(sources[src]):
+                    verified_hosted_slots.add(tuple(path))
             continue   # a hosted source prints it: it ships
         if any(tier(c.get("source")) == "hosted" and c.get("label") in ("verbatim", "reported") for c in cs) \
                 and not any(tier(c.get("source")) != "hosted" for c in cs):
@@ -563,11 +575,30 @@ def project(protocol, tiers=None, sources=None, extractors=None, strict=True,
         def screen_quote(text):   # operator / uncited screen text: run rule, whole rule for CJK only
             return runs.quoted(text, latin=False)
 
+        def bound_cell_key(path, key):
+            # Reported interaction cells use level_a|level_b as an index, not prose.
+            # Levels themselves remain subject to normal computed/literal checks.
+            if len(path) != 5 or path[:2] != ["analysis", "effects"] or path[3:] != ["reported", "cells"]:
+                return False
+            effects = (p.get("analysis") or {}).get("effects")
+            if not isinstance(effects, list) or not isinstance(path[2], int):
+                return False
+            effect = effects[path[2]]
+            c = effect.get("compute") if isinstance(effect, dict) else None
+            if not isinstance(c, dict) or c.get("op") != "interaction":
+                return False
+            aa, bb = c.get("a_levels"), c.get("b_levels")
+            if not isinstance(aa, list) or not isinstance(bb, list):
+                return False
+            if not all(isinstance(x, str) and _IDENT.fullmatch(x) for x in aa + bb):
+                return False
+            return key in {a + "|" + b for a in aa for b in bb}
+
         def quote_walk(o, path):
             if isinstance(o, dict):
                 items = list(o.items())
                 for k in o:   # a dict key cannot be withheld: source text in a key is an error, everywhere
-                    if isinstance(k, str) and not _TOKEN.fullmatch(k.strip()) and \
+                    if isinstance(k, str) and not bound_cell_key(path, k) and not _TOKEN.fullmatch(k.strip()) and \
                             (found_in(k) is not None or whole_in_source(k)):   # the same rules as for values
                         key_quotes.append(_ptr(path + [k]))
             elif isinstance(o, list):
@@ -580,6 +611,8 @@ def project(protocol, tiers=None, sources=None, extractors=None, strict=True,
                                            or (path == ["meta"] and k == "citation")):
                     continue   # bibliographic strings (the citation, a source's title …); _scan still checks them
                 if isinstance(v, str):
+                    if tuple(path + [k]) in verified_hosted_slots:
+                        continue   # exact, cited, licensed and hash-verified text only
                     if computed(path, k):
                         continue   # computed: never held or withheld; the computed check below refuses quotes
                     if _is_withheld(v) or set(v) == {_d.PLACEHOLDER} or _TOKEN.fullmatch(v.strip()):
@@ -1257,7 +1290,7 @@ def _scan(p, held_texts, cites=None):
     return replaced, leaks, screen
 
 
-_SCANNED_JSON = ("effects.json", "study.json", "capabilities.json", "sources/source.json")
+_SCANNED_JSON = ("effects.json", "study.json", "capabilities.json", "sources/source.json", "program.json")
 
 
 def _bib_position(path, name, source_keys=()):
@@ -1266,6 +1299,8 @@ def _bib_position(path, name, source_keys=()):
     `citation` object, and in sources/SOURCE.json a source entry's own bibliographic field."""
     if not path or not isinstance(path[-1], str) or path[-1] not in _BIB:
         return False
+    if name == "program.json":
+        return False   # all Program bibliography is explicitly source-bound
     if len(path) == 1:
         return True
     if len(path) == 2 and path[0] in ("paper", "citation"):
@@ -1278,13 +1313,22 @@ def _bib_position(path, name, source_keys=()):
     return False
 
 
-def _json_quotes(content, sources_lowered, held_hashes=frozenset(), held_texts=(), name="", source_keys=()):
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def _json_quotes(content, sources_lowered, held_hashes=frozenset(), held_texts=(), name="", source_keys=(), verified_paths=frozenset()):
     """True when no string in a JSON document is held text — whole-string equality (case-folded) with a held text of
     6-15 characters, a shared 16-character fragment with a longer one, or the hash of a held text / part, checked
     for every string and key without exception — and no string outside a bibliographic position shares a
     quote-length run with a non-hosted source."""
     try:
-        doc = json.loads(content) if isinstance(content, (bytes, str)) else content
+        doc = json.loads(content, object_pairs_hook=_unique_json_object) if isinstance(content, (bytes, str)) else content
     except ValueError:
         return False
     index = HeldIndex(held_texts, held_hashes)
@@ -1311,7 +1355,7 @@ def _json_quotes(content, sources_lowered, held_hashes=frozenset(), held_texts=(
             if held_hit(o):
                 hits.append(o)
                 return
-            if _TOKEN.fullmatch(o.strip()) or _bib_position(path, name, source_keys):
+            if tuple(path) in verified_paths or _TOKEN.fullmatch(o.strip()) or _bib_position(path, name, source_keys):
                 return
             if quote(o):
                 hits.append(o)
@@ -1359,8 +1403,10 @@ def _text_free_of_held(content, texts, hashes):
 
 def distributable(name, projection, content=None, sources=None, extractors=None, held_texts=None):
     """is_public(name), and not a file that may carry text of a non-hosted source. While any source is not hosted
-    (or anything is held): review/** (fidelity notes and check reports quote materials), program.json, package/**
-    and sources/open/** are refused, and artifacts/** only ship when the projection still references them as an
+    (or anything is held): package/** is refused; declared hosted originals require exact licensed bytes.
+    Program and allowed review files require all pinned restricted sources and quote/held-text scans.
+    Program cited quotes and summary overlap windows may use exact verified hosted provenance.
+    artifacts/** only ship when the projection still references them as an
     image it did not hold. sourcetext/ files and blind readings ship only for a hosted source with nothing held.
     Names are compared normalised (posix normpath) and case-folded, except sourcetext/ names: `sourcetext/<key>.txt`
     or `sourcetext/<key>#…` must name a declared hosted source key exactly. variants/** is refused (a variant needs
@@ -1404,13 +1450,25 @@ def distributable(name, projection, content=None, sources=None, extractors=None,
         if content is None:
             return False
         try:
-            doc = json.loads(content) if isinstance(content, (bytes, str)) else content
+            doc = json.loads(content, object_pairs_hook=_unique_json_object) if isinstance(content, (bytes, str)) else content
         except ValueError:
             return False
         return doc == projection and (projection.get("distribution") or {}).get("strict") is True
     if low.startswith("variants/"):
         return all_hosted
-    if low in _SCANNED_JSON and not all_hosted:
+    if low.startswith("sources/open/") and not all_hosted:
+        if held or not isinstance(content, bytes) or (projection.get("distribution") or {}).get("strict") is not True:
+            return False
+        for record in srcs.values():
+            if not isinstance(record, dict) or record.get("file") != n:
+                continue
+            d = record.get("distribution") or {}
+            sha = d.get("sha256") or record.get("sha256")
+            if d.get("tier") == "hosted" and hosted_licence_ok(d.get("licence")) and d.get("attribution") and sha == _d.sha256(content):
+                return True
+        return False
+    review_text = low.startswith("review/") and low.endswith((".md", ".txt", ".json"))
+    if (low in _SCANNED_JSON or review_text) and not all_hosted:
         if content is None or not sources:
             return False
         declared = [str(k) for k, t in ((k, (v.get("distribution") or {}).get("tier") if isinstance(v, dict) else None)
@@ -1418,6 +1476,14 @@ def distributable(name, projection, content=None, sources=None, extractors=None,
                     if t != "hosted"]
         if any(k not in sources for k in declared):
             return False   # every non-hosted source must be scanned against
+        if low == "program.json" or review_text:
+            if (projection.get("distribution") or {}).get("strict") is not True:
+                return False
+            for k in declared:
+                record = srcs.get(k) or {}
+                sha = (record.get("distribution") or {}).get("sha256") or record.get("sha256")
+                if sha != _d.sha256(sources[k]):
+                    return False
         low_src = []
         for k, b in sources.items():
             d = (srcs.get(k) or {}).get("distribution") if isinstance(srcs.get(k), dict) else None
@@ -1433,7 +1499,88 @@ def distributable(name, projection, content=None, sources=None, extractors=None,
         if rec is None:
             return False
         texts, hashes = rec
-        return _json_quotes(content, low_src, hashes, texts, low, set(srcs) if isinstance(srcs, dict) else set())
+        if review_text and not low.endswith(".json"):
+            if isinstance(content, bytes):
+                try:
+                    content = content.decode("utf-8")
+                except UnicodeDecodeError:
+                    return False
+            if not isinstance(content, str):
+                return False
+            content = {"review": content}
+        verified = set()
+        if low == "program.json":
+            try:
+                doc = json.loads(content, object_pairs_hook=_unique_json_object) if isinstance(content, (str, bytes)) else content
+                evidence = doc.get("evidence") or []
+                by_id = {e.get("id"): e for e in evidence if isinstance(e, dict)}
+                cache = {}
+                def licensed(text, e):
+                    key = e.get("sourceId")
+                    record = srcs.get(key) or {}
+                    d = record.get("distribution") or {}
+                    raw = sources.get(key)
+                    if not isinstance(text, str) or raw is None or d.get("tier") != "hosted" or not hosted_licence_ok(d.get("licence")) or not d.get("attribution"):
+                        return False
+                    if (d.get("sha256") or record.get("sha256")) != _d.sha256(raw) or e.get("path") != record.get("file"):
+                        return False
+                    if key not in cache:
+                        fmt = d.get("format") or _d.sniff(raw)
+                        cache[key] = (fmt, _d.Scope(_d.units(fmt, raw, extractors)))
+                    fmt, scope = cache[key]
+                    return _d.make_locator(text, fmt, scope.units, extractors, scope=scope) is not None
+                # Program bibliographic strings are not implicitly trusted; bind
+                # them to the declared licensed source and actual source bytes.
+                primary = doc.get("source")
+                if isinstance(primary, dict):
+                    for key, record in srcs.items():
+                        if isinstance(record, dict) and primary.get("filename") == record.get("file"):
+                            e = {"sourceId": key, "path": record.get("file")}
+                            for field, text in primary.items():
+                                if field in _BIB and licensed(text, e):
+                                    verified.add(("source", field))
+                            if licensed(doc.get("title"), e):
+                                verified.add(("title",))
+                for i, e in enumerate(evidence):
+                    if isinstance(e, dict) and licensed(e.get("quote"), e):
+                        verified.add(("evidence", i, "quote"))
+                restricted = SourceRuns([(str(i), x) for i, x in enumerate(low_src)])
+                def covered(text, ids):
+                    # Summaries can contain shared phrases: every restricted window,
+                    # not merely the first hit, must also occur in verified cited sources.
+                    allowed = []
+                    for eid in ids:
+                        e = by_id.get(eid) if isinstance(eid, str) else None
+                        if e and licensed(e.get("quote"), e):
+                            scope = cache[e["sourceId"]][1]
+                            allowed.extend(_skel_stream(scope.full(w)[0]) for w in ("plain", "dehyph"))
+                    if not allowed:
+                        return False
+                    allowed_wide = {w for source in allowed for w in _cjk_windows(source)}
+                    for form in _forms(text):
+                        sk = _skel(form)
+                        for window in _cjk_windows(sk):
+                            if window in restricted.wide and window not in allowed_wide:
+                                return False
+                        windows = {sk[i:i + _QUOTE_MIN] for i in range(max(0, len(sk) - _QUOTE_MIN + 1))}
+                        if any(_wide(ch) for ch in sk) and len(sk) >= 6:
+                            windows.add(sk)
+                        for window in windows:
+                            if _lettered(window) and any(window in source for _, source in restricted.skels) and not any(window in source for source in allowed):
+                                return False
+                    return True
+                def fields(o, path):
+                    if isinstance(o, dict):
+                        ids = o.get("evidenceIds") or []
+                        if isinstance(ids, list) and isinstance(o.get("value"), str) and covered(o["value"], ids):
+                            verified.add(tuple(path + ["value"]))
+                        for k, v in o.items(): fields(v, path + [k])
+                    elif isinstance(o, list):
+                        for i, v in enumerate(o): fields(v, path + [i])
+                fields(doc, [])
+            except (ValueError, TypeError, AttributeError, KeyError):
+                return False
+        return _json_quotes(content, low_src, hashes, texts, low, set(srcs) if isinstance(srcs, dict) else set(), verified)
     if low.startswith(("review/", "package/", "sources/open/")) or low == "program.json":
         return all_hosted
 
