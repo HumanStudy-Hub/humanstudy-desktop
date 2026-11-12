@@ -89,7 +89,10 @@ test('paired export projects hosted sources and binds both documents to the froz
   assert.equal(canonical.status,0,canonical.stderr)
   const study={schema_version:'1',id:'lamp',title:'Lamp study',authors:['A. Example'],year:2026,version:'1.2.3',quality:'high_fidelity',
    licence:{paper:'CC0-1.0',materials:'CC0-1.0'},protocol:{path:'protocol.json',sha256:canonical.stdout.trim(),schema_version:'1'}}
-  const program={schemaVersion:2,id:'lamp',source:{title:'Lamp study',authors:'A. Example'},nodes:[],evidence:[],issues:[{id:'missing',reason:'Original instructions unavailable'}],
+  const program={schemaVersion:2,id:'lamp',title:'Lamp study',intent:'reconstruct',
+   source:{title:'Lamp study',authors:'A. Example',filename:'sources/open/survey.txt'},
+   studies:[{id:'main',title:'Lamp preference',type:'empirical'}],nodes:[],steps:[],relations:[],evidence:[],
+   issues:[{id:'missing',title:'Missing instructions',severity:'blocking',reason:'Original instructions unavailable',impact:'The missing arm cannot run.',suggestedAction:'Provide the original instructions.',evidenceIds:[]}],
    extensions:{scholarly:{profile:'scholarly-v1',protocol:{path:'protocol.json',id:'lamp',sha256:rawHash}}}}
   write('protocol.json',raw);write('study.json',JSON.stringify(study));write('program.json',JSON.stringify(program))
   write('sources/open/survey.txt',source)
