@@ -121,6 +121,21 @@ test('paired export projects hosted sources and binds both documents to the froz
   assert.equal(readFileSync(join(root,'protocol.json'),'utf8'),raw)
   assert.deepEqual(JSON.parse(readFileSync(join(root,'study.json'),'utf8')),study)
   assert.deepEqual(JSON.parse(readFileSync(join(root,'program.json'),'utf8')),program)
+  // A downloaded open-source projection carries a placeholder marker in metadata, not held text.
+  const imported=join(root,'imported')
+  for(const [name,data] of Object.entries(entries)){
+   const file=join(imported,name);mkdirSync(dirname(file),{recursive:true});writeFileSync(file,data)
+  }
+  const reexport=spawnSync('python3',[script,'--output','exports/reexport.zip'],{cwd:imported,encoding:'utf8'})
+  assert.equal(reexport.status,0,reexport.stderr)
+  const again=unzipSync(readFileSync(join(imported,'exports/reexport.zip')))
+  assert.deepEqual(JSON.parse(strFromU8(again['protocol.json'])).distribution.held,{})
+  for(const name of ['program.json','protocol.json','study.json'])assert.equal(readFileSync(join(imported,name),'utf8'),strFromU8(entries[name]))
+  const concealed=json('protocol.json')
+  concealed.stages.q.content[0].text+=' ░'
+  writeFileSync(join(imported,'protocol.json'),JSON.stringify(concealed))
+  const heldContent=spawnSync('python3',[script,'--output','exports/held.zip'],{cwd:imported,encoding:'utf8'})
+  assert.match(heldContent.stderr,/held or locally restored wording/)
   if(process.env.HUMANSTUDY_TEST_PAIRED_ZIP) writeFileSync(process.env.HUMANSTUDY_TEST_PAIRED_ZIP,zip)
   write('program.json',JSON.stringify({...program,notes:privateText}))
   assert.match(run('leak').stderr,/Private materials appear in program[.]json/)

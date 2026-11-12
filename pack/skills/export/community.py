@@ -134,7 +134,8 @@ def paired_projection(protocol, study, program, payload, licensed):
 
     if protocol.get("schema_version") != "1" or study.get("schema_version") != "1":
         raise ValueError("Paired export needs the v1 protocol and study card.")
-    if (protocol.get("distribution") or {}).get("held") or "░" in json.dumps(protocol, ensure_ascii=False):
+    if (protocol.get("distribution") or {}).get("held") or "░" in json.dumps(
+            {key: value for key, value in protocol.items() if key != "distribution"}, ensure_ascii=False):
         raise ValueError("Paired export cannot carry held or locally restored wording.")
     if any(has_private_reference(doc) for doc in (protocol, study, program)):
         raise ValueError("The pair refers to a private or local file.")
