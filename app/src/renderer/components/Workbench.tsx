@@ -1,5 +1,5 @@
 import { ProtocolStudy } from './ProtocolStudy'
-import { scholarlyProfile } from '../../shared/scholarly-program'
+import { scholarlyProfile, scholarlyDeclarationProblems } from '../../shared/scholarly-program'
 // The right pane: Study (the 12-section document) and Paper, plus any file the researcher or the agent
 // opens as another tab, like an artifact panel. A Files sidebar (hidden by default, ⌘B) lists the folder.
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
@@ -139,11 +139,15 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
     try {
-      return { ...readHumanProgram(project.program), error: undefined }
+      const read = readHumanProgram(project.program)
+      const declaration = scholarlyDeclarationProblems(read.program)
+      if (!declaration.length && scholarlyProfile(read.program) && !flatten(project.tree).some(f => f.rel === 'protocol.json'))
+        declaration.push('This scholarly view requires its protocol.json. Restore the actual paired protocol, or omit extensions.scholarly for Program-only conversion; do not invent a protocol.')
+      return { ...read, problems: [...read.problems, ...declaration], error: undefined }
     } catch (e) {
       return { program: null, error: t('study.invalid', { error: String(e) }), problems: [] as string[] }
     }
-  }, [project.program, project.programError])
+  }, [project.program, project.programError, project.tree])
   const fixProgram = () => onFixProgram?.(fixProgramMessage(problems, error))
   // The automatic build after a paper import: one status line while it runs, one retry when it stops.
   const build = project.build

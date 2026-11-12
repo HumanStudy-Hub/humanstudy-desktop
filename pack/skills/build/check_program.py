@@ -12,6 +12,7 @@ Exit 0 when clean, 1 when any problem is found.
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from pathlib import Path
 
@@ -192,7 +193,16 @@ def coverage_problems(p):
         return [("build coverage policy is unavailable", "restore the build skill files")]
     policy = json.loads(policy_path.read_text(encoding="utf-8"))
     scholarly = (p.get("extensions") or {}).get("scholarly")
-    if isinstance(scholarly, dict) and scholarly.get("profile") == "scholarly-v1":
+    if "scholarly" in (p.get("extensions") or {}):
+        hint = "For Program-only conversion, omit extensions.scholarly; do not invent a protocol binding. For paired delivery, bind the actual protocol.json and verify it."
+        if not isinstance(scholarly, dict) or scholarly.get("profile") != "scholarly-v1":
+            return [("Unsupported scholarly profile.", hint)]
+        binding = scholarly.get("protocol")
+        if (not isinstance(binding, dict) or binding.get("path") != "protocol.json"
+                or not isinstance(binding.get("id"), str) or not binding["id"].strip()
+                or not isinstance(binding.get("sha256"), str)
+                or len(binding["sha256"]) != 64 or any(c not in "0123456789abcdef" for c in binding["sha256"])):
+            return [("scholarly-v1 requires protocol.path, protocol.id and the actual protocol SHA-256.", hint)]
         return scholarly_coverage_problems(p, policy["scholarly"])
     out = []
     nodes, steps, issues = p.get("nodes", []), p.get("steps", []), p.get("issues", [])
@@ -268,6 +278,16 @@ def main() -> None:
     found = (check(data) if isinstance(data, dict) and data.get("schemaVersion") != 2 else schema_problems(data, path) + check(data))
     if "--complete" in sys.argv and not found:
         found += coverage_problems(data)
+        scholarly = (data.get("extensions") or {}).get("scholarly")
+        if not found and isinstance(scholarly, dict) and scholarly.get("profile") == "scholarly-v1":
+            try:
+                raw = (path.parent / "protocol.json").read_bytes()
+                protocol = json.loads(raw)
+                binding = scholarly["protocol"]
+                if protocol.get("id") != binding["id"] or hashlib.sha256(raw).hexdigest() != binding["sha256"]:
+                    found.append(("The scholarly protocol binding does not match the actual protocol.json.", "bind the actual unchanged protocol; then run paired delivery checks"))
+            except (OSError, ValueError, AttributeError):
+                found.append(("scholarly-v1 requires a readable protocol.json for paired verification.", "for Program-only conversion omit extensions.scholarly; never invent a protocol"))
     for msg, hint in found:
         print(f"PROBLEM {msg}" + (f"\n        fix: {hint}" if hint else ""))
     if found:

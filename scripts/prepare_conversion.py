@@ -34,7 +34,10 @@ The following initial-conversion scope overrides desktop-specific assumptions:
   Preserve source identities, title, available abstract/description, provenance,
   scientific content, missing items and uncertainty. Do not invent metadata or a
   new parallel schema. Do not shorten scientific content to meet an output cap.
-- This is program-only initial conversion. Do not build a runnable package, start
+- This is program-only initial conversion. Omit extensions.scholarly: scholarly-v1
+  is only a view bound to an actual protocol.json, not a generic draft label. This
+  overrides the shared pack default for paired new-project delivery. Do not invent
+  a protocol or its binding to satisfy a check. Do not build a runnable package, start
   simulation/reanalysis, classify/tag studies or fill scientific gaps unless asked.
   Existing supplied code/data can remain referenced resources; do not execute
   third-party research code merely to transcribe it.
@@ -74,7 +77,8 @@ Do not claim scientific reproduction from a successful initial conversion.
 Write program.json only through `.opencode/skills/build/program_io.py`, as the build skill
 requires: it holds the shared program lock, replaces the file atomically and keeps confirmed
 researcher fields. The final check is `check_program.py program.json --complete`, the same
-minimum-coverage rule the desktop app applies before it reports a build complete.
+minimum-coverage check for this Program-only scope. The worker independently certifies
+the saved Program. Paired Desktop delivery additionally requires protocol verification.
 
 Validate with your prepared Python environment:
 
