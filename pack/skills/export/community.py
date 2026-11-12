@@ -6,6 +6,7 @@ import json
 import sys
 import unicodedata
 import zipfile
+from functools import lru_cache
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "build"))
@@ -166,8 +167,9 @@ def program_only_projection(root, program, licensed):
         if tier in {"user", "link"} or not release.hosted_licence_ok(recorded_license(licensed.get(name, {}))):
             restricted.add(name)
 
+    @lru_cache(maxsize=None)
     def shareable_quote(name):
-        if not isinstance(name, str) or not name or name in restricted or name in private_paths or has_private_reference({"file": name}):
+        if not name or name in restricted or name in private_paths or has_private_reference({"file": name}):
             return False
         record = licensed.get(name, {})
         if not release.hosted_licence_ok(recorded_license(record)):
@@ -190,7 +192,7 @@ def program_only_projection(root, program, licensed):
         matching_hash = cited_hash is None or (isinstance(cited_hash, str) and isinstance(recorded_hash, str)
                                                and cited_hash.lower() == recorded_hash.lower())
         if evidence.get("quote"):
-            if matching_hash and (linked_name is None or linked_name == name) and shareable_quote(name):
+            if isinstance(name, str) and matching_hash and (linked_name is None or linked_name == name) and shareable_quote(name):
                 permitted_quotes.add(evidence["id"])
             else:
                 evidence.pop("quote")
