@@ -171,7 +171,8 @@ export function createResearchCollector(options: Options) {
    * earlier ones, so without it a quick second write can replace the file before it is read and
    * the earlier version is never recorded.
    */
-  function queueArtifact(path: string, projectId: string, artifactId: string, by: string, link?: CaptureLink | (() => CaptureLink), snapshot?: string): Promise<void> {
+  function queueArtifact(path: string, projectId: string, artifactId: string, by: string, link?: CaptureLink | (() => CaptureLink), snapshot?: string,
+    filter?: (text: string | undefined) => string | undefined | null): Promise<void> {
     const capturedOwner = localOwner()
     return run(async () => {
       const owner = await capturedOwner; if (!owner || await localOwner() !== owner) return
@@ -180,11 +181,12 @@ export function createResearchCollector(options: Options) {
       const textFile = /\.(json|md|txt|csv|tsv|html?|py|r|js|ts|tex|bib|ya?ml|xml|svg|qmd|rmd|css|sql|jl|do|sps|ipynb|log|toml|ini)$/i.test(artifactId)
       const role = artifactId === 'program.json' ? 'program' : 'file'
       const projectDir = path.slice(0, -artifactId.length).replace(/[\\/]+$/, '')
-      const ref = snapshot !== undefined
-        ? await stageBytes(root, Buffer.from(scrubResearchString(snapshot, { projectDir })), role)
-        : textFile
-          ? await stageBytes(root, Buffer.from(scrubResearchString(await readFile(path, 'utf8'), { projectDir })), role)
-          : await stageFile(root, path, 'application/octet-stream')
+      const original = snapshot ?? (textFile ? await readFile(path, 'utf8') : undefined)
+      const text = filter ? filter(original) : original
+      if (text === null) return
+      const ref = text === undefined
+        ? await stageFile(root, path, 'application/octet-stream')
+        : await stageBytes(root, Buffer.from(scrubResearchString(text, { projectDir })), role)
       if (before) {
         const after = await stat(path)
         if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ino !== after.ino) return

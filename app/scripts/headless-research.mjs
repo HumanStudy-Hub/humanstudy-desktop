@@ -46,6 +46,12 @@ export async function startHeadlessResearch({ research, createResearchAgent, pri
     const current = captureScope()
     return current && mayCollectFile({ rel, published: current.published, index: EMPTY_INDEX })
   }
+  const artifactFilter = text => {
+    const current = captureScope()
+    if (!current) return null
+    if (text === undefined) return undefined
+    return redactCapture({ metadata: { file: text } }, EMPTY_INDEX, current.published).metadata.file
+  }
   const inside = file => { const distance = relative(project, realpathSync(file)); return !distance.startsWith('..') && !isAbsolute(distance) }
   const agent = createResearchAgent((event, context) => {
     const current = captureScope()
@@ -84,14 +90,15 @@ export async function startHeadlessResearch({ research, createResearchAgent, pri
     }
     artifactChain = artifactChain.then(async () => {
       for (const { path, rel, text, writer } of snapshots) if (allowedFile(rel))
-        await research.queueArtifact(path, projectId, rel, 'agent-or-external', writer, text)
+        await research.queueArtifact(path, projectId, rel, 'agent-or-external', writer, text, artifactFilter)
       async function walk(rel) {
         if (!inside(join(project, rel))) return
         for (const entry of readdirSync(join(project, rel), { withFileTypes: true })) {
           if (entry.name.startsWith('.') || entry.isSymbolicLink()) continue
           const child = rel + '/' + entry.name
           if (entry.isDirectory()) await walk(child)
-          else if (entry.isFile() && allowedFile(child)) await research.queueArtifact(join(project, child), projectId, child, 'agent-or-external', link(child))
+          else if (entry.isFile() && allowedFile(child))
+            await research.queueArtifact(join(project, child), projectId, child, 'agent-or-external', link(child), undefined, artifactFilter)
         }
       }
       for (const rel of ['artifacts', 'package', 'exports']) if (existsSync(join(project, rel))) await walk(rel)
