@@ -12,7 +12,7 @@ const { OpencodeKernel } = await import(pathToFileURL(join(out, 'k.mjs')).href)
 const tick = () => new Promise(r => setImmediate(r))
 async function scenario(name, run) {
   const k = new OpencodeKernel({ binary: '/bin/true', provider: 'humanstudy' })
-  k.register('s', { dir: out, exited: false })
+  k.register('s', { dir: out, exited: false, transport: { models: async () => ['anthropic/claude-sonnet-5.5'] } })
   const events = [], requests = []
   k.onEvent(e => events.push(e))
   k.request = async (_server, method, path, body) => {

@@ -121,6 +121,7 @@ interface SessionState {
   server: Server
   inFlight: boolean
   stopping?: boolean
+  buildLookup?: AbortController
   roles: Map<string, string> // messageID -> role
   partTypes: Map<string, string> // partID -> part type
   emitted: Map<string, number> // text partID -> chars already emitted
@@ -176,6 +177,7 @@ export class OpencodeKernel implements Kernel {
   private home: string
   private provider: string
   private model: string
+  private hostedModels: string[]
   private readyTimeoutMs: number
   private permission: 'ask' | 'project' | undefined
   /** Fixed at construction: whether simulations use the per-run relay (see OpencodeOptions.relay). */
@@ -195,6 +197,11 @@ export class OpencodeKernel implements Kernel {
     // An empty provider means "do not force a model" (no hosted access and no dev key).
     this.provider = opts.provider ?? process.env.HUMANSTUDY_PROVIDER ?? DEFAULT_PROVIDER
     this.model = opts.model ?? process.env.HUMANSTUDY_MODEL ?? DEFAULT_MODEL
+    let offers: unknown
+    try { offers = JSON.parse(process.env.HUMANSTUDY_HOSTED_MODELS ?? '[]') } catch { /* use known models */ }
+    this.hostedModels = [...new Set([this.model, BUILD_MODEL,
+      ...(Array.isArray(offers) ? offers.filter((id): id is string => typeof id === 'string' && /^[\w./:-]+$/.test(id)) : []),
+    ])]
     // Own OpenRouter keys are a developer path only.
     if (this.provider === 'openrouter' && !(process.env.HUMANSTUDY_DEV_KEYS === '1' && process.env.OPENROUTER_API_KEY)) this.provider = ''
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 30_000
@@ -331,10 +338,36 @@ export class OpencodeKernel implements Kernel {
     if (this.reportResolved('q:' + questionId)) this.emitter.emit({ sessionId, type: 'question', question: { ...question, resolved: 'rejected' } })
   }
 
+  private hostedBuildModel(allowed: string[], explicit?: string): { providerID: string; modelID: string } {
+    if (explicit && !allowed.includes(explicit)) throw new Error('This account cannot use the selected hosted model. Choose an available model and retry the Build.')
+    const modelID = explicit ?? [BUILD_MODEL, ...this.hostedModels, ...BAKED_HOSTED_MODELS].find(model => allowed.includes(model))
+    if (!modelID) throw new Error('No hosted Build model is available for this account. Check your hosted allowance and try again.')
+    return { providerID: HOSTED_PROVIDER, modelID }
+  }
+
   async send(sessionId: string, text: string, options?: { purpose?: 'build' }): Promise<void> {
     const s = this.session(sessionId)
     if (s.stopping) throw new Error('Wait for this conversation to stop before starting another turn.')
-    s.turnModel = s.selection?.model ?? (this.provider ? { providerID: this.provider, modelID: options?.purpose === 'build' && this.provider === HOSTED_PROVIDER ? BUILD_MODEL : this.model } : undefined)
+    if (s.buildLookup) throw new Error('The Build is already checking available models.')
+    const selected = s.selection?.model
+    let model = selected ?? (this.provider ? { providerID: this.provider, modelID: this.model } : undefined)
+    if (options?.purpose === 'build' && (selected?.providerID ?? this.provider) === HOSTED_PROVIDER) {
+      const lookup = new AbortController()
+      s.buildLookup = lookup
+      let allowed: string[]
+      try {
+        allowed = await s.server.transport?.models(lookup.signal) ?? []
+      } catch {
+        if (lookup.signal.aborted) throw new Error('The Build was stopped.')
+        throw new Error('Could not check hosted models. Check your connection and try the Build again.')
+      } finally {
+        s.buildLookup = undefined
+      }
+      if (lookup.signal.aborted || s.stopping || this.disposed) throw new Error('The Build was stopped.')
+      if (s.selection?.model !== selected) throw new Error('The model selection changed. Retry the Build with the selected model.')
+      model = this.hostedBuildModel(allowed, selected?.modelID)
+    }
+    s.turnModel = model
     s.turnBaseline = new Set(s.roles.keys())
     s.awaitingAssistant = true
     s.expectUserIdentity = true
@@ -418,6 +451,7 @@ export class OpencodeKernel implements Kernel {
     const turn = NATIVE_TURNS.has(request.operation)
     if (turn) {
       if (s.stopping) throw new Error('Wait for this conversation to stop before starting another turn.')
+      if (s.buildLookup) throw new Error('The Build is already checking available models.')
       s.turnModel = s.selection?.model ?? (this.provider ? { providerID: this.provider, modelID: this.model } : undefined)
       s.turnBaseline = new Set(s.roles.keys()); s.inFlight = true; s.awaitingAssistant = true; s.expectUserIdentity = request.operation!=='compact'; s.failed = false
       s.lastActivity = this.clock(); s.lastProbe = 0; s.idleSince = undefined; s.stalled = false
@@ -451,6 +485,7 @@ export class OpencodeKernel implements Kernel {
     const s = this.session(sessionId)
     if (s.stopping) throw new Error('This conversation is already stopping.')
     s.stopping = true
+    s.buildLookup?.abort()
     let stopped = false
     try {
       await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/abort`)
@@ -525,6 +560,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     this.disposed = true
     clearInterval(this.livenessTimer)
     process.removeListener('exit', this.exitHook)
+    for (const session of this.sessions.values()) session.buildLookup?.abort()
     const procs = [...this.live]
     this.killAll('SIGTERM')
     await Promise.all(
@@ -614,7 +650,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     }
     if (this.provider === HOSTED_PROVIDER) {
       cfg.provider = { [HOSTED_PROVIDER]: { ...(transport ? { options: { baseURL: transport.baseURL, apiKey: transport.token } } : {}),
-        models: Object.fromEntries([...new Set([this.model, BUILD_MODEL])].map(id => [id, {
+        models: Object.fromEntries(this.hostedModels.map(id => [id, {
           ...(!BAKED_HOSTED_MODELS.includes(id) ? { name: id, tool_call: true } : {}),
           variants: { 'humanstudy-recovery': { reasoningEffort: 'low' } },
         }])) } }
