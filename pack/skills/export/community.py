@@ -112,7 +112,8 @@ def has_private_reference(value):
             if key in {"file", "filename", "path", "src"} and isinstance(item, str):
                 name = item.replace("\\", "/")
                 if not name.startswith(("https://", "http://")) and (
-                        name.startswith(("/", "file:")) or len(name) > 1 and name[1] == ":" or private_payload(name)):
+                        name.startswith(("/", "file:")) or len(name) > 1 and name[1] == ":"
+                        or ".." in name.split("/") or private_payload(name)):
                     return True
             if has_private_reference(item):
                 return True
@@ -121,16 +122,123 @@ def has_private_reference(value):
     return False
 
 
-def paired_projection(protocol, study, program, payload, licensed):
+def projection_engine():
     # In an installed project the engine is beside skills/. The second path is for repository tests.
     here = Path(__file__).resolve()
     candidates = (here.parents[2] / "hsenv", here.parents[2] / "runtime/hsenv")
     engine = next((p for p in candidates if (p / "hsenv/release.py").is_file()), None)
     if engine is None:
-        raise ValueError("Paired export needs the current Desktop protocol engine.")
+        raise ValueError("Community export needs the current Desktop protocol engine.")
     sys.path.insert(0, str(engine))
     from hsenv import release, schema_check, distribution
     sys.path.pop(0)
+    return release, schema_check, distribution
+
+
+def program_only_projection(root, program, licensed):
+    """Keep the scholarly document independent of its local execution files."""
+    release, _, _ = projection_engine()
+    protocol_path = root / "protocol.json"
+    try:
+        protocol = read_json(protocol_path) if safe_candidate(root, protocol_path) else {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        protocol = {}
+    if not isinstance(protocol, dict):
+        protocol = {}
+    binding = (program.get("extensions") or {}).get("scholarly")
+    if isinstance(binding, dict):
+        binding.pop("protocol", None)
+
+    sources = (protocol.get("meta") or {}).get("sources") or {}
+    private_paths = set(check_materials.private_paths(root))
+    restricted = {name for name, record in licensed.items() if not release.hosted_licence_ok(recorded_license(record))}
+    private = {name for name, record in licensed.items()
+               if record.get("private") is True or str(record.get("license")).lower() == check_materials.RESEARCHER_LICENSE}
+    for entry in sources.values() if isinstance(sources, dict) else ():
+        if not isinstance(entry, dict) or not isinstance(entry.get("file"), str):
+            continue
+        name = entry["file"]
+        tier = (entry.get("distribution") or {}).get("tier")
+        if tier in {"user", "link"} or not release.hosted_licence_ok(recorded_license(licensed.get(name, {}))):
+            restricted.add(name)
+
+    def shareable_quote(name):
+        if not isinstance(name, str) or not name or name in restricted or name in private_paths or has_private_reference({"file": name}):
+            return False
+        record = licensed.get(name, {})
+        if not release.hosted_licence_ok(recorded_license(record)):
+            return False
+        sha = record.get("sha256")
+        path = root / name
+        return isinstance(sha, str) and safe_candidate(root, path) and sha.lower() == check_materials.sha(path)
+
+    paper = program["source"]
+    evidence_records = program.get("evidence", [])
+    permitted_quotes = set()
+    withheld_quotes = []
+    for evidence in evidence_records:
+        # Keep the source identifier, URL and locator even when its exact quote stays local.
+        name = evidence.get("path") or paper.get("filename")
+        if evidence.get("quote"):
+            if shareable_quote(name):
+                permitted_quotes.add(evidence["id"])
+            else:
+                evidence.pop("quote")
+                evidence.pop("verification", None)
+                withheld_quotes.append(evidence["id"])
+    fields = [field for node in program.get("nodes", []) for field in node.get("fields", [])]
+    fields.extend(step["rule"] for step in program.get("steps", []) if isinstance(step.get("rule"), dict))
+    for field in fields:
+        if field.get("origin") == "verbatim" and field.get("state") != "missing" and not (
+                field.get("evidenceIds") and set(field["evidenceIds"]) <= permitted_quotes):
+            raise ValueError("Verbatim Program fields need a verified redistributable source. Keep restricted wording local.")
+    if has_private_reference(program) or private & research_sources(program):
+        raise ValueError("The Program contains a private or local path. Keep a public citation or locator instead.")
+
+    # The standard private index includes researcher files and unlicensed sources. Also check restricted
+    # references outside its default directories, including a local paper.pdf or a mislabelled open file.
+    texts, _ = check_materials.private_index(root)
+    bibliography = {word for key in ("title", "authors", "venue", "doi")
+                    for word in check_materials.words(paper.get(key))}
+    for name in (restricted | research_sources(program) | {"paper.pdf"}) - private_paths:
+        if has_private_reference({"file": name}) or shareable_quote(name):
+            continue
+        path = root / name
+        if safe_candidate(root, path):
+            for shingle in check_materials.shingles(check_materials.text_of(path)):
+                if not all(word in bibliography for word in shingle.split()):
+                    texts.setdefault(shingle, name)
+    held = (protocol.get("distribution") or {}).get("held") or {}
+    held_hashes = set()
+    for item in held.values() if isinstance(held, dict) else ():
+        if isinstance(item, dict):
+            loc = item.get("locator") or {}
+            held_hashes.update(h for h in [item.get("text_sha256"), *(p.get("canon_sha256") for p in loc.get("parts", []))]
+                               if isinstance(h, str))
+    held_index = release.HeldIndex(hashes=held_hashes)
+    for value in check_materials.strings(program):
+        if held_index.hit(value):
+            raise ValueError("Held source wording appears in program.json. Keep the material local and cite its source.")
+        words = check_materials.words(value)
+        if any(" ".join(words[i:i + size]) in texts
+               for size in range(4, check_materials.SHINGLE + 1) for i in range(len(words) - size + 1)):
+            raise ValueError("Restricted source wording appears in program.json. Keep the material local and cite its source.")
+    extensions = program.setdefault("extensions", {})
+    previous = extensions.get("communityExport") or {}
+    previous_quotes = previous.get("withheldEvidenceQuotes") if isinstance(previous, dict) else None
+    previous_ids = previous_quotes.get("ids") if isinstance(previous_quotes, dict) else None
+    prior_ids = {value for value in previous_ids if isinstance(value, str)} if isinstance(previous_ids, list) else set()
+    withheld = set(withheld_quotes) | prior_ids
+    withheld_quotes = [e["id"] for e in evidence_records if e["id"] in withheld and not e.get("quote")]
+    extensions["communityExport"] = {
+        "scope": "program-only",
+        "withheldEvidenceQuotes": {"ids": withheld_quotes, "reason": "redistribution-unverified"},
+    }
+    return json_bytes(program), withheld_quotes
+
+
+def paired_projection(protocol, study, program, payload, licensed):
+    release, schema_check, distribution = projection_engine()
 
     if protocol.get("schema_version") != "1" or study.get("schema_version") != "1":
         raise ValueError("Paired export needs the v1 protocol and study card.")
@@ -212,12 +320,14 @@ def paired_projection(protocol, study, program, payload, licensed):
     return card
 
 
-def export(root, output, include_paper=False):
+def export(root, output, include_paper=False, *, program_only=False):
     root, output = Path(root).resolve(), Path(output).resolve()
     if not output.is_relative_to(root) or output.exists():
         raise ValueError("Choose a new export path inside the research project")
     protocol_path = root / "protocol.json"
-    paired = protocol_path.exists() or protocol_path.is_symlink()
+    paired = not program_only and (protocol_path.exists() or protocol_path.is_symlink())
+    if program_only and include_paper:
+        raise ValueError("A Program-only export contains just program.json.")
     study_path = root / "study.json"
     protocol = study = None
     if paired:
@@ -261,7 +371,7 @@ def export(root, output, include_paper=False):
                     part in {"", ".", ".."} for part in name.split("/")) or private_payload(name):
                 raise ValueError("A source cited by the pair is missing from the licensed public sources/open/ files.")
             candidates[root / name] = name
-    for top in (("artifacts",) if paired else ("package", "artifacts", "sources")):
+    for top in (() if program_only else ("artifacts",) if paired else ("package", "artifacts", "sources")):
         folder = root / top
         if folder.is_symlink():
             raise ValueError("Symlinked source folders cannot be published")
@@ -273,7 +383,7 @@ def export(root, output, include_paper=False):
         referenced.add(paper["filename"])
     if include_paper:
         referenced.add("paper.pdf")
-    for name in sorted(referenced) if not paired else ():
+    for name in sorted(referenced) if not paired and not program_only else ():
         relative = Path(name)
         if relative.is_absolute() or "\\" in name or ":" in name or ".." in relative.parts:
             continue
@@ -322,7 +432,7 @@ def export(root, output, include_paper=False):
         selected[path] = (name, before, license)
 
     # Copied private wording is a blocking finding in the program/package and an omission in a report.
-    for shown, src, _ in check_materials.leaks(root, selected):
+    for shown, src, _ in check_materials.leaks(root, selected) if not program_only else ():
         if not shown.startswith("artifacts/"):
             raise ValueError(f"Private materials appear in {shown} (from {src}). Keep the material in the project and cite its source.")
         selected.pop(root / shown, None)
@@ -357,6 +467,11 @@ def export(root, output, include_paper=False):
         meta["kind"] = "protocol"
         meta["paper"] = {"title": card["title"], "authors": card["authors"], "firstAuthor": card["authors"][0],
                          "year": card["year"], "doi": card.get("doi")}
+    if program_only:
+        if "program.json" not in payload:
+            raise ValueError("The project does not have a shareable program.json.")
+        shared_program, withheld_quotes = program_only_projection(root, program, licensed)
+        payload["program.json"] = (shared_program, None)
     if public_sources:
         source_manifest = {"schemaVersion": 1, "files": public_sources}
         payload["sources/SOURCE.json"] = (json.dumps(source_manifest, ensure_ascii=False, indent=2).encode("utf-8") + b"\n", None)
@@ -382,13 +497,21 @@ def export(root, output, include_paper=False):
         if created:
             output.unlink(missing_ok=True)
         raise
-    return {"file": str(output), "files": len(payload) + 1, "publicFiles": ["CONTRIBUTION.json", *sorted(payload)],
-            "omitted": omitted, "baseRevision": meta["baseRevision"], "paperId": meta["paperId"]}
+    result = {"file": str(output), "files": len(payload) + 1, "publicFiles": ["CONTRIBUTION.json", *sorted(payload)],
+              "omitted": omitted, "baseRevision": meta["baseRevision"], "paperId": meta["paperId"]}
+    if program_only:
+        result["scope"] = "Program only. The experiment needs its protocol and any missing materials to run."
+        result["withheldEvidenceQuotes"] = {
+            "ids": withheld_quotes,
+            "reason": "Redistribution was not verified. Evidence locators and source references are preserved.",
+        }
+    return result
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
     parser.add_argument("--include-paper", action="store_true", help="Only if the researcher explicitly permits public redistribution of the paper PDF")
+    parser.add_argument("--program-only", action="store_true", help="Share the research Program without runtime files")
     args = parser.parse_args()
-    print(json.dumps(export(Path.cwd(), args.output, args.include_paper)))
+    print(json.dumps(export(Path.cwd(), args.output, args.include_paper, program_only=args.program_only)))

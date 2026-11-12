@@ -149,5 +149,40 @@ test('paired export projects hosted sources and binds both documents to the froz
   assert.match(run('held').stderr,/held or locally restored wording/)
   write('protocol.json',JSON.stringify({...protocol,meta:{...protocol.meta,citation:'Changed'}}))
   assert.match(run('stale').stderr,/does not bind/)
+
+  const restricted='Please hand the sealed envelope to the observer beside the red gate.'
+  const reference={id:'held-instructions',path:'sources/handout.txt',sourceSha256:hash(restricted),
+   url:'https://example.org/materials',locator:{page:1},quote:restricted,verification:'verified'}
+  write('sources/handout.txt',restricted)
+  write('sources/SOURCE.json',JSON.stringify({files:[
+   {path:'sources/open/survey.txt',sha256:hash(source),license:'CC0-1.0',attribution:'A. Example'},
+   {path:'sources/handout.txt',sha256:hash(restricted),license:'CC-BY-ND-4.0',attribution:'A. Example'}]}))
+  write('protocol.json',JSON.stringify({...protocol,meta:{...protocol.meta,sources:{...protocol.meta.sources,
+   restricted:{file:'sources/handout.txt',distribution:{tier:'link',url:reference.url}}}}}))
+  const localProgram={...program,evidence:[reference]}
+  write('program.json',JSON.stringify(localProgram))
+  const standalone=(name)=>spawnSync('python3',[script,'--program-only','--output',`exports/${name}.zip`],{cwd:root,encoding:'utf8'})
+  const programOnly=standalone('program-only')
+  assert.equal(programOnly.status,0,programOnly.stderr)
+  const partial=unzipSync(readFileSync(join(root,'exports/program-only.zip')))
+  assert.deepEqual(Object.keys(partial).sort(),['CONTRIBUTION.json','program.json'])
+  const shared=JSON.parse(strFromU8(partial['program.json']))
+  assert.equal(shared.extensions.scholarly.protocol,undefined)
+  assert.deepEqual(shared.issues,program.issues)
+  assert.deepEqual(shared.evidence,[{id:reference.id,path:reference.path,sourceSha256:reference.sourceSha256,
+   url:reference.url,locator:reference.locator}])
+  assert.deepEqual(shared.extensions.communityExport,{scope:'program-only',
+   withheldEvidenceQuotes:{ids:[reference.id],reason:'redistribution-unverified'}})
+  assert.equal(JSON.parse(strFromU8(partial['CONTRIBUTION.json'])).files[0].sha256,hash(partial['program.json']))
+  assert.deepEqual(JSON.parse(programOnly.stdout).withheldEvidenceQuotes.ids,[reference.id])
+  assert.deepEqual(JSON.parse(readFileSync(join(root,'program.json'),'utf8')),localProgram)
+  if(process.env.HUMANSTUDY_TEST_PROGRAM_ZIP)writeFileSync(process.env.HUMANSTUDY_TEST_PROGRAM_ZIP,readFileSync(join(root,'exports/program-only.zip')))
+
+  write('program.json',JSON.stringify({...localProgram,notes:restricted}))
+  assert.match(standalone('restricted-copy').stderr,/Restricted source wording appears in program[.]json/)
+  const held='Go forward.'
+  write('protocol.json',JSON.stringify({...protocol,distribution:{held:{h1:{text_sha256:hash(held)}}}}))
+  write('program.json',JSON.stringify({...localProgram,notes:held}))
+  assert.match(standalone('held-copy').stderr,/Held source wording appears in program[.]json/)
  }finally{rmSync(root,{recursive:true,force:true})}
 })
