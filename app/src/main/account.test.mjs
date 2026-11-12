@@ -125,23 +125,24 @@ assert.ok(calls.some((c) => c.url.endsWith('/auth/v1/logout') && c.headers.autho
 assert.equal(store.session, undefined)
 assert.equal(store.desktopKey, undefined)
 
-// A new workspace seed survives both an old refresh success and an old refresh rejection.
-for (const reply of [
-  json(200, { access_token: 'AT2', refresh_token: 'RT2', expires_in: 3600 }),
-  json(400, { error: 'invalid_grant', error_description: 'Invalid Refresh Token' }),
+// Late refresh responses cannot overwrite a workspace seed or authorize the caller as another user.
+const fixtureToken = sub => 'fixture.' + Buffer.from(JSON.stringify({ sub })).toString('base64url') + '.fixture'
+for (const { reply, owner } of [
+  { reply: json(200, { access_token: 'AT2', refresh_token: 'RT2', expires_in: 3600 }), owner: 'workspace-owner' },
+  { reply: json(400, { error: 'invalid_grant', error_description: 'Invalid Refresh Token' }), owner: 'workspace-owner' },
+  { reply: json(400, { error: 'invalid_grant', error_description: 'Invalid Refresh Token' }), owner: 'different-owner' },
 ]) {
-  await acct.signIn('a@b.org', 'pw')
-  clock += 2 * 3600_000
+  store.session = enc(JSON.stringify({ accessToken: fixtureToken('workspace-owner'), refreshToken: 'RT1', expiresAt: clock - 1, email: 'a@b.org' }))
   let settle
   let requested
   const requestStarted = new Promise(resolve => { requested = resolve })
   holdRefresh = () => new Promise(resolve => { settle = resolve; requested() })
   const pending = acct.restAuth()
   await requestStarted
-  const seeded = 'fixture.' + Buffer.from(JSON.stringify({ sub: 'workspace-owner' })).toString('base64url') + '.fixture'
+  const seeded = fixtureToken(owner)
   store.session = enc(JSON.stringify({ accessToken: seeded, refreshToken: 'fresh-workspace-refresh', expiresAt: clock + 3600_000, email: 'a@b.org' }))
   settle(reply)
-  assert.equal((await pending).accessToken, seeded)
+  assert.equal((await pending)?.accessToken, owner === 'workspace-owner' ? seeded : undefined)
   assert.equal((await acct.restAuth()).accessToken, seeded)
   holdRefresh = undefined
 }

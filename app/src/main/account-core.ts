@@ -177,7 +177,8 @@ export function createAccount(deps: AccountDeps) {
     const replacementAccessToken = (): string | null | undefined => {
       const current = getSession()
       if (current?.refreshToken === s.refreshToken) return undefined
-      return current && current.expiresAt > now() ? current.accessToken : null
+      const owner = jwtSub(s.accessToken)
+      return current && owner && jwtSub(current.accessToken) === owner && current.expiresAt > now() ? current.accessToken : null
     }
     try {
       const json = await supabase('token?grant_type=refresh_token', { refresh_token: s.refreshToken })
