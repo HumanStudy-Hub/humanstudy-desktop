@@ -1,0 +1,96 @@
+{
+  "humanstudy-fresh": {
+    "modelRoutes": [
+      "humanstudy/anthropic/claude-haiku-5.5"
+    ],
+    "outputTokensReported": 32382,
+    "inputTokensReported": 424587,
+    "reasoningTokensReported": 102838,
+    "activePhaseSeconds": 764,
+    "phases": [
+      {
+        "phase": "initial",
+        "stop": "idle",
+        "seconds": 320
+      },
+      {
+        "phase": "repair-1",
+        "stop": "error",
+        "seconds": 382
+      },
+      {
+        "phase": "repair-2",
+        "stop": "output_budget_reached",
+        "seconds": 62
+      }
+    ],
+    "toolCompletions": 46,
+    "distinctImageReads": 11,
+    "errors": [
+      "Request too large"
+    ],
+    "artifactFiles": [],
+    "programCounts": {
+      "studies": 4,
+      "nodes": 36,
+      "steps": 9,
+      "evidence": 31,
+      "issues": 6
+    },
+    "nodesByStudy": {
+      "study-1": 23,
+      "study-2": 13,
+      "study-3": 0,
+      "study-4": 0
+    }
+  },
+  "paper2skill-fresh": {
+    "modelRoutes": [
+      "humanstudy/anthropic/claude-haiku-5.5"
+    ],
+    "outputTokensReported": 32360,
+    "inputTokensReported": 237804,
+    "reasoningTokensReported": 24202,
+    "activePhaseSeconds": 864,
+    "phases": [
+      {
+        "phase": "initial",
+        "stop": "idle",
+        "seconds": 303
+      },
+      {
+        "phase": "repair-1",
+        "stop": "idle",
+        "seconds": 62
+      },
+      {
+        "phase": "repair-2",
+        "stop": "output_budget_reached",
+        "seconds": 499
+      }
+    ],
+    "toolCompletions": 68,
+    "distinctImageReads": 23,
+    "errors": [
+      "Request too large",
+      "Request Entity Too Large",
+      "Request too large"
+    ],
+    "artifactFiles": [],
+    "reviewedPageFlags": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      14,
+      16
+    ],
+    "pageCount": 23
+  }
+}
