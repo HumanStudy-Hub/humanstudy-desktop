@@ -277,6 +277,8 @@ const ROWS: Row[] = [
   ['study.build_from_paper', 'Build it from the paper', '根据论文构建'],
   ['study.problems', 'The study file has {n} formatting problems; they were set aside.', '研究文件有 {n} 处格式问题，已暂时忽略'],
   ['study.fix', 'Ask the agent to fix', '让助手修复'],
+  ['study.program_only', 'Shared Program. Running the experiment requires its protocol and any missing materials.', '已分享研究程序。运行实验需要实验方案及缺失的材料。'],
+  ['study.withheld_quotes', 'Source locators remain for {n} withheld evidence excerpts.', '有 {n} 处未公开的证据引文保留了来源定位。'],
   ['study.unreadable', 'The study document could not be read', '无法读取研究文档'],
   ['file.reveal', 'Show in Finder', '在访达中显示'],
   ['artifact.open_named', 'Open {title} on the right', '在右侧打开“{title}”'],

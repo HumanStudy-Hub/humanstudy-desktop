@@ -697,8 +697,15 @@ type StudyViewProps = StudyModelProps & {
 
 /** The study model, with the notices about program.json that sit above it. */
 function StudyView({ editError, problems, onFix, ...modelProps }: StudyViewProps) {
+  const exported = modelProps.program.extensions?.communityExport
+  const programOnly = exported && typeof exported === 'object' && !Array.isArray(exported) && exported.scope === 'program-only'
+  const quotes = programOnly ? exported.withheldEvidenceQuotes : null
+  const quoteIds = quotes && typeof quotes === 'object' && !Array.isArray(quotes) && Array.isArray(quotes.ids) ? quotes.ids : []
   return (
     <>
+      {programOnly && <p className="muted small program-notice" role="status">
+        {t('study.program_only')} {quoteIds.length > 0 && t('study.withheld_quotes', { n: quoteIds.length })}
+      </p>}
       {problems.length > 0 && (
         <p className="muted small program-notice" role="status" title={problems.join('\n')}>
           {t('study.problems', { n: problems.length })} · <button className="link" onClick={onFix}>{t('study.fix')}</button>

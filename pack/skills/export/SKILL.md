@@ -43,6 +43,14 @@ Exports are derived from `program.json` and existing artifacts; they add no fact
   missing items, and binds both documents to the exported protocol. Held wording and local copies
   are excluded from this route. Review the ZIP before submitting it as **User submitted**.
 
+  If the protocol or its materials cannot be shared, offer to share just the Program with
+  `--program-only`. Use this option when the researcher requests the Program by itself or chooses
+  it after hearing why the pair is unavailable. The ZIP keeps the Program's missing items and
+  source locators. It excludes runtime files and exact evidence quotes without verified
+  redistribution permission. Report any withheld evidence quotes from the export result and
+  show the exact public file list. Explain that the experiment needs its protocol and any missing
+  materials to run. The export leaves the saved project intact.
+
 - **Agent skill (folder)**: for using the study in another AI agent (Claude Code, Codex,
   OpenCode, anything that reads skills). Run
   `python .opencode/skills/export/agent_package.py --output exports/<project>-agent-<date>`.
