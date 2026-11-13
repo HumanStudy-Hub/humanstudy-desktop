@@ -157,11 +157,18 @@ test('the online workspace forks explicitly and restores the existing project on
             check(button('Open in my projects').disabled, 'Stale copy is enabled')
             check(requests.length === 1 && requests[0][0] === paper && requests[0][1] === staleRevision, 'Stale detail request lost the revision')
             check(forks.length === 0 && opened.length === 0, 'Explicit handoff did not take precedence over previous project')
+            detailFailure = 'This paper no longer has a published version. No project was created.'
+            button('Review current published version').click()
+            await until(() => document.body.textContent.includes('no longer has a published version'), 'Failed recovery was not explained')
+            check(button('Open in my projects').disabled && forks.length === 0, 'Failed recovery allowed a project copy')
+            detailFailure = ''
+            button('Try again').click()
+            await until(() => button('Review current published version'), 'Retry did not preserve stale-revision protection')
             button('Review current published version').click()
             await until(() => document.body.textContent.includes('You are reviewing the current published version.') && !button('Open in my projects').disabled,
               'Current-version review did not recover')
             check(requests.some(([id, rev, fresh]) => id === paper && rev === undefined && fresh === true), 'Recovery did not request a fresh readonly catalog')
-            check(requests.length === 2, 'Recovery issued duplicate detail requests')
+            check(requests.length === 4, 'Recovery issued duplicate detail requests')
             check(new URLSearchParams(location.search).get('revision') === revision && new URLSearchParams(location.search).get('other') === 'preserved', 'Explicit recovery did not update the handoff URL safely')
             check(forks.length === 0 && opened.length === 0, 'Reviewing current version created a project')
             root.unmount()
