@@ -16,7 +16,7 @@ import { t, useLang } from './i18n'
 import { classifyTool, researchActivity, toolSentence } from './toolSentence'
 import { onAsk as onArtifactAsk, onOpenSource as onArtifactOpenSource } from './bridge'
 import { artifactSourceRef } from './artifact-source'
-import { SampleOnboarding } from './components/SampleOnboarding'
+import { SampleOnboarding, walkthroughSample, type SampleGuideAction } from './components/SampleOnboarding'
 import { forget, goBack, remember } from './nav'
 import { clearDraftsIn, draftCount, draftsIn, onDraftsChange } from './drafts'
 import { WEB_EDITION } from './edition'
@@ -202,16 +202,31 @@ export default function App() {
     clearDraftsIn(dir)
     return true
   }
+  const sampleProgram = useMemo(() => walkthroughSample(project?.program), [project?.program])
+  const sampleProject = Boolean(sampleProgram)
   const closeOnboarding = useCallback(() => {
-    try { localStorage.setItem('hs.workspaceGuide.v1', 'done'); localStorage.setItem('hs.sampleOnboarding.v1', 'done') } catch { /* ignore */ }
+    try { localStorage.setItem('hs.sampleWalkthrough.v2', 'done') } catch { /* ignore */ }
     setShowSampleOnboarding(false)
   }, [])
   useEffect(() => {
-    if (!project) return
     let seen = false
-    try { seen = localStorage.getItem('hs.workspaceGuide.v1') === 'done' || localStorage.getItem('hs.sampleOnboarding.v1') === 'done' } catch { /* storage may be unavailable */ }
-    setShowSampleOnboarding(!seen)
-  }, [project?.dir])
+    try { seen = localStorage.getItem('hs.sampleWalkthrough.v2') === 'done' } catch { /* storage may be unavailable */ }
+    setShowSampleOnboarding(Boolean(sampleProject && !seen))
+  }, [project?.dir, sampleProject])
+  const guideAction = (action: SampleGuideAction) => {
+    if (action === 'overview') openStudy()
+    else if (action === 'source') {
+      const evidence = sampleProgram?.evidence.find(item => typeof item.locator.page === 'number' && item.quote)
+      if (evidence) {
+        setPane('program', true)
+        requestAnimationFrame(() => workbench.current?.compareSource({ page: evidence.locator.page ?? 1, quote: evidence.quote, file: evidence.path, sourceId: evidence.sourceId, sourceSha256: evidence.sourceSha256, verified: false }))
+      }
+      else showTab('paper')
+    } else if (action === 'participant') {
+      setPane('program', true)
+      requestAnimationFrame(() => workbench.current?.showParticipantPreview())
+    } else prefill('Help me prepare a small trial of Study 1 from this paper. First explain the conditions, participant setup and any missing materials. Do not run the experiment until I approve the plan.', true)
+  }
   const closeProjectRef = useRef<() => boolean>(() => false)
   const closeProject = (): boolean => {
     if (!confirmLeave()) return false
@@ -313,9 +328,9 @@ export default function App() {
     setPane('agent', true)
     chat.current?.focus()
   }
-  const prefill = (text: string) => {
+  const prefill = (text: string, append = false) => {
     setPane('agent', true)
-    requestAnimationFrame(() => chat.current?.prefill(text))
+    requestAnimationFrame(() => chat.current?.prefill(text, append))
   }
 
   // Artifact views (bridge.ts): a click on a cited mark opens the paper there; "ask" prefills the chat.
@@ -354,7 +369,7 @@ export default function App() {
       if (command === 'project.open') return void window.humanstudy.project.open().then((dir) => { if (dir && (dir === state.current.project?.dir || confirmLeave())) void openProject(dir) })
       if (command === 'thread.new') return st.project ? newThreadRef.current() : undefined
       if (command === 'selection.clear') return setSelected((s) => (s.length ? [] : s))
-      // Back never acts behind a dialog (Settings, consent, the sample welcome).
+      // Back never acts behind a dialog (Settings or consent).
       if (command === 'nav.back') return void (st.settingsOpen || document.querySelector('[aria-modal="true"]') ? undefined : goBack())
       if (command === 'project.close') return void (st.project && closeProject())
       if (command === 'tab.close') return void (st.project && workbench.current?.closeTab() ? undefined : window.close())
@@ -477,6 +492,7 @@ export default function App() {
           <span className="crumb">/ {project.name}</span>
         </div>
         <div className="titlebar-actions">
+          {sampleProject && <button className="ghost" onClick={() => setShowSampleOnboarding(true)}>Sample guide</button>}
           <button className="ghost" onClick={closeProject} title={t('app.back_hint')}>
             {t('app.projects')}
           </button>
@@ -495,6 +511,7 @@ export default function App() {
         </div>
       </header>
 
+      {sampleProject && showSampleOnboarding && !consent && <SampleOnboarding onClose={closeOnboarding} onAction={guideAction} />}
       <main className="workspace">
         <section className={`pane agent ${open.agent ? '' : 'folded'}`} aria-label={paneLabel('agent')}>
           {open.agent ? (
@@ -571,7 +588,6 @@ export default function App() {
       </main>
       {dialog}
       {consent}
-      {showSampleOnboarding && !consent && <SampleOnboarding onClose={closeOnboarding} />}
       <UpdateNotice />
     </div>
   )
