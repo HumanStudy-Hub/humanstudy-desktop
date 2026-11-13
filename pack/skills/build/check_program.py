@@ -6,7 +6,7 @@ Usage: python .opencode/skills/build/check_program.py program.json
 Mirrors the app's validateHumanProgram (app/src/shared/human-program.ts, collectProblems): unique ids,
 every reference resolves (evidence, nodes, steps, studies, conditions, issue nodeId/stepId/studyId/fieldId),
 condition rules, cycles, derivation, evidence sources, and "unresolved field/rule needs a review issue".
-When the `jsonschema` package is importable it also validates schema/human-program.schema.json.
+Schema validation is required: missing validator dependencies or the bundled schema fail the check.
 Exit 0 when clean, 1 when any problem is found.
 """
 from __future__ import annotations
@@ -167,11 +167,13 @@ def schema_problems(p, path: Path) -> list[tuple[str, str]]:
     try:
         import jsonschema  # type: ignore
     except ImportError:
-        return []
+        return [("schema validation unavailable: jsonschema could not be imported",
+                 "run with HumanStudy's managed Python runtime; do not mark this Program as checked")]
     candidates = [path.resolve().parent / "schema/human-program.schema.json", Path(__file__).resolve().parents[3] / "schema/human-program.schema.json", Path(__file__).resolve().parents[2] / "schema/human-program.schema.json"]
     schema_path = next((c for c in candidates if c.is_file()), None)
     if schema_path is None:
-        return []
+        return [("schema validation unavailable: human-program.schema.json is missing",
+                 "restore the bundled schema/human-program.schema.json through the current app pack; then rerun the check")]
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     validator = jsonschema.validators.validator_for(schema)(schema)
     return [("schema: " + "/".join(map(str, e.absolute_path)) + ": " + e.message[:200], "match schema/human-program.schema.json") for e in sorted(validator.iter_errors(p), key=lambda e: list(map(str, e.absolute_path)))[:50]]
