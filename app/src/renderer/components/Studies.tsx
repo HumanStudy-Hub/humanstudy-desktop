@@ -289,20 +289,26 @@ function StudyPage({
   const [expectedRevision, setExpectedRevision] = useState(handoff?.revision)
   const [reviewingCurrent, setReviewingCurrent] = useState(false)
   const selectedRevision = useRef(handoff?.revision)
+  const requestGeneration = useRef(0)
+  const reviewInFlight = useRef(false)
   useEffect(() => track('community.study_opened', { target: id }), [id])
 
   const load = useCallback(async () => {
+    if (reviewInFlight.current) return
+    const generation = ++requestGeneration.current
     setError('')
     setDetail(null)
     try {
-      setDetail(await window.humanstudy.community.study(id, selectedRevision.current))
+      const current = await window.humanstudy.community.study(id, selectedRevision.current)
+      if (generation === requestGeneration.current) setDetail(current)
     } catch (e) {
-      setError(errorText(e, 'This study could not be loaded.'))
+      if (generation === requestGeneration.current) setError(errorText(e, 'This study could not be loaded.'))
     }
   }, [id, handoff?.revision])
 
   useEffect(() => {
     void load()
+    return () => { requestGeneration.current++ }
   }, [load])
 
   useEffect(() => {
@@ -315,6 +321,7 @@ function StudyPage({
   }, [onBack])
 
   const fork = async () => {
+    if (reviewInFlight.current || error || (summary?.currentRevision && !detail)) return
     setForking(true)
     setForkError('')
     try {
@@ -326,10 +333,14 @@ function StudyPage({
   }
 
   const reviewCurrent = async () => {
+    if (reviewInFlight.current) return
+    reviewInFlight.current = true
+    const generation = ++requestGeneration.current
     setReviewingCurrent(true)
     setForkError('')
     try {
       const current = await window.humanstudy.community.study(id, undefined, true)
+      if (generation !== requestGeneration.current) return
       if (!current.currentRevision) throw Error('This paper no longer has a published version. No project was created.')
       selectedRevision.current = current.currentRevision
       setExpectedRevision(current.currentRevision)
@@ -341,8 +352,8 @@ function StudyPage({
       setDetail(current)
       setError('')
     } catch (e) {
-      setError(errorText(e, 'The current published version could not be loaded.'))
-    } finally { setReviewingCurrent(false) }
+      if (generation === requestGeneration.current) setError(errorText(e, 'The current published version could not be loaded.'))
+    } finally { reviewInFlight.current = false; if (generation === requestGeneration.current) setReviewingCurrent(false) }
   }
 
   const head = detail ?? summary
@@ -365,7 +376,7 @@ function StudyPage({
         </div>
         <div className="repo-actions">
           <div className="repo-buttons">
-            <button className="primary" onClick={() => void fork()} disabled={forking || reviewingCurrent || Boolean(error) || !head || Boolean(handoff && (!detail || error)) || changed}>
+            <button className="primary" onClick={() => void fork()} disabled={forking || reviewingCurrent || Boolean(error) || Boolean(summary?.currentRevision && !detail) || !head || Boolean(handoff && (!detail || error)) || changed}>
               {forking ? 'Copying…' : handoff ? 'Open in my projects' : 'Fork to my projects'}
             </button>
             <button className="outline" onClick={() => detail && open(detail.repoUrl)} disabled={!detail}>
@@ -411,7 +422,7 @@ function StudyPage({
           <div className="home-empty">
             <p>{!navigator.onLine ? 'You’re offline.' : 'This study could not be loaded.'}</p>
             <p className="muted small">{error}</p>
-            <button className="ghost lib-retry" onClick={() => void load()}>
+            <button className="ghost lib-retry" disabled={reviewingCurrent} onClick={() => void load()}>
               Try again
             </button>
           </div>

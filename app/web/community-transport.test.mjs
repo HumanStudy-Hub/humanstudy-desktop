@@ -5,7 +5,7 @@ import { createRequire } from 'node:module'
 import { mkdtemp, readFile, mkdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import vm from 'node:vm'
 import { build } from 'esbuild'
@@ -20,7 +20,7 @@ test('real preload and browser JSON HTTP transport preserve omitted community re
  const entry={id,title:'Transport fixture',authors:[],year:2026,currentRevision:revision,assetRoot:'community/wire/revisions/'+revision,assetFiles}
  const handlers=new Map(), wire=[]; let created=0, server
  try {
-  await build({entryPoints:[new URL('../src/main/community.ts',import.meta.url).pathname],bundle:true,platform:'node',format:'esm',outfile:join(temp,'community.mjs')})
+  await build({entryPoints:[fileURLToPath(new URL('../src/main/community.ts',import.meta.url))],bundle:true,platform:'node',format:'esm',outfile:join(temp,'community.mjs')})
   const lib=await import(pathToFileURL(join(temp,'community.mjs')));lib.setCommunityCacheDir(join(temp,'cache'))
   globalThis.fetch=async input=>{
    const url=String(input)

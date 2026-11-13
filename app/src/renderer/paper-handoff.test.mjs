@@ -27,6 +27,7 @@ test('the online workspace forks explicitly and restores the existing project on
           import App from './App'
           import { rememberBrowserProject } from './browser-project'
           import { ResearchOverview } from './components/ResearchOverview'
+          import { Studies } from './components/Studies'
           import './styles.css'
           import { assertPaperRevision } from '../shared/paper-handoff'
           import { catalogPublicationFields } from '../shared/research-search'
@@ -55,6 +56,8 @@ test('the online workspace forks explicitly and restores the existing project on
           const settings = { theme: 'system' }
           let detailFailure = ''
           let finishLoading
+          let releaseReview
+          let delayReview = false
           let releaseFork
           window.humanstudy = {
             app: { info: async () => ({ version: 'test' }), setUnsaved: noop },
@@ -76,6 +79,7 @@ test('the online workspace forks explicitly and restores the existing project on
               studies: async () => [entry],
               study: async (id, expectedRevision, refresh) => {
                 requests.push([id, expectedRevision, refresh])
+                if (refresh && delayReview) await new Promise(resolve => { releaseReview = resolve })
                 if (detailFailure === 'wait') await new Promise(resolve => { finishLoading = resolve })
                 if (detailFailure) throw Error(detailFailure)
                 assertPaperRevision(entry.currentRevision, expectedRevision)
@@ -164,7 +168,15 @@ test('the online workspace forks explicitly and restores the existing project on
             detailFailure = ''
             button('Try again').click()
             await until(() => button('Review current published version'), 'Retry did not preserve stale-revision protection')
+            delayReview = true
             button('Review current published version').click()
+            await until(() => releaseReview && button('Try again')?.disabled, 'Retry remained enabled during recovery')
+            const beforeRetry = requests.length
+            button('Try again').click()
+            await new Promise(resolve => setTimeout(resolve, 30))
+            check(requests.length === beforeRetry, 'Disabled retry raced current-version recovery')
+            delayReview = false
+            releaseReview()
             await until(() => document.body.textContent.includes('You are reviewing the current published version.') && !button('Open in my projects').disabled,
               'Current-version review did not recover')
             check(requests.some(([id, rev, fresh]) => id === paper && rev === undefined && fresh === true), 'Recovery did not request a fresh readonly catalog')
@@ -180,6 +192,27 @@ test('the online workspace forks explicitly and restores the existing project on
             check(!button('Review current published version'), 'Removed paper offers a nonexistent current version')
             check(button('Open in my projects').disabled && forks.length === 0, 'Removed paper can be copied')
             root.unmount()
+            requests.splice(1)
+
+            // Internal library cards must not copy a published summary before details resolve.
+            detailFailure = 'wait'
+            finishLoading = null
+            root = createRoot(document.getElementById('root'))
+            root.render(<Studies query="" onOpenProject={noop} />)
+            await until(() => document.querySelector('.research-card-open'), 'Internal library card absent')
+            document.querySelector('.research-card-open').click()
+            await until(() => finishLoading && button('Fork to my projects'), 'Internal detail request absent')
+            check(button('Fork to my projects').disabled, 'Published summary could be copied before detail verification')
+            button('Fork to my projects').click()
+            check(forks.length === 0, 'Pending internal card created a project')
+            detailFailure = ''
+            finishLoading()
+            await until(() => !button('Fork to my projects').disabled, 'Loaded internal card stayed disabled')
+            button('Fork to my projects').click()
+            await until(() => forks.length === 1, 'Loaded internal card did not request explicit copy')
+            check(forks[0][1] === revision, 'Internal card copy omitted its displayed revision')
+            root.unmount()
+            forks.length = 0
             requests.splice(1)
 
             detailFailure = 'wait'
