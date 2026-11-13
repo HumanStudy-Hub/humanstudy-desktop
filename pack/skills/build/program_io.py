@@ -153,8 +153,9 @@ def main() -> int:
                         issue.update(stepId=path[1])
                     merged["issues"] = [i for i in merged["issues"] if i.get("id") != issue_id] + [issue]
                 print(f"Kept {len(conflicts)} confirmed researcher edit(s); proposed changes saved to {report} for review.", file=sys.stderr)
-            with tmp.open("w", encoding="utf-8", newline="\n") as handle:
-                handle.write(json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
+            raw = (json.dumps(merged, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+            with tmp.open("wb") as handle:
+                handle.write(raw)
                 handle.flush()
                 os.fsync(handle.fileno())
             # Windows file sharing can transiently block an atomic replacement.
@@ -166,12 +167,14 @@ def main() -> int:
                     if attempt == 9:
                         raise
                     time.sleep(0.2)
+            checkpoint_hash = hashlib.sha256(raw).hexdigest()
     except (OSError, ValueError) as error:
         tmp.unlink(missing_ok=True)
         print(f"program_io: {error}. program.json was not changed.", file=sys.stderr)
         return 1
     counts = ", ".join(f"{len(merged[key])} {key}" for key in RECORDS)
     print(f"Saved {target}: {counts}. Run check_program.py next.")
+    print(checkpoint_hash)
     return 0
 
 

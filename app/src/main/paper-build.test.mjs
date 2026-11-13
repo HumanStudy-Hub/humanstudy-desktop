@@ -449,10 +449,13 @@ test('scholarly checkpoint writer refuses stale bytes and keeps the researcher e
  const dir=project(), file=join(dir,'program.json'), io=join(here,'../../../pack/skills/build/program_io.py')
  const save=(patch,expected)=>spawnSync(python,[io,'-','--expected-hash',expected],{cwd:dir,input:JSON.stringify(patch),encoding:'utf8'})
  const original=save(JSON.parse(sample),'absent');assert.equal(original.status,0,original.stderr)
- const base=createHash('sha256').update(readFileSync(file)).digest('hex')
- const changed=JSON.parse(readFileSync(file,'utf8'));changed.title='Researcher title';writeFileSync(file,JSON.stringify(changed))
+ const base=original.stdout.trim().split(/\r?\n/).at(-1)
+ assert.equal(base,createHash('sha256').update(readFileSync(file)).digest('hex'))
+ const changed=JSON.parse(readFileSync(file,'utf8'));changed.title='Researcher title — preserved';writeFileSync(file,JSON.stringify(changed))
+ const humanBytes=readFileSync(file)
  const stale=save({title:'Agent patch'},base);assert.notEqual(stale.status,0);assert.match(stale.stderr,/changed/)
- assert.equal(JSON.parse(readFileSync(file,'utf8')).title,'Researcher title')
+ assert.equal(stale.stdout,'')
+ assert.deepEqual(readFileSync(file),humanBytes)
 })
 
 test('Program-only certificates explain invalid scholarly declarations without waiving paired checks', () => {
