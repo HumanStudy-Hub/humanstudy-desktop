@@ -30,18 +30,19 @@ test('sample guide opens the real source and participant preview without sending
           import {createRoot} from 'react-dom/client'
           import {SampleOnboarding,walkthroughSample} from './components/SampleOnboarding'
           import {Workbench} from './components/Workbench'
+          import {Chat} from './components/Chat'
           import program from '../../resources/protocol-sample/program.json'
           import protocol from '../../resources/protocol-sample/protocol.json?raw'
           import preview from '../../resources/protocol-sample/artifacts/preview.html?raw'
           import './styles.css'
           let calls=[]
-          window.humanstudy={project:{readText:async path=>path.endsWith('protocol.json')?protocol:path.endsWith('preview.html')?preview:Promise.reject(Error('No annotations'))}}
+          window.humanstudy={app:{info:async()=>({})},project:{readText:async path=>path.endsWith('protocol.json')?protocol:path.endsWith('preview.html')?preview:Promise.reject(Error('No annotations'))}}
           const entry=(rel,ext)=>({name:rel.split('/').pop(),rel,path:'/sample/'+rel,ext,type:'file',url:'/'+rel,size:1,mtime:1})
           const pdf=entry('paper.pdf','pdf');const project={dir:'/sample',name:'Renamed sample',program,pdf,tree:[entry('protocol.json','json'),entry('artifacts/preview.html','html'),pdf],artifacts:[],exports:[]}
           function Fixture(){
             const workbench=useRef(null);const [activeProject,setActiveProject]=useState(project);const [visible,setVisible]=useState(true),[draft,setDraft]=useState('My unsent research question'),[source,setSource]=useState(null)
             return <><button onClick={()=>setVisible(true)}>Sample guide</button>
-              {visible&&<SampleOnboarding onClose={()=>setVisible(false)} onAction={action=>{
+              {visible&&<SampleOnboarding agentReady={true} onClose={()=>setVisible(false)} onAction={action=>{
                 calls.push(action)
                 if(action==='overview')workbench.current.showTab('study')
                 if(action==='source'){const evidence=program.evidence.find(e=>e.locator.page&&e.quote);workbench.current.compareSource({page:evidence.locator.page,quote:evidence.quote,file:evidence.path})}
@@ -53,6 +54,15 @@ test('sample guide opens the real source and participant preview without sending
               <textarea aria-label="Chat draft" value={draft} onChange={e=>setDraft(e.target.value)}/>
             </>
           }
+          const blockedCalls=[]
+          function LockedFixture(){
+            const [open,setOpen]=useState(false)
+            const noop=()=>{}
+            const forbidden=()=>{blockedCalls.push('forbidden')}
+            return <><SampleOnboarding agentReady={false} onClose={noop} onAction={action=>{blockedCalls.push(action);if(action==='setup')setOpen(true)}}/>
+              {open&&<Chat session={{id:null,messages:[],queue:[],pendingPermissions:[],usage:{input:0,output:0},native:forbidden,send:forbidden}} selected={[]} onClearSelection={noop} account={{signedIn:true,modelAccess:'hosted'}} onSettings={noop} agreement="needed" onReview={forbidden} projectDir="/sample" tree={[]} model="" auto={true} onAuto={forbidden} onModel={noop} busyEnter="queue" kernel={{status:null,retry:noop}} onOpenStudy={noop} onOpenFile={noop}/>}
+            </>
+          }
           function check(value,message){if(!value)throw Error(message)}
           async function until(fn,message){for(let i=0;i<200;i++){if(fn())return;await new Promise(r=>setTimeout(r,10))}throw Error(message)}
           function button(label){return [...document.querySelectorAll('button')].find(x=>x.textContent.trim()===label)}
@@ -62,7 +72,7 @@ test('sample guide opens the real source and participant preview without sending
             check(!walkthroughSample(null),'Empty project must not get sample guide');
             check(appendChatDraft('!echo safe','trial')==='!echo safe','Shell draft must stay untouched');
             check(appendChatDraft('/compact','trial')==='/compact','Command draft must stay untouched');
-            createRoot(document.getElementById('root')).render(<Fixture/>);
+            const root=createRoot(document.getElementById('root'));root.render(<Fixture/>);
             await until(()=>button('Show the overview'),'Guide not visible');
             check(!document.querySelector('[aria-modal="true"]'),'Guide blocks workspace');
             await until(()=>document.querySelector('.research-overview'),'Actual research overview missing');
@@ -82,6 +92,15 @@ test('sample guide opens the real source and participant preview without sending
             check(calls.length===4,'Skipping or replay caused actions');
             button('Other project').click();await new Promise(r=>setTimeout(r,100));
             check(!document.querySelector('.research-preview[open]'),'Preview opened automatically in another project');
+            root.render(<LockedFixture/>);await until(()=>button('Show the overview'),'Blocked guide missing');
+            button('Show the overview').click();await until(()=>button('Compare with the source'),'Blocked step2');
+            button('Compare with the source').click();await until(()=>button('Explore participant view'),'Blocked step3');
+            button('Explore participant view').click();await until(()=>button('See agent setup'),'Setup action not substituted');
+            check(!button('Draft a trial request'),'Unavailable draft action shown');
+            button('See agent setup').click();await until(()=>document.querySelector('.agreement-lock'),'Actual Chat agreement gate not opened');
+            check(!document.querySelector('textarea'),'Locked Chat rendered composer');
+            check(document.querySelector('.sample-guide-copy').textContent.includes('No request was drafted or sent'),'Blocked completion misleading');
+            check(blockedCalls.join(',')==='overview,source,participant,setup','Blocked guide drafted, sent, or accepted consent');
             return 'GUIDE_OK'
           }
           run().then(result=>fetch('/result',{method:'POST',body:result}),error=>fetch('/result',{method:'POST',body:error.stack}));

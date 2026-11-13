@@ -225,7 +225,8 @@ export default function App() {
     } else if (action === 'participant') {
       setPane('program', true)
       requestAnimationFrame(() => workbench.current?.showParticipantPreview())
-    } else prefill('Help me prepare a small trial of Study 1 from this paper. First explain the conditions, participant setup and any missing materials. Do not run the experiment until I approve the plan.', true)
+    } else if (action === 'setup' || !agentReady) setPane('agent', true)
+    else prefill('Help me prepare a small trial of Study 1 from this paper. First explain the conditions, participant setup and any missing materials. Do not run the experiment until I approve the plan.', true)
   }
   const closeProjectRef = useRef<() => boolean>(() => false)
   const closeProject = (): boolean => {
@@ -511,7 +512,7 @@ export default function App() {
         </div>
       </header>
 
-      {sampleProject && showSampleOnboarding && !consent && <SampleOnboarding onClose={closeOnboarding} onAction={guideAction} />}
+      {sampleProject && showSampleOnboarding && !consent && <SampleOnboarding agentReady={agentReady} onClose={closeOnboarding} onAction={guideAction} />}
       <main className="workspace">
         <section className={`pane agent ${open.agent ? '' : 'folded'}`} aria-label={paneLabel('agent')}>
           {open.agent ? (
