@@ -3,6 +3,7 @@ on:
   pull_request:
     branches: [dev, main]
     paths:
+      - '.gitattributes'
       - 'app/src/renderer/components/SourceDrawer.tsx'
       - 'app/src/renderer/components/SampleOnboarding.tsx'
       - 'app/src/renderer/sample-walkthrough.test.mjs'

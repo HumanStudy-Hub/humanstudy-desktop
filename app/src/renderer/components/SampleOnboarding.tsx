@@ -58,8 +58,8 @@ export function SampleOnboarding({ onClose, onAction, agentReady }: { agentReady
     }
     const measure = () => {
       frame = 0
-      if (step === 1 && !revealed) {
-        const cite = document.querySelector<HTMLElement>('.research-cite')
+      if (step < 2 && !revealed) {
+        const cite = document.querySelector<HTMLElement>(step === 0 ? '.research-overview-topic' : '.research-cite')
         if (cite) revealed = true
         for (let parent = cite?.parentElement; parent; parent = parent.parentElement) {
           if (parent instanceof HTMLDetailsElement) parent.open = true

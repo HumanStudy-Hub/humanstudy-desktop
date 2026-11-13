@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { spawn, execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
@@ -22,6 +23,10 @@ const chrome = [
 if (process.env.HUMANSTUDY_REQUIRE_CHROME === '1') assert.ok(chrome, 'Chrome required for guide acceptance')
 
 test('sample guide opens the real source and participant preview without sending or running', { skip: !chrome && 'Chrome unavailable' }, async () => {
+  const protocolBytes = await readFile(fileURLToPath(new URL('../../resources/protocol-sample/protocol.json', import.meta.url)))
+  const previewText = await readFile(fileURLToPath(new URL('../../resources/protocol-sample/artifacts/preview.html', import.meta.url)), 'utf8')
+  const identity = JSON.parse(previewText.match(/<script[^>]*id=["']hs-protocol["'][^>]*>([\s\S]*?)<\/script>/i)[1])
+  assert.equal(createHash('sha256').update(protocolBytes).digest('hex'), identity.sha256, 'Bundled protocol bytes changed; preserve checkout line endings, never bypass preview validation')
   const dir = await mkdtemp(join(tmpdir(), 'hs-sample-guide-'))
   let testError
   try {
