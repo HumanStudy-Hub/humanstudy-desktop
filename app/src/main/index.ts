@@ -674,9 +674,9 @@ app.whenReady().then(() => {
 
   setCommunityCacheDir(app.getPath('userData'))
   ipcMain.handle('community:studies', () => communityStudies())
-  ipcMain.handle('community:study', (_e, id: string, expectedRevision?: string, refresh?: boolean) => communityStudy(id, expectedRevision, refresh))
+  ipcMain.handle('community:study', (_e, id: string, expectedRevision?: string, refresh?: boolean) => communityStudy(id, expectedRevision ?? undefined, refresh))
   ipcMain.handle('community:fork', async (_e, id: string, expectedRevision?: string) => {
-    const dir = await forkCommunityStudy(id, (input) => createProject(input), expectedRevision)
+    const dir = await forkCommunityStudy(id, (input) => createProject(input), expectedRevision ?? undefined)
     telemetry.track('project.forked', { target: String(id).slice(0, 80) }, dir)
     return dir
   })
