@@ -704,9 +704,9 @@ def intentional(harm: float, help_: float) -> float:
         await loadPreviewCatalog()
         return communityStudies.map((s) => ({ ...s }))
       },
-      study: async (id, expectedRevision) => {
+      study: async (id, expectedRevision, refresh) => {
         await new Promise((r) => setTimeout(r, 250))
-        if (expectedRevision !== undefined) await loadPreviewCatalog()
+        if (expectedRevision !== undefined || refresh) await loadPreviewCatalog()
         const detail = communityDetail(id)
         assertPaperRevision(detail.currentRevision, expectedRevision)
         return detail

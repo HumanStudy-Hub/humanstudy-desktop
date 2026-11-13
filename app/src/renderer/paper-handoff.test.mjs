@@ -27,6 +27,7 @@ test('the online workspace forks explicitly and restores the existing project on
           import App from './App'
           import { rememberBrowserProject } from './browser-project'
           import { ResearchOverview } from './components/ResearchOverview'
+          import { Studies } from './components/Studies'
           import './styles.css'
           import { assertPaperRevision } from '../shared/paper-handoff'
           import { catalogPublicationFields } from '../shared/research-search'
@@ -55,6 +56,8 @@ test('the online workspace forks explicitly and restores the existing project on
           const settings = { theme: 'system' }
           let detailFailure = ''
           let finishLoading
+          let releaseReview
+          let delayReview = false
           let releaseFork
           window.humanstudy = {
             app: { info: async () => ({ version: 'test' }), setUnsaved: noop },
@@ -74,8 +77,9 @@ test('the online workspace forks explicitly and restores the existing project on
             },
             community: {
               studies: async () => [entry],
-              study: async (id, expectedRevision) => {
-                requests.push([id, expectedRevision])
+              study: async (id, expectedRevision, refresh) => {
+                requests.push([id, expectedRevision, refresh])
+                if (refresh && delayReview) await new Promise(resolve => { releaseReview = resolve })
                 if (detailFailure === 'wait') await new Promise(resolve => { finishLoading = resolve })
                 if (detailFailure) throw Error(detailFailure)
                 assertPaperRevision(entry.currentRevision, expectedRevision)
@@ -157,7 +161,59 @@ test('the online workspace forks explicitly and restores the existing project on
             check(button('Open in my projects').disabled, 'Stale copy is enabled')
             check(requests.length === 1 && requests[0][0] === paper && requests[0][1] === staleRevision, 'Stale detail request lost the revision')
             check(forks.length === 0 && opened.length === 0, 'Explicit handoff did not take precedence over previous project')
+            detailFailure = 'This paper no longer has a published version. No project was created.'
+            button('Review current published version').click()
+            await until(() => document.body.textContent.includes('no longer has a published version'), 'Failed recovery was not explained')
+            check(button('Open in my projects').disabled && forks.length === 0, 'Failed recovery allowed a project copy')
+            detailFailure = ''
+            button('Try again').click()
+            await until(() => button('Review current published version'), 'Retry did not preserve stale-revision protection')
+            delayReview = true
+            button('Review current published version').click()
+            await until(() => releaseReview && button('Try again')?.disabled, 'Retry remained enabled during recovery')
+            const beforeRetry = requests.length
+            button('Try again').click()
+            await new Promise(resolve => setTimeout(resolve, 30))
+            check(requests.length === beforeRetry, 'Disabled retry raced current-version recovery')
+            delayReview = false
+            releaseReview()
+            await until(() => document.body.textContent.includes('You are reviewing the current published version.') && !button('Open in my projects').disabled,
+              'Current-version review did not recover')
+            check(requests.some(([id, rev, fresh]) => id === paper && rev === undefined && fresh === true), 'Recovery did not request a fresh readonly catalog')
+            check(requests.length === 4, 'Recovery issued duplicate detail requests')
+            check(new URLSearchParams(location.search).get('revision') === revision && new URLSearchParams(location.search).get('other') === 'preserved', 'Explicit recovery did not update the handoff URL safely')
+            check(forks.length === 0 && opened.length === 0, 'Reviewing current version created a project')
             root.unmount()
+            requests.splice(1)
+
+            detailFailure = 'This paper no longer has a published version. No project was created.'
+            root = mount(staleRevision)
+            await until(() => document.body.textContent.includes('no longer has a published version'), 'Missing publication distinction absent')
+            check(!button('Review current published version'), 'Removed paper offers a nonexistent current version')
+            check(button('Open in my projects').disabled && forks.length === 0, 'Removed paper can be copied')
+            root.unmount()
+            requests.splice(1)
+
+            // Internal library cards must not copy a published summary before details resolve.
+            detailFailure = 'wait'
+            finishLoading = null
+            root = createRoot(document.getElementById('root'))
+            root.render(<Studies query="" onOpenProject={noop} />)
+            await until(() => document.querySelector('.research-card-open'), 'Internal library card absent')
+            document.querySelector('.research-card-open').click()
+            await until(() => finishLoading && button('Fork to my projects'), 'Internal detail request absent')
+            check(button('Fork to my projects').disabled, 'Published summary could be copied before detail verification')
+            button('Fork to my projects').click()
+            check(forks.length === 0, 'Pending internal card created a project')
+            detailFailure = ''
+            finishLoading()
+            await until(() => !button('Fork to my projects').disabled, 'Loaded internal card stayed disabled')
+            button('Fork to my projects').click()
+            await until(() => forks.length === 1, 'Loaded internal card did not request explicit copy')
+            check(forks[0][1] === revision, 'Internal card copy omitted its displayed revision')
+            root.unmount()
+            forks.length = 0
+            requests.splice(1)
 
             detailFailure = 'wait'
             root = mount(revision)
