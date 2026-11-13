@@ -1,16 +1,22 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { HumanProgram, ProgramEvidence, ProgramNode } from '../../shared/human-program'
+import type { HumanProgram, ProgramEvidence, ProgramField, ProgramNode, ProgramStep } from '../../shared/human-program'
 import { programText } from '../../shared/human-program'
 import { prepareExperimentPrompt, scholarlyArmIds, scholarlyProblems, scholarlyProfile } from '../../shared/scholarly-program'
 import type { SourceRef } from '../../shared/program-view'
 import './research-overview.css'
 
-const overviewKinds = ['background', 'finding']
-const sectionGroups = [
-  { title: 'Reported results', kinds: ['result'] },
-  { title: 'Hypotheses and design', kinds: ['hypothesis', 'design', 'participants'] },
+const overviewGroups = [
+  { title: 'Research question and motivation', kinds: ['background', 'question', 'research-question', 'motivation'] },
+  { title: 'Paper summary', kinds: ['overview'] },
+  { title: 'Hypotheses', kinds: ['hypothesis'] },
+  { title: 'Main findings', kinds: ['finding'] },
+]
+const overviewKinds = new Set(overviewGroups.flatMap(group => group.kinds))
+const detailGroups = [
+  { title: 'Design and conditions', kinds: ['design', 'participants', 'condition'] },
   { title: 'Materials and procedure', kinds: ['material', 'procedure'] },
-  { title: 'Variables and analysis', kinds: ['variable', 'analysis'] },
+  { title: 'Variables and analysis', kinds: ['variable', 'record', 'analysis'] },
+  { title: 'Reported results', kinds: ['result'] },
   { title: 'Limitations', kinds: ['limitation'] },
 ]
 
@@ -57,51 +63,94 @@ export function ResearchOverview({ program, text, problems: documentProblems = [
     </li>
   }
 
-  const draw = (node: ProgramNode) => <section key={node.id} className="research-section">
-    <h3>{node.title}</h3>
-    {node.fields.map(field => {
-      const evidence = [...new Set(field.evidenceIds.length ? field.evidenceIds : node.evidenceIds)]
-        .map(id => evidenceById.get(id))
-        .filter((item): item is ProgramEvidence => Boolean(item))
-      return <div key={field.id} className="research-claim">
-        {(node.fields.length !== 1 || field.label.trim() !== node.title.trim()) && <strong>{field.label}</strong>}
-        {field.value !== null && <p>{programText(field.value)}</p>}
-        {field.state === 'missing' && <span className="muted">{field.extensions?.gapReason === 'source_unavailable' ? 'Source needed' : 'Not reported in the available source'}</span>}
-        {field.origin === 'derived' && <span className="muted">Interpretation · {field.derivation}</span>}
-        {evidence.length > 0 && <details className="research-evidence">
-          <summary>Source evidence ({evidence.length})</summary>
-          <ul>{evidence.map(drawEvidence)}</ul>
-        </details>}
-      </div>
-    })}
-  </section>
+  const studiesById = new Map(program.studies.map(study => [study.id, study]))
+  const studyNames = (ids: string[]) => ids.map(id => studiesById.get(id)?.title ?? id).join(', ')
+  const nodesFor = (studyId: string | null | undefined) => program.nodes.flatMap(node => {
+    const matches = (ids: string[]) => {
+      const known = ids.every(id => studiesById.has(id))
+      if (studyId === undefined) return !known
+      return known && (studyId === null ? ids.length !== 1 : ids.length === 1 && ids[0] === studyId)
+    }
+    const fields = node.fields.filter(field => matches(field.studyIds?.length ? field.studyIds : node.studyIds))
+    const nodeHere = matches(node.studyIds)
+    if (!fields.length && !(nodeHere && (!node.fields.length || node.summary || node.description))) return []
+    return [{ ...node, fields, summary: nodeHere ? node.summary : undefined, description: nodeHere ? node.description : undefined }]
+  })
+  const stepsById = new Map(program.steps.map(step => [step.id, step]))
+  const nodesById = new Map(program.nodes.map(node => [node.id, node]))
+  const nodeNames = (ids: string[]) => ids.map(id => nodesById.get(id)?.title ?? id).join(', ')
+  const paperNodes = nodesFor(null)
+  const unassigned = nodesFor(undefined)
 
-  const drawGroups = (nodes: ProgramNode[]) => {
-    const covered = new Set(sectionGroups.flatMap(group => group.kinds))
-    const groups = [...sectionGroups, { title: 'Additional study notes', kinds: nodes.filter(node => !covered.has(node.kind)).map(node => node.kind) }]
-    return groups.map(group => {
-      const entries = nodes.filter(node => group.kinds.includes(node.kind))
-      return entries.length > 0 ? <details key={group.title} className="research-group"><summary>{group.title}</summary>{entries.map(draw)}</details> : null
-    })
+  const drawSources = (ids: string[]) => {
+    const entries = [...new Set(ids)].map(id => evidenceById.get(id))
+      .filter((item): item is ProgramEvidence => Boolean(item))
+    return entries.length > 0 && <details className="research-evidence">
+      <summary>Source evidence ({entries.length})</summary>
+      <ul>{entries.map(drawEvidence)}</ul>
+    </details>
+  }
+  const drawField = (field: ProgramField, fallbackEvidence: string[], showLabel = true, scope?: string) =>
+    <div key={field.id} className="research-claim">
+      {showLabel && <strong>{field.label}</strong>}
+      {scope && <p className="muted">Applies to {scope}</p>}
+      {field.value !== null && <p>{programText(field.value)}</p>}
+      {field.state === 'missing' && <span className="muted">{field.extensions?.gapReason === 'source_unavailable' ? 'Source needed' : 'Not reported in the available source'}</span>}
+      {field.origin === 'derived' && field.derivation && <span className="muted">Interpretation · {field.derivation}</span>}
+      {drawSources(field.evidenceIds.length ? field.evidenceIds : fallbackEvidence)}
+    </div>
+
+  const draw = (node: ProgramNode, showScope = false) => {
+    const sharedScope = showScope && node.studyIds.length > 1
+      && (!node.fields.length || node.summary || node.description || node.fields.every(field => !field.studyIds?.length))
+    return <section key={node.id} className="research-section">
+      <h4>{node.title}</h4>
+      {sharedScope && <p className="muted">Applies to {studyNames(node.studyIds)}</p>}
+      {node.summary && <p>{node.summary}</p>}
+      {node.description && node.description !== node.summary && <p>{node.description}</p>}
+      {node.fields.map(field => {
+        const ids = field.studyIds?.length ? field.studyIds : node.studyIds
+        return drawField(field, node.evidenceIds, node.fields.length !== 1 || field.label.trim() !== node.title.trim(),
+          showScope && ids.length > 1 && (!sharedScope || field.studyIds?.length) ? studyNames(ids) : undefined)
+      })}
+      {node.fields.every(field => field.evidenceIds.length > 0) && drawSources(node.evidenceIds)}
+    </section>
   }
 
-  const studyIds = new Set(program.studies.map(study => study.id))
-  const knownScope = (ids: string[]) => ids.every(id => studyIds.has(id))
-  const paperScope = (ids: string[]) => knownScope(ids) && (!ids.length || program.studies.every(study => ids.includes(study.id)))
-  const overview = program.nodes.filter(node => overviewKinds.includes(node.kind) && paperScope(node.studyIds)
-    && node.fields.every(field => !field.studyIds?.length || paperScope(field.studyIds)))
-  const remaining = program.nodes.filter(node => !overview.includes(node))
-  const scoped = (studyId: string | null) => remaining.flatMap(node => {
-    const fields = node.fields.filter(field => {
-      const ids = field.studyIds?.length ? field.studyIds : node.studyIds
-      return studyId ? knownScope(ids) && ids.includes(studyId) : ids.length === 0
-    })
-    return fields.length ? [{ ...node, fields }] : []
+  const drawOverview = (nodes: ProgramNode[], showScope = false) => overviewGroups.map(group => {
+    const entries = nodes.filter(node => group.kinds.includes(node.kind))
+    return entries.length > 0 && <div key={group.title} className="research-topic">
+      <h3>{group.title}</h3>
+      {entries.map(node => draw(node, showScope))}
+    </div>
   })
-  const unassigned = remaining.flatMap(node => {
-    const fields = node.fields.filter(field => !knownScope(field.studyIds?.length ? field.studyIds : node.studyIds))
-    return fields.length ? [{ ...node, fields }] : []
-  })
+  const drawGroups = (nodes: ProgramNode[], showScope = false) => {
+    const details = nodes.filter(node => !overviewKinds.has(node.kind))
+    const other = details.filter(node => !detailGroups.some(group => group.kinds.includes(node.kind)))
+    return [
+      ...detailGroups.map(group => ({ title: group.title, entries: details.filter(node => group.kinds.includes(node.kind)) })),
+      { title: 'Additional notes', entries: other },
+    ].map(({ title, entries }) => entries.length > 0 &&
+      <details key={title} className="research-group"><summary>{title}</summary>{entries.map(node => draw(node, showScope))}</details>)
+  }
+  const drawSteps = (steps: ProgramStep[]) => steps.length > 0 && <details className="research-group">
+    <summary>Experiment flow</summary>
+    <ul className="research-steps">
+      {steps.map(step => <li key={step.id}>
+        <strong>{step.title}</strong>
+        {step.conditionIds?.length ? <p>Conditions · {nodeNames(step.conditionIds)}</p> : null}
+        {step.actorIds.length > 0 && <p>Actors · {nodeNames(step.actorIds)}</p>}
+        {step.inputIds.length > 0 && <p>Inputs · {nodeNames(step.inputIds)}</p>}
+        {step.outputIds.length > 0 && <p>Outputs · {nodeNames(step.outputIds)}</p>}
+        {step.visibleIds.length > 0 && <p>Visible information · {nodeNames(step.visibleIds)}</p>}
+        {step.children.length > 0 && <p>Contains · {step.children.map(id => stepsById.get(id)?.title ?? id).join(', ')}</p>}
+        {step.next.map(edge => <p key={edge.to}>Next · {stepsById.get(edge.to)?.title ?? edge.to}{edge.when && ` (${edge.when})`}</p>)}
+        {step.rule && drawField(step.rule, [])}
+        {drawSources(step.evidenceIds)}
+      </li>)}
+    </ul>
+  </details>
+
   const arms: ProtocolArm[] = Array.isArray(protocol?.arms) ? protocol.arms.filter((arm: ProtocolArm | null) => typeof arm?.id === 'string') : []
 
   return <article className="research-overview">
@@ -109,9 +158,12 @@ export function ResearchOverview({ program, text, problems: documentProblems = [
     {program.source.authors && <p className="muted research-citation">{program.source.authors}</p>}
     {!bound && <p className="research-notice" role="status">Research notes are readable, but have not been checked against this experiment.</p>}
     {problems.length > 0 && <details className="research-notice"><summary>Research notes need checking</summary><ul>{problems.map(problem => <li key={problem}>{problem}</li>)}</ul></details>}
-    {overview.map(draw)}
-    <section className="research-experiments">
-      <h2>Experiments</h2>
+    {paperNodes.some(node => overviewKinds.has(node.kind)) && <section className="research-experiments">
+      <h2>Overview</h2>
+      {drawOverview(paperNodes, true)}
+    </section>}
+    {program.studies.length > 0 && <section className="research-experiments">
+      <h2>Experiments and analyses</h2>
       {program.studies.map(study => {
         const ids = bound ? scholarlyArmIds(program, study.id) : []
         const matchedArms = arms.filter(arm => ids.includes(arm.id))
@@ -119,17 +171,23 @@ export function ResearchOverview({ program, text, problems: documentProblems = [
         const reasons = [...new Set(matchedArms.flatMap(arm => arm.runnable === false && typeof arm.why === 'string'
           ? [arm.why.replace(/\s+\(DESIGN[^)]*\)\.?$/, '')]
           : []).filter(Boolean))]
-        return <details className="research-experiment" key={study.id}>
+        const nodes = nodesFor(study.id)
+        return <details className="research-experiment" key={study.id} open={program.studies.length === 1}>
           <summary>{study.title}</summary>
           {study.description && <p>{study.description}</p>}
           {reasons.map(reason => <p key={reason} className="muted">{reason}</p>)}
           {blocked && !reasons.length && <p className="muted">Materials are needed before this experiment can run.</p>}
-          {drawGroups(scoped(study.id))}
+          {drawOverview(nodes)}
+          {drawSteps(program.steps.filter(step => step.studyId === study.id))}
+          {drawGroups(nodes)}
           {onAsk && study.type !== 'analysis' && <button className="ghost research-prepare" onClick={() => onAsk(prepareExperimentPrompt(study, ids))}>{blocked ? 'Review missing materials' : 'Prepare this experiment'}</button>}
         </details>
       })}
-    </section>
-    {drawGroups(scoped(null))}
-    {unassigned.length > 0 && <section className="research-group"><h2>Notes with unresolved study references</h2>{unassigned.map(draw)}</section>}
+    </section>}
+    {paperNodes.some(node => !overviewKinds.has(node.kind)) && <section className="research-experiments">
+      <h2>Details across the paper</h2>
+      {drawGroups(paperNodes, true)}
+    </section>}
+    {unassigned.length > 0 && <section className="research-group"><h2>Notes with unresolved study references</h2>{unassigned.map(node => draw(node))}</section>}
   </article>
 }

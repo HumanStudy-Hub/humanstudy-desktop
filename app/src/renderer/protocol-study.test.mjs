@@ -39,3 +39,24 @@ test('actual research renderer preserves readable incomplete notes without certi
  assert.equal(JSON.stringify(original),before)
  assert.throws(()=>inspectHumanProgram({...original,nodes:'not nodes'}))
 })
+
+test('research Overview preserves the source and scopes paper and experiment claims', () => {
+  const program = JSON.parse(readFileSync(join(here, '../../resources/protocol-sample/program.json'), 'utf8'))
+  const hypothesis = program.nodes.find(node => node.kind === 'hypothesis')
+  hypothesis.fields.push({
+    id: 'one-study-prediction', label: 'Local prediction', value: 'Unique Study 2 prediction',
+    studyIds: ['s2'], evidenceIds: [], state: 'confirmed', origin: 'reported',
+  })
+  hypothesis.evidenceIds = ['node-source']
+  for (const field of hypothesis.fields) field.evidenceIds = ['field-source']
+  program.evidence.push(
+    { id: 'node-source', url: 'https://example.test/node', locator: { page: 3 }, quote: 'Additional node-level excerpt' },
+    { id: 'field-source', url: 'https://example.test/field', locator: { page: 4 }, quote: 'Field-level excerpt' },
+  )
+  const markup = render(program, text, [])
+  const [overview, experiments] = markup.split('Experiments and analyses')
+  assert.match(overview, /Overview.*Research question and motivation.*Hypotheses.*Applies to Study 1.*Study 2.*Source evidence.*Field-level excerpt.*Additional node-level excerpt.*Main findings/s)
+  assert.doesNotMatch(overview, /Unique Study 2 prediction/)
+  assert.match(experiments, /Study 1.*Study 2.*Unique Study 2 prediction.*Reported results.*Limitations/s)
+  assert.equal(markup.split('Unique Study 2 prediction').length, 2)
+})
