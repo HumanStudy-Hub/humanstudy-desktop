@@ -74,8 +74,8 @@ test('the online workspace forks explicitly and restores the existing project on
             },
             community: {
               studies: async () => [entry],
-              study: async (id, expectedRevision) => {
-                requests.push([id, expectedRevision])
+              study: async (id, expectedRevision, refresh) => {
+                requests.push([id, expectedRevision, refresh])
                 if (detailFailure === 'wait') await new Promise(resolve => { finishLoading = resolve })
                 if (detailFailure) throw Error(detailFailure)
                 assertPaperRevision(entry.currentRevision, expectedRevision)
@@ -157,7 +157,23 @@ test('the online workspace forks explicitly and restores the existing project on
             check(button('Open in my projects').disabled, 'Stale copy is enabled')
             check(requests.length === 1 && requests[0][0] === paper && requests[0][1] === staleRevision, 'Stale detail request lost the revision')
             check(forks.length === 0 && opened.length === 0, 'Explicit handoff did not take precedence over previous project')
+            button('Review current published version').click()
+            await until(() => document.body.textContent.includes('You are reviewing the current published version.') && !button('Open in my projects').disabled,
+              'Current-version review did not recover')
+            check(requests.some(([id, rev, fresh]) => id === paper && rev === undefined && fresh === true), 'Recovery did not request a fresh readonly catalog')
+            check(requests.length === 2, 'Recovery issued duplicate detail requests')
+            check(new URLSearchParams(location.search).get('revision') === revision && new URLSearchParams(location.search).get('other') === 'preserved', 'Explicit recovery did not update the handoff URL safely')
+            check(forks.length === 0 && opened.length === 0, 'Reviewing current version created a project')
             root.unmount()
+            requests.splice(1)
+
+            detailFailure = 'This paper no longer has a published version. No project was created.'
+            root = mount(staleRevision)
+            await until(() => document.body.textContent.includes('no longer has a published version'), 'Missing publication distinction absent')
+            check(!button('Review current published version'), 'Removed paper offers a nonexistent current version')
+            check(button('Open in my projects').disabled && forks.length === 0, 'Removed paper can be copied')
+            root.unmount()
+            requests.splice(1)
 
             detailFailure = 'wait'
             root = mount(revision)
