@@ -121,7 +121,7 @@ export function ResearchOverview({ program, text, problems: documentProblems = [
 
   const drawOverview = (nodes: ProgramNode[], showScope = false) => overviewGroups.map(group => {
     const entries = nodes.filter(node => group.kinds.includes(node.kind))
-    return entries.length > 0 && <div key={group.title} className="research-topic">
+    return entries.length > 0 && <div key={group.title} className="research-overview-topic">
       <h3>{group.title}</h3>
       {entries.map(node => draw(node, showScope))}
     </div>
