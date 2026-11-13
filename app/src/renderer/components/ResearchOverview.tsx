@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import type { HumanProgram, ProgramEvidence, ProgramField, ProgramNode, ProgramStep } from '../../shared/human-program'
 import { programText } from '../../shared/human-program'
 import { prepareExperimentPrompt, scholarlyArmIds, scholarlyProblems, scholarlyProfile } from '../../shared/scholarly-program'
@@ -23,6 +23,7 @@ const detailGroups = [
 type ProtocolArm = { id: string; runnable?: boolean; why?: string }
 
 export function ResearchOverview({ program, text, problems: documentProblems = [], onSource, onAsk }: { program: HumanProgram; text: string; problems?: string[]; onSource(ref: SourceRef): void; onAsk?(text: string): void }) {
+  const anchorPrefix = useId()
   const protocol = useMemo(() => {
     try { return JSON.parse(text) } catch { return null }
   }, [text])
@@ -119,9 +120,9 @@ export function ResearchOverview({ program, text, problems: documentProblems = [
     </section>
   }
 
-  const drawOverview = (nodes: ProgramNode[], showScope = false) => overviewGroups.map(group => {
+  const drawOverview = (nodes: ProgramNode[], showScope = false) => overviewGroups.map((group, index) => {
     const entries = nodes.filter(node => group.kinds.includes(node.kind))
-    return entries.length > 0 && <div key={group.title} className="research-overview-topic">
+    return entries.length > 0 && <div key={group.title} id={showScope ? `${anchorPrefix}-overview-${index}` : undefined} tabIndex={showScope ? -1 : undefined} className="research-overview-topic">
       <h3>{group.title}</h3>
       {entries.map(node => draw(node, showScope))}
     </div>
@@ -155,41 +156,71 @@ export function ResearchOverview({ program, text, problems: documentProblems = [
 
   const arms: ProtocolArm[] = Array.isArray(protocol?.arms) ? protocol.arms.filter((arm: ProtocolArm | null) => typeof arm?.id === 'string') : []
 
+  const overviewLinks = overviewGroups.flatMap((group, index) =>
+    paperNodes.some(node => group.kinds.includes(node.kind))
+      ? [{ id: `${anchorPrefix}-overview-${index}`, title: group.title }] : [])
+  const experimentLinks = program.studies.map((study, index) => ({ id: `${anchorPrefix}-experiment-${index}`, title: study.title }))
+  const links = (entries: typeof overviewLinks) => <ul>
+    {entries.map(({ id, title }) => <li key={id}><a href={`#${id}`} onClick={event => {
+      event.preventDefault()
+      const target = document.getElementById(id)
+      if (!target) return
+      if (target instanceof HTMLDetailsElement) target.open = true
+      const disclosure = event.currentTarget.closest('details')
+      if (disclosure) disclosure.open = false
+      const focus = target instanceof HTMLDetailsElement ? target.querySelector('summary') : target
+      focus?.focus({ preventScroll: true })
+      target.scrollIntoView({ block: 'start' })
+    }}>{title}</a></li>)}
+  </ul>
+  const contents = <>
+    {overviewLinks.length > 0 && <div><strong>Overview</strong>{links(overviewLinks)}</div>}
+    {experimentLinks.length > 0 && <div><strong>Experiments and analyses</strong>{links(experimentLinks)}</div>}
+  </>
+
   return <article className="research-overview">
-    <h1>{program.title}</h1>
-    {program.source.authors && <p className="muted research-citation">{program.source.authors}</p>}
-    {!bound && <p className="research-notice" role="status">Research notes are readable, but have not been checked against this experiment.</p>}
-    {problems.length > 0 && <details className="research-notice"><summary>Research notes need checking</summary><ul>{problems.map(problem => <li key={problem}>{problem}</li>)}</ul></details>}
-    {paperNodes.some(node => overviewKinds.has(node.kind)) && <section className="research-experiments">
-      <h2>Overview</h2>
-      {drawOverview(paperNodes, true)}
-    </section>}
-    {program.studies.length > 0 && <section className="research-experiments">
-      <h2>Experiments and analyses</h2>
-      {program.studies.map(study => {
-        const ids = bound ? scholarlyArmIds(program, study.id) : []
-        const matchedArms = arms.filter(arm => ids.includes(arm.id))
-        const blocked = matchedArms.length > 0 && matchedArms.every(arm => arm.runnable === false)
-        const reasons = [...new Set(matchedArms.flatMap(arm => arm.runnable === false && typeof arm.why === 'string'
-          ? [arm.why.replace(/\s+\(DESIGN[^)]*\)\.?$/, '')]
-          : []).filter(Boolean))]
-        const nodes = nodesFor(study.id)
-        return <details className="research-experiment" key={study.id} open={program.studies.length === 1}>
-          <summary>{study.title}</summary>
-          {study.description && <p>{study.description}</p>}
-          {reasons.map(reason => <p key={reason} className="muted">{reason}</p>)}
-          {blocked && !reasons.length && <p className="muted">Materials are needed before this experiment can run.</p>}
-          {drawOverview(nodes)}
-          {drawSteps(program.steps.filter(step => step.studyId === study.id))}
-          {drawGroups(nodes)}
-          {onAsk && study.type !== 'analysis' && <button className="ghost research-prepare" onClick={() => onAsk(prepareExperimentPrompt(study, ids))}>{blocked ? 'Review missing materials' : 'Prepare this experiment'}</button>}
-        </details>
-      })}
-    </section>}
-    {paperNodes.some(node => !overviewKinds.has(node.kind)) && <section className="research-experiments">
-      <h2>Details across the paper</h2>
-      {drawGroups(paperNodes, true)}
-    </section>}
-    {unassigned.length > 0 && <section className="research-group"><h2>Notes with unresolved study references</h2>{unassigned.map(node => draw(node))}</section>}
+    <div className="research-reading-layout">
+      {(overviewLinks.length > 0 || experimentLinks.length > 0) && <nav className="research-reading-contents" aria-label="Study contents">
+        <div className="research-reading-rail">{contents}</div>
+        <details className="research-reading-compact"><summary>Contents</summary>{contents}</details>
+      </nav>}
+      <div className="research-reading-body">
+        <h1>{program.title}</h1>
+        {program.source.authors && <p className="muted research-citation">{program.source.authors}</p>}
+        {!bound && <p className="research-notice" role="status">Research notes are readable, but have not been checked against this experiment.</p>}
+        {problems.length > 0 && <details className="research-notice"><summary>Research notes need checking</summary><ul>{problems.map(problem => <li key={problem}>{problem}</li>)}</ul></details>}
+        {paperNodes.some(node => overviewKinds.has(node.kind)) && <section className="research-experiments">
+          <h2>Overview</h2>
+          {drawOverview(paperNodes, true)}
+        </section>}
+        {program.studies.length > 0 && <section className="research-experiments">
+          <h2>Experiments and analyses</h2>
+          {program.studies.map((study, index) => {
+            const ids = bound ? scholarlyArmIds(program, study.id) : []
+            const matchedArms = arms.filter(arm => ids.includes(arm.id))
+            const blocked = matchedArms.length > 0 && matchedArms.every(arm => arm.runnable === false)
+            const reasons = [...new Set(matchedArms.flatMap(arm => arm.runnable === false && typeof arm.why === 'string'
+              ? [arm.why.replace(/\s+\(DESIGN[^)]*\)\.?$/, '')]
+              : []).filter(Boolean))]
+            const nodes = nodesFor(study.id)
+            return <details className="research-experiment" id={experimentLinks[index].id} key={study.id} open={program.studies.length === 1}>
+              <summary>{study.title}</summary>
+              {study.description && <p>{study.description}</p>}
+              {reasons.map(reason => <p key={reason} className="muted">{reason}</p>)}
+              {blocked && !reasons.length && <p className="muted">Materials are needed before this experiment can run.</p>}
+              {drawOverview(nodes)}
+              {drawSteps(program.steps.filter(step => step.studyId === study.id))}
+              {drawGroups(nodes)}
+              {onAsk && study.type !== 'analysis' && <button className="ghost research-prepare" onClick={() => onAsk(prepareExperimentPrompt(study, ids))}>{blocked ? 'Review missing materials' : 'Prepare this experiment'}</button>}
+            </details>
+          })}
+        </section>}
+        {paperNodes.some(node => !overviewKinds.has(node.kind)) && <section className="research-experiments">
+          <h2>Details across the paper</h2>
+          {drawGroups(paperNodes, true)}
+        </section>}
+        {unassigned.length > 0 && <section className="research-group"><h2>Notes with unresolved study references</h2>{unassigned.map(node => draw(node))}</section>}
+      </div>
+    </div>
   </article>
 }

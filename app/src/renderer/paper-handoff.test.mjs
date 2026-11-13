@@ -129,6 +129,7 @@ test('the online workspace forks explicitly and restores the existing project on
             }
 
             const fixture = document.createElement('div')
+            fixture.style.width = '500px'
             document.body.append(fixture)
             const overview = createRoot(fixture)
             overview.render(<ResearchOverview program={program} text="{}" onSource={noop} />)
@@ -138,6 +139,15 @@ test('the online workspace forks explicitly and restores the existing project on
             fixture.append(taxonomyTag)
             check(getComputedStyle(taxonomyTag).borderRadius === '999px', 'Taxonomy tag styles were not loaded')
             check(getComputedStyle(topic).borderRadius === '0px', 'Overview section inherited taxonomy pill styling')
+            const contents = fixture.querySelector('.research-reading-contents')
+            const compact = contents.querySelector('details')
+            check(getComputedStyle(compact).display !== 'none', 'Narrow contents is unavailable')
+            fixture.querySelector('.research-experiment').open = false
+            compact.open = true
+            compact.querySelector('a[href*="-experiment-"]').click()
+            check(!compact.open && fixture.querySelector('.research-experiment').open, 'Contents link did not reveal the experiment')
+            fixture.style.width = '800px'
+            check(getComputedStyle(contents).position === 'sticky', 'Wide contents is not sticky')
             overview.unmount()
             fixture.remove()
 
