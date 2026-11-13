@@ -142,7 +142,7 @@ export function Studies({ query, onOpenProject, ref, handoff, onHandoffConsumed 
     const activeHandoff = handoff?.paper === openId ? handoff : null
     return <StudyPage key={`${openId}:${activeHandoff?.revision ?? ''}`} id={openId} summary={summary} onBack={back} onTopic={onTopic}
       handoff={activeHandoff}
-      onOpenProject={dir => { onHandoffConsumed?.(); onOpenProject(dir) }} />
+      onOpenProject={dir => { if (activeHandoff) back(); onOpenProject(dir) }} />
   }
 
   const offline = typeof navigator !== 'undefined' && !navigator.onLine
@@ -153,7 +153,7 @@ export function Studies({ query, onOpenProject, ref, handoff, onHandoffConsumed 
         <div>
           {pending && <button className="link small" onClick={() => setPending(false)}>‹ All studies</button>}
           <h1 className="lib-title">{pending ? 'Not yet extracted' : 'Studies'}</h1>
-          <p className="muted lib-lead">{pending ? 'Indexed papers without a Human Program, materials or artifacts yet.' : 'Papers with study materials or a community Human Program.'}</p>
+          <p className="muted lib-lead">{pending ? 'Indexed papers without a Human Study Program, materials or artifacts yet.' : 'Papers with study materials or a community Human Study Program.'}</p>
         </div>
         <button className="lib-link" onClick={() => open(REPO_URL)}>
           Contribute on GitHub ↗
@@ -331,7 +331,7 @@ function StudyPage({
 
       <header className="repo-head">
         <div className="repo-id">
-          <h1 className="repo-title">{head?.title ?? 'Loading…'}</h1>
+          <h1 className="repo-title">{head?.title ?? (error ? 'Study unavailable' : 'Loading…')}</h1>
           {head && <p className="muted repo-byline">{byline(head)}</p>}
           {head && isUserSubmission(head) && <p className="small research-availability">User submitted</p>}
           <Topics topics={head?.topics} onSelect={onTopic} />
@@ -348,9 +348,9 @@ function StudyPage({
               Discuss ↗
             </button>
           </div>
-          <p className="muted small repo-note">
-              {head?.currentRevision ? 'Copies the Human Program, materials and artifacts into your projects.' : head?.legacyStudyId || /^study_\d+$/.test(id) ? 'Copies the study materials; the agent can build its Human Program.' : 'Only the source is indexed. A Human Program is unavailable.'}
-          </p>
+          {head && (!handoff || detail) && <p className="muted small repo-note">
+            {head.currentRevision ? 'Copies the Human Study Program, materials and artifacts into your projects.' : head.legacyStudyId || /^study_\d+$/.test(id) ? 'Copies the study materials; the agent can build its Human Study Program.' : 'Only the source is indexed. A Human Study Program is unavailable.'}
+          </p>}
           {forkError && <p className="home-error repo-error">{forkError}</p>}
           {changed && <p role="alert" className="home-error">This paper has changed since you opened it on the website. Return to the library to choose the current version.</p>}
           {handoff && !changed && !error && <p className="muted small">Create an editable copy to {handoff.intent === 'run' ? 'review and prepare the experiment' : 'discuss the paper with the agent'}. No simulation starts automatically.</p>}
@@ -384,6 +384,8 @@ function StudyPage({
               Try again
             </button>
           </div>
+        ) : !head || (handoff && !detail) ? (
+          <p className="muted small" role="status">Loading study…</p>
         ) : tab === 'overview' ? (
           <div className="overview">
             <h2 className="home-label">About</h2>
