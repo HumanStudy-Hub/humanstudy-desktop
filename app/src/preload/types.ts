@@ -371,9 +371,10 @@ export interface HumanStudyApi {
   community: {
     /** The library index; cached, refreshed when online. */
     studies(): Promise<CommunityStudy[]>
-    study(id: string): Promise<CommunityStudyDetail>
+    /** An expected revision requires a fresh, pinned catalog read. */
+    study(id: string, expectedRevision?: string): Promise<CommunityStudyDetail>
     /** Creates a local project from the study (paper, materials, description) and returns its dir. */
-    fork(id: string): Promise<string>
+    fork(id: string, expectedRevision?: string): Promise<string>
     openExternal(url: string): Promise<void>
   }
   account: {
