@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 import sys
 import unicodedata
 import zipfile
@@ -24,6 +25,35 @@ MAX_FILE_BYTES = 25 * 1024 * 1024
 MAX_EXPANDED_BYTES = 128 * 1024 * 1024
 MAX_ZIP_BYTES = 40 * 1024 * 1024
 MAX_ENTRIES = 2000
+
+
+# Keep this deterministic guard aligned with the Web pre-publication guard. Never echo a matched value.
+_PUBLIC_SECRET = re.compile(
+    r"\b(?:sk-[A-Za-z0-9_-]{12,}|hsk_[A-Za-z0-9_-]{8,}|(?:ghp|gho|github_pat|xox[abp])_[A-Za-z0-9_]{12,}"
+    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b"
+    r"|\bAuthorization\s*:\s*Bearer\s+[^\s\"'<>]{8,}", re.I)
+_PUBLIC_LOCAL_PATH = re.compile(
+    r"(?<![\w:/])(?:file://[^\s]+|[A-Za-z]:[\\/][^\s]+|\\\\[^\\\s]+\\[^\s]+"
+    r"|(?:~?/Users/|~?/home/|/private/|/tmp/|/var/folders/|/vercel/sandbox/)[^\s]+)", re.I)
+
+
+def public_text_problem(value):
+    """Reject strong credential/local-path signatures, not author emails or ordinary citations."""
+    if isinstance(value, dict):
+        values = [*value.keys(), *value.values()]
+    elif isinstance(value, list):
+        values = value
+    elif isinstance(value, str):
+        if _PUBLIC_SECRET.search(value):
+            return "a credential-like value"
+        # Public URLs may legitimately contain /home/ or /Users/ in their path.
+        without_urls = re.sub(r"https?://[^\s<>\"']+", "", value, flags=re.I)
+        if _PUBLIC_LOCAL_PATH.search(without_urls):
+            return "an absolute local path"
+        return None
+    else:
+        return None
+    return next((problem for item in values if (problem := public_text_problem(item))), None)
 
 
 def private_payload(rel):
@@ -500,6 +530,26 @@ def export(root, output, include_paper=False, *, program_only=False):
     if public_sources:
         source_manifest = {"schemaVersion": 1, "files": public_sources}
         payload["sources/SOURCE.json"] = (json.dumps(source_manifest, ensure_ascii=False, indent=2).encode("utf-8") + b"\n", None)
+    # Scan the frozen public text after projection, including reports and source metadata.
+    text_suffixes = {".json", ".jsonl", ".md", ".txt", ".htm", ".html", ".csv", ".tsv", ".py", ".js", ".cjs", ".mjs",
+                     ".ts", ".tsx", ".yaml", ".yml", ".toml", ".xml", ".svg", ".qsf"}
+    for name, (data, _) in payload.items():
+        if public_text_problem(name):
+            raise ValueError("Public export blocked: a file name contains a sensitive value. Review it locally before sharing.")
+        if Path(name).suffix.lower() not in text_suffixes:
+            continue
+        content = data.decode("utf-8", errors="replace")
+        if Path(name).suffix.lower() in {".json", ".qsf"}:
+            try:
+                content = json.loads(content)
+            except ValueError:
+                pass  # Structural validation owns malformed JSON.
+        problem = public_text_problem(content)
+        if problem:
+            raise ValueError(f"Public export blocked: a public file contains {problem}. Review it locally before sharing.")
+    problem = public_text_problem(meta)
+    if problem:
+        raise ValueError(f"Public export blocked: contribution metadata contains {problem}. Review it locally before sharing.")
     meta["includesPdf"] = any(name.lower().endswith(".pdf") for name in payload)
     meta["files"] = [{"path": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
                       **({"license": license} if license else {})}
