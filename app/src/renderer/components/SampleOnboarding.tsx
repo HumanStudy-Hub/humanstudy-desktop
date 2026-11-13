@@ -20,7 +20,7 @@ export function SampleOnboarding({ onClose, onAction }: { onClose(): void; onAct
   const finish = useRef<HTMLButtonElement>(null)
   useEffect(() => { if (step === steps.length) finish.current?.focus() }, [step])
   useEffect(() => {
-    const keys = (event: KeyboardEvent) => { if (event.key === 'Escape' && !document.querySelector('[aria-modal="true"]')) onClose() }
+    const keys = (event: KeyboardEvent) => { if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || document.querySelector('[aria-modal="true"]')) return; const target = event.target as HTMLElement; if (target?.closest?.('input, textarea, [contenteditable="true"]')) return; onClose() }
     window.addEventListener('keydown', keys)
     return () => window.removeEventListener('keydown', keys)
   }, [onClose])
@@ -31,7 +31,7 @@ export function SampleOnboarding({ onClose, onAction }: { onClose(): void; onAct
     </div>
     <div className="sample-guide-copy" aria-live="polite">
       <strong>{current?.title ?? 'Your turn'}</strong>
-      <p>{current?.hint ?? 'The request is ready in chat. Edit it, send it when you want, or keep exploring the paper.'}</p>
+      <p>{current?.hint ?? 'Continue in chat. Review your draft before sending, or keep exploring the paper.'}</p>
     </div>
     <div className="sample-guide-actions">
       {current && <button className="primary" onClick={() => { onAction(current.action); setStep(value => value + 1) }}>{current.button}</button>}

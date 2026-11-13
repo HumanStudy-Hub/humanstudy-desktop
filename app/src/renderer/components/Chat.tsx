@@ -107,6 +107,11 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
       focus()
     },
     prefill(text, append = false) {
+      if (append && /^[!/]/.test(draft.trim())) {
+        setAttachError('Finish or clear the current command draft before adding the sample request.')
+        focus()
+        return
+      }
       setDraft(current => append ? appendChatDraft(current, text) : text)
       focus()
     },

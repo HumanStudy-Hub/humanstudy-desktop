@@ -217,7 +217,10 @@ export default function App() {
     if (action === 'overview') openStudy()
     else if (action === 'source') {
       const evidence = sampleProgram?.evidence.find(item => typeof item.locator.page === 'number' && item.quote)
-      if (evidence) showSource({ page: evidence.locator.page ?? 1, quote: evidence.quote, file: evidence.path, sourceId: evidence.sourceId, sourceSha256: evidence.sourceSha256, verified: false })
+      if (evidence) {
+        setPane('program', true)
+        requestAnimationFrame(() => workbench.current?.compareSource({ page: evidence.locator.page ?? 1, quote: evidence.quote, file: evidence.path, sourceId: evidence.sourceId, sourceSha256: evidence.sourceSha256, verified: false }))
+      }
       else showTab('paper')
     } else if (action === 'participant') {
       setPane('program', true)

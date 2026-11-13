@@ -25,28 +25,31 @@ test('sample guide opens the real source and participant preview without sending
     await build({
       stdin: {
         contents: `
-          import React, {useState} from 'react'
+          import React, {useState,useRef} from 'react'
           import {appendChatDraft} from './chat-draft'
           import {createRoot} from 'react-dom/client'
           import {SampleOnboarding,walkthroughSample} from './components/SampleOnboarding'
-          import {ProtocolStudy} from './components/ProtocolStudy'
+          import {Workbench} from './components/Workbench'
           import program from '../../resources/protocol-sample/program.json'
           import protocol from '../../resources/protocol-sample/protocol.json?raw'
           import preview from '../../resources/protocol-sample/artifacts/preview.html?raw'
           import './styles.css'
           let calls=[]
-          window.humanstudy={project:{readText:async()=>preview}}
+          window.humanstudy={project:{readText:async path=>path.endsWith('protocol.json')?protocol:path.endsWith('preview.html')?preview:Promise.reject(Error('No annotations'))}}
+          const entry=(rel,ext)=>({name:rel.split('/').pop(),rel,path:'/sample/'+rel,ext,type:'file',url:'/'+rel,size:1,mtime:1})
+          const pdf=entry('paper.pdf','pdf');const project={dir:'/sample',name:'Renamed sample',program,pdf,tree:[entry('protocol.json','json'),entry('artifacts/preview.html','html'),pdf],artifacts:[],exports:[]}
           function Fixture(){
-            const [visible,setVisible]=useState(true),[token,setToken]=useState(0),[draft,setDraft]=useState('My unsent research question'),[source,setSource]=useState(null)
+            const workbench=useRef(null);const [activeProject,setActiveProject]=useState(project);const [visible,setVisible]=useState(true),[draft,setDraft]=useState('My unsent research question'),[source,setSource]=useState(null)
             return <><button onClick={()=>setVisible(true)}>Sample guide</button>
               {visible&&<SampleOnboarding onClose={()=>setVisible(false)} onAction={action=>{
                 calls.push(action)
-                if(action==='source')setSource(program.evidence.find(e=>e.locator.page&&e.quote))
-                if(action==='participant')setToken(v=>v+1)
+                if(action==='overview')workbench.current.showTab('study')
+                if(action==='source'){const evidence=program.evidence.find(e=>e.locator.page&&e.quote);workbench.current.compareSource({page:evidence.locator.page,quote:evidence.quote,file:evidence.path})}
+                if(action==='participant')workbench.current.showParticipantPreview()
                 if(action==='trial')setDraft(current=>appendChatDraft(current,'Review a small trial before sending'))
               }}/>}
-              {source&&<aside aria-label="Original source">{source.quote}</aside>}
-              <ProtocolStudy text={protocol} program={program} preview={{path:'preview.html',url:'/preview.html'}} previewRequest={token} onSource={()=>{}}/>
+              <button onClick={()=>setActiveProject({...project,dir:'/other',name:'Unrelated project'})}>Other project</button>
+              <Workbench ref={workbench} project={activeProject} source={source} selectedIds={[]} onSource={(id,ref)=>setSource(ref)} onPick={()=>{}} onAsk={()=>{}} onClearSelection={()=>{}} onAskSelection={()=>{}} onFold={()=>{}}/>
               <textarea aria-label="Chat draft" value={draft} onChange={e=>setDraft(e.target.value)}/>
             </>
           }
@@ -57,13 +60,15 @@ test('sample guide opens the real source and participant preview without sending
             check(walkthroughSample({...program,title:'Renamed paper'}),'Renaming must not hide sample guide');
             check(!walkthroughSample({...program,id:'different-paper'}),'Non-sample must not get sample guide');
             check(!walkthroughSample(null),'Empty project must not get sample guide');
+            check(appendChatDraft('!echo safe','trial')==='!echo safe','Shell draft must stay untouched');
+            check(appendChatDraft('/compact','trial')==='/compact','Command draft must stay untouched');
             createRoot(document.getElementById('root')).render(<Fixture/>);
             await until(()=>button('Show the overview'),'Guide not visible');
             check(!document.querySelector('[aria-modal="true"]'),'Guide blocks workspace');
-            check(document.querySelector('.research-overview'),'Actual research overview missing');
+            await until(()=>document.querySelector('.research-overview'),'Actual research overview missing');
             button('Show the overview').click();await until(()=>button('Compare with the source'),'Step two missing');
-            button('Compare with the source').click();await until(()=>document.querySelector('[aria-label="Original source"]'),'Source not shown');
-            check(document.querySelector('[aria-label="Original source"]').textContent===program.evidence.find(e=>e.locator.page&&e.quote).quote,'Source quote altered');
+            button('Compare with the source').click();await until(()=>document.querySelector('.wb-paper:not([hidden])'),'Real Workbench source pane not shown');
+            check(document.querySelector('.wb-paper:not([hidden])'),'Source comparison invisible');
             button('Explore participant view').click();await until(()=>document.querySelector('.research-preview[open] iframe'),'Real preview not opened');
             check(document.querySelector('textarea').value==='My unsent research question','Existing draft changed before trial action');
             button('Draft a trial request').click();await until(()=>button('Finish guide'),'Completion missing');
@@ -75,6 +80,8 @@ test('sample guide opens the real source and participant preview without sending
             button('Sample guide').click();await until(()=>button('Show the overview'),'Replay did not reset');
             window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));await until(()=>!document.querySelector('.sample-onboarding'),'Escape did not skip');
             check(calls.length===4,'Skipping or replay caused actions');
+            button('Other project').click();await new Promise(r=>setTimeout(r,100));
+            check(!document.querySelector('.research-preview[open]'),'Preview opened automatically in another project');
             return 'GUIDE_OK'
           }
           run().then(result=>fetch('/result',{method:'POST',body:result}),error=>fetch('/result',{method:'POST',body:error.stack}));
@@ -83,6 +90,8 @@ test('sample guide opens the real source and participant preview without sending
       },
       bundle:true,platform:'browser',jsx:'automatic',logLevel:'error',
       plugins:[{name:'raw',setup(build){
+        build.onResolve({filter:/[?]url$/},()=>({path:'worker',namespace:'worker'}));
+        build.onLoad({filter:/.*/,namespace:'worker'},()=>({contents:'export default "/pdf.worker.mjs"'}));
         build.onResolve({filter:/[?]raw$/},args=>({path:join(args.resolveDir,args.path.slice(0,-4)),namespace:'raw'}));
         build.onLoad({filter:/.*/,namespace:'raw'},async args=>({contents:await readFile(args.path,'utf8'),loader:'text'}));
       }}],
@@ -105,7 +114,11 @@ test('sample guide opens the real source and participant preview without sending
           response.writeHead(204).end()
           reportResult(message)
         })
-      } else if (request.url === '/preview.html') {
+      } else if (request.url === '/paper.pdf') {
+        readFile(fileURLToPath(new URL('../../resources/protocol-sample/paper.pdf', import.meta.url))).then(data => response.writeHead(200, { 'Content-Type':'application/pdf' }).end(data))
+      } else if (request.url === '/pdf.worker.mjs') {
+        readFile(fileURLToPath(new URL('../../node_modules/pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url))).then(data => response.writeHead(200, { 'Content-Type':'text/javascript' }).end(data))
+      } else if (request.url === '/artifacts/preview.html') {
         readFile(fileURLToPath(new URL('../../resources/protocol-sample/artifacts/preview.html', import.meta.url))).then(html => response.writeHead(200, { 'Content-Type': 'text/html' }).end(html))
       } else if (request.url === '/guide.css') {
         response.writeHead(200, { 'Content-Type': 'text/css' }).end(stylesheet)
