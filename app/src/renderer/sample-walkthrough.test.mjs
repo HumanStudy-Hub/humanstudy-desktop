@@ -21,6 +21,7 @@ const chrome = [
 
 test('sample guide opens the real source and participant preview without sending or running', { skip: !chrome && 'Chrome unavailable' }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'hs-sample-guide-'))
+  let testError
   try {
     await build({
       stdin: {
@@ -154,6 +155,8 @@ test('sample guide opens the real source and participant preview without sending
       ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
       `--user-data-dir=${join(dir, 'chrome')}`, `http://127.0.0.1:${server.address().port}/`,
     ], { stdio: ['ignore', 'ignore', 'pipe'] })
+    // Register before teardown so a fast exit cannot race the waiter.
+    const browserClosed = new Promise(resolve => browser.once('close', resolve))
     let diagnostics = ''
     browser.stderr.on('data', chunk => { diagnostics = (diagnostics + chunk).slice(-2000) })
     const timeout = setTimeout(() => failTest(new Error('Browser did not complete the guide test: ' + diagnostics)), 60_000)
@@ -161,14 +164,37 @@ test('sample guide opens the real source and participant preview without sending
     browser.on('exit', code => failTest(new Error(`Chrome exited early (${code})`)))
     try {
       assert.equal(await result, 'GUIDE_OK')
+    } catch (error) {
+      testError = error
+      throw error
     } finally {
       clearTimeout(timeout)
-      browser.kill('SIGKILL')
-      browser.stderr.destroy()
-      server.closeAllConnections()
-      await new Promise(resolve => server.close(resolve))
+      if (browser.exitCode === null && browser.signalCode === null) browser.kill('SIGKILL')
+      let shutdownTimer
+      try {
+        await Promise.race([browserClosed, new Promise((_, reject) => {
+          shutdownTimer = setTimeout(() => reject(new Error('Test Chrome did not close within 10 seconds')), 10_000)
+        })])
+      } catch (error) {
+        if (testError) throw new AggregateError([testError, error], 'Guide assertion failed and Chrome teardown also failed')
+        throw error
+      } finally {
+        clearTimeout(shutdownTimer)
+        browser.stderr.destroy()
+        server.closeAllConnections()
+        await new Promise(resolve => server.close(resolve))
+      }
     }
+  } catch (error) {
+    testError = error
+    throw error
   } finally {
-    await rm(dir, { recursive: true, force: true })
+    try {
+      // Chromium helpers can briefly finish profile writes after the parent exits.
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    } catch (error) {
+      if (testError) throw new AggregateError([testError, error], 'Guide test failed and temporary-profile cleanup also failed')
+      throw error
+    }
   }
 })
