@@ -103,6 +103,8 @@ export function ResearchOverview({ program, text, problems: documentProblems = [
   const draw = (node: ProgramNode, showScope = false) => {
     const sharedScope = showScope && node.studyIds.length > 1
       && (!node.fields.length || node.summary || node.description || node.fields.every(field => !field.studyIds?.length))
+    const fieldSourceIds = new Set(node.fields.flatMap(field => field.evidenceIds.length ? field.evidenceIds : node.evidenceIds))
+    const noteSourceIds = node.evidenceIds.filter(id => !fieldSourceIds.has(id))
     return <section key={node.id} className="research-section">
       <h4>{node.title}</h4>
       {sharedScope && <p className="muted">Applies to {studyNames(node.studyIds)}</p>}
@@ -113,7 +115,7 @@ export function ResearchOverview({ program, text, problems: documentProblems = [
         return drawField(field, node.evidenceIds, node.fields.length !== 1 || field.label.trim() !== node.title.trim(),
           showScope && ids.length > 1 && (!sharedScope || field.studyIds?.length) ? studyNames(ids) : undefined)
       })}
-      {node.fields.every(field => field.evidenceIds.length > 0) && drawSources(node.evidenceIds)}
+      {drawSources(noteSourceIds)}
     </section>
   }
 
