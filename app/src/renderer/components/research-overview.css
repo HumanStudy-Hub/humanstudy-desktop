@@ -11,8 +11,8 @@
 .research-overview .research-evidence li { margin: 8px 0; }
 .research-overview .research-evidence blockquote { border-left: 2px solid var(--line); margin: 4px 0; padding-left: 10px; white-space: pre-wrap; }
 .research-overview .research-prepare { margin-top: 12px; }
-.research-overview .research-topic { margin: 16px 0; }
-.research-overview .research-topic > h3 { font-size: 16px; }
+.research-overview .research-overview-topic { margin: 16px 0; }
+.research-overview .research-overview-topic > h3 { font-size: 16px; }
 .research-overview .research-section { margin: 12px 0; }
 .research-overview .research-section h4 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
 .research-overview .research-claim > p { white-space: pre-wrap; overflow-wrap: anywhere; }

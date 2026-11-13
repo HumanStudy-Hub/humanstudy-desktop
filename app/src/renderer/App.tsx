@@ -19,6 +19,9 @@ import { artifactSourceRef } from './artifact-source'
 import { SampleOnboarding } from './components/SampleOnboarding'
 import { forget, goBack, remember } from './nav'
 import { clearDraftsIn, draftCount, draftsIn, onDraftsChange } from './drafts'
+import { WEB_EDITION } from './edition'
+import { readPaperHandoff } from '../shared/paper-handoff'
+import { browserProject, rememberBrowserProject } from './browser-project'
 
 const PANES_KEY = 'hs.panes'
 type Pane = 'agent' | 'program'
@@ -34,6 +37,9 @@ export function runCommand(command: AppCommand, arg?: string): void {
 export default function App() {
   useLang() // re-render the whole tree when the language changes
   const [project, setProject] = useState<ProjectSnapshot | null>(null)
+  const [restoreDir, setRestoreDir] = useState(() =>
+    WEB_EDITION && !readPaperHandoff(window.location.search) ? browserProject() : null)
+  const restoring = useRef(false)
   const [showSampleOnboarding, setShowSampleOnboarding] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
   const [source, setSource] = useState<SourceRef | null>(null)
@@ -160,6 +166,7 @@ export default function App() {
       const action = claimAction('project.open', true)
       const switched = state.current.project?.dir !== dir
       await load(dir)
+      if (WEB_EDITION) rememberBrowserProject(dir)
       await setTelemetryProject(dir)
       track('project.opened', { durationMs: performance.now() - started }, action)
       // Back from a project, once its own places are used up, leads to the project list.
@@ -176,6 +183,16 @@ export default function App() {
     },
     [load]
   )
+  useEffect(() => {
+    if (!restoreDir || restoring.current) return
+    restoring.current = true
+    void window.humanstudy.projects.list().then(projects => {
+      if (!projects.some(project => project.dir === restoreDir)) throw new Error()
+      return openProject(restoreDir)
+    }).catch(() => {
+      rememberBrowserProject(null)
+    }).finally(() => setRestoreDir(null))
+  }, [openProject, restoreDir])
   // Unsaved file edits survive tab switches; leaving the project asks before they are dropped.
   const confirmLeave = (): boolean => {
     const dir = state.current.project?.dir
@@ -201,6 +218,7 @@ export default function App() {
     track('project.closed')
     void setTelemetryProject(null)
     setProject(null)
+    if (WEB_EDITION) rememberBrowserProject(null)
     forget('project')
     forget('app')
     return true
@@ -430,6 +448,8 @@ export default function App() {
       }}
     />
   )
+
+  if (restoreDir && !project) return <div className="empty-state" role="status">{t('app.loading_project')}</div>
 
   if (!project)
     return (

@@ -17,14 +17,17 @@ const chrome = [
   '/usr/bin/chromium',
 ].find(path => path && existsSync(path))
 
-test('the online Home only forks the selected revision after an explicit click', { skip: !chrome && 'Chrome unavailable' }, async () => {
+test('the online workspace forks explicitly and restores the existing project on refresh', { skip: !chrome && 'Chrome unavailable' }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'hs-paper-handoff-'))
   try {
     await build({
       stdin: {
         contents: `
           import { createRoot } from 'react-dom/client'
-          import { Home } from './components/Home'
+          import App from './App'
+          import { rememberBrowserProject } from './browser-project'
+          import { ResearchOverview } from './components/ResearchOverview'
+          import './styles.css'
           import { assertPaperRevision } from '../shared/paper-handoff'
           import { catalogPublicationFields } from '../shared/research-search'
 
@@ -39,12 +42,36 @@ test('the online Home only forks the selected revision after an explicit click',
           const requests = []
           const forks = []
           const opened = []
+          const projectDir = '/projects/copied-paper'
+          const listedProject = { dir: projectDir, name: 'Copied paper', updatedAt: '2026-11-12' }
+          const noop = () => {}
+          const unsubscribe = () => noop
+          const noValue = async () => null
+          const study = { id: 'study-1', title: 'Study 1', type: 'empirical' }
+          const program = { title: 'Paper handoff fixture', source: {}, studies: [study], evidence: [], steps: [],
+            nodes: [{ id: 'background', kind: 'background', title: 'Question', studyIds: [], evidenceIds: [],
+              fields: [{ id: 'question', label: 'Question', value: 'Research question fixture', evidenceIds: [] }] }] }
+          let projectCreated = sessionStorage.getItem('handoff-complete') === 'true'
+          const settings = { theme: 'system' }
           let detailFailure = ''
           let finishLoading
           let releaseFork
           window.humanstudy = {
-            app: { info: async () => ({ version: 'test' }) },
-            projects: { list: async () => [] },
+            app: { info: async () => ({ version: 'test' }), setUnsaved: noop },
+            account: { status: noValue },
+            settings: { get: async () => settings },
+            menu: { onCommand: unsubscribe },
+            kernel: { install: { status: noValue, onProgress: unsubscribe }, onEvent: unsubscribe },
+            threads: { list: async () => [], onChanged: unsubscribe },
+            projects: { list: async () => projectCreated ? [listedProject] : [] },
+            project: {
+              onChanged: unsubscribe,
+              read: async dir => {
+                opened.push(dir)
+                if (dir !== projectDir || !projectCreated) throw Error('Unknown project')
+                return { ...listedProject, tree: [], artifacts: [], exports: [], program: null, pdf: null }
+              },
+            },
             community: {
               studies: async () => [entry],
               study: async (id, expectedRevision) => {
@@ -57,7 +84,7 @@ test('the online Home only forks the selected revision after an explicit click',
               fork: async (id, expectedRevision) => {
                 forks.push([id, expectedRevision])
                 assertPaperRevision(entry.currentRevision, expectedRevision)
-                return new Promise(resolve => { releaseFork = () => resolve('/projects/copied-paper') })
+                return new Promise(resolve => { releaseFork = () => { projectCreated = true; resolve(projectDir) } })
               },
             },
           }
@@ -83,26 +110,43 @@ test('the online Home only forks the selected revision after an explicit click',
               }))
             }
             const root = createRoot(document.getElementById('root'))
-            root.render(<Home onOpen={dir => opened.push(dir)} onSettings={() => {}}
-              onAccount={() => {}} account={null} kernel={{status: null, retry() {}}} />)
+            root.render(<App />)
             return root
           }
 
           async function run() {
             if (sessionStorage.getItem('handoff-complete')) {
               const root = mount()
-              await until(() => document.querySelector('.home-main'), 'Home did not reopen after refresh')
-              check(!button('Open in my projects') && !requests.length && !forks.length && !opened.length,
-                'Refresh retried the completed handoff')
+              await until(() => document.querySelector('.crumb')?.textContent.includes('Copied paper'), 'Project did not reopen after refresh')
+              check(!button('Open in my projects') && !requests.length && !forks.length && opened.length === 1 && opened[0] === projectDir,
+                'Refresh retried the completed handoff or failed to read the existing project once')
+              button('Skip guide')?.click()
+              button('Projects').click()
+              await until(() => document.querySelector('.home-main'), 'Projects page did not reopen after closing the project')
+              check(!sessionStorage.getItem('hs.activeProject'), 'Explicit project close left stale restore state')
               root.unmount()
               return 'HANDOFF_OK'
             }
 
+            const fixture = document.createElement('div')
+            document.body.append(fixture)
+            const overview = createRoot(fixture)
+            overview.render(<ResearchOverview program={program} text="{}" onSource={noop} />)
+            const topic = await until(() => fixture.querySelector('.research-overview-topic'), 'Overview topic absent')
+            const taxonomyTag = document.createElement('button')
+            taxonomyTag.className = 'research-topic'
+            fixture.append(taxonomyTag)
+            check(getComputedStyle(taxonomyTag).borderRadius === '999px', 'Taxonomy tag styles were not loaded')
+            check(getComputedStyle(topic).borderRadius === '0px', 'Overview section inherited taxonomy pill styling')
+            overview.unmount()
+            fixture.remove()
+
+            rememberBrowserProject(projectDir)
             let root = mount(staleRevision)
             await until(() => document.body.textContent.includes('different published version'), 'Stale revision error absent')
             check(button('Open in my projects').disabled, 'Stale copy is enabled')
             check(requests.length === 1 && requests[0][0] === paper && requests[0][1] === staleRevision, 'Stale detail request lost the revision')
-            check(forks.length === 0, 'Stale handoff attempted a fork')
+            check(forks.length === 0 && opened.length === 0, 'Explicit handoff did not take precedence over previous project')
             root.unmount()
 
             detailFailure = 'wait'
@@ -133,7 +177,9 @@ test('the online Home only forks the selected revision after an explicit click',
             check(forks.length === 1 && forks[0][0] === paper && forks[0][1] === revision, 'Fork did not receive one exact revision')
             releaseFork()
             await until(() => opened.length === 1, 'Copied project was not opened')
-            check(opened[0] === '/projects/copied-paper', 'Wrong project opened')
+            await until(() => document.querySelector('.crumb')?.textContent.includes('Copied paper'), 'Copied project view absent')
+            button('Skip guide')?.click()
+            check(opened[0] === projectDir, 'Wrong project opened')
             const params = new URLSearchParams(location.search)
             check(!params.has('paper') && !params.has('revision') && !params.has('intent') && params.get('other') === 'preserved',
               'Completed handoff was not removed from the address')
@@ -152,9 +198,14 @@ test('the online Home only forks the selected revision after an explicit click',
         loader: 'tsx',
       },
       bundle: true, platform: 'browser', jsx: 'automatic', logLevel: 'error',
-      loader: { '.css': 'empty' }, outfile: join(dir, 'handoff.js'),
+      plugins: [{ name: 'fixture-assets', setup(build) {
+        build.onResolve({ filter: /[?]url$/ }, () => ({ path: 'unused', namespace: 'fixture-url' }))
+        build.onLoad({ filter: /.*/, namespace: 'fixture-url' }, () => ({ contents: 'export default "/unused"' }))
+      } }],
+      loader: { '.css': 'css', '.woff2': 'empty', '.svg': 'empty' }, outfile: join(dir, 'handoff.js'),
     })
     const script = await readFile(join(dir, 'handoff.js'))
+    const stylesheet = await readFile(join(dir, 'handoff.css'))
     let reportResult
     let failTest
     const result = new Promise((resolve, reject) => {
@@ -170,11 +221,13 @@ test('the online Home only forks the selected revision after an explicit click',
           response.writeHead(204).end()
           reportResult(message)
         })
+      } else if (request.url === '/handoff.css') {
+        response.writeHead(200, { 'Content-Type': 'text/css' }).end(stylesheet)
       } else if (request.url === '/handoff.js') {
         response.writeHead(200, { 'Content-Type': 'text/javascript' }).end(script)
       } else {
         response.writeHead(200, { 'Content-Type': 'text/html' }).end(
-          '<!doctype html><title>HANDOFF_PENDING</title><div id="root"></div><script>window.__HS_WEB__ = true; window.onerror = (msg) => fetch("/result", {method: "POST", body: String(msg)}); window.onunhandledrejection = (e) => fetch("/result", {method: "POST", body: String(e.reason)})</script><script src="/handoff.js"></script>')
+          '<!doctype html><title>HANDOFF_PENDING</title><link rel="stylesheet" href="/handoff.css"><div id="root"></div><script>window.__HS_WEB__ = true; window.onerror = (msg, file, line, column, error) => fetch("/result", {method: "POST", body: error?.stack || String(msg)}); window.onunhandledrejection = (e) => fetch("/result", {method: "POST", body: String(e.reason)})</script><script src="/handoff.js"></script>')
       }
     })
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))

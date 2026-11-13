@@ -32,6 +32,7 @@ const ROWS: Row[] = [
   // ---- app shell
   ['app.agent', 'Study agent', '研究助手'],
   ['app.workspace', 'Workspace', '工作区'],
+  ['app.loading_project', 'Loading project…', '正在加载项目…'],
   ['app.projects', 'Projects', '项目'],
   ['app.back_hint', 'Back to all projects', '返回全部项目'],
   ['app.leave_unsaved', '{n} file(s) in this project have unsaved changes. Leave and discard them?', '此项目中有 {n} 个文件的修改尚未保存。离开并放弃这些修改？'],
