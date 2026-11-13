@@ -399,19 +399,21 @@ button.tile:hover:not(:disabled) { border-color: var(--accent); box-shadow: var(
   width: min(760px, 100%); height: min(560px, 100%); display: flex; overflow: hidden; outline: 0;
   background: var(--bg); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 64px rgba(0, 0, 0, 0.22);
 }
-.sample-onboarding { display: flex; align-items: center; gap: 18px; flex: none; padding: 12px 24px; background: var(--bg-soft); border-bottom: 1px solid var(--line); }
-.sample-guide-progress { display: flex; gap: 4px; flex: none; }
-.sample-guide-progress span { width: 8px; height: 8px; border: 1px solid var(--muted); border-radius: 50%; }
-.sample-guide-progress .current { border: 2px solid var(--accent); }
+/* Non-modal spotlight: real controls remain interactive through the cutout. */
+.sample-guide-layer { position: fixed; inset: 0; z-index: 40; pointer-events: none; }
+.sample-guide-spotlight { position: fixed; border-radius: 10px; outline: 2px solid var(--accent); box-shadow: 0 0 0 9999px rgba(12, 23, 29, .58), 0 0 0 5px rgba(255,255,255,.3); }
+.sample-guide-shade { position: absolute; inset: 0; background: rgba(12,23,29,.42); }
+.sample-onboarding { position: fixed; width: min(324px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto; padding: 20px; pointer-events: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 56px rgba(0,0,0,.28); }
+.sample-guide-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.sample-guide-count { font-size: 11px; letter-spacing: .08em; color: var(--muted); }
+.sample-guide-progress { display: flex; gap: 5px; }
+.sample-guide-progress span { width: 7px; height: 7px; border: 1px solid var(--muted); border-radius: 50%; }
+.sample-guide-progress .current { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .sample-guide-progress .done { background: var(--accent); border-color: var(--accent); }
-.sample-guide-copy { flex: 1; min-width: 0; }
-.sample-guide-copy p { margin: 3px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
-.sample-guide-actions { display: flex; align-items: center; gap: 8px; flex: none; }
-@media (max-width: 760px) {
-  .sample-onboarding { gap: 8px 12px; padding: 10px 14px; flex-wrap: wrap; }
-  .sample-guide-copy { flex-basis: calc(100% - 70px); }
-  .sample-guide-actions { margin-left: 0; flex-wrap: wrap; }
-}
+.sample-guide-copy strong { display: block; font-size: 16px; line-height: 1.4; }
+.sample-guide-copy p { margin: 8px 0 18px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.sample-guide-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sample-guide-actions button { font-size: 12px; }
 .settings-nav { width: 188px; flex: none; background: var(--bg-soft); border-right: 1px solid var(--line); padding: 18px 10px; display: flex; flex-direction: column; gap: 2px; }
 .settings-title { font-size: 13px; font-weight: 600; padding: 0 10px 12px; }
 .settings-nav button { text-align: left; padding: 7px 10px; border-radius: 8px; color: var(--muted); }

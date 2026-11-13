@@ -4,6 +4,8 @@ on:
     branches: [dev, main]
     paths:
       - 'app/src/renderer/components/SourceDrawer.tsx'
+      - 'app/src/renderer/components/SampleOnboarding.tsx'
+      - 'app/src/renderer/sample-walkthrough.test.mjs'
       - 'app/src/renderer/pdf-render-status.test.mjs'
       - 'app/src/renderer/pdf-page-cache*'
       - 'app/src/renderer/styles.css'
@@ -33,6 +35,6 @@ jobs:
           cache-dependency-path: app/package-lock.json
       - run: npm ci
       - run: npm run typecheck
-      - run: node --test src/renderer/pdf-render-status.test.mjs src/renderer/pdf-page-cache.test.mjs
+      - run: node --test src/renderer/pdf-render-status.test.mjs src/renderer/pdf-page-cache.test.mjs src/renderer/sample-walkthrough.test.mjs
         env:
           HUMANSTUDY_REQUIRE_CHROME: '1'

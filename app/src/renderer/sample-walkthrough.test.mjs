@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
@@ -18,6 +18,8 @@ const chrome = [
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
 ].find(path => path && existsSync(path))
+
+if (process.env.HUMANSTUDY_REQUIRE_CHROME === '1') assert.ok(chrome, 'Chrome required for guide acceptance')
 
 test('sample guide opens the real source and participant preview without sending or running', { skip: !chrome && 'Chrome unavailable' }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'hs-sample-guide-'))
@@ -76,21 +78,34 @@ test('sample guide opens the real source and participant preview without sending
             const root=createRoot(document.getElementById('root'));root.render(<Fixture/>);
             await until(()=>button('Show the overview'),'Guide not visible');
             check(!document.querySelector('[aria-modal="true"]'),'Guide blocks workspace');
+            await until(()=>document.querySelector('.sample-guide-spotlight'),'Spotlight missing');
+            check(getComputedStyle(document.querySelector('.sample-guide-spotlight')).boxShadow.includes('9999px'),'Background is not dimmed');
+            check(getComputedStyle(document.querySelector('.sample-guide-layer')).pointerEvents==='none','Spotlight blocks real controls');
+            const coach=document.querySelector('.sample-onboarding').getBoundingClientRect();
+            check(coach.left>=0&&coach.right<=innerWidth&&coach.bottom<=innerHeight,'Coach card outside viewport');
             await until(()=>document.querySelector('.research-overview'),'Actual research overview missing');
             button('Show the overview').click();await until(()=>button('Compare with the source'),'Step two missing');
-            button('Compare with the source').click();await until(()=>document.querySelector('.wb-paper:not([hidden])'),'Real Workbench source pane not shown');
+            await until(()=>document.querySelector('.research-cite')?.getBoundingClientRect().top>0,'Citation not revealed');
+            await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+            const cite=document.querySelector('.research-cite'), citeRect=cite.getBoundingClientRect();
+            check(cite.contains(document.elementFromPoint(citeRect.left+citeRect.width/2,citeRect.top+citeRect.height/2)),'Guide covers citation control');
+            cite.click();await until(()=>button('Explore participant view'),'Actual source click did not advance');await until(()=>document.querySelector('.wb-paper:not([hidden])'),'Real Workbench source pane not shown');
             check(document.querySelector('.wb-paper:not([hidden])'),'Source comparison invisible');
             button('Explore participant view').click();await until(()=>document.querySelector('.research-preview[open] iframe'),'Real preview not opened');
             check(document.querySelector('textarea').value==='My unsent research question','Existing draft changed before trial action');
             button('Draft a trial request').click();await until(()=>button('Finish guide'),'Completion missing');
             check(document.querySelector('textarea').value==='My unsent research question\\n\\nReview a small trial before sending','Existing draft was overwritten');
             check(document.activeElement===button('Finish guide'),'Keyboard focus lost at final step');
-            check(calls.join(',')==='overview,source,participant,trial','Unexpected action');
+            check(calls.join(',')==='overview,participant,trial','Unexpected action');
             check(document.documentElement.scrollWidth<=innerWidth,'Narrow page overflows');
             button('Finish guide').click();await until(()=>!document.querySelector('.sample-onboarding'),'Finish did not close');
-            button('Sample guide').click();await until(()=>button('Show the overview'),'Replay did not reset');
+            check(!document.querySelector('.sample-guide-layer'),'Spotlight leaked after close');
+            check(!document.querySelector('[aria-describedby*="sample-guide-description"]'),'Target description leaked');
+            button('Sample guide').focus();button('Sample guide').click();await until(()=>button('Show the overview'),'Replay did not reset');
+            check(document.activeElement===button('Show the overview'),'Guide has no keyboard entry');
             window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));await until(()=>!document.querySelector('.sample-onboarding'),'Escape did not skip');
-            check(calls.length===4,'Skipping or replay caused actions');
+            check(calls.length===3,'Skipping or replay caused actions');
+            check(document.activeElement===button('Sample guide'),'Skip did not restore focus');
             button('Other project').click();await new Promise(r=>setTimeout(r,100));
             check(!document.querySelector('.research-preview[open]'),'Preview opened automatically in another project');
             root.render(<LockedFixture/>);await until(()=>button('Show the overview'),'Blocked guide missing');
@@ -150,8 +165,11 @@ test('sample guide opens the real source and participant preview without sending
       }
     })
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-    const browser = spawn(chrome, [
-      '--headless', '--window-size=700,900', '--disable-gpu', '--no-first-run', '--disable-dev-shm-usage', '--disable-background-networking',
+    let nativeMac = false
+    try { nativeMac = process.platform === 'darwin' && !process.env.HUMANSTUDY_TEST_CHROME && execFileSync('/usr/sbin/sysctl', ['-n', 'hw.optional.arm64'], { encoding: 'utf8' }).trim() === '1' } catch {}
+    const browser = spawn(nativeMac ? '/usr/bin/arch' : chrome, [
+      ...(nativeMac ? ['-arm64', chrome] : []),
+      '--headless', '--window-size=' + (process.env.HUMANSTUDY_TEST_VIEWPORT || '700,900'), '--disable-gpu', '--no-first-run', '--disable-dev-shm-usage', '--disable-background-networking',
       ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
       `--user-data-dir=${join(dir, 'chrome')}`, `http://127.0.0.1:${server.address().port}/`,
     ], { stdio: ['ignore', 'ignore', 'pipe'] })
@@ -169,7 +187,7 @@ test('sample guide opens the real source and participant preview without sending
       throw error
     } finally {
       clearTimeout(timeout)
-      if (browser.exitCode === null && browser.signalCode === null) browser.kill('SIGKILL')
+      if (browser.exitCode === null && browser.signalCode === null) browser.kill('SIGTERM')
       let shutdownTimer
       try {
         await Promise.race([browserClosed, new Promise((_, reject) => {
