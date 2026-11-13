@@ -54,7 +54,12 @@ test('research Overview preserves the source and scopes paper and experiment cla
     { id: 'field-source', url: 'https://example.test/field', locator: { page: 4 }, quote: 'Field-level excerpt' },
   )
   const markup = render(program, text, [])
-  const [overview, experiments] = markup.split('Experiments and analyses')
+  assert.match(markup, /aria-label="Study contents"/)
+  assert.match(markup, /href="#[^"]*-overview-0"[^>]*>Research question and motivation/)
+  assert.match(markup, /href="#[^"]*-experiment-1"[^>]*>Study 2/)
+  assert.match(markup, /class="research-experiment" id="[^"]*-experiment-1"/)
+  const body = markup.slice(markup.indexOf('class="research-reading-body"'))
+  const [overview, experiments] = body.split('Experiments and analyses')
   assert.match(overview, /Overview.*Research question and motivation.*Hypotheses.*Applies to Study 1.*Study 2.*Source evidence.*Field-level excerpt.*Additional node-level excerpt.*Main findings/s)
   assert.doesNotMatch(overview, /Unique Study 2 prediction/)
   assert.equal(overview.split('Field-level excerpt').length, 2, 'note sources do not repeat field sources')
