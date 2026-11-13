@@ -1,0 +1,3 @@
+# Bundled research assets are byte-bound to their preview/provenance hashes.
+# Never rewrite their line endings during a Windows checkout.
+app/resources/protocol-sample/** -text
