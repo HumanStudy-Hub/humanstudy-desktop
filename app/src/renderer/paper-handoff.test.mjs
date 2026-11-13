@@ -26,12 +26,16 @@ test('the online Home only forks the selected revision after an explicit click',
           import { createRoot } from 'react-dom/client'
           import { Home } from './components/Home'
           import { assertPaperRevision } from '../shared/paper-handoff'
+          import { catalogPublicationFields } from '../shared/research-search'
 
           const paper = 'paper_' + 'a'.repeat(24)
           const revision = 'b'.repeat(64)
           const staleRevision = 'c'.repeat(64)
           const entry = { id: paper, title: 'Paper handoff fixture', currentRevision: revision,
             authors: [], contributors: [], year: null, description: 'Fixture.', files: [], activity: [] }
+          const publication = catalogPublicationFields({ ...entry, assetFiles: [{path:'protocol.json'}],
+            protocol: { schemaVersion:'1', revision, fidelity:{verdict:'HIGH FIDELITY', signed_by:'Reviewer'}, arms:[{runnable:true}] },
+          }, { [paper]: {kind:'maintainer-reviewed-protocol', revision} })
           const requests = []
           const forks = []
           const opened = []
@@ -48,7 +52,7 @@ test('the online Home only forks the selected revision after an explicit click',
                 if (detailFailure === 'wait') await new Promise(resolve => { finishLoading = resolve })
                 if (detailFailure) throw Error(detailFailure)
                 assertPaperRevision(entry.currentRevision, expectedRevision)
-                return entry
+                return { ...entry, ...publication }
               },
               fork: async (id, expectedRevision) => {
                 forks.push([id, expectedRevision])
@@ -118,6 +122,8 @@ test('the online Home only forks the selected revision after an explicit click',
             }, 'Verified copy action absent')
             check(requests.length === 3 && requests.slice(1).every(([id, rev]) => id === paper && rev === revision),
               'Detail and retry must both use the exact revision')
+            check(document.querySelector('.repo-head .research-availability')?.textContent === 'Validated protocol',
+              'Verified maintainer publication did not display its badge')
             check(forks.length === 0 && opened.length === 0, 'Page load or retry created a project')
 
             copy.click()

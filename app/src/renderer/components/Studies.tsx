@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import type { CommunityStudy, CommunityStudyDetail } from '../../preload/types'
-import { isExtracted, isUserSubmission, matchesResearch, researchAvailability, researchRank } from '../../shared/research-search'
+import { isExtracted, isUserSubmission, isValidatedProtocol, matchesResearch, researchAvailability, researchRank } from '../../shared/research-search'
 import { relativeTime } from './Home'
 import { track } from '../telemetry'
 import { remember } from '../nav'
@@ -239,24 +239,27 @@ function Contributors({ people, compact }: { people: CommunityStudy['contributor
     )
   return (
     <ul className="people">
-      {people.map((c) => (
-        <li key={c.github ?? c.name}>
-          {c.github ? (
-            <button className="person" onClick={() => open(`https://github.com/${encodeURIComponent(c.github!)}`)}>
-              <Avatar name={c.name} src={contributorAvatar(c)} size={26} />
-              <span>{c.name}{c.affiliation && <span className="muted small"> · {c.affiliation}</span>}</span>
-              <span className="muted small">@{c.github}</span>
-            </button>
-          ) : (
-            <span className="person">
-              <Avatar name={c.name} size={26} />
-              <span>{c.name}{c.affiliation && <span className="muted small"> · {c.affiliation}</span>}</span>
-            </span>
-          )}
-          {c.orcid && <button className="link small" aria-label={`ORCID profile for ${c.name}`}
-            onClick={() => open(`https://orcid.org/${encodeURIComponent(c.orcid!)}`)}>ORCID ↗</button>}
-        </li>
-      ))}
+      {people.map(c => {
+        const name = c.github?.toLowerCase() === 'assassin808' ? 'HumanStudy Hub Team' : c.name
+        return (
+          <li key={c.github ?? c.name}>
+            {c.github ? (
+              <button className="person" onClick={() => open(`https://github.com/${encodeURIComponent(c.github!)}`)}>
+                <Avatar name={name} src={contributorAvatar(c)} size={26} />
+                <span>{name}{c.affiliation && <span className="muted small"> · {c.affiliation}</span>}</span>
+                <span className="muted small">@{c.github}</span>
+              </button>
+            ) : (
+              <span className="person">
+                <Avatar name={name} size={26} />
+                <span>{name}{c.affiliation && <span className="muted small"> · {c.affiliation}</span>}</span>
+              </span>
+            )}
+            {c.orcid && <button className="link small" aria-label={`ORCID profile for ${name}`}
+              onClick={() => open(`https://orcid.org/${encodeURIComponent(c.orcid!)}`)}>ORCID ↗</button>}
+          </li>
+        )
+      })}
     </ul>
   )
 }
@@ -333,7 +336,8 @@ function StudyPage({
         <div className="repo-id">
           <h1 className="repo-title">{head?.title ?? (error ? 'Study unavailable' : 'Loading…')}</h1>
           {head && <p className="muted repo-byline">{byline(head)}</p>}
-          {head && isUserSubmission(head) && <p className="small research-availability">User submitted</p>}
+          {head && (!handoff || detail) && (isValidatedProtocol(head) || isUserSubmission(head)) &&
+            <p className="small research-availability">{researchAvailability(head)}</p>}
           <Topics topics={head?.topics} onSelect={onTopic} />
         </div>
         <div className="repo-actions">
