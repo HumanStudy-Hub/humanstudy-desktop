@@ -4,6 +4,7 @@ import { isExtracted, isUserSubmission, matchesResearch, researchAvailability, r
 import { relativeTime } from './Home'
 import { track } from '../telemetry'
 import { remember } from '../nav'
+import { type PaperHandoff } from '../../shared/paper-handoff'
 
 const REPO_URL = 'https://github.com/HumanStudy-Hub/HumanStudy-Bench'
 
@@ -16,6 +17,8 @@ interface Props {
   query: string
   onOpenProject(dir: string): void
   ref?: Ref<StudiesHandle>
+  handoff?: PaperHandoff | null
+  onHandoffConsumed?(): void
 }
 
 // Kept across section switches so returning to Studies doesn't flash a loading state.
@@ -68,10 +71,10 @@ function Avatar({ name, src, size = 22 }: { name: string; src?: string; size?: n
 const contributorAvatar = (c: CommunityStudy['contributors'][number]) =>
   c.github ? `https://github.com/${encodeURIComponent(c.github)}.png?size=64` : undefined
 
-export function Studies({ query, onOpenProject, ref }: Props) {
+export function Studies({ query, onOpenProject, ref, handoff, onHandoffConsumed }: Props) {
   const [list, setList] = useState<CommunityStudy[] | null>(cachedList)
   const [error, setError] = useState('')
-  const [openId, setOpenId] = useState<string | null>(null)
+  const [openId, setOpenId] = useState<string | null>(handoff?.paper ?? null)
   const [topic, setTopic] = useState<{ id: string; label: string } | null>(null)
   const [visibleCount, setVisibleCount] = useState(30)
   const [pending, setPending] = useState(false)
@@ -125,8 +128,8 @@ export function Studies({ query, onOpenProject, ref }: Props) {
       setOpenId(null)
     })
   }, [])
-  const back = useCallback(() => setOpenId(null), [])
-  const onTopic = useCallback((next: { id: string; label: string } | null) => { setTopic(next); setOpenId(null) }, [])
+  const back = useCallback(() => { setOpenId(null); onHandoffConsumed?.() }, [onHandoffConsumed])
+  const onTopic = useCallback((next: { id: string; label: string } | null) => { setTopic(next); setOpenId(null); onHandoffConsumed?.() }, [onHandoffConsumed])
   useEffect(() => {
     if (openId || !listScroll.current) return
     const el = document.querySelector<HTMLElement>('[data-library-scroll]')
@@ -136,7 +139,10 @@ export function Studies({ query, onOpenProject, ref }: Props) {
 
   if (openId) {
     const summary = list?.find((s) => s.id === openId) ?? null
-    return <StudyPage id={openId} summary={summary} onBack={back} onTopic={onTopic} onOpenProject={onOpenProject} />
+    const activeHandoff = handoff?.paper === openId ? handoff : null
+    return <StudyPage key={`${openId}:${activeHandoff?.revision ?? ''}`} id={openId} summary={summary} onBack={back} onTopic={onTopic}
+      handoff={activeHandoff}
+      onOpenProject={dir => { onHandoffConsumed?.(); onOpenProject(dir) }} />
   }
 
   const offline = typeof navigator !== 'undefined' && !navigator.onLine
@@ -263,12 +269,14 @@ function StudyPage({
   onBack,
   onTopic,
   onOpenProject,
+  handoff,
 }: {
   id: string
   summary: CommunityStudy | null
   onBack(): void
   onTopic(topic: { id: string; label: string }): void
   onOpenProject(dir: string): void
+  handoff?: PaperHandoff | null
 }) {
   const [detail, setDetail] = useState<CommunityStudyDetail | null>(null)
   const [error, setError] = useState('')
@@ -279,15 +287,15 @@ function StudyPage({
 
   const load = useCallback(async () => {
     setError('')
+    setDetail(null)
     try {
-      setDetail(await window.humanstudy.community.study(id))
+      setDetail(await window.humanstudy.community.study(id, handoff?.revision))
     } catch (e) {
       setError(errorText(e, 'This study could not be loaded.'))
     }
-  }, [id])
+  }, [id, handoff?.revision])
 
   useEffect(() => {
-    setDetail(null)
     void load()
   }, [load])
 
@@ -304,7 +312,7 @@ function StudyPage({
     setForking(true)
     setForkError('')
     try {
-      onOpenProject(await window.humanstudy.community.fork(id))
+      onOpenProject(await window.humanstudy.community.fork(id, handoff?.revision))
     } catch (e) {
       setForkError(errorText(e, 'The study could not be copied.'))
       setForking(false)
@@ -312,6 +320,7 @@ function StudyPage({
   }
 
   const head = detail ?? summary
+  const changed = Boolean(handoff && detail && detail.currentRevision !== handoff.revision)
   const files = useMemo(() => [...(detail?.files ?? [])].sort((a, b) => a.path.localeCompare(b.path)), [detail])
 
   return (
@@ -329,8 +338,8 @@ function StudyPage({
         </div>
         <div className="repo-actions">
           <div className="repo-buttons">
-            <button className="primary" onClick={() => void fork()} disabled={forking || !head}>
-              {forking ? 'Copying…' : 'Fork to my projects'}
+            <button className="primary" onClick={() => void fork()} disabled={forking || !head || Boolean(handoff && (!detail || error)) || changed}>
+              {forking ? 'Copying…' : handoff ? 'Open in my projects' : 'Fork to my projects'}
             </button>
             <button className="outline" onClick={() => detail && open(detail.repoUrl)} disabled={!detail}>
               Open on GitHub ↗
@@ -343,6 +352,8 @@ function StudyPage({
               {head?.currentRevision ? 'Copies the Human Program, materials and artifacts into your projects.' : head?.legacyStudyId || /^study_\d+$/.test(id) ? 'Copies the study materials; the agent can build its Human Program.' : 'Only the source is indexed. A Human Program is unavailable.'}
           </p>
           {forkError && <p className="home-error repo-error">{forkError}</p>}
+          {changed && <p role="alert" className="home-error">This paper has changed since you opened it on the website. Return to the library to choose the current version.</p>}
+          {handoff && !changed && !error && <p className="muted small">Create an editable copy to {handoff.intent === 'run' ? 'review and prepare the experiment' : 'discuss the paper with the agent'}. No simulation starts automatically.</p>}
         </div>
       </header>
 

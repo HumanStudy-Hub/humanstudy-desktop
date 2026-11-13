@@ -21,8 +21,8 @@ const api: HumanStudyApi = {
   },
   community: {
     studies: () => ipcRenderer.invoke('community:studies'),
-    study: (id) => ipcRenderer.invoke('community:study', id),
-    fork: (id) => ipcRenderer.invoke('community:fork', id),
+    study: (id, expectedRevision) => ipcRenderer.invoke('community:study', id, expectedRevision),
+    fork: (id, expectedRevision) => ipcRenderer.invoke('community:fork', id, expectedRevision),
     openExternal: (url) => ipcRenderer.invoke('community:openExternal', url),
   },
   account: {

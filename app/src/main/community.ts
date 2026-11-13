@@ -8,13 +8,15 @@ import { join } from 'node:path'
 import type { CommunityStudy, CommunityStudyDetail } from '../preload/types'
 import { catalogSearchFields } from '../shared/research-search'
 import { repinHeld } from './original-text'
+import { assertPaperRevision } from '../shared/paper-handoff'
 
 const OWNER_REPO = 'HumanStudy-Hub/HumanStudy-Bench'
 const BRANCH = process.env.HUMANSTUDY_COMMUNITY_BRANCH || 'main'
 const RAW = `https://raw.githubusercontent.com/${OWNER_REPO}/${BRANCH}`
 const API = `https://api.github.com/repos/${OWNER_REPO}`
 const INDEX_URL = `${RAW}/co_website/data/studies_index.json`
-const RESEARCH_INDEX_URL = `${RAW}/co_website/data/research_index.json`
+const RESEARCH_INDEX_PATH = 'co_website/data/research_index.json'
+const RESEARCH_INDEX_URL = `${RAW}/${RESEARCH_INDEX_PATH}`
 const REPO_URL = `https://github.com/${OWNER_REPO}`
 const DISCUSSIONS_URL = `${REPO_URL}/discussions`
 const TTL_MS = 10 * 60 * 1000
@@ -150,18 +152,28 @@ function normStudy(raw: unknown): CommunityStudy | null {
 }
 
 // ---- studies() ------------------------------------------------------------------------
+type Catalog = {
+  studies?: unknown
+  papers?: unknown
+  taxonomy?: { concepts?: { id: string; label: string; aliases: string[]; status: string }[] }
+}
+
+function catalogStudies(data: Catalog): CommunityStudy[] {
+  const concepts = data?.taxonomy?.concepts ?? []
+  const list = Array.isArray(data?.papers) ? data.papers.map(raw => {
+    const paper = raw as Record<string, unknown>
+    return { ...paper, ...catalogSearchFields(paper, concepts) }
+  }) : Array.isArray(data?.studies) ? data.studies : []
+  return list.map(normStudy).filter((s): s is CommunityStudy => s !== null)
+}
+
 async function refreshIndex(): Promise<CommunityStudy[]> {
   if (indexInFlight) return indexInFlight
   indexInFlight = (async () => {
-    let data: { studies?: unknown; papers?: unknown; taxonomy?: { concepts?: { id: string; label: string; aliases: string[]; status: string }[] } }
-    try { data = await getJson(RESEARCH_INDEX_URL) as typeof data }
-    catch { data = await getJson(INDEX_URL) as typeof data }
-    const concepts = data.taxonomy?.concepts ?? []
-    const list = Array.isArray(data?.papers) ? data.papers.map(raw => {
-      const paper = raw as Record<string, unknown>
-      return { ...paper, ...catalogSearchFields(paper, concepts) }
-    }) : Array.isArray(data?.studies) ? data.studies : []
-    const studies = list.map(normStudy).filter((s): s is CommunityStudy => s !== null)
+    let data: Catalog
+    try { data = await getJson(RESEARCH_INDEX_URL) as Catalog }
+    catch { data = await getJson(INDEX_URL) as Catalog }
+    const studies = catalogStudies(data)
     const c = await loadCache()
     c.index = { fetchedAt: Date.now(), studies, format: 2 }
     await saveCache()
@@ -288,8 +300,9 @@ function bare(id: string, entry: CommunityStudy | null): Detail {
 }
 
 /** Detail for one study; cached for 10 minutes, never throws on rate limits or offline. */
-export async function communityStudy(rawId: string): Promise<Detail> {
+export async function communityStudy(rawId: string, expectedRevision?: string): Promise<Detail> {
   const id = assertId(rawId)
+  if (expectedRevision !== undefined) return pinnedCommunityStudy(id, expectedRevision)
   const c = await loadCache()
   const hit = c.details?.[id]
   const entry = await indexEntry(id)
@@ -328,15 +341,25 @@ async function mainSha(): Promise<string | null> {
   }
 }
 
+async function pinnedCommunityStudy(id: string, expectedRevision: string): Promise<Detail> {
+  const sha = await mainSha()
+  if (!sha) throw new Error('The source version could not be pinned. Retry when GitHub is available.')
+  const catalog = await getJson(`https://raw.githubusercontent.com/${OWNER_REPO}/${sha}/${RESEARCH_INDEX_PATH}`) as Catalog
+  const entry = catalogStudies(catalog).find(study => study.id === id)
+  assertPaperRevision(entry?.currentRevision, expectedRevision)
+  return { ...bare(id, entry ?? null), files: await listFiles(id, entry ?? null, sha), sourceCommit: sha }
+}
+
 const rawUrl = (id: string, rel: string): string => `${RAW}/studies/${id}/${rel.split('/').map(encodeURIComponent).join('/')}`
 
 /** Creates a local project from a community study and returns its directory. */
 export async function forkCommunityStudy(
   rawId: string,
-  createProject: (input: { name: string }) => Promise<string>
+  createProject: (input: { name: string }) => Promise<string>,
+  expectedRevision?: string
 ): Promise<string> {
   const id = assertId(rawId)
-  const detail = await communityStudy(id)
+  const detail = await communityStudy(id, expectedRevision)
   const sha = detail.sourceCommit || await mainSha()
   if (!sha) throw new Error('The source version could not be pinned. Retry when GitHub is available.')
   if (detail.currentRevision) {

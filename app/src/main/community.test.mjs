@@ -69,7 +69,9 @@ test('community index retains searchable aliases and forks exact verified files 
  assert.deepEqual(studies[0].contributors,[{name:'Reconstruction contributor',affiliation:'University',orcid:'0000-0002-1825-0097'}])
  assert.ok(lib.isAllowedExternal('https://orcid.org/0000-0002-1825-0097'))
  assert.ok(!lib.isAllowedExternal('https://orcid.org/0000-0002-1825-0097?redirect=https://example.com'))
- const project=await lib.forkCommunityStudy(id,async()=>{created++;const dir=join(temp,'project');await mkdir(dir);return dir})
+ await assert.rejects(lib.forkCommunityStudy(id,async()=>{created++;throw Error('must not create')},'0'.repeat(64)), /different published version/)
+ assert.equal(created,0)
+ const project=await lib.forkCommunityStudy(id,async()=>{created++;const dir=join(temp,'project');await mkdir(dir);return dir},revision)
  assert.equal(created,1);assert.equal((await readFile(join(project,'program.json'))).toString(),content.toString())
  const metadata=JSON.parse(await readFile(join(project,'.humanstudy/community.json'),'utf8'))
  assert.equal(metadata.baseRevision,revision);assert.equal(metadata.commit,commit)
@@ -82,6 +84,7 @@ test('community index retains searchable aliases and forks exact verified files 
  assert.ok(!(await readdir(project)).includes('Capabilities.json'),'case variants cannot become root aliases')
  assert.equal(await readFile(join(project,'sources/study.json'),'utf8'),'{"participants":42}','local context must not overwrite a cited resource')
  assert.ok(!calls.some(url=>url.includes(`/main/${paper.assetRoot}`)))
+ await lib.communityStudy(id)
 })
 test('a tampered immutable file fails before a local project is created',async()=>{
  globalThis.fetch=async input=>String(input).includes(`/${commit}/`)?new Response('tampered'):new Response('[]')
@@ -89,6 +92,70 @@ test('a tampered immutable file fails before a local project is created',async()
  await assert.rejects(lib.forkCommunityStudy(id,async()=>{created=true;return '/not-used'}),/verification failed/)
  assert.equal(created,false)
 
+})
+
+test('a pinned handoff ignores cached detail and verifies the catalog at the same commit', async () => {
+ const previousCommit = 'b'.repeat(40)
+ const nextContent = Buffer.from('{"schemaVersion":2,"id":"new-version"}')
+ const manifest = [{ path: 'program.json', sha256: createHash('sha256').update(nextContent).digest('hex'), bytes: nextContent.length }]
+ const nextRevision = createHash('sha256').update(JSON.stringify(manifest.map(({ path, sha256 }) => ({ path, sha256 })))).digest('hex')
+ const nextPaper = { ...paper, currentRevision: nextRevision, assetRoot: `community/fixture/revisions/${nextRevision}`, assetFiles: manifest }
+ const calls = []
+ let head = previousCommit
+ let pinnedCatalogAvailable = true
+ let created = 0
+ globalThis.fetch = async input => {
+  const url = String(input)
+  calls.push(url)
+  if (url.endsWith('/commits/main')) return new Response(head)
+  if (url.includes('/commits?')) return new Response('[]')
+  if (url.includes('/main/') && url.endsWith('research_index.json')) return Response.json(catalog)
+  if (url.includes(`/${commit}/`) && url.endsWith('research_index.json')) {
+   if (!pinnedCatalogAvailable) return new Response(null, { status: 503 })
+   return Response.json({ ...catalog, papers: [nextPaper] })
+  }
+  if (url.endsWith(`/${commit}/${nextPaper.assetRoot}/program.json`)) return new Response(nextContent)
+  throw new Error('Unexpected URL ' + url)
+ }
+ lib.setCommunityCacheDir(join(temp, 'handoff-cache'))
+ const cached = await lib.communityStudy(id)
+ assert.equal(cached.currentRevision, revision)
+ assert.equal(cached.sourceCommit, previousCommit)
+
+ head = commit
+ const create = async () => {
+  created++
+  const project = join(temp, 'handoff-project')
+  await mkdir(project)
+  return project
+ }
+ calls.length = 0
+ await assert.rejects(lib.forkCommunityStudy(id, create, revision), /different published version/)
+ assert.equal(created, 0)
+ assert.deepEqual(calls.map(url => new URL(url).pathname.split('/').slice(-2)), [
+  ['commits', 'main'], ['data', 'research_index.json'],
+ ])
+ assert.ok(calls[1].includes(`/${commit}/`), 'the handoff uses the catalog from the pinned commit')
+
+ pinnedCatalogAvailable = false
+ await assert.rejects(lib.forkCommunityStudy(id, create, revision), /503/)
+ assert.equal(created, 0)
+ assert.equal((await lib.communityStudy(id)).sourceCommit, previousCommit, 'ordinary browsing still uses its cached detail')
+
+ pinnedCatalogAvailable = true
+ await assert.rejects(lib.communityStudy(id, revision), /different published version/)
+ const detail = await lib.communityStudy(id, nextRevision)
+ assert.equal(detail.currentRevision, nextRevision)
+ assert.equal(detail.sourceCommit, commit)
+ assert.ok(detail.files.every(file => file.url.includes(`/${commit}/`)))
+ assert.equal((await lib.communityStudy(id)).sourceCommit, previousCommit)
+ const project = await lib.forkCommunityStudy(id, create, nextRevision)
+ assert.equal(created, 1)
+ assert.deepEqual(await readFile(join(project, 'program.json')), nextContent)
+ const metadata = JSON.parse(await readFile(join(project, '.humanstudy/community.json'), 'utf8'))
+ assert.equal(metadata.baseRevision, nextRevision)
+ assert.equal(metadata.sourceCommit, commit)
+ assert.equal(metadata.commit, commit)
 })
 
 after(async()=>{globalThis.fetch=previous;await rm(temp,{recursive:true,force:true})})
