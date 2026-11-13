@@ -61,6 +61,18 @@ test('community export includes finished research artifacts and the real baselin
   const withPaper=unzipSync(readFileSync(join(root,'exports/with-paper.zip')))
   assert.ok(withPaper['sources/paper.pdf']);assert.equal(JSON.parse(strFromU8(withPaper['CONTRIBUTION.json'])).includesPdf,true)
   assert.equal(spawnSync('python3',[script,'--output','exports/community.zip'],{cwd:root}).status,1,'existing exports are never overwritten')
+  writeFileSync(join(root,'artifacts/private-token.md'),'Authorization: Bearer synthetic-not-a-real-token-123456789')
+  const reportSecret=spawnSync('python3',[script,'--output','exports/report-secret.zip'],{cwd:root,encoding:'utf8'})
+  assert.equal(reportSecret.status,1)
+  assert.match(reportSecret.stderr,/Public export blocked/)
+  rmSync(join(root,'artifacts/private-token.md'))
+  const sensitiveName='sk-synthetic-not-a-real-secret-123456789.md'
+  writeFileSync(join(root,'artifacts',sensitiveName),'Ordinary report')
+  const namedSecret=spawnSync('python3',[script,'--output','exports/named-secret.zip'],{cwd:root,encoding:'utf8'})
+  assert.equal(namedSecret.status,1)
+  assert.match(namedSecret.stderr,/Public export blocked/)
+  assert.ok(!namedSecret.stderr.includes(sensitiveName))
+  rmSync(join(root,'artifacts',sensitiveName))
   writeFileSync(join(root,'sources/material.txt'),'CHANGED AFTER LICENCE RECORD')
   const changed=spawnSync('python3',[script,'--output','exports/changed.zip'],{cwd:root,encoding:'utf8'})
   assert.equal(changed.status,1)
@@ -102,8 +114,28 @@ test('paired export projects hosted sources and binds both documents to the froz
   write('artifacts/private-copy.md',privateText)
   write('artifacts/simulations/run/records.jsonl','private simulation records')
   const run=(name)=>spawnSync('python3',[script,'--output',`exports/${name}.zip`],{cwd:root,encoding:'utf8'})
+  // Both public routes reject sensitive values embedded in ordinary prose, not just path keys.
+  const unsafe = [
+   '/Users/synthetic-person/private-notes.txt',
+   'C:\\Users\\synthetic-person\\private-notes.txt',
+   'Authorization: Bearer synthetic-not-a-real-token-123456789',
+   'sk-synthetic-not-a-real-secret-123456789',
+  ]
+  for (const [index, value] of unsafe.entries()) {
+   write('program.json', JSON.stringify({...program, notes:`Working note: ${value}`}))
+   for (const programOnly of [false, true]) {
+    const rel=`exports/blocked-${index}-${programOnly}.zip`
+    const attempt=spawnSync('python3',[script,'--output',rel,...(programOnly?['--program-only']:[])],{cwd:root,encoding:'utf8'})
+    assert.equal(attempt.status,1)
+    assert.match(attempt.stderr,/Public export blocked/)
+    assert.ok(!attempt.stderr.includes(value),'rejection does not disclose the sensitive value')
+   }
+  }
+  const safeProgram={...program, notes:'Author: researcher@example.org; source https://example.org/Users/reference and doi:10.1234/example. SHA '+ 'a'.repeat(64)}
+  write('program.json',JSON.stringify(safeProgram))
   const exported=run('pair')
   assert.equal(exported.status,0,exported.stderr)
+  write('program.json',JSON.stringify(program))
   const zip=readFileSync(join(root,'exports/pair.zip'))
   const entries=unzipSync(zip)
   const json=name=>JSON.parse(strFromU8(entries[name]))
