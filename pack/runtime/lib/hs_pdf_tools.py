@@ -36,8 +36,10 @@ def _open_plumber(path: str, password: str | None = None):
 
 def page_text(pdf, index: int, layout: bool) -> str:
     """Text of one page (0-based). pdfplumber first, pypdf if pdfplumber chokes on the page."""
+    page = None
     try:
-        t = pdf.pages[index].extract_text(layout=layout) or ""
+        page = pdf.pages[index]
+        t = page.extract_text(layout=layout) or ""
     except Exception:  # noqa: BLE001
         t = ""
         try:
@@ -46,6 +48,9 @@ def page_text(pdf, index: int, layout: bool) -> str:
             t = PdfReader(pdf.stream).pages[index].extract_text() or ""
         except Exception:  # noqa: BLE001
             pass
+    finally:
+        if page is not None:
+            page.close()
     # poppler does not pad lines with trailing blanks; a layout rendering of a blank page is just blanks.
     lines = [ln.rstrip() for ln in t.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     while lines and not lines[-1]:
@@ -228,15 +233,15 @@ def hs_pdf(argv: list[str]) -> int:
     if path is None:
         raise ToolError(usage)
     blank = []
-    chunks = []
     with _open_plumber(path) as pdf:
         n = len(pdf.pages)
-        for i in _page_range(n, first, last):
+        selected = _page_range(n, first, last)
+        for i in selected:
             t = page_text(pdf, i, layout)
             if not t.strip():
                 blank.append(i + 1)
-            chunks.append(f"=== page {i + 1} ===\n{t}\n")
-    _write("\n".join(chunks), "-")
+            separator = "" if i == selected.start else "\n"
+            _write(f"{separator}=== page {i + 1} ===\n{t}\n", "-")
     if blank:
         shown = ", ".join(map(str, blank[:20])) + (" ..." if len(blank) > 20 else "")
         sys.stderr.write(
