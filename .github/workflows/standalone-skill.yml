@@ -1,0 +1,31 @@
+name: Standalone skill checks
+
+on:
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - '.github/workflows/standalone-skill.yml'
+      - '.github/workflows/release.yml'
+      - 'scripts/build_standalone_skill.py'
+      - 'scripts/tests/test_standalone_skill.py'
+      - 'pack/**'
+      - 'app/src/shared/sample-program.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  standalone-skill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install jsonschema==4.26.0
+      # These tests generate the standalone ZIP and exercise its checks and export in a plain project.
+      - run: python -m unittest discover -s scripts/tests -p 'test_standalone_skill.py' -v
