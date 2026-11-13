@@ -9,6 +9,7 @@ import unicodedata
 import zipfile
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "build"))
 import check_materials  # noqa: E402  (researcher-supplied and not-openly-licensed materials stay in the project)
@@ -33,7 +34,7 @@ _PUBLIC_SECRET = re.compile(
     r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b"
     r"|\bAuthorization\s*:\s*Bearer\s+[^\s\"'<>]{8,}", re.I)
 _PUBLIC_LOCAL_PATH = re.compile(
-    r"(?<![\w:/])(?:file://[^\s]+|[A-Za-z]:[\\/][^\s]+|\\\\[^\\\s]+\\[^\s]+"
+    r"(?<![\w:/])(?:file://[^\s]+|[A-Za-z]:[\\/](?![\\/])[^\s]+|\\\\[^\\\s]+\\[^\s]+"
     r"|(?:~?/Users/|~?/home/|/private/|/tmp/|/var/folders/|/vercel/sandbox/)[^\s]+)", re.I)
 
 
@@ -174,6 +175,40 @@ def projection_engine():
     return release, schema_check, distribution
 
 
+def public_source_url(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() in {"http", "https"} and parsed.hostname and not parsed.username and not parsed.password:
+            return value
+    except ValueError:
+        pass
+    return None
+
+
+def public_source_credit(record, evidence, paper, name):
+    """Carry the approved source credit with quoted Program text, without local manifest paths."""
+    attribution = record.get("attribution")
+    source_url = public_source_url(record.get("url")) or public_source_url(evidence.get("url"))
+    if not source_url and name == paper.get("filename") and normalized_doi(paper.get("doi")):
+        source_url = "https://doi.org/" + normalized_doi(paper["doi"])
+    license = recorded_license(record)
+    terms = public_source_url(record.get("licenseUrl"))
+    cc = re.fullmatch(r"CC-BY-([1-4]\.0|2\.5)", license or "", re.I)
+    if not terms and cc:
+        terms = f"https://creativecommons.org/licenses/by/{cc[1]}/"
+    if not terms and license in {"CC0", "CC0-1.0"}:
+        terms = "https://creativecommons.org/publicdomain/zero/1.0/"
+    if not isinstance(attribution, str) or not attribution.strip() or not source_url or not terms:
+        raise ValueError("A quoted public source needs attribution, a public source URL and a license URL in sources/SOURCE.json. Review its source record before sharing.")
+    title = record.get("title") or (paper.get("title") if name == paper.get("filename") else None)
+    return {"evidenceIds": [], "url": source_url, "attribution": attribution.strip(), "license": license,
+            "licenseUrl": terms, "sha256": record["sha256"],
+            **({"title": title} if isinstance(title, str) and title.strip() else {}),
+            "changes": "Source information organized into a Human Study Program; evidence excerpts retained. Original source unchanged."}
+
+
 def program_only_projection(root, program, licensed):
     """Keep the scholarly document independent of its local execution files."""
     release, _, _ = projection_engine()
@@ -211,6 +246,7 @@ def program_only_projection(root, program, licensed):
     paper = program["source"]
     evidence_records = program.get("evidence", [])
     permitted_quotes = set()
+    public_credits = {}
     withheld_quotes = []
     for evidence in evidence_records:
         # Keep the source identifier, URL and locator even when its exact quote stays local.
@@ -224,6 +260,9 @@ def program_only_projection(root, program, licensed):
         if evidence.get("quote"):
             if isinstance(name, str) and matching_hash and (linked_name is None or linked_name == name) and shareable_quote(name):
                 permitted_quotes.add(evidence["id"])
+                if name not in public_credits:
+                    public_credits[name] = public_source_credit(licensed[name], evidence, paper, name)
+                public_credits[name]["evidenceIds"].append(evidence["id"])
             else:
                 evidence.pop("quote")
                 evidence.pop("verification", None)
@@ -274,6 +313,7 @@ def program_only_projection(root, program, licensed):
     withheld_quotes = [e["id"] for e in evidence_records if e["id"] in withheld and not e.get("quote")]
     extensions["communityExport"] = {
         "scope": "program-only",
+        "sources": list(public_credits.values()),
         "withheldEvidenceQuotes": {"ids": withheld_quotes, "reason": "redistribution-unverified"},
     }
     return json_bytes(program), withheld_quotes
