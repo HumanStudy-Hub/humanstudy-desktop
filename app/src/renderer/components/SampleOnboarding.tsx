@@ -11,8 +11,8 @@ export type SampleGuideAction = 'overview' | 'source' | 'participant' | 'trial' 
 const steps: { action: SampleGuideAction; title: string; hint: string; button: string }[] = [
   { action: 'overview', title: 'Find the research question', hint: 'Start with what the paper asks, predicts and finds.', button: 'Show the overview' },
   { action: 'source', title: 'Check it against the paper', hint: 'Open a cited passage beside the study. The source stays one click away.', button: 'Compare with the source' },
-  { action: 'participant', title: 'Step into the experiment', hint: 'Explore the participant view. Try its conditions and pages; these are examples, not results.', button: 'Explore participant view' },
-  { action: 'trial', title: 'Make it your own', hint: 'Put a small trial request in the chat. Review it before sending; nothing runs automatically.', button: 'Draft a trial request' },
+  { action: 'participant', title: 'Read the original passage', hint: 'Compare the highlighted passage with the study. Next, try the participant view.', button: 'Explore participant view' },
+  { action: 'trial', title: 'Try a condition', hint: 'Change a condition or move through the screens. When ready, draft a trial request in chat; nothing runs automatically.', button: 'Draft a trial request' },
 ]
 
 /** A non-modal tour of the real editable sample. Progress means a view was opened, not scientific validation. */
@@ -118,7 +118,7 @@ export function SampleOnboarding({ onClose, onAction, agentReady }: { agentReady
     return () => window.removeEventListener('keydown', keys)
   }, [onClose])
   const current = step === 3 && !agentReady
-    ? { action: 'setup' as const, title: 'Set up your study agent', hint: 'Sign in, check model access and review the research data agreement before using the agent. You can keep exploring without it.', button: 'See agent setup' }
+    ? { action: 'setup' as const, title: 'Try a condition', hint: 'Change a condition or move through the screens. You can explore without an account, then set up the agent when ready.', button: 'See agent setup' }
     : steps[step]
   return createPortal(<div className="sample-guide-layer">
     {spot ? <div className="sample-guide-spotlight" aria-hidden="true" style={spot} /> : <div className="sample-guide-shade" aria-hidden="true" />}
