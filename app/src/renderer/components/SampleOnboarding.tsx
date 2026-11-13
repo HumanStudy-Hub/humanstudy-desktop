@@ -6,7 +6,7 @@ export function walkthroughSample(input: unknown) {
   try { const program = validateHumanProgram(input); return program.id === 'mazzarella2018politeness-research' ? program : null } catch { return null }
 }
 
-export type SampleGuideAction = 'overview' | 'source' | 'participant' | 'trial'
+export type SampleGuideAction = 'overview' | 'source' | 'participant' | 'trial' | 'setup'
 const steps: { action: SampleGuideAction; title: string; hint: string; button: string }[] = [
   { action: 'overview', title: 'Find the research question', hint: 'Start with what the paper asks, predicts and finds.', button: 'Show the overview' },
   { action: 'source', title: 'Check it against the paper', hint: 'Open a cited passage beside the study. The source stays one click away.', button: 'Compare with the source' },
@@ -15,7 +15,7 @@ const steps: { action: SampleGuideAction; title: string; hint: string; button: s
 ]
 
 /** A non-modal tour of the real editable sample. Progress means a view was opened, not scientific validation. */
-export function SampleOnboarding({ onClose, onAction }: { onClose(): void; onAction(action: SampleGuideAction): void }) {
+export function SampleOnboarding({ onClose, onAction, agentReady }: { agentReady: boolean; onClose(): void; onAction(action: SampleGuideAction): void }) {
   const [step, setStep] = useState(0)
   const finish = useRef<HTMLButtonElement>(null)
   useEffect(() => { if (step === steps.length) finish.current?.focus() }, [step])
@@ -24,14 +24,16 @@ export function SampleOnboarding({ onClose, onAction }: { onClose(): void; onAct
     window.addEventListener('keydown', keys)
     return () => window.removeEventListener('keydown', keys)
   }, [onClose])
-  const current = steps[step]
+  const current = step === 3 && !agentReady
+    ? { action: 'setup' as const, title: 'Set up your study agent', hint: 'Sign in, check model access and review the research data agreement before using the agent. You can keep exploring without it.', button: 'See agent setup' }
+    : steps[step]
   return <section className="sample-onboarding" aria-label="Sample walkthrough">
     <div className="sample-guide-progress" aria-label={`${Math.min(step + 1, 4)} of 4 steps`}>
       {steps.map((item, index) => <span key={item.action} className={index < step ? 'done' : index === step ? 'current' : ''} aria-hidden="true" />)}
     </div>
     <div className="sample-guide-copy" aria-live="polite">
       <strong>{current?.title ?? 'Your turn'}</strong>
-      <p>{current?.hint ?? 'Continue in chat. Review your draft before sending, or keep exploring the paper.'}</p>
+      <p>{current?.hint ?? (agentReady ? 'Continue in chat. Review your draft before sending, or keep exploring the paper.' : 'Agent setup is shown on the left. No request was drafted or sent. You can finish setup or keep exploring the paper.')}</p>
     </div>
     <div className="sample-guide-actions">
       {current && <button className="primary" onClick={() => { onAction(current.action); setStep(value => value + 1) }}>{current.button}</button>}
