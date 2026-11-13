@@ -90,3 +90,16 @@ Knobe is a local-only pilot built from the existing sandbox protocol. It retains
 The preparation action prefills the existing agent composer, rather than starting a run. Guest UI verification covered the switch to the agent panel, not a hosted model conversation. On-demand preparation instructions, machine checks, local UI and the local runner are verified; live fresh-PDF generation, a real clarification/material handoff, a user-approved variant run, automatic preview regeneration and private intake/handback integration are not yet accepted. No batch work resumed, paid call, merge or release.
 
 Verification: typecheck, production desktop/web build, 103 targeted app/IPC/runner/checkpoint tests, and both browser walkthroughs.
+
+## Contextual sample guide (November 2026)
+
+Home's existing sample card still creates a real, editable Mazzarella project. A compact, non-modal guide appears beneath the workspace header. It follows the stable sample document ID, so renaming the project does not lose the guide; other projects do not receive a Mazzarella tour.
+
+1. **Show the overview** opens Study and its research question, hypotheses and findings.
+2. **Compare with the source** opens an actual sample evidence passage beside Study, retaining source identity and hash where supplied.
+3. **Explore participant view** opens the existing protocol-bound preview, with its real conditions and pages. If unavailable, the ordinary missing-preview explanation remains visible.
+4. **Draft a trial request** opens the agent pane and appends an editable Study 1 trial request, explicitly requiring a plan before execution. Existing unsent text is preserved. Nothing sends, calls a model or runs automatically.
+
+**Skip guide** or Escape closes it. **Sample guide** in the sample workspace header replays it. Completion is local (`hs.sampleWalkthrough.v2`); scientific files and account data do not change. Native keyboard-accessible buttons, announced step copy, and focus on **Finish guide** support keyboard use. Progress indicates navigation, never scientific validation.
+
+Validation: typecheck and real-Chrome local regression with the real sample Program, protocol, participant HTML and renderer. The regression checks action order, unchanged source text, preview opening, preserved unsent text, stable identity after renaming, non-sample exclusion, skip/replay, keyboard focus and a narrow viewport. This fixture is **not** cloud end-to-end acceptance. Before release, open the sample through Home in the deployed cloud app and verify the four actions, real PDF comparison and unsent composer text. No model call is needed.

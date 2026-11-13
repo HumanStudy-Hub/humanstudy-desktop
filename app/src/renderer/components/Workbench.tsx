@@ -44,6 +44,7 @@ const DEFAULT_SOURCE: SourceRef = { page: 1 }
 
 export interface WorkbenchHandle {
   showTab(tab: MainTab): void
+  showParticipantPreview(): void
   /** Open a project file in a tab by its absolute path. */
   openFile(path: string): void
   toggleFiles(): void
@@ -189,6 +190,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const [editError, setEditError] = useState('')
   const [changed, setChanged] = useState<Set<string>>(() => new Set())
   const [paperSeen, setPaperSeen] = useState(false)
+  const [previewRequest, setPreviewRequest] = useState(0)
   const sourceResolution = useMemo(() => source ? resolveSource(project, source) : null, [project, source])
   const drawerSource = useMemo(() => source ? { ...source, pending: sourceResolution?.pending } : null, [source, sourceResolution?.pending])
   const sourceFile = sourceResolution ? sourceResolution.file : project.pdf
@@ -344,6 +346,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   }, [update])
   useImperativeHandle(ref, () => ({
     showTab: (tab) => activate(tab),
+    showParticipantPreview() { activate('study'); update(value => ({ ...value, compare: false })); setPreviewRequest(value => value + 1) },
     openFile(path) {
       if (fileByPath.has(path)) open(`file:${path}`)
     },
@@ -589,7 +592,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
                 {!building && problems.length > 0 && <p className="muted small program-notice" role="status" title={problems.join('\n')}>
                   {t('study.problems', { n: problems.length })} · <button className="link" onClick={fixProgram}>{t('study.fix')}</button>
                 </p>}
-                {protocolText || showResearchDespiteReadError ? <ProtocolStudy text={protocolText ?? ''} program={researchProgram} problems={problems} preview={files.find(f => f.rel === 'artifacts/preview.html')}
+                {protocolText || showResearchDespiteReadError ? <ProtocolStudy previewRequest={previewRequest} text={protocolText ?? ''} program={researchProgram} problems={problems} preview={files.find(f => f.rel === 'artifacts/preview.html')}
                   onAsk={docProps.onPrefill}
                   onSource={ref => { rememberHere(); docProps.onSource('protocol', ref); update(l => ({ ...l, active: 'study', compare: true })) }} />
                   : <div className="empty-state">{loadedProtocol?.key === protocolKey && loadedProtocol.error ? loadedProtocol.error : t('protocol.loading')}</div>}

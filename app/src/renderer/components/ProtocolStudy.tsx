@@ -18,8 +18,9 @@ export async function matchingPreview(text: string, html: string): Promise<boole
   } catch { return false }
 }
 
-export function ProtocolStudy({ text, preview, program, problems = [], onSource, onAsk }: { text: string; preview?: ProjectEntry; program?: HumanProgram | null; problems?: string[]; onSource(ref: SourceRef): void; onAsk?(text: string): void }) {
+export function ProtocolStudy({ text, preview, program, problems = [], previewRequest = 0, onSource, onAsk }: { text: string; preview?: ProjectEntry; program?: HumanProgram | null; problems?: string[]; previewRequest?: number; onSource(ref: SourceRef): void; onAsk?(text: string): void }) {
   const frame = useRef<HTMLIFrameElement>(null)
+  const previewSection = useRef<HTMLDetailsElement>(null)
   const [about, setAbout] = useState(false)
   const [view, setView] = useState<{ text: string; html: string } | null>(null)
   useEffect(() => {
@@ -30,6 +31,12 @@ export function ProtocolStudy({ text, preview, program, problems = [], onSource,
     }).catch(() => undefined)
     return () => { live = false }
   }, [text, preview?.path, preview?.mtime, preview?.size, preview?.version])
+  useEffect(() => {
+    if (previewRequest && previewSection.current) {
+      previewSection.current.open = true
+      previewSection.current.scrollIntoView({ block: 'nearest' })
+    }
+  }, [previewRequest, view])
   useEffect(() => {
     const listener = (e: MessageEvent) => {
       const msg = acceptFrom(e, frame.current)
@@ -46,13 +53,13 @@ export function ProtocolStudy({ text, preview, program, problems = [], onSource,
   catch { return research ? <section className="protocol-research-document">{research}<p className="research-overview muted">{t('protocol.invalid')}</p></section> : <div className="empty-state">{t('protocol.invalid')}</div> }
   if (view?.text === text && preview?.url && research) return <section className="protocol-research-document">
     {research}
-    <details className="research-preview"><summary>Explore the participant view</summary>
+    <details ref={previewSection} className="research-preview"><summary>Explore the participant view</summary>
       <iframe ref={frame} className="artifact-frame" title={String(p.meta?.title ?? p.id)} sandbox="allow-scripts" src={versionedUrl(preview.url, preview.version)} />
     </details>
   </section>
   if (research) return <section className="protocol-research-document">
     {research}
-    <details className="research-preview"><summary>Participant view</summary>
+    <details ref={previewSection} className="research-preview"><summary>Participant view</summary>
       <p className="muted">{t('protocol.preview_missing')}</p>
       {onAsk && <button className="link" onClick={() => onAsk(t('protocol.preview_request'))}>{t('protocol.preview_action')}</button>}
     </details>

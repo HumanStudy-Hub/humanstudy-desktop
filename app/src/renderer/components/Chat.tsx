@@ -1,3 +1,4 @@
+import { appendChatDraft } from '../chat-draft'
 import { useNativeControls } from './NativeControls'
 import { NativeValue } from './NativePanel'
 import { parseSlash } from '../native-commands'
@@ -24,7 +25,7 @@ import type { KernelInstallStatus } from '../../preload/types'
 export interface ChatHandle {
   ask(id: string, fieldId?: string, draft?: string): void
   /** Replace the draft and focus the composer. */
-  prefill(text: string): void
+  prefill(text: string, append?: boolean): void
   focus(): void
   /** Append @-mentions of project files (relative paths) to the draft and focus the composer. */
   mention(rels: string[]): void
@@ -105,8 +106,8 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
       setDraft(`About ${target}: ${text ?? ''}`)
       focus()
     },
-    prefill(text) {
-      setDraft(text)
+    prefill(text, append = false) {
+      setDraft(current => append ? appendChatDraft(current, text) : text)
       focus()
     },
     focus,
