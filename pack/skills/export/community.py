@@ -3,11 +3,13 @@
 import argparse
 import hashlib
 import json
+import re
 import sys
 import unicodedata
 import zipfile
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "build"))
 import check_materials  # noqa: E402  (researcher-supplied and not-openly-licensed materials stay in the project)
@@ -24,6 +26,35 @@ MAX_FILE_BYTES = 25 * 1024 * 1024
 MAX_EXPANDED_BYTES = 128 * 1024 * 1024
 MAX_ZIP_BYTES = 40 * 1024 * 1024
 MAX_ENTRIES = 2000
+
+
+# Keep this deterministic guard aligned with the Web pre-publication guard. Never echo a matched value.
+_PUBLIC_SECRET = re.compile(
+    r"\b(?:sk-[A-Za-z0-9_-]{12,}|hsk_[A-Za-z0-9_-]{8,}|(?:ghp|gho|github_pat|xox[abp])_[A-Za-z0-9_]{12,}"
+    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b"
+    r"|\bAuthorization\s*:\s*Bearer\s+[^\s\"'<>]{8,}", re.I)
+_PUBLIC_LOCAL_PATH = re.compile(
+    r"(?<![\w:/])(?:file://[^\s]+|[A-Za-z]:[\\/](?![\\/])[^\s]+|\\\\[^\\\s]+\\[^\s]+"
+    r"|(?:~?/Users/|~?/home/|/private/|/tmp/|/var/folders/|/vercel/sandbox/)[^\s]+)", re.I)
+
+
+def public_text_problem(value):
+    """Reject strong credential/local-path signatures, not author emails or ordinary citations."""
+    if isinstance(value, dict):
+        values = [*value.keys(), *value.values()]
+    elif isinstance(value, list):
+        values = value
+    elif isinstance(value, str):
+        if _PUBLIC_SECRET.search(value):
+            return "a credential-like value"
+        # Public URLs may legitimately contain /home/ or /Users/ in their path.
+        without_urls = re.sub(r"https?://[^\s<>\"']+", "", value, flags=re.I)
+        if _PUBLIC_LOCAL_PATH.search(without_urls):
+            return "an absolute local path"
+        return None
+    else:
+        return None
+    return next((problem for item in values if (problem := public_text_problem(item))), None)
 
 
 def private_payload(rel):
@@ -144,6 +175,40 @@ def projection_engine():
     return release, schema_check, distribution
 
 
+def public_source_url(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() in {"http", "https"} and parsed.hostname and not parsed.username and not parsed.password:
+            return value
+    except ValueError:
+        pass
+    return None
+
+
+def public_source_credit(record, evidence, paper, name):
+    """Carry the approved source credit with quoted Program text, without local manifest paths."""
+    attribution = record.get("attribution")
+    source_url = public_source_url(record.get("url")) or public_source_url(evidence.get("url"))
+    if not source_url and name == paper.get("filename") and normalized_doi(paper.get("doi")):
+        source_url = "https://doi.org/" + normalized_doi(paper["doi"])
+    license = recorded_license(record)
+    terms = public_source_url(record.get("licenseUrl"))
+    cc = re.fullmatch(r"CC-BY-([1-4]\.0|2\.5)", license or "", re.I)
+    if not terms and cc:
+        terms = f"https://creativecommons.org/licenses/by/{cc[1]}/"
+    if not terms and license in {"CC0", "CC0-1.0"}:
+        terms = "https://creativecommons.org/publicdomain/zero/1.0/"
+    if not isinstance(attribution, str) or not attribution.strip() or not source_url or not terms:
+        raise ValueError("A quoted public source needs attribution, a public source URL and a license URL in sources/SOURCE.json. Review its source record before sharing.")
+    title = record.get("title") or (paper.get("title") if name == paper.get("filename") else None)
+    return {"evidenceIds": [], "url": source_url, "attribution": attribution.strip(), "license": license,
+            "licenseUrl": terms, "sha256": record["sha256"],
+            **({"title": title} if isinstance(title, str) and title.strip() else {}),
+            "changes": "Source information organized into a Human Study Program; evidence excerpts retained. Original source unchanged."}
+
+
 def program_only_projection(root, program, licensed):
     """Keep the scholarly document independent of its local execution files."""
     release, _, _ = projection_engine()
@@ -181,6 +246,7 @@ def program_only_projection(root, program, licensed):
     paper = program["source"]
     evidence_records = program.get("evidence", [])
     permitted_quotes = set()
+    public_credits = {}
     withheld_quotes = []
     for evidence in evidence_records:
         # Keep the source identifier, URL and locator even when its exact quote stays local.
@@ -194,6 +260,9 @@ def program_only_projection(root, program, licensed):
         if evidence.get("quote"):
             if isinstance(name, str) and matching_hash and (linked_name is None or linked_name == name) and shareable_quote(name):
                 permitted_quotes.add(evidence["id"])
+                if name not in public_credits:
+                    public_credits[name] = public_source_credit(licensed[name], evidence, paper, name)
+                public_credits[name]["evidenceIds"].append(evidence["id"])
             else:
                 evidence.pop("quote")
                 evidence.pop("verification", None)
@@ -244,6 +313,7 @@ def program_only_projection(root, program, licensed):
     withheld_quotes = [e["id"] for e in evidence_records if e["id"] in withheld and not e.get("quote")]
     extensions["communityExport"] = {
         "scope": "program-only",
+        "sources": list(public_credits.values()),
         "withheldEvidenceQuotes": {"ids": withheld_quotes, "reason": "redistribution-unverified"},
     }
     return json_bytes(program), withheld_quotes
@@ -500,6 +570,26 @@ def export(root, output, include_paper=False, *, program_only=False):
     if public_sources:
         source_manifest = {"schemaVersion": 1, "files": public_sources}
         payload["sources/SOURCE.json"] = (json.dumps(source_manifest, ensure_ascii=False, indent=2).encode("utf-8") + b"\n", None)
+    # Scan the frozen public text after projection, including reports and source metadata.
+    text_suffixes = {".json", ".jsonl", ".md", ".txt", ".htm", ".html", ".csv", ".tsv", ".py", ".js", ".cjs", ".mjs",
+                     ".ts", ".tsx", ".yaml", ".yml", ".toml", ".xml", ".svg", ".qsf"}
+    for name, (data, _) in payload.items():
+        if public_text_problem(name):
+            raise ValueError("Public export blocked: a file name contains a sensitive value. Review it locally before sharing.")
+        if Path(name).suffix.lower() not in text_suffixes:
+            continue
+        content = data.decode("utf-8", errors="replace")
+        if Path(name).suffix.lower() in {".json", ".qsf"}:
+            try:
+                content = json.loads(content)
+            except ValueError:
+                pass  # Structural validation owns malformed JSON.
+        problem = public_text_problem(content)
+        if problem:
+            raise ValueError(f"Public export blocked: a public file contains {problem}. Review it locally before sharing.")
+    problem = public_text_problem(meta)
+    if problem:
+        raise ValueError(f"Public export blocked: contribution metadata contains {problem}. Review it locally before sharing.")
     meta["includesPdf"] = any(name.lower().endswith(".pdf") for name in payload)
     meta["files"] = [{"path": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
                       **({"license": license} if license else {})}

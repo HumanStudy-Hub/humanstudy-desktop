@@ -9,6 +9,7 @@ import { errorText } from './SettingsDialog'
 import { relativeTime } from '../format'
 import { t } from '../i18n'
 import { WEB_EDITION } from '../edition'
+import { readPaperHandoff } from '../../shared/paper-handoff'
 
 type Section = 'projects' | 'studies'
 const SECTION_KEY = 'hs.homeSection'
@@ -32,6 +33,7 @@ export interface HomeHandle {
 }
 
 export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Props & { ref?: Ref<HomeHandle> }) {
+  const [paperHandoff, setPaperHandoff] = useState(() => WEB_EDITION ? readPaperHandoff(window.location.search) : null)
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null)
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
@@ -44,6 +46,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
   const search = useRef<HTMLInputElement>(null)
   const studies = useRef<StudiesHandle>(null)
   const [section, setSectionState] = useState<Section>(() => {
+    if (paperHandoff) return 'studies'
     try {
       return localStorage.getItem(SECTION_KEY) === 'studies' ? 'studies' : 'projects'
     } catch {
@@ -247,7 +250,12 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
         </nav>
         <main className="home-main" data-library-scroll>
           {section === 'studies' ? (
-            <Studies ref={studies} query={query} onOpenProject={onOpen} />
+            <Studies ref={studies} query={query} onOpenProject={onOpen} handoff={paperHandoff} onHandoffConsumed={() => {
+              setPaperHandoff(null)
+              const url = new URL(window.location.href)
+              for (const key of ['paper', 'revision', 'intent']) url.searchParams.delete(key)
+              window.history.replaceState(window.history.state, '', url)
+            }} />
           ) : (
             <div className="home-inner">
               <KernelBar kernel={kernel} />

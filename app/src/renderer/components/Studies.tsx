@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import type { CommunityStudy, CommunityStudyDetail } from '../../preload/types'
-import { isExtracted, isUserSubmission, matchesResearch, researchAvailability, researchRank } from '../../shared/research-search'
+import { isExtracted, isUserSubmission, isValidatedProtocol, matchesResearch, researchAvailability, researchRank } from '../../shared/research-search'
 import { relativeTime } from './Home'
 import { track } from '../telemetry'
 import { remember } from '../nav'
+import { type PaperHandoff } from '../../shared/paper-handoff'
 
 const REPO_URL = 'https://github.com/HumanStudy-Hub/HumanStudy-Bench'
 
@@ -16,6 +17,8 @@ interface Props {
   query: string
   onOpenProject(dir: string): void
   ref?: Ref<StudiesHandle>
+  handoff?: PaperHandoff | null
+  onHandoffConsumed?(): void
 }
 
 // Kept across section switches so returning to Studies doesn't flash a loading state.
@@ -68,10 +71,10 @@ function Avatar({ name, src, size = 22 }: { name: string; src?: string; size?: n
 const contributorAvatar = (c: CommunityStudy['contributors'][number]) =>
   c.github ? `https://github.com/${encodeURIComponent(c.github)}.png?size=64` : undefined
 
-export function Studies({ query, onOpenProject, ref }: Props) {
+export function Studies({ query, onOpenProject, ref, handoff, onHandoffConsumed }: Props) {
   const [list, setList] = useState<CommunityStudy[] | null>(cachedList)
   const [error, setError] = useState('')
-  const [openId, setOpenId] = useState<string | null>(null)
+  const [openId, setOpenId] = useState<string | null>(handoff?.paper ?? null)
   const [topic, setTopic] = useState<{ id: string; label: string } | null>(null)
   const [visibleCount, setVisibleCount] = useState(30)
   const [pending, setPending] = useState(false)
@@ -125,8 +128,8 @@ export function Studies({ query, onOpenProject, ref }: Props) {
       setOpenId(null)
     })
   }, [])
-  const back = useCallback(() => setOpenId(null), [])
-  const onTopic = useCallback((next: { id: string; label: string } | null) => { setTopic(next); setOpenId(null) }, [])
+  const back = useCallback(() => { setOpenId(null); onHandoffConsumed?.() }, [onHandoffConsumed])
+  const onTopic = useCallback((next: { id: string; label: string } | null) => { setTopic(next); setOpenId(null); onHandoffConsumed?.() }, [onHandoffConsumed])
   useEffect(() => {
     if (openId || !listScroll.current) return
     const el = document.querySelector<HTMLElement>('[data-library-scroll]')
@@ -136,7 +139,10 @@ export function Studies({ query, onOpenProject, ref }: Props) {
 
   if (openId) {
     const summary = list?.find((s) => s.id === openId) ?? null
-    return <StudyPage id={openId} summary={summary} onBack={back} onTopic={onTopic} onOpenProject={onOpenProject} />
+    const activeHandoff = handoff?.paper === openId ? handoff : null
+    return <StudyPage key={`${openId}:${activeHandoff?.revision ?? ''}`} id={openId} summary={summary} onBack={back} onTopic={onTopic}
+      handoff={activeHandoff}
+      onOpenProject={dir => { if (activeHandoff) back(); onOpenProject(dir) }} />
   }
 
   const offline = typeof navigator !== 'undefined' && !navigator.onLine
@@ -147,7 +153,7 @@ export function Studies({ query, onOpenProject, ref }: Props) {
         <div>
           {pending && <button className="link small" onClick={() => setPending(false)}>‹ All studies</button>}
           <h1 className="lib-title">{pending ? 'Not yet extracted' : 'Studies'}</h1>
-          <p className="muted lib-lead">{pending ? 'Indexed papers without a Human Program, materials or artifacts yet.' : 'Papers with study materials or a community Human Program.'}</p>
+          <p className="muted lib-lead">{pending ? 'Indexed papers without a Human Study Program, materials or artifacts yet.' : 'Papers with study materials or a community Human Study Program.'}</p>
         </div>
         <button className="lib-link" onClick={() => open(REPO_URL)}>
           Contribute on GitHub ↗
@@ -233,24 +239,27 @@ function Contributors({ people, compact }: { people: CommunityStudy['contributor
     )
   return (
     <ul className="people">
-      {people.map((c) => (
-        <li key={c.github ?? c.name}>
-          {c.github ? (
-            <button className="person" onClick={() => open(`https://github.com/${encodeURIComponent(c.github!)}`)}>
-              <Avatar name={c.name} src={contributorAvatar(c)} size={26} />
-              <span>{c.name}{c.affiliation && <span className="muted small"> · {c.affiliation}</span>}</span>
-              <span className="muted small">@{c.github}</span>
-            </button>
-          ) : (
-            <span className="person">
-              <Avatar name={c.name} size={26} />
-              <span>{c.name}{c.affiliation && <span className="muted small"> · {c.affiliation}</span>}</span>
-            </span>
-          )}
-          {c.orcid && <button className="link small" aria-label={`ORCID profile for ${c.name}`}
-            onClick={() => open(`https://orcid.org/${encodeURIComponent(c.orcid!)}`)}>ORCID ↗</button>}
-        </li>
-      ))}
+      {people.map(c => {
+        const name = c.github?.toLowerCase() === 'assassin808' ? 'HumanStudy Hub Team' : c.name
+        return (
+          <li key={c.github ?? c.name}>
+            {c.github ? (
+              <button className="person" onClick={() => open(`https://github.com/${encodeURIComponent(c.github!)}`)}>
+                <Avatar name={name} src={contributorAvatar(c)} size={26} />
+                <span>{name}{c.affiliation && <span className="muted small"> · {c.affiliation}</span>}</span>
+                <span className="muted small">@{c.github}</span>
+              </button>
+            ) : (
+              <span className="person">
+                <Avatar name={name} size={26} />
+                <span>{name}{c.affiliation && <span className="muted small"> · {c.affiliation}</span>}</span>
+              </span>
+            )}
+            {c.orcid && <button className="link small" aria-label={`ORCID profile for ${name}`}
+              onClick={() => open(`https://orcid.org/${encodeURIComponent(c.orcid!)}`)}>ORCID ↗</button>}
+          </li>
+        )
+      })}
     </ul>
   )
 }
@@ -263,12 +272,14 @@ function StudyPage({
   onBack,
   onTopic,
   onOpenProject,
+  handoff,
 }: {
   id: string
   summary: CommunityStudy | null
   onBack(): void
   onTopic(topic: { id: string; label: string }): void
   onOpenProject(dir: string): void
+  handoff?: PaperHandoff | null
 }) {
   const [detail, setDetail] = useState<CommunityStudyDetail | null>(null)
   const [error, setError] = useState('')
@@ -279,15 +290,15 @@ function StudyPage({
 
   const load = useCallback(async () => {
     setError('')
+    setDetail(null)
     try {
-      setDetail(await window.humanstudy.community.study(id))
+      setDetail(await window.humanstudy.community.study(id, handoff?.revision))
     } catch (e) {
       setError(errorText(e, 'This study could not be loaded.'))
     }
-  }, [id])
+  }, [id, handoff?.revision])
 
   useEffect(() => {
-    setDetail(null)
     void load()
   }, [load])
 
@@ -304,7 +315,7 @@ function StudyPage({
     setForking(true)
     setForkError('')
     try {
-      onOpenProject(await window.humanstudy.community.fork(id))
+      onOpenProject(await window.humanstudy.community.fork(id, handoff?.revision))
     } catch (e) {
       setForkError(errorText(e, 'The study could not be copied.'))
       setForking(false)
@@ -312,6 +323,7 @@ function StudyPage({
   }
 
   const head = detail ?? summary
+  const changed = Boolean(handoff && detail && detail.currentRevision !== handoff.revision)
   const files = useMemo(() => [...(detail?.files ?? [])].sort((a, b) => a.path.localeCompare(b.path)), [detail])
 
   return (
@@ -322,15 +334,16 @@ function StudyPage({
 
       <header className="repo-head">
         <div className="repo-id">
-          <h1 className="repo-title">{head?.title ?? 'Loading…'}</h1>
+          <h1 className="repo-title">{head?.title ?? (error ? 'Study unavailable' : 'Loading…')}</h1>
           {head && <p className="muted repo-byline">{byline(head)}</p>}
-          {head && isUserSubmission(head) && <p className="small research-availability">User submitted</p>}
+          {head && (!handoff || detail) && (isValidatedProtocol(head) || isUserSubmission(head)) &&
+            <p className="small research-availability">{researchAvailability(head)}</p>}
           <Topics topics={head?.topics} onSelect={onTopic} />
         </div>
         <div className="repo-actions">
           <div className="repo-buttons">
-            <button className="primary" onClick={() => void fork()} disabled={forking || !head}>
-              {forking ? 'Copying…' : 'Fork to my projects'}
+            <button className="primary" onClick={() => void fork()} disabled={forking || !head || Boolean(handoff && (!detail || error)) || changed}>
+              {forking ? 'Copying…' : handoff ? 'Open in my projects' : 'Fork to my projects'}
             </button>
             <button className="outline" onClick={() => detail && open(detail.repoUrl)} disabled={!detail}>
               Open on GitHub ↗
@@ -339,10 +352,12 @@ function StudyPage({
               Discuss ↗
             </button>
           </div>
-          <p className="muted small repo-note">
-              {head?.currentRevision ? 'Copies the Human Program, materials and artifacts into your projects.' : head?.legacyStudyId || /^study_\d+$/.test(id) ? 'Copies the study materials; the agent can build its Human Program.' : 'Only the source is indexed. A Human Program is unavailable.'}
-          </p>
+          {head && (!handoff || detail) && <p className="muted small repo-note">
+            {head.currentRevision ? 'Copies the Human Study Program, materials and artifacts into your projects.' : head.legacyStudyId || /^study_\d+$/.test(id) ? 'Copies the study materials; the agent can build its Human Study Program.' : 'Only the source is indexed. A Human Study Program is unavailable.'}
+          </p>}
           {forkError && <p className="home-error repo-error">{forkError}</p>}
+          {changed && <p role="alert" className="home-error">This paper has changed since you opened it on the website. Return to the library to choose the current version.</p>}
+          {handoff && !changed && !error && <p className="muted small">Create an editable copy to {handoff.intent === 'run' ? 'review and prepare the experiment' : 'discuss the paper with the agent'}. No simulation starts automatically.</p>}
         </div>
       </header>
 
@@ -373,6 +388,8 @@ function StudyPage({
               Try again
             </button>
           </div>
+        ) : !head || (handoff && !detail) ? (
+          <p className="muted small" role="status">Loading study…</p>
         ) : tab === 'overview' ? (
           <div className="overview">
             <h2 className="home-label">About</h2>

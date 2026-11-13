@@ -244,6 +244,8 @@ export interface ProviderStatus {
   configured: boolean
 }
 
+export type CommunityPublication = { kind: 'user-submitted' | 'maintainer-reviewed-protocol'; revision: string }
+
 /** A study in the community library (HumanStudy-Bench on GitHub). Only real fields; no invented metrics. */
 export interface CommunityStudy {
   id: string
@@ -260,6 +262,8 @@ export interface CommunityStudy {
   searchAliases?: string[]
   currentRevision?: string | null
   assetRoot?: string
+  publication?: CommunityPublication
+  hasReviewedProtocol?: boolean
   assetFiles?: { path: string; sha256: string; bytes: number }[]
   capabilities?: Record<string, boolean>
   resources?: { id: string; kind: string; url?: string; access: string }[]
@@ -371,9 +375,10 @@ export interface HumanStudyApi {
   community: {
     /** The library index; cached, refreshed when online. */
     studies(): Promise<CommunityStudy[]>
-    study(id: string): Promise<CommunityStudyDetail>
+    /** An expected revision requires a fresh, pinned catalog read. */
+    study(id: string, expectedRevision?: string): Promise<CommunityStudyDetail>
     /** Creates a local project from the study (paper, materials, description) and returns its dir. */
-    fork(id: string): Promise<string>
+    fork(id: string, expectedRevision?: string): Promise<string>
     openExternal(url: string): Promise<void>
   }
   account: {

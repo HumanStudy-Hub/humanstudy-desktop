@@ -1,3 +1,4 @@
+import { assertPaperRevision } from '../shared/paper-handoff'
 import { packageReadiness } from '../shared/package-readiness'
 import { validateAnswers, updateQuestion, type KernelQuestion } from '../shared/question'
 // Browser preview: when the renderer runs outside Electron, stand in for the preload bridge with
@@ -13,7 +14,7 @@ import exampleSummary from '../../resources/sample/example-simulation/summary.js
 import exampleProgress from '../../resources/sample/example-simulation/progress.json?raw'
 import exampleReport from '../../resources/sample/example-simulation/report.md?raw'
 import { EXAMPLE_RUN } from '../shared/simulation-run'
-import { catalogSearchFields, type ResearchConcept } from '../shared/research-search'
+import { catalogPublicationFields, catalogSearchFields, type ResearchConcept } from '../shared/research-search'
 
 // Preview flags (all optional, combine freely):
 //   ?project=empty    a new project: paper.pdf only, no study yet
@@ -638,8 +639,8 @@ def intentional(harm: float, help_: float) -> float:
     if (new URLSearchParams(location.search).get('catalog') !== 'research' || catalogLoaded) return
     const response = await fetch('/preview/research_index.json')
     if (!response.ok) throw new Error('Copy the public research catalog to public/preview/research_index.json to preview it.')
-    const index = await response.json() as { papers: (CommunityStudy & Record<string, unknown>)[]; taxonomy: { concepts: ResearchConcept[] } }
-    communityStudies = index.papers.map(paper => ({ ...paper, contributors: paper.contributors ?? [], ...catalogSearchFields(paper, index.taxonomy.concepts) }))
+    const index = await response.json() as { papers: (CommunityStudy & Record<string, unknown>)[]; taxonomy: { concepts: ResearchConcept[] }; publications?: unknown }
+    communityStudies = index.papers.map(paper => ({ ...paper, contributors: paper.contributors ?? [], ...catalogSearchFields(paper, index.taxonomy.concepts), ...catalogPublicationFields(paper, index.publications) }))
     catalogLoaded = true
   }
   const communityDetail = (id: string): CommunityStudyDetail => {
@@ -703,12 +704,16 @@ def intentional(harm: float, help_: float) -> float:
         await loadPreviewCatalog()
         return communityStudies.map((s) => ({ ...s }))
       },
-      study: async (id) => {
+      study: async (id, expectedRevision) => {
         await new Promise((r) => setTimeout(r, 250))
-        return communityDetail(id)
+        if (expectedRevision !== undefined) await loadPreviewCatalog()
+        const detail = communityDetail(id)
+        assertPaperRevision(detail.currentRevision, expectedRevision)
+        return detail
       },
-      fork: async (id) => {
+      fork: async (id, expectedRevision) => {
         const study = communityDetail(id)
+        assertPaperRevision(study.currentRevision, expectedRevision)
         const name = `${study.authors[0]?.split(' ').pop() ?? 'Study'}${study.year ? ` ${study.year}` : ''} · ${study.title}`
         let dir = `/preview/${slug(study.id)}`
         for (let i = 2; projects.some((p) => p.dir === dir); i++) dir = `/preview/${slug(study.id)}-${i}`
