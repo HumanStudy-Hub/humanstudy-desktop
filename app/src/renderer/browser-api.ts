@@ -14,7 +14,7 @@ import exampleSummary from '../../resources/sample/example-simulation/summary.js
 import exampleProgress from '../../resources/sample/example-simulation/progress.json?raw'
 import exampleReport from '../../resources/sample/example-simulation/report.md?raw'
 import { EXAMPLE_RUN } from '../shared/simulation-run'
-import { catalogSearchFields, type ResearchConcept } from '../shared/research-search'
+import { catalogPublicationFields, catalogSearchFields, type ResearchConcept } from '../shared/research-search'
 
 // Preview flags (all optional, combine freely):
 //   ?project=empty    a new project: paper.pdf only, no study yet
@@ -639,8 +639,8 @@ def intentional(harm: float, help_: float) -> float:
     if (new URLSearchParams(location.search).get('catalog') !== 'research' || catalogLoaded) return
     const response = await fetch('/preview/research_index.json')
     if (!response.ok) throw new Error('Copy the public research catalog to public/preview/research_index.json to preview it.')
-    const index = await response.json() as { papers: (CommunityStudy & Record<string, unknown>)[]; taxonomy: { concepts: ResearchConcept[] } }
-    communityStudies = index.papers.map(paper => ({ ...paper, contributors: paper.contributors ?? [], ...catalogSearchFields(paper, index.taxonomy.concepts) }))
+    const index = await response.json() as { papers: (CommunityStudy & Record<string, unknown>)[]; taxonomy: { concepts: ResearchConcept[] }; publications?: unknown }
+    communityStudies = index.papers.map(paper => ({ ...paper, contributors: paper.contributors ?? [], ...catalogSearchFields(paper, index.taxonomy.concepts), ...catalogPublicationFields(paper, index.publications) }))
     catalogLoaded = true
   }
   const communityDetail = (id: string): CommunityStudyDetail => {

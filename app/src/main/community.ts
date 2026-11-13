@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { CommunityStudy, CommunityStudyDetail } from '../preload/types'
-import { catalogSearchFields } from '../shared/research-search'
+import { catalogPublicationFields, catalogSearchFields } from '../shared/research-search'
 import { repinHeld } from './original-text'
 import { assertPaperRevision } from '../shared/paper-handoff'
 
@@ -155,6 +155,7 @@ function normStudy(raw: unknown): CommunityStudy | null {
 type Catalog = {
   studies?: unknown
   papers?: unknown
+  publications?: unknown
   taxonomy?: { concepts?: { id: string; label: string; aliases: string[]; status: string }[] }
 }
 
@@ -162,9 +163,10 @@ function catalogStudies(data: Catalog): CommunityStudy[] {
   const concepts = data?.taxonomy?.concepts ?? []
   const list = Array.isArray(data?.papers) ? data.papers.map(raw => {
     const paper = raw as Record<string, unknown>
-    return { ...paper, ...catalogSearchFields(paper, concepts) }
-  }) : Array.isArray(data?.studies) ? data.studies : []
-  return list.map(normStudy).filter((s): s is CommunityStudy => s !== null)
+    const study = normStudy({ ...paper, ...catalogSearchFields(paper, concepts) })
+    return study && { ...study, ...catalogPublicationFields(paper, data.publications) }
+  }) : Array.isArray(data?.studies) ? data.studies.map(normStudy) : []
+  return list.filter((s): s is CommunityStudy => s !== null)
 }
 
 async function refreshIndex(): Promise<CommunityStudy[]> {
@@ -175,7 +177,7 @@ async function refreshIndex(): Promise<CommunityStudy[]> {
     catch { data = await getJson(INDEX_URL) as Catalog }
     const studies = catalogStudies(data)
     const c = await loadCache()
-    c.index = { fetchedAt: Date.now(), studies, format: 2 }
+    c.index = { fetchedAt: Date.now(), studies, format: 3 }
     await saveCache()
     return studies
   })().finally(() => {
@@ -187,7 +189,7 @@ async function refreshIndex(): Promise<CommunityStudy[]> {
 /** Refresh expired/pre-topic caches before returning; keep the last copy if offline. */
 export async function communityStudies(): Promise<CommunityStudy[]> {
   const c = await loadCache()
-  if (c.index?.format === 2 && Date.now() - c.index.fetchedAt < TTL_MS) return c.index.studies
+  if (c.index?.format === 3 && Date.now() - c.index.fetchedAt < TTL_MS) return c.index.studies
   try {
     return await refreshIndex()
   } catch {

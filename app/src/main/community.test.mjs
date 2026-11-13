@@ -45,9 +45,9 @@ test('shared catalog topics distinguish an assignment from lexical matches and p
  assert.deepEqual(untagged.topics,[],'text matches must not manufacture a classification')
  assert.equal(matchesResearch(untagged,'','phenomenon:framing'),false)
  assert.deepEqual(proposed.topics,[]);assert.equal(matchesResearch(proposed,'风险'),false)
- assert.equal(researchAvailability(tagged),'User submitted')
- assert.equal(researchAvailability({...tagged,capabilities:{protocol:true}}),'User submitted')
- assert.equal(researchAvailability({...tagged,assetRoot:'studies/study_003'}),'Human Program available')
+ assert.equal(researchAvailability(tagged),'Human Study Program available')
+ assert.equal(researchAvailability({...tagged,capabilities:{protocol:true}}),'Human Study Program available')
+ assert.equal(researchAvailability({...tagged,assetRoot:'studies/study_003'}),'Human Study Program available')
  assert.equal(researchAvailability({...untagged,currentRevision:null}),'Not yet extracted')
  assert.equal(researchAvailability({...untagged,currentRevision:null,legacyStudyId:'study_003'}),'Study materials')
 })
@@ -86,8 +86,37 @@ test('community index retains searchable aliases and forks exact verified files 
  assert.ok(!calls.some(url=>url.includes(`/main/${paper.assetRoot}`)))
  await lib.communityStudy(id)
 })
+test('only exact catalog publication provenance enables the validated and submitted badges', async () => {
+ const reviewed = { ...paper, assetFiles: [...assetFiles, { path: 'protocol.json' }], protocol: {
+  schemaVersion: '1', revision, fidelity: { verdict: 'HIGH FIDELITY', signed_by: 'Reviewer' }, arms: [{ runnable: true }],
+ }, hasReviewedProtocol: true, publication: { kind: 'maintainer-reviewed-protocol', revision } }
+ const stale = { ...reviewed.publication, revision: 'd'.repeat(64) }
+ const submitted = { kind: 'user-submitted', revision }
+ const read = async (name, row, publication) => {
+  lib.setCommunityCacheDir(join(temp, name))
+  globalThis.fetch = async () => Response.json({ ...catalog, papers: [row], publications: { [id]: publication } })
+  const [study] = await lib.communityStudies()
+  return study
+ }
+ const forged = await read('provenance-forged', reviewed)
+ assert.equal(forged.publication, undefined)
+ assert.equal(researchAvailability(forged), 'Human Study Program available')
+ assert.equal(researchAvailability(await read('provenance-stale', reviewed, stale)), 'Human Study Program available')
+ assert.equal(researchAvailability(await read('provenance-validated', reviewed, reviewed.publication)), 'Validated protocol')
+ assert.equal(researchAvailability(await read('provenance-submitted', reviewed, submitted)), 'User submitted')
+ assert.equal(researchAvailability(await read('provenance-no-protocol', { ...reviewed, assetFiles }, reviewed.publication)), 'Human Study Program available')
+ assert.equal(researchAvailability(await read('provenance-blocked', { ...reviewed, protocol: { ...reviewed.protocol, arms: [{ runnable: false }] } }, reviewed.publication)), 'Human Study Program available')
+})
+
 test('a tampered immutable file fails before a local project is created',async()=>{
- globalThis.fetch=async input=>String(input).includes(`/${commit}/`)?new Response('tampered'):new Response('[]')
+ globalThis.fetch=async input=>{
+  const url = String(input)
+  if (url.includes(`/${commit}/`)) return new Response('tampered')
+  if (url.endsWith('research_index.json')) return Response.json(catalog)
+  if (url.endsWith('/commits/main')) return new Response(commit)
+  return new Response('[]')
+ }
+ lib.setCommunityCacheDir(join(temp,'tampered-cache'))
  let created=false
  await assert.rejects(lib.forkCommunityStudy(id,async()=>{created=true;return '/not-used'}),/verification failed/)
  assert.equal(created,false)
