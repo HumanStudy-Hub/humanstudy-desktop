@@ -297,6 +297,7 @@ code, pre { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 1
 .pages { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; align-items: center; background: var(--bg-sunk); position: relative; scrollbar-width: thin; }
 .pdf-page { position: relative; flex: none; width: 100%; max-width: 980px; background: #fff; border: 1px solid #dfe5da; box-shadow: 0 2px 7px #273d3410; container-type: inline-size; }
 .pdf-page canvas { display: block; width: 100%; height: 100%; user-select: none; }
+.pdf-page-status { position: absolute; z-index: 4; top: 12px; left: 12px; right: 12px; display: flex; gap: 12px; align-items: center; padding: 6px 10px; width: fit-content; background: var(--bg, #fff); color: var(--muted); font-size: 13px; }
 .pdf-text { position: absolute; inset: 0; overflow: hidden; z-index: 2; line-height: 1; }
 .pdf-text span { position: absolute; color: transparent; white-space: pre; font-family: Arial, sans-serif; line-height: 1.1; cursor: text; }
 .pdf-text ::selection { background: #3d7a5f40; color: transparent; }
@@ -398,17 +399,21 @@ button.tile:hover:not(:disabled) { border-color: var(--accent); box-shadow: var(
   width: min(760px, 100%); height: min(560px, 100%); display: flex; overflow: hidden; outline: 0;
   background: var(--bg); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 64px rgba(0, 0, 0, 0.22);
 }
-.sample-onboarding-overlay { z-index: 60; }
-.sample-onboarding {
-  position: relative; width: min(460px, 100%); padding: 28px 30px 22px; outline: 0;
-  background: var(--bg); border: 1px solid var(--line); border-radius: 16px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.22);
-}
-.sample-onboarding h2 { font-family: var(--font-serif); font-size: 1.25rem; font-weight: 500; margin: 0 32px 8px 0; }
-.sample-guide-lead { margin: 0 0 16px; }
-.sample-guide-steps { padding-left: 22px; margin: 0; color: var(--text); }
-.sample-guide-steps li { padding: 4px 0 4px 3px; }
-.sample-guide-actions { margin-top: 20px; }
+/* Non-modal spotlight: real controls remain interactive through the cutout. */
+.sample-guide-layer { position: fixed; inset: 0; z-index: 40; pointer-events: none; }
+.sample-guide-spotlight { position: fixed; border-radius: 10px; outline: 2px solid var(--accent); box-shadow: 0 0 0 9999px rgba(12, 23, 29, .58), 0 0 0 5px rgba(255,255,255,.3); }
+.sample-guide-shade { position: absolute; inset: 0; background: rgba(12,23,29,.42); }
+.sample-onboarding { position: fixed; width: min(324px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto; padding: 20px; pointer-events: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 56px rgba(0,0,0,.28); }
+.sample-guide-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.sample-guide-count { font-size: 11px; letter-spacing: .08em; color: var(--muted); }
+.sample-guide-progress { display: flex; gap: 5px; }
+.sample-guide-progress span { width: 7px; height: 7px; border: 1px solid var(--muted); border-radius: 50%; }
+.sample-guide-progress .current { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.sample-guide-progress .done { background: var(--accent); border-color: var(--accent); }
+.sample-guide-copy strong { display: block; font-size: 16px; line-height: 1.4; }
+.sample-guide-copy p { margin: 8px 0 18px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.sample-guide-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sample-guide-actions button { font-size: 12px; }
 .settings-nav { width: 188px; flex: none; background: var(--bg-soft); border-right: 1px solid var(--line); padding: 18px 10px; display: flex; flex-direction: column; gap: 2px; }
 .settings-title { font-size: 13px; font-weight: 600; padding: 0 10px 12px; }
 .settings-nav button { text-align: left; padding: 7px 10px; border-radius: 8px; color: var(--muted); }
@@ -422,7 +427,9 @@ button.tile:hover:not(:disabled) { border-color: var(--accent); box-shadow: var(
 .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 0; border-bottom: 1px solid var(--line); }
 .setting-row:last-child { border-bottom: 0; }
 .setting-label { font-weight: 500; }
-.setting-control { flex: none; max-width: 60%; }
+.setting-control { flex: 0 1 auto; max-width: 60%; }
+.setting-control > .segmented { max-width: 100%; }
+.setting-row > div:first-child { min-width: 0; }
 .segmented { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; padding: 2px; border-radius: 8px; background: var(--bg-sunk); max-width: 60%; flex-shrink: 1; }
 .segmented button { padding: 4px 11px; border-radius: 6px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
 .segmented button[aria-checked="true"] { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }

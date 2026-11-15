@@ -302,9 +302,9 @@ function bare(id: string, entry: CommunityStudy | null): Detail {
 }
 
 /** Detail for one study; cached for 10 minutes, never throws on rate limits or offline. */
-export async function communityStudy(rawId: string, expectedRevision?: string): Promise<Detail> {
+export async function communityStudy(rawId: string, expectedRevision?: string, refresh = false): Promise<Detail> {
   const id = assertId(rawId)
-  if (expectedRevision !== undefined) return pinnedCommunityStudy(id, expectedRevision)
+  if (expectedRevision !== undefined || refresh === true) return pinnedCommunityStudy(id, expectedRevision)
   const c = await loadCache()
   const hit = c.details?.[id]
   const entry = await indexEntry(id)
@@ -343,11 +343,14 @@ async function mainSha(): Promise<string | null> {
   }
 }
 
-async function pinnedCommunityStudy(id: string, expectedRevision: string): Promise<Detail> {
+async function pinnedCommunityStudy(id: string, expectedRevision?: string): Promise<Detail> {
   const sha = await mainSha()
   if (!sha) throw new Error('The source version could not be pinned. Retry when GitHub is available.')
   const catalog = await getJson(`https://raw.githubusercontent.com/${OWNER_REPO}/${sha}/${RESEARCH_INDEX_PATH}`) as Catalog
   const entry = catalogStudies(catalog).find(study => study.id === id)
+  if (expectedRevision === undefined && !entry?.currentRevision) {
+    throw new Error('This paper no longer has a published version. Return to the library to choose another paper. No project was created.')
+  }
   assertPaperRevision(entry?.currentRevision, expectedRevision)
   return { ...bare(id, entry ?? null), files: await listFiles(id, entry ?? null, sha), sourceCommit: sha }
 }

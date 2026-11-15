@@ -132,6 +132,7 @@ test('a pinned handoff ignores cached detail and verifies the catalog at the sam
  const calls = []
  let head = previousCommit
  let pinnedCatalogAvailable = true
+ let published = true
  let created = 0
  globalThis.fetch = async input => {
   const url = String(input)
@@ -141,7 +142,7 @@ test('a pinned handoff ignores cached detail and verifies the catalog at the sam
   if (url.includes('/main/') && url.endsWith('research_index.json')) return Response.json(catalog)
   if (url.includes(`/${commit}/`) && url.endsWith('research_index.json')) {
    if (!pinnedCatalogAvailable) return new Response(null, { status: 503 })
-   return Response.json({ ...catalog, papers: [nextPaper] })
+   return Response.json({ ...catalog, papers: published ? [nextPaper] : [] })
   }
   if (url.endsWith(`/${commit}/${nextPaper.assetRoot}/program.json`)) return new Response(nextContent)
   throw new Error('Unexpected URL ' + url)
@@ -173,6 +174,14 @@ test('a pinned handoff ignores cached detail and verifies the catalog at the sam
 
  pinnedCatalogAvailable = true
  await assert.rejects(lib.communityStudy(id, revision), /different published version/)
+ const refreshed = await lib.communityStudy(id, undefined, true)
+ assert.equal(refreshed.currentRevision, nextRevision, 'explicit recovery bypasses stale detail cache')
+ assert.equal(refreshed.sourceCommit, commit)
+ assert.equal(created, 0, 'reviewing current published version must not create a project')
+ nextPaper.currentRevision = 'f'.repeat(64)
+ await assert.rejects(lib.forkCommunityStudy(id, create, refreshed.currentRevision), /different published version/)
+ assert.equal(created, 0, 'a second publication change after review must still block copying')
+ nextPaper.currentRevision = nextRevision
  const detail = await lib.communityStudy(id, nextRevision)
  assert.equal(detail.currentRevision, nextRevision)
  assert.equal(detail.sourceCommit, commit)
@@ -185,6 +194,10 @@ test('a pinned handoff ignores cached detail and verifies the catalog at the sam
  assert.equal(metadata.baseRevision, nextRevision)
  assert.equal(metadata.sourceCommit, commit)
  assert.equal(metadata.commit, commit)
+ published = false
+ await assert.rejects(lib.communityStudy(id, undefined, true), /no longer has a published version/)
+ await assert.rejects(lib.forkCommunityStudy(id, create, nextRevision), /no longer has a published version/)
+ assert.equal(created, 1, 'removed publication must not create another project')
 })
 
 after(async()=>{globalThis.fetch=previous;await rm(temp,{recursive:true,force:true})})

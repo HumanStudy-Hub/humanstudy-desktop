@@ -92,7 +92,7 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
       - run: npm ci
-      - run: node --test scripts/web-manifest.test.mjs web/browser-electron.test.mjs
+      - run: node --test scripts/web-manifest.test.mjs web/browser-electron.test.mjs web/community-transport.test.mjs
       - run: node scripts/build-web.mjs
       - run: node --test web/web.test.mjs
       - name: Package the exact tagged web build

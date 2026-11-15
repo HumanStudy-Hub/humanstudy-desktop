@@ -89,7 +89,7 @@ jobs:
       - name: Desktop test suite (offline; live-provider suites excluded)
         if: ${{ !cancelled() }}
         run: |
-          files=$(ls src/main/*.test.mjs src/main/kernel/*.test.mjs src/renderer/*.test.mjs src/shared/*.test.mjs scripts/*.test.mjs \
+          files=$(ls src/main/*.test.mjs src/main/kernel/*.test.mjs src/renderer/*.test.mjs src/shared/*.test.mjs scripts/*.test.mjs web/community-transport.test.mjs \
             | grep -v '\.live\.test\.mjs$' | grep -v 'native-live\.test\.mjs$')
           echo "$files"
           # Pack Python tests already ran above with this interpreter. The managed-runtime step repeats them with the installed interpreter.

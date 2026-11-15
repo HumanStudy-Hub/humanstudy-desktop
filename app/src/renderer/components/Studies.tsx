@@ -4,7 +4,7 @@ import { isExtracted, isUserSubmission, isValidatedProtocol, matchesResearch, re
 import { relativeTime } from './Home'
 import { track } from '../telemetry'
 import { remember } from '../nav'
-import { type PaperHandoff } from '../../shared/paper-handoff'
+import { isPaperRevisionMismatch, type PaperHandoff } from '../../shared/paper-handoff'
 
 const REPO_URL = 'https://github.com/HumanStudy-Hub/HumanStudy-Bench'
 
@@ -286,20 +286,29 @@ function StudyPage({
   const [tab, setTab] = useState<Tab>('overview')
   const [forking, setForking] = useState(false)
   const [forkError, setForkError] = useState('')
+  const [expectedRevision, setExpectedRevision] = useState(handoff?.revision)
+  const [reviewingCurrent, setReviewingCurrent] = useState(false)
+  const selectedRevision = useRef(handoff?.revision)
+  const requestGeneration = useRef(0)
+  const reviewInFlight = useRef(false)
   useEffect(() => track('community.study_opened', { target: id }), [id])
 
   const load = useCallback(async () => {
+    if (reviewInFlight.current) return
+    const generation = ++requestGeneration.current
     setError('')
     setDetail(null)
     try {
-      setDetail(await window.humanstudy.community.study(id, handoff?.revision))
+      const current = await window.humanstudy.community.study(id, selectedRevision.current)
+      if (generation === requestGeneration.current) setDetail(current)
     } catch (e) {
-      setError(errorText(e, 'This study could not be loaded.'))
+      if (generation === requestGeneration.current) setError(errorText(e, 'This study could not be loaded.'))
     }
   }, [id, handoff?.revision])
 
   useEffect(() => {
     void load()
+    return () => { requestGeneration.current++ }
   }, [load])
 
   useEffect(() => {
@@ -312,18 +321,43 @@ function StudyPage({
   }, [onBack])
 
   const fork = async () => {
+    if (reviewInFlight.current || error || (summary?.currentRevision && !detail)) return
     setForking(true)
     setForkError('')
     try {
-      onOpenProject(await window.humanstudy.community.fork(id, handoff?.revision))
+      onOpenProject(await window.humanstudy.community.fork(id, expectedRevision ?? detail?.currentRevision ?? undefined))
     } catch (e) {
       setForkError(errorText(e, 'The study could not be copied.'))
       setForking(false)
     }
   }
 
+  const reviewCurrent = async () => {
+    if (reviewInFlight.current) return
+    reviewInFlight.current = true
+    const generation = ++requestGeneration.current
+    setReviewingCurrent(true)
+    setForkError('')
+    try {
+      const current = await window.humanstudy.community.study(id, undefined, true)
+      if (generation !== requestGeneration.current) return
+      if (!current.currentRevision) throw Error('This paper no longer has a published version. No project was created.')
+      selectedRevision.current = current.currentRevision
+      setExpectedRevision(current.currentRevision)
+      const params = new URLSearchParams(window.location.search)
+      if (params.get('paper') === id) {
+        params.set('revision', current.currentRevision)
+        window.history.replaceState(null, '', `${window.location.pathname}?${params}${window.location.hash}`)
+      }
+      setDetail(current)
+      setError('')
+    } catch (e) {
+      if (generation === requestGeneration.current) setError(errorText(e, 'The current published version could not be loaded.'))
+    } finally { reviewInFlight.current = false; if (generation === requestGeneration.current) setReviewingCurrent(false) }
+  }
+
   const head = detail ?? summary
-  const changed = Boolean(handoff && detail && detail.currentRevision !== handoff.revision)
+  const changed = Boolean(handoff && detail && detail.currentRevision !== expectedRevision)
   const files = useMemo(() => [...(detail?.files ?? [])].sort((a, b) => a.path.localeCompare(b.path)), [detail])
 
   return (
@@ -342,7 +376,7 @@ function StudyPage({
         </div>
         <div className="repo-actions">
           <div className="repo-buttons">
-            <button className="primary" onClick={() => void fork()} disabled={forking || !head || Boolean(handoff && (!detail || error)) || changed}>
+            <button className="primary" onClick={() => void fork()} disabled={forking || reviewingCurrent || Boolean(error) || Boolean(summary?.currentRevision && !detail) || !head || Boolean(handoff && (!detail || error)) || changed}>
               {forking ? 'Copying…' : handoff ? 'Open in my projects' : 'Fork to my projects'}
             </button>
             <button className="outline" onClick={() => detail && open(detail.repoUrl)} disabled={!detail}>
@@ -356,6 +390,10 @@ function StudyPage({
             {head.currentRevision ? 'Copies the Human Study Program, materials and artifacts into your projects.' : head.legacyStudyId || /^study_\d+$/.test(id) ? 'Copies the study materials; the agent can build its Human Study Program.' : 'Only the source is indexed. A Human Study Program is unavailable.'}
           </p>}
           {forkError && <p className="home-error repo-error">{forkError}</p>}
+          {isPaperRevisionMismatch(error || forkError) && <button className="outline" disabled={reviewingCurrent} onClick={() => void reviewCurrent()}>
+            {reviewingCurrent ? 'Loading current version…' : 'Review current published version'}
+          </button>}
+          {handoff && expectedRevision !== handoff.revision && detail && !error && <p className="muted small">You are reviewing the current published version. Check it before creating your own copy; nothing has been imported.</p>}
           {changed && <p role="alert" className="home-error">This paper has changed since you opened it on the website. Return to the library to choose the current version.</p>}
           {handoff && !changed && !error && <p className="muted small">Create an editable copy to {handoff.intent === 'run' ? 'review and prepare the experiment' : 'discuss the paper with the agent'}. No simulation starts automatically.</p>}
         </div>
@@ -384,7 +422,7 @@ function StudyPage({
           <div className="home-empty">
             <p>{!navigator.onLine ? 'You’re offline.' : 'This study could not be loaded.'}</p>
             <p className="muted small">{error}</p>
-            <button className="ghost lib-retry" onClick={() => void load()}>
+            <button className="ghost lib-retry" disabled={reviewingCurrent} onClick={() => void load()}>
               Try again
             </button>
           </div>

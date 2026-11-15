@@ -80,7 +80,7 @@ export function SourceDrawer({
   const [annotationsReady, setAnnotationsReady] = useState(false)
   const [saving, setSaving] = useState(false)
   const annotationRaw = useRef<string | null>(null)
-  const documentKey = JSON.stringify([pdf?.path, pdf?.version, pdf?.sha256])
+  const documentKey = JSON.stringify([pdf?.path, pdf?.url, pdf?.version, pdf?.sha256])
   const [loaded, setLoaded] = useState<{ key: string; doc: pdfjs.PDFDocumentProxy } | null>(null)
   const doc = loaded?.key === documentKey ? loaded.doc : null
   const [pages, setPages] = useState<PageInfo[]>([])
@@ -500,7 +500,10 @@ export function SourceDrawer({
             : t('paper.none')}
         </p>
       )}
-      {err && <p className="part error pad">{err}</p>}
+      {err && <p className="part error pad" role="alert">{err}</p>}
+      {active && open && pdf && !err && !pages.length && (
+        <p className="muted pad" role="status">{t('paper.loading')}</p>
+      )}
       <div
         className="pages"
         ref={host}
@@ -637,6 +640,8 @@ const PdfPage = memo(
     const el = useRef<HTMLDivElement>(null)
     const canvas = useRef<HTMLCanvasElement>(null)
     const [width, setWidth] = useState(0)
+    const [renderState, setRenderState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+    const [renderAttempt, setRenderAttempt] = useState(0)
     useEffect(() => {
       if (!el.current) return
       return observeSettledWidth(el.current, setWidth)
@@ -680,26 +685,43 @@ const PdfPage = memo(
       }
     }, [near, active, loadPage, initialInfo.n])
     useEffect(() => {
-      if (!active || !near || width <= 0 || !canvas.current || !el.current) return
+      if (!active || !near || width <= 0 || !canvas.current || !el.current) {
+        setRenderState('idle')
+        return
+      }
       let task: pdfjs.RenderTask | null = null,
         cancelled = false
+      // Draw offscreen first: resizing/cancelling must not erase the last completed page.
+      const pendingCanvas = document.createElement('canvas')
+      setRenderState('loading')
       void doc
         .getPage(info.n)
-        .then((page) => {
+        .then(async (page) => {
           if (cancelled || !canvas.current || !el.current) return
           const scale = Math.min(3, (width * devicePixelRatio) / info.w)
           const vp = page.getViewport({ scale })
-          canvas.current.width = Math.ceil(vp.width)
-          canvas.current.height = Math.ceil(vp.height)
-          task = page.render({ canvasContext: canvas.current.getContext('2d')!, viewport: vp })
-          return task.promise
+          pendingCanvas.width = Math.ceil(vp.width)
+          pendingCanvas.height = Math.ceil(vp.height)
+          task = page.render({ canvasContext: pendingCanvas.getContext('2d')!, viewport: vp })
+          await task.promise
+          if (cancelled || !canvas.current) return
+          canvas.current.width = pendingCanvas.width
+          canvas.current.height = pendingCanvas.height
+          canvas.current.getContext('2d')!.drawImage(pendingCanvas, 0, 0)
+          setRenderState('ready')
         })
-        .catch(() => undefined)
+        .catch(() => {
+          if (!cancelled) setRenderState('error')
+        })
+        .finally(() => {
+          pendingCanvas.width = 0
+          pendingCanvas.height = 0
+        })
       return () => {
         cancelled = true
         task?.cancel()
       }
-    }, [active, near, doc, info.n, info.w, width])
+    }, [active, near, doc, info.n, info.w, width, renderAttempt])
     useEffect(() => {
       if (!near && canvas.current) {
         canvas.current.width = 0
@@ -712,6 +734,8 @@ const PdfPage = memo(
         ref={el}
         className="pdf-page"
         data-page={info.n}
+        data-render-state={active && near ? renderState : 'idle'}
+        aria-busy={active && near && renderState === 'loading'}
         style={{
           width: `${zoom * 100}%`,
           maxWidth: `${980 * zoom}px`,
@@ -720,6 +744,14 @@ const PdfPage = memo(
         }}
       >
         <canvas ref={canvas} aria-label={t('paper.page_aria', { n: info.n })} />
+        {active && near && (renderState === 'loading' || renderState === 'error') && (
+          <div className="pdf-page-status">
+            <span>{t(renderState === 'error' ? 'paper.page_failed' : 'paper.page_loading')}</span>
+            {renderState === 'error' && (
+              <button className="link" onClick={() => setRenderAttempt(n => n + 1)}>{t('paper.page_retry')}</button>
+            )}
+          </div>
+        )}
         {textReady && (
           <div className="pdf-text">
             {info.words.map((w, i) => (
