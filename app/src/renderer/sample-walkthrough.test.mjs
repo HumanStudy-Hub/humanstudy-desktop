@@ -80,6 +80,13 @@ test('sample guide opens the real source and participant preview without sending
             check(!walkthroughSample(null),'Empty project must not get sample guide');
             check(appendChatDraft('!echo safe','trial')==='!echo safe','Shell draft must stay untouched');
             check(appendChatDraft('/compact','trial')==='/compact','Command draft must stay untouched');
+            const settingsProbe=document.createElement('div');
+            settingsProbe.style.width='500px';
+            settingsProbe.innerHTML='<div class="setting-row"><div>Appearance</div><div class="setting-control"><div class="segmented"><button>Light</button><button>Dark</button><button>System</button></div></div></div>';
+            document.body.append(settingsProbe);
+            const optionTops=[...settingsProbe.querySelectorAll('button')].map(el=>el.getBoundingClientRect().top);
+            check(optionTops.every(top=>top===optionTops[0]),'Settings options unnecessarily stack at desktop width');
+            settingsProbe.remove();
             const root=createRoot(document.getElementById('root'));root.render(<Fixture/>);
             await until(()=>button('Show the overview'),'Guide not visible');
             check(!document.querySelector('[aria-modal="true"]'),'Guide blocks workspace');
