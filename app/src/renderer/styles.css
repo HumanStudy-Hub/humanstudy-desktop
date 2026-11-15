@@ -427,7 +427,9 @@ button.tile:hover:not(:disabled) { border-color: var(--accent); box-shadow: var(
 .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 0; border-bottom: 1px solid var(--line); }
 .setting-row:last-child { border-bottom: 0; }
 .setting-label { font-weight: 500; }
-.setting-control { flex: none; max-width: 60%; }
+.setting-control { flex: 0 1 auto; max-width: 60%; }
+.setting-control > .segmented { max-width: 100%; }
+.setting-row > div:first-child { min-width: 0; }
 .segmented { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; padding: 2px; border-radius: 8px; background: var(--bg-sunk); max-width: 60%; flex-shrink: 1; }
 .segmented button { padding: 4px 11px; border-radius: 6px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
 .segmented button[aria-checked="true"] { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }

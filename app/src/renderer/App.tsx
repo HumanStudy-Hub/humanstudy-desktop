@@ -202,6 +202,13 @@ export default function App() {
     clearDraftsIn(dir)
     return true
   }
+  const [guideReplay, setGuideReplay] = useState(0)
+  const startSampleGuide = () => {
+    setSettingsOpen(null)
+    openStudy()
+    setGuideReplay(value => value + 1)
+    setShowSampleOnboarding(true)
+  }
   const sampleProgram = useMemo(() => walkthroughSample(project?.program), [project?.program])
   const sampleProject = Boolean(sampleProgram)
   const closeOnboarding = useCallback(() => {
@@ -493,7 +500,7 @@ export default function App() {
           <span className="crumb">/ {project.name}</span>
         </div>
         <div className="titlebar-actions">
-          {sampleProject && <button className="ghost" onClick={() => setShowSampleOnboarding(true)}>Sample guide</button>}
+          {sampleProject && <button className="ghost" onClick={startSampleGuide}>Sample guide</button>}
           <button className="ghost" onClick={closeProject} title={t('app.back_hint')}>
             {t('app.projects')}
           </button>
@@ -512,7 +519,7 @@ export default function App() {
         </div>
       </header>
 
-      {sampleProject && showSampleOnboarding && !consent && <SampleOnboarding agentReady={agentReady} onClose={closeOnboarding} onAction={guideAction} />}
+      {sampleProject && showSampleOnboarding && !consent && !settingsOpen && <SampleOnboarding key={guideReplay} agentReady={agentReady} onClose={closeOnboarding} onAction={guideAction} />}
       <main className="workspace">
         <section className={`pane agent ${open.agent ? '' : 'folded'}`} aria-label={paneLabel('agent')}>
           {open.agent ? (

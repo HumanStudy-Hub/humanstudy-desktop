@@ -203,3 +203,9 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
 - [~] Editable sample first-use guide: implemented by GPT-6 Luna, short and skippable, remembers dismissal.
 - [x] Release integration: desktop fixes merged and 0.6.1 automatic updates published;
   signed/notarized Mac assets verified, with real arm64 quit-to-install acceptance.
+
+## 2026-11-15 settings and guide report
+- [x] Fix nested 60% width constraints stacking settings options; browser regression passed.
+- [x] Explicit Sample guide replay resets the tour and opens Study; hide coach marks while settings is open. Typecheck and browser walkthrough passed.
+- [ ] Deploy reviewed dev guide changes to the online runtime and desktop release together; main still has the older onboarding implementation.
+- [ ] Cross-device projects: current Recent projects lists workspace-local folders, not shared account projects. Define explicit transfer/sync behavior before implementing uploads or conflict handling. No automatic upload introduced.
