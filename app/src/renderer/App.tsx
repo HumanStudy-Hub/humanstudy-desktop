@@ -1,3 +1,4 @@
+import { guidePrompts } from './sample-guide-flow'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { AccountStatus, ProjectSnapshot, Settings, TelemetryStatus, WorkspaceContext } from '../preload/types'
 import { Chat, type ChatHandle } from './components/Chat'
@@ -233,7 +234,7 @@ export default function App() {
       setPane('program', true)
       requestAnimationFrame(() => workbench.current?.showParticipantPreview())
     } else if (action === 'setup' || !agentReady) setPane('agent', true)
-    else prefill('Help me prepare a small trial of Study 1 from this paper. First explain the conditions, participant setup and any missing materials. Do not run the experiment until I approve the plan.', true)
+    else prefill(guidePrompts[action], true)
   }
   const closeProjectRef = useRef<() => boolean>(() => false)
   const closeProject = (): boolean => {
@@ -519,7 +520,7 @@ export default function App() {
         </div>
       </header>
 
-      {sampleProject && showSampleOnboarding && !consent && !settingsOpen && <SampleOnboarding key={guideReplay} agentReady={agentReady} onClose={closeOnboarding} onAction={guideAction} />}
+      {sampleProject && showSampleOnboarding && <SampleOnboarding suspended={Boolean(consent || settingsOpen)} key={project.dir + ':' + guideReplay} conversation={{ messages: session.messages, threadId: session.threadId ?? session.id, busy: session.busy || session.stopping || session.waitingForPermission || session.waitingForQuestion, error: session.error }} agentReady={agentReady} onClose={closeOnboarding} onAction={guideAction} />}
       <main className="workspace">
         <section className={`pane agent ${open.agent ? '' : 'folded'}`} aria-label={paneLabel('agent')}>
           {open.agent ? (
