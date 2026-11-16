@@ -7,6 +7,9 @@ import { installPack } from './pack'
 import { installSampleAssets, SAMPLE_TITLE } from './sample-project'
 import { ensureProjectsRoot, getSettings } from './settings'
 import type { ProjectSummary } from '../preload/types'
+import { safeName } from './project-name'
+
+export { safeName }
 
 /** True when p is root or inside it. Through path.relative, so on Windows the comparison ignores case
  *  (C:\\Users vs c:\\users, as other tools report the drive) the way the file system does. */
@@ -18,18 +21,6 @@ export function isWithin(root: string, p: string): boolean {
 /** True when p is strictly inside root (root itself does not count). */
 export function isInside(root: string, p: string): boolean {
   return isWithin(root, p) && relative(resolve(root), resolve(p)) !== ''
-}
-
-export function safeName(name: string): string {
-  const cleaned = name
-    .normalize('NFC')
-    .replace(/[\u0000-\u001f\u007f/\\:*?"<>|]+/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/^[.\-\s]+|[.\s]+$/g, '')
-    .slice(0, 80)
-    .trim()
-  return cleaned || 'Untitled study'
 }
 
 function uniqueDir(parent: string, name: string, except?: string): string {

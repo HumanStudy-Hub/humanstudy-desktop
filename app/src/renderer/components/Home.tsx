@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type DragEvent, type Ref } from 'react'
 import type { AccountStatus, ProjectSummary } from '../../preload/types'
 import { Studies, type StudiesHandle } from './Studies'
 import { claimAction, holdAction, track } from '../telemetry'
@@ -10,6 +10,7 @@ import { relativeTime } from '../format'
 import { t } from '../i18n'
 import { WEB_EDITION } from '../edition'
 import { readPaperHandoff } from '../../shared/paper-handoff'
+import { isStudyFile } from './StudyTransfer'
 
 type Section = 'projects' | 'studies'
 const SECTION_KEY = 'hs.homeSection'
@@ -21,6 +22,10 @@ interface Props {
   /** Opens Settings → Account. */
   onAccount(): void
   kernel: { status: KernelInstallStatus | null; retry(): void }
+  /** "Download this study" for a project in the list. */
+  onDownload(dir: string): void
+  /** "Open a downloaded study": picks a file, or opens the one given (dropped on the list). */
+  onOpenDownloaded(path?: string): void
 }
 
 export { relativeTime }
@@ -32,7 +37,7 @@ export interface HomeHandle {
   fromPaper(): void
 }
 
-export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Props & { ref?: Ref<HomeHandle> }) {
+export function Home({ ref, onOpen, onSettings, account, onAccount, kernel, onDownload, onOpenDownloaded }: Props & { ref?: Ref<HomeHandle> }) {
   const [paperHandoff, setPaperHandoff] = useState(() => WEB_EDITION ? readPaperHandoff(window.location.search) : null)
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null)
   const [query, setQuery] = useState('')
@@ -43,6 +48,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
   const [menu, setMenu] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<{ dir: string; name: string } | null>(null)
   const [confirmTrash, setConfirmTrash] = useState<string | null>(null)
+  const [dropping, setDropping] = useState(false)
   const search = useRef<HTMLInputElement>(null)
   const studies = useRef<StudiesHandle>(null)
   const [section, setSectionState] = useState<Section>(() => {
@@ -164,8 +170,31 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
     return q ? list.filter((p) => p.name.toLowerCase().includes(q)) : list
   }, [projects, query])
 
+  // A downloaded study dropped on the project list opens as a new project (online, the file is uploaded first).
+  const dropTarget = section === 'projects'
+  const onDragOver = (e: DragEvent) => {
+    if (!dropTarget || !e.dataTransfer.types.includes('Files')) return
+    e.preventDefault()
+    if (!dropping) setDropping(true)
+  }
+  const onDrop = (e: DragEvent) => {
+    if (!dropTarget || !e.dataTransfer.files.length) return
+    e.preventDefault()
+    setDropping(false)
+    const file = e.dataTransfer.files[0]
+    if (!isStudyFile(file.name)) return setError(t('transfer.not_study_file'))
+    setError('')
+    onOpenDownloaded(window.humanstudy.files.pathOf(file))
+  }
+
   return (
-    <div className="home">
+    <div
+      className={`home${dropping ? ' dropping' : ''}`}
+      onDragOver={onDragOver}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropping(false) }}
+      onDrop={onDrop}
+    >
+      {dropping && <div className="drop-hint">{t('transfer.drop')}</div>}
       <header className="titlebar home-bar">
         <div className="brand">
           <span className="brand-mark" aria-hidden />
@@ -196,9 +225,14 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
           <kbd>⌘K</kbd>
         </label>
         <div className="titlebar-actions">
-          {!WEB_EDITION && (
+          {!WEB_EDITION ? (
             <button className="ghost" onClick={openFolder} disabled={busy}>
               {t('home.open_folder')}
+            </button>
+          ) : (
+            // Online there is no folder to open and no File menu: a downloaded study takes this place.
+            <button className="ghost" onClick={() => onOpenDownloaded()} disabled={busy}>
+              {t('transfer.open')}
             </button>
           )}
           <button className="ghost" onClick={onSettings}>
@@ -442,6 +476,16 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                                   }}
                                 >
                                   {t('home.rename')}
+                                </button>
+                                <button
+                                  className="menu-item row"
+                                  role="menuitem"
+                                  onClick={() => {
+                                    setMenu(null)
+                                    onDownload(p.dir)
+                                  }}
+                                >
+                                  {t('transfer.download')}
                                 </button>
                                 {!WEB_EDITION && (
                                   <button

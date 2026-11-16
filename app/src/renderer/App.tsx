@@ -23,13 +23,15 @@ import { clearDraftsIn, draftCount, draftsIn, onDraftsChange } from './drafts'
 import { WEB_EDITION } from './edition'
 import { readPaperHandoff } from '../shared/paper-handoff'
 import { browserProject, rememberBrowserProject } from './browser-project'
+import { ExportStudyDialog, TransferNotice, transferErrorText } from './components/StudyTransfer'
+import { errorText } from './components/SettingsDialog'
 
 const PANES_KEY = 'hs.panes'
 type Pane = 'agent' | 'program'
 const paneLabel = (p: Pane) => t(p === 'agent' ? 'app.agent' : 'app.workspace')
 
 /** Commands both the keyboard shortcuts and (later) the native menu run. */
-export type AppCommand = 'pane.toggle' | 'tab.show' | 'files.toggle' | 'settings.open' | 'project.fromPaper' | 'project.new' | 'project.open' | 'project.close' | 'selection.clear' | 'thread.new' | 'nav.back' | 'tab.close'
+export type AppCommand = 'pane.toggle' | 'tab.show' | 'files.toggle' | 'settings.open' | 'project.fromPaper' | 'project.new' | 'project.open' | 'project.close' | 'selection.clear' | 'thread.new' | 'nav.back' | 'tab.close' | 'study.download' | 'study.open'
 let commandHandler: ((command: AppCommand, arg?: string) => void) | null = null
 export function runCommand(command: AppCommand, arg?: string): void {
   commandHandler?.(command, arg)
@@ -248,6 +250,32 @@ export default function App() {
     return true
   }
   closeProjectRef.current = closeProject
+
+  // "Download this study" / "Open a downloaded study" (StudyTransfer.tsx; the work is in main/study-transfer.ts).
+  const [exportDir, setExportDir] = useState<string | null>(null)
+  const [transfer, setTransfer] = useState<{ busy: boolean; title?: string; message: string } | null>(null)
+  const openDownloaded = async (path?: string) => {
+    let file = path
+    try {
+      file = file ?? (await window.humanstudy.projects.pickStudy()) ?? undefined
+    } catch (e) {
+      return setTransfer({ busy: false, title: t('transfer.err_title'), message: errorText(e, t('transfer.err_title')) })
+    }
+    if (!file) return
+    // The study opens as a new project in place of the one open now: unsaved edits there are asked about first.
+    if (state.current.project && !confirmLeave()) return
+    setTransfer({ busy: true, message: t('transfer.opening') })
+    try {
+      const r = await window.humanstudy.projects.importStudy(file)
+      if (!r.ok) return setTransfer({ busy: false, title: t('transfer.err_title'), message: transferErrorText(r, 'import') })
+      setTransfer(null)
+      await openProject(r.dir)
+    } catch (e) {
+      setTransfer({ busy: false, title: t('transfer.err_title'), message: errorText(e, t('transfer.err_title')) })
+    }
+  }
+  const openDownloadedRef = useRef(openDownloaded)
+  openDownloadedRef.current = openDownloaded
   // Closing the window or quitting asks while any draft exists (main/index.ts shows the dialog).
   useEffect(() => {
     const sync = () => window.humanstudy.app.setUnsaved(draftCount() ? { message: t('app.quit_unsaved'), detail: t('app.quit_unsaved_detail'), discard: t('app.discard_close'), cancel: t('app.cancel') } : null)
@@ -385,6 +413,8 @@ export default function App() {
       if (command === 'pane.toggle' && st.project && (arg === 'agent' || arg === 'program')) setPane(arg, !st.open[arg])
       if (command === 'tab.show' && st.project && (arg === 'study' || arg === 'paper')) showTab(arg)
       if (command === 'files.toggle' && st.project) workbench.current?.toggleFiles()
+      if (command === 'study.open') return void openDownloadedRef.current()
+      if (command === 'study.download') return st.project ? setExportDir(st.project.dir) : setTransfer({ busy: false, message: t('transfer.pick_project') })
     }
     return () => {
       commandHandler = null
@@ -405,6 +435,8 @@ export default function App() {
         else if (c.command === 'back') runCommand('nav.back')
         else if (c.command === 'projects') runCommand('project.close')
         else if (c.command === 'closeTab') runCommand('tab.close')
+        else if (c.command === 'downloadStudy') runCommand('study.download')
+        else if (c.command === 'openStudy') runCommand('study.open')
       }),
     [],
   )
@@ -473,6 +505,13 @@ export default function App() {
     />
   )
 
+  const transferDialogs = (
+    <>
+      {exportDir && <ExportStudyDialog dir={exportDir} onClose={() => setExportDir(null)} />}
+      {transfer && <TransferNotice {...transfer} onClose={() => setTransfer(null)} />}
+    </>
+  )
+
   if (restoreDir && !project) return <div className="empty-state" role="status">{t('app.loading_project')}</div>
 
   if (!project)
@@ -485,8 +524,11 @@ export default function App() {
           account={account}
           onAccount={() => openSettings('account')}
           kernel={kernel}
+          onDownload={setExportDir}
+          onOpenDownloaded={(path) => void openDownloaded(path)}
         />
         {dialog}
+        {transferDialogs}
         {consent}
         <UpdateNotice />
       </div>
@@ -596,6 +638,7 @@ export default function App() {
         </section>
       </main>
       {dialog}
+      {transferDialogs}
       {consent}
       <UpdateNotice />
     </div>

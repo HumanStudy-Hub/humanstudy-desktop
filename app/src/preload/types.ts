@@ -224,6 +224,32 @@ export interface ProjectSummary {
   artifactCount: number
 }
 
+/** "Download this study": what the one-file copy would hold (study-transfer.ts). Sizes are before compression. */
+export interface StudyExportPreview {
+  name: string
+  /** Study files that are always included (program, protocol, package, results, notes, the paper). */
+  study: { files: number; bytes: number }
+  hasPaper: boolean
+  /** The chat history (.humanstudy/threads), included unless the researcher unticks it. */
+  conversations: { count: number; files: number; bytes: number }
+  /** Files the researcher supplied privately (sources/private/ and the like): listed by name, left out by default. */
+  privateFiles: { path: string; bytes: number }[]
+  /** The limits a study file has to stay within (the same ones checked when it is opened). */
+  limits: { maxFiles: number; maxTotalBytes: number; maxFileBytes: number }
+}
+export interface StudyExportOptions {
+  conversations: boolean
+  /** Project-relative paths from `privateFiles` the researcher ticked. */
+  privateFiles: string[]
+}
+/** Plain reasons a study file could not be written or opened; the renderer words them (i18n `transfer.err_*`). */
+export type StudyTransferErrorCode = 'not-package' | 'newer' | 'damaged' | 'unsafe' | 'too-large' | 'not-project' | 'failed'
+export interface StudyTransferFailure { ok: false; code: StudyTransferErrorCode; file?: string; detail?: string }
+export type StudyExportResult = { ok: true; savedPath: string; bytes: number; files: number } | StudyTransferFailure
+export type StudyImportResult =
+  | { ok: true; dir: string; name: string; renamed: boolean; conversations: number; privateFiles: number }
+  | StudyTransferFailure
+
 export type Theme = 'light' | 'dark' | 'system'
 export interface Settings {
   theme: Theme
@@ -323,7 +349,7 @@ export interface KernelInstallStatus {
 
 /** A native menu action for the renderer. */
 export interface MenuCommand {
-  command: 'newProject' | 'openFolder' | 'pane' | 'settings' | 'back' | 'projects' | 'closeTab'
+  command: 'newProject' | 'openFolder' | 'pane' | 'settings' | 'back' | 'projects' | 'closeTab' | 'downloadStudy' | 'openStudy'
   /** For 'pane': 'agent' | 'study' | 'paper' | 'files'. */
   arg?: string
   /** Chosen with the item's keyboard accelerator rather than the menu itself. */
@@ -371,6 +397,14 @@ export interface HumanStudyApi {
     rename(dir: string, name: string): Promise<string>
     /** Moves the project folder to the Trash. */
     trash(dir: string): Promise<void>
+    /** What "Download this study" would include. */
+    exportPreview(dir: string): Promise<StudyExportPreview>
+    /** Asks where to save (online: the browser downloads it) and writes <name>.humanstudy.zip; null when cancelled. */
+    exportStudy(dir: string, options: StudyExportOptions): Promise<StudyExportResult | null>
+    /** Picks a downloaded study file (online: uploads it); null when cancelled. */
+    pickStudy(): Promise<string | null>
+    /** Opens a downloaded study as a new project; never changes an existing one. */
+    importStudy(path: string): Promise<StudyImportResult>
   }
   community: {
     /** The library index; cached, refreshed when online. */

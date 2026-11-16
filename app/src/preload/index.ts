@@ -18,6 +18,10 @@ const api: HumanStudyApi = {
     pickPdf: () => ipcRenderer.invoke('projects:pickPdf'),
     rename: (dir, name) => ipcRenderer.invoke('projects:rename', dir, name),
     trash: (dir) => ipcRenderer.invoke('projects:trash', dir),
+    exportPreview: (dir) => ipcRenderer.invoke('projects:exportPreview', dir),
+    exportStudy: (dir, options) => ipcRenderer.invoke('projects:exportStudy', dir, options),
+    pickStudy: () => ipcRenderer.invoke('projects:pickStudy'),
+    importStudy: (path) => ipcRenderer.invoke('projects:importStudy', path),
   },
   community: {
     studies: () => ipcRenderer.invoke('community:studies'),

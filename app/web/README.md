@@ -24,7 +24,8 @@ browser ──▶ https://<sandbox>.vercel.run
 
 What differs from desktop, all outside the shared code: folder pickers return nothing (projects live in
 the sandbox's projects folder), "Show in Finder" does nothing, save dialogs become browser downloads,
-closing the tab with unsaved edits asks through the browser, and model access for simulations uses the
+closing the tab with unsaved edits asks through the browser, "Download this study" / "Open a downloaded study"
+(`src/main/study-transfer.ts`) ride on the same download and upload (so a study file online is capped at the 200 MB upload limit), and model access for simulations uses the
 key path (`relaySupported()` is macOS-only), inside the user's own sandbox.
 
 ## Build and run locally

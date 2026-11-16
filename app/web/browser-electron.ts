@@ -44,12 +44,16 @@ function encode(v: unknown): unknown {
 // ---- uploads: a picked or dropped file gets its sandbox path at once; calls wait for the upload ------
 const uploads = new Map<string, Promise<unknown>>()
 const failedUploads = new Map<string, Error>()
+const UPLOAD_LIMIT = 200 << 20
 function upload(file: File): string {
   const id = crypto.randomUUID()
   const name = file.name.replace(/[/\\]/g, '_') || 'file'
   const path = [config.uploads, id, name].join(config.sep)
-  const p = fetch(`/upload/${id}/${encodeURIComponent(name)}`, { method: 'POST', body: file, credentials: 'same-origin' })
-    .then((r) => { if (!r.ok) throw new Error(`Upload of ${name} failed (${r.status}).`) })
+  // The server stops reading at 200 MB (server.cjs); say so before sending, instead of a dropped connection.
+  const p = (file.size > UPLOAD_LIMIT
+    ? Promise.reject(new Error(`${name} is larger than 200 MB, the most the online workspace accepts.`))
+    : fetch(`/upload/${id}/${encodeURIComponent(name)}`, { method: 'POST', body: file, credentials: 'same-origin' })
+      .then((r) => { if (!r.ok) throw new Error(`Upload of ${name} failed (${r.status}).`) }))
     .catch((e: Error) => { failedUploads.set(path, e); throw e })
   uploads.set(path, p)
   void p.finally(() => uploads.delete(path)).catch(() => undefined)
@@ -71,7 +75,9 @@ function pick(accept: string): Promise<string | null> {
 }
 
 // ---- downloads: a save dialog in the sandbox writes a file; the browser then downloads it -----------
-function download(path: unknown): void {
+function download(value: unknown): void {
+  // Most saves answer with the saved path; a study download answers { ok, savedPath } (or why it failed).
+  const path = value && typeof value === 'object' ? (value as { ok?: unknown; savedPath?: unknown }).ok === true ? (value as { savedPath?: unknown }).savedPath : null : value
   if (typeof path !== 'string' || !path) return
   const a = document.createElement('a')
   a.href = '/download/' + encodeURIComponent(path)
@@ -80,7 +86,7 @@ function download(path: unknown): void {
   a.click()
   a.remove()
 }
-const SAVES = new Set(['project:saveCopy', 'kernel:export', 'telemetry:saveExport'])
+const SAVES = new Set(['project:saveCopy', 'kernel:export', 'telemetry:saveExport', 'projects:exportStudy'])
 
 async function call(channel: string, args: unknown[]): Promise<unknown> {
   // A call that names a picked file waits for its upload; a failed upload fails only the calls that use it.
@@ -201,6 +207,7 @@ window.addEventListener('beforeunload', (e) => { if (unsaved) { e.preventDefault
 export const ipcRenderer = {
   invoke(channel: string, ...args: unknown[]): Promise<unknown> {
     if (channel === 'projects:pickPdf') return pick('application/pdf,.pdf')
+    if (channel === 'projects:pickStudy') return pick('.zip,application/zip')
     // Folder pickers have no web equivalent: projects live in the sandbox's projects folder.
     if (channel === 'project:open' || channel === 'settings:pickProjectsRoot') return Promise.resolve(null)
     if (channel === 'project:reveal') return Promise.resolve(undefined)

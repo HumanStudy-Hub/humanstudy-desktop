@@ -567,6 +567,25 @@ button.person:hover { border-color: var(--accent); }
 }
 .consent-dialog h2 { font-family: var(--font-serif); font-size: 1.25rem; font-weight: 500; margin: 0 0 12px; }
 .consent-dialog .row-end { margin-top: 14px; }
+/* study transfer: "Download this study" and the notice while a downloaded study opens (StudyTransfer.tsx) */
+.transfer-dialog { width: min(480px, 100%); }
+.transfer-text { font-size: 13px; line-height: 1.55; margin: 0 0 12px; }
+.transfer-label { font-size: 12px; font-weight: 600; margin: 14px 0 6px; color: var(--muted); }
+.transfer-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); }
+.transfer-list.private { max-height: 180px; overflow-y: auto; }
+.transfer-list li { display: flex; align-items: flex-start; gap: 10px; padding: 8px 12px; font-size: 13px; }
+.transfer-list li + li { border-top: 1px solid var(--line); }
+.transfer-list li > label { display: flex; gap: 10px; align-items: flex-start; flex: 1; min-width: 0; cursor: pointer; }
+.transfer-list li > input { margin-top: 3px; flex: none; }
+.transfer-list li > span:first-of-type { flex: 1; }
+.transfer-list label > input { margin-top: 3px; flex: none; }
+.transfer-list label > span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.transfer-list li > .small { flex: none; white-space: nowrap; padding-top: 1px; }
+.transfer-file { overflow-wrap: anywhere; }
+.transfer-hint { display: block; margin: 0 0 6px; line-height: 1.45; }
+.transfer-list .transfer-hint { margin: 0; }
+.transfer-size { margin: 12px 0 0; }
+.home { position: relative; }
 .consent-text { font-size: 13px; line-height: 1.55; }
 .consent-text p { margin: 0 0 9px; }
 .consent-choices { display: flex; flex-direction: column; gap: 8px; margin: 14px 0 10px; }
