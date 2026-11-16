@@ -114,7 +114,17 @@ interface Server {
   exited: boolean
   stderrTail: string
   eventsOnline: boolean
+  /** Set when this app stopped the process on purpose (dispose, restart), so its exit is not an error. */
+  intentional?: boolean
   transport?: Awaited<ReturnType<typeof startRequestTransport>>
+}
+
+/** Plain words for an unexpected assistant-process exit. Exported for tests. */
+export function exitMessage(code: number | null, signal: NodeJS.Signals | null): string {
+  const saved = 'Your project and chat are saved. Send your message again to continue.'
+  if (signal) return `The AI assistant was stopped by the system (${signal}). This can happen when an online workspace reaches its time limit or runs out of memory. ${saved}`
+  if (code && code !== 0) return `The AI assistant stopped unexpectedly (exit code ${code}). ${saved}`
+  return `The AI assistant closed. ${saved}`
 }
 
 interface SessionState {
@@ -346,6 +356,8 @@ export class OpencodeKernel implements Kernel {
   }
 
   async send(sessionId: string, text: string, options?: { purpose?: 'build' }): Promise<void> {
+    // Only a conversation dropped by an exit takes the async reopen; the normal path stays synchronous.
+    if (this.lost.has(sessionId) && !this.sessions.has(sessionId)) await this.reviveLost(sessionId)
     const s = this.session(sessionId)
     if (s.stopping) throw new Error('Wait for this conversation to stop before starting another turn.')
     if (s.buildLookup) throw new Error('The Build is already checking available models.')
@@ -621,6 +633,19 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     return this.permission ?? (process.env.HUMANSTUDY_PERMISSION === 'ask' ? 'ask' : 'project')
   }
 
+  /** Sessions whose assistant process ended; opencode keeps them on disk, so the next message reopens them. */
+  private readonly lost = new Map<string, { dir: string; selection?: SessionState['selection'] }>()
+
+  private async reviveLost(sessionId: string): Promise<void> {
+    const gone = this.lost.get(sessionId)
+    if (!gone || this.sessions.has(sessionId)) return
+    const alive = await this.resumeSession(gone.dir, sessionId)
+    if (!alive) throw new Error('This conversation could not be reopened after the AI assistant stopped. Start a new conversation; your project files are unchanged.')
+    this.lost.delete(sessionId)
+    const s = this.sessions.get(sessionId)
+    if (s && gone.selection && !s.selection) s.selection = gone.selection
+  }
+
   private session(id: string): SessionState {
     const s = this.sessions.get(id)
     if (!s) throw new Error(`unknown session ${id}`)
@@ -743,17 +768,22 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     }
     proc.stdout?.on('data', keep)
     proc.stderr?.on('data', keep)
-    proc.on('exit', (code) => {
+    proc.on('exit', (code, signal) => {
       transport?.close()
       server.exited = true
       server.sse.abort()
       this.live.delete(server)
       this.servers.delete(dir)
       if (this.disposed) return
+      // Keep a short, redacted record of why the process ended (signal, code, last output) for diagnosis.
+      const tail = redact(server.stderrTail).trim().split('\n').slice(-5).join(' | ')
+      console.warn(`[opencode] exited code=${code} signal=${signal} intentional=${Boolean(server.intentional)}${tail ? ' tail=' + tail : ''}`)
       for (const [id, s] of this.sessions) {
         if (s.server !== server) continue
-        this.emitter.emit({ sessionId: id, type: 'error', text: `opencode exited (code ${code})` })
+        // An idle conversation is resumed quietly on its next message; only a turn that was running is told.
+        if (s.inFlight && !server.intentional) this.emitter.emit({ sessionId: id, type: 'error', text: exitMessage(code, signal) })
         if (s.inFlight) this.emitter.emit({ sessionId: id, type: 'done' })
+        this.lost.set(id, { dir, selection: s.selection })
         this.sessions.delete(id)
       }
     })
@@ -795,6 +825,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
   private killAll(sig: NodeJS.Signals): void {
     for (const srv of this.live) {
+      srv.intentional = true
       srv.transport?.close()
       srv.sse.abort()
       if (!srv.exited) srv.proc.kill(sig)
