@@ -50,6 +50,10 @@ export function buildMenu(hooks: MenuHooks): Menu {
         { label: 'New window', accelerator: 'CmdOrCtrl+Shift+N', click: () => hooks.newWindow() },
         { label: 'Open folder…', accelerator: 'CmdOrCtrl+O', click: (_item, _win, event) => send({ command: 'openFolder', accelerator: Boolean(event?.triggeredByAccelerator) }) },
         { type: 'separator' },
+        // The same two actions as the project list's ⋯ menu and dropping a study file on the app (study-transfer.ts).
+        { label: 'Open a downloaded study…', click: (_item, _win, event) => send({ command: 'openStudy', accelerator: Boolean(event?.triggeredByAccelerator) }) },
+        { label: 'Download this study…', click: (_item, _win, event) => send({ command: 'downloadStudy', accelerator: Boolean(event?.triggeredByAccelerator) }) },
+        { type: 'separator' },
         // ⌘W closes the open file tab (or Compare) first, like an editor; with none open it closes the window.
         { label: 'Close tab', accelerator: 'CmdOrCtrl+W', click: (_item, _win, event) => send({ command: 'closeTab', accelerator: Boolean(event?.triggeredByAccelerator) }) },
         { role: 'close', label: 'Close window', accelerator: 'CmdOrCtrl+Shift+W' },
