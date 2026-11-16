@@ -8,13 +8,26 @@ export const guidePrompts = {
   materials: 'Help me prepare research materials from Study 1. Ask whether I want participant instructions, a preregistration draft or an analysis plan. Ground the draft in the paper, cite sources, mark missing information, and keep any suggested additions separate.',
 } as const
 export type GuidePrompt = keyof typeof guidePrompts
-export interface GuideWait { ids: number[]; thread: string | null; startedAt: number }
+/** What the guide waits for: a message sent after `count` messages existed (ids and counts survive a thread
+ *  reload; timestamps may come from another clock). `interrupted` = the last attempt was stopped or rejected. */
+export interface GuideWait { ids: number[]; count: number; thread: string | null; startedAt: number; interrupted?: boolean }
+const isCommand = (message: Message) => message.parts.some(part => part.kind === 'text' && /^[!/]/.test(part.text.trim()))
+/** A turn that ended on a rejected or unanswered question/permission was not a finished reply. */
+const unfinished = (message: Message) => message.parts.some(part =>
+  (part.kind === 'question' && (part.resolved === 'rejected' || part.expired)) || (part.kind === 'permission' && (part.expired || part.resolved === 'reject')))
+export function newUserIndex(messages: Message[], wait: GuideWait) {
+  return messages.findIndex((message, index) => index >= wait.count && message.role === 'user' && !wait.ids.includes(message.id) && !isCommand(message))
+}
 /** A completed response is a navigation signal, never a claim of scientific success. */
 export function guideReplyReceived(messages: Message[], wait: GuideWait, thread: string | null, busy: boolean, error: string | null) {
   if (thread !== wait.thread || busy || error) return false
-  const user = messages.findIndex(message => message.role === 'user' && !wait.ids.includes(message.id) && (message.at ?? 0) >= wait.startedAt)
+  const user = newUserIndex(messages, wait)
   if (user < 0) return false
-  return messages.slice(user + 1).some(message => message.role === 'assistant' && !wait.ids.includes(message.id)
-    && !message.parts.some(part => part.kind === 'error')
-    && message.parts.some(part => part.kind === 'text' && part.text.trim()))
+  const replies = messages.slice(user + 1).filter(message => message.role === 'assistant' && !wait.ids.includes(message.id))
+  if (replies.some(message => message.parts.some(part => part.kind === 'error') || unfinished(message))) return false
+  return replies.some(message => message.parts.some(part => part.kind === 'text' && part.text.trim()))
+}
+/** Re-arm after the conversation moved on without a usable reply: only messages after this point count. */
+export function rearm(messages: Message[], thread: string | null, interrupted = false): GuideWait {
+  return { ids: messages.map(message => message.id), count: messages.length, thread, startedAt: Date.now(), interrupted }
 }

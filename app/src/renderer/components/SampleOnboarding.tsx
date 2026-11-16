@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { guideReplyReceived, type GuideWait, type GuidePrompt } from '../sample-guide-flow'
+import { guideReplyReceived, newUserIndex, rearm, type GuideWait, type GuidePrompt } from '../sample-guide-flow'
 import type { Session } from '../useSession'
 import { validateHumanProgram } from '../../shared/human-program'
 
@@ -25,33 +25,44 @@ const choices: { action: GuidePrompt; label: string }[] = [
 ]
 
 /** A non-modal tour of the real editable sample. Progress means a view was opened, not scientific validation. */
-export function SampleOnboarding({ onClose, onAction, agentReady, conversation, suspended = false }: { suspended?: boolean; conversation?: Pick<Session, 'messages' | 'threadId' | 'busy' | 'error'>; agentReady: boolean; onClose(): void; onAction(action: SampleGuideAction): void }) {
+export function SampleOnboarding({ onClose, onAction, agentReady, conversation, suspended = false }: { suspended?: boolean; conversation?: Pick<Session, 'messages' | 'threadId' | 'busy' | 'error'> & { stopping?: boolean }; agentReady: boolean; onClose(): void; onAction(action: SampleGuideAction): void }) {
   const [step, setStep] = useState(0)
   const [waiting, setWaiting] = useState<GuideWait | null>(null)
   const threadChanged = Boolean(waiting && waiting.thread !== null && conversation && waiting.thread !== conversation.threadId)
   useEffect(() => {
-    if (waiting && waiting.thread === null && conversation?.threadId && conversation.messages.some(message => message.role === 'user' && !waiting.ids.includes(message.id) && (message.at ?? 0) >= waiting.startedAt)) {
+    if (!waiting || !conversation) return
+    // A first message creates the thread: bind the wait to it.
+    if (waiting.thread === null && conversation.threadId && newUserIndex(conversation.messages, waiting) >= 0) {
       setWaiting({ ...waiting, thread: conversation.threadId })
       return
     }
-    if (waiting && conversation && guideReplyReceived(conversation.messages, waiting, conversation.threadId, conversation.busy, conversation.error)) {
+    // Stop, or a rejected/unanswered question or permission, is not a finished reply: wait for the next message.
+    if (conversation.stopping && newUserIndex(conversation.messages, waiting) >= 0) {
+      setWaiting(rearm(conversation.messages, conversation.threadId ?? null, true))
+      return
+    }
+    if (guideReplyReceived(conversation.messages, waiting, conversation.threadId, conversation.busy, conversation.error)) {
       setWaiting(null)
       setStep(value => value + 1)
     }
-  }, [waiting, conversation?.messages, conversation?.threadId, conversation?.busy, conversation?.error])
+  }, [waiting, conversation?.messages, conversation?.threadId, conversation?.busy, conversation?.error, conversation?.stopping])
   const act = (action: SampleGuideAction) => {
     if (action === 'setup') { onAction(action); return }
     if (step >= 3) {
-      setWaiting({ ids: conversation?.messages.map(message => message.id) ?? [], thread: conversation?.threadId ?? null, startedAt: Date.now() })
+      setWaiting(rearm(conversation?.messages ?? [], conversation?.threadId ?? null))
     } else setStep(value => value + 1)
     onAction(action)
   }
   const finish = useRef<HTMLButtonElement>(null)
   const card = useRef<HTMLElement>(null)
+  const mounted = useRef(false)
   useEffect(() => {
     if (suspended) return
     const opener = document.activeElement as HTMLElement | null
-    card.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true })
+    // Focus the card once; after Settings/consent closes, only move focus to a primary action (never to Skip).
+    const target = mounted.current ? card.current?.querySelector<HTMLButtonElement>('button.primary:not([disabled])') : card.current?.querySelector<HTMLButtonElement>('button')
+    mounted.current = true
+    target?.focus({ preventScroll: true })
     const panel = card.current
     return () => { if (opener?.isConnected && (document.activeElement === document.body || panel?.contains(document.activeElement))) opener.focus({ preventScroll: true }) }
   }, [suspended])
@@ -60,6 +71,7 @@ export function SampleOnboarding({ onClose, onAction, agentReady, conversation, 
   // Observe layout, not a timer: scrolling, panel resizing and async source loading
   // can all move the real control underneath this non-modal coach mark.
   useEffect(() => {
+    if (suspended) return
     let frame = 0
     let revealed = false
     let target: HTMLElement | null = null
@@ -139,7 +151,7 @@ export function SampleOnboarding({ onClose, onAction, agentReady, conversation, 
     document.addEventListener('click', click)
     schedule()
     return () => { cancelAnimationFrame(frame); observer.disconnect(); resize.disconnect(); restore(); window.removeEventListener('resize', schedule); window.removeEventListener('scroll', schedule, true); document.removeEventListener('click', click) }
-  }, [step, agentReady, waiting])
+  }, [step, agentReady, waiting, suspended])
   useEffect(() => { if (step === steps.length) finish.current?.focus() }, [step])
   useEffect(() => {
     const keys = (event: KeyboardEvent) => { if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || document.querySelector('[aria-modal="true"]')) return; const target = event.target as HTMLElement; if (target?.closest?.('input, textarea, [contenteditable="true"]')) return; onClose() }
@@ -161,15 +173,16 @@ export function SampleOnboarding({ onClose, onAction, agentReady, conversation, 
       <strong>{waiting ? 'Continue in the chat' : current?.title ?? 'Keep exploring'}</strong>
       <p>{waiting
         ? threadChanged ? 'You switched conversations. Return to the previous chat, or continue the guide here.'
+          : waiting.interrupted && !conversation?.busy ? 'The reply was stopped before it finished. Send your question again when ready; the guide continues after a complete reply.'
           : conversation?.error ? 'The agent could not finish. Retry in chat, or skip the guide; your research is still here.'
           : conversation?.busy ? 'The agent is working on your question. Review its reply before choosing what to do next.'
           : 'Your question is in the chat draft. Edit it as you like and send it when ready. The guide continues after a reply; nothing runs automatically.'
         : current?.hint ?? 'You have practiced checking evidence, asking questions and planning your next research step. Continue in chat; review any proposed experiment before approving a run.'}</p>
     </div>
     <div className="sample-guide-actions">
-      {threadChanged && <button className="primary" onClick={() => setWaiting(null)}>Continue here</button>}
+      {threadChanged && <button className="primary" onClick={() => setWaiting(rearm(conversation?.messages ?? [], conversation?.threadId ?? null))}>Continue here</button>}
       {!waiting && current && (step === 5 && agentReady
-        ? choices.map(choice => <button key={choice.action} className="primary" onClick={() => act(choice.action)}>{choice.label}</button>)
+        ? choices.map(choice => <button key={choice.action} className="primary" disabled={Boolean(conversation?.busy)} onClick={() => act(choice.action)}>{choice.label}</button>)
         : <button className="primary" disabled={step >= 3 && Boolean(conversation?.busy)} onClick={() => act(current.action)}>{current.button}</button>)}
       <button ref={finish} className="ghost" onClick={onClose}>{current ? 'Skip guide' : 'Finish guide'}</button>
     </div>
