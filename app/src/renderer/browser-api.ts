@@ -698,6 +698,18 @@ def intentional(harm: float, help_: float) -> float:
         const i = projects.findIndex((p) => p.dir === dir)
         if (i >= 0) projects.splice(i, 1)
       },
+      // Study transfer in the visual preview: a plausible dialog, no file is written or read.
+      exportPreview: async (dir) => ({
+        name: projects.find((p) => p.dir === dir)?.name ?? 'Study',
+        study: { files: 42, bytes: 3_400_000 },
+        hasPaper: true,
+        conversations: { count: 3, files: 3, bytes: 180_000 },
+        privateFiles: [{ path: 'sources/private/my-copy.pdf', bytes: 1_200_000 }],
+        limits: { maxFiles: 20_000, maxTotalBytes: 2048 * 1024 * 1024, maxFileBytes: 512 * 1024 * 1024 },
+      }),
+      exportStudy: async () => ({ ok: true as const, savedPath: 'Study.humanstudy.zip', bytes: 2_100_000, files: 45 }),
+      pickStudy: async () => null,
+      importStudy: async () => ({ ok: false as const, code: 'not-package' as const }),
     },
     community: {
       studies: async () => {

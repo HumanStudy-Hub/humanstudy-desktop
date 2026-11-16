@@ -17,14 +17,15 @@ import {
   isAllowedExternal,
   setCommunityCacheDir,
 } from './community'
-import { createProject, isInside, isWithin, listProjects, renameProject, trashProject } from './projects'
+import { createProject, isInside, isProject, isWithin, listProjects, renameProject, trashProject } from './projects'
+import { exportStudy, importStudy, packageName, previewExport, sweepImports, TransferError } from './study-transfer'
 import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
 import { checkForUpdates, installUpdate, startUpdates, stopUpdates, updateStatus } from './updates'
 import { createReadStream, existsSync } from 'node:fs'
 import { watchFolder, type FolderWatch } from './project-watch'
 import { fileVersion } from '../shared/file-version'
 import { manifestSourceDigests, protocolSourceDigests } from '../shared/source-target'
-import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
@@ -48,7 +49,7 @@ import { launchProtocolRun, newRunFolder, sweepRunCopies, type Binding as Protoc
 import type { Kernel, KernelEvent } from './kernel-types'
 import { actionRef } from '../shared/research-operations'
 import { withPrivateCopyNote } from '../shared/workspace-context'
-import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
+import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, StudyExportOptions, StudyExportResult, StudyImportResult, StudyTransferFailure, UnsavedPrompt, WorkspaceContext } from '../preload/types'
 
 // macOS with /usr/bin/sandbox-exec: simulations go through a per-run relay. Elsewhere they use the
 // pre-relay path and the run confirmation says that the study's code can read the key.
@@ -670,6 +671,82 @@ app.whenReady().then(() => {
   ipcMain.handle('projects:trash', async (_e, dir: string) => {
     unwatch(resolve(dir))
     await trashProject(dir)
+  })
+
+  // ---- "Download this study" / "Open a downloaded study" (study-transfer.ts) -------------------------
+  // Only on the researcher's explicit action; research data never sees the file or what is in it (only counts).
+  const ONLINE = process.env.HUMANSTUDY_RESEARCH_SURFACE === 'web'
+  const transferFailure = (e: unknown): StudyTransferFailure =>
+    e instanceof TransferError ? { ok: false, code: e.code, ...(e.file ? { file: e.file } : {}), detail: e.message }
+      : { ok: false, code: 'failed', detail: e instanceof Error ? e.message : String(e) }
+  /** A project folder a download may read: a HumanStudy project under the projects folder or opened with Open. */
+  const transferProject = (dir: string): string | null => {
+    const d = resolve(String(dir ?? ''))
+    return isAllowed(d) && isProject(d) && d !== resolve(getSettings().projectsRoot) ? d : null
+  }
+  void sweepImports(ensureProjectsRoot())
+  ipcMain.handle('projects:exportPreview', async (_e, dir: string) => {
+    const d = transferProject(dir)
+    if (!d) throw new Error('This folder is not a HumanStudy project.')
+    return previewExport(d)
+  })
+  ipcMain.handle('projects:exportStudy', async (e, dir: string, options: StudyExportOptions): Promise<StudyExportResult | null> => {
+    const d = transferProject(dir)
+    if (!d) return { ok: false, code: 'not-project' }
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const opts = {
+      title: 'Download this study',
+      defaultPath: join(app.getPath('downloads'), packageName(basename(d))),
+      filters: [{ name: 'HumanStudy study', extensions: ['zip'] }],
+    }
+    const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    if (r.canceled || !r.filePath) return null
+    // A study file saved inside a project is never itself part of a download, nor collected (telemetry-core.ts).
+    let target = r.filePath
+    if (!/\.zip$/i.test(target)) target += '.zip'
+    try {
+      const out = await exportStudy(d, target, {
+        conversations: options?.conversations !== false,
+        privateFiles: Array.isArray(options?.privateFiles) ? options.privateFiles.filter((p): p is string => typeof p === 'string') : [],
+        source: { platform: ONLINE ? 'online' : 'desktop', appVersion: app.getVersion() },
+      })
+      telemetry.track('project.exported', { metadata: { files: out.files, bytes: out.bytes, conversations: out.manifest.includes.conversations, privateFiles: out.manifest.includes.privateFiles.length } }, d)
+      return { ok: true, savedPath: out.path, bytes: out.bytes, files: out.files }
+    } catch (err) {
+      return transferFailure(err)
+    }
+  })
+  ipcMain.handle('projects:pickStudy', async () => {
+    const win = BrowserWindow.getFocusedWindow()
+    const opts = {
+      title: 'Open a downloaded study',
+      properties: ['openFile'] as Array<'openFile'>,
+      filters: [{ name: 'HumanStudy study', extensions: ['zip'] }],
+    }
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    return r.canceled ? null : (r.filePaths[0] ?? null)
+  })
+  ipcMain.handle('projects:importStudy', async (_e, path: string): Promise<StudyImportResult> => {
+    if (typeof path !== 'string' || !path) return { ok: false, code: 'not-package' }
+    const file = resolve(path)
+    try {
+      const out = await importStudy(file, ensureProjectsRoot())
+      // The app's own agent files are not in a study file (they may hold a provider key): install this version's.
+      await refreshPack(out.dir).catch(() => undefined)
+      if (out.privateFiles > 0 && (await isPublishedStudy(out.dir).catch(() => false))) {
+        // Private copies arrived: research capture must recognise their wording before anything else reads them.
+        const python = await readyPython()
+        if (python) await indexPrivateCopies(python, trustedOriginalTextFiles(), out.dir, originalTextCache(), process.env.HUMANSTUDY_RUNTIME_BIN || '').catch(() => undefined)
+        await telemetry.refreshPrivateIndex().catch(() => undefined)
+      }
+      telemetry.track('project.imported', { metadata: { files: out.manifest.files.length, conversations: out.conversations, privateFiles: out.privateFiles, from: out.manifest.source.platform, renamed: out.renamed } }, out.dir)
+      return { ok: true, dir: out.dir, name: out.name, renamed: out.renamed, conversations: out.conversations, privateFiles: out.privateFiles }
+    } catch (err) {
+      return transferFailure(err)
+    } finally {
+      // Online, the picked file was uploaded into the sandbox only for this: do not keep a second copy there.
+      if (ONLINE && isInside(join(app.getPath('userData'), 'uploads'), dirname(file))) void rm(dirname(file), { recursive: true, force: true }).catch(() => undefined)
+    }
   })
 
   setCommunityCacheDir(app.getPath('userData'))
