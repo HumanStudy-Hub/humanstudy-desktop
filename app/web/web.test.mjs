@@ -152,6 +152,18 @@ test('a study moves out of and back into the online workspace: browser download,
   assert.equal(again.value.code, 'not-package')
 })
 
+test('project sync runs in the online workspace too; signed out it stays local and never fails opening', async () => {
+  const created = await ipc('projects:create', { name: 'Sync check' })
+  assert.equal(created.ok, true)
+  const listed = await ipc('sync:list')
+  assert.equal(listed.ok, true, JSON.stringify(listed))
+  assert.deepEqual({ signedIn: listed.value.signedIn, cloudOnly: listed.value.cloudOnly }, { signedIn: false, cloudOnly: [] })
+  const opened = await ipc('sync:beforeOpen', created.value)
+  assert.deepEqual(opened.value, { dir: created.value })
+  assert.equal((await ipc('sync:closed', created.value)).ok, true)
+  assert.equal((await ipc('sync:download', 'proj-12345678')).ok, false, 'signed out: no cloud projects')
+})
+
 // One pending read per stream: a read abandoned by a timeout would swallow the next chunk.
 function lines(stream) {
   const reader = stream.getReader()

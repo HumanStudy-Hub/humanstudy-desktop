@@ -155,6 +155,8 @@ export default function App() {
     requestAnimationFrame(() => home.current?.fromPaper())
   }, [project, wantNew])
 
+  // Project sync: while a project is brought up to date from the cloud, and when both copies had changed.
+  const [syncNotice, setSyncNotice] = useState<{ busy: boolean; title?: string; message: string } | null>(null)
   const load = useCallback(async (dir: string) => {
     const snap = await window.humanstudy.project.read(dir)
     // Only a different project clears the selection. A re-read of the same one (the agent saved a
@@ -167,6 +169,22 @@ export default function App() {
     async (dir: string) => {
       const started = performance.now()
       const action = claimAction('project.open', true)
+      if (state.current.project?.dir !== dir) {
+        const previous = state.current.project?.dir
+        if (previous) void window.humanstudy.sync?.closed(previous)?.catch(() => undefined)
+        // Signed in: a newer cloud revision comes in first when this copy has no unsynced changes; when both changed,
+        // the cloud version is kept as a new project. Never fails; offline, the local copy opens.
+        const slow = setTimeout(() => setSyncNotice({ busy: true, message: t('sync.updating') }), 700)
+        try {
+          const r = await window.humanstudy.sync.beforeOpen(dir)
+          dir = r.dir
+          setSyncNotice(r.copy ? { busy: false, title: t('sync.copy_title'), message: t('sync.copy_made', { device: r.copy.device, name: r.copy.name }) } : null)
+        } catch {
+          setSyncNotice(null)
+        } finally {
+          clearTimeout(slow)
+        }
+      }
       const switched = state.current.project?.dir !== dir
       await load(dir)
       if (WEB_EDITION) rememberBrowserProject(dir)
@@ -242,6 +260,8 @@ export default function App() {
   const closeProject = (): boolean => {
     if (!confirmLeave()) return false
     track('project.closed')
+    const closing = state.current.project?.dir
+    if (closing) void window.humanstudy.sync?.closed(closing)?.catch(() => undefined)
     void setTelemetryProject(null)
     setProject(null)
     if (WEB_EDITION) rememberBrowserProject(null)
@@ -509,6 +529,7 @@ export default function App() {
     <>
       {exportDir && <ExportStudyDialog dir={exportDir} onClose={() => setExportDir(null)} />}
       {transfer && <TransferNotice {...transfer} onClose={() => setTransfer(null)} />}
+      {syncNotice && <TransferNotice {...syncNotice} onClose={() => setSyncNotice(null)} />}
     </>
   )
 

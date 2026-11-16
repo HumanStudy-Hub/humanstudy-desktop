@@ -19,6 +19,10 @@ import {
 } from './community'
 import { createProject, isInside, isProject, isWithin, listProjects, renameProject, trashProject } from './projects'
 import { exportStudy, importStudy, PACKAGE_SUFFIX, packageName, previewExport, sweepImports, TransferError } from './study-transfer'
+import { createProjectSync, sweepSyncTemps, type SyncEngine } from './project-sync'
+import { createCloud } from './project-sync-cloud'
+import { deviceLabel } from './project-sync-core'
+import { hostname } from 'node:os'
 import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
 import { checkForUpdates, installUpdate, startUpdates, stopUpdates, updateStatus } from './updates'
 import { createReadStream, existsSync } from 'node:fs'
@@ -26,6 +30,7 @@ import { watchFolder, type FolderWatch } from './project-watch'
 import { fileVersion } from '../shared/file-version'
 import { manifestSourceDigests, protocolSourceDigests } from '../shared/source-target'
 import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
@@ -86,6 +91,8 @@ const sessionKernel = new Map<string, Kernel>()
 /** The project folder of each session (for checks that need it before the kernel sees a message). */
 const sessionProject = new Map<string, string>()
 const activeTurns = new Set<string>()
+/** Project sync (project-sync.ts), set up when the app is ready. */
+let projectSync: SyncEngine | null = null
 // The automatic paper build; its state file is under .humanstudy, which the project watcher ignores.
 const paperBuilds = createPaperBuilds(dir => broadcast('project:changed', dir), async dir => protocolDraftCertificate(
   await readyPython(), trustedEngineFiles(), dir, process.env.HUMANSTUDY_RUNTIME_BIN || ''))
@@ -102,7 +109,12 @@ const shutdown = createShutdown({
     })
     return result.response === 1
   },
-  flush: async () => { if (threadsInitialized) await threads().flush(); await telemetry.settleResearch(activeTurns.size === 0) },
+  flush: async () => {
+    if (threadsInitialized) await threads().flush()
+    await telemetry.settleResearch(activeTurns.size === 0)
+    // Best effort and bounded: a sync that cannot finish now runs on the next start.
+    await projectSync?.flushAll(8_000).catch(() => undefined)
+  },
   quiesce: async () => {
     // Preserve kernel/session bindings until exit so an unsuccessful quit remains usable.
     await Promise.all([...activeTurns].map(id => kernelFor(id).abort(id)))
@@ -120,7 +132,12 @@ function currentKernel(): Kernel {
       // A cancelled quit must leave queued prompts in place rather than dispatching them
       // into the closing gate when the interrupted turn reports completion.
       if (shutdown.closing() && e.type === 'done') e = { ...e, detail: 'shutdown' }
-      if (e.type === 'done') activeTurns.delete(e.sessionId)
+      if (e.type === 'done') {
+        activeTurns.delete(e.sessionId)
+        // A finished turn saved the conversation and whatever the agent wrote: push once the project is quiet.
+        const turnDir = sessionProject.get(e.sessionId)
+        if (turnDir) projectSync?.touch(turnDir)
+      }
       else if (e.type === 'text' || e.type === 'tool' || (e.type === 'status' && e.text === 'busy') || (e.type === 'question' && !e.question?.resolved) || (e.type === 'permission' && !e.permission?.resolved)) activeTurns.add(e.sessionId)
       try { void Promise.resolve(paperBuilds.event(e)).catch(err => console.error('paper build check', err)) } catch (err) { console.error('paper build state', err) } // never blocks events
       threads().onEvent(e) // record before the renderer hears about it
@@ -303,6 +320,7 @@ function watchProject(dir: string): void {
       ignore: (file) => file.startsWith('.humanstudy'),
       onFile: (file) => {
         telemetry.noteFsChange(dir, file)
+        projectSync?.touch(dir)
         // A history for what the agent (or the researcher) wrote; debounced so one write is one version.
         const rel = file.split(sep).join('/')
         if (isVersioned(rel)) {
@@ -666,12 +684,74 @@ app.whenReady().then(() => {
     const from = resolve(dir)
     const to = await renameProject(from, name)
     if (to !== from) unwatch(from)
+    projectSync?.touch(to) // the cloud copy takes the new name
     return to
   })
   ipcMain.handle('projects:trash', async (_e, dir: string) => {
     unwatch(resolve(dir))
+    // The cloud copy is soft-deleted first (restorable for 30 days); offline, the delete is sent later.
+    if (isInside(getSettings().projectsRoot, resolve(dir)) && isProject(resolve(dir))) await projectSync?.trashed(resolve(dir)).catch(() => undefined)
     await trashProject(dir)
   })
+
+  // ---- project sync: every project privately in the account's cloud storage (project-sync.ts) -------------------
+  void sweepSyncTemps(ensureProjectsRoot())
+  const pendingFile = (): string => join(app.getPath('userData'), 'sync-pending-deletes.json')
+  projectSync = createProjectSync({
+    cloud: createCloud({ auth: () => getAccount().restAuth(), fetch }),
+    signedInUser: () => getAccount().researchOwner(),
+    projectsRoot: () => ensureProjectsRoot(),
+    // Folders opened with Open (outside the projects folder) stay local.
+    syncable: (dir) => isInside(getSettings().projectsRoot, dir) && isProject(dir),
+    // Online, a sandbox can be reclaimed without a quit: push sooner after the last change.
+    debounceMs: process.env.HUMANSTUDY_RESEARCH_SURFACE === 'web' ? 20_000 : undefined,
+    localProjects: async () => {
+      const root = ensureProjectsRoot()
+      return (await readdir(root, { withFileTypes: true }).catch(() => []))
+        .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
+        .map((d) => join(root, d.name))
+        .filter(isProject)
+    },
+    device: deviceLabel(process.env.HUMANSTUDY_RESEARCH_SURFACE === 'web' ? 'online' : 'desktop', hostname()),
+    platform: process.env.HUMANSTUDY_RESEARCH_SURFACE === 'web' ? 'online' : 'desktop',
+    appVersion: app.getVersion(),
+    // The app's agent files never travel (they can hold a provider key): install this version's.
+    afterInstall: (dir) => refreshPack(dir),
+    busy: (dir) => [...activeTurns].some((sid) => sessionProject.get(sid) === dir),
+    release: async (dir) => {
+      unwatch(dir)
+      if (threadsInitialized) await threads().forgetDir(dir)
+    },
+    onChange: () => broadcast('sync:changed', null),
+    readPending: () => {
+      try {
+        const v = JSON.parse(readFileSync(pendingFile(), 'utf8')) as unknown
+        return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+      } catch {
+        return []
+      }
+    },
+    writePending: (ids) => {
+      try { writeFileSync(pendingFile(), JSON.stringify(ids), { mode: 0o600 }) } catch { /* next time */ }
+    },
+  })
+  /** A project folder sync may touch: a HumanStudy project inside the projects folder. */
+  const syncProjectDir = (dir: unknown): string => {
+    const d = resolve(String(dir ?? ''))
+    if (!isInside(getSettings().projectsRoot, d) || !isProject(d)) throw new Error('This folder is not a HumanStudy project.')
+    return d
+  }
+  ipcMain.handle('sync:list', () => projectSync!.list())
+  ipcMain.handle('sync:beforeOpen', async (_e, dir: string) => {
+    const d = resolve(String(dir ?? ''))
+    // Folders opened with Open (outside the projects folder) stay local, as do non-projects.
+    if (!isInside(getSettings().projectsRoot, d) || !isProject(d)) return { dir: d }
+    if (threadsInitialized) await threads().flushDir(d).catch(() => undefined) // decide on what is saved
+    return projectSync!.beforeOpen(d)
+  })
+  ipcMain.handle('sync:download', (_e, projectId: string) => projectSync!.download(String(projectId ?? '')))
+  ipcMain.handle('sync:closed', (_e, dir: string) => { try { projectSync!.closed(syncProjectDir(dir)) } catch { /* not a synced folder */ } })
+  ipcMain.handle('sync:restore', (_e, projectId: string) => projectSync!.restore(String(projectId ?? '')))
 
   // ---- "Download this study" / "Open a downloaded study" (study-transfer.ts) -------------------------
   // Only on the researcher's explicit action; research data never sees the file or what is in it (only counts).
@@ -721,7 +801,6 @@ app.whenReady().then(() => {
     try {
       const out = await exportStudy(d, target, {
         conversations: options?.conversations !== false,
-        privateFiles: Array.isArray(options?.privateFiles) ? options.privateFiles.filter((p): p is string => typeof p === 'string') : [],
         source: { platform: ONLINE ? 'online' : 'desktop', appVersion: app.getVersion() },
         published: await isPublishedStudy(d).catch(() => false),
       })

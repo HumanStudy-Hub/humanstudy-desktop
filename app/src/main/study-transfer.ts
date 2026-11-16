@@ -12,9 +12,11 @@
 //
 // What goes in (`classify`): the study (program.json, protocol.json, package/, artifacts/ with simulation results,
 // notes, sources, the paper, .humanstudy/project.json and community.json), the chat history (.humanstudy/threads and
-// thread-history; the researcher can untick it) and, only when ticked one by one, private files (sources/private/,
+// thread-history; the researcher can untick it) and the researcher's private files (sources/private/,
 // sources/researcher/, sources/quarantine/, any original-text/ folder: the same rule research capture uses,
-// telemetry-core.ts PRIVATE_MATERIAL). Never: hidden files and folders (.git, .env, .opencode with its possible
+// telemetry-core.ts PRIVATE_MATERIAL). The study file is the researcher's own copy, like their cloud copy
+// (project-sync.ts), so private files go in; privacy and copyright checks apply when publishing to the community
+// (community.ts), not here. Never: hidden files and folders (.git, .env, .opencode with its possible
 // provider config, .DS_Store, ...), node_modules, caches, save temporaries, other study files, and from .humanstudy
 // everything else (original-text.json, tmp/, versions/). Account, keys, settings, consent and the restored-wording
 // cache live in app storage, outside the project, and the scan never leaves the project folder or follows a link.
@@ -170,7 +172,7 @@ export async function scanProject(root: string, limits: Limits = LIMITS, publish
   return out
 }
 
-const isThread = (rel: string): boolean => /^\.humanstudy\/threads\/[^/]+\.json$/.test(rel)
+export const isThread = (rel: string): boolean => /^\.humanstudy\/threads\/[^/]+\.json$/.test(rel)
 const threadCount = (files: { path: string }[]): number => files.filter((f) => isThread(f.path)).length
 
 export async function previewExport(root: string, o: { published?: boolean; limits?: Limits } = {}): Promise<StudyExportPreview> {
@@ -194,7 +196,7 @@ const ID_RE = /^[A-Za-z0-9_-]{8,80}$/
 const MARKER = ['.humanstudy', 'project.json'] as const
 
 /** The marker's contents: null when there is none, 'unreadable' when it exists but is not a JSON object. */
-async function readMarker(root: string): Promise<Record<string, unknown> | null | 'unreadable'> {
+export async function readMarker(root: string): Promise<Record<string, unknown> | null | 'unreadable'> {
   try {
     const meta = JSON.parse(await readFile(join(root, ...MARKER), 'utf8')) as unknown
     return meta && typeof meta === 'object' && !Array.isArray(meta) ? (meta as Record<string, unknown>) : 'unreadable'
@@ -203,7 +205,7 @@ async function readMarker(root: string): Promise<Record<string, unknown> | null 
   }
 }
 
-async function writeMarker(root: string, meta: Record<string, unknown>): Promise<void> {
+export async function writeMarker(root: string, meta: Record<string, unknown>): Promise<void> {
   await mkdir(join(root, '.humanstudy'), { recursive: true })
   const tmp = join(root, '.humanstudy', `project.json.${process.pid}.${randomUUID()}.tmp`)
   await writeFile(tmp, JSON.stringify(meta, null, 2) + '\n', { flag: 'wx' })
@@ -225,7 +227,7 @@ export async function ensureProjectId(root: string): Promise<string> {
 }
 
 /** The ids of the projects in the projects folder (only folders that carry the marker). */
-async function projectIds(projectsRoot: string): Promise<Set<string>> {
+export async function projectIds(projectsRoot: string): Promise<Set<string>> {
   const ids = new Set<string>()
   for (const d of await readdir(projectsRoot, { withFileTypes: true }).catch(() => [])) {
     if (!d.isDirectory() || d.name.startsWith('.')) continue
@@ -237,7 +239,7 @@ async function projectIds(projectsRoot: string): Promise<Set<string>> {
 
 /** A conversation's native model session belongs to the computer it ran on. Without it, the thread resumes as a fresh
  *  session that is given the saved history (threads-core.ts `resume`). */
-function withoutNativeSession(raw: Buffer): Buffer {
+export function withoutNativeSession(raw: Buffer): Buffer {
   let thread: unknown
   try { thread = JSON.parse(raw.toString('utf8')) } catch { return raw }
   if (!thread || typeof thread !== 'object' || Array.isArray(thread)) return raw
@@ -485,7 +487,7 @@ export function checkCollisions(paths: string[]): void {
   for (const folder of folders) if (seen.has(folder)) fail('unsafe', 'a file and a folder with the same name', paths.find((p) => foldKey(p) === folder) ?? folder)
 }
 
-function checkManifest(value: unknown, limits: Limits): Manifest {
+export function checkManifest(value: unknown, limits: Limits = LIMITS): Manifest {
   const m = value as Partial<Manifest> | null
   if (!m || typeof m !== 'object' || Array.isArray(m) || m.format !== FORMAT) return fail('not-package', 'not a HumanStudy study file')
   if (typeof m.version !== 'number' || !Number.isInteger(m.version) || m.version < 1) return fail('not-package', 'no format version')
@@ -541,9 +543,9 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
   const limits = o.limits ?? LIMITS
   const now = o.now ?? new Date()
   const id = await ensureProjectId(root)
-  const ticked = new Set(Array.isArray(o.privateFiles) ? o.privateFiles : [])
+  // Private files are included (the researcher's own copy); only the chat history can be left out.
   const chosen = (await scanProject(root, limits, o.published === true)).filter((f) =>
-    f.kind === 'study' || (f.kind === 'conversation' && o.conversations === true) || (f.kind === 'private' && ticked.has(f.path)))
+    f.kind === 'study' || f.kind === 'private' || (f.kind === 'conversation' && o.conversations === true))
   if (chosen.length > limits.maxFiles) fail('too-large', `more than ${limits.maxFiles} files`)
   let planned = 0
   for (const f of chosen) {

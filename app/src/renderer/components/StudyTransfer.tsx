@@ -32,7 +32,6 @@ export const isStudyFile = (name: string): boolean => /\.zip$/i.test(name)
 export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): void }) {
   const [preview, setPreview] = useState<StudyExportPreview | null>(null)
   const [conversations, setConversations] = useState(true)
-  const [ticked, setTicked] = useState<Set<string>>(() => new Set())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState('')
@@ -55,12 +54,12 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
 
   const size = useMemo(() => {
     if (!preview) return { bytes: 0, files: 0 }
-    const priv = preview.privateFiles.filter((f) => ticked.has(f.path))
+    // Private files are always included (the researcher's own copy); only the chat history can be left out.
     return {
-      bytes: preview.study.bytes + (conversations ? preview.conversations.bytes : 0) + priv.reduce((n, f) => n + f.bytes, 0),
-      files: preview.study.files + (conversations ? preview.conversations.files : 0) + priv.length,
+      bytes: preview.study.bytes + (conversations ? preview.conversations.bytes : 0) + preview.privateFiles.reduce((n, f) => n + f.bytes, 0),
+      files: preview.study.files + (conversations ? preview.conversations.files : 0) + preview.privateFiles.length,
     }
-  }, [preview, conversations, ticked])
+  }, [preview, conversations])
   const tooBig = Boolean(preview && (size.bytes > preview.limits.maxTotalBytes || size.files > preview.limits.maxFiles))
 
   const save = async () => {
@@ -68,7 +67,7 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
     setBusy(true)
     setError('')
     try {
-      const r = await window.humanstudy.projects.exportStudy(dir, { conversations, privateFiles: [...ticked] })
+      const r = await window.humanstudy.projects.exportStudy(dir, { conversations })
       if (!r) return // the save dialog was cancelled
       if (!r.ok) return setError(transferErrorText(r, 'export'))
       setSaved(r.savedPath.split(/[\\/]/).pop() || r.savedPath)
@@ -78,13 +77,6 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
       setBusy(false)
     }
   }
-  const toggle = (path: string) =>
-    setTicked((prev) => {
-      const next = new Set(prev)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      return next
-    })
 
   return (
     <div className="overlay" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose() }}>
@@ -110,6 +102,16 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
                     <span>{t(preview.hasPaper ? 'transfer.study_files_paper' : 'transfer.study_files', { n: preview.study.files })}</span>
                     <span className="muted small">{formatBytes(preview.study.bytes)}</span>
                   </li>
+                  {preview.privateFiles.length > 0 && (
+                    <li>
+                      <input type="checkbox" checked disabled aria-hidden />
+                      <span>
+                        {t(preview.privateFiles.length === 1 ? 'transfer.private_one' : 'transfer.private_n', { n: preview.privateFiles.length })}
+                        <span className="muted small transfer-hint">{t('transfer.private_hint')}</span>
+                      </span>
+                      <span className="muted small">{formatBytes(preview.privateFiles.reduce((n, f) => n + f.bytes, 0))}</span>
+                    </li>
+                  )}
                   {preview.conversations.count > 0 && (
                     <li>
                       <label>
@@ -123,23 +125,6 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
                     </li>
                   )}
                 </ul>
-                {preview.privateFiles.length > 0 && (
-                  <>
-                    <h3 className="transfer-label">{t('transfer.private')}</h3>
-                    <p className="muted small transfer-hint">{t('transfer.private_hint')}</p>
-                    <ul className="transfer-list private">
-                      {preview.privateFiles.map((f) => (
-                        <li key={f.path}>
-                          <label title={f.path}>
-                            <input type="checkbox" checked={ticked.has(f.path)} disabled={busy} onChange={() => toggle(f.path)} />
-                            <span className="transfer-file">{f.path.replace(/^sources\/(?:private|researcher|quarantine)\//i, '')}</span>
-                          </label>
-                          <span className="muted small">{formatBytes(f.bytes)}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                )}
                 <p className="small transfer-size">
                   {t('transfer.size', { size: formatBytes(size.bytes) })}
                   <span className="muted"> · {t('transfer.never')}</span>

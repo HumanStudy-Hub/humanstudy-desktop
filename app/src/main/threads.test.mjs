@@ -318,6 +318,27 @@ const saved=JSON.parse(readFileSync(join(failDir,'.humanstudy','threads',unsaved
 assert.equal(saved.messages.at(-1).parts[0].text,lastReply)
 rmSync(failDir,{recursive:true,force:true})
 
+// Project sync: one project's pending conversations are written now, and after its files were replaced the
+// in-memory copies are dropped so the next read loads the new files.
+{
+  const dir = mkdtempSync(join(tmpdir(), 'threads-sync-'))
+  const m = new T.ThreadManager({kernelName:()=> 'mock',start:async()=> 'sync-session',resume:async()=>null},()=>{}, {saveDelayMs:60_000})
+  const t = await m.create(dir)
+  m.beforeSend(t.kernelSessionId, 'Pending until the project syncs')
+  const file = join(dir, '.humanstudy', 'threads', t.id + '.json')
+  assert.equal(existsSync(file), false, 'still waiting for its save delay')
+  await m.flushDir(dir)
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).messages[0].parts[0].text, 'Pending until the project syncs')
+  const pulled = JSON.parse(readFileSync(file, 'utf8'))
+  pulled.title = 'From the other device'
+  writeFileSync(file, JSON.stringify(pulled))
+  await m.forgetDir(dir)
+  assert.equal((await m.get(dir, t.id)).title, 'From the other device')
+  await m.flush()
+  assert.equal(JSON.parse(readFileSync(file, 'utf8')).title, 'From the other device', 'quitting never writes the old copy back')
+  rmSync(dir, { recursive: true, force: true })
+}
+
 await mgr.flush()
 await kernel.dispose()
 rmSync(out, { recursive: true, force: true })
