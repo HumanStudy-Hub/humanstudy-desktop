@@ -120,9 +120,11 @@ interface Server {
 }
 
 /** Plain words for an unexpected assistant-process exit. Exported for tests. */
-export function exitMessage(code: number | null, signal: NodeJS.Signals | null): string {
+export function exitMessage(code: number | null, signal: NodeJS.Signals | null, online = process.env.HUMANSTUDY_RESEARCH_SURFACE === 'web'): string {
   const saved = 'Your project and chat are saved. Send your message again to continue.'
-  if (signal) return `The AI assistant was stopped by the system (${signal}). This can happen when an online workspace reaches its time limit or runs out of memory. ${saved}`
+  if (signal) return online
+    ? `The AI assistant was stopped by the system (${signal}). This can happen when an online workspace reaches its time limit or runs out of memory. ${saved}`
+    : `The AI assistant was stopped by the system (${signal}), for example because the computer ran low on memory. ${saved}`
   if (code && code !== 0) return `The AI assistant stopped unexpectedly (exit code ${code}). ${saved}`
   return `The AI assistant closed. ${saved}`
 }
@@ -234,9 +236,21 @@ export class OpencodeKernel implements Kernel {
     return info.id
   }
 
-  async resumeSession(projectDir: string, sessionId: string): Promise<string | null> {
+  /** One reopen per session id: a send and a thread resume racing must not register the session twice. */
+  private readonly reopening = new Map<string, Promise<string | null>>()
+
+  resumeSession(projectDir: string, sessionId: string): Promise<string | null> {
     const known = this.sessions.get(sessionId)
-    if (known && !known.server.exited) return sessionId
+    if (known && !known.server.exited) return Promise.resolve(sessionId)
+    let p = this.reopening.get(sessionId)
+    if (!p) {
+      p = this.reopen(projectDir, sessionId).finally(() => this.reopening.delete(sessionId))
+      this.reopening.set(sessionId, p)
+    }
+    return p
+  }
+
+  private async reopen(projectDir: string, sessionId: string): Promise<string | null> {
     // opencode keeps sessions on disk, so a freshly started server may still know this one.
     const server = await this.serverFor(projectDir)
     const res = await fetch(server.base + `/session/${encodeURIComponent(sessionId)}`, {
@@ -245,7 +259,10 @@ export class OpencodeKernel implements Kernel {
     })
     if (res.status === 404 || res.status === 400) return null
     if (!res.ok) throw new Error(`opencode GET /session/${sessionId} -> ${res.status}`)
+    const live = this.sessions.get(sessionId)
+    if (live && !live.server.exited) return sessionId
     this.register(sessionId, server)
+    this.lost.delete(sessionId)
     // The local thread already contains previous turns. Seed their IDs so a later
     // connection repair cannot append the entire native history as a new answer.
     await this.seedHistory(sessionId)
@@ -405,6 +422,7 @@ export class OpencodeKernel implements Kernel {
 
   /** Native OpenCode functions, scoped to a session already owned by this app. */
   async native(sessionId: string, request: NativeRequest): Promise<unknown> {
+    if (this.lost.has(sessionId) && !this.sessions.has(sessionId)) await this.reviveLost(sessionId)
     const s = this.session(sessionId)
     if (NATIVE_SESSION_MUTATIONS.has(request.operation) && s.inFlight) throw Error('Stop the current response before changing this session.')
     if (request.operation === 'select') {
@@ -494,6 +512,7 @@ export class OpencodeKernel implements Kernel {
   }
 
   async abort(sessionId: string): Promise<void> {
+    if (this.lost.has(sessionId) && !this.sessions.has(sessionId)) return // the assistant already stopped: nothing to stop
     const s = this.session(sessionId)
     if (s.stopping) throw new Error('This conversation is already stopping.')
     s.stopping = true
@@ -635,6 +654,8 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
   /** Sessions whose assistant process ended; opencode keeps them on disk, so the next message reopens them. */
   private readonly lost = new Map<string, { dir: string; selection?: SessionState['selection'] }>()
+  /** The server process that currently owns each project directory. */
+  private readonly current = new Map<string, Server>()
 
   private async reviveLost(sessionId: string): Promise<void> {
     const gone = this.lost.get(sessionId)
@@ -763,6 +784,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       transport,
     }
     this.live.add(server)
+    this.current.set(dir, server)
     const keep = (chunk: Buffer): void => {
       server.stderrTail = (server.stderrTail + chunk.toString()).slice(-2000)
     }
@@ -773,15 +795,17 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       server.exited = true
       server.sse.abort()
       this.live.delete(server)
-      this.servers.delete(dir)
+      // A late exit of an old process must not remove a newer server for the same project.
+      if (this.current.get(dir) === server) { this.current.delete(dir); this.servers.delete(dir) }
       if (this.disposed) return
       // Keep a short, redacted record of why the process ended (signal, code, last output) for diagnosis.
-      const tail = redact(server.stderrTail).trim().split('\n').slice(-5).join(' | ')
+      const tail = exitLogTail(server.stderrTail)
       console.warn(`[opencode] exited code=${code} signal=${signal} intentional=${Boolean(server.intentional)}${tail ? ' tail=' + tail : ''}`)
       for (const [id, s] of this.sessions) {
         if (s.server !== server) continue
         // An idle conversation is resumed quietly on its next message; only a turn that was running is told.
         if (s.inFlight && !server.intentional) this.emitter.emit({ sessionId: id, type: 'error', text: exitMessage(code, signal) })
+        s.recovery.cancelled = true; s.recovery.pending = false
         if (s.inFlight) this.emitter.emit({ sessionId: id, type: 'done' })
         this.lost.set(id, { dir, selection: s.selection })
         this.sessions.delete(id)
@@ -798,6 +822,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       await server.connected
     } catch (err) {
       transport?.close()
+      server.intentional = true
       proc.kill('SIGKILL')
       const tail = redact(server.stderrTail).trim().split('\n').slice(-5).join('\n')
       throw new Error(`${(err as Error).message}${tail ? `\nopencode output:\n${tail}` : ''}`)
@@ -1342,10 +1367,20 @@ function summarizeInput(input: unknown): string {
 }
 
 function redact(s: string): string {
-  for (const key of [process.env.OPENROUTER_API_KEY, process.env.HUMANSTUDY_DESKTOP_KEY, process.env.HUMANSTUDY_SERVER_BYPASS]) {
+  for (const key of [process.env.OPENROUTER_API_KEY, process.env.HUMANSTUDY_DESKTOP_KEY, process.env.HUMANSTUDY_SERVER_BYPASS, process.env.OPENCODE_SERVER_PASSWORD, process.env.ANTHROPIC_API_KEY]) {
     if (key) s = s.split(key).join('[redacted]')
   }
   return s
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [redacted]')
+    .replace(/\b(sk|pk|rk|ghp|gho|github_pat|xox[abp])[-_][A-Za-z0-9_-]{8,}/g, '[redacted]')
+    .replace(/("?(?:api[_-]?key|apiKey|password|token|secret)"?\s*[:=]\s*)"?[^"\s,}]+"?/gi, '$1[redacted]')
+}
+
+/** One short, redacted log line: secrets removed, user text cut short. */
+export function exitLogTail(stderrTail: string): string {
+  return redact(stderrTail).trim().split('\n')
+    .map(line => /"(text|parts|content|prompt)"\s*:/i.test(line) ? '[message content omitted]' : line)
+    .slice(-5).map(line => line.length > 160 ? line.slice(0, 160) + '…' : line).join(' | ')
 }
 
 export const HOSTED_PROVIDER = 'humanstudy'

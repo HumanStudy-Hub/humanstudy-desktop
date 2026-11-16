@@ -6,10 +6,11 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 const out = mkdtempSync(join(tmpdir(), 'opencode-exit-'))
 await build({ entryPoints: [join(dirname(fileURLToPath(import.meta.url)), 'opencode.ts')], bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'k.mjs'), logLevel: 'error' })
-const { OpencodeKernel, exitMessage } = await import(pathToFileURL(join(out, 'k.mjs')).href)
+const { OpencodeKernel, exitMessage, exitLogTail } = await import(pathToFileURL(join(out, 'k.mjs')).href)
 
 // Plain-language messages name the cause and say nothing was lost.
-assert.match(exitMessage(null, 'SIGKILL'), /stopped by the system \(SIGKILL\).*time limit or runs out of memory.*saved/)
+assert.match(exitMessage(null, 'SIGKILL', true), /stopped by the system \(SIGKILL\).*online workspace.*time limit or runs out of memory.*saved/)
+assert.doesNotMatch(exitMessage(null, 'SIGKILL', false), /online workspace/)
 assert.match(exitMessage(1, null), /stopped unexpectedly \(exit code 1\)/)
 assert.match(exitMessage(0, null), /closed\. Your project and chat are saved/)
 assert.doesNotMatch(exitMessage(null, 'SIGTERM'), /opencode/)
@@ -45,6 +46,31 @@ assert.doesNotMatch(exitMessage(null, 'SIGTERM'), /opencode/)
   k.killAll('SIGTERM')
   assert.equal(srv.intentional, true)
   k.live.clear()
+  await k.dispose()
+}
+// Logged output never carries keys, bearer tokens or long user text.
+{
+  const tail = exitLogTail('Authorization: Bearer sk-or-v1-LEAKME0123456789\n{"apiKey":"tok_secret_value"}\npassword=hunter2hunter\n' + 'x'.repeat(500))
+  assert.doesNotMatch(tail, /LEAKME|tok_secret_value|hunter2hunter/)
+  assert.doesNotMatch(exitLogTail('PROMPT {"parts":[{"type":"text","text":"my private wording"}]}'), /private wording/)
+  assert.ok(tail.length < 1100)
+}
+// A send and a thread resume reopening the same lost session share one reopen: registered once.
+{
+  const k = new OpencodeKernel({ binary: '/bin/true', provider: 'humanstudy' })
+  let registers = 0, calls = 0
+  const orig = k.register.bind(k)
+  k.register = (id, server) => { registers++; return orig(id, server) }
+  k.reopen = async (dir, id) => { calls++; await new Promise(r => setTimeout(r, 20)); k.register(id, { dir, exited: false }); return id }
+  const [a, b] = await Promise.all([k.resumeSession(out, 's'), k.resumeSession(out, 's')])
+  assert.equal(a, 's'); assert.equal(b, 's'); assert.equal(calls, 1); assert.equal(registers, 1)
+  await k.dispose()
+}
+// Stop after the assistant already stopped is a no-op, not an "unknown session" error.
+{
+  const k = new OpencodeKernel({ binary: '/bin/true', provider: 'humanstudy' })
+  k.lost.set('z', { dir: out })
+  await k.abort('z')
   await k.dispose()
 }
 console.log('opencode exit tests passed')
