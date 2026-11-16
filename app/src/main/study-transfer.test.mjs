@@ -415,3 +415,30 @@ test('research data never collects a study file, wherever it is saved in a proje
     assert.equal(TC.mayCollectFile({ rel, published: false, index }), false, rel)
   assert.equal(TC.mayCollectFile({ rel: 'exports/agent-package.zip', published: false, index }), true, 'other files keep the existing rules')
 })
+
+test('a study made on Linux with names that collide elsewhere fails when downloaded, not when opened', () => {
+  for (const paths of [['Data.csv', 'data.csv'], ['café.txt', 'café.txt'], ['A', 'a/b.txt']])
+    assert.throws(() => S.checkCollisions(paths), (e) => e.code === 'unsafe', paths.join(' / '))
+  S.checkCollisions(['a/b.txt', 'a/c.txt', 'ab'])
+})
+
+test('a published study: run outputs are private files, offered by name and left out by default', async () => {
+  const root = project(fresh('desk'))
+  assert.equal(S.kindOf('artifacts/simulations/run/results.html', true), 'private')
+  assert.equal(S.kindOf('artifacts/simulations/run/results.html', false), 'study')
+  assert.equal(S.kindOf('artifacts/notes.md', true), 'study')
+  const preview = await S.previewExport(root, { published: true })
+  assert.ok(preview.privateFiles.some((f) => f.path === 'artifacts/simulations/2026-11-02-1000/results.html'))
+  const r = await exportTo(root, { published: true })
+  assert.equal(r.manifest.files.some((f) => f.path.startsWith('artifacts/simulations/')), false)
+})
+
+test('the download is written through a save temporary that file watching and research data skip', async () => {
+  assert.equal(S.classify('exports/x.humanstudy.zip.123.0b6c2f4e-1d2a-4c3b-9e8f-112233445566.tmp'), 'never')
+  // an unreadable marker is never replaced by a download
+  const root = project(fresh('desk'), 'Broken marker')
+  writeFileSync(join(root, '.humanstudy', 'project.json'), '{not json')
+  const r = await exportTo(root)
+  assert.match(r.manifest.projectId, /^[0-9a-f-]{36}$/)
+  assert.equal(readFileSync(join(root, '.humanstudy', 'project.json'), 'utf8'), '{not json')
+})

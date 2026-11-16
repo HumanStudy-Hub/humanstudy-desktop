@@ -575,7 +575,7 @@ const ROWS: Row[] = [
   ['transfer.conversations_one', 'Chat history (1 conversation)', '对话记录（1 段对话）'],
   ['transfer.conversations_hint', 'Conversations can continue after you open the study elsewhere. They may quote your files.', '在别处打开研究后可以继续这些对话。对话中可能引用了你的文件。'],
   ['transfer.private', 'Your private files', '你的私有文件'],
-  ['transfer.private_hint', 'Files you added privately, such as your own copy of a source. Left out unless you tick them.', '你私下添加的文件，例如你自己的原始资料副本。除非勾选，否则不会包含。'],
+  ['transfer.private_hint', 'Files you added privately, such as your own copy of a source, and in a published study its simulation results, which can quote the original wording. Left out unless you tick them.', '你私下添加的文件（例如你自己的原始资料副本），以及已发布研究的模拟结果（其中可能引用原文措辞）。除非勾选，否则不会包含。'],
   ['transfer.never', 'Your account, keys and settings are never included.', '你的账户、密钥和设置永远不会包含在内。'],
   ['transfer.size', 'Size: {size}', '大小：{size}'],
   ['transfer.too_big', 'This is more than one study file can hold ({limit}). Leave some files out, or move large files out of the project.', '超过了单个研究文件的容量（{limit}）。请少选一些文件，或把大文件移出项目。'],

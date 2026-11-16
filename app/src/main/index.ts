@@ -18,7 +18,7 @@ import {
   setCommunityCacheDir,
 } from './community'
 import { createProject, isInside, isProject, isWithin, listProjects, renameProject, trashProject } from './projects'
-import { exportStudy, importStudy, packageName, previewExport, sweepImports, TransferError } from './study-transfer'
+import { exportStudy, importStudy, PACKAGE_SUFFIX, packageName, previewExport, sweepImports, TransferError } from './study-transfer'
 import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
 import { checkForUpdates, installUpdate, startUpdates, stopUpdates, updateStatus } from './updates'
 import { createReadStream, existsSync } from 'node:fs'
@@ -685,10 +685,22 @@ app.whenReady().then(() => {
     return isAllowed(d) && isProject(d) && d !== resolve(getSettings().projectsRoot) ? d : null
   }
   void sweepImports(ensureProjectsRoot())
+  /** Online only: study files from earlier downloads (each save gets downloads/<n>/), older than ten minutes. */
+  async function sweepOnlineDownloads(current: string): Promise<void> {
+    const root = app.getPath('downloads')
+    for (const d of await readdir(root, { withFileTypes: true }).catch(() => [])) {
+      const folder = join(root, d.name)
+      if (!d.isDirectory() || folder === current) continue
+      const names = await readdir(folder).catch(() => [] as string[])
+      if (!names.length || !names.every((n) => n.toLowerCase().endsWith(PACKAGE_SUFFIX))) continue
+      const st = await stat(folder).catch(() => null)
+      if (st && Date.now() - st.mtimeMs > 10 * 60_000) await rm(folder, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
   ipcMain.handle('projects:exportPreview', async (_e, dir: string) => {
     const d = transferProject(dir)
     if (!d) throw new Error('This folder is not a HumanStudy project.')
-    return previewExport(d)
+    return previewExport(d, { published: await isPublishedStudy(d).catch(() => false) })
   })
   ipcMain.handle('projects:exportStudy', async (e, dir: string, options: StudyExportOptions): Promise<StudyExportResult | null> => {
     const d = transferProject(dir)
@@ -701,14 +713,17 @@ app.whenReady().then(() => {
     }
     const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
     if (r.canceled || !r.filePath) return null
-    // A study file saved inside a project is never itself part of a download, nor collected (telemetry-core.ts).
-    let target = r.filePath
-    if (!/\.zip$/i.test(target)) target += '.zip'
+    // Always <name>.humanstudy.zip: saved inside a project, a study file is then never part of the next download and
+    // never collected by research data (study-transfer.ts classify, telemetry-core.ts STUDY_PACKAGE).
+    const target = r.filePath.replace(/(?:\.humanstudy)?\.zip$/i, '') + PACKAGE_SUFFIX
+    // Online, earlier study files left in the sandbox's download folder (the browser has its copy) are removed.
+    if (ONLINE) await sweepOnlineDownloads(dirname(target))
     try {
       const out = await exportStudy(d, target, {
         conversations: options?.conversations !== false,
         privateFiles: Array.isArray(options?.privateFiles) ? options.privateFiles.filter((p): p is string => typeof p === 'string') : [],
         source: { platform: ONLINE ? 'online' : 'desktop', appVersion: app.getVersion() },
+        published: await isPublishedStudy(d).catch(() => false),
       })
       telemetry.track('project.exported', { metadata: { files: out.files, bytes: out.bytes, conversations: out.manifest.includes.conversations, privateFiles: out.manifest.includes.privateFiles.length } }, d)
       return { ok: true, savedPath: out.path, bytes: out.bytes, files: out.files }

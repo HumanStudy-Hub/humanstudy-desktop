@@ -137,9 +137,17 @@ export function classify(rel: string): FileKind {
 
 export interface ScannedFile { path: string; size: number; kind: Exclude<FileKind, 'never'> }
 
+/** In a published study, AI participants' replies can quote the restored wording, so its run outputs are offered as
+ *  private files like the sources (research capture withholds the same folders: telemetry-core.ts mayCollectFile). */
+const RUN_OUTPUTS = /^(?:artifacts\/simulations|runs)(?:\/|$)/
+export function kindOf(rel: string, published: boolean): FileKind {
+  const kind = classify(rel)
+  return kind === 'study' && published && RUN_OUTPUTS.test(rel) ? 'private' : kind
+}
+
 /** Every file of the project that may go into a study file. Links are never followed and never included; folders
  *  that are never part of a study are not entered. */
-export async function scanProject(root: string, limits: Limits = LIMITS): Promise<ScannedFile[]> {
+export async function scanProject(root: string, limits: Limits = LIMITS, published = false): Promise<ScannedFile[]> {
   const out: ScannedFile[] = []
   const walk = async (rel: string, depth: number): Promise<void> => {
     const entries = await readdir(rel ? join(root, ...rel.split('/')) : root, { withFileTypes: true })
@@ -154,7 +162,7 @@ export async function scanProject(root: string, limits: Limits = LIMITS): Promis
         if (out.length >= limits.maxFiles * 2) fail('too-large', `more than ${limits.maxFiles} files`)
         const handle = await open(join(root, ...child.split('/')), 'r')
         const size = await handle.stat().then((s) => s.size).finally(() => handle.close())
-        out.push({ path: child, size, kind: classify(child) as ScannedFile['kind'] })
+        out.push({ path: child, size, kind: kindOf(child, published) as ScannedFile['kind'] })
       }
     }
   }
@@ -165,8 +173,9 @@ export async function scanProject(root: string, limits: Limits = LIMITS): Promis
 const isThread = (rel: string): boolean => /^\.humanstudy\/threads\/[^/]+\.json$/.test(rel)
 const threadCount = (files: { path: string }[]): number => files.filter((f) => isThread(f.path)).length
 
-export async function previewExport(root: string, limits: Limits = LIMITS): Promise<StudyExportPreview> {
-  const files = await scanProject(root, limits)
+export async function previewExport(root: string, o: { published?: boolean; limits?: Limits } = {}): Promise<StudyExportPreview> {
+  const limits = o.limits ?? LIMITS
+  const files = await scanProject(root, limits, o.published === true)
   const sum = (kind: ScannedFile['kind']) => files.filter((f) => f.kind === kind).reduce((n, f) => n + f.size, 0)
   const conversations = files.filter((f) => f.kind === 'conversation')
   return {
@@ -184,23 +193,34 @@ export async function previewExport(root: string, limits: Limits = LIMITS): Prom
 const ID_RE = /^[A-Za-z0-9_-]{8,80}$/
 const MARKER = ['.humanstudy', 'project.json'] as const
 
-async function readMarker(root: string): Promise<Record<string, unknown> | null> {
+/** The marker's contents: null when there is none, 'unreadable' when it exists but is not a JSON object. */
+async function readMarker(root: string): Promise<Record<string, unknown> | null | 'unreadable'> {
   try {
     const meta = JSON.parse(await readFile(join(root, ...MARKER), 'utf8')) as unknown
-    return meta && typeof meta === 'object' && !Array.isArray(meta) ? (meta as Record<string, unknown>) : {}
+    return meta && typeof meta === 'object' && !Array.isArray(meta) ? (meta as Record<string, unknown>) : 'unreadable'
   } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? null : {}
+    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? null : 'unreadable'
   }
+}
+
+async function writeMarker(root: string, meta: Record<string, unknown>): Promise<void> {
+  await mkdir(join(root, '.humanstudy'), { recursive: true })
+  const tmp = join(root, '.humanstudy', `project.json.${process.pid}.${randomUUID()}.tmp`)
+  await writeFile(tmp, JSON.stringify(meta, null, 2) + '\n', { flag: 'wx' })
+  await rename(tmp, join(root, ...MARKER))
 }
 
 /** The project's id in .humanstudy/project.json: the one already there (research data adds the same field), else a new
  *  random one, written back so the next download carries the same id. Only random; it names nothing. */
 export async function ensureProjectId(root: string): Promise<string> {
-  const meta = (await readMarker(root)) ?? { format: 1, createdAt: new Date().toISOString() }
+  const found = await readMarker(root)
+  // An unreadable marker is left as it is (never replaced); this download still gets an id of its own.
+  if (found === 'unreadable') return randomUUID()
+  const meta = found ?? { format: 1, createdAt: new Date().toISOString() }
   if (typeof meta.id === 'string' && ID_RE.test(meta.id)) return meta.id
   const id = randomUUID()
-  await mkdir(join(root, '.humanstudy'), { recursive: true })
-  await writeFile(join(root, ...MARKER), JSON.stringify({ ...meta, id }, null, 2) + '\n')
+  // A read-only project still downloads; it just gets a new id next time.
+  await writeMarker(root, { ...meta, id }).catch(() => undefined)
   return id
 }
 
@@ -210,7 +230,7 @@ async function projectIds(projectsRoot: string): Promise<Set<string>> {
   for (const d of await readdir(projectsRoot, { withFileTypes: true }).catch(() => [])) {
     if (!d.isDirectory() || d.name.startsWith('.')) continue
     const meta = await readMarker(join(projectsRoot, d.name))
-    if (meta && typeof meta.id === 'string') ids.add(meta.id)
+    if (meta && meta !== 'unreadable' && typeof meta.id === 'string') ids.add(meta.id)
   }
   return ids
 }
@@ -450,6 +470,21 @@ export function checkPath(p: unknown, limits: Limits = LIMITS): string {
   return p
 }
 
+/** Two paths that would be one file (or a file and a folder) on a case-insensitive file system: refused on both sides,
+ *  so a study made on Linux (online) with Data.csv and data.csv fails when it is downloaded, not when it is opened. */
+export function checkCollisions(paths: string[]): void {
+  const seen = new Set<string>()
+  const folders = new Set<string>()
+  for (const path of paths) {
+    const key = foldKey(path)
+    if (seen.has(key) || folders.has(key)) fail('unsafe', 'two files with the same name', path)
+    seen.add(key)
+    const parts = key.split('/')
+    for (let i = 1; i < parts.length; i++) folders.add(parts.slice(0, i).join('/'))
+  }
+  for (const folder of folders) if (seen.has(folder)) fail('unsafe', 'a file and a folder with the same name', paths.find((p) => foldKey(p) === folder) ?? folder)
+}
+
 function checkManifest(value: unknown, limits: Limits): Manifest {
   const m = value as Partial<Manifest> | null
   if (!m || typeof m !== 'object' || Array.isArray(m) || m.format !== FORMAT) return fail('not-package', 'not a HumanStudy study file')
@@ -457,8 +492,6 @@ function checkManifest(value: unknown, limits: Limits): Manifest {
   if (m.version > FORMAT_VERSION) return fail('newer', `format version ${m.version}`)
   if (!Array.isArray(m.files)) return fail('not-package', 'no file list')
   if (m.files.length > limits.maxFiles) fail('too-large', `more than ${limits.maxFiles} files`)
-  const seen = new Set<string>()
-  const folders = new Set<string>()
   let total = 0
   for (const f of m.files as unknown[]) {
     const file = f as Partial<ManifestFile> | null
@@ -469,13 +502,8 @@ function checkManifest(value: unknown, limits: Limits): Manifest {
     if (file.size > limits.maxFileBytes) fail('too-large', `a file larger than ${limits.maxFileBytes} bytes`, path)
     total += file.size
     if (total > limits.maxTotalBytes) fail('too-large', `more than ${limits.maxTotalBytes} bytes in all`)
-    const key = foldKey(path)
-    if (seen.has(key) || folders.has(key)) fail('unsafe', 'two files with the same name', path)
-    seen.add(key)
-    const parts = key.split('/')
-    for (let i = 1; i < parts.length; i++) folders.add(parts.slice(0, i).join('/'))
   }
-  for (const folder of folders) if (seen.has(folder)) fail('unsafe', 'a file and a folder with the same name', folder)
+  checkCollisions((m.files as ManifestFile[]).map((f) => f.path))
   const source = (m.source && typeof m.source === 'object' ? m.source : {}) as Partial<Manifest['source']>
   const includes = (m.includes && typeof m.includes === 'object' ? m.includes : {}) as Partial<Manifest['includes']>
   return {
@@ -505,6 +533,8 @@ export interface ExportResult { path: string; bytes: number; files: number; mani
 /** Writes the study file to `outPath` (through a temporary next to it, so a failure never leaves a partial file). */
 export async function exportStudy(root: string, outPath: string, o: StudyExportOptions & {
   source: { platform: Platform; appVersion: string }
+  /** A published study: its run outputs are private files (see kindOf). */
+  published?: boolean
   limits?: Limits
   now?: Date
 }): Promise<ExportResult> {
@@ -512,7 +542,7 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
   const now = o.now ?? new Date()
   const id = await ensureProjectId(root)
   const ticked = new Set(Array.isArray(o.privateFiles) ? o.privateFiles : [])
-  const chosen = (await scanProject(root, limits)).filter((f) =>
+  const chosen = (await scanProject(root, limits, o.published === true)).filter((f) =>
     f.kind === 'study' || (f.kind === 'conversation' && o.conversations === true) || (f.kind === 'private' && ticked.has(f.path)))
   if (chosen.length > limits.maxFiles) fail('too-large', `more than ${limits.maxFiles} files`)
   let planned = 0
@@ -522,7 +552,9 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
   }
   if (planned > limits.maxTotalBytes) fail('too-large', `more than ${limits.maxTotalBytes} bytes in all`)
   for (const f of chosen) checkPath(f.path, limits) // a name another platform could not store fails here, not on opening
-  const tmp = `${outPath}.${process.pid}.${randomUUID()}.partial`
+  checkCollisions(chosen.map((f) => f.path))
+  // `<name>.<pid>.<uuid>.tmp`: the save-temporary form file watching and research capture already skip.
+  const tmp = `${outPath}.${process.pid}.${randomUUID()}.tmp`
   const fh = await open(tmp, 'wx')
   const files: ManifestFile[] = []
   let total = 0
@@ -608,13 +640,17 @@ async function openPackage(zipPath: string, limits: Limits): Promise<OpenedPacka
 }
 
 /** Checks the whole study file without writing anything: what `importStudy` does first. */
+async function verifyAll(pkg: OpenedPackage): Promise<void> {
+  for (const f of pkg.manifest.files) {
+    const data = await inflateEntry(pkg.fh, pkg.entries.get(f.path)!, f.size, f.path)
+    if (sha256(data) !== f.sha256) fail('damaged', 'a file that changed after the study was downloaded', f.path)
+  }
+}
+
 export async function verifyPackage(zipPath: string, limits: Limits = LIMITS): Promise<Manifest> {
   const pkg = await openPackage(zipPath, limits)
   try {
-    for (const f of pkg.manifest.files) {
-      const data = await inflateEntry(pkg.fh, pkg.entries.get(f.path)!, f.size, f.path)
-      if (sha256(data) !== f.sha256) fail('damaged', 'a file that changed after the study was downloaded', f.path)
-    }
+    await verifyAll(pkg)
     return pkg.manifest
   } finally {
     await pkg.fh.close().catch(() => undefined)
@@ -648,11 +684,13 @@ export function importName(manifest: Pick<Manifest, 'name' | 'source'>, duplicat
 export async function importStudy(zipPath: string, projectsRoot: string, o: { limits?: Limits; now?: Date } = {}): Promise<ImportResult> {
   const limits = o.limits ?? LIMITS
   const now = o.now ?? new Date()
-  await verifyPackage(zipPath, limits)
+  // One open file and one file list for both passes: the bytes extracted are the bytes verified (each file is hashed
+  // again as it is written, too).
   const pkg = await openPackage(zipPath, limits)
   const { manifest } = pkg
   const temp = join(projectsRoot, `.importing-${randomUUID()}`)
   try {
+    await verifyAll(pkg)
     await mkdir(temp)
     for (const f of manifest.files) {
       const data = await inflateEntry(pkg.fh, pkg.entries.get(f.path)!, f.size, f.path)
@@ -667,7 +705,8 @@ export async function importStudy(zipPath: string, projectsRoot: string, o: { li
     const existing = await projectIds(projectsRoot)
     const duplicate = Boolean(manifest.projectId && existing.has(manifest.projectId))
     const id = manifest.projectId && !duplicate ? manifest.projectId : randomUUID()
-    const meta = (await readMarker(temp)) ?? { format: 1, createdAt: now.toISOString() }
+    const found = await readMarker(temp)
+    const meta = found && found !== 'unreadable' ? found : { format: 1, createdAt: now.toISOString() }
     await mkdir(join(temp, '.humanstudy'), { recursive: true })
     await writeFile(join(temp, ...MARKER), JSON.stringify({
       ...meta,
@@ -678,16 +717,19 @@ export async function importStudy(zipPath: string, projectsRoot: string, o: { li
     }, null, 2) + '\n')
     const name = importName(manifest, duplicate, now)
     let dir = ''
-    for (let i = 1; !dir; i++) {
+    for (let i = 1, busy = 0; !dir; ) {
       if (i > 1000) fail('failed', 'no free folder name')
       const candidate = join(projectsRoot, i === 1 ? name : `${name} ${i}`)
-      if (existsSync(candidate)) continue
+      if (existsSync(candidate)) { i++; continue }
       try {
         await rename(temp, candidate)
         dir = candidate
       } catch (e) {
         const code = (e as NodeJS.ErrnoException).code
-        if (code !== 'EEXIST' && code !== 'ENOTEMPTY' && code !== 'EPERM') throw e
+        if (code === 'EEXIST' || code === 'ENOTEMPTY' || code === 'ENOTDIR') { i++; continue } // taken meanwhile
+        // Windows: a virus scanner may still hold a file just written; try the same name again shortly.
+        if ((code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') && busy++ < 10) { await new Promise((r) => setTimeout(r, 200)); continue }
+        throw e
       }
     }
     return {
