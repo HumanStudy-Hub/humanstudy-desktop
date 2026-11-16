@@ -14,9 +14,13 @@ export interface GuideWait { ids: number[]; count: number; thread: string | null
 const isCommand = (message: Message) => message.parts.some(part => part.kind === 'text' && /^[!/]/.test(part.text.trim()))
 /** A turn that ended on a rejected or unanswered question/permission was not a finished reply. */
 const unfinished = (message: Message) => message.parts.some(part =>
-  (part.kind === 'question' && (part.resolved === 'rejected' || part.expired)) || (part.kind === 'permission' && (part.expired || part.resolved === 'reject')))
+  (part.kind === 'question' && (part.resolved === 'rejected' || part.expired)) || (part.kind === 'permission' && part.expired))
+const isNewUser = (message: Message, index: number, wait: GuideWait) =>
+  index >= wait.count && message.role === 'user' && !wait.ids.includes(message.id) && !isCommand(message)
+/** The latest message the researcher sent after the guide armed (a retry replaces an earlier attempt). */
 export function newUserIndex(messages: Message[], wait: GuideWait) {
-  return messages.findIndex((message, index) => index >= wait.count && message.role === 'user' && !wait.ids.includes(message.id) && !isCommand(message))
+  for (let index = messages.length - 1; index >= 0; index--) if (isNewUser(messages[index], index, wait)) return index
+  return -1
 }
 /** A completed response is a navigation signal, never a claim of scientific success. */
 export function guideReplyReceived(messages: Message[], wait: GuideWait, thread: string | null, busy: boolean, error: string | null) {

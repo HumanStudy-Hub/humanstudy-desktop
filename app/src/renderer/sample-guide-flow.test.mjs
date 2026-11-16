@@ -45,3 +45,21 @@ test('re-arming after a stopped reply only counts later messages',()=>{
  assert.equal(guideReplyReceived(stopped,next,'current',false,null),false)
  assert.equal(guideReplyReceived([...stopped,msg(5,'user'),msg(6,'assistant')],next,'current',false,null),true)
 })
+test('a retry after an error, a rejected question or a stop advances on its complete reply',()=>{
+ const old=[msg(1,'user'),msg(2,'assistant')]
+ const failed=[...old,msg(3,'user'),msg(4,'assistant','error')]
+ assert.equal(guideReplyReceived(failed,wait,'current',false,null),false)
+ assert.equal(guideReplyReceived([...failed,msg(5,'user'),msg(6,'assistant')],wait,'current',false,null),true)
+ const rejected=[...old,msg(3,'user'),{id:4,role:'assistant',parts:[{kind:'text',text:'Let me ask'},{kind:'question',id:'q',questions:[],resolved:'rejected'}]}]
+ assert.equal(guideReplyReceived([...rejected,msg(5,'user'),msg(6,'assistant')],wait,'current',false,null),true)
+})
+test('a refused permission followed by a complete answer counts',()=>{
+ const old=[msg(1,'user'),msg(2,'assistant')]
+ const reply={id:4,role:'assistant',parts:[{kind:'permission',id:'p',type:'bash',resolved:'reject'},{kind:'text',text:'Here is the answer without running it.'}]}
+ assert.equal(guideReplyReceived([...old,msg(3,'user'),reply],wait,'current',false,null),true)
+})
+test('the count anchor survives a reload that renumbers ids',()=>{
+ const reloaded=[msg(11,'user'),msg(12,'assistant')]
+ assert.equal(guideReplyReceived(reloaded,wait,'current',false,null),false,'renumbered history before the anchor does not count')
+ assert.equal(guideReplyReceived([...reloaded,msg(13,'user'),msg(14,'assistant')],wait,'current',false,null),true)
+})

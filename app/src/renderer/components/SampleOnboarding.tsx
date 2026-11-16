@@ -173,7 +173,7 @@ export function SampleOnboarding({ onClose, onAction, agentReady, conversation, 
       <strong>{waiting ? 'Continue in the chat' : current?.title ?? 'Keep exploring'}</strong>
       <p>{waiting
         ? threadChanged ? 'You switched conversations. Return to the previous chat, or continue the guide here.'
-          : waiting.interrupted && !conversation?.busy ? 'The reply was stopped before it finished. Send your question again when ready; the guide continues after a complete reply.'
+          : waiting.interrupted && !conversation?.busy ? 'The reply was stopped before it finished. Send a question when ready; the guide continues after a complete reply.'
           : conversation?.error ? 'The agent could not finish. Retry in chat, or skip the guide; your research is still here.'
           : conversation?.busy ? 'The agent is working on your question. Review its reply before choosing what to do next.'
           : 'Your question is in the chat draft. Edit it as you like and send it when ready. The guide continues after a reply; nothing runs automatically.'
