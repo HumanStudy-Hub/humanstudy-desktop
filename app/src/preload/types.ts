@@ -232,15 +232,14 @@ export interface StudyExportPreview {
   hasPaper: boolean
   /** The chat history (.humanstudy/threads), included unless the researcher unticks it. */
   conversations: { count: number; files: number; bytes: number }
-  /** Files the researcher supplied privately (sources/private/ and the like): listed by name, left out by default. */
+  /** Files the researcher supplied privately (sources/private/ and the like): included, like every project file. */
   privateFiles: { path: string; bytes: number }[]
   /** The limits a study file has to stay within (the same ones checked when it is opened). */
   limits: { maxFiles: number; maxTotalBytes: number; maxFileBytes: number }
 }
 export interface StudyExportOptions {
+  /** False leaves the chat history out; everything else in the project is always included. */
   conversations: boolean
-  /** Project-relative paths from `privateFiles` the researcher ticked. */
-  privateFiles: string[]
 }
 /** Plain reasons a study file could not be written or opened; the renderer words them (i18n `transfer.err_*`). */
 export type StudyTransferErrorCode = 'not-package' | 'newer' | 'damaged' | 'unsafe' | 'too-large' | 'not-project' | 'failed'
@@ -249,6 +248,34 @@ export type StudyExportResult = { ok: true; savedPath: string; bytes: number; fi
 export type StudyImportResult =
   | { ok: true; dir: string; name: string; renamed: boolean; conversations: number; privateFiles: number }
   | StudyTransferFailure
+
+/** Project sync (main/project-sync.ts): the status shown next to a project when signed in. */
+export type ProjectSyncStatus = 'synced' | 'syncing' | 'not-synced' | 'conflict-copy' | 'behind' | 'deleted' | 'too-large' | 'other-account'
+export interface ProjectSyncEntry {
+  dir: string
+  status: ProjectSyncStatus
+  /** Why a project is not synced yet: retrying after a failure, a file too large for cloud storage, a file name
+   *  another computer cannot store, or a second folder with the same project. */
+  detail?: 'retrying' | 'file-too-large' | 'unsafe-name' | 'duplicate'
+  file?: string
+}
+/** A project in the account's cloud storage. */
+export interface CloudProject { projectId: string; name: string; updatedAt: string; device: string; bytes: number; deletedAt?: string }
+export interface SyncListing {
+  signedIn: boolean
+  /** The cloud could not be reached: local statuses only. */
+  offline: boolean
+  local: ProjectSyncEntry[]
+  /** In the account, not on this computer: opening one downloads it. */
+  cloudOnly: CloudProject[]
+  /** Deleted in the last 30 days: restorable. */
+  deleted: CloudProject[]
+  /** The largest project that syncs (bytes). */
+  maxBytes: number
+}
+/** What opening a project did: the folder to open (renamed when the cloud name changed), and the copy made when both
+ *  this copy and the cloud had changed. */
+export interface SyncOpenResult { dir: string; copy?: { dir: string; name: string; device: string } }
 
 export type Theme = 'light' | 'dark' | 'system'
 export interface Settings {
@@ -405,6 +432,18 @@ export interface HumanStudyApi {
     pickStudy(): Promise<string | null>
     /** Opens a downloaded study as a new project; never changes an existing one. */
     importStudy(path: string): Promise<StudyImportResult>
+  }
+  sync: {
+    /** Each project's sync status, plus the account's cloud-only and recently deleted projects (signed in only). */
+    list(): Promise<SyncListing>
+    /** Before opening a project: brings it up to date from the cloud when that is safe; never fails. */
+    beforeOpen(dir: string): Promise<SyncOpenResult>
+    /** Downloads a cloud-only project; returns its folder. */
+    download(projectId: string): Promise<string>
+    /** The open project was closed: push its changes now. */
+    closed(dir: string): Promise<void>
+    restore(projectId: string): Promise<void>
+    onChanged(cb: () => void): () => void
   }
   community: {
     /** The library index; cached, refreshed when online. */

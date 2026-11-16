@@ -711,6 +711,15 @@ def intentional(harm: float, help_: float) -> float:
       pickStudy: async () => null,
       importStudy: async () => ({ ok: false as const, code: 'not-package' as const }),
     },
+    // Project sync in the visual preview: signed out, so the list is local only.
+    sync: {
+      list: async () => ({ signedIn: false, offline: false, local: [], cloudOnly: [], deleted: [], maxBytes: 500_000_000 }),
+      beforeOpen: async (dir) => ({ dir }),
+      download: async () => { throw new Error('Cloud projects are not available in the preview.') },
+      closed: async () => undefined,
+      restore: async () => undefined,
+      onChanged: () => () => undefined,
+    },
     community: {
       studies: async () => {
         await loadPreviewCatalog()

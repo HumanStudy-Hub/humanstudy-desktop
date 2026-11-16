@@ -76,7 +76,7 @@ function project(projectsRoot, name = 'Moral Luck', id = 'proj-1234-abcd') {
 }
 const exportTo = async (root, o = {}) => {
   const out = join(fresh('downloads'), S.packageName('Moral Luck'))
-  const r = await S.exportStudy(root, out, { conversations: true, privateFiles: [], source: SOURCE, now: NOW, ...o })
+  const r = await S.exportStudy(root, out, { conversations: true, source: SOURCE, now: NOW, ...o })
   return { ...r, zip: out }
 }
 
@@ -135,7 +135,7 @@ const small = (o) => ({ ...S.LIMITS, ...o })
 test('round trip: every study file arrives byte for byte; the native session is dropped; the id is kept', async () => {
   const root = project(fresh('desk'))
   const before = tree(root)
-  const r = await exportTo(root, { privateFiles: ['sources/private/my copy.pdf'] })
+  const r = await exportTo(root)
   assert.ok(r.zip.endsWith('Moral Luck.humanstudy.zip'))
   assert.deepEqual(tree(root), before, 'exporting never changes the project (it already had an id)')
   const online = fresh('online-projects')
@@ -144,14 +144,14 @@ test('round trip: every study file arrives byte for byte; the native session is 
   assert.equal(imp.renamed, false)
   assert.equal(imp.id, 'proj-1234-abcd')
   assert.equal(imp.conversations, 2)
-  assert.equal(imp.privateFiles, 1)
+  assert.equal(imp.privateFiles, 2)
   const after = tree(imp.dir)
   for (const [rel, bytes] of before) {
-    if (rel === '.humanstudy/project.json' || rel === '.humanstudy/threads/thr_a.json' || rel === 'sources/researcher/booklet.txt') continue
+    if (rel === '.humanstudy/project.json' || rel === '.humanstudy/threads/thr_a.json') continue
     assert.ok(after.has(rel), `missing ${rel}`)
     assert.ok(after.get(rel).equals(bytes), `bytes differ: ${rel}`)
   }
-  assert.equal(after.has('sources/researcher/booklet.txt'), false, 'an unticked private file stays behind')
+  assert.equal(after.get('sources/researcher/booklet.txt').toString(), 'private wording', 'private files travel: it is the researcher\'s own copy')
   const a = JSON.parse(after.get('.humanstudy/threads/thr_a.json'))
   const orig = JSON.parse(before.get('.humanstudy/threads/thr_a.json'))
   assert.equal(a.kernelSessionId, '', 'the native model session belongs to the other computer')
@@ -161,7 +161,7 @@ test('round trip: every study file arrives byte for byte; the native session is 
   assert.equal(meta.importedFrom, 'desktop')
   assert.equal(meta.createdAt, '2026-11-01T00:00:00.000Z')
   // and back again: the file made by the imported project matches the first one's contents
-  const back = await S.exportStudy(imp.dir, join(fresh('dl'), 'b.humanstudy.zip'), { conversations: true, privateFiles: ['sources/private/my copy.pdf'], source: { platform: 'online', appVersion: '0.8.2' }, now: NOW })
+  const back = await S.exportStudy(imp.dir, join(fresh('dl'), 'b.humanstudy.zip'), { conversations: true, source: { platform: 'online', appVersion: '0.8.2' }, now: NOW })
   const strip = (m) => m.files.filter((f) => f.path !== '.humanstudy/project.json')
   assert.deepEqual(strip(back.manifest), strip(r.manifest))
   assert.equal(back.manifest.source.platform, 'online')
@@ -177,7 +177,7 @@ test('the study file: a manifest with sizes and SHA-256 of every file, files und
   assert.equal(m.name, 'Moral Luck')
   assert.deepEqual(m.source, SOURCE)
   assert.equal(m.exportedAt, NOW.toISOString())
-  assert.deepEqual(m.includes, { conversations: true, privateFiles: [] })
+  assert.deepEqual(m.includes, { conversations: true, privateFiles: ['sources/private/my copy.pdf', 'sources/researcher/booklet.txt'] })
   for (const f of m.files) {
     const bytes = f.path.startsWith('.humanstudy/threads/') ? null : readFileSync(join(root, ...f.path.split('/')))
     if (bytes) { assert.equal(f.size, bytes.length, f.path); assert.equal(f.sha256, sha(bytes), f.path) }
@@ -187,19 +187,19 @@ test('the study file: a manifest with sizes and SHA-256 of every file, files und
   assert.ok(raw.includes(Buffer.from('study/program.json')) && raw.includes(Buffer.from('humanstudy-study.json')))
 })
 
-test('private files are listed by name, left out by default, and included one by one when ticked', async () => {
+test('private files are listed by name and included by default (no per-file opt-in)', async () => {
   const root = project(fresh('desk'))
   const preview = await S.previewExport(root)
   assert.deepEqual(preview.privateFiles.map((f) => f.path).sort(), ['sources/private/my copy.pdf', 'sources/researcher/booklet.txt'])
   assert.equal(preview.hasPaper, true)
   assert.equal(preview.conversations.count, 2)
   assert.ok(preview.study.files > 5 && preview.study.bytes > 40_000)
-  const none = await exportTo(root)
-  assert.equal(none.manifest.files.some((f) => /^sources\/(private|researcher)\//.test(f.path)), false)
-  assert.equal(readFileSync(none.zip).includes(Buffer.from('private wording')), false)
-  const one = await exportTo(root, { privateFiles: ['sources/researcher/booklet.txt', 'sources/../program.json', 'not/a/file'] })
-  assert.deepEqual(one.manifest.files.filter((f) => f.path.startsWith('sources/r')).map((f) => f.path), ['sources/researcher/booklet.txt'])
-  assert.deepEqual(one.manifest.includes.privateFiles, ['sources/researcher/booklet.txt'])
+  const all = await exportTo(root)
+  assert.deepEqual(all.manifest.files.filter((f) => /^sources\/(private|researcher)\//.test(f.path)).map((f) => f.path).sort(), ['sources/private/my copy.pdf', 'sources/researcher/booklet.txt'])
+  assert.deepEqual(all.manifest.includes.privateFiles, ['sources/private/my copy.pdf', 'sources/researcher/booklet.txt'])
+  // An old caller's list of ticked files no longer narrows anything.
+  const old = await exportTo(root, { privateFiles: [] })
+  assert.equal(old.manifest.files.length, all.manifest.files.length)
 })
 
 test('chat history: included by default, left out entirely when unticked', async () => {
@@ -230,7 +230,7 @@ test('never included: hidden files, tools, caches, app state, agent config, othe
   symlinkSync(outside, join(root, 'linked-keys.txt'))
   symlinkSync(dirname(outside), join(root, 'linked-folder'))
   for (const rel of never) assert.equal(S.classify(rel), 'never', rel)
-  const r = await exportTo(root, { privateFiles: ['sources/private/my copy.pdf', 'sources/researcher/booklet.txt'] })
+  const r = await exportTo(root)
   const paths = r.manifest.files.map((f) => f.path)
   for (const rel of [...never, 'linked-keys.txt']) assert.equal(paths.includes(rel), false, rel)
   assert.equal(paths.some((p) => p.startsWith('linked-folder')), false)
@@ -422,7 +422,7 @@ test('a study made on Linux with names that collide elsewhere fails when downloa
   S.checkCollisions(['a/b.txt', 'a/c.txt', 'ab'])
 })
 
-test('a published study: run outputs are private files, offered by name and left out by default', async () => {
+test('a published study: run outputs count as private files and are included like the rest', async () => {
   const root = project(fresh('desk'))
   assert.equal(S.kindOf('artifacts/simulations/run/results.html', true), 'private')
   assert.equal(S.kindOf('artifacts/simulations/run/results.html', false), 'study')
@@ -430,7 +430,7 @@ test('a published study: run outputs are private files, offered by name and left
   const preview = await S.previewExport(root, { published: true })
   assert.ok(preview.privateFiles.some((f) => f.path === 'artifacts/simulations/2026-11-02-1000/results.html'))
   const r = await exportTo(root, { published: true })
-  assert.equal(r.manifest.files.some((f) => f.path.startsWith('artifacts/simulations/')), false)
+  assert.ok(r.manifest.includes.privateFiles.includes('artifacts/simulations/2026-11-02-1000/results.html'))
 })
 
 test('the download is written through a save temporary that file watching and research data skip', async () => {

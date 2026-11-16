@@ -540,6 +540,32 @@ export class ThreadManager {
     if (this.writeFailures.size) throw new AggregateError([...this.writeFailures.values()], 'Could not save conversations')
   }
 
+  /** Write the pending conversations of one project now (before project sync decides whether it changed). */
+  async flushDir(dir: string): Promise<void> {
+    for (const [key, t] of this.live) {
+      if (dirOf(key) !== dir) continue
+      const timer = this.timers.get(key)
+      if (!timer) continue
+      clearTimeout(timer)
+      this.timers.delete(key)
+      void this.write(key, dir, t)
+    }
+    await Promise.all([...this.writes.entries()].filter(([key]) => dirOf(key) === dir).map(([, w]) => w))
+  }
+
+  /** Drop the in-memory copies of one project's conversations (project sync replaced its files; the next read loads
+   *  them from disk). Pending writes finish first. */
+  async forgetDir(dir: string): Promise<void> {
+    await this.flushDir(dir)
+    for (const [key, t] of [...this.live]) {
+      if (dirOf(key) !== dir) continue
+      this.live.delete(key)
+      if (this.bySession.get(t.kernelSessionId)?.thread === t) this.bySession.delete(t.kernelSessionId)
+      this.writes.delete(key)
+      this.writeFailures.delete(key)
+    }
+  }
+
   // ---- internals ----
 
   private bind(dir: string, t: Thread): void {

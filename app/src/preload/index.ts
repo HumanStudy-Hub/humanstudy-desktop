@@ -23,6 +23,14 @@ const api: HumanStudyApi = {
     pickStudy: () => ipcRenderer.invoke('projects:pickStudy'),
     importStudy: (path) => ipcRenderer.invoke('projects:importStudy', path),
   },
+  sync: {
+    list: () => ipcRenderer.invoke('sync:list'),
+    beforeOpen: (dir) => ipcRenderer.invoke('sync:beforeOpen', dir),
+    download: (projectId) => ipcRenderer.invoke('sync:download', projectId),
+    closed: (dir) => ipcRenderer.invoke('sync:closed', dir),
+    restore: (projectId) => ipcRenderer.invoke('sync:restore', projectId),
+    onChanged: (cb) => listen<null>('sync:changed', () => cb()),
+  },
   community: {
     studies: () => ipcRenderer.invoke('community:studies'),
     study: (id, expectedRevision, refresh) => ipcRenderer.invoke('community:study', id, expectedRevision, refresh),

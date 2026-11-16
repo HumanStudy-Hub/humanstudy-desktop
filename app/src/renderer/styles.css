@@ -377,6 +377,12 @@ button.tile:hover:not(:disabled) { border-color: var(--accent); box-shadow: var(
 .badges { display: flex; gap: 4px; flex: none; }
 .badge { font-size: 11px; line-height: 18px; padding: 0 7px; border-radius: 999px; background: var(--bg-sunk); color: var(--muted); }
 .project-time { flex: none; width: 96px; text-align: right; }
+.sync-status { flex: none; font-size: 11px; line-height: 18px; color: var(--muted); white-space: nowrap; }
+.sync-status.syncing, .sync-status.not-synced, .sync-status.behind { color: var(--accent); }
+.sync-status.conflict-copy, .sync-status.too-large, .sync-status.deleted { color: var(--danger); }
+.doc-icon.cloud { border-style: dashed; }
+.sync-deleted { margin-top: 10px; }
+.sync-deleted > button { color: var(--muted); }
 .row-menu { flex: none; padding-right: 4px; }
 .more { padding: 2px 8px; font-size: 16px; line-height: 1.4; opacity: 0; }
 .project-list li:hover .more, .project-list li.menu-open .more, .more:focus-visible { opacity: 1; }

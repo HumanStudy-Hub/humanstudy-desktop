@@ -58,6 +58,11 @@ Check the kernel tag's published Linux assets and `SHA256SUMS.txt` before using 
 image. The browser image uses the matching Linux kernel build, whose release tag can differ
 from the Desktop installer tag.
 
+Signed in, every project is also kept in the account's private cloud storage by the same code as on desktop
+(`src/main/project-sync*.ts`; Supabase bucket `projects` and table `project_sync`, owner-only, defined in
+humanstudy-hub-web `supabase/migrations/*_project_sync.sql`). A new or reset sandbox lists the account's projects
+and downloads one when it is opened, so keeping projects no longer depends on the sandbox snapshot.
+
 Each user's sandbox is persistent. To update existing sandboxes, set the launcher's
 `TRY_APP_URL` and `TRY_APP_SHA256` from the approved release assets. The startup script verifies
 the digest and installs the app on the next start. Projects, accounts and conversations live
