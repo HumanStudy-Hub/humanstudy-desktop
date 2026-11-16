@@ -209,3 +209,11 @@ Detailed plan: [next-stage-plan-2026-10-13.md](docs/next-stage-plan-2026-10-13.m
 - [x] Explicit Sample guide replay resets the tour and opens Study; hide coach marks while settings is open. Typecheck and browser walkthrough passed.
 - [ ] Deploy reviewed dev guide changes to the online runtime and desktop release together; main still has the older onboarding implementation.
 - [ ] Cross-device projects: current Recent projects lists workspace-local folders, not shared account projects. Define explicit transfer/sync behavior before implementing uploads or conflict handling. No automatic upload introduced.
+
+## Research story guide — 2026-11-15
+- [x] Replace control-by-control copy with a research journey: understand, verify, experience, prepare replication, discuss design, choose a next step.
+- [x] Guide editable chat drafts and wait for newly sent messages and completed replies; no automatic sending, consent or experiment runs.
+- [x] Offer AI trial, variation and research-material directions inside the existing guide.
+- [x] Preserve existing drafts; handle thread changes, agent errors and setup gates without false completion.
+- [x] TypeScript, flow regressions and real Chrome source/preview/three-message walkthrough checks passed with simulated replies. No paid model calls.
+- [ ] Review dev UI and publish matching cloud/desktop runtime.

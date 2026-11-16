@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { guideReplyReceived, newUserIndex, rearm, type GuideWait, type GuidePrompt } from '../sample-guide-flow'
+import type { Session } from '../useSession'
 import { validateHumanProgram } from '../../shared/human-program'
 
 /** Identify the bundled sample by its stable document identity, never a user-editable project name. */
@@ -7,36 +9,75 @@ export function walkthroughSample(input: unknown) {
   try { const program = validateHumanProgram(input); return program.id === 'mazzarella2018politeness-research' ? program : null } catch { return null }
 }
 
-export type SampleGuideAction = 'overview' | 'source' | 'participant' | 'trial' | 'setup'
+export type SampleGuideAction = 'overview' | 'source' | 'participant' | 'setup' | GuidePrompt
 const steps: { action: SampleGuideAction; title: string; hint: string; button: string }[] = [
-  { action: 'overview', title: 'Find the research question', hint: 'Start with what the paper asks, predicts and finds.', button: 'Show the overview' },
-  { action: 'source', title: 'Check it against the paper', hint: 'Open a cited passage beside the study. The source stays one click away.', button: 'Compare with the source' },
-  { action: 'participant', title: 'Read the original passage', hint: 'Compare the highlighted passage with the study. Next, try the participant view.', button: 'Explore participant view' },
-  { action: 'trial', title: 'Try a condition', hint: 'Change a condition or move through the screens. When ready, draft a trial request in chat; nothing runs automatically.', button: 'Draft a trial request' },
+  { action: 'overview', title: 'Understand the paper', hint: 'Can politeness change how we interpret a reply? Explore what this paper asks, predicts and finds.', button: 'Read the finding' },
+  { action: 'source', title: 'Check the evidence', hint: 'Does the paper support this account? Compare a claim with the original passage.', button: 'Check the original passage' },
+  { action: 'participant', title: 'Experience the experiment', hint: 'See the scenario and question participants received. Try answering, then switch conditions to discover what changes.', button: 'Try the participant task' },
+  { action: 'replicate', title: 'Try to replicate it', hint: 'After exploring the conditions, ask what you would need to reproduce this study—and which materials are still missing.', button: 'Prepare my first question' },
+  { action: 'question', title: 'Discuss the research', hint: 'You can question the design, not just read it. Ask why this experiment tests the hypothesis and what else might explain the finding.', button: 'Ask about the design' },
+  { action: 'ai', title: 'Choose your next step', hint: 'Use the paper as a starting point for your own research. Choose a direction to draft your next message.', button: 'Prepare an AI trial' },
+]
+const choices: { action: GuidePrompt; label: string }[] = [
+  { action: 'ai', label: 'Prepare an AI trial' },
+  { action: 'variation', label: 'Explore a variation' },
+  { action: 'materials', label: 'Prepare research materials' },
 ]
 
 /** A non-modal tour of the real editable sample. Progress means a view was opened, not scientific validation. */
-export function SampleOnboarding({ onClose, onAction, agentReady }: { agentReady: boolean; onClose(): void; onAction(action: SampleGuideAction): void }) {
+export function SampleOnboarding({ onClose, onAction, agentReady, conversation, suspended = false }: { suspended?: boolean; conversation?: Pick<Session, 'messages' | 'threadId' | 'busy' | 'error'> & { stopping?: boolean }; agentReady: boolean; onClose(): void; onAction(action: SampleGuideAction): void }) {
   const [step, setStep] = useState(0)
+  const [waiting, setWaiting] = useState<GuideWait | null>(null)
+  const threadChanged = Boolean(waiting && waiting.thread !== null && conversation && waiting.thread !== conversation.threadId)
+  useEffect(() => {
+    if (!waiting || !conversation) return
+    // A first message creates the thread: bind the wait to it.
+    if (waiting.thread === null && conversation.threadId && newUserIndex(conversation.messages, waiting) >= 0) {
+      setWaiting({ ...waiting, thread: conversation.threadId })
+      return
+    }
+    // Stop, or a rejected/unanswered question or permission, is not a finished reply: wait for the next message.
+    if (conversation.stopping && newUserIndex(conversation.messages, waiting) >= 0) {
+      setWaiting(rearm(conversation.messages, conversation.threadId ?? null, true))
+      return
+    }
+    if (guideReplyReceived(conversation.messages, waiting, conversation.threadId, conversation.busy, conversation.error)) {
+      setWaiting(null)
+      setStep(value => value + 1)
+    }
+  }, [waiting, conversation?.messages, conversation?.threadId, conversation?.busy, conversation?.error, conversation?.stopping])
+  const act = (action: SampleGuideAction) => {
+    if (action === 'setup') { onAction(action); return }
+    if (step >= 3) {
+      setWaiting(rearm(conversation?.messages ?? [], conversation?.threadId ?? null))
+    } else setStep(value => value + 1)
+    onAction(action)
+  }
   const finish = useRef<HTMLButtonElement>(null)
   const card = useRef<HTMLElement>(null)
+  const mounted = useRef(false)
   useEffect(() => {
+    if (suspended) return
     const opener = document.activeElement as HTMLElement | null
-    card.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true })
+    // Focus the card once; after Settings/consent closes, only move focus to a primary action (never to Skip).
+    const target = mounted.current ? card.current?.querySelector<HTMLButtonElement>('button.primary:not([disabled])') : card.current?.querySelector<HTMLButtonElement>('button')
+    mounted.current = true
+    target?.focus({ preventScroll: true })
     const panel = card.current
     return () => { if (opener?.isConnected && (document.activeElement === document.body || panel?.contains(document.activeElement))) opener.focus({ preventScroll: true }) }
-  }, [])
+  }, [suspended])
   const [spot, setSpot] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
   const [position, setPosition] = useState({ left: 16, top: 80 })
   // Observe layout, not a timer: scrolling, panel resizing and async source loading
   // can all move the real control underneath this non-modal coach mark.
   useEffect(() => {
+    if (suspended) return
     let frame = 0
     let revealed = false
     let target: HTMLElement | null = null
     let previousDescription: string | null = null
     const selector = step === 0 ? '.research-overview-topic' : step === 1 ? '.research-cite' : step === 2
-      ? '.wb-paper:not([hidden]) .source-body' : step === 3
+      ? '.wb-paper:not([hidden]) .source-body' : step === 3 && !waiting
       ? '.research-preview[open] iframe' : '.composer, .agreement-lock, .signin-card'
     const restore = () => {
       if (!target) return
@@ -110,30 +151,39 @@ export function SampleOnboarding({ onClose, onAction, agentReady }: { agentReady
     document.addEventListener('click', click)
     schedule()
     return () => { cancelAnimationFrame(frame); observer.disconnect(); resize.disconnect(); restore(); window.removeEventListener('resize', schedule); window.removeEventListener('scroll', schedule, true); document.removeEventListener('click', click) }
-  }, [step, agentReady])
+  }, [step, agentReady, waiting, suspended])
   useEffect(() => { if (step === steps.length) finish.current?.focus() }, [step])
   useEffect(() => {
     const keys = (event: KeyboardEvent) => { if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || document.querySelector('[aria-modal="true"]')) return; const target = event.target as HTMLElement; if (target?.closest?.('input, textarea, [contenteditable="true"]')) return; onClose() }
     window.addEventListener('keydown', keys)
     return () => window.removeEventListener('keydown', keys)
   }, [onClose])
-  const current = step === 3 && !agentReady
-    ? { action: 'setup' as const, title: 'Try a condition', hint: 'Change a condition or move through the screens. You can explore without an account, then set up the agent when ready.', button: 'See agent setup' }
+  const current = step >= 3 && step < steps.length && !agentReady
+    ? { action: 'setup' as const, title: steps[step].title, hint: 'You can explore the paper without an account. Set up the agent to ask your own questions. No message is sent and no experiment runs automatically.', button: 'See agent setup' }
     : steps[step]
-  return createPortal(<div className="sample-guide-layer">
+  return createPortal(<div className="sample-guide-layer" hidden={suspended}>
     {spot ? <div className="sample-guide-spotlight" aria-hidden="true" style={spot} /> : <div className="sample-guide-shade" aria-hidden="true" />}
     <section ref={card} className="sample-onboarding" aria-label="Sample walkthrough" style={position}>
-    <div className="sample-guide-heading"><span className="sample-guide-count">{Math.min(step + 1, 4)} / 4</span>
-    <div className="sample-guide-progress" aria-label={`${Math.min(step + 1, 4)} of 4 steps`}>
+    <div className="sample-guide-heading"><span className="sample-guide-count">{Math.min(step + 1, steps.length)} / {steps.length}</span>
+    <div className="sample-guide-progress" aria-label={`${Math.min(step + 1, steps.length)} of ${steps.length} steps`}>
       {steps.map((item, index) => <span key={item.action} className={index < step ? 'done' : index === step ? 'current' : ''} aria-hidden="true" />)}
     </div>
     </div>
     <div id="sample-guide-description" className="sample-guide-copy" aria-live="polite">
-      <strong>{current?.title ?? 'Your turn'}</strong>
-      <p>{current?.hint ?? (agentReady ? 'Continue in chat. Review your draft before sending, or keep exploring the paper.' : 'Agent setup is shown on the left. No request was drafted or sent. You can finish setup or keep exploring the paper.')}</p>
+      <strong>{waiting ? 'Continue in the chat' : current?.title ?? 'Keep exploring'}</strong>
+      <p>{waiting
+        ? threadChanged ? 'You switched conversations. Return to the previous chat, or continue the guide here.'
+          : waiting.interrupted && !conversation?.busy ? 'The reply was stopped before it finished. Send a question when ready; the guide continues after a complete reply.'
+          : conversation?.error ? 'The agent could not finish. Retry in chat, or skip the guide; your research is still here.'
+          : conversation?.busy ? 'The agent is working on your question. Review its reply before choosing what to do next.'
+          : 'Your question is in the chat draft. Edit it as you like and send it when ready. The guide continues after a reply; nothing runs automatically.'
+        : current?.hint ?? 'You have practiced checking evidence, asking questions and planning your next research step. Continue in chat; review any proposed experiment before approving a run.'}</p>
     </div>
     <div className="sample-guide-actions">
-      {current && <button className="primary" onClick={() => { onAction(current.action); setStep(value => value + 1) }}>{current.button}</button>}
+      {threadChanged && <button className="primary" onClick={() => setWaiting(rearm(conversation?.messages ?? [], conversation?.threadId ?? null))}>Continue here</button>}
+      {!waiting && current && (step === 5 && agentReady
+        ? choices.map(choice => <button key={choice.action} className="primary" disabled={Boolean(conversation?.busy)} onClick={() => act(choice.action)}>{choice.label}</button>)
+        : <button className="primary" disabled={step >= 3 && Boolean(conversation?.busy)} onClick={() => act(current.action)}>{current.button}</button>)}
       <button ref={finish} className="ghost" onClick={onClose}>{current ? 'Skip guide' : 'Finish guide'}</button>
     </div>
   </section></div>, document.body)
