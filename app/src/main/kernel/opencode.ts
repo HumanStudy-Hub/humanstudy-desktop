@@ -375,6 +375,7 @@ export class OpencodeKernel implements Kernel {
   async send(sessionId: string, text: string, options?: { purpose?: 'build' }): Promise<void> {
     // Only a conversation dropped by an exit takes the async reopen; the normal path stays synchronous.
     if (this.lost.has(sessionId) && !this.sessions.has(sessionId)) await this.reviveLost(sessionId)
+    else if (this.reopening.has(sessionId)) await this.reopening.get(sessionId) // let a thread resume finish loading history
     const s = this.session(sessionId)
     if (s.stopping) throw new Error('Wait for this conversation to stop before starting another turn.')
     if (s.buildLookup) throw new Error('The Build is already checking available models.')
