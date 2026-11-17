@@ -362,7 +362,7 @@ function Details({ id, ctx }: { id: string; ctx: Ctx }) {
   const node = program.nodes.find(n => n.id === id), step = program.steps.find(st => `flow:${st.id}` === id);
   if (!node && !step) return <p className={s.muted}>{id}</p>;
   const names = (ids: string[]) => ids.map(x => program.nodes.find(n => n.id === x)).filter((n): n is ProgramNode => Boolean(n));
-  const fields = (node?.fields ?? (step?.rule ? [step.rule] : [])).filter(f => f.value !== null && f.value !== '' || fieldNeed(f));
+  const fields = (node?.fields ?? (step?.rule ? [step.rule] : [])).filter(f => f.value !== null && f.value !== '' || fieldNeed(f) || withheldSources(f) !== null);
   const evidenceIds = [...new Set([...(node?.evidenceIds ?? step?.evidenceIds ?? []), ...fields.flatMap(f => f.evidenceIds)])];
   const connections = program.relations.filter(r => r.from === id || r.to === id);
   const issues = issuesOf(ctx, id);
@@ -397,6 +397,15 @@ function peerMaterial(program: HumanProgram, node: ProgramNode): ProgramNode | u
   return program.nodes.find(n => n.kind === 'material' && n.id !== node.id && n.conditionIds?.length && !n.conditionIds.some(c => node.conditionIds!.includes(c)) && n.studyIds.some(x => node.studyIds.includes(x)));
 }
 
+/** A shared overview withholds wording it may not redistribute: the field keeps where to get it (URL or DOI, hash). */
+export function withheldSources(field: ProgramField): string[] | null {
+  if (field.value !== null) return null;
+  const marker = field.extensions?.getFromSource;
+  const sources = marker && typeof marker === 'object' && !Array.isArray(marker) ? marker.sources : null;
+  if (!Array.isArray(sources)) return null;
+  return sources.flatMap(r => r && typeof r === 'object' && !Array.isArray(r) && typeof r.url === 'string' ? [r.url] : []);
+}
+
 /** Evidence badge: in zh the Chinese name with the English term kept small after it. */
 const ORIGINS: Partial<Record<ProgramField['origin'], string>> = { verbatim: 'verbatim', reported: 'reported', derived: 'derived', researcher: 'researcher', implementation: 'implementation', unknown: 'unknown' };
 function FieldRow({ id, field, ctx, against }: { id: string; field: ProgramField; ctx: Ctx; against?: ProgramField }) {
@@ -412,7 +421,9 @@ function FieldRow({ id, field, ctx, against }: { id: string; field: ProgramField
   const refs = sourceRefs(ctx.program, field.evidenceIds);
   const origin = ORIGINS[field.origin];
   const peer = against?.value != null ? fieldText(against.value) : undefined;
-  const body = placeholder ? <span className={s.fillHint}>{editable ? t('doc.fill_hint') : t('doc.not_specified')}</span>
+  const withheld = withheldSources(field);
+  const body = withheld ? <span className={s.fillHint}>{t('doc.get_from_source')}{withheld.length > 0 && <small> · {withheld.join(' · ')}</small>}</span>
+    : placeholder ? <span className={s.fillHint}>{editable ? t('doc.fill_hint') : t('doc.not_specified')}</span>
     : peer !== undefined && peer !== text ? wordDiff(text, peer).map((p, i) => p.changed ? <mark key={i}>{p.text}</mark> : <Fragment key={i}>{p.text}</Fragment>) : text;
   return <div data-field-id={field.id} data-amber={need || undefined} className={`${s.field} ${need ? s.amberField : ''} ${focused ? s.focusedField : ''}`}>
     <dt>

@@ -708,6 +708,15 @@ def intentional(harm: float, help_: float) -> float:
         limits: { maxFiles: 20_000, maxTotalBytes: 2048 * 1024 * 1024, maxFileBytes: 512 * 1024 * 1024 },
       }),
       exportStudy: async () => ({ ok: true as const, savedPath: 'Study.humanstudy.zip', bytes: 2_100_000, files: 45 }),
+      sharePreview: async () => ({
+        overview: { available: true, files: ['CONTRIBUTION.json', 'program.json'], withheld: 2, getFromSource: 1 },
+        experiment: { available: false, code: 'not-validated' as const, files: [] },
+        results: [
+          { id: 'artifacts/simulations/run-1', kind: 'trial' as const, files: ['artifacts/simulations/run-1/results.html'], bytes: 84_000 },
+          { id: 'artifacts/report.md', kind: 'material' as const, files: ['artifacts/report.md'], bytes: 3_200 },
+        ],
+      }),
+      shareStudy: async () => ({ ok: true as const, savedPath: 'Study-overview.zip', bytes: 12_000, files: 2 }),
       pickStudy: async () => null,
       importStudy: async () => ({ ok: false as const, code: 'not-package' as const }),
     },

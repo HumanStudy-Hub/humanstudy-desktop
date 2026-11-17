@@ -86,7 +86,7 @@ function download(value: unknown): void {
   a.click()
   a.remove()
 }
-const SAVES = new Set(['project:saveCopy', 'kernel:export', 'telemetry:saveExport', 'projects:exportStudy'])
+const SAVES = new Set(['project:saveCopy', 'kernel:export', 'telemetry:saveExport', 'projects:exportStudy', 'projects:shareStudy'])
 
 async function call(channel: string, args: unknown[]): Promise<unknown> {
   // A call that names a picked file waits for its upload; a failed upload fails only the calls that use it.

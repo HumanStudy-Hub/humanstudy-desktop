@@ -20,6 +20,8 @@ const api: HumanStudyApi = {
     trash: (dir) => ipcRenderer.invoke('projects:trash', dir),
     exportPreview: (dir) => ipcRenderer.invoke('projects:exportPreview', dir),
     exportStudy: (dir, options) => ipcRenderer.invoke('projects:exportStudy', dir, options),
+    sharePreview: (dir) => ipcRenderer.invoke('projects:sharePreview', dir),
+    shareStudy: (dir, options) => ipcRenderer.invoke('projects:shareStudy', dir, options),
     pickStudy: () => ipcRenderer.invoke('projects:pickStudy'),
     importStudy: (path) => ipcRenderer.invoke('projects:importStudy', path),
   },
