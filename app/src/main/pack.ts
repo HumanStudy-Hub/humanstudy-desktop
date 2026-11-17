@@ -140,6 +140,17 @@ export function trustedBudgetFiles(): [string, string][] {
     ...run.filter((rel) => files[PREFIX + rel] !== undefined).map((rel): [string, string] => [rel, files[PREFIX + rel]])]
 }
 
+/** What the app runs to prepare a share (share-layers.ts), in the layout community.py expects: the exporter under
+ *  skills/export/, the build checks it imports under skills/build/ and the engine under hsenv/. The shipped copy,
+ *  never the project's editable .opencode copy, so a project cannot change what is checked before sharing. */
+export function trustedShareFiles(): [string, string][] {
+  const pick = (key: string): boolean => key === PREFIX + 'skills/export/community.py' || (key.startsWith(PREFIX + 'skills/build/') && key.endsWith('.py'))
+  return [
+    ...Object.entries(files).filter(([key]) => pick(key)).map(([key, content]): [string, string] => [key.slice(PREFIX.length), content]),
+    ...engineFiles().map((rel): [string, string] => ['hsenv/' + rel.slice('runtime/hsenv/'.length), files[PREFIX + rel]]),
+  ]
+}
+
 /** Put every app-owned file of the pack back at the shipped version (helpers, the run and preview skills, the
  *  engine, the artifact kit), and nothing else. Run before a simulation starts (review 3, S3): the run imports
  *  the approval-binding and scoring code from the project's .opencode copy, which the agent can edit. */

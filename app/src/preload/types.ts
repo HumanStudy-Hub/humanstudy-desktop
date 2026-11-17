@@ -249,6 +249,30 @@ export type StudyImportResult =
   | { ok: true; dir: string; name: string; renamed: boolean; conversations: number; privateFiles: number }
   | StudyTransferFailure
 
+/** Sharing a study (main/share-layers.ts): three layers, unlike "Download this study" (the researcher's own full
+ *  copy) and private project sync, which include everything and are not sharing. */
+export type ShareLayer = 'overview' | 'experiment'
+export interface ShareLayerState {
+  available: boolean
+  /** Why it is unavailable: no protocol, not Validated and checks not passed, changed after download from the
+   *  library, the research runtime is missing, or the exporter's own plain reason (`blocked`, see `reason`). */
+  code?: 'not-validated' | 'no-protocol' | 'changed-published' | 'blocked' | 'runtime'
+  reason?: string
+  /** The exact public file list of this layer (without results). */
+  files: string[]
+  /** Evidence excerpts withheld and marked "Get from source". */
+  withheld?: number
+  /** Sources the receiver gets restricted wording from (URL or DOI plus hash). */
+  getFromSource?: number
+  /** Layer 2: Validated in the library, or its checks passed on this computer. */
+  validated?: 'library' | 'checks'
+}
+/** Layer 3: one of the researcher's own results or materials (artifacts/), shared only when ticked. */
+export interface ShareResultItem { id: string; kind: 'trial' | 'material'; files: string[]; bytes: number; blocked?: string }
+export interface SharePreview { overview: ShareLayerState; experiment: ShareLayerState; results: ShareResultItem[] }
+export interface ShareOptions { layer: ShareLayer; results: string[] }
+export type ShareResult = { ok: true; savedPath: string; bytes: number; files: number } | { ok: false; code: 'not-project' | 'runtime' | 'failed'; detail?: string }
+
 /** Project sync (main/project-sync.ts): the status shown next to a project when signed in. */
 export type ProjectSyncStatus = 'synced' | 'syncing' | 'not-synced' | 'conflict-copy' | 'behind' | 'deleted' | 'too-large' | 'other-account'
 export interface ProjectSyncEntry {
@@ -428,6 +452,10 @@ export interface HumanStudyApi {
     exportPreview(dir: string): Promise<StudyExportPreview>
     /** Asks where to save (online: the browser downloads it) and writes <name>.humanstudy.zip; null when cancelled. */
     exportStudy(dir: string, options: StudyExportOptions): Promise<StudyExportResult | null>
+    /** What each share layer would contain (overview, runnable experiment, ticked results). */
+    sharePreview(dir: string): Promise<SharePreview>
+    /** Asks where to save (online: the browser downloads it) and writes the share ZIP; null when cancelled. */
+    shareStudy(dir: string, options: ShareOptions): Promise<ShareResult | null>
     /** Picks a downloaded study file (online: uploads it); null when cancelled. */
     pickStudy(): Promise<string | null>
     /** Opens a downloaded study as a new project; never changes an existing one. */

@@ -39,10 +39,12 @@ import { createThreads, threads } from './threads'
 import { assertProjectWritePath, saveProjectCopy, saveProjectText } from './program-save'
 import { createPaperBuilds, isBuildTurn } from './paper-build'
 import { createShutdown } from './shutdown-core'
-import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedRunFiles } from './pack'
+import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedRunFiles, trustedShareFiles } from './pack'
+import { isValidatedProtocol } from '../shared/research-search'
+import { confirmedLibrarySha, heldTextsOf, passedProtocolSha, selectedResults, shareExport, ShareError, shareFileName, sharePlan, type ShareRuntime } from './share-layers'
 import { legacyFileIsolationAvailable, scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
-import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf } from './package-readiness'
+import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf, protocolProblems } from './package-readiness'
 import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, restoredRunFiles, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
 import { protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
@@ -54,7 +56,7 @@ import { launchProtocolRun, newRunFolder, sweepRunCopies, type Binding as Protoc
 import type { Kernel, KernelEvent } from './kernel-types'
 import { actionRef } from '../shared/research-operations'
 import { withPrivateCopyNote } from '../shared/workspace-context'
-import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, StudyExportOptions, StudyExportResult, StudyImportResult, StudyTransferFailure, UnsavedPrompt, WorkspaceContext } from '../preload/types'
+import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, ShareOptions, ShareResult, SharePreview, StudyExportOptions, StudyExportResult, StudyImportResult, StudyTransferFailure, UnsavedPrompt, WorkspaceContext } from '../preload/types'
 
 // macOS with /usr/bin/sandbox-exec: simulations go through a per-run relay. Elsewhere they use the
 // pre-relay path and the run confirmation says that the study's code can read the key.
@@ -808,6 +810,54 @@ app.whenReady().then(() => {
       return { ok: true, savedPath: out.path, bytes: out.bytes, files: out.files }
     } catch (err) {
       return transferFailure(err)
+    }
+  })
+  // Sharing (share-layers.ts): the study overview, the runnable experiment and ticked results, prepared by the app's
+  // own copy of the community exporter. Unlike "Download this study" and private sync, never everything.
+  async function shareRuntime(d: string): Promise<ShareRuntime> {
+    const python = await readyPython()
+    const runtime: ShareRuntime = { python, files: trustedShareFiles(), bin: process.env.HUMANSTUDY_RUNTIME_BIN || '' }
+    if (!python) return runtime
+    const raw = await readFile(join(d, 'protocol.json')).catch(() => null)
+    if (!raw) return runtime
+    if (await isPublishedStudy(d).catch(() => false)) {
+      // Validated is confirmed against the library catalog, never taken from the project's own files.
+      runtime.libraryValidated = await confirmedLibrarySha(d, communityStudies, (entry) => isValidatedProtocol(entry))
+      const restored = await restoredProtocolText(originalTextCache(), createHash('sha256').update(raw).digest('hex'))
+      if (restored) runtime.heldTexts = heldTextsOf(raw.toString('utf8'), restored)
+    } else {
+      runtime.checksPassed = await passedProtocolSha(d, (p) => protocolProblems(p))
+    }
+    return runtime
+  }
+  ipcMain.handle('projects:sharePreview', async (_e, dir: string): Promise<SharePreview> => {
+    const d = transferProject(dir)
+    if (!d) throw new Error('This folder is not a HumanStudy project.')
+    return sharePlan(await shareRuntime(d), d)
+  })
+  ipcMain.handle('projects:shareStudy', async (e, dir: string, options: ShareOptions): Promise<ShareResult | null> => {
+    const d = transferProject(dir)
+    if (!d) return { ok: false, code: 'not-project' }
+    const layer = options?.layer === 'experiment' ? 'experiment' : 'overview'
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const opts = {
+      title: 'Share this study',
+      defaultPath: join(app.getPath('downloads'), shareFileName(basename(d), layer)),
+      filters: [{ name: 'Shared study', extensions: ['zip'] }],
+    }
+    const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    if (r.canceled || !r.filePath) return null
+    const target = /\.zip$/i.test(r.filePath) ? r.filePath : r.filePath + '.zip'
+    try {
+      const runtime = await shareRuntime(d)
+      // Results are re-listed now: only ids that are still shareable reach the exporter, which checks them again.
+      const results = Array.isArray(options?.results) && options.results.length ? selectedResults(options.results, await sharePlan(runtime, d)) : []
+      const out = await shareExport(runtime, d, layer, results, target)
+      telemetry.track('project.shared', { metadata: { layer, results: results.length, files: out.files.length, bytes: out.bytes } }, d)
+      return { ok: true, savedPath: target, bytes: out.bytes, files: out.files.length }
+    } catch (err) {
+      if (err instanceof ShareError) return { ok: false, code: err.code, detail: err.message }
+      return { ok: false, code: 'failed', detail: err instanceof Error ? err.message.slice(0, 300) : undefined }
     }
   })
   ipcMain.handle('projects:pickStudy', async () => {
