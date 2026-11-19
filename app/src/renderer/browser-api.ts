@@ -761,7 +761,10 @@ def intentional(harm: float, help_: float) -> float:
         Object.assign(account, { signedIn: true, email: email.trim() })
         return accountStatus()
       },
-      signUp: async () => ({ needsConfirmation: true }),
+      signUp: async (_email, _password, code) => {
+        if (!code.trim()) throw new Error('Enter your invitation code.')
+        return { needsConfirmation: true }
+      },
       forgotPassword: async () => { throw new Error('Browser preview cannot send account emails/change account passwords. Use desktop app or website.') },
       resendConfirmation: async () => { throw new Error('Browser preview cannot send account emails/change account passwords. Use desktop app or website.') },
       changePassword: async () => { throw new Error('Browser preview cannot send account emails/change account passwords. Use desktop app or website.') },

@@ -56,7 +56,9 @@ async function main() {
   const signed = await checked(await fetch(sb+'/auth/v1/token?grant_type=password',{method:'POST',headers:{apikey:key,'content-type':'application/json'},body:JSON.stringify({email,password}),signal:AbortSignal.timeout(15000)}))
   if (!signed.user?.id || !signed.access_token || !signed.refresh_token) throw Error('Account returned an incomplete session.')
   let desktopKey
-  if (invitationCode) desktopKey=(await checked(await fetch(server+'/api/desktop/key',{method:'POST',headers:{Authorization:`Bearer ${signed.access_token}`,'content-type':'application/json'},body:JSON.stringify({code:invitationCode}),signal:AbortSignal.timeout(15000)}))).key
+  // An invited account gets its key without a code; invitationCode is only for accounts never invited.
+  const keyRes=await fetch(server+'/api/desktop/key',{method:'POST',headers:{Authorization:`Bearer ${signed.access_token}`,'content-type':'application/json'},body:JSON.stringify(invitationCode?{code:invitationCode}:{}),signal:AbortSignal.timeout(15000)})
+  if (keyRes.ok || invitationCode) desktopKey=(await checked(keyRes)).key
   await save(file,{server,supabaseUrl:sb,supabaseKey:key,userId:signed.user.id,accessToken:signed.access_token,refreshToken:signed.refresh_token,expiresAt:Date.now()+signed.expires_in*1000,desktopKey,consentVersion:CONSENT_VERSION,sources:true})
   console.log(JSON.stringify({status:'signed_in',userId:signed.user.id,consentVersion:CONSENT_VERSION}))
 }

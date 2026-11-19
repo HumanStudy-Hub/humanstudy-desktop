@@ -42,7 +42,7 @@ const api: HumanStudyApi = {
   account: {
     status: () => ipcRenderer.invoke('account:status'),
     signIn: (email, password) => ipcRenderer.invoke('account:signIn', email, password),
-    signUp: (email, password) => ipcRenderer.invoke('account:signUp', email, password),
+    signUp: (email, password, code) => ipcRenderer.invoke('account:signUp', email, password, code),
     forgotPassword: (email) => ipcRenderer.invoke('account:forgotPassword', email),
     resendConfirmation: (email) => ipcRenderer.invoke('account:resendConfirmation', email),
     changePassword: (currentPassword, newPassword) => ipcRenderer.invoke('account:changePassword', currentPassword, newPassword),

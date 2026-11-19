@@ -949,12 +949,17 @@ app.whenReady().then(() => {
     syncAccess()
     return v
   }
-  ipcMain.handle('account:status', () => acct.status())
+  // Signed in without a valid desktop key (new device, expired key): an invited account gets one
+  // silently. autoUnlock tries once per app start or sign-in, so repeated status calls stay local.
+  ipcMain.handle('account:status', async () => {
+    await acct.autoUnlock()
+    return afterAccount(acct.status())
+  })
   ipcMain.handle('account:signIn', async (_e, email: string, password: string) =>
     afterAccount(await acct.signIn(email, password))
   )
-  ipcMain.handle('account:signUp', async (_e, email: string, password: string) =>
-    afterAccount(await acct.signUp(email, password))
+  ipcMain.handle('account:signUp', async (_e, email: string, password: string, code: string) =>
+    afterAccount(await acct.signUp(email, password, code))
   )
   ipcMain.handle('account:forgotPassword', (_e, email: string) => acct.forgotPassword(email))
   ipcMain.handle('account:resendConfirmation', (_e, email: string) => acct.resendConfirmation(email))

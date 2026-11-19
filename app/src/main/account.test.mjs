@@ -28,6 +28,8 @@ const calls = []
 let refreshOk = true
 let holdRefresh
 let holdLogout
+let invited = false
+let keyOffline = false
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 const stubFetch = async (url, init = {}) => {
   const u = String(url)
@@ -49,12 +51,16 @@ const stubFetch = async (url, init = {}) => {
   }
   if (u.startsWith(`${SB}/auth/v1/signup?redirect_to=`)) {
     assert.equal(decodeURIComponent(u.split('redirect_to=')[1]), `${SERVER}/auth/confirm`)
+    assert.deepEqual(body.data, { invitation_code: 'humanstudy' }, 'the invitation code travels as signup metadata')
     return json(200, { id: 'u1', email: body.email }) // confirmation required: no session
   }
   if (u === `${SB}/auth/v1/logout?scope=local`) return holdLogout ? holdLogout() : new Response(null, { status: 204 })
   if (u === `${SERVER}/api/desktop/key`) {
-    if (h.authorization !== 'Bearer AT2') return json(401, { error: 'not_signed_in' })
-    if (body.code !== 'GOOD') return json(403, { error: 'invalid_code' })
+    if (keyOffline) throw new TypeError('fetch failed')
+    if (!['Bearer AT1', 'Bearer AT2'].includes(h.authorization)) return json(401, { error: 'not_signed_in' })
+    if (body.code === undefined && !invited) return json(403, { error: 'code_required' })
+    if (body.code !== undefined && body.code !== 'GOOD') return json(403, { error: 'invalid_code' })
+    invited = true
     return json(200, { key: 'hsk_secret', expiresAt: new Date(clock + 30 * 86_400_000).toISOString(), email: 'a@b.org' })
   }
   throw new Error('unexpected fetch ' + u)
@@ -78,12 +84,21 @@ const acct = createAccount({
 assert.deepEqual(acct.status(), { signedIn: false, email: undefined, unlocked: false, keyExpiresAt: undefined, server: SERVER, modelAccess: 'none' })
 
 await assert.rejects(acct.signIn('a@b.org', 'bad'), /Invalid login credentials/)
-assert.deepEqual(await acct.signUp('a@b.org', 'pw'), { needsConfirmation: true })
+await assert.rejects(acct.signUp('a@b.org', 'pw', ' '), /invitation code/)
+assert.deepEqual(await acct.signUp('a@b.org', 'pw', ' humanstudy '), { needsConfirmation: true })
 
+// Silent unlock on sign-in: a not-yet-invited account gets 403 code_required, which leaves the
+// state unchanged and does not throw; it is tried once, not on every later status refresh.
+const keyCalls = () => calls.filter((c) => c.url === `${SERVER}/api/desktop/key`)
 let st = await acct.signIn('a@b.org', 'pw')
 assert.equal(st.signedIn, true)
 assert.equal(st.email, 'a@b.org')
 assert.equal(st.modelAccess, 'none')
+assert.equal(keyCalls().length, 1)
+assert.deepEqual(keyCalls()[0].body, {}, 'silent unlock sends no code')
+assert.equal(store.desktopKey, undefined)
+assert.equal(await acct.autoUnlock(), false)
+assert.equal(keyCalls().length, 1, 'no repeated silent attempts')
 const disk = JSON.stringify(store)
 assert.ok(!disk.includes('AT1') && !disk.includes('RT1'), 'tokens must be stored encrypted')
 
@@ -117,14 +132,46 @@ refreshOk = false
 await assert.rejects(acct.unlock('GOOD'), /Sign in first/)
 assert.equal(acct.status().signedIn, false)
 
-// Sign out clears session and key.
+// The account is invited now: signing in again (key expired, no code) gets a key silently.
 refreshOk = true
-await acct.signIn('a@b.org', 'pw')
+let before = keyCalls().length
+st = await acct.signIn('a@b.org', 'pw')
+assert.equal(st.unlocked, true)
+assert.equal(st.modelAccess, 'hosted')
+assert.deepEqual(keyCalls().at(-1).body, {})
+assert.equal(keyCalls().length, before + 1)
+assert.ok(!JSON.stringify(store).includes('hsk_secret'), 'desktop key must be stored encrypted')
+// A valid key means no further requests.
+assert.equal(await acct.autoUnlock(), false)
+assert.equal(keyCalls().length, before + 1)
+
+// Sign out clears session and key.
 st = await acct.signOut()
 assert.equal(st.signedIn, false)
 assert.ok(calls.some((c) => c.url.endsWith('/auth/v1/logout?scope=local') && c.headers.authorization === 'Bearer AT1'))
 assert.equal(store.session, undefined)
 assert.equal(store.desktopKey, undefined)
+
+// Sign out, then sign in: silent unlock runs again.
+before = keyCalls().length
+st = await acct.signIn('a@b.org', 'pw')
+assert.equal(st.unlocked, true)
+assert.equal(keyCalls().length, before + 1)
+
+// A network failure during silent unlock never blocks sign-in.
+await acct.signOut()
+keyOffline = true
+st = await acct.signIn('a@b.org', 'pw')
+assert.equal(st.signedIn, true)
+assert.equal(st.unlocked, false)
+keyOffline = false
+await acct.signOut()
+
+// A silent attempt rejected with 401 does not sign the user out.
+store.session = enc(JSON.stringify({ accessToken: 'ATX', refreshToken: 'RTX', expiresAt: clock + 3600_000, email: 'a@b.org' }))
+assert.equal(await acct.autoUnlock(), false)
+assert.equal(acct.status().signedIn, true)
+await acct.signOut()
 
 // Late refresh responses cannot overwrite a workspace seed or authorize the caller as another user.
 const fixtureToken = (sub, revision) => 'fixture.' + Buffer.from(JSON.stringify({ sub, revision })).toString('base64url') + '.fixture'

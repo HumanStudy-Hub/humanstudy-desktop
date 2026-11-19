@@ -373,8 +373,9 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
     run(
       'signup',
       async () => {
-        const r = await window.humanstudy.account.signUp(email.trim(), password)
+        const r = await window.humanstudy.account.signUp(email.trim(), password, code.trim())
         setPassword('')
+        setCode('')
         if (r.needsConfirmation) setNotice(t('settings.confirm_email'))
         else onAccount(await window.humanstudy.account.status())
       },
@@ -461,11 +462,23 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
+          <label>
+            <span className="setting-label">{t('settings.signup_code')}</span>
+            <input
+              className="field"
+              name="code"
+              data-private
+              autoComplete="off"
+              spellCheck={false}
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+            />
+          </label>
           <div className="row-end">
             <button
               type="button"
               className="ghost"
-              disabled={Boolean(busy) || !email.trim() || !password}
+              disabled={Boolean(busy) || !email.trim() || !password || !code.trim()}
               onClick={() => void signUp()}
             >
               {busy === 'signup' ? t('settings.creating') : t('settings.create_account')}
