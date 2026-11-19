@@ -310,6 +310,7 @@ export default function App() {
     window.humanstudy.account.status().then(setAccount).catch(() => undefined)
   }, [])
   useEffect(refreshAccount, [refreshAccount])
+  useEffect(() => window.humanstudy.account.onChanged(setAccount), [])
 
   // The explicit theme choice wins over the OS preference; 'system' defers to prefers-color-scheme.
   useEffect(() => {

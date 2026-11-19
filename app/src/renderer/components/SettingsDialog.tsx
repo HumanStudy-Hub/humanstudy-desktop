@@ -364,8 +364,14 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
     run(
       'signin',
       async () => {
-        onAccount(await window.humanstudy.account.signIn(email.trim(), password))
+        const st = await window.humanstudy.account.signIn(email.trim(), password)
+        onAccount(st)
         setPassword('')
+        // A code typed into the shared field also unlocks an older account that was never invited.
+        if (code.trim() && !st.unlocked) {
+          onAccount(await window.humanstudy.account.unlock(code.trim()))
+          setCode('')
+        }
       },
       t('settings.err_signin')
     )
@@ -373,8 +379,9 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
     run(
       'signup',
       async () => {
-        const r = await window.humanstudy.account.signUp(email.trim(), password)
+        const r = await window.humanstudy.account.signUp(email.trim(), password, code.trim())
         setPassword('')
+        setCode('')
         if (r.needsConfirmation) setNotice(t('settings.confirm_email'))
         else onAccount(await window.humanstudy.account.status())
       },
@@ -461,11 +468,23 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
+          <label>
+            <span className="setting-label">{t('settings.signup_code')}</span>
+            <input
+              className="field"
+              name="code"
+              data-private
+              autoComplete="off"
+              spellCheck={false}
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+            />
+          </label>
           <div className="row-end">
             <button
               type="button"
               className="ghost"
-              disabled={Boolean(busy) || !email.trim() || !password}
+              disabled={Boolean(busy) || !email.trim() || !password || !code.trim()}
               onClick={() => void signUp()}
             >
               {busy === 'signup' ? t('settings.creating') : t('settings.create_account')}

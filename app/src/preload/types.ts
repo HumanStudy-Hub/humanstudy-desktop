@@ -485,14 +485,16 @@ export interface HumanStudyApi {
   account: {
     status(): Promise<AccountStatus>
     signIn(email: string, password: string): Promise<AccountStatus>
-    /** Creates the account; the user must confirm by email before signing in. */
-    signUp(email: string, password: string): Promise<{ needsConfirmation: boolean }>
+    /** Creates the account with its invitation code (entered once); the user confirms by email before signing in. */
+    signUp(email: string, password: string, code: string): Promise<{ needsConfirmation: boolean }>
     forgotPassword(email: string): Promise<void>
     resendConfirmation(email: string): Promise<void>
     changePassword(currentPassword: string, newPassword: string): Promise<AccountStatus>
     signOut(): Promise<AccountStatus>
-    /** Redeems an invitation code for a desktop key that unlocks hosted models. */
+    /** Redeems an invitation code for a desktop key (fallback for accounts created without one). */
     unlock(code: string): Promise<AccountStatus>
+    /** The status changed in the background (a desktop key arrived without a code). */
+    onChanged(cb: (a: AccountStatus) => void): () => void
   }
   settings: {
     get(): Promise<Settings>

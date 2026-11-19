@@ -949,12 +949,22 @@ app.whenReady().then(() => {
     syncAccess()
     return v
   }
-  ipcMain.handle('account:status', () => acct.status())
+  // Signed in without a valid desktop key (new device, expired key): an invited account gets one
+  // in the background. autoUnlock tries once per app start or sign-in, so repeated calls stay local.
+  const silentUnlock = <T>(v: T): T => {
+    void acct.autoUnlock().then((got) => {
+      if (!got) return
+      syncAccess()
+      broadcast('account:changed', acct.status())
+    })
+    return v
+  }
+  ipcMain.handle('account:status', () => silentUnlock(acct.status()))
   ipcMain.handle('account:signIn', async (_e, email: string, password: string) =>
-    afterAccount(await acct.signIn(email, password))
+    silentUnlock(afterAccount(await acct.signIn(email, password)))
   )
-  ipcMain.handle('account:signUp', async (_e, email: string, password: string) =>
-    afterAccount(await acct.signUp(email, password))
+  ipcMain.handle('account:signUp', async (_e, email: string, password: string, code: string) =>
+    silentUnlock(afterAccount(await acct.signUp(email, password, code)))
   )
   ipcMain.handle('account:forgotPassword', (_e, email: string) => acct.forgotPassword(email))
   ipcMain.handle('account:resendConfirmation', (_e, email: string) => acct.resendConfirmation(email))
