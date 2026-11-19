@@ -61,7 +61,7 @@ test('the online workspace forks explicitly and restores the existing project on
           let releaseFork
           window.humanstudy = {
             app: { info: async () => ({ version: 'test' }), setUnsaved: noop },
-            account: { status: noValue },
+            account: { status: noValue, onChanged: unsubscribe },
             settings: { get: async () => settings },
             menu: { onCommand: unsubscribe },
             kernel: { install: { status: noValue, onProgress: unsubscribe }, onEvent: unsubscribe },
