@@ -493,6 +493,8 @@ export interface HumanStudyApi {
     signOut(): Promise<AccountStatus>
     /** Redeems an invitation code for a desktop key (fallback for accounts created without one). */
     unlock(code: string): Promise<AccountStatus>
+    /** The status changed in the background (a desktop key arrived without a code). */
+    onChanged(cb: (a: AccountStatus) => void): () => void
   }
   settings: {
     get(): Promise<Settings>

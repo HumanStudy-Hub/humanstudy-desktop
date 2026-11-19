@@ -30,6 +30,7 @@ let holdRefresh
 let holdLogout
 let invited = false
 let keyOffline = false
+let holdKey
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 const stubFetch = async (url, init = {}) => {
   const u = String(url)
@@ -57,6 +58,7 @@ const stubFetch = async (url, init = {}) => {
   if (u === `${SB}/auth/v1/logout?scope=local`) return holdLogout ? holdLogout() : new Response(null, { status: 204 })
   if (u === `${SERVER}/api/desktop/key`) {
     if (keyOffline) throw new TypeError('fetch failed')
+    if (holdKey) return holdKey()
     if (!['Bearer AT1', 'Bearer AT2'].includes(h.authorization)) return json(401, { error: 'not_signed_in' })
     if (body.code === undefined && !invited) return json(403, { error: 'code_required' })
     if (body.code !== undefined && body.code !== 'GOOD') return json(403, { error: 'invalid_code' })
@@ -87,13 +89,17 @@ await assert.rejects(acct.signIn('a@b.org', 'bad'), /Invalid login credentials/)
 await assert.rejects(acct.signUp('a@b.org', 'pw', ' '), /invitation code/)
 assert.deepEqual(await acct.signUp('a@b.org', 'pw', ' humanstudy '), { needsConfirmation: true })
 
-// Silent unlock on sign-in: a not-yet-invited account gets 403 code_required, which leaves the
-// state unchanged and does not throw; it is tried once, not on every later status refresh.
+// Silent unlock after sign-in (the IPC layer runs it in the background): a not-yet-invited account
+// gets 403 code_required, which leaves the state unchanged and does not throw; it is tried once,
+// not on every later status refresh.
 const keyCalls = () => calls.filter((c) => c.url === `${SERVER}/api/desktop/key`)
 let st = await acct.signIn('a@b.org', 'pw')
 assert.equal(st.signedIn, true)
 assert.equal(st.email, 'a@b.org')
 assert.equal(st.modelAccess, 'none')
+assert.equal(keyCalls().length, 0, 'sign-in itself does not wait for the key')
+assert.equal(await acct.autoUnlock(), false)
+assert.equal(acct.status().signedIn, true)
 assert.equal(keyCalls().length, 1)
 assert.deepEqual(keyCalls()[0].body, {}, 'silent unlock sends no code')
 assert.equal(store.desktopKey, undefined)
@@ -135,7 +141,9 @@ assert.equal(acct.status().signedIn, false)
 // The account is invited now: signing in again (key expired, no code) gets a key silently.
 refreshOk = true
 let before = keyCalls().length
-st = await acct.signIn('a@b.org', 'pw')
+await acct.signIn('a@b.org', 'pw')
+assert.equal(await acct.autoUnlock(), true)
+st = acct.status()
 assert.equal(st.unlocked, true)
 assert.equal(st.modelAccess, 'hosted')
 assert.deepEqual(keyCalls().at(-1).body, {})
@@ -154,17 +162,49 @@ assert.equal(store.desktopKey, undefined)
 
 // Sign out, then sign in: silent unlock runs again.
 before = keyCalls().length
-st = await acct.signIn('a@b.org', 'pw')
-assert.equal(st.unlocked, true)
+await acct.signIn('a@b.org', 'pw')
+assert.equal(await acct.autoUnlock(), true)
+assert.equal(acct.status().unlocked, true)
 assert.equal(keyCalls().length, before + 1)
 
 // A network failure during silent unlock never blocks sign-in.
 await acct.signOut()
 keyOffline = true
-st = await acct.signIn('a@b.org', 'pw')
-assert.equal(st.signedIn, true)
-assert.equal(st.unlocked, false)
+await acct.signIn('a@b.org', 'pw')
+assert.equal(await acct.autoUnlock(), false)
+assert.equal(acct.status().signedIn, true)
+assert.equal(acct.status().unlocked, false)
 keyOffline = false
+await acct.signOut()
+
+// Account A's slow answer arriving after sign-out and sign-in as B stores no key for B.
+await acct.signIn('a@b.org', 'pw')
+let releaseKey
+let keyRequested
+const keyStarted = new Promise((resolve) => { keyRequested = resolve })
+holdKey = () => new Promise((resolve) => { releaseKey = resolve; keyRequested() })
+const slow = acct.autoUnlock()
+await keyStarted
+holdKey = undefined
+await acct.signOut()
+await acct.signIn('b@c.org', 'pw')
+releaseKey(json(200, { key: 'hsk_for_a', expiresAt: new Date(clock + 30 * 86_400_000).toISOString() }))
+assert.equal(await slow, false)
+assert.equal(store.desktopKey, undefined)
+assert.equal(acct.status().unlocked, false)
+assert.equal(acct.status().email, 'b@c.org')
+// ... and a late 401 for A does not sign B out of an explicit unlock either.
+const lateStarted = new Promise((resolve) => { keyRequested = resolve })
+holdKey = () => new Promise((resolve) => { releaseKey = resolve; keyRequested() })
+const late = acct.unlock('GOOD')
+await lateStarted
+holdKey = undefined
+await acct.signOut()
+await acct.signIn('a@b.org', 'pw')
+releaseKey(json(401, { error: 'not_signed_in' }))
+await assert.rejects(late, /session has ended/)
+assert.equal(acct.status().signedIn, true)
+assert.equal(acct.status().email, 'a@b.org')
 await acct.signOut()
 
 // A silent attempt rejected with 401 does not sign the user out.

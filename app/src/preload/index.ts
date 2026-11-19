@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
-import type { HumanStudyApi, KernelEvent, KernelInstallStatus, MenuCommand, UpdateStatus } from './types'
+import type { AccountStatus, HumanStudyApi, KernelEvent, KernelInstallStatus, MenuCommand, UpdateStatus } from './types'
 
 function listen<T>(channel: string, cb: (v: T) => void): () => void {
   const h = (_: IpcRendererEvent, v: T): void => cb(v)
@@ -48,6 +48,7 @@ const api: HumanStudyApi = {
     changePassword: (currentPassword, newPassword) => ipcRenderer.invoke('account:changePassword', currentPassword, newPassword),
     signOut: () => ipcRenderer.invoke('account:signOut'),
     unlock: (code) => ipcRenderer.invoke('account:unlock', code),
+    onChanged: (cb) => listen<AccountStatus>('account:changed', cb),
   },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),

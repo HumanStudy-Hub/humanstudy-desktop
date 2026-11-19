@@ -225,8 +225,7 @@ export function createAccount(deps: AccountDeps) {
     // A different account must not inherit the previous account's desktop key.
     if (prev && prev.email.toLowerCase() !== s.email.toLowerCase()) writeSecret('desktopKey', null)
     writeSecret('session', s)
-    autoUnlockTried = false
-    await autoUnlock()
+    autoUnlockTried = false // the caller runs autoUnlock in the background
     return status()
   }
 
@@ -247,8 +246,7 @@ export function createAccount(deps: AccountDeps) {
     const s = sessionFrom(json, e)
     if (s) {
       writeSecret('session', s)
-      autoUnlockTried = false
-      await autoUnlock()
+      autoUnlockTried = false // the caller runs autoUnlock in the background
       return { needsConfirmation: false }
     }
     return { needsConfirmation: true }
@@ -319,7 +317,8 @@ export function createAccount(deps: AccountDeps) {
   /**
    * Asks for a desktop key without a code: an invited account (code given at sign-up or redeemed
    * before) gets one; otherwise nothing changes and the invitation code field stays the fallback.
-   * Never throws. At most one attempt per sign-in or app start until a key is obtained.
+   * Never throws. At most one attempt per sign-in or app start until a key is obtained. Callers run
+   * it in the background and publish the new status when it returns true.
    */
   async function autoUnlock(): Promise<boolean> {
     if (autoUnlockTried || !getSession() || keyValid(getKey())) return false
@@ -336,6 +335,15 @@ export function createAccount(deps: AccountDeps) {
   async function requestKey(code?: string, silent = false): Promise<AccountStatus> {
     const token = await accessToken()
     if (!token) throw new AccountError('Sign in first, then enter your code.', 'not_signed_in')
+    // The answer belongs to the account that asked: a sign-out or a different sign-in during the
+    // request must neither receive its key nor be signed out by its 401.
+    const owner = jwtSub(token)
+    const ownerEmail = getSession()?.email.toLowerCase()
+    const sameAccount = (): boolean => {
+      const cur = getSession()
+      if (!cur) return false
+      return owner ? jwtSub(cur.accessToken) === owner : cur.email.toLowerCase() === ownerEmail
+    }
     let res: Response
     try {
       res = await deps.fetch(`${server}/api/desktop/key`, {
@@ -352,7 +360,7 @@ export function createAccount(deps: AccountDeps) {
       const errCode = typeof json.error === 'string' ? json.error : String(res.status)
       if (res.status === 401) {
         // A silent attempt never signs the user out; an explicit unlock reports the ended session.
-        if (!silent) writeSecret('session', null)
+        if (!silent && sameAccount()) writeSecret('session', null)
         throw new AccountError('Your session has ended. Sign in again.', errCode)
       }
       if (res.status === 403)
@@ -361,8 +369,7 @@ export function createAccount(deps: AccountDeps) {
       throw new AccountError(`HumanStudy Hub returned ${res.status}.`, errCode)
     }
     if (typeof json.key !== 'string' || !json.key) throw new AccountError('HumanStudy Hub returned no key.')
-    // A sign-out during the request must not leave a key behind.
-    if (!getSession()) throw new AccountError('Sign in first, then enter your code.', 'not_signed_in')
+    if (!sameAccount()) throw new AccountError('Your account changed. Please try again.', 'account_changed')
     writeSecret('desktopKey', {
       key: json.key,
       expiresAt: typeof json.expiresAt === 'string' ? json.expiresAt : '',

@@ -364,8 +364,14 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
     run(
       'signin',
       async () => {
-        onAccount(await window.humanstudy.account.signIn(email.trim(), password))
+        const st = await window.humanstudy.account.signIn(email.trim(), password)
+        onAccount(st)
         setPassword('')
+        // A code typed into the shared field also unlocks an older account that was never invited.
+        if (code.trim() && !st.unlocked) {
+          onAccount(await window.humanstudy.account.unlock(code.trim()))
+          setCode('')
+        }
       },
       t('settings.err_signin')
     )
