@@ -42,19 +42,47 @@ try {
   await secondReply
   assert.deepEqual(replies,[{reply:'once'},{reply:'once'}])
   assert.ok(events.some(e=>e.permission?.automatic&&e.permission.resolved==='once'))
+  // Project mode never prompts: inside-project rm is approved, everything else is rejected with a reason.
+  const decided = (id, reply) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { off(); reject(new Error(`Automatic ${reply} of ${id} timed out`)) }, 5000)
+    const off = k.onEvent(e => { if (e.permission?.id === id && e.permission?.automatic && e.permission?.resolved === reply) { clearTimeout(timer); off(); resolve() } })
+  })
+  const bash = (id, cmd) => k.handle({type:'permission.asked',properties:{sessionID:'s',id,permission:'bash',patterns:[cmd]}})
+  const session = k.sessions.get('s')
+  session.recovery.cancelled = false
+  let done = decided('rm-in', 'once'); bash('rm-in', 'rm -f stray-empty.txt'); await done
+  assert.deepEqual(replies.at(-1), {reply:'once'})
+  const reason = /only permits actions inside this project folder/
+  for (const [id, cmd] of [['rm-root', 'rm -rf .'], ['rm-out', 'rm -f /etc/fixture'], ['sudo', 'sudo ls']]) {
+    done = decided(id, 'reject'); bash(id, cmd); await done
+    assert.equal(replies.at(-1).reply, 'reject', cmd)
+    assert.match(replies.at(-1).message, reason, 'the agent is told why, so the turn continues')
+    k.handle({type:'permission.replied',properties:{sessionID:'s',requestID:id,reply:'reject'}})
+  }
+  done = decided('outside', 'reject')
   k.handle({type:'permission.asked',properties:{sessionID:'s',id:'outside',permission:'edit',patterns:['/etc/fixture'],metadata:{filepath:'/etc/fixture'}}})
-  await new Promise(r=>setTimeout(r,30))
-  assert.equal(replies.length,2,'out-of-project edits still require a user answer')
+  await done
+  k.handle({type:'permission.replied',properties:{sessionID:'s',requestID:'outside',reply:'reject'}})
+  assert.equal(replies.length,7)
+  for (const id of ['rm-in', 'rm-root', 'rm-out', 'sudo', 'outside'])
+    assert.ok(!events.some(e => e.permission?.id === id && !e.permission.resolved), `no permission prompt for ${id}`)
+  assert.equal(session.recovery.cancelled, false, 'an automatic reject does not cancel the turn')
+  assert.deepEqual(k.permissions('s'), [])
+  // Developer opt-in ask mode still prompts.
   k.setPermissionMode('ask')
+  k.handle({type:'permission.asked',properties:{sessionID:'s',id:'outside2',permission:'edit',patterns:['/etc/fixture'],metadata:{filepath:'/etc/fixture'}}})
+  await new Promise(r=>setTimeout(r,30))
+  assert.equal(replies.length,7,'ask mode waits for the researcher')
+  assert.ok(events.some(e => e.permission?.id === 'outside2' && !e.permission.resolved))
   const original = k.sessions.get('s')
   k.register('other', original.server)
   k.sessions.get('other').inFlight = true
-  assert.deepEqual(k.permissions('s').map(p => p.id), ['outside'])
-  await assert.rejects(k.reply('other', 'outside', 'once'), /no longer pending/)
-  await k.reply('s', 'outside', 'once')
-  ask('outside') // A captured GET /permission snapshot can arrive after the reply.
+  assert.deepEqual(k.permissions('s').map(p => p.id), ['outside2'])
+  await assert.rejects(k.reply('other', 'outside2', 'once'), /no longer pending/)
+  await k.reply('s', 'outside2', 'once')
+  ask('outside2') // A captured GET /permission snapshot can arrive after the reply.
   assert.deepEqual(k.permissions('s'), [])
-  assert.equal(events.filter(e => e.permission?.id === 'outside' && !e.permission.resolved).length, 1)
+  assert.equal(events.filter(e => e.permission?.id === 'outside2' && !e.permission.resolved).length, 1)
   k.handle({type:'permission.asked',properties:{sessionID:'other',id:'kept',permission:'bash',patterns:['echo fixture']}})
   let acknowledge
   const stopRequest = new Promise(resolve => { acknowledge = resolve })
@@ -122,6 +150,42 @@ if (process.env.HUMANSTUDY_KERNEL_BIN) {
     assert.ok(events.some(e=>e.type==='text'&&e.text.includes('Completed')))
     assert.ok(!events.some(e=>e.permission?.resolved==='always'),'Auto must not silently create a remembered permission grant')
     console.log('Real OpenCode Auto on → off → pending → on round trip passed')
+  } finally { await k.dispose();await new Promise(r=>model.close(r)) }
+}
+
+if (process.env.HUMANSTUDY_KERNEL_BIN) {
+  // A real automatic reject: the model asks to delete the project folder, receives the reason as the
+  // tool result and the same turn continues to its final answer, with no prompt shown.
+  const toolResults=[]
+  const model = createServer(async(req,res)=>{
+    const chunks=[];for await(const c of req)chunks.push(c)
+    const body=JSON.parse(Buffer.concat(chunks).toString())
+    const tools=body.messages?.filter(m=>m.role==='tool')??[]
+    toolResults.splice(0,toolResults.length,...tools.map(m=>typeof m.content==='string'?m.content:JSON.stringify(m.content)))
+    const tool=body.tools?.some(t=>t.function?.name==='bash') && tools.length<1
+    const delta=tool?{tool_calls:[{index:0,id:'call_rm',type:'function',function:{name:'bash',arguments:JSON.stringify({command:`rm -rf ${out}`,description:'Delete the project folder'})}}]}:{content:'Skipped the deletion and finished.'}
+    const msg={id:'fixture',object:'chat.completion.chunk',created:1,model:'fixture',choices:[{index:0,delta,finish_reason:null}]}
+    res.writeHead(200,{'content-type':'text/event-stream'})
+    res.write(`data: ${JSON.stringify(msg)}\n\n`)
+    res.end(`data: ${JSON.stringify({...msg,choices:[{index:0,delta:{},finish_reason:tool?'tool_calls':'stop'}]})}\n\ndata: [DONE]\n\n`)
+  })
+  await new Promise(r=>model.listen(0,'127.0.0.1',r))
+  const k=new OpencodeKernel({binary:process.env.HUMANSTUDY_KERNEL_BIN,home:join(out,'home'),provider:'fixture',model:'fixture',permission:'project'})
+  k.configContent=()=>JSON.stringify({model:'fixture/fixture',small_model:'fixture/fixture',permission:{bash:'ask'},provider:{fixture:{npm:'@ai-sdk/openai-compatible',options:{baseURL:`http://127.0.0.1:${model.address().port}/v1`,apiKey:'fixture'},models:{fixture:{name:'Fixture',tool_call:true,limit:{context:200000,output:10000}}}}}})
+  try {
+    const sid=await k.startSession(out)
+    const events=[]
+    const done=new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>reject(new Error(`Automatic reject did not continue: ${JSON.stringify(events)}`)),45000)
+      k.onEvent(e=>{ if(e.sessionId!==sid)return; events.push(e); if(e.type==='done'){clearTimeout(timer);resolve()} })
+    })
+    await k.send(sid,'Clean up, then finish.')
+    await done
+    assert.ok(events.some(e=>e.permission?.automatic&&e.permission.resolved==='reject'))
+    assert.ok(!events.some(e=>e.type==='permission'&&!e.permission.resolved),'no prompt')
+    assert.ok(toolResults.some(t=>/only permits actions inside this project folder/.test(t)),'the model saw the reason')
+    assert.ok(events.some(e=>e.type==='text'&&e.text.includes('Skipped')),'the turn continued after the reject')
+    console.log('Real OpenCode automatic reject continues the turn')
   } finally { await k.dispose();await new Promise(r=>model.close(r)) }
 }
 rmSync(out,{recursive:true,force:true})

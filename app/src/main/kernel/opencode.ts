@@ -166,8 +166,8 @@ export interface OpencodeOptions {
   home?: string
   provider?: string
   model?: string
-  /** 'ask': every edit/bash call goes to the renderer. 'project': those inside the project folder are
-   *  approved automatically. Default: HUMANSTUDY_PERMISSION env (set from Settings), else 'project'. */
+  /** 'ask' (developer opt-in): every edit/bash call goes to the renderer. 'project': those inside the
+   *  project folder are approved automatically and all others rejected automatically, never prompted. Default: HUMANSTUDY_PERMISSION env (set from Settings), else 'project'. */
   permission?: 'ask' | 'project'
   readyTimeoutMs?: number
   /** Simulations through the per-run model relay (default: relaySupported(), i.e. macOS with
@@ -307,7 +307,7 @@ export class OpencodeKernel implements Kernel {
     if (response === 'reject') { s.recovery.cancelled = true; s.recovery.pending = false }
   }
 
-  private async replyTo(server: Server, sessionId: string, permissionId: string, response: PermissionReply): Promise<void> {
+  private async replyTo(server: Server, sessionId: string, permissionId: string, response: PermissionReply, message?: string): Promise<void> {
     const post = (path: string, body: unknown): Promise<Response> =>
       fetch(server.base + path, {
         method: 'POST',
@@ -315,7 +315,9 @@ export class OpencodeKernel implements Kernel {
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(15_000),
       })
-    let res = await post(`/permission/${encodeURIComponent(permissionId)}/reply`, { reply: response })
+    // A reject with `message` reaches the model as feedback (opencode CorrectedError) and the turn
+    // continues; a plain reject (RejectedError) stops the agent loop.
+    let res = await post(`/permission/${encodeURIComponent(permissionId)}/reply`, message ? { reply: response, message } : { reply: response })
     if (res.status === 404 || res.status === 405) {
       const text = await res.clone().text()
       // Older servers only have the (now deprecated) per-session route.
@@ -633,9 +635,31 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   setPermissionMode(mode: 'ask' | 'project'): void {
     this.permission = mode
     if (mode !== 'project') return
-    for (const [sid, s] of this.sessions) for (const p of s.pendingPermissions.values()) {
-      if (isInsideProject(s.server.dir, p)) this.autoApprove(sid, s, p)
-    }
+    for (const [sid, s] of this.sessions) for (const p of s.pendingPermissions.values()) this.autoDecide(sid, s, p)
+  }
+  /** Project mode never shows a prompt (an unnoticed prompt left a hosted workspace idle until its
+   *  time limit): inside-project actions are approved once, everything else is rejected with a short
+   *  reason the agent sees, so it can do the step another way and the turn continues. */
+  private autoDecide(sessionId: string, s: SessionState, perm: KernelPermission): void {
+    if (isInsideProject(s.server.dir, perm)) this.autoApprove(sessionId, s, perm)
+    else this.autoReject(sessionId, s, perm)
+  }
+  /** Ids rejected automatically; their `permission.replied` must not cancel the turn's recovery. Bounded. */
+  private autoRejected = new Set<string>()
+  private autoReject(sessionId: string, s: SessionState, perm: KernelPermission): void {
+    if (s.stopping || this.autoReplies.has(perm.id)) return
+    this.autoReplies.add(perm.id)
+    this.autoRejected.add(perm.id)
+    if (this.autoRejected.size > 4096) this.autoRejected.delete(this.autoRejected.values().next().value as string)
+    this.replyTo(s.server, sessionId, perm.id, 'reject', autoRejectMessage(perm)).then(() => {
+      s.pendingPermissions.delete(perm.id)
+      if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'reject' } })
+    }, () => {
+      // The reply could not be delivered (server gone or unreachable). Showing the request is the
+      // only way left to unblock it; this is not a normal path, and the answer is then the researcher's.
+      this.autoRejected.delete(perm.id)
+      if (s.inFlight && !s.stopping && !this.resolvedReported.has(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: perm })
+    }).finally(() => this.autoReplies.delete(perm.id))
   }
   private autoApprove(sessionId: string, s: SessionState, perm: KernelPermission): void {
     if (s.stopping || this.autoReplies.has(perm.id)) return
@@ -1264,8 +1288,8 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         if (!perm || !s.inFlight || this.resolvedReported.has(perm.id)) return
         s.pendingPermissions.set(perm.id, perm)
         if (s.stopping) return
-        if (this.permissionMode() === 'project' && isInsideProject(s.server.dir, perm)) {
-          this.autoApprove(sessionId, s, perm)
+        if (this.permissionMode() === 'project') {
+          this.autoDecide(sessionId, s, perm)
           return
         }
         emit({ type: 'permission', permission: perm })
@@ -1274,10 +1298,12 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
 
       case 'permission.replied': {
         if (p.requestID) s.pendingPermissions.delete(p.requestID)
-        if ((p.reply ?? p.response) === 'reject') { s.recovery.cancelled = true; s.recovery.pending = false }
+        const automatic = !!p.requestID && (this.autoReplies.has(p.requestID) || this.autoRejected.has(p.requestID))
+        // A researcher's reject stops the turn; an automatic reject only declines that one tool call.
+        if ((p.reply ?? p.response) === 'reject' && !(p.requestID && this.autoRejected.has(p.requestID))) { s.recovery.cancelled = true; s.recovery.pending = false }
         const reply = p.reply ?? p.response
         if (p.requestID && (reply === 'once' || reply === 'always' || reply === 'reject') && this.reportResolved(p.requestID))
-          emit({ type: 'permission', permission: { id: p.requestID, type: '', resolved: reply, ...(this.autoReplies.has(p.requestID) ? { automatic: true } : {}) } })
+          emit({ type: 'permission', permission: { id: p.requestID, type: '', resolved: reply, ...(automatic ? { automatic: true } : {}) } })
         return
       }
     }
@@ -1304,8 +1330,18 @@ export function toKernelPermission(p: {
   return { id: p.id, type: p.permission ?? 'unknown', title, patterns, metadata: md }
 }
 
+/** The feedback an automatically rejected tool call returns to the agent. */
+export function autoRejectMessage(perm: KernelPermission): string {
+  if (perm.type === 'doom_loop')
+    return 'Not allowed: the same tool call was repeated several times. Try a different approach or skip this step.'
+  if (perm.type === 'read')
+    return 'Not allowed: HumanStudy does not read secret files such as .env. Do it another way or skip it.'
+  return 'Not allowed: HumanStudy only permits actions inside this project folder (no sudo, command substitution, or deleting the project folder itself). Do it another way or skip it.'
+}
+
 /** Tool permissions that are safe to auto-approve when "inside the project": edit/write patterns that
- *  resolve under `dir`, and bash commands that name no path outside it. Anything else is asked. */
+ *  resolve under `dir`, and bash commands that name no path outside it. Anything else is rejected
+ *  automatically (or asked, in the developer-only ask mode). */
 function permissionPath(path: string): string {
   try {
     return realpathSync(path)
@@ -1334,9 +1370,31 @@ export function isInsideProject(dir: string, perm: KernelPermission): boolean {
   }
   if (perm.type === 'bash') {
     // Patterns are command lines. Reject absolute/home/parent paths and shell indirection we cannot judge.
+    const root = ((): string | null => { try { return permissionPath(resolve(dir)) } catch { return null } })()
+    // rm (any flags) is allowed when every path is inside the project and none is the project itself.
+    const safeRm = (args: string[]): boolean => {
+      const paths = args.filter((a, i) => !(a.startsWith('-') && !args.slice(0, i).includes('--')))
+      if (args.some((a) => /^--no-preserve-root$/.test(a)) || paths.length === 0 || !root) return false
+      return paths.every((a) => {
+        if (/[$~]/.test(a) || /^[*?[]/.test(a.replace(/^(\.\/)+/, ''))) return false
+        const base = a.replace(/[*?[].*$/, '') || '.'
+        if (!inside(base)) return false
+        try {
+          return permissionPath(isAbsolute(base) ? base : resolve(dir, base)) !== root
+        } catch {
+          return false
+        }
+      })
+    }
     return (perm.patterns ?? []).length > 0 &&
       (perm.patterns ?? []).every((cmd) => {
-        if (/[`$]\(|`|\$\{|\|\s*(sh|bash|zsh)\b|\bsudo\b|\brm\s+-\w*[rf]/.test(cmd)) return false
+        if (/[`$]\(|`|\$\{|\|\s*(sh|bash|zsh)\b|\bsudo\b/.test(cmd)) return false
+        for (const segment of cmd.split(/&&|\|\||[;|\n]/)) {
+          const words = segment.trim().split(/\s+/).filter(Boolean).map((w) => w.replace(/^["']|["']$/g, ''))
+          // rm must be the command itself; behind xargs/env/exec/a subshell its arguments cannot be judged.
+          const at = words.findIndex((w) => /^[({]*(\S*\/)?rm$/.test(w))
+          if (at > 0 || (at === 0 && (/^[({]/.test(words[0]) || !safeRm(words.slice(1))))) return false
+        }
         return cmd
           .split(/\s+/)
           .every((tok) => {

@@ -123,6 +123,14 @@ console.log('mock permission ok')
   assert.ok(!k.isInsideProject(proj, P('edit', ['x'], { filepath: '/home/u/proj/../other/x' })))
   assert.ok(!k.isInsideProject(proj, P('external_directory', ['/tmp/*'], { filepath: '/tmp/x' })))
   assert.ok(!k.isInsideProject(proj, P('webfetch', ['https://x.org'])))
+  // rm: allowed for paths inside the project, never the project itself, outside paths or unjudgeable forms.
+  for (const cmd of ['rm -f stray.txt', 'rm notes.md', 'rm -rf build/tmp', 'rm -r ./cache', 'rm -f data/*.tmp', 'rm -f /home/u/proj/x.json', 'rm -f a.txt && ls', 'rm -- -odd'])
+    assert.ok(k.isInsideProject(proj, P('bash', [cmd])), cmd)
+  for (const cmd of ['rm -rf .', 'rm -rf ./', 'rm -rf *', 'rm -rf ./*', 'rm -rf /home/u/proj', 'rm -rf data/..', 'rm -rf ..', 'rm -f ../x',
+    'rm -rf /', 'rm -rf ~/x', 'rm -rf $HOME', 'rm -rf', 'rm -rf --no-preserve-root x', 'ls | xargs rm -rf', 'FOO=1 rm -rf x',
+    '(rm -rf .)', 'sudo rm -f x', 'rm -f $(cat list)', 'echo ok; rm -rf /etc'])
+    assert.ok(!k.isInsideProject(proj, P('bash', [cmd])), cmd)
+  assert.match(k.autoRejectMessage(P('bash', ['sudo ls'])), /only permits actions inside this project folder/)
   if (process.platform !== 'win32') {
     const project = join(out, 'project')
     const alias = join(out, 'project-alias')

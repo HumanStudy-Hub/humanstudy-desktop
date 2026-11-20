@@ -171,6 +171,7 @@ await scenario('late-finish-metadata', async ({ k, requests, idle }) => {
   assert.equal(requests.length, 2, 'usage metadata cannot swallow a later output-limit signal')
 })
 for (const wait of ['question', 'permission']) await scenario('waiting-' + wait, async ({ k, requests, finish, idle }) => {
+  k.setPermissionMode('ask') // a researcher's answer; project mode never asks
   await k.send('s', 'Build')
   finish()
   k.handle({ type: wait + '.asked', properties: { sessionID: 's', id: 'needs-user', permission: 'external_directory', patterns: ['/outside-project'], questions: [{ question: 'Which condition?', header: 'Condition', options: [{ label: 'A', description: 'A' }] }] } })
@@ -179,6 +180,20 @@ for (const wait of ['question', 'permission']) await scenario('waiting-' + wait,
   k.handle({ type: wait === 'question' ? 'question.rejected' : 'permission.replied', properties: { sessionID: 's', requestID: 'needs-user', reply: 'reject' } })
   idle(); await tick()
   assert.equal(requests.length, 1, 'a rejection is not permission to retry')
+})
+await scenario('automatic-reject-keeps-recovery', async ({ k, events, requests, finish, idle }) => {
+  const replies = []
+  k.replyTo = async (_server, _sid, id, reply, message) => { replies.push({ id, reply, message }) }
+  await k.send('s', 'Build')
+  finish()
+  k.handle({ type: 'permission.asked', properties: { sessionID: 's', id: 'outside', permission: 'external_directory', patterns: ['/outside-project'] } })
+  await tick()
+  assert.equal(replies[0].reply, 'reject')
+  assert.match(replies[0].message, /inside this project folder/)
+  assert.ok(!events.some(e => e.type === 'permission' && !e.permission.resolved), 'project mode shows no prompt')
+  k.handle({ type: 'permission.replied', properties: { sessionID: 's', requestID: 'outside', reply: 'reject' } })
+  idle(); await tick()
+  assert.equal(requests.length, 2, 'an automatic reject does not cancel recovery')
 })
 await scenario('invalid-after-stop', async ({ k, requests, idle }) => {
   await k.send('s', 'Build'); assistant(k, 'bad')
