@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { AccountStatus, ProviderStatus, Settings } from '../../preload/types'
+import type { AccountStatus, Allowance, ProviderStatus, Settings } from '../../preload/types'
 import { AboutUpdates } from './Updates'
 import { ResearchDataSection } from './ResearchData'
 import { HelpFeedback } from './HelpFeedback'
@@ -347,6 +347,15 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
   const [busy, setBusy] = useState<'' | 'signin' | 'signup' | 'signout' | 'unlock' | 'forgot' | 'resend' | 'change'>('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [allowance, setAllowance] = useState<Allowance | null>(null)
+  const hosted = account?.modelAccess === 'hosted'
+  // Read once when the section opens (and when hosted access changes); the main process caches it.
+  useEffect(() => {
+    if (!hosted) return setAllowance(null)
+    let live = true
+    void window.humanstudy.account.allowance().then((a) => { if (live) setAllowance(a) }, () => undefined)
+    return () => { live = false }
+  }, [hosted])
 
   const run = async (kind: Exclude<typeof busy, ''>, task: () => Promise<void>, fallback: string) => {
     setBusy(kind)
@@ -569,6 +578,9 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
           {accessLine(account)}
         </span>
       </div>
+      {hosted && allowance?.available && (
+        <p className="muted small allowance-line">{t('settings.allowance', { n: allowance.percentLeft })}</p>
+      )}
     </section>
   )
 }

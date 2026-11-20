@@ -48,6 +48,7 @@ const api: HumanStudyApi = {
     changePassword: (currentPassword, newPassword) => ipcRenderer.invoke('account:changePassword', currentPassword, newPassword),
     signOut: () => ipcRenderer.invoke('account:signOut'),
     unlock: (code) => ipcRenderer.invoke('account:unlock', code),
+    allowance: (refresh) => ipcRenderer.invoke('account:allowance', Boolean(refresh)),
     onChanged: (cb) => listen<AccountStatus>('account:changed', cb),
   },
   settings: {

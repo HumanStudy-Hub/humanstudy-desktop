@@ -5,7 +5,7 @@ import { parseSlash } from '../native-commands'
 import { QuestionCard } from './Question'
 import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
 import type { Part, Session } from '../useSession'
-import type { AccountStatus, PermissionReply, ProjectEntry } from '../../preload/types'
+import type { AccountStatus, Allowance, PermissionReply, ProjectEntry } from '../../preload/types'
 import { selectionContext, type SelectedItem } from '../program/labels'
 import type { SettingsSection } from './SettingsDialog'
 import { Markdown, copyText } from './Markdown'
@@ -122,6 +122,20 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
       focus()
     },
   }))
+
+  // Hosted allowance: read on mount and fresh after each finished agent turn (no polling).
+  const [allowance, setAllowance] = useState<Allowance | null>(null)
+  const hosted = account?.modelAccess === 'hosted'
+  const wasBusy = useRef(session.busy)
+  useEffect(() => {
+    const turnEnded = wasBusy.current && !session.busy
+    wasBusy.current = session.busy
+    if (!hosted) return setAllowance(null)
+    if (session.busy) return
+    let live = true
+    void window.humanstudy.account.allowance(turnEnded).then((a) => { if (live) setAllowance(a) }, () => undefined)
+    return () => { live = false }
+  }, [hosted, session.busy])
 
   const follow = useRef(true)
   useEffect(() => {
@@ -422,6 +436,9 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
           )}
         </div>
       </div>
+      )}
+      {hosted && allowance?.available && allowance.percentLeft <= 20 && (
+        <div className="usage-line small muted allowance-low">{t('chat.allowance_low', { n: allowance.percentLeft })}</div>
       )}
       {u.input + u.output > 0 && (
         <div
