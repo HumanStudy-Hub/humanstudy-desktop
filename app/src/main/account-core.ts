@@ -2,7 +2,7 @@
 // unlocks hosted models. Electron-free (storage, encryption and fetch are injected) so it can be
 // tested against a stubbed fetch; src/main/account.ts wires it to safeStorage and userData.
 // Tokens and keys are never logged and never returned to the renderer.
-import type { AccountStatus } from '../preload/types'
+import type { AccountStatus, Allowance } from '../preload/types'
 
 export const DEFAULT_SERVER = 'https://humanstudy-hub.com'
 
@@ -60,6 +60,23 @@ export class AccountError extends Error {
 }
 
 const REFRESH_MARGIN_MS = 60_000
+const ALLOWANCE_TTL_MS = 60_000
+const ALLOWANCE_TIMEOUT_MS = 5_000
+
+/** Validates GET /api/desktop/allowance; anything malformed is treated as unknown (null). */
+export function parseAllowance(v: unknown): Allowance | null {
+  if (!v || typeof v !== 'object') return null
+  const o = v as Record<string, unknown>
+  if (typeof o.available !== 'boolean' || typeof o.percentLeft !== 'number' || !Number.isFinite(o.percentLeft)) return null
+  const requestsLeft = typeof o.requestsLeft === 'number' && Number.isFinite(o.requestsLeft) ? Math.max(0, o.requestsLeft) : 0
+  return {
+    available: o.available,
+    percentLeft: Math.min(100, Math.max(0, Math.round(o.percentLeft))),
+    requestsLeft,
+    revoked: o.revoked === true,
+    expired: o.expired === true,
+  }
+}
 
 export function createAccount(deps: AccountDeps) {
   const server = deps.server.replace(/\/+$/, '')
@@ -390,6 +407,41 @@ export function createAccount(deps: AccountDeps) {
     return { server, key: k.key, model, models }
   }
 
+  // Remaining hosted allowance. Never throws: any failure (offline, 401, 404 before the server
+  // ships the endpoint, timeout, malformed body) is null, which the UI shows as nothing. Results,
+  // null included, are cached per key for a minute; concurrent callers share one request.
+  let allowanceCache: { keyId: string; at: number; value: Allowance | null } | null = null
+  let allowanceInFlight: { keyId: string; promise: Promise<Allowance | null> } | null = null
+  async function allowance(refresh = false): Promise<Allowance | null> {
+    try {
+      if (status().modelAccess !== 'hosted') return null
+      const k = getKey()
+      if (!keyValid(k)) return null
+      const keyId = k.key
+      if (allowanceInFlight?.keyId === keyId) return await allowanceInFlight.promise
+      if (!refresh && allowanceCache?.keyId === keyId && now() - allowanceCache.at < ALLOWANCE_TTL_MS) return allowanceCache.value
+      const promise = (async (): Promise<Allowance | null> => {
+        try {
+          const res = await deps.fetch(`${server}/api/desktop/allowance`, {
+            headers: { authorization: `Bearer ${keyId}` },
+            signal: AbortSignal.timeout(ALLOWANCE_TIMEOUT_MS),
+          })
+          if (!res.ok) return null
+          return parseAllowance(await res.json())
+        } catch {
+          return null
+        }
+      })()
+      allowanceInFlight = { keyId, promise }
+      const value = await promise
+      if (allowanceInFlight?.promise === promise) allowanceInFlight = null
+      allowanceCache = { keyId, at: now(), value }
+      return value
+    } catch {
+      return null
+    }
+  }
+
   /**
    * What a PostgREST call on the user's own rows needs (research data): a fresh access token, the
    * Supabase URL and publishable key, and the user id (the JWT `sub`). Null when signed out.
@@ -408,7 +460,7 @@ export function createAccount(deps: AccountDeps) {
     if (!token) return null
     try { return jwtSub(token) || null } catch { return null }
   }
-  return { status, signIn, signUp, signOut, forgotPassword, resendConfirmation, changePassword, unlock, autoUnlock, getConfig, hostedAccess, restAuth, researchOwner }
+  return { status, signIn, signUp, signOut, forgotPassword, resendConfirmation, changePassword, unlock, autoUnlock, getConfig, hostedAccess, allowance, restAuth, researchOwner }
 }
 
 function validAuthOrigin(raw: string): string {

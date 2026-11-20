@@ -779,6 +779,7 @@ def intentional(harm: float, help_: float) -> float:
         account.keyExpiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString()
         return accountStatus()
       },
+      allowance: async () => null,
       onChanged: () => () => undefined,
     },
     settings: {

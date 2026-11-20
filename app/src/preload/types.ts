@@ -370,6 +370,16 @@ export interface AccountStatus {
   models?: string[]
 }
 
+/** Remaining hosted model allowance (GET /api/desktop/allowance). */
+export interface Allowance {
+  available: boolean
+  /** 0-100. */
+  percentLeft: number
+  requestsLeft: number
+  revoked: boolean
+  expired: boolean
+}
+
 /** Auto-update state (electron-updater, GitHub Releases). Packaged builds only. */
 export interface UpdateStatus {
   /** The running app version. */
@@ -493,6 +503,8 @@ export interface HumanStudyApi {
     signOut(): Promise<AccountStatus>
     /** Redeems an invitation code for a desktop key (fallback for accounts created without one). */
     unlock(code: string): Promise<AccountStatus>
+    /** Remaining hosted allowance, or null when unknown (not hosted, offline, server without the endpoint). Cached ~60 s unless refresh. */
+    allowance(refresh?: boolean): Promise<Allowance | null>
     /** The status changed in the background (a desktop key arrived without a code). */
     onChanged(cb: (a: AccountStatus) => void): () => void
   }
