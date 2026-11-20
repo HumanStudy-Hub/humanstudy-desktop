@@ -648,6 +648,16 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   }
   /** Ids rejected automatically; their `permission.replied` must not cancel the turn's recovery. Bounded. */
   private autoRejected = new Set<string>()
+  /** Shortly after our own automatic reject, in project mode: plain rejects are opencode's cascade. */
+  private inCascadeWindow(s: SessionState): boolean {
+    return this.permissionMode() === 'project' && s.lastAutoReject !== undefined && this.clock() - s.lastAutoReject < 15_000
+  }
+  /** A plain cascade reject ends opencode's loop. Resume once through recovery, unless the turn was
+   *  cancelled (a researcher's reject, a dismissed question, Stop): that always stays stopped. */
+  private resumeAfterCascade(s: SessionState): void {
+    if (!s.inFlight || s.stopping || s.recovery.cancelled || s.recovery.running) return
+    s.recovery.reason = 'declined_tool_call'; s.recovery.pending = true
+  }
   private autoReject(sessionId: string, s: SessionState, perm: KernelPermission): void {
     if (s.stopping || this.autoReplies.has(perm.id)) return
     this.autoReplies.add(perm.id)
@@ -658,8 +668,9 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       s.pendingPermissions.delete(perm.id)
       if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'reject' } })
     }, (error) => {
-      // Already answered (e.g. opencode's cascade from another reject): nothing to show.
-      if (alreadyResolved(error)) { s.pendingPermissions.delete(perm.id); return }
+      // Already answered: opencode's cascade from our other reject (two disallowed calls in parallel)
+      // ended the loop with a plain reject. Nothing to show; resume like any cascade.
+      if (alreadyResolved(error)) { s.pendingPermissions.delete(perm.id); if (this.inCascadeWindow(s)) this.resumeAfterCascade(s); return }
       // The reply could not be delivered (server gone or unreachable). Showing the request is the
       // only way left to unblock it; this is not a normal path, and the answer is then the researcher's.
       this.autoRejected.delete(perm.id)
@@ -767,6 +778,9 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       ...(this.provider === HOSTED_PROVIDER ? { HUMANSTUDY_MODEL: this.model } : {}),
     })
     delete env.OPENCODE_CONFIG // a personal config file path
+    // `cd` must mean the named directory: no inherited CDPATH (zsh's `cdpath` array follows it).
+    env.CDPATH = ''
+    delete env.cdpath
     delete env.OPENCODE_CONFIG_DIR
     if (this.relay) {
       for (const name of Object.keys(env)) {
@@ -1310,15 +1324,11 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         if (p.requestID) s.pendingPermissions.delete(p.requestID)
         // opencode rejects the session's other pending requests along with one reject; after our own
         // automatic reject those cascade rejects are not a researcher's decision either.
-        const cascade = (p.reply ?? p.response) === 'reject' && s.lastAutoReject !== undefined && this.clock() - s.lastAutoReject < 15_000
+        const cascade = (p.reply ?? p.response) === 'reject' && this.inCascadeWindow(s)
         const automatic = !!p.requestID && (this.autoReplies.has(p.requestID) || this.autoRejected.has(p.requestID) || cascade)
         // A researcher's reject stops the turn; an automatic reject only declines that one tool call.
         if ((p.reply ?? p.response) === 'reject' && !(p.requestID && this.autoRejected.has(p.requestID)) && !cascade) { s.recovery.cancelled = true; s.recovery.pending = false }
-        // A plain cascade reject ends opencode's loop. Resume once through recovery, unless the turn was
-        // cancelled (a researcher's reject, a dismissed question, Stop): that always stays stopped.
-        if (cascade && p.requestID && !this.autoRejected.has(p.requestID) && s.inFlight && !s.recovery.cancelled && !s.recovery.running) {
-          s.recovery.reason = 'declined_tool_call'; s.recovery.pending = true
-        }
+        if (cascade && p.requestID && !this.autoRejected.has(p.requestID)) this.resumeAfterCascade(s)
         const reply = p.reply ?? p.response
         if (p.requestID && (reply === 'once' || reply === 'always' || reply === 'reject') && this.reportResolved(p.requestID))
           emit({ type: 'permission', permission: { id: p.requestID, type: '', resolved: reply, ...(automatic ? { automatic: true } : {}) } })
@@ -1367,7 +1377,7 @@ export function autoRejectMessage(perm: KernelPermission): string {
     return 'Not allowed: the same tool call was repeated several times. Try a different approach or skip this step.'
   if (perm.type === 'read')
     return 'Not allowed: HumanStudy does not read secret files such as .env. Do it another way or skip it.'
-  return 'Not allowed: HumanStudy only permits actions inside this project folder that it can check automatically. Do it another way or skip it.'
+  return 'Not allowed: HumanStudy only permits actions inside this project folder that it can check automatically (to change directory, use `cd ./dir`). Do it another way or skip it.'
 }
 
 /** Tool permissions that are safe to auto-approve when "inside the project": edit/write patterns that
@@ -1457,11 +1467,11 @@ function plainShell(cmd: string): boolean {
   return !r.dollar && !r.brace && !r.quotedCommand
 }
 
-/** Every `cd`/`pushd` names one literal path inside the project, checked from the directory the
- *  previous `cd` reached; `popd`, a bare `cd` and any CDPATH never pass. Leading NAME=value words and
+/** Every `cd`/`pushd` names one literal `./path` or absolute path inside the project, checked from the
+ *  directory the previous `cd` reached; `popd`, a bare `cd`, `cd src` and any mention of cdpath never pass. Leading NAME=value words and
  *  `builtin`/`command` are skipped to find the real command word. */
 function literalCd(cmd: string, dir: string, inside: (p: string) => boolean): boolean {
-  if (/\bCDPATH=/.test(cmd)) return false
+  if (/cdpath/i.test(cmd)) return false
   const r = scanShell(cmd)
   const command = (w: string[]): string[] => {
     let i = 0
@@ -1477,6 +1487,8 @@ function literalCd(cmd: string, dir: string, inside: (p: string) => boolean): bo
     if (w[0] === 'popd' || w.length !== 2) return false
     const t = w[1]
     if (!/^[\w./@+,:%=-]+$/.test(t) || t.startsWith('-') || t === '..' || t.startsWith('../') || t.includes('/../') || t.endsWith('/..')) return false
+    // The shell ignores CDPATH only for `./x` and absolute paths; plain `cd src` could go elsewhere.
+    if (!t.startsWith('./') && !isAbsolute(t)) return false
     const next = isAbsolute(t) ? t : resolve(cwd, t)
     if (!inside(next)) return false
     cwd = next

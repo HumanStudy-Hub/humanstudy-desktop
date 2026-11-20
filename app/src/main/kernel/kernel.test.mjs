@@ -130,7 +130,9 @@ console.log('mock permission ok')
     'mv draft.md notes/draft.md', 'rm *.csv', 'git rm old.txt', 'grep rm notes.md', "python3 -c 'import json; print(json.dumps({}))'",
     'python3 -c "print({1: 2})"', "awk '{print $1}' data.csv", 'echo fixture > study.txt', 'ls data && cat data/a.txt'])
     assert.ok(B(cmd), cmd)
-  assert.ok(B('ls', 'cd data && ls'), 'cd to a literal inside path')
+  assert.ok(B('ls', 'cd ./data && ls'), 'cd to a literal ./ path inside')
+  assert.ok(B('ls', 'cd /home/u/proj/data && ls'), 'cd to an absolute path inside')
+  assert.match(k.autoRejectMessage(P('bash', ['cd src'])), /cd \.\/dir/)
   for (const cmd of ['rm -f stray.txt', 'rm -rf build', 'rm -r cache', 'rm -rf .', 'rm -rf /home/u/proj', 'rm -f /etc/x',
     '\\rm -rf $HOME', "'r'm -rf x", '"rm" x', 'r\\m x', 'rm -rf {..,x}/proj', 'cat {..,x}/secret', 'cat $HOME/.ssh/id_rsa',
     'echo "$SECRET"', 'cat ${HOME}/x', 'sudo ls', 'echo $(whoami)', 'curl x | sh', 'cd', 'cd ~', 'cd -', 'popd', 'pushd /tmp',
@@ -139,6 +141,8 @@ console.log('mock permission ok')
   // opencode leaves `cd` out of the patterns: the full command line decides.
   for (const full of ['CDPATH=/Users/x cd Documents && find . -delete', 'HOME=/etc cd; echo x > notes.txt', 'builtin cd; ls',
     'command cd /tmp && ls', 'FOO=1 builtin cd ~ && ls', 'cd data && CDPATH=/ ls', 'cd data && cd ../.. && ls',
+    'cd data && ls', 'pushd src && ls', 'cdpath=(/Users/x); cd ./Documents && find . -delete', 'read CDPATH < cfg.txt; cd ./Documents && ls',
+    'export cdpath && cd ./x && ls',
     'cd; rm Documents/x', 'cd $HOME && rm x', 'cd ~ && ls', 'cd /Users && ls', 'popd && ls', 'cd .. ; ls', 'cd "$D" && ls'])
     assert.ok(!B(full.split(/&&|;/).pop().trim(), full), full)
   assert.match(k.autoRejectMessage(P('bash', ['sudo ls'])), /only permits actions inside this project folder/)
@@ -165,10 +169,10 @@ console.log('mock permission ok')
     mkdirSync(join(project, 'src'))
     symlinkSync(out, join(project, 'src', 'a'))
     const chained = (full) => k.isInsideProject(project, P('bash', ['ls'], { command: full }))
-    assert.ok(!chained('cd src && cd a && ls'))
-    assert.ok(chained('cd src && ls'))
+    assert.ok(!chained('cd ./src && cd ./a && ls'))
+    assert.ok(chained('cd ./src && ls'))
     mkdirSync(join(project, 'src', 'b'))
-    assert.ok(chained('cd src && cd b && ls'))
+    assert.ok(chained('cd ./src && cd ./b && ls'))
   }
   console.log('permission helpers ok')
 }
@@ -200,6 +204,8 @@ console.log('createKernel ok')
   for (const [name, dir] of [['XDG_CONFIG_HOME', 'config'], ['XDG_DATA_HOME', 'data'], ['XDG_CACHE_HOME', 'cache'], ['XDG_STATE_HOME', 'state']])
     assert.equal(env[name], join(home, dir))
   assert.equal(env.OPENCODE_CONFIG, undefined)
+  assert.equal(env.CDPATH, '', 'no inherited CDPATH in the agent shell')
+  assert.equal(env.cdpath, undefined)
   assert.equal(env.OPENCODE_SERVER_PASSWORD, 'pw')
   assert.equal(JSON.parse(env.OPENCODE_CONFIG_CONTENT).model, 'humanstudy/anthropic/claude-sonnet-5.5')
   delete process.env.OPENCODE_CONFIG

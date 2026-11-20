@@ -211,6 +211,23 @@ await scenario('automatic-reject-cascade-resumes', async ({ k, events, requests,
   assert.match(requests[1].body.parts[0].text, /declined automatically together with a disallowed one/)
   assert.match(requests[1].body.parts[0].text, /simulation approval requirements still apply/)
 })
+await scenario('two-parallel-disallowed-calls-resume-once', async ({ k, events, requests, idle }) => {
+  // opencode handles our first reject (with message), cascades a plain reject to the second request,
+  // so our own reply for the second finds it gone (PermissionNotFound) and its loop has ended.
+  k.replyTo = async (_server, _sid, id) => {
+    if (id === 'second') throw new Error('opencode permission reply -> 404 {"_tag":"PermissionNotFoundError"}')
+  }
+  await k.send('s', 'Build')
+  k.handle({ type: 'permission.asked', properties: { sessionID: 's', id: 'first', permission: 'bash', patterns: ['sudo ls'] } })
+  k.handle({ type: 'permission.asked', properties: { sessionID: 's', id: 'second', permission: 'bash', patterns: ['rm -rf build'] } })
+  k.handle({ type: 'permission.replied', properties: { sessionID: 's', requestID: 'first', reply: 'reject' } })
+  k.handle({ type: 'permission.replied', properties: { sessionID: 's', requestID: 'second', reply: 'reject' } })
+  await tick(); await tick()
+  idle(); await tick(); idle(); await tick()
+  assert.ok(!events.some(e => e.type === 'permission' && !e.permission.resolved), 'no prompt')
+  assert.equal(requests.length, 2, 'recovery queued once')
+  assert.match(requests[1].body.parts[0].text, /declined automatically/)
+})
 await scenario('dismissed-question-stops-turn', async ({ k, events, requests, idle }) => {
   k.replyTo = async () => {}
   await k.send('s', 'Build')
