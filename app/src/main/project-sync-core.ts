@@ -31,9 +31,6 @@ export const RETRY_BASE_MS = 30_000
 export const RETRY_MAX_MS = 30 * 60_000
 /** A deleted project can be restored this long; after it, its cloud copy is removed. */
 export const RESTORE_DAYS = 30
-/** Cloud objects no manifest refers to any more are removed once they are this old (a slower device's push in
- *  progress can still refer to them). */
-export const GC_AGE_MS = 7 * 24 * 3600_000
 
 /** Folders the app installs into every project and keeps at its own version: not synced (see the header). */
 const SYNC_SKIP = /^schema(?:\/|$)/

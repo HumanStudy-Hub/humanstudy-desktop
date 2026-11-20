@@ -36,6 +36,8 @@ const verbKeys: Record<string, string> = {
 
 export function PermissionCard({ part, onReply }: { part: PermissionPart; onReply(id: string, response: PermissionReply): void }) {
   const [showDiff, setShowDiff] = useState(true)
+  // A repeated identical step is stopped automatically (kernel/opencode.ts autoReject): say so, once.
+  if (part.automatic && part.type === 'doom_loop' && part.resolved === 'reject') return <div className="perm done denied" role="status"><span className="perm-label">{t('perm.doom_loop')}</span></div>
   if (part.automatic) return null
   const target = permissionTarget(part)
   const diff = str(part.metadata?.diff)

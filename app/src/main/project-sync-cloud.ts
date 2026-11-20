@@ -37,9 +37,29 @@ export interface CommitInput {
   device: string
 }
 
-export type Cloud = ReturnType<typeof createCloud>
+/** The operations; `Cloud` adds `forUser`. */
+export type CloudOps = ReturnType<typeof createOps>
+export type Cloud = CloudOps & {
+  /** The same operations bound to one account: each fails with an 'auth' SyncError (and sends nothing) once `still()`
+   *  is false or the current credentials belong to a different user, so a sync run started for user A never reads or
+   *  writes in B's storage after an account switch. */
+  forUser(userId: string, still: () => boolean): CloudOps
+}
 
-export function createCloud(deps: CloudDeps) {
+export function createCloud(deps: CloudDeps): Cloud {
+  const forUser = (userId: string, still: () => boolean): CloudOps => createOps({
+    ...deps,
+    auth: async () => {
+      if (!still()) throw new SyncError('auth', 'the account changed during the sync')
+      const a = await deps.auth()
+      if (a && a.userId !== userId) throw new SyncError('auth', 'the account changed during the sync')
+      return a
+    },
+  })
+  return Object.assign(createOps(deps), { forUser })
+}
+
+function createOps(deps: CloudDeps) {
   const timeout = deps.timeoutMs ?? 20_000
   /** A large file gets a minute plus a second per 100 kB (about 1 Mbit/s). */
   const transferTimeout = (bytes: number): number => Math.max(timeout, 60_000 + Math.ceil(bytes / 100_000) * 1000)
@@ -49,6 +69,7 @@ export function createCloud(deps: CloudDeps) {
     try {
       a = await deps.auth()
     } catch (e) {
+      if (e instanceof SyncError) throw e
       throw new SyncError('offline', (e as Error).message || 'offline')
     }
     if (!a || !a.userId) throw new SyncError('auth', 'not signed in')

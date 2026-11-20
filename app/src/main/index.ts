@@ -19,7 +19,7 @@ import {
 } from './community'
 import { createProject, isInside, isProject, isWithin, listProjects, renameProject, trashProject } from './projects'
 import { exportStudy, importStudy, PACKAGE_SUFFIX, packageName, previewExport, sweepImports, TransferError } from './study-transfer'
-import { createProjectSync, sweepSyncTemps, type SyncEngine } from './project-sync'
+import { createProjectSync, sweepSyncTemps, type PendingDelete, type SyncEngine } from './project-sync'
 import { createCloud } from './project-sync-cloud'
 import { deviceLabel } from './project-sync-core'
 import { hostname } from 'node:os'
@@ -668,6 +668,7 @@ app.whenReady().then(() => {
   ipcMain.handle('projects:create', async (_e, input: { name: string; pdfPath?: string; sample?: boolean }, action?: unknown) => {
     const ref = actionRef(action)
     const dir = await createProject(input)
+    await projectSync?.claim(dir) // made while signed in: this account's, never uploaded to another
     telemetry.noteProjectCreated(dir, ref)
     telemetry.track('project.created', { metadata: { sample: Boolean(input?.sample), withPaper: Boolean(input?.pdfPath) }, ...(ref ? { action: ref } : {}) }, dir)
     return dir
@@ -728,7 +729,9 @@ app.whenReady().then(() => {
     readPending: () => {
       try {
         const v = JSON.parse(readFileSync(pendingFile(), 'utf8')) as unknown
-        return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+        return Array.isArray(v)
+          ? v.filter((x): x is PendingDelete => typeof x === 'string' || (!!x && typeof x === 'object' && typeof (x as { projectId?: unknown }).projectId === 'string' && typeof (x as { userId?: unknown }).userId === 'string'))
+          : []
       } catch {
         return []
       }
@@ -898,6 +901,7 @@ app.whenReady().then(() => {
   ipcMain.handle('community:study', (_e, id: string, expectedRevision?: string, refresh?: boolean) => communityStudy(id, expectedRevision ?? undefined, refresh))
   ipcMain.handle('community:fork', async (_e, id: string, expectedRevision?: string) => {
     const dir = await forkCommunityStudy(id, (input) => createProject(input), expectedRevision ?? undefined)
+    await projectSync?.claim(dir)
     telemetry.track('project.forked', { target: String(id).slice(0, 80) }, dir)
     return dir
   })
@@ -947,6 +951,8 @@ app.whenReady().then(() => {
   const acct = getAccount()
   const afterAccount = <T>(v: T): T => {
     syncAccess()
+    // A sync running for the previous account stops; it never continues in the new account's storage.
+    projectSync?.accountChanged()
     return v
   }
   // Signed in without a valid desktop key (new device, expired key): an invited account gets one
