@@ -4,6 +4,7 @@ import { AboutUpdates } from './Updates'
 import { ResearchDataSection } from './ResearchData'
 import { HelpFeedback } from './HelpFeedback'
 import { track } from '../telemetry'
+import { allowanceMessage } from '../allowance'
 import { t, getLangPref, setLangPref, type LangPref } from '../i18n'
 
 export type SettingsSection = 'account' | 'general' | 'models' | 'research' | 'help' | 'about'
@@ -431,6 +432,9 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
     }, t('settings.err_change_password'))
   }
 
+  const allowanceMsg = allowanceMessage(allowance, 'settings')
+  const allowanceText = allowanceMsg ? t(allowanceMsg.key, allowanceMsg.vars) : ''
+
   if (!account)
     return (
       <section>
@@ -578,9 +582,7 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
           {accessLine(account)}
         </span>
       </div>
-      {hosted && allowance?.available && (
-        <p className="muted small allowance-line">{t('settings.allowance', { n: allowance.percentLeft })}</p>
-      )}
+      {hosted && allowanceText && <p className="muted small allowance-line">{allowanceText}</p>}
     </section>
   )
 }

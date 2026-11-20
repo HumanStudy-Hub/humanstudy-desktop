@@ -763,6 +763,7 @@ const ROWS: Row[] = [
   ['settings.access_until', ' · until {date}', ' · 有效期至 {date}'],
   ['settings.access_none', 'No model access yet', '尚无模型使用权限'],
   ['settings.allowance', 'Model allowance: {n}% left', '模型额度：剩余 {n}%'],
+  ['allowance.ended', 'Model allowance has ended', '模型额度已用完或已到期'],
   ['settings.confirm_email', 'Check your email to confirm, then sign in.', '请查收邮件完成确认，然后登录。'],
   ['settings.err_signin', 'Could not sign in.', '无法登录。'],
   ['settings.err_signup', 'Could not create the account.', '无法创建账户。'],

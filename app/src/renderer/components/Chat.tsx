@@ -13,6 +13,7 @@ import { ModelPicker, shortModelName } from './ModelPicker'
 import { PermissionCard } from './Permission'
 import { ToolGroup } from './ToolView'
 import { t } from '../i18n'
+import { allowanceMessage } from '../allowance'
 import { ArtifactCard } from './ArtifactCard'
 import { classifyTool, researchActivity } from '../toolSentence'
 import { approvalRequest } from '../../shared/simulation-scope'
@@ -232,6 +233,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
   const runningTool = tools.some(p => p.state === 'pending' || p.state === 'running')
   const statusLine = session.stopping ? t('chat.stopping') : session.status==='compacting'?'Organizing conversation context…':session.waitingForQuestion ? t('question.waiting') : session.waitingForPermission ? t('chat.waiting_perm') : session.busy ? (session.status === 'stalled' ? t('activity.stalled') : session.status === 'recovering' ? t('activity.recovery') : session.status === 'reconnecting' ? t('activity.reconnecting') : runningTool ? '' : t(activity.key, activity.vars)) : session.status === 'aborted' ? '' : session.status
   const u = session.usage
+  const allowanceMsg = allowanceMessage(allowance, 'chat')
   const lastAssistant = session.messages.length ? session.messages[session.messages.length - 1].id : -1
 
   return (
@@ -437,9 +439,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
         </div>
       </div>
       )}
-      {hosted && allowance?.available && allowance.percentLeft <= 20 && (
-        <div className="usage-line small muted allowance-low">{t('chat.allowance_low', { n: allowance.percentLeft })}</div>
-      )}
+      {hosted && allowanceMsg && <div className="usage-line small muted allowance-low">{t(allowanceMsg.key, allowanceMsg.vars)}</div>}
       {u.input + u.output > 0 && (
         <div
           className="usage-line small muted"
