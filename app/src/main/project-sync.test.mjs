@@ -62,6 +62,11 @@ function fakeSupabase() {
     return op === 'eq' && String(row[k]) === val
   })
   async function fetch(input, init = {}) {
+    const res = await handle(input, init)
+    state.afterRequest?.(new URL(String(input)).pathname, init.method ?? 'GET')
+    return res
+  }
+  async function handle(input, init = {}) {
     const u = new URL(String(input))
     calls.push(`${init.method ?? 'GET'} ${u.pathname}`)
     if (state.offline) throw new TypeError('fetch failed')
@@ -665,8 +670,17 @@ test('an account switch during an upload stops the run; nothing is written under
   assert.equal(uploads, 1, 'the run stopped at its next cloud operation')
   assert.equal([...db.objects.keys()].filter((k) => k.startsWith(`${OTHER}/`)).length, 0, 'no object under the new account')
   assert.equal(db.rows.size, 0, 'no revision committed for either account')
-  assert.equal(existsSync(join(dir, '.humanstudy', 'sync.json')), false, 'not recorded as synced')
+  const stamp = JSON.parse(read(dir, '.humanstudy/sync.json'))
+  assert.equal(stamp.baseRevision, 0, 'not recorded as synced')
+  assert.equal(stamp.userId, USER, 'but owned by the account that started it')
   assert.equal(a.timers.length, 0, 'no retry scheduled for the old account')
+  // The new account's list sees another account's project and never uploads it.
+  const listed = await a.engine.list()
+  assert.equal(listed.local[0].status, 'other-account')
+  for (const t of [...a.timers]) { a.timers.splice(a.timers.indexOf(t), 1); t.fn() }
+  await a.engine.syncNow(dir)
+  assert.equal([...db.objects.keys()].filter((k) => k.startsWith(`${OTHER}/`)).length, 0, 'still nothing under the new account')
+  assert.equal(db.rows.size, 0)
 })
 
 test('a switch noticed only through the credentials still stops the run (no accountChanged call)', async () => {
@@ -725,4 +739,55 @@ test('a file changed here where the other device made a folder is kept (conflict
   assert.equal(read(dir, 'materials'), 'edited here')
   assert.ok(opened.copy)
   assert.equal(read(opened.copy.dir, 'materials/items.csv'), 'id,item\n1,cup\n')
+})
+
+test('a project made while signed in belongs to that account before its first upload; one made signed out is adopted', async () => {
+  const db = fakeSupabase()
+  const a = device(db, 'Laptop')
+  const mine = project(a.root, 'Made by A')
+  await a.engine.claim(mine)
+  a.signOut()
+  const loose = project(a.root, 'Made signed out')
+  await a.engine.claim(loose) // signed out: no owner
+  a.signIn(OTHER); a.engine.accountChanged()
+  const listed = await a.engine.list()
+  assert.equal(listed.local.find((e) => e.dir === mine).status, 'other-account')
+  for (const t of [...a.timers]) { a.timers.splice(a.timers.indexOf(t), 1); t.fn() }
+  await a.engine.syncNow(mine)
+  await a.engine.syncNow(loose)
+  const owners = [...db.rows.values()].map((r) => [r.user_id, r.name])
+  assert.deepEqual(owners, [[OTHER, 'Made signed out']], 'only the ownerless project is adopted by the next account')
+})
+
+test('queued deletes are sent only with the account they belong to', async () => {
+  const db = fakeSupabase()
+  const a = device(db, 'Laptop')
+  const dir = project(a.root, 'Trash me')
+  await a.engine.syncNow(dir)
+  db.state.offline = true
+  await a.engine.trashed(dir)
+  assert.deepEqual(a.pending.ids.map((p) => p.userId), [USER])
+  db.state.offline = false
+  a.signIn(OTHER); a.engine.accountChanged()
+  await a.engine.list()
+  assert.equal(a.pending.ids.length, 1, 'kept while another account is signed in')
+  assert.equal([...db.rows.values()][0].deleted_at, null)
+  a.signIn(USER); a.engine.accountChanged()
+  await a.engine.list()
+  assert.deepEqual(a.pending.ids, [])
+  assert.ok([...db.rows.values()][0].deleted_at, 'sent once its account is back')
+})
+
+test('a list whose account changed while it was read shows no rows and schedules nothing', async () => {
+  const db = fakeSupabase()
+  const a = device(db, 'Laptop')
+  const dir = project(a.root, 'Fresh')
+  db.state.afterRequest = (path, method) => { if (method === 'GET' && path === '/rest/v1/project_sync') { db.state.afterRequest = null; a.signIn(OTHER) } }
+  const listed = await a.engine.list()
+  assert.equal(listed.offline, true, 'the rows read for the previous account are dropped')
+  assert.equal(a.timers.length, 0, 'nothing scheduled')
+  // The next list (for the new account) does the work: the project made signed out is adopted by it.
+  await a.engine.list()
+  assert.equal(a.timers.length, 1)
+  assert.equal((await a.engine.statusOf(dir)).status, 'not-synced')
 })

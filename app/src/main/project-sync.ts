@@ -50,9 +50,10 @@ export interface SyncEngineDeps {
   release(dir: string): Promise<void> | void
   /** The status of some project changed (the renderer re-reads the list). */
   onChange(): void
-  /** Deletes made while offline, sent later (a small file in app storage). */
-  readPending(): string[]
-  writePending(ids: string[]): void
+  /** Deletes made while offline, sent later (a small file in app storage), each with the account it belongs to (a
+   *  bare id: written by 0.8.2, owner unknown, sent with the signed-in account as before). */
+  readPending(): PendingDelete[]
+  writePending(entries: PendingDelete[]): void
   now?(): number
   random?(): number
   setTimer?(fn: () => void, ms: number): unknown
@@ -61,6 +62,11 @@ export interface SyncEngineDeps {
   debounceMs?: number
   limits?: Limits
 }
+
+export type PendingDelete = string | { projectId: string; userId: string }
+const pendingId = (p: PendingDelete): string => (typeof p === 'string' ? p : p.projectId)
+/** True when the entry may be sent by `uid` (its owner, or an old entry without one). */
+const pendingFor = (p: PendingDelete, uid: string): boolean => typeof p === 'string' || p.userId === uid
 
 interface Live {
   syncing: boolean
@@ -101,6 +107,25 @@ export function createProjectSync(deps: SyncEngineDeps) {
   const cloudFor = (uid: string): CloudOps => {
     const started = epoch
     return deps.cloud.forUser(uid, () => epoch === started && deps.signedInUser() === uid)
+  }
+
+  /** The never-synced state that marks a folder as the signed-in account's before anything of it leaves the computer:
+   *  after an account switch the next account sees it as another account's project and never uploads it. A folder
+   *  that never had an owner (made while signed out) is still adopted by whoever signs in next. */
+  const stamp = (uid: string, pid: string): SyncState => ({ format: 1, userId: uid, projectId: pid, baseRevision: 0, baseDigest: '', syncedAt: '' })
+  /** Folders already stamped (or found owned) in this run, so a change does not read sync.json each time. */
+  const claimed = new Set<string>()
+  async function claim(dir: string): Promise<void> {
+    const uid = deps.signedInUser()
+    if (!uid || claimed.has(`${uid}\n${dir}`) || duplicates.has(dir) || !deps.syncable(dir)) return
+    await lock(dir, async () => {
+      if (deps.signedInUser() !== uid) return
+      const state = await readState(dir)
+      const pid = await projectId(dir)
+      if (!pid) return
+      if (!state || state.projectId !== pid) await writeState(dir, stamp(uid, pid))
+      claimed.add(`${uid}\n${dir}`)
+    })
   }
 
   const liveOf = (dir: string): Live => {
@@ -433,6 +458,8 @@ export function createProjectSync(deps: SyncEngineDeps) {
         const pid = await projectId(dir)
         if (!pid) throw new SyncError('damaged', 'the project marker cannot be read')
         if (state && state.projectId !== pid) state = null // the marker changed: a different project now
+        // Owned before the first cloud call: an account switch from here on leaves it to this account.
+        if (!state) { state = stamp(uid, pid); await writeState(dir, state) }
         l.dirty = false
         await sweepStaging(dir)
         if (state?.pulling) {
@@ -519,14 +546,19 @@ export function createProjectSync(deps: SyncEngineDeps) {
     }, ms)
   }
 
-  async function sendPendingDeletes(): Promise<void> {
+  /** Sends the signed-in account's queued deletes; another account's stay queued until it signs in. */
+  async function sendPendingDeletes(uid: string): Promise<void> {
     const pending = deps.readPending()
-    if (!pending.length) return
-    const left: string[] = []
-    for (const id of pending) {
-      try { await deps.cloud.setDeleted(id, true) } catch (e) { if (!isSyncError(e) || e.code === 'offline') left.push(id) }
+    if (!pending.some((p) => pendingFor(p, uid))) return
+    const c = cloudFor(uid)
+    const left: PendingDelete[] = []
+    for (const p of pending) {
+      if (!pendingFor(p, uid)) { left.push(p); continue }
+      try { await c.setDeleted(pendingId(p), true) } catch (e) { if (!isSyncError(e) || e.code === 'offline' || e.code === 'auth') left.push(p) }
     }
-    deps.writePending(left)
+    // Entries queued meanwhile (another trash) are kept too.
+    const sent = new Set(pending.filter((p) => !left.includes(p)).map((p) => JSON.stringify(p)))
+    deps.writePending(deps.readPending().filter((p) => !sent.has(JSON.stringify(p))))
   }
 
   async function purge(uid: string, rows: CloudRow[]): Promise<void> {
@@ -565,7 +597,13 @@ export function createProjectSync(deps: SyncEngineDeps) {
   return {
     /** A change in a project (a file written, a conversation saved): push after the project is quiet. */
     touch(dir: string): void {
+      void claim(dir).catch(() => undefined)
       schedule(dir, deps.debounceMs ?? DEBOUNCE_MS)
+    },
+
+    /** A project made while signed in: it belongs to this account from the start (see `stamp`). */
+    claim(dir: string): Promise<void> {
+      return claim(dir).catch(() => undefined)
     },
 
     /** Syncs one project now (in the background queue) and resolves when done; throws what failed. */
@@ -627,17 +665,20 @@ export function createProjectSync(deps: SyncEngineDeps) {
       if (!uid || !state || state.userId !== uid || state.baseRevision === 0) return
       // Noted here first, then sent; moving to the Trash waits at most two seconds for the network (the list sends a
       // delete still pending later).
-      deps.writePending([...new Set([...deps.readPending(), state.projectId])])
+      const others = deps.readPending().filter((p) => !(pendingId(p) === state.projectId && pendingFor(p, uid)))
+      deps.writePending([...others, { projectId: state.projectId, userId: uid }])
       const l = live.get(dir)
       if (l) { clearTimer(l.debounce); clearTimer(l.retry) }
       live.delete(dir)
-      await Promise.race([sendPendingDeletes().catch(() => undefined), new Promise((r) => { const t = setTimeout(r, 2_000); t.unref?.() })])
+      await Promise.race([sendPendingDeletes(uid).catch(() => undefined), new Promise((r) => { const t = setTimeout(r, 2_000); t.unref?.() })])
     },
 
     /** Restores a deleted cloud project; a local copy that was kept as local only syncs again. */
     async restore(pid: string): Promise<void> {
-      await deps.cloud.setDeleted(pid, false)
-      deps.writePending(deps.readPending().filter((id) => id !== pid))
+      const uid = deps.signedInUser()
+      if (!uid) throw new SyncError('auth', 'Sign in to restore your cloud projects.')
+      await cloudFor(uid).setDeleted(pid, false)
+      deps.writePending(deps.readPending().filter((p) => !(pendingId(p) === pid && pendingFor(p, uid))))
       for (const dir of await deps.localProjects()) {
         const state = await readState(dir)
         if (state?.projectId === pid && state.cloudDeleted) {
@@ -669,12 +710,16 @@ export function createProjectSync(deps: SyncEngineDeps) {
       }
       let rows: CloudRow[] | null = null
       try {
-        await sendPendingDeletes()
-        rows = await deps.cloud.rows()
+        await sendPendingDeletes(uid)
+        rows = await cloudFor(uid).rows()
       } catch {
         rows = null
       }
-      const pending = new Set(deps.readPending())
+      // The account changed while the list was read: its rows are dropped and nothing is scheduled (the next list,
+      // for the new account, does that).
+      const switched = deps.signedInUser() !== uid
+      if (switched) rows = null
+      const pending = new Set(deps.readPending().filter((p) => pendingFor(p, uid)).map(pendingId))
       const byId = new Map((rows ?? []).map((r) => [r.project_id, r]))
       const split = splitCloud((rows ?? []).filter((r) => !pending.has(r.project_id)), new Set(ids.keys()), now())
       if (split.expired.length) void purge(uid, split.expired)
@@ -685,7 +730,7 @@ export function createProjectSync(deps: SyncEngineDeps) {
       })
       // Unsynced work (never synced, or changed while the app was closed) goes up in the background; once per run
       // every project is checked, later only those not synced.
-      for (const e of local) {
+      for (const e of switched ? [] : local) {
         const l = live.get(e.dir)
         // A problem that waits for the researcher (a file name, a file too large) is tried again on the next change.
         const recently = now() - (listScheduled.get(e.dir) ?? -Infinity) < 60_000
@@ -695,7 +740,7 @@ export function createProjectSync(deps: SyncEngineDeps) {
         }
         else if (!checkedAll && (e.status === 'synced' || e.status === 'conflict-copy' || e.status === 'behind')) schedule(e.dir, 5_000)
       }
-      checkedAll = true
+      if (!switched) checkedAll = true
       return { signedIn: true, offline: rows === null, local, cloudOnly: split.cloudOnly.map(cloudProject), deleted: split.deleted.map(cloudProject), maxBytes }
     },
 
