@@ -21,10 +21,10 @@ import { basename, dirname, join } from 'node:path'
 import { checkManifest, FORMAT, FORMAT_VERSION, LIMITS, readMarker, writeMarker, type Limits, type Manifest, type ManifestFile } from './study-transfer'
 import { safeName } from './project-name'
 import {
-  CACHE_FILE, conflictName, decide, DEBOUNCE_MS, GC_AGE_MS, manifestDigest, MAX_PROJECT_BYTES, parseState, retryDelay, scanSnapshot,
+  CACHE_FILE, conflictName, decide, DEBOUNCE_MS, manifestDigest, MAX_PROJECT_BYTES, parseState, retryDelay, scanSnapshot,
   snapshotBytes, splitCloud, STATE_FILE, syncIncluded, SyncError, type CloudRow, type ScanCache, type Snapshot, type SyncState,
 } from './project-sync-core'
-import type { Cloud } from './project-sync-cloud'
+import type { Cloud, CloudOps } from './project-sync-cloud'
 import type { CloudProject, ProjectSyncEntry, ProjectSyncStatus, SyncListing, SyncOpenResult } from '../preload/types'
 
 export interface SyncEngineDeps {
@@ -50,9 +50,10 @@ export interface SyncEngineDeps {
   release(dir: string): Promise<void> | void
   /** The status of some project changed (the renderer re-reads the list). */
   onChange(): void
-  /** Deletes made while offline, sent later (a small file in app storage). */
-  readPending(): string[]
-  writePending(ids: string[]): void
+  /** Deletes made while offline, sent later (a small file in app storage), each with the account it belongs to (a
+   *  bare id: written by 0.8.2, owner unknown, sent with the signed-in account as before). */
+  readPending(): PendingDelete[]
+  writePending(entries: PendingDelete[]): void
   now?(): number
   random?(): number
   setTimer?(fn: () => void, ms: number): unknown
@@ -61,6 +62,11 @@ export interface SyncEngineDeps {
   debounceMs?: number
   limits?: Limits
 }
+
+export type PendingDelete = string | { projectId: string; userId: string }
+const pendingId = (p: PendingDelete): string => (typeof p === 'string' ? p : p.projectId)
+/** True when the entry may be sent by `uid` (its owner, or an old entry without one). */
+const pendingFor = (p: PendingDelete, uid: string): boolean => typeof p === 'string' || p.userId === uid
 
 interface Live {
   syncing: boolean
@@ -93,6 +99,34 @@ export function createProjectSync(deps: SyncEngineDeps) {
   let checkedAll = false
   /** When the list last scheduled a project, so a status that does not settle cannot become a request loop. */
   const listScheduled = new Map<string, number>()
+  /** Bumped when the signed-in account changes: every cloud operation of a run started before fails ('auth'). */
+  let epoch = 0
+  let lastUser: string | null | undefined
+  try { lastUser = deps.signedInUser() } catch { /* not known yet */ }
+  /** The cloud for one run on behalf of `uid`: valid while that account is signed in and no switch happened since. */
+  const cloudFor = (uid: string): CloudOps => {
+    const started = epoch
+    return deps.cloud.forUser(uid, () => epoch === started && deps.signedInUser() === uid)
+  }
+
+  /** The never-synced state that marks a folder as the signed-in account's before anything of it leaves the computer:
+   *  after an account switch the next account sees it as another account's project and never uploads it. A folder
+   *  that never had an owner (made while signed out) is still adopted by whoever signs in next. */
+  const stamp = (uid: string, pid: string): SyncState => ({ format: 1, userId: uid, projectId: pid, baseRevision: 0, baseDigest: '', syncedAt: '' })
+  /** Folders already stamped (or found owned) in this run, so a change does not read sync.json each time. */
+  const claimed = new Set<string>()
+  async function claim(dir: string): Promise<void> {
+    const uid = deps.signedInUser()
+    if (!uid || claimed.has(`${uid}\n${dir}`) || duplicates.has(dir) || !deps.syncable(dir)) return
+    await lock(dir, async () => {
+      if (deps.signedInUser() !== uid) return
+      const state = await readState(dir)
+      const pid = await projectId(dir)
+      if (!pid) return
+      if (!state || state.projectId !== pid) await writeState(dir, stamp(uid, pid))
+      claimed.add(`${uid}\n${dir}`)
+    })
+  }
 
   const liveOf = (dir: string): Live => {
     let l = live.get(dir)
@@ -159,12 +193,17 @@ export function createProjectSync(deps: SyncEngineDeps) {
   })
   /** True when the folder was renamed here since the last sync (an older state without a name counts as not). */
   const renamedHere = (dir: string, state: SyncState | null): boolean => Boolean(state?.name) && basename(dir) !== state!.name
-  /** Throws when a folder on the way to `rel` is a link: a pull never writes through one (outside the project). */
-  async function assertNoLink(dir: string, rel: string): Promise<void> {
+  /** Throws when a folder on the way to `rel` is a link: a pull never writes through one (outside the project). A
+   *  regular file on the way is allowed only when the pull removes it first (`removing`: files of the copy, which
+   *  matches its base revision, that the new revision no longer has), as when `materials` became
+   *  `materials/items.csv`; then nothing below it exists yet. */
+  async function assertNoLink(dir: string, rel: string, removing: ReadonlySet<string> = new Set()): Promise<void> {
     const parts = rel.split('/')
     for (let i = 1; i < parts.length; i++) {
+      const sub = parts.slice(0, i).join('/')
       const st = await lstat(join(dir, ...parts.slice(0, i))).catch(() => null)
       if (!st) return
+      if (st.isFile() && removing.has(sub)) return
       if (st.isSymbolicLink() || !st.isDirectory()) throw new SyncError('busy', 'a folder on the way is a link or a file', rel)
     }
   }
@@ -188,10 +227,10 @@ export function createProjectSync(deps: SyncEngineDeps) {
   }
 
   /** The cloud's manifest for a row, every name and hash checked as when a study file is opened. */
-  async function fetchManifest(row: Pick<CloudRow, 'project_id' | 'manifest_sha256'>): Promise<Manifest> {
+  async function fetchManifest(c: CloudOps, row: Pick<CloudRow, 'project_id' | 'manifest_sha256'>): Promise<Manifest> {
     let m: Manifest
     try {
-      m = checkManifest(await deps.cloud.getManifest(row.project_id, row.manifest_sha256), limits)
+      m = checkManifest(await c.getManifest(row.project_id, row.manifest_sha256), limits)
     } catch (e) {
       if (isSyncError(e)) throw e
       throw new SyncError('damaged', (e as Error).message)
@@ -201,15 +240,15 @@ export function createProjectSync(deps: SyncEngineDeps) {
     return m
   }
 
-  async function blob(pid: string, sha: string, size: number): Promise<Buffer> {
-    const data = await deps.cloud.getBlob(pid, sha, size)
+  async function blob(c: CloudOps, pid: string, sha: string, size: number): Promise<Buffer> {
+    const data = await c.getBlob(pid, sha, size)
     if (data.length !== size || sha256(data) !== sha) throw new SyncError('damaged', 'a downloaded file does not match its hash')
     return data
   }
 
   // ---- push -------------------------------------------------------------------------------------------------------
-  async function push(dir: string, uid: string, pid: string, snap: Snapshot, state: SyncState | null, current: CloudRow | null): Promise<CloudRow | 'conflict'> {
-    const present = new Set((await deps.cloud.list(pid, 'blobs')).map((o) => o.name))
+  async function push(c: CloudOps, dir: string, uid: string, pid: string, snap: Snapshot, state: SyncState | null, current: CloudRow | null): Promise<CloudRow | 'conflict'> {
+    const present = new Set((await c.list(pid, 'blobs')).map((o) => o.name))
     const sent = new Set<string>()
     for (const f of snap.files) {
       if (present.has(f.sha256) || sent.has(f.sha256)) continue
@@ -217,7 +256,7 @@ export function createProjectSync(deps: SyncEngineDeps) {
       // Changed since the scan: the next sync (soon) sees the new version.
       if (sha256(data) !== f.sha256) throw new SyncError('busy', 'a file changed while syncing', f.path)
       try {
-        await deps.cloud.putBlob(pid, f.sha256, data)
+        await c.putBlob(pid, f.sha256, data)
       } catch (e) {
         if (isSyncError(e) && e.code === 'file-too-large') throw new SyncError('file-too-large', e.message, f.path)
         throw e
@@ -228,24 +267,15 @@ export function createProjectSync(deps: SyncEngineDeps) {
     // on another device that this copy takes when it next opens.
     const local = basename(dir)
     const name = !current || !state?.name || renamedHere(dir, state) ? local : current.name || local
-    await deps.cloud.putManifest(pid, snap.digest, JSON.stringify(manifestFor(pid, name, snap)))
-    const row = await deps.cloud.commit({ projectId: pid, base: state?.baseRevision ?? 0, digest: snap.digest, bytes: snap.bytes, files: snap.files.length, name, device: deps.device })
+    await c.putManifest(pid, snap.digest, JSON.stringify(manifestFor(pid, name, snap)))
+    const row = await c.commit({ projectId: pid, base: state?.baseRevision ?? 0, digest: snap.digest, bytes: snap.bytes, files: snap.files.length, name, device: deps.device })
     if (row === 'conflict') return row
     await writeState(dir, synced(uid, pid, row.revision, snap.digest, state, name === local ? local : state?.name ?? local))
-    void collect(pid, snap).catch(() => undefined)
+    // No cleanup of cloud objects the new revision does not use: another device may have committed a newer revision
+    // (or be uploading one) that still references them, and a client-side delete raced with it. Old blobs and manifests
+    // are kept until the whole project is purged.
+    // TODO: coordinated garbage collection on the server (knows every revision and in-flight push).
     return row
-  }
-
-  /** Removes cloud objects the current revision does not use and that are older than GC_AGE_MS (at most daily). */
-  const collected = new Map<string, number>()
-  async function collect(pid: string, snap: Snapshot): Promise<void> {
-    if (now() - (collected.get(pid) ?? 0) < 24 * 3600_000) return
-    collected.set(pid, now())
-    const keep = new Set(snap.files.map((f) => f.sha256))
-    const old = (o: { createdAt: number }) => o.createdAt > 0 && now() - o.createdAt > GC_AGE_MS
-    const blobs = (await deps.cloud.list(pid, 'blobs')).filter((o) => !keep.has(o.name) && old(o)).map((o) => `blobs/${o.name}`)
-    const manifests = (await deps.cloud.list(pid, 'manifests')).filter((o) => o.name !== `${snap.digest}.json` && old(o)).map((o) => `manifests/${o.name}`)
-    await deps.cloud.remove(pid, [...manifests, ...blobs])
   }
 
   // ---- pull: bring an unchanged copy up to the cloud revision ------------------------------------------------------
@@ -253,7 +283,7 @@ export function createProjectSync(deps: SyncEngineDeps) {
 
   /** Replaces this copy's files with the manifest's. `local` is the copy now; it must match its base revision (or, when
    *  finishing an interrupted pull, consist only of base and target files). */
-  async function applyManifest(dir: string, pid: string, manifest: Manifest, local: Snapshot): Promise<void> {
+  async function applyManifest(c: CloudOps, dir: string, pid: string, manifest: Manifest, local: Snapshot): Promise<void> {
     const localSha = new Map(local.files.map((f) => [f.path, f.sha256]))
     const twin = new Map(local.files.map((f) => [f.sha256, f.path]))
     const changed = manifest.files.filter((f) => localSha.get(f.path) !== f.sha256)
@@ -268,9 +298,10 @@ export function createProjectSync(deps: SyncEngineDeps) {
         if (existsSync(staged)) continue
         const from = twin.get(f.sha256)
         const data = from ? await snapshotBytes(dir, from).catch(() => null) : null
-        await writeFile(staged, data && sha256(data) === f.sha256 ? data : await blob(pid, f.sha256, f.size))
+        await writeFile(staged, data && sha256(data) === f.sha256 ? data : await blob(c, pid, f.sha256, f.size))
       }
-      for (const f of changed) await assertNoLink(dir, f.path)
+      const removing = new Set(removed)
+      for (const f of changed) await assertNoLink(dir, f.path, removing)
       await deps.release(dir)
       // Saved while the files were downloading (an editor, a conversation written by release): stop, nothing replaced.
       const again = await scan(dir)
@@ -298,13 +329,13 @@ export function createProjectSync(deps: SyncEngineDeps) {
     }
   }
 
-  async function pull(dir: string, uid: string, row: CloudRow, local: Snapshot, state: SyncState | null): Promise<void> {
-    const manifest = await fetchManifest(row)
+  async function pull(c: CloudOps, dir: string, uid: string, row: CloudRow, local: Snapshot, state: SyncState | null): Promise<void> {
+    const manifest = await fetchManifest(c, row)
     const base = state ?? synced(uid, row.project_id, 0, '', null, basename(dir))
     // Noted before the first file changes: an interrupted pull is finished (or kept as a conflict) next time.
     await writeState(dir, { ...base, pulling: { revision: row.revision, digest: row.manifest_sha256 } })
     try {
-      await applyManifest(dir, row.project_id, manifest, local)
+      await applyManifest(c, dir, row.project_id, manifest, local)
     } catch (e) {
       // Nothing was replaced when the check after staging failed: forget the note.
       if (isSyncError(e) && e.code === 'busy') await writeState(dir, base).catch(() => undefined)
@@ -318,17 +349,17 @@ export function createProjectSync(deps: SyncEngineDeps) {
   /** A pull that did not finish (a crash, a file another program held open). It is finished only when every file is
    *  still either the base revision's or the target's, so no edit made since is replaced; otherwise the copy is kept
    *  and the target revision becomes a synced copy (the conflict path). */
-  async function recover(dir: string, uid: string, state: SyncState, snap: Snapshot): Promise<SyncState> {
+  async function recover(c: CloudOps, dir: string, uid: string, state: SyncState, snap: Snapshot): Promise<SyncState> {
     const target = state.pulling!
     const pid = state.projectId
     const { pulling: _done, ...rest } = state
     const plain = rest as SyncState
     try {
-      const want = await fetchManifest({ project_id: pid, manifest_sha256: target.digest })
-      const before = state.baseDigest ? await fetchManifest({ project_id: pid, manifest_sha256: state.baseDigest }) : null
+      const want = await fetchManifest(c, { project_id: pid, manifest_sha256: target.digest })
+      const before = state.baseDigest ? await fetchManifest(c, { project_id: pid, manifest_sha256: state.baseDigest }) : null
       const known = new Set([...want.files, ...(before?.files ?? [])].map((f: ManifestFile) => `${f.path}\n${f.sha256}`))
       if (before && snap.files.every((f) => known.has(`${f.path}\n${f.sha256}`))) {
-        await applyManifest(dir, pid, want, snap)
+        await applyManifest(c, dir, pid, want, snap)
         const next = synced(uid, pid, target.revision, target.digest, state, state.name ?? basename(dir))
         await writeState(dir, next)
         await deps.afterInstall(dir).catch(() => undefined)
@@ -356,9 +387,9 @@ export function createProjectSync(deps: SyncEngineDeps) {
   }
 
   // ---- a new local project from a cloud revision: a cloud-only project, or the other side of a conflict -----------
-  async function materialize(uid: string, row: CloudRow, kind: 'download' | 'conflict', localName = ''): Promise<string> {
+  async function materialize(c: CloudOps, uid: string, row: CloudRow, kind: 'download' | 'conflict', localName = ''): Promise<string> {
     const root = deps.projectsRoot()
-    const manifest = await fetchManifest(row)
+    const manifest = await fetchManifest(c, row)
     const temp = join(root, `.syncing-${randomUUID()}`)
     await mkdir(temp, { recursive: true })
     try {
@@ -368,7 +399,7 @@ export function createProjectSync(deps: SyncEngineDeps) {
         const paths = bySha.get(f.sha256)
         if (!paths) continue
         bySha.delete(f.sha256)
-        const data = await blob(row.project_id, f.sha256, f.size)
+        const data = await blob(c, row.project_id, f.sha256, f.size)
         for (const p of paths) {
           const target = join(temp, ...p.split('/'))
           await mkdir(dirname(target), { recursive: true })
@@ -418,22 +449,27 @@ export function createProjectSync(deps: SyncEngineDeps) {
       deps.onChange()
       let outcome: Outcome = { dir }
       try {
+        const expected = deps.signedInUser()
         const uid = await deps.cloud.userId()
+        if (!expected || uid !== expected) throw new SyncError('auth', 'the account changed during the sync')
+        const c = cloudFor(uid)
         let state = await readState(dir)
         if (state && state.userId !== uid) { l.dirty = false; l.problem = undefined; return outcome }
         const pid = await projectId(dir)
         if (!pid) throw new SyncError('damaged', 'the project marker cannot be read')
         if (state && state.projectId !== pid) state = null // the marker changed: a different project now
+        // Owned before the first cloud call: an account switch from here on leaves it to this account.
+        if (!state) { state = stamp(uid, pid); await writeState(dir, state) }
         l.dirty = false
         await sweepStaging(dir)
         if (state?.pulling) {
           if (deps.busy(dir)) throw new SyncError('busy', 'the agent is working in this project')
-          state = await recover(dir, uid, state, await scan(dir))
+          state = await recover(c, dir, uid, state, await scan(dir))
         }
         let settled = false
         for (let round = 0; round < 3 && !settled; round++) {
           const snap = await scan(dir)
-          const row = await deps.cloud.row(pid)
+          const row = await c.row(pid)
           // Restored on another device since this copy saw the delete: it syncs again.
           if (state?.cloudDeleted && row && !row.deleted_at) {
             const { cloudDeleted: _restored, ...rest } = state
@@ -451,23 +487,23 @@ export function createProjectSync(deps: SyncEngineDeps) {
               await writeState(dir, state)
             }
             if (row && state && renamedHere(dir, state)) {
-              await deps.cloud.rename(pid, basename(dir))
+              await c.rename(pid, basename(dir))
               state = { ...state, name: basename(dir) }
               await writeState(dir, state)
             }
             settled = true
           } else if (d === 'push') {
-            settled = (await push(dir, uid, pid, snap, state, row)) !== 'conflict' // lost the race: decide again
+            settled = (await push(c, dir, uid, pid, snap, state, row)) !== 'conflict' // lost the race: decide again
             if (settled) state = await readState(dir)
           } else if (d === 'pull') {
             if (mode === 'open' && !deps.busy(dir)) {
-              await pull(dir, uid, row!, snap, state)
+              await pull(c, dir, uid, row!, snap, state)
               state = await readState(dir)
             } // else shown as "Update available"; pulled when the project opens
             settled = true
           } else if (d === 'conflict') {
             // Keep both: the cloud version becomes a new project; this copy then continues from that revision.
-            const copy = await materialize(uid, row!, 'conflict', basename(dir))
+            const copy = await materialize(c, uid, row!, 'conflict', basename(dir))
             outcome = { ...outcome, copy: { dir: copy, name: basename(copy), device: row!.updated_by_device || 'another device' } }
             state = synced(uid, pid, row!.revision, row!.manifest_sha256, state, state?.name ?? basename(dir))
             await writeState(dir, state)
@@ -476,7 +512,7 @@ export function createProjectSync(deps: SyncEngineDeps) {
         }
         if (!settled) throw new SyncError('conflict', 'other devices kept pushing; trying again shortly')
         // Opening takes a name given on another device.
-        if (mode === 'open') outcome = { ...outcome, dir: await adoptName(dir, uid, state, await deps.cloud.row(pid).catch(() => null)) }
+        if (mode === 'open') outcome = { ...outcome, dir: await adoptName(dir, uid, state, await c.row(pid).catch(() => null)) }
         l.problem = undefined
         l.attempt = 0
         return outcome
@@ -510,23 +546,29 @@ export function createProjectSync(deps: SyncEngineDeps) {
     }, ms)
   }
 
-  async function sendPendingDeletes(): Promise<void> {
+  /** Sends the signed-in account's queued deletes; another account's stay queued until it signs in. */
+  async function sendPendingDeletes(uid: string): Promise<void> {
     const pending = deps.readPending()
-    if (!pending.length) return
-    const left: string[] = []
-    for (const id of pending) {
-      try { await deps.cloud.setDeleted(id, true) } catch (e) { if (!isSyncError(e) || e.code === 'offline') left.push(id) }
+    if (!pending.some((p) => pendingFor(p, uid))) return
+    const c = cloudFor(uid)
+    const left: PendingDelete[] = []
+    for (const p of pending) {
+      if (!pendingFor(p, uid)) { left.push(p); continue }
+      try { await c.setDeleted(pendingId(p), true) } catch (e) { if (!isSyncError(e) || e.code === 'offline' || e.code === 'auth') left.push(p) }
     }
-    deps.writePending(left)
+    // Entries queued meanwhile (another trash) are kept too.
+    const sent = new Set(pending.filter((p) => !left.includes(p)).map((p) => JSON.stringify(p)))
+    deps.writePending(deps.readPending().filter((p) => !sent.has(JSON.stringify(p))))
   }
 
-  async function purge(rows: CloudRow[]): Promise<void> {
+  async function purge(uid: string, rows: CloudRow[]): Promise<void> {
+    const c = cloudFor(uid)
     for (const r of rows) {
       try {
         // The row first: the server decides whether the 30 days are over (this computer's clock may be wrong).
-        if (!(await deps.cloud.dropRow(r.project_id))) continue
-        const names = [...(await deps.cloud.list(r.project_id, 'blobs')).map((o) => `blobs/${o.name}`), ...(await deps.cloud.list(r.project_id, 'manifests')).map((o) => `manifests/${o.name}`)]
-        await deps.cloud.remove(r.project_id, names)
+        if (!(await c.dropRow(r.project_id))) continue
+        const names = [...(await c.list(r.project_id, 'blobs')).map((o) => `blobs/${o.name}`), ...(await c.list(r.project_id, 'manifests')).map((o) => `manifests/${o.name}`)]
+        await c.remove(r.project_id, names)
       } catch {
         /* next time */
       }
@@ -555,7 +597,13 @@ export function createProjectSync(deps: SyncEngineDeps) {
   return {
     /** A change in a project (a file written, a conversation saved): push after the project is quiet. */
     touch(dir: string): void {
+      void claim(dir).catch(() => undefined)
       schedule(dir, deps.debounceMs ?? DEBOUNCE_MS)
+    },
+
+    /** A project made while signed in: it belongs to this account from the start (see `stamp`). */
+    claim(dir: string): Promise<void> {
+      return claim(dir).catch(() => undefined)
     },
 
     /** Syncs one project now (in the background queue) and resolves when done; throws what failed. */
@@ -602,9 +650,11 @@ export function createProjectSync(deps: SyncEngineDeps) {
       return lock(`download:${projectIdToGet}`, async () => {
         for (const dir of await deps.localProjects()) if ((await projectId(dir).catch(() => null)) === projectIdToGet) return dir
         const uid = await deps.cloud.userId()
-        const row = await deps.cloud.row(projectIdToGet)
+        if (uid !== deps.signedInUser()) throw new SyncError('auth', 'the account changed')
+        const c = cloudFor(uid)
+        const row = await c.row(projectIdToGet)
         if (!row || row.deleted_at) throw new SyncError('server', 'This project is no longer in your account.')
-        return materialize(uid, row, 'download')
+        return materialize(c, uid, row, 'download')
       })
     },
 
@@ -615,17 +665,20 @@ export function createProjectSync(deps: SyncEngineDeps) {
       if (!uid || !state || state.userId !== uid || state.baseRevision === 0) return
       // Noted here first, then sent; moving to the Trash waits at most two seconds for the network (the list sends a
       // delete still pending later).
-      deps.writePending([...new Set([...deps.readPending(), state.projectId])])
+      const others = deps.readPending().filter((p) => !(pendingId(p) === state.projectId && pendingFor(p, uid)))
+      deps.writePending([...others, { projectId: state.projectId, userId: uid }])
       const l = live.get(dir)
       if (l) { clearTimer(l.debounce); clearTimer(l.retry) }
       live.delete(dir)
-      await Promise.race([sendPendingDeletes().catch(() => undefined), new Promise((r) => { const t = setTimeout(r, 2_000); t.unref?.() })])
+      await Promise.race([sendPendingDeletes(uid).catch(() => undefined), new Promise((r) => { const t = setTimeout(r, 2_000); t.unref?.() })])
     },
 
     /** Restores a deleted cloud project; a local copy that was kept as local only syncs again. */
     async restore(pid: string): Promise<void> {
-      await deps.cloud.setDeleted(pid, false)
-      deps.writePending(deps.readPending().filter((id) => id !== pid))
+      const uid = deps.signedInUser()
+      if (!uid) throw new SyncError('auth', 'Sign in to restore your cloud projects.')
+      await cloudFor(uid).setDeleted(pid, false)
+      deps.writePending(deps.readPending().filter((p) => !(pendingId(p) === pid && pendingFor(p, uid))))
       for (const dir of await deps.localProjects()) {
         const state = await readState(dir)
         if (state?.projectId === pid && state.cloudDeleted) {
@@ -657,15 +710,19 @@ export function createProjectSync(deps: SyncEngineDeps) {
       }
       let rows: CloudRow[] | null = null
       try {
-        await sendPendingDeletes()
-        rows = await deps.cloud.rows()
+        await sendPendingDeletes(uid)
+        rows = await cloudFor(uid).rows()
       } catch {
         rows = null
       }
-      const pending = new Set(deps.readPending())
+      // The account changed while the list was read: its rows are dropped and nothing is scheduled (the next list,
+      // for the new account, does that).
+      const switched = deps.signedInUser() !== uid
+      if (switched) rows = null
+      const pending = new Set(deps.readPending().filter((p) => pendingFor(p, uid)).map(pendingId))
       const byId = new Map((rows ?? []).map((r) => [r.project_id, r]))
       const split = splitCloud((rows ?? []).filter((r) => !pending.has(r.project_id)), new Set(ids.keys()), now())
-      if (split.expired.length) void purge(split.expired)
+      if (split.expired.length) void purge(uid, split.expired)
       const local = dirs.map((dir) => {
         const state = states.get(dir) ?? null
         const id = [...ids.entries()].find(([, d]) => d === dir)?.[0]
@@ -673,7 +730,7 @@ export function createProjectSync(deps: SyncEngineDeps) {
       })
       // Unsynced work (never synced, or changed while the app was closed) goes up in the background; once per run
       // every project is checked, later only those not synced.
-      for (const e of local) {
+      for (const e of switched ? [] : local) {
         const l = live.get(e.dir)
         // A problem that waits for the researcher (a file name, a file too large) is tried again on the next change.
         const recently = now() - (listScheduled.get(e.dir) ?? -Infinity) < 60_000
@@ -683,7 +740,7 @@ export function createProjectSync(deps: SyncEngineDeps) {
         }
         else if (!checkedAll && (e.status === 'synced' || e.status === 'conflict-copy' || e.status === 'behind')) schedule(e.dir, 5_000)
       }
-      checkedAll = true
+      if (!switched) checkedAll = true
       return { signedIn: true, offline: rows === null, local, cloudOnly: split.cloudOnly.map(cloudProject), deleted: split.deleted.map(cloudProject), maxBytes }
     },
 
@@ -697,6 +754,20 @@ export function createProjectSync(deps: SyncEngineDeps) {
         Promise.all(dirty.map((dir) => syncOne(dir, 'background').catch(() => undefined))),
         new Promise((r) => { const t = setTimeout(r, ms); t.unref?.() }),
       ])
+    },
+
+    /** The app's account changed (sign-in, sign-out, another account): a sync running for the previous account stops
+     *  at its next cloud operation (it never continues in the new account's storage), and its scheduled work is
+     *  dropped. The new account's projects are scheduled again by the next list. */
+    accountChanged(): void {
+      const user = deps.signedInUser()
+      if (user === lastUser) return
+      lastUser = user
+      epoch++
+      for (const [, l] of live) { clearTimer(l.debounce); clearTimer(l.retry); l.debounce = undefined; l.retry = undefined; l.dirty = false; l.attempt = 0; l.problem = undefined }
+      listScheduled.clear()
+      checkedAll = false
+      deps.onChange()
     },
 
     /** Stops timers (sign-out, tests). */
