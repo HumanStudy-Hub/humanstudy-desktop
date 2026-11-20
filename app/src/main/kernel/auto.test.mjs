@@ -183,7 +183,7 @@ if (process.env.HUMANSTUDY_KERNEL_BIN) {
   })
   await new Promise(r=>model.listen(0,'127.0.0.1',r))
   const k=new OpencodeKernel({binary:process.env.HUMANSTUDY_KERNEL_BIN,home:join(out,'home'),provider:'fixture',model:'fixture',permission:'project'})
-  k.configContent=()=>JSON.stringify({model:'fixture/fixture',small_model:'fixture/fixture',permission:{bash:'ask'},experimental:{continue_loop_on_deny:true},provider:{fixture:{npm:'@ai-sdk/openai-compatible',options:{baseURL:`http://127.0.0.1:${model.address().port}/v1`,apiKey:'fixture'},models:{fixture:{name:'Fixture',tool_call:true,limit:{context:200000,output:10000}}}}}})
+  k.configContent=()=>JSON.stringify({model:'fixture/fixture',small_model:'fixture/fixture',permission:{bash:'ask'},provider:{fixture:{npm:'@ai-sdk/openai-compatible',options:{baseURL:`http://127.0.0.1:${model.address().port}/v1`,apiKey:'fixture'},models:{fixture:{name:'Fixture',tool_call:true,limit:{context:200000,output:10000}}}}}})
   try {
     const sid=await k.startSession(out)
     const events=[]

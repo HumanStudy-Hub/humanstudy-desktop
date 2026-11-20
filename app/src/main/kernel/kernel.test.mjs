@@ -137,7 +137,9 @@ console.log('mock permission ok')
     'cd .. && ls', 'cd /tmp && ls'])
     assert.ok(!B(cmd), cmd)
   // opencode leaves `cd` out of the patterns: the full command line decides.
-  for (const full of ['cd; rm Documents/x', 'cd $HOME && rm x', 'cd ~ && ls', 'cd /Users && ls', 'popd && ls', 'cd .. ; ls', 'cd "$D" && ls'])
+  for (const full of ['CDPATH=/Users/x cd Documents && find . -delete', 'HOME=/etc cd; echo x > notes.txt', 'builtin cd; ls',
+    'command cd /tmp && ls', 'FOO=1 builtin cd ~ && ls', 'cd data && CDPATH=/ ls', 'cd data && cd ../.. && ls',
+    'cd; rm Documents/x', 'cd $HOME && rm x', 'cd ~ && ls', 'cd /Users && ls', 'popd && ls', 'cd .. ; ls', 'cd "$D" && ls'])
     assert.ok(!B(full.split(/&&|;/).pop().trim(), full), full)
   assert.match(k.autoRejectMessage(P('bash', ['sudo ls'])), /only permits actions inside this project folder/)
   // Read-only web lookups are approved (prepare-experiment fetches public SI/OSF/GitHub sources).
@@ -159,6 +161,14 @@ console.log('mock permission ok')
     symlinkSync(out, external)
     assert.ok(!k.isInsideProject(alias, P('edit', [join(external, 'draft.json')])))
     assert.ok(!k.isInsideProject(alias, P('external_directory', [destination])))
+    // Chained relative cds are resolved from the previous cd: `cd src && cd a` with src/a -> outside.
+    mkdirSync(join(project, 'src'))
+    symlinkSync(out, join(project, 'src', 'a'))
+    const chained = (full) => k.isInsideProject(project, P('bash', ['ls'], { command: full }))
+    assert.ok(!chained('cd src && cd a && ls'))
+    assert.ok(chained('cd src && ls'))
+    mkdirSync(join(project, 'src', 'b'))
+    assert.ok(chained('cd src && cd b && ls'))
   }
   console.log('permission helpers ok')
 }

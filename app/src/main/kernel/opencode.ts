@@ -152,7 +152,7 @@ interface SessionState {
   pendingPermissions: Map<string, KernelPermission>
   /** When this session last sent an automatic reject; opencode's cascade rejects follow it. */
   lastAutoReject?: number
-  recovery: { epoch: number; attempts: number; pending: boolean; running: boolean; cancelled: boolean; progress: boolean; reason?: 'output_limit' | 'invalid_tool_call'; assistantId?: string }
+  recovery: { epoch: number; attempts: number; pending: boolean; running: boolean; cancelled: boolean; progress: boolean; reason?: 'output_limit' | 'invalid_tool_call' | 'declined_tool_call'; assistantId?: string }
   expectUserIdentity?: boolean
   selection?: NativeSelection
   /** Per-turn default; does not change the researcher's model selection for the next chat. */
@@ -578,7 +578,7 @@ export class OpencodeKernel implements Kernel {
         ...(s.turnModel ? { model: s.turnModel } : {}),
         ...(s.selection?.agent?{agent:s.selection.agent}:{}),
         ...(recoveryProvider === HOSTED_PROVIDER ? { variant: 'humanstudy-recovery' } : s.selection?.variant?{variant:s.selection.variant}:{}),
-        parts: [{ type: 'text', text: `[HumanStudy automatic recovery ${attempt}/2: ${reason === 'invalid_tool_call' ? 'the previous tool call had malformed arguments and may not have executed' : 'the previous model response exhausted its generation budget'}; this is not a new research request.]
+        parts: [{ type: 'text', text: `[HumanStudy automatic recovery ${attempt}/2: ${reason === 'invalid_tool_call' ? 'the previous tool call had malformed arguments and may not have executed' : reason === 'declined_tool_call' ? 'a tool call was declined automatically together with a disallowed one and did not run' : 'the previous model response exhausted its generation budget'}; this is not a new research request.]
 Keep the original user's task and all scientific requirements. First inspect existing files and validation results to establish what actually completed. Do not assume an interrupted tool call wrote a file. Do not repeat completed actions or rerun simulations, submissions, uploads or other external actions. Existing permission and simulation approval requirements still apply.
 Adjust the execution plan: finish the smallest coherent pending unit, save and validate it, then advance one unit at a time. For a large human program, use small complete JSON batches and program_io.py when available, or separate complete intermediate files per study/section, and assemble the final schema-valid program.json from those files. Preserve every required detail, verbatim quotation and source reference; split the work rather than shorten or omit content. Do not overwrite valid existing work unnecessarily or announce a plan and ask permission to start again. Act on the task already authorized; ask only for genuinely missing research decisions. If a tool invocation was incomplete, construct a smaller valid invocation after checking the filesystem.
 ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made progress. Further reduce the size of each write/tool call and complete the remaining units from saved checkpoints.' : 'Avoid spending the whole response thinking through the entire paper before making the first checkpoint.'}` }],
@@ -724,10 +724,10 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     const cfg: Record<string, unknown> = {
       $schema: 'https://opencode.ai/config.json',
       ...(model ? { model, small_model: model } : {}), // small_model: otherwise titles go to opencode's own default
+      // No experimental.continue_loop_on_deny: it would also keep a turn going after a dismissed
+      // question (simulation scope/confirmation). Our automatic rejects carry a message, which does
+      // not end the turn; opencode's plain cascade rejects are resumed by recovery (see permission.replied).
       permission: { edit: 'ask', bash: BASH_PERMISSION, external_directory: 'ask' },
-      // A rejected tool call (ours, or opencode's cascade to the session's other pending requests)
-      // returns an error to the model instead of ending the turn. Present in the fork since 1.18.21.
-      experimental: { continue_loop_on_deny: true },
     }
     if (this.provider === HOSTED_PROVIDER) {
       cfg.provider = { [HOSTED_PROVIDER]: { ...(transport ? { options: { baseURL: transport.baseURL, apiKey: transport.token } } : {}),
@@ -1314,6 +1314,11 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         const automatic = !!p.requestID && (this.autoReplies.has(p.requestID) || this.autoRejected.has(p.requestID) || cascade)
         // A researcher's reject stops the turn; an automatic reject only declines that one tool call.
         if ((p.reply ?? p.response) === 'reject' && !(p.requestID && this.autoRejected.has(p.requestID)) && !cascade) { s.recovery.cancelled = true; s.recovery.pending = false }
+        // A plain cascade reject ends opencode's loop. Resume once through recovery, unless the turn was
+        // cancelled (a researcher's reject, a dismissed question, Stop): that always stays stopped.
+        if (cascade && p.requestID && !this.autoRejected.has(p.requestID) && s.inFlight && !s.recovery.cancelled && !s.recovery.running) {
+          s.recovery.reason = 'declined_tool_call'; s.recovery.pending = true
+        }
         const reply = p.reply ?? p.response
         if (p.requestID && (reply === 'once' || reply === 'always' || reply === 'reject') && this.reportResolved(p.requestID))
           emit({ type: 'permission', permission: { id: p.requestID, type: '', resolved: reply, ...(automatic ? { automatic: true } : {}) } })
@@ -1343,9 +1348,9 @@ export function toKernelPermission(p: {
   return { id: p.id, type: p.permission ?? 'unknown', title, patterns, metadata: md }
 }
 
-/** An automatic reply found no pending request: it was already answered (404 PermissionNotFound). */
+/** An automatic reply found no pending request: it was already answered (PermissionNotFound). */
 function alreadyResolved(error: unknown): boolean {
-  return error instanceof Error && /-> 404\b|PermissionNotFound/.test(error.message)
+  return error instanceof Error && /PermissionNotFound/.test(error.message)
 }
 
 /** Read-only web tools: preparing an experiment fetches public sources (journal SI, OSF, GitHub). */
@@ -1362,7 +1367,7 @@ export function autoRejectMessage(perm: KernelPermission): string {
     return 'Not allowed: the same tool call was repeated several times. Try a different approach or skip this step.'
   if (perm.type === 'read')
     return 'Not allowed: HumanStudy does not read secret files such as .env. Do it another way or skip it.'
-  return 'Not allowed: HumanStudy only permits actions inside this project folder (no sudo, shell variables, command substitution, cd elsewhere, or rm -f/-r). Do it another way or skip it.'
+  return 'Not allowed: HumanStudy only permits actions inside this project folder that it can check automatically. Do it another way or skip it.'
 }
 
 /** Tool permissions that are safe to auto-approve when "inside the project": edit/write patterns that
@@ -1400,7 +1405,7 @@ export function isInsideProject(dir: string, perm: KernelPermission): boolean {
     return (perm.patterns ?? []).length > 0 &&
       (perm.patterns ?? []).every((cmd) => {
         if (/[`$]\(|`|\$\{|\|\s*(sh|bash|zsh)\b|\bsudo\b|\brm\s+-\w*[rf]/.test(cmd)) return false
-        if (!plainShell(cmd) || !literalCd(cmd, inside)) return false
+        if (!plainShell(cmd) || !literalCd(cmd, dir, inside)) return false
         return cmd
           .split(/\s+/)
           .every((tok) => {
@@ -1410,7 +1415,7 @@ export function isInsideProject(dir: string, perm: KernelPermission): boolean {
           })
       }) &&
       // opencode leaves `cd` out of the patterns; the full command line shows where the rest runs.
-      (typeof full !== 'string' || literalCd(full, inside))
+      (typeof full !== 'string' || literalCd(full, dir, inside))
   }
   return false
 }
@@ -1452,16 +1457,30 @@ function plainShell(cmd: string): boolean {
   return !r.dollar && !r.brace && !r.quotedCommand
 }
 
-/** Every `cd`/`pushd` names one literal path inside the project; `popd` and a bare `cd` never pass. */
-function literalCd(cmd: string, inside: (p: string) => boolean): boolean {
+/** Every `cd`/`pushd` names one literal path inside the project, checked from the directory the
+ *  previous `cd` reached; `popd`, a bare `cd` and any CDPATH never pass. Leading NAME=value words and
+ *  `builtin`/`command` are skipped to find the real command word. */
+function literalCd(cmd: string, dir: string, inside: (p: string) => boolean): boolean {
+  if (/\bCDPATH=/.test(cmd)) return false
   const r = scanShell(cmd)
-  if (r.dollar || r.brace) return !r.segments.some((w) => /^(cd|pushd|popd)$/.test(w[0])) && !/\b(cd|pushd|popd)\b/.test(cmd)
-  return r.segments.every((w) => {
-    if (!/^(cd|pushd|popd)$/.test(w[0])) return true
+  const command = (w: string[]): string[] => {
+    let i = 0
+    while (i < w.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w[i]) || w[i] === 'builtin' || w[i] === 'command')) i++
+    return w.slice(i)
+  }
+  const isCd = (w: string[]): boolean => /^(cd|pushd|popd)$/.test(command(w)[0] ?? '')
+  if (r.dollar || r.brace) return !r.segments.some(isCd) && !/\b(cd|pushd|popd)\b/.test(cmd)
+  let cwd = resolve(dir)
+  return r.segments.every((seg) => {
+    if (!isCd(seg)) return true
+    const w = command(seg)
     if (w[0] === 'popd' || w.length !== 2) return false
     const t = w[1]
     if (!/^[\w./@+,:%=-]+$/.test(t) || t.startsWith('-') || t === '..' || t.startsWith('../') || t.includes('/../') || t.endsWith('/..')) return false
-    return inside(t)
+    const next = isAbsolute(t) ? t : resolve(cwd, t)
+    if (!inside(next)) return false
+    cwd = next
+    return true
   })
 }
 

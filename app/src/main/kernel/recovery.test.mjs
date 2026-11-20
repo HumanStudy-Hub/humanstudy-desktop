@@ -195,20 +195,35 @@ await scenario('automatic-reject-keeps-recovery', async ({ k, events, requests, 
   idle(); await tick()
   assert.equal(requests.length, 2, 'an automatic reject does not cancel recovery')
 })
-await scenario('automatic-reject-cascade-keeps-recovery', async ({ k, events, requests, finish, idle }) => {
+await scenario('automatic-reject-cascade-resumes', async ({ k, events, requests, idle }) => {
   k.replyTo = async () => {}
-  assert.equal(JSON.parse(k.configContent()).experimental.continue_loop_on_deny, true, 'a reject never ends the turn')
+  assert.equal(JSON.parse(k.configContent()).experimental?.continue_loop_on_deny, undefined, 'a dismissed question must still end the turn')
   await k.send('s', 'Build')
-  finish()
   k.handle({ type: 'permission.asked', properties: { sessionID: 's', id: 'parallel', permission: 'bash', patterns: ['ls'] } })
   k.handle({ type: 'permission.asked', properties: { sessionID: 's', id: 'outside', permission: 'bash', patterns: ['sudo ls'] } })
   await tick()
-  // opencode answers the other pending request of the session with a plain reject.
+  // opencode answers the session's other pending request with a plain reject, which ends its loop.
   k.handle({ type: 'permission.replied', properties: { sessionID: 's', requestID: 'parallel', reply: 'reject' } })
   k.handle({ type: 'permission.replied', properties: { sessionID: 's', requestID: 'outside', reply: 'reject' } })
   idle(); await tick()
   assert.ok(!events.some(e => e.type === 'permission' && !e.permission.resolved), 'no prompt')
-  assert.equal(requests.length, 2, 'the cascade reject does not cancel recovery')
+  assert.equal(requests.length, 2, 'recovery resumes the turn the cascade ended')
+  assert.match(requests[1].body.parts[0].text, /declined automatically together with a disallowed one/)
+  assert.match(requests[1].body.parts[0].text, /simulation approval requirements still apply/)
+})
+await scenario('dismissed-question-stops-turn', async ({ k, events, requests, idle }) => {
+  k.replyTo = async () => {}
+  await k.send('s', 'Build')
+  k.handle({ type: 'permission.asked', properties: { sessionID: 's', id: 'parallel', permission: 'bash', patterns: ['ls'] } })
+  k.handle({ type: 'permission.asked', properties: { sessionID: 's', id: 'outside', permission: 'bash', patterns: ['sudo ls'] } })
+  await tick()
+  k.handle({ type: 'permission.replied', properties: { sessionID: 's', requestID: 'parallel', reply: 'reject' } })
+  // The researcher dismisses the simulation-scope question: nothing may continue the turn.
+  k.handle({ type: 'question.asked', properties: { sessionID: 's', id: 'scope', questions: [{ question: 'Run the simulation?', header: 'Simulation scope', options: [{ label: 'Run', description: '' }] }] } })
+  k.handle({ type: 'question.rejected', properties: { sessionID: 's', requestID: 'scope' } })
+  idle(); await tick()
+  assert.equal(requests.length, 1, 'no recovery or run after a dismissed question')
+  assert.ok(events.some(e => e.type === 'done'))
 })
 await scenario('invalid-after-stop', async ({ k, requests, idle }) => {
   await k.send('s', 'Build'); assistant(k, 'bad')
