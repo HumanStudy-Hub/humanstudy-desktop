@@ -641,7 +641,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
    *  time limit): inside-project actions are approved once, everything else is rejected with a short
    *  reason the agent sees, so it can do the step another way and the turn continues. */
   private autoDecide(sessionId: string, s: SessionState, perm: KernelPermission): void {
-    if (isInsideProject(s.server.dir, perm)) this.autoApprove(sessionId, s, perm)
+    if (isAutoApproved(s.server.dir, perm)) this.autoApprove(sessionId, s, perm)
     else this.autoReject(sessionId, s, perm)
   }
   /** Ids rejected automatically; their `permission.replied` must not cancel the turn's recovery. Bounded. */
@@ -1328,6 +1328,14 @@ export function toKernelPermission(p: {
   const pick = (k: string): string | undefined => (typeof md[k] === 'string' && md[k] ? (md[k] as string) : undefined)
   const title = pick('command') ?? pick('filepath') ?? pick('filePath') ?? pick('description') ?? (patterns.join(' ') || undefined)
   return { id: p.id, type: p.permission ?? 'unknown', title, patterns, metadata: md }
+}
+
+/** Read-only web tools: preparing an experiment fetches public sources (journal SI, OSF, GitHub). */
+const WEB_READ_PERMISSIONS = new Set(['webfetch', 'websearch', 'codesearch'])
+
+/** Project mode approves inside-project actions and read-only web lookups; everything else is rejected. */
+export function isAutoApproved(dir: string, perm: KernelPermission): boolean {
+  return WEB_READ_PERMISSIONS.has(perm.type) || isInsideProject(dir, perm)
 }
 
 /** The feedback an automatically rejected tool call returns to the agent. */

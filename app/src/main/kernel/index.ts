@@ -9,7 +9,7 @@ import type { Kernel } from './types'
 
 export type { Kernel, KernelEvent, KernelEventType, KernelPermission, KernelUsage, PermissionReply } from './types'
 export { MockKernel } from './mock'
-export { OpencodeKernel, isInsideProject, autoRejectMessage, toKernelPermission, DEFAULT_MODEL, DEFAULT_PROVIDER } from './opencode'
+export { OpencodeKernel, isInsideProject, isAutoApproved, autoRejectMessage, toKernelPermission, DEFAULT_MODEL, DEFAULT_PROVIDER } from './opencode'
 
 export function createKernel(): Kernel {
   const forced = process.env.HUMANSTUDY_KERNEL

@@ -59,12 +59,16 @@ try {
     assert.match(replies.at(-1).message, reason, 'the agent is told why, so the turn continues')
     k.handle({type:'permission.replied',properties:{sessionID:'s',requestID:id,reply:'reject'}})
   }
+  done = decided('web', 'once')
+  k.handle({type:'permission.asked',properties:{sessionID:'s',id:'web',permission:'webfetch',patterns:['https://osf.io/abcd']}})
+  await done
+  assert.deepEqual(replies.at(-1), {reply:'once'}, 'public source fetches are approved')
   done = decided('outside', 'reject')
   k.handle({type:'permission.asked',properties:{sessionID:'s',id:'outside',permission:'edit',patterns:['/etc/fixture'],metadata:{filepath:'/etc/fixture'}}})
   await done
   k.handle({type:'permission.replied',properties:{sessionID:'s',requestID:'outside',reply:'reject'}})
-  assert.equal(replies.length,7)
-  for (const id of ['rm-in', 'rm-root', 'rm-out', 'sudo', 'outside'])
+  assert.equal(replies.length,8)
+  for (const id of ['rm-in', 'rm-root', 'rm-out', 'sudo', 'web', 'outside'])
     assert.ok(!events.some(e => e.permission?.id === id && !e.permission.resolved), `no permission prompt for ${id}`)
   assert.equal(session.recovery.cancelled, false, 'an automatic reject does not cancel the turn')
   assert.deepEqual(k.permissions('s'), [])
@@ -72,7 +76,7 @@ try {
   k.setPermissionMode('ask')
   k.handle({type:'permission.asked',properties:{sessionID:'s',id:'outside2',permission:'edit',patterns:['/etc/fixture'],metadata:{filepath:'/etc/fixture'}}})
   await new Promise(r=>setTimeout(r,30))
-  assert.equal(replies.length,7,'ask mode waits for the researcher')
+  assert.equal(replies.length,8,'ask mode waits for the researcher')
   assert.ok(events.some(e => e.permission?.id === 'outside2' && !e.permission.resolved))
   const original = k.sessions.get('s')
   k.register('other', original.server)
