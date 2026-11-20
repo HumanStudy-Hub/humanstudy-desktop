@@ -947,6 +947,8 @@ app.whenReady().then(() => {
   const acct = getAccount()
   const afterAccount = <T>(v: T): T => {
     syncAccess()
+    // A sync running for the previous account stops; it never continues in the new account's storage.
+    projectSync?.accountChanged()
     return v
   }
   // Signed in without a valid desktop key (new device, expired key): an invited account gets one

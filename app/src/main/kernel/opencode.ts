@@ -663,8 +663,13 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     this.autoReplies.add(perm.id)
     this.autoRejected.add(perm.id)
     if (this.autoRejected.size > 4096) this.autoRejected.delete(this.autoRejected.values().next().value as string)
-    s.lastAutoReject = this.clock()
-    this.replyTo(s.server, sessionId, perm.id, 'reject', autoRejectMessage(perm)).then(() => {
+    // A repeated identical tool call (opencode's doom_loop) is rejected without a message, which ends the turn: a reject
+    // with feedback would continue the loop and keep spending (hosted) requests. No automatic recovery follows; the
+    // renderer shows a short note (Permission.tsx, perm.doom_loop).
+    const stop = perm.type === 'doom_loop'
+    if (stop) { s.recovery.cancelled = true; s.recovery.pending = false }
+    else s.lastAutoReject = this.clock()
+    this.replyTo(s.server, sessionId, perm.id, 'reject', stop ? undefined : autoRejectMessage(perm)).then(() => {
       s.pendingPermissions.delete(perm.id)
       if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'reject' } })
     }, (error) => {

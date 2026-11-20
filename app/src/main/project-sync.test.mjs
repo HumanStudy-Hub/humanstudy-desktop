@@ -654,3 +654,75 @@ test('a conversation being saved (.json.tmp) is not part of the cloud copy', () 
   assert.equal(C.syncIncluded('.humanstudy/threads/thr_1.json.tmp'), false)
   assert.equal(C.syncIncluded('.humanstudy/threads/thr_1.json'), true)
 })
+
+test('an account switch during an upload stops the run; nothing is written under the new account', async () => {
+  const db = fakeSupabase()
+  const a = device(db, 'Laptop')
+  const dir = project(a.root, 'Switch', { 'data/a.csv': 'a', 'data/b.csv': 'b', 'data/c.csv': 'c' })
+  let uploads = 0
+  db.state.rejectUpload = (path) => { if (path.includes('/blobs/') && ++uploads === 1) { a.signIn(OTHER); a.engine.accountChanged() } return false }
+  await a.engine.syncNow(dir)
+  assert.equal(uploads, 1, 'the run stopped at its next cloud operation')
+  assert.equal([...db.objects.keys()].filter((k) => k.startsWith(`${OTHER}/`)).length, 0, 'no object under the new account')
+  assert.equal(db.rows.size, 0, 'no revision committed for either account')
+  assert.equal(existsSync(join(dir, '.humanstudy', 'sync.json')), false, 'not recorded as synced')
+  assert.equal(a.timers.length, 0, 'no retry scheduled for the old account')
+})
+
+test('a switch noticed only through the credentials still stops the run (no accountChanged call)', async () => {
+  const db = fakeSupabase()
+  const a = device(db, 'Laptop')
+  const dir = project(a.root, 'Switch2', { 'data/a.csv': 'a', 'data/b.csv': 'b' })
+  db.state.rejectUpload = (path) => { if (path.includes('/blobs/')) a.signIn(OTHER); return false }
+  await a.engine.syncNow(dir)
+  assert.equal([...db.objects.keys()].filter((k) => k.startsWith(`${OTHER}/`)).length, 0)
+  assert.equal(db.rows.size, 0)
+})
+
+test('a sync never deletes cloud objects, even ones the new revision no longer uses', async () => {
+  const db = fakeSupabase()
+  const a = device(db, 'Laptop')
+  const dir = project(a.root, 'Keep')
+  await a.engine.syncNow(dir)
+  const before = new Set(db.objects.keys())
+  for (let i = 2; i <= 3; i++) {
+    db.state.clock += 8 * 24 * 3600_000 // older than any cleanup age
+    put(dir, 'notes/plan.md', `plan v${i}`)
+    await a.engine.syncNow(dir)
+  }
+  assert.equal([...db.rows.values()][0].revision, 3)
+  assert.ok(!db.calls.some((c) => c.startsWith('DELETE /storage/')), 'no delete request')
+  for (const k of before) assert.ok(db.objects.has(k), `kept ${k}`)
+})
+
+test('a file that became a folder on another device arrives (materials -> materials/items.csv)', async () => {
+  const db = fakeSupabase()
+  const a = device(db, 'Laptop'), b = device(db, 'Office PC')
+  const dir = project(a.root, 'Shape', { materials: 'one file' })
+  await a.engine.syncNow(dir)
+  const other = await b.engine.download((await b.engine.list()).cloudOnly[0].projectId)
+  rmSync(join(other, 'materials'))
+  put(other, 'materials/items.csv', 'id,item\n1,cup\n')
+  await b.engine.syncNow(other)
+  const opened = await a.engine.beforeOpen(dir)
+  assert.equal(opened.copy, undefined, 'a plain update, not a conflict')
+  assert.equal(read(dir, 'materials/items.csv'), 'id,item\n1,cup\n')
+  assert.equal(JSON.parse(read(dir, '.humanstudy/sync.json')).baseRevision, 2)
+  assert.equal((await a.engine.statusOf(dir)).status, 'synced')
+})
+
+test('a file changed here where the other device made a folder is kept (conflict copy), never replaced', async () => {
+  const db = fakeSupabase()
+  const a = device(db, 'Laptop'), b = device(db, 'Office PC')
+  const dir = project(a.root, 'Shape2', { materials: 'one file' })
+  await a.engine.syncNow(dir)
+  const other = await b.engine.download((await b.engine.list()).cloudOnly[0].projectId)
+  rmSync(join(other, 'materials'))
+  put(other, 'materials/items.csv', 'id,item\n1,cup\n')
+  await b.engine.syncNow(other)
+  put(dir, 'materials', 'edited here')
+  const opened = await a.engine.beforeOpen(dir)
+  assert.equal(read(dir, 'materials'), 'edited here')
+  assert.ok(opened.copy)
+  assert.equal(read(opened.copy.dir, 'materials/items.csv'), 'id,item\n1,cup\n')
+})
