@@ -353,7 +353,7 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
   useEffect(() => {
     if (!hosted) return setAllowance(null)
     let live = true
-    void window.humanstudy.account.allowance().then((a) => { if (live) setAllowance(a) }, () => undefined)
+    void Promise.resolve(window.humanstudy.account?.allowance?.() ?? null).then((a) => { if (live) setAllowance(a) }, () => undefined)
     return () => { live = false }
   }, [hosted])
 

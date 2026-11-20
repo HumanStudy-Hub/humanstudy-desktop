@@ -133,7 +133,7 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
     if (!hosted) return setAllowance(null)
     if (session.busy) return
     let live = true
-    void window.humanstudy.account.allowance(turnEnded).then((a) => { if (live) setAllowance(a) }, () => undefined)
+    void Promise.resolve(window.humanstudy.account?.allowance?.(turnEnded) ?? null).then((a) => { if (live) setAllowance(a) }, () => undefined)
     return () => { live = false }
   }, [hosted, session.busy])
 
