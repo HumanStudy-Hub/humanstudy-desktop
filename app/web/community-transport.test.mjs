@@ -35,7 +35,7 @@ test('real preload and browser JSON HTTP transport preserve omitted community re
   const registrations=main.slice(main.indexOf("  ipcMain.handle('community:studies'"),main.indexOf("  ipcMain.handle('community:openExternal'"))
   vm.runInNewContext(transpile(registrations),{
    ipcMain:{handle:(name,fn)=>handlers.set(name,fn)},communityStudies:lib.communityStudies,communityStudy:lib.communityStudy,forkCommunityStudy:lib.forkCommunityStudy,
-   createProject:async()=>{const dir=join(temp,'project-'+ ++created);await mkdir(dir);return dir},telemetry:{track(){}},
+   createProject:async()=>{const dir=join(temp,'project-'+ ++created);await mkdir(dir);return dir},telemetry:{track(){}},projectSync:null,
   })
   server=createServer(async(req,res)=>{
    const chunks=[];for await(const chunk of req)chunks.push(chunk)
