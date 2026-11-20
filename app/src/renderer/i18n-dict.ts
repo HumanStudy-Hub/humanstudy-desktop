@@ -711,7 +711,7 @@ const ROWS: Row[] = [
   ['settings.queue', 'Queue message', '排队'],
   ['settings.interrupt', 'Interrupt', '打断'],
   ['settings.permission', 'Auto mode', '自动模式'],
-  ['settings.permission_hint', 'Automatically allow routine work inside this project. Questions and simulation confirmation still need your answer.', '自动允许项目内的常规操作；研究问题与模拟范围仍需要你确认。'],
+  ['settings.permission_hint', 'Automatically allow routine work inside this project and decline anything outside it, without asking. Questions and simulation confirmation still need your answer.', '自动允许项目内的常规操作，项目外的操作直接拒绝、不弹窗；研究问题与模拟范围仍需要你确认。'],
   ['settings.perm_ask', 'Ask before commands', '运行命令前询问'],
   ['settings.perm_project', 'Allow inside the project', '项目内自动允许'],
   ['settings.notifications', 'Notifications', '通知'],
