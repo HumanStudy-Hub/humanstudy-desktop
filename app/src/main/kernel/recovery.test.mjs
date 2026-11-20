@@ -195,6 +195,21 @@ await scenario('automatic-reject-keeps-recovery', async ({ k, events, requests, 
   idle(); await tick()
   assert.equal(requests.length, 2, 'an automatic reject does not cancel recovery')
 })
+await scenario('automatic-reject-cascade-keeps-recovery', async ({ k, events, requests, finish, idle }) => {
+  k.replyTo = async () => {}
+  assert.equal(JSON.parse(k.configContent()).experimental.continue_loop_on_deny, true, 'a reject never ends the turn')
+  await k.send('s', 'Build')
+  finish()
+  k.handle({ type: 'permission.asked', properties: { sessionID: 's', id: 'parallel', permission: 'bash', patterns: ['ls'] } })
+  k.handle({ type: 'permission.asked', properties: { sessionID: 's', id: 'outside', permission: 'bash', patterns: ['sudo ls'] } })
+  await tick()
+  // opencode answers the other pending request of the session with a plain reject.
+  k.handle({ type: 'permission.replied', properties: { sessionID: 's', requestID: 'parallel', reply: 'reject' } })
+  k.handle({ type: 'permission.replied', properties: { sessionID: 's', requestID: 'outside', reply: 'reject' } })
+  idle(); await tick()
+  assert.ok(!events.some(e => e.type === 'permission' && !e.permission.resolved), 'no prompt')
+  assert.equal(requests.length, 2, 'the cascade reject does not cancel recovery')
+})
 await scenario('invalid-after-stop', async ({ k, requests, idle }) => {
   await k.send('s', 'Build'); assistant(k, 'bad')
   await k.abort('s'); invalid(k, 'bad'); idle(); await tick()

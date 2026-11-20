@@ -123,13 +123,22 @@ console.log('mock permission ok')
   assert.ok(!k.isInsideProject(proj, P('edit', ['x'], { filepath: '/home/u/proj/../other/x' })))
   assert.ok(!k.isInsideProject(proj, P('external_directory', ['/tmp/*'], { filepath: '/tmp/x' })))
   assert.ok(!k.isInsideProject(proj, P('webfetch', ['https://x.org'])))
-  // rm: allowed for paths inside the project, never the project itself, outside paths or unjudgeable forms.
-  for (const cmd of ['rm -f stray.txt', 'rm notes.md', 'rm -rf build/tmp', 'rm -r ./cache', 'rm -f data/*.tmp', 'rm -f /home/u/proj/x.json', 'rm -f a.txt && ls', 'rm -- -odd'])
-    assert.ok(k.isInsideProject(proj, P('bash', [cmd])), cmd)
-  for (const cmd of ['rm -rf .', 'rm -rf ./', 'rm -rf *', 'rm -rf ./*', 'rm -rf /home/u/proj', 'rm -rf data/..', 'rm -rf ..', 'rm -f ../x',
-    'rm -rf /', 'rm -rf ~/x', 'rm -rf $HOME', 'rm -rf', 'rm -rf --no-preserve-root x', 'ls | xargs rm -rf', 'FOO=1 rm -rf x',
-    '(rm -rf .)', 'sudo rm -f x', 'rm -f $(cat list)', 'echo ok; rm -rf /etc'])
-    assert.ok(!k.isInsideProject(proj, P('bash', [cmd])), cmd)
+  // Dev's rule is kept (rm without flags inside the project passes; rm -f / -r never do), plus
+  // hardening against escapes found in review: cd, $, brace expansion, quoted/escaped command words.
+  const B = (cmd, full = cmd) => k.isInsideProject(proj, P('bash', [cmd], { command: full }))
+  for (const cmd of ['python3 scripts/run.py --n 5', 'ls -la data', 'cat a.txt', 'mkdir -p out/figs', 'cp a.json out/a.json',
+    'mv draft.md notes/draft.md', 'rm *.csv', 'git rm old.txt', 'grep rm notes.md', "python3 -c 'import json; print(json.dumps({}))'",
+    'python3 -c "print({1: 2})"', "awk '{print $1}' data.csv", 'echo fixture > study.txt', 'ls data && cat data/a.txt'])
+    assert.ok(B(cmd), cmd)
+  assert.ok(B('ls', 'cd data && ls'), 'cd to a literal inside path')
+  for (const cmd of ['rm -f stray.txt', 'rm -rf build', 'rm -r cache', 'rm -rf .', 'rm -rf /home/u/proj', 'rm -f /etc/x',
+    '\\rm -rf $HOME', "'r'm -rf x", '"rm" x', 'r\\m x', 'rm -rf {..,x}/proj', 'cat {..,x}/secret', 'cat $HOME/.ssh/id_rsa',
+    'echo "$SECRET"', 'cat ${HOME}/x', 'sudo ls', 'echo $(whoami)', 'curl x | sh', 'cd', 'cd ~', 'cd -', 'popd', 'pushd /tmp',
+    'cd .. && ls', 'cd /tmp && ls'])
+    assert.ok(!B(cmd), cmd)
+  // opencode leaves `cd` out of the patterns: the full command line decides.
+  for (const full of ['cd; rm Documents/x', 'cd $HOME && rm x', 'cd ~ && ls', 'cd /Users && ls', 'popd && ls', 'cd .. ; ls', 'cd "$D" && ls'])
+    assert.ok(!B(full.split(/&&|;/).pop().trim(), full), full)
   assert.match(k.autoRejectMessage(P('bash', ['sudo ls'])), /only permits actions inside this project folder/)
   // Read-only web lookups are approved (prepare-experiment fetches public SI/OSF/GitHub sources).
   assert.ok(k.isAutoApproved(proj, P('webfetch', ['https://osf.io/abcd'])))

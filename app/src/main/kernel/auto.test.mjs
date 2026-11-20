@@ -13,6 +13,7 @@ const { OpencodeKernel } = await import(pathToFileURL(join(out,'k.mjs')).href)
 const replies = []
 const api = createServer(async(req,res) => {
   const chunks=[];for await(const c of req) chunks.push(c)
+  if (req.url.includes('/gone')) { res.writeHead(404,{'content-type':'application/json'}); return res.end(JSON.stringify({_tag:'PermissionNotFoundError'})) }
   replies.push(JSON.parse(Buffer.concat(chunks).toString()))
   res.writeHead(200,{'content-type':'application/json'});res.end('true')
 })
@@ -42,7 +43,7 @@ try {
   await secondReply
   assert.deepEqual(replies,[{reply:'once'},{reply:'once'}])
   assert.ok(events.some(e=>e.permission?.automatic&&e.permission.resolved==='once'))
-  // Project mode never prompts: inside-project rm is approved, everything else is rejected with a reason.
+  // Project mode never prompts: inside-project work is approved, everything else is rejected with a reason.
   const decided = (id, reply) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => { off(); reject(new Error(`Automatic ${reply} of ${id} timed out`)) }, 5000)
     const off = k.onEvent(e => { if (e.permission?.id === id && e.permission?.automatic && e.permission?.resolved === reply) { clearTimeout(timer); off(); resolve() } })
@@ -50,10 +51,10 @@ try {
   const bash = (id, cmd) => k.handle({type:'permission.asked',properties:{sessionID:'s',id,permission:'bash',patterns:[cmd]}})
   const session = k.sessions.get('s')
   session.recovery.cancelled = false
-  let done = decided('rm-in', 'once'); bash('rm-in', 'rm -f stray-empty.txt'); await done
+  let done = decided('py', 'once'); bash('py', 'python3 scripts/run.py --n 5'); await done
   assert.deepEqual(replies.at(-1), {reply:'once'})
   const reason = /only permits actions inside this project folder/
-  for (const [id, cmd] of [['rm-root', 'rm -rf .'], ['rm-out', 'rm -f /etc/fixture'], ['sudo', 'sudo ls']]) {
+  for (const [id, cmd] of [['rm-in', 'rm -f stray-empty.txt'], ['rm-root', 'rm -rf .'], ['rm-out', 'rm -f /etc/fixture'], ['sudo', 'sudo ls']]) {
     done = decided(id, 'reject'); bash(id, cmd); await done
     assert.equal(replies.at(-1).reply, 'reject', cmd)
     assert.match(replies.at(-1).message, reason, 'the agent is told why, so the turn continues')
@@ -67,8 +68,15 @@ try {
   k.handle({type:'permission.asked',properties:{sessionID:'s',id:'outside',permission:'edit',patterns:['/etc/fixture'],metadata:{filepath:'/etc/fixture'}}})
   await done
   k.handle({type:'permission.replied',properties:{sessionID:'s',requestID:'outside',reply:'reject'}})
-  assert.equal(replies.length,8)
-  for (const id of ['rm-in', 'rm-root', 'rm-out', 'sudo', 'web', 'outside'])
+  // opencode's cascade: one reject also rejects the session's other pending requests (no message).
+  session.pendingPermissions.set('cascaded', {id:'cascaded', type:'bash', patterns:['ls']}) // never replied by us
+  k.handle({type:'permission.replied',properties:{sessionID:'s',requestID:'cascaded',reply:'reject'}})
+  assert.ok(events.some(e => e.permission?.id === 'cascaded' && e.permission.automatic && e.permission.resolved === 'reject'), 'a cascade reject is recorded as automatic')
+  // An automatic reply that finds the request already answered (404) is resolved, not shown.
+  bash('gone', 'ls data')
+  await new Promise(r=>setTimeout(r,50))
+  assert.equal(replies.length,9)
+  for (const id of ['py', 'rm-in', 'rm-root', 'rm-out', 'sudo', 'web', 'outside', 'cascaded', 'gone'])
     assert.ok(!events.some(e => e.permission?.id === id && !e.permission.resolved), `no permission prompt for ${id}`)
   assert.equal(session.recovery.cancelled, false, 'an automatic reject does not cancel the turn')
   assert.deepEqual(k.permissions('s'), [])
@@ -76,7 +84,7 @@ try {
   k.setPermissionMode('ask')
   k.handle({type:'permission.asked',properties:{sessionID:'s',id:'outside2',permission:'edit',patterns:['/etc/fixture'],metadata:{filepath:'/etc/fixture'}}})
   await new Promise(r=>setTimeout(r,30))
-  assert.equal(replies.length,8,'ask mode waits for the researcher')
+  assert.equal(replies.length,9,'ask mode waits for the researcher')
   assert.ok(events.some(e => e.permission?.id === 'outside2' && !e.permission.resolved))
   const original = k.sessions.get('s')
   k.register('other', original.server)
@@ -175,7 +183,7 @@ if (process.env.HUMANSTUDY_KERNEL_BIN) {
   })
   await new Promise(r=>model.listen(0,'127.0.0.1',r))
   const k=new OpencodeKernel({binary:process.env.HUMANSTUDY_KERNEL_BIN,home:join(out,'home'),provider:'fixture',model:'fixture',permission:'project'})
-  k.configContent=()=>JSON.stringify({model:'fixture/fixture',small_model:'fixture/fixture',permission:{bash:'ask'},provider:{fixture:{npm:'@ai-sdk/openai-compatible',options:{baseURL:`http://127.0.0.1:${model.address().port}/v1`,apiKey:'fixture'},models:{fixture:{name:'Fixture',tool_call:true,limit:{context:200000,output:10000}}}}}})
+  k.configContent=()=>JSON.stringify({model:'fixture/fixture',small_model:'fixture/fixture',permission:{bash:'ask'},experimental:{continue_loop_on_deny:true},provider:{fixture:{npm:'@ai-sdk/openai-compatible',options:{baseURL:`http://127.0.0.1:${model.address().port}/v1`,apiKey:'fixture'},models:{fixture:{name:'Fixture',tool_call:true,limit:{context:200000,output:10000}}}}}})
   try {
     const sid=await k.startSession(out)
     const events=[]
