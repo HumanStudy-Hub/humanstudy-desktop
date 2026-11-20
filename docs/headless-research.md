@@ -19,8 +19,9 @@ for questions or deletion requests. The agreement is mandatory for the research 
 Use `app/scripts/research-auth.mjs --server https://humanstudy-hub.com --file <private-path>
 --agree-research-v3`. It reads `{ "email": "…", "password": "…", "invitationCode": "…" }`
 from stdin, not command arguments. Supply it from a private terminal or secure credential
-manager; never paste credentials into an agent chat, an issue, source bundle or PR. The optional
-invitation code enables hosted model access for that same account.
+manager; never paste credentials into an agent chat, an issue, source bundle or PR. An account
+invited at sign-up gets hosted model access without a code; the optional invitation code is only
+needed once for an older account that was never invited.
 
 The profile contains access/refresh tokens (and hosted key when unlocked), not the password.
 Keep it outside the project and repositories; Unix permissions must be `0600`. In CI, supply

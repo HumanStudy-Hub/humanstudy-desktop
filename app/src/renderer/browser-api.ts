@@ -698,6 +698,36 @@ def intentional(harm: float, help_: float) -> float:
         const i = projects.findIndex((p) => p.dir === dir)
         if (i >= 0) projects.splice(i, 1)
       },
+      // Study transfer in the visual preview: a plausible dialog, no file is written or read.
+      exportPreview: async (dir) => ({
+        name: projects.find((p) => p.dir === dir)?.name ?? 'Study',
+        study: { files: 42, bytes: 3_400_000 },
+        hasPaper: true,
+        conversations: { count: 3, files: 3, bytes: 180_000 },
+        privateFiles: [{ path: 'sources/private/my-copy.pdf', bytes: 1_200_000 }],
+        limits: { maxFiles: 20_000, maxTotalBytes: 2048 * 1024 * 1024, maxFileBytes: 512 * 1024 * 1024 },
+      }),
+      exportStudy: async () => ({ ok: true as const, savedPath: 'Study.humanstudy.zip', bytes: 2_100_000, files: 45 }),
+      sharePreview: async () => ({
+        overview: { available: true, files: ['CONTRIBUTION.json', 'program.json'], withheld: 2, getFromSource: 1 },
+        experiment: { available: false, code: 'not-validated' as const, files: [] },
+        results: [
+          { id: 'artifacts/simulations/run-1', kind: 'trial' as const, files: ['artifacts/simulations/run-1/results.html'], bytes: 84_000 },
+          { id: 'artifacts/report.md', kind: 'material' as const, files: ['artifacts/report.md'], bytes: 3_200 },
+        ],
+      }),
+      shareStudy: async () => ({ ok: true as const, savedPath: 'Study-overview.zip', bytes: 12_000, files: 2 }),
+      pickStudy: async () => null,
+      importStudy: async () => ({ ok: false as const, code: 'not-package' as const }),
+    },
+    // Project sync in the visual preview: signed out, so the list is local only.
+    sync: {
+      list: async () => ({ signedIn: false, offline: false, local: [], cloudOnly: [], deleted: [], maxBytes: 500_000_000 }),
+      beforeOpen: async (dir) => ({ dir }),
+      download: async () => { throw new Error('Cloud projects are not available in the preview.') },
+      closed: async () => undefined,
+      restore: async () => undefined,
+      onChanged: () => () => undefined,
     },
     community: {
       studies: async () => {
@@ -731,7 +761,10 @@ def intentional(harm: float, help_: float) -> float:
         Object.assign(account, { signedIn: true, email: email.trim() })
         return accountStatus()
       },
-      signUp: async () => ({ needsConfirmation: true }),
+      signUp: async (_email, _password, code) => {
+        if (!code.trim()) throw new Error('Enter your invitation code.')
+        return { needsConfirmation: true }
+      },
       forgotPassword: async () => { throw new Error('Browser preview cannot send account emails/change account passwords. Use desktop app or website.') },
       resendConfirmation: async () => { throw new Error('Browser preview cannot send account emails/change account passwords. Use desktop app or website.') },
       changePassword: async () => { throw new Error('Browser preview cannot send account emails/change account passwords. Use desktop app or website.') },
@@ -746,6 +779,8 @@ def intentional(harm: float, help_: float) -> float:
         account.keyExpiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString()
         return accountStatus()
       },
+      allowance: async () => null,
+      onChanged: () => () => undefined,
     },
     settings: {
       get: async () => ({ ...settings }),

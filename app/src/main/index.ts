@@ -17,14 +17,20 @@ import {
   isAllowedExternal,
   setCommunityCacheDir,
 } from './community'
-import { createProject, isInside, isWithin, listProjects, renameProject, trashProject } from './projects'
+import { createProject, isInside, isProject, isWithin, listProjects, renameProject, trashProject } from './projects'
+import { exportStudy, importStudy, PACKAGE_SUFFIX, packageName, previewExport, sweepImports, TransferError } from './study-transfer'
+import { createProjectSync, sweepSyncTemps, type SyncEngine } from './project-sync'
+import { createCloud } from './project-sync-cloud'
+import { deviceLabel } from './project-sync-core'
+import { hostname } from 'node:os'
 import { applySettings, ensureProjectsRoot, getSettings, setSettings } from './settings'
 import { checkForUpdates, installUpdate, startUpdates, stopUpdates, updateStatus } from './updates'
 import { createReadStream, existsSync } from 'node:fs'
 import { watchFolder, type FolderWatch } from './project-watch'
 import { fileVersion } from '../shared/file-version'
 import { manifestSourceDigests, protocolSourceDigests } from '../shared/source-target'
-import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import * as kernelModule from './kernel'
@@ -33,10 +39,12 @@ import { createThreads, threads } from './threads'
 import { assertProjectWritePath, saveProjectCopy, saveProjectText } from './program-save'
 import { createPaperBuilds, isBuildTurn } from './paper-build'
 import { createShutdown } from './shutdown-core'
-import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedRunFiles } from './pack'
+import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedRunFiles, trustedShareFiles } from './pack'
+import { isValidatedProtocol } from '../shared/research-search'
+import { confirmedLibrarySha, heldTextsOf, passedProtocolSha, selectedResults, shareExport, ShareError, shareFileName, sharePlan, type ShareRuntime } from './share-layers'
 import { legacyFileIsolationAvailable, scientificReadiness } from './scientific-readiness'
 import { readyPython } from './runtime-install'
-import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf } from './package-readiness'
+import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf, protocolProblems } from './package-readiness'
 import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, restoredRunFiles, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
 import { protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
@@ -48,7 +56,7 @@ import { launchProtocolRun, newRunFolder, sweepRunCopies, type Binding as Protoc
 import type { Kernel, KernelEvent } from './kernel-types'
 import { actionRef } from '../shared/research-operations'
 import { withPrivateCopyNote } from '../shared/workspace-context'
-import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, UnsavedPrompt, WorkspaceContext } from '../preload/types'
+import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, ShareOptions, ShareResult, SharePreview, StudyExportOptions, StudyExportResult, StudyImportResult, StudyTransferFailure, UnsavedPrompt, WorkspaceContext } from '../preload/types'
 
 // macOS with /usr/bin/sandbox-exec: simulations go through a per-run relay. Elsewhere they use the
 // pre-relay path and the run confirmation says that the study's code can read the key.
@@ -85,6 +93,8 @@ const sessionKernel = new Map<string, Kernel>()
 /** The project folder of each session (for checks that need it before the kernel sees a message). */
 const sessionProject = new Map<string, string>()
 const activeTurns = new Set<string>()
+/** Project sync (project-sync.ts), set up when the app is ready. */
+let projectSync: SyncEngine | null = null
 // The automatic paper build; its state file is under .humanstudy, which the project watcher ignores.
 const paperBuilds = createPaperBuilds(dir => broadcast('project:changed', dir), async dir => protocolDraftCertificate(
   await readyPython(), trustedEngineFiles(), dir, process.env.HUMANSTUDY_RUNTIME_BIN || ''))
@@ -101,7 +111,12 @@ const shutdown = createShutdown({
     })
     return result.response === 1
   },
-  flush: async () => { if (threadsInitialized) await threads().flush(); await telemetry.settleResearch(activeTurns.size === 0) },
+  flush: async () => {
+    if (threadsInitialized) await threads().flush()
+    await telemetry.settleResearch(activeTurns.size === 0)
+    // Best effort and bounded: a sync that cannot finish now runs on the next start.
+    await projectSync?.flushAll(8_000).catch(() => undefined)
+  },
   quiesce: async () => {
     // Preserve kernel/session bindings until exit so an unsuccessful quit remains usable.
     await Promise.all([...activeTurns].map(id => kernelFor(id).abort(id)))
@@ -119,7 +134,12 @@ function currentKernel(): Kernel {
       // A cancelled quit must leave queued prompts in place rather than dispatching them
       // into the closing gate when the interrupted turn reports completion.
       if (shutdown.closing() && e.type === 'done') e = { ...e, detail: 'shutdown' }
-      if (e.type === 'done') activeTurns.delete(e.sessionId)
+      if (e.type === 'done') {
+        activeTurns.delete(e.sessionId)
+        // A finished turn saved the conversation and whatever the agent wrote: push once the project is quiet.
+        const turnDir = sessionProject.get(e.sessionId)
+        if (turnDir) projectSync?.touch(turnDir)
+      }
       else if (e.type === 'text' || e.type === 'tool' || (e.type === 'status' && e.text === 'busy') || (e.type === 'question' && !e.question?.resolved) || (e.type === 'permission' && !e.permission?.resolved)) activeTurns.add(e.sessionId)
       try { void Promise.resolve(paperBuilds.event(e)).catch(err => console.error('paper build check', err)) } catch (err) { console.error('paper build state', err) } // never blocks events
       threads().onEvent(e) // record before the renderer hears about it
@@ -302,6 +322,7 @@ function watchProject(dir: string): void {
       ignore: (file) => file.startsWith('.humanstudy'),
       onFile: (file) => {
         telemetry.noteFsChange(dir, file)
+        projectSync?.touch(dir)
         // A history for what the agent (or the researcher) wrote; debounced so one write is one version.
         const rel = file.split(sep).join('/')
         if (isVersioned(rel)) {
@@ -665,11 +686,211 @@ app.whenReady().then(() => {
     const from = resolve(dir)
     const to = await renameProject(from, name)
     if (to !== from) unwatch(from)
+    projectSync?.touch(to) // the cloud copy takes the new name
     return to
   })
   ipcMain.handle('projects:trash', async (_e, dir: string) => {
     unwatch(resolve(dir))
+    // The cloud copy is soft-deleted first (restorable for 30 days); offline, the delete is sent later.
+    if (isInside(getSettings().projectsRoot, resolve(dir)) && isProject(resolve(dir))) await projectSync?.trashed(resolve(dir)).catch(() => undefined)
     await trashProject(dir)
+  })
+
+  // ---- project sync: every project privately in the account's cloud storage (project-sync.ts) -------------------
+  void sweepSyncTemps(ensureProjectsRoot())
+  const pendingFile = (): string => join(app.getPath('userData'), 'sync-pending-deletes.json')
+  projectSync = createProjectSync({
+    cloud: createCloud({ auth: () => getAccount().restAuth(), fetch }),
+    signedInUser: () => getAccount().researchOwner(),
+    projectsRoot: () => ensureProjectsRoot(),
+    // Folders opened with Open (outside the projects folder) stay local.
+    syncable: (dir) => isInside(getSettings().projectsRoot, dir) && isProject(dir),
+    // Online, a sandbox can be reclaimed without a quit: push sooner after the last change.
+    debounceMs: process.env.HUMANSTUDY_RESEARCH_SURFACE === 'web' ? 20_000 : undefined,
+    localProjects: async () => {
+      const root = ensureProjectsRoot()
+      return (await readdir(root, { withFileTypes: true }).catch(() => []))
+        .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
+        .map((d) => join(root, d.name))
+        .filter(isProject)
+    },
+    device: deviceLabel(process.env.HUMANSTUDY_RESEARCH_SURFACE === 'web' ? 'online' : 'desktop', hostname()),
+    platform: process.env.HUMANSTUDY_RESEARCH_SURFACE === 'web' ? 'online' : 'desktop',
+    appVersion: app.getVersion(),
+    // The app's agent files never travel (they can hold a provider key): install this version's.
+    afterInstall: (dir) => refreshPack(dir),
+    busy: (dir) => [...activeTurns].some((sid) => sessionProject.get(sid) === dir),
+    release: async (dir) => {
+      unwatch(dir)
+      if (threadsInitialized) await threads().forgetDir(dir)
+    },
+    onChange: () => broadcast('sync:changed', null),
+    readPending: () => {
+      try {
+        const v = JSON.parse(readFileSync(pendingFile(), 'utf8')) as unknown
+        return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+      } catch {
+        return []
+      }
+    },
+    writePending: (ids) => {
+      try { writeFileSync(pendingFile(), JSON.stringify(ids), { mode: 0o600 }) } catch { /* next time */ }
+    },
+  })
+  /** A project folder sync may touch: a HumanStudy project inside the projects folder. */
+  const syncProjectDir = (dir: unknown): string => {
+    const d = resolve(String(dir ?? ''))
+    if (!isInside(getSettings().projectsRoot, d) || !isProject(d)) throw new Error('This folder is not a HumanStudy project.')
+    return d
+  }
+  ipcMain.handle('sync:list', () => projectSync!.list())
+  ipcMain.handle('sync:beforeOpen', async (_e, dir: string) => {
+    const d = resolve(String(dir ?? ''))
+    // Folders opened with Open (outside the projects folder) stay local, as do non-projects.
+    if (!isInside(getSettings().projectsRoot, d) || !isProject(d)) return { dir: d }
+    if (threadsInitialized) await threads().flushDir(d).catch(() => undefined) // decide on what is saved
+    return projectSync!.beforeOpen(d)
+  })
+  ipcMain.handle('sync:download', (_e, projectId: string) => projectSync!.download(String(projectId ?? '')))
+  ipcMain.handle('sync:closed', (_e, dir: string) => { try { projectSync!.closed(syncProjectDir(dir)) } catch { /* not a synced folder */ } })
+  ipcMain.handle('sync:restore', (_e, projectId: string) => projectSync!.restore(String(projectId ?? '')))
+
+  // ---- "Download this study" / "Open a downloaded study" (study-transfer.ts) -------------------------
+  // Only on the researcher's explicit action; research data never sees the file or what is in it (only counts).
+  const ONLINE = process.env.HUMANSTUDY_RESEARCH_SURFACE === 'web'
+  const transferFailure = (e: unknown): StudyTransferFailure =>
+    e instanceof TransferError ? { ok: false, code: e.code, ...(e.file ? { file: e.file } : {}), detail: e.message }
+      : { ok: false, code: 'failed', detail: e instanceof Error ? e.message : String(e) }
+  /** A project folder a download may read: a HumanStudy project under the projects folder or opened with Open. */
+  const transferProject = (dir: string): string | null => {
+    const d = resolve(String(dir ?? ''))
+    return isAllowed(d) && isProject(d) && d !== resolve(getSettings().projectsRoot) ? d : null
+  }
+  void sweepImports(ensureProjectsRoot())
+  /** Online only: study files from earlier downloads (each save gets downloads/<n>/), older than ten minutes. */
+  async function sweepOnlineDownloads(current: string): Promise<void> {
+    const root = app.getPath('downloads')
+    for (const d of await readdir(root, { withFileTypes: true }).catch(() => [])) {
+      const folder = join(root, d.name)
+      if (!d.isDirectory() || folder === current) continue
+      const names = await readdir(folder).catch(() => [] as string[])
+      if (!names.length || !names.every((n) => n.toLowerCase().endsWith(PACKAGE_SUFFIX))) continue
+      const st = await stat(folder).catch(() => null)
+      if (st && Date.now() - st.mtimeMs > 10 * 60_000) await rm(folder, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+  ipcMain.handle('projects:exportPreview', async (_e, dir: string) => {
+    const d = transferProject(dir)
+    if (!d) throw new Error('This folder is not a HumanStudy project.')
+    return previewExport(d, { published: await isPublishedStudy(d).catch(() => false) })
+  })
+  ipcMain.handle('projects:exportStudy', async (e, dir: string, options: StudyExportOptions): Promise<StudyExportResult | null> => {
+    const d = transferProject(dir)
+    if (!d) return { ok: false, code: 'not-project' }
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const opts = {
+      title: 'Download this study',
+      defaultPath: join(app.getPath('downloads'), packageName(basename(d))),
+      filters: [{ name: 'HumanStudy study', extensions: ['zip'] }],
+    }
+    const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    if (r.canceled || !r.filePath) return null
+    // Always <name>.humanstudy.zip: saved inside a project, a study file is then never part of the next download and
+    // never collected by research data (study-transfer.ts classify, telemetry-core.ts STUDY_PACKAGE).
+    const target = r.filePath.replace(/(?:\.humanstudy)?\.zip$/i, '') + PACKAGE_SUFFIX
+    // Online, earlier study files left in the sandbox's download folder (the browser has its copy) are removed.
+    if (ONLINE) await sweepOnlineDownloads(dirname(target))
+    try {
+      const out = await exportStudy(d, target, {
+        conversations: options?.conversations !== false,
+        source: { platform: ONLINE ? 'online' : 'desktop', appVersion: app.getVersion() },
+        published: await isPublishedStudy(d).catch(() => false),
+      })
+      telemetry.track('project.exported', { metadata: { files: out.files, bytes: out.bytes, conversations: out.manifest.includes.conversations, privateFiles: out.manifest.includes.privateFiles.length } }, d)
+      return { ok: true, savedPath: out.path, bytes: out.bytes, files: out.files }
+    } catch (err) {
+      return transferFailure(err)
+    }
+  })
+  // Sharing (share-layers.ts): the study overview, the runnable experiment and ticked results, prepared by the app's
+  // own copy of the community exporter. Unlike "Download this study" and private sync, never everything.
+  async function shareRuntime(d: string): Promise<ShareRuntime> {
+    const python = await readyPython()
+    const runtime: ShareRuntime = { python, files: trustedShareFiles(), bin: process.env.HUMANSTUDY_RUNTIME_BIN || '' }
+    if (!python) return runtime
+    const raw = await readFile(join(d, 'protocol.json')).catch(() => null)
+    if (!raw) return runtime
+    if (await isPublishedStudy(d).catch(() => false)) {
+      // Validated is confirmed against the library catalog, never taken from the project's own files.
+      runtime.libraryValidated = await confirmedLibrarySha(d, communityStudies, (entry) => isValidatedProtocol(entry))
+      const restored = await restoredProtocolText(originalTextCache(), createHash('sha256').update(raw).digest('hex'))
+      if (restored) runtime.heldTexts = heldTextsOf(raw.toString('utf8'), restored)
+    } else {
+      runtime.checksPassed = await passedProtocolSha(d, (p) => protocolProblems(p))
+    }
+    return runtime
+  }
+  ipcMain.handle('projects:sharePreview', async (_e, dir: string): Promise<SharePreview> => {
+    const d = transferProject(dir)
+    if (!d) throw new Error('This folder is not a HumanStudy project.')
+    return sharePlan(await shareRuntime(d), d)
+  })
+  ipcMain.handle('projects:shareStudy', async (e, dir: string, options: ShareOptions): Promise<ShareResult | null> => {
+    const d = transferProject(dir)
+    if (!d) return { ok: false, code: 'not-project' }
+    const layer = options?.layer === 'experiment' ? 'experiment' : 'overview'
+    const win = BrowserWindow.fromWebContents(e.sender)
+    const opts = {
+      title: 'Share this study',
+      defaultPath: join(app.getPath('downloads'), shareFileName(basename(d), layer)),
+      filters: [{ name: 'Shared study', extensions: ['zip'] }],
+    }
+    const r = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    if (r.canceled || !r.filePath) return null
+    const target = /\.zip$/i.test(r.filePath) ? r.filePath : r.filePath + '.zip'
+    try {
+      const runtime = await shareRuntime(d)
+      // Results are re-listed now: only ids that are still shareable reach the exporter, which checks them again.
+      const results = Array.isArray(options?.results) && options.results.length ? selectedResults(options.results, await sharePlan(runtime, d)) : []
+      const out = await shareExport(runtime, d, layer, results, target)
+      telemetry.track('project.shared', { metadata: { layer, results: results.length, files: out.files.length, bytes: out.bytes } }, d)
+      return { ok: true, savedPath: target, bytes: out.bytes, files: out.files.length }
+    } catch (err) {
+      if (err instanceof ShareError) return { ok: false, code: err.code, detail: err.message }
+      return { ok: false, code: 'failed', detail: err instanceof Error ? err.message.slice(0, 300) : undefined }
+    }
+  })
+  ipcMain.handle('projects:pickStudy', async () => {
+    const win = BrowserWindow.getFocusedWindow()
+    const opts = {
+      title: 'Open a downloaded study',
+      properties: ['openFile'] as Array<'openFile'>,
+      filters: [{ name: 'HumanStudy study', extensions: ['zip'] }],
+    }
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    return r.canceled ? null : (r.filePaths[0] ?? null)
+  })
+  ipcMain.handle('projects:importStudy', async (_e, path: string): Promise<StudyImportResult> => {
+    if (typeof path !== 'string' || !path) return { ok: false, code: 'not-package' }
+    const file = resolve(path)
+    try {
+      const out = await importStudy(file, ensureProjectsRoot())
+      // The app's own agent files are not in a study file (they may hold a provider key): install this version's.
+      await refreshPack(out.dir).catch(() => undefined)
+      if (out.privateFiles > 0 && (await isPublishedStudy(out.dir).catch(() => false))) {
+        // Private copies arrived: research capture must recognise their wording before anything else reads them.
+        const python = await readyPython()
+        if (python) await indexPrivateCopies(python, trustedOriginalTextFiles(), out.dir, originalTextCache(), process.env.HUMANSTUDY_RUNTIME_BIN || '').catch(() => undefined)
+        await telemetry.refreshPrivateIndex().catch(() => undefined)
+      }
+      telemetry.track('project.imported', { metadata: { files: out.manifest.files.length, conversations: out.conversations, privateFiles: out.privateFiles, from: out.manifest.source.platform, renamed: out.renamed } }, out.dir)
+      return { ok: true, dir: out.dir, name: out.name, renamed: out.renamed, conversations: out.conversations, privateFiles: out.privateFiles }
+    } catch (err) {
+      return transferFailure(err)
+    } finally {
+      // Online, the picked file was uploaded into the sandbox only for this: do not keep a second copy there.
+      if (ONLINE && isInside(join(app.getPath('userData'), 'uploads'), dirname(file))) void rm(dirname(file), { recursive: true, force: true }).catch(() => undefined)
+    }
   })
 
   setCommunityCacheDir(app.getPath('userData'))
@@ -728,18 +949,29 @@ app.whenReady().then(() => {
     syncAccess()
     return v
   }
-  ipcMain.handle('account:status', () => acct.status())
+  // Signed in without a valid desktop key (new device, expired key): an invited account gets one
+  // in the background. autoUnlock tries once per app start or sign-in, so repeated calls stay local.
+  const silentUnlock = <T>(v: T): T => {
+    void acct.autoUnlock().then((got) => {
+      if (!got) return
+      syncAccess()
+      broadcast('account:changed', acct.status())
+    })
+    return v
+  }
+  ipcMain.handle('account:status', () => silentUnlock(acct.status()))
   ipcMain.handle('account:signIn', async (_e, email: string, password: string) =>
-    afterAccount(await acct.signIn(email, password))
+    silentUnlock(afterAccount(await acct.signIn(email, password)))
   )
-  ipcMain.handle('account:signUp', async (_e, email: string, password: string) =>
-    afterAccount(await acct.signUp(email, password))
+  ipcMain.handle('account:signUp', async (_e, email: string, password: string, code: string) =>
+    silentUnlock(afterAccount(await acct.signUp(email, password, code)))
   )
   ipcMain.handle('account:forgotPassword', (_e, email: string) => acct.forgotPassword(email))
   ipcMain.handle('account:resendConfirmation', (_e, email: string) => acct.resendConfirmation(email))
   ipcMain.handle('account:changePassword', async (_e, currentPassword: string, newPassword: string) =>
     afterAccount(await acct.changePassword(currentPassword, newPassword))
   )
+  ipcMain.handle('account:allowance', (_e, refresh?: boolean) => acct.allowance(Boolean(refresh)))
   ipcMain.handle('account:signOut', async () => afterAccount(await acct.signOut()))
   ipcMain.handle('account:unlock', async (_e, code: string) => {
     await acct.getConfig().catch(() => undefined) // the hosted model list, if reachable

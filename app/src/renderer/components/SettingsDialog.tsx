@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { AccountStatus, ProviderStatus, Settings } from '../../preload/types'
+import type { AccountStatus, Allowance, ProviderStatus, Settings } from '../../preload/types'
 import { AboutUpdates } from './Updates'
 import { ResearchDataSection } from './ResearchData'
 import { HelpFeedback } from './HelpFeedback'
 import { track } from '../telemetry'
+import { allowanceMessage } from '../allowance'
 import { t, getLangPref, setLangPref, type LangPref } from '../i18n'
 
 export type SettingsSection = 'account' | 'general' | 'models' | 'research' | 'help' | 'about'
@@ -347,6 +348,15 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
   const [busy, setBusy] = useState<'' | 'signin' | 'signup' | 'signout' | 'unlock' | 'forgot' | 'resend' | 'change'>('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [allowance, setAllowance] = useState<Allowance | null>(null)
+  const hosted = account?.modelAccess === 'hosted'
+  // Read once when the section opens (and when hosted access changes); the main process caches it.
+  useEffect(() => {
+    if (!hosted) return setAllowance(null)
+    let live = true
+    void Promise.resolve(window.humanstudy.account?.allowance?.() ?? null).then((a) => { if (live) setAllowance(a) }, () => undefined)
+    return () => { live = false }
+  }, [hosted])
 
   const run = async (kind: Exclude<typeof busy, ''>, task: () => Promise<void>, fallback: string) => {
     setBusy(kind)
@@ -364,8 +374,14 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
     run(
       'signin',
       async () => {
-        onAccount(await window.humanstudy.account.signIn(email.trim(), password))
+        const st = await window.humanstudy.account.signIn(email.trim(), password)
+        onAccount(st)
         setPassword('')
+        // A code typed into the shared field also unlocks an older account that was never invited.
+        if (code.trim() && !st.unlocked) {
+          onAccount(await window.humanstudy.account.unlock(code.trim()))
+          setCode('')
+        }
       },
       t('settings.err_signin')
     )
@@ -373,8 +389,9 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
     run(
       'signup',
       async () => {
-        const r = await window.humanstudy.account.signUp(email.trim(), password)
+        const r = await window.humanstudy.account.signUp(email.trim(), password, code.trim())
         setPassword('')
+        setCode('')
         if (r.needsConfirmation) setNotice(t('settings.confirm_email'))
         else onAccount(await window.humanstudy.account.status())
       },
@@ -414,6 +431,9 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
       setNotice(t('settings.password_changed'))
     }, t('settings.err_change_password'))
   }
+
+  const allowanceMsg = allowanceMessage(allowance, 'settings')
+  const allowanceText = allowanceMsg ? t(allowanceMsg.key, allowanceMsg.vars) : ''
 
   if (!account)
     return (
@@ -461,11 +481,23 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
+          <label>
+            <span className="setting-label">{t('settings.signup_code')}</span>
+            <input
+              className="field"
+              name="code"
+              data-private
+              autoComplete="off"
+              spellCheck={false}
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+            />
+          </label>
           <div className="row-end">
             <button
               type="button"
               className="ghost"
-              disabled={Boolean(busy) || !email.trim() || !password}
+              disabled={Boolean(busy) || !email.trim() || !password || !code.trim()}
               onClick={() => void signUp()}
             >
               {busy === 'signup' ? t('settings.creating') : t('settings.create_account')}
@@ -550,6 +582,7 @@ function Account({ account, onAccount }: { account: AccountStatus | null; onAcco
           {accessLine(account)}
         </span>
       </div>
+      {hosted && allowanceText && <p className="muted small allowance-line">{allowanceText}</p>}
     </section>
   )
 }

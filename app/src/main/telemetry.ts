@@ -14,7 +14,7 @@ import { createSerial, createWriteAttribution, isSaveTemp } from './write-captur
 import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
 import { loadPrivateIndexDir } from './private-index'
-import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, namesPrivatePath, mayCollectFile, programDiff, PRIVATE_MATERIAL, REDACTED_PRIVATE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
+import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, namesPrivatePath, mayCollectFile, programDiff, PRIVATE_MATERIAL, REDACTED_PRIVATE, STUDY_PACKAGE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
 import { createReplay, REPLAY_FLUSH_MS, type Replay, type ReplayFile, type ReplayFs } from './replay-core'
 import type { Capture } from './threads-core'
 import type { KernelEvent } from './kernel-types'
@@ -538,7 +538,7 @@ export function noteFsChange(projectDir: string, rel: string): void {
   const isAnnotation = r.endsWith('.annotations.json')
   const isSource = !isAnnotation && (r === 'paper.pdf' || r.startsWith('sources/'))
   if (!isProgram && r !== 'protocol.json' && r !== 'study.json' && !isSource && !isAnnotation && !WATCHED_DIRS.test(r)) return
-  if (r.includes('/.') || isSaveTemp(r)) return
+  if (r.includes('/.') || isSaveTemp(r) || STUDY_PACKAGE.test(r)) return
   const key = `${projectDir}\0${r}`
   clearTimeout(fsTimers.get(key))
   const timer = setTimeout(() => {
@@ -771,8 +771,9 @@ export function registerTelemetry(): void {
     const action = actionRef(o.action)
     track(type, { target, durationMs, metadata, projectId: known, ...(action ? { action } : {}), ...(o.v1Only === true ? { v1Only: true } : {}) }, dir)
   })
-  // Remembers the open project; the id (and .humanstudy/project.json's `id`) only exists once
-  // usage events are on, so a project is never touched for research without consent.
+  // Remembers the open project. Research data adds .humanstudy/project.json's `id` only once usage events are on, so a
+  // project is never touched for research without consent; "Download this study" (study-transfer.ts) adds the same
+  // random id when it is missing, so a study keeps one id wherever it moves. Neither sends anything by itself.
   ipcMain.handle('telemetry:projectId', (_e, projectDir: string | null) => {
     rendererProjectDir = typeof projectDir === 'string' && projectDir ? resolve(projectDir) : undefined
     if (!rendererProjectDir || !t.status().usage) return null

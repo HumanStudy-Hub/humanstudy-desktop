@@ -24,7 +24,8 @@ browser ──▶ https://<sandbox>.vercel.run
 
 What differs from desktop, all outside the shared code: folder pickers return nothing (projects live in
 the sandbox's projects folder), "Show in Finder" does nothing, save dialogs become browser downloads,
-closing the tab with unsaved edits asks through the browser, and model access for simulations uses the
+closing the tab with unsaved edits asks through the browser, "Download this study" / "Open a downloaded study"
+(`src/main/study-transfer.ts`) ride on the same download and upload (so a study file online is capped at the 200 MB upload limit), and model access for simulations uses the
 key path (`relaySupported()` is macOS-only), inside the user's own sandbox.
 
 ## Build and run locally
@@ -56,6 +57,11 @@ install-specific.
 Check the kernel tag's published Linux assets and `SHA256SUMS.txt` before using it for a new
 image. The browser image uses the matching Linux kernel build, whose release tag can differ
 from the Desktop installer tag.
+
+Signed in, every project is also kept in the account's private cloud storage by the same code as on desktop
+(`src/main/project-sync*.ts`; Supabase bucket `projects` and table `project_sync`, owner-only, defined in
+humanstudy-hub-web `supabase/migrations/*_project_sync.sql`). A new or reset sandbox lists the account's projects
+and downloads one when it is opened, so keeping projects no longer depends on the sandbox snapshot.
 
 Each user's sandbox is persistent. To update existing sandboxes, set the launcher's
 `TRY_APP_URL` and `TRY_APP_SHA256` from the approved release assets. The startup script verifies

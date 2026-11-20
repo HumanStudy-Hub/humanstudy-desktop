@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
-import type { HumanStudyApi, KernelEvent, KernelInstallStatus, MenuCommand, UpdateStatus } from './types'
+import type { AccountStatus, HumanStudyApi, KernelEvent, KernelInstallStatus, MenuCommand, UpdateStatus } from './types'
 
 function listen<T>(channel: string, cb: (v: T) => void): () => void {
   const h = (_: IpcRendererEvent, v: T): void => cb(v)
@@ -18,6 +18,20 @@ const api: HumanStudyApi = {
     pickPdf: () => ipcRenderer.invoke('projects:pickPdf'),
     rename: (dir, name) => ipcRenderer.invoke('projects:rename', dir, name),
     trash: (dir) => ipcRenderer.invoke('projects:trash', dir),
+    exportPreview: (dir) => ipcRenderer.invoke('projects:exportPreview', dir),
+    exportStudy: (dir, options) => ipcRenderer.invoke('projects:exportStudy', dir, options),
+    sharePreview: (dir) => ipcRenderer.invoke('projects:sharePreview', dir),
+    shareStudy: (dir, options) => ipcRenderer.invoke('projects:shareStudy', dir, options),
+    pickStudy: () => ipcRenderer.invoke('projects:pickStudy'),
+    importStudy: (path) => ipcRenderer.invoke('projects:importStudy', path),
+  },
+  sync: {
+    list: () => ipcRenderer.invoke('sync:list'),
+    beforeOpen: (dir) => ipcRenderer.invoke('sync:beforeOpen', dir),
+    download: (projectId) => ipcRenderer.invoke('sync:download', projectId),
+    closed: (dir) => ipcRenderer.invoke('sync:closed', dir),
+    restore: (projectId) => ipcRenderer.invoke('sync:restore', projectId),
+    onChanged: (cb) => listen<null>('sync:changed', () => cb()),
   },
   community: {
     studies: () => ipcRenderer.invoke('community:studies'),
@@ -28,12 +42,14 @@ const api: HumanStudyApi = {
   account: {
     status: () => ipcRenderer.invoke('account:status'),
     signIn: (email, password) => ipcRenderer.invoke('account:signIn', email, password),
-    signUp: (email, password) => ipcRenderer.invoke('account:signUp', email, password),
+    signUp: (email, password, code) => ipcRenderer.invoke('account:signUp', email, password, code),
     forgotPassword: (email) => ipcRenderer.invoke('account:forgotPassword', email),
     resendConfirmation: (email) => ipcRenderer.invoke('account:resendConfirmation', email),
     changePassword: (currentPassword, newPassword) => ipcRenderer.invoke('account:changePassword', currentPassword, newPassword),
     signOut: () => ipcRenderer.invoke('account:signOut'),
     unlock: (code) => ipcRenderer.invoke('account:unlock', code),
+    allowance: (refresh) => ipcRenderer.invoke('account:allowance', Boolean(refresh)),
+    onChanged: (cb) => listen<AccountStatus>('account:changed', cb),
   },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),

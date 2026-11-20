@@ -122,6 +122,48 @@ test('annotation saves retain conflict protection and browser exports preserve t
   assert.equal((await fetch(`${B}/download/${encodeURIComponent('/etc/passwd')}`, { headers: auth })).status, 404)
 })
 
+test('a study moves out of and back into the online workspace: browser download, upload, a new project', async () => {
+  const created = await ipc('projects:create', { name: 'Transfer check', sample: true })
+  assert.equal(created.ok, true)
+  const preview = (await ipc('projects:exportPreview', created.value)).value
+  assert.ok(preview.study.files > 3 && preview.hasPaper)
+  const saved = await ipc('projects:exportStudy', created.value, { conversations: true, privateFiles: [] })
+  assert.equal(saved.ok, true, JSON.stringify(saved))
+  assert.equal(saved.value.ok, true, JSON.stringify(saved.value))
+  assert.match(saved.value.savedPath, /Transfer check\.humanstudy\.zip$/)
+  const downloaded = await fetch(`${B}/download/${encodeURIComponent(saved.value.savedPath)}`, { headers: auth })
+  assert.equal(downloaded.status, 200)
+  const zip = Buffer.from(await downloaded.arrayBuffer())
+  assert.equal(zip.length, saved.value.bytes)
+  const id = crypto.randomUUID()
+  const up = await (await fetch(`${B}/upload/${id}/${encodeURIComponent('Transfer check.humanstudy.zip')}`, { method: 'POST', headers: auth, body: zip })).json()
+  const opened = await ipc('projects:importStudy', up.path)
+  assert.equal(opened.ok, true, JSON.stringify(opened))
+  assert.equal(opened.value.ok, true, JSON.stringify(opened.value))
+  assert.equal(opened.value.renamed, true, 'the same study is already here: a copy, never an overwrite')
+  assert.match(opened.value.name, /^Transfer check \(from online, [A-Z][a-z]{2} \d{1,2}\)$/)
+  const snap = (await ipc('project:read', opened.value.dir)).value
+  assert.equal(snap.program.extensions.scholarly.profile, 'scholarly-v1')
+  assert.equal((await ipc('project:readText', `${opened.value.dir}/protocol.json`)).value, (await ipc('project:readText', `${created.value}/protocol.json`)).value)
+  assert.ok((await ipc('projects:list')).value.some((p) => p.dir === opened.value.dir))
+  // the uploaded copy is not kept in the sandbox; a broken file is refused with a reason, not an exception
+  const again = await ipc('projects:importStudy', up.path)
+  assert.equal(again.value.ok, false)
+  assert.equal(again.value.code, 'not-package')
+})
+
+test('project sync runs in the online workspace too; signed out it stays local and never fails opening', async () => {
+  const created = await ipc('projects:create', { name: 'Sync check' })
+  assert.equal(created.ok, true)
+  const listed = await ipc('sync:list')
+  assert.equal(listed.ok, true, JSON.stringify(listed))
+  assert.deepEqual({ signedIn: listed.value.signedIn, cloudOnly: listed.value.cloudOnly }, { signedIn: false, cloudOnly: [] })
+  const opened = await ipc('sync:beforeOpen', created.value)
+  assert.deepEqual(opened.value, { dir: created.value })
+  assert.equal((await ipc('sync:closed', created.value)).ok, true)
+  assert.equal((await ipc('sync:download', 'proj-12345678')).ok, false, 'signed out: no cloud projects')
+})
+
 // One pending read per stream: a read abandoned by a timeout would swallow the next chunk.
 function lines(stream) {
   const reader = stream.getReader()

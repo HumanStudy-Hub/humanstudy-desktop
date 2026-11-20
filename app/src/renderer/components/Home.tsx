@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react'
-import type { AccountStatus, ProjectSummary } from '../../preload/types'
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type DragEvent, type Ref } from 'react'
+import type { AccountStatus, CloudProject, ProjectSummary, ProjectSyncEntry, ProjectSyncStatus, SyncListing } from '../../preload/types'
 import { Studies, type StudiesHandle } from './Studies'
 import { claimAction, holdAction, track } from '../telemetry'
 import { VersionFooter } from './Updates'
@@ -10,6 +10,7 @@ import { relativeTime } from '../format'
 import { t } from '../i18n'
 import { WEB_EDITION } from '../edition'
 import { readPaperHandoff } from '../../shared/paper-handoff'
+import { formatBytes, isStudyFile } from './StudyTransfer'
 
 type Section = 'projects' | 'studies'
 const SECTION_KEY = 'hs.homeSection'
@@ -21,9 +22,43 @@ interface Props {
   /** Opens Settings → Account. */
   onAccount(): void
   kernel: { status: KernelInstallStatus | null; retry(): void }
+  /** "Download this study" for a project in the list. */
+  onDownload(dir: string): void
+  /** "Open a downloaded study": picks a file, or opens the one given (dropped on the list). */
+  onOpenDownloaded(path?: string): void
 }
 
 export { relativeTime }
+
+/** Project sync: the small status next to a project when signed in (main/project-sync.ts). */
+const SYNC_LABEL: Record<ProjectSyncStatus, string> = {
+  synced: 'sync.synced',
+  syncing: 'sync.syncing',
+  'not-synced': 'sync.not_synced',
+  'conflict-copy': 'sync.conflict_copy',
+  behind: 'sync.behind',
+  deleted: 'sync.deleted',
+  'too-large': 'sync.too_large',
+  'other-account': 'sync.other_account',
+}
+export function syncHint(e: ProjectSyncEntry, maxBytes: number): string {
+  const limit = formatBytes(maxBytes)
+  if (e.status === 'too-large') return t('sync.hint_too_large', { limit })
+  if (e.detail === 'file-too-large') return t('sync.hint_file_too_large', { file: e.file ?? '' })
+  if (e.detail === 'unsafe-name') return t('sync.hint_unsafe', { file: e.file ?? '' })
+  if (e.detail === 'duplicate') return t('sync.hint_duplicate')
+  if (e.detail === 'retrying') return t('sync.hint_retrying')
+  return t(`sync.hint_${e.status.replace('-', '_')}`)
+}
+function SyncBadge({ entry, maxBytes }: { entry: ProjectSyncEntry | undefined; maxBytes: number }) {
+  if (!entry) return null
+  return (
+    <span className={`sync-status ${entry.status}`} title={syncHint(entry, maxBytes)}>
+      {t(SYNC_LABEL[entry.status], { limit: formatBytes(maxBytes) })}
+    </span>
+  )
+}
+type Row = { kind: 'local'; p: ProjectSummary } | { kind: 'cloud'; c: CloudProject }
 
 const baseName = (path: string) => (path.split(/[\\/]/).pop() ?? '').replace(/\.pdf$/i, '').trim() || t('home.untitled')
 
@@ -32,7 +67,7 @@ export interface HomeHandle {
   fromPaper(): void
 }
 
-export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Props & { ref?: Ref<HomeHandle> }) {
+export function Home({ ref, onOpen, onSettings, account, onAccount, kernel, onDownload, onOpenDownloaded }: Props & { ref?: Ref<HomeHandle> }) {
   const [paperHandoff, setPaperHandoff] = useState(() => WEB_EDITION ? readPaperHandoff(window.location.search) : null)
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null)
   const [query, setQuery] = useState('')
@@ -43,6 +78,9 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
   const [menu, setMenu] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<{ dir: string; name: string } | null>(null)
   const [confirmTrash, setConfirmTrash] = useState<string | null>(null)
+  const [dropping, setDropping] = useState(false)
+  const [sync, setSync] = useState<SyncListing | null>(null)
+  const [showDeleted, setShowDeleted] = useState(false)
   const search = useRef<HTMLInputElement>(null)
   const studies = useRef<StudiesHandle>(null)
   const [section, setSectionState] = useState<Section>(() => {
@@ -78,6 +116,44 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  // Signed in: the account's cloud projects merged with the local ones, each with its sync status.
+  const refreshSync = useCallback(async () => {
+    try {
+      setSync(await window.humanstudy.sync.list())
+    } catch {
+      setSync(null)
+    }
+  }, [])
+  useEffect(() => {
+    void refreshSync()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    // Optional: an embedding without the sync API (tests, older previews) is simply local only.
+    const off = window.humanstudy.sync?.onChanged(() => {
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        void refreshSync()
+        void refresh() // a download or a synced copy adds a project; a pull can rename one
+      }, 800)
+    })
+    return () => { clearTimeout(timer); off?.() }
+  }, [refreshSync, refresh, account?.signedIn, account?.email])
+  const syncOf = useMemo(() => new Map((sync?.local ?? []).map((e) => [e.dir, e])), [sync])
+  const openCloud = (c: CloudProject) =>
+    run(async () => {
+      setSync((s) => (s ? { ...s, cloudOnly: s.cloudOnly.filter((x) => x.projectId !== c.projectId) } : s))
+      const dir = await window.humanstudy.sync.download(c.projectId).catch((e: unknown) => {
+        void refreshSync()
+        throw new Error(errorText(e, t('sync.err_download')))
+      })
+      await refresh()
+      onOpen(dir)
+    })
+  const restore = (c: CloudProject) =>
+    run(async () => {
+      await window.humanstudy.sync.restore(c.projectId)
+      await refreshSync()
+    })
 
   useEffect(() => {
     const keys = (e: KeyboardEvent) => {
@@ -158,14 +234,43 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
       await refresh()
     })
 
-  const shown = useMemo(() => {
+  const shown = useMemo((): Row[] => {
     const q = query.trim().toLowerCase()
-    const list = [...(projects ?? [])].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
-    return q ? list.filter((p) => p.name.toLowerCase().includes(q)) : list
-  }, [projects, query])
+    const rows: Row[] = [
+      ...(projects ?? []).map((p): Row => ({ kind: 'local', p })),
+      ...(sync?.cloudOnly ?? []).map((c): Row => ({ kind: 'cloud', c })),
+    ]
+    const time = (r: Row) => Date.parse(r.kind === 'local' ? r.p.updatedAt : r.c.updatedAt) || 0
+    const name = (r: Row) => (r.kind === 'local' ? r.p.name : r.c.name).toLowerCase()
+    const list = rows.sort((a, b) => time(b) - time(a))
+    return q ? list.filter((r) => name(r).includes(q)) : list
+  }, [projects, sync, query])
+
+  // A downloaded study dropped on the project list opens as a new project (online, the file is uploaded first).
+  const dropTarget = section === 'projects'
+  const onDragOver = (e: DragEvent) => {
+    if (!dropTarget || !e.dataTransfer.types.includes('Files')) return
+    e.preventDefault()
+    if (!dropping) setDropping(true)
+  }
+  const onDrop = (e: DragEvent) => {
+    if (!dropTarget || !e.dataTransfer.files.length) return
+    e.preventDefault()
+    setDropping(false)
+    const file = e.dataTransfer.files[0]
+    if (!isStudyFile(file.name)) return setError(t('transfer.not_study_file'))
+    setError('')
+    onOpenDownloaded(window.humanstudy.files.pathOf(file))
+  }
 
   return (
-    <div className="home">
+    <div
+      className={`home${dropping ? ' dropping' : ''}`}
+      onDragOver={onDragOver}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropping(false) }}
+      onDrop={onDrop}
+    >
+      {dropping && <div className="drop-hint">{t('transfer.drop')}</div>}
       <header className="titlebar home-bar">
         <div className="brand">
           <span className="brand-mark" aria-hidden />
@@ -187,7 +292,8 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
               }
               if (e.key === 'Enter') {
                 if (section === 'studies') studies.current?.openFirst()
-                else if (shown[0]) onOpen(shown[0].dir)
+                else if (shown[0]?.kind === 'local') onOpen(shown[0].p.dir)
+                else if (shown[0]?.kind === 'cloud') void openCloud(shown[0].c)
               }
             }}
             placeholder={t(section === 'studies' ? 'home.search_studies' : 'home.search_projects')}
@@ -196,9 +302,14 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
           <kbd>⌘K</kbd>
         </label>
         <div className="titlebar-actions">
-          {!WEB_EDITION && (
+          {!WEB_EDITION ? (
             <button className="ghost" onClick={openFolder} disabled={busy}>
               {t('home.open_folder')}
+            </button>
+          ) : (
+            // Online there is no folder to open and no File menu: a downloaded study takes this place.
+            <button className="ghost" onClick={() => onOpenDownloaded()} disabled={busy}>
+              {t('transfer.open')}
             </button>
           )}
           <button className="ghost" onClick={onSettings}>
@@ -368,7 +479,17 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                   </div>
                 ) : (
                   <ul className="project-list">
-                    {shown.map((p) => (
+                    {shown.map((r) => r.kind === 'cloud' ? (
+                      <li key={`cloud:${r.c.projectId}`}>
+                        <button className="project-row" onClick={() => void openCloud(r.c)} disabled={busy} title={t('sync.hint_cloud', { device: r.c.device || '?' })}>
+                          <span className="doc-icon cloud" aria-hidden />
+                          <span className="project-name">{r.c.name}</span>
+                          <span className="sync-status cloud">{t('sync.cloud_only')}</span>
+                          <span className="project-time muted small">{relativeTime(r.c.updatedAt)}</span>
+                        </button>
+                        <span className="row-menu" aria-hidden><span className="more" /></span>
+                      </li>
+                    ) : ((p) => (
                       <li key={p.dir} className={menu === p.dir ? 'menu-open' : ''}>
                         {renaming?.dir === p.dir ? (
                           <form
@@ -405,6 +526,7 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                                 </span>
                               )}
                             </span>
+                            <SyncBadge entry={sync?.signedIn ? syncOf.get(p.dir) : undefined} maxBytes={sync?.maxBytes ?? 0} />
                             <span className="project-time muted small">{relativeTime(p.updatedAt)}</span>
                           </button>
                         )}
@@ -443,6 +565,16 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                                 >
                                   {t('home.rename')}
                                 </button>
+                                <button
+                                  className="menu-item row"
+                                  role="menuitem"
+                                  onClick={() => {
+                                    setMenu(null)
+                                    onDownload(p.dir)
+                                  }}
+                                >
+                                  {t('transfer.download')}
+                                </button>
                                 {!WEB_EDITION && (
                                   <button
                                     className="menu-item row"
@@ -470,8 +602,31 @@ export function Home({ ref, onOpen, onSettings, account, onAccount, kernel }: Pr
                           </span>
                         )}
                       </li>
-                    ))}
+                    ))(r.p))}
                   </ul>
+                )}
+                {!query && sync?.signedIn && sync.deleted.length > 0 && (
+                  <div className="sync-deleted">
+                    <button className="ghost small" aria-expanded={showDeleted} onClick={() => setShowDeleted(!showDeleted)}>
+                      {t('sync.deleted_list', { n: sync.deleted.length })}
+                    </button>
+                    {showDeleted && (
+                      <ul className="project-list">
+                        {sync.deleted.map((c) => (
+                          <li key={`deleted:${c.projectId}`}>
+                            <span className="project-row">
+                              <span className="doc-icon cloud" aria-hidden />
+                              <span className="project-name muted">{c.name}</span>
+                              <span className="project-time muted small">{relativeTime(c.deletedAt ?? c.updatedAt)}</span>
+                            </span>
+                            <span className="row-menu">
+                              <button className="ghost small" onClick={() => void restore(c)} disabled={busy}>{t('sync.restore')}</button>
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                 )}
               </section>
             </div>

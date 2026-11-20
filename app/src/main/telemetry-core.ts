@@ -175,6 +175,8 @@ export interface RowBase {
  *  globs or searches under sources/, counts too (the agent may build the path in pieces). */
 export const PRIVATE_MATERIAL = /(?:^|[^A-Za-z0-9_-])sources[\\/]+(?:private|researcher|quarantine)(?=$|[^A-Za-z0-9_.-])|(?:^|[\\/])original-text[\\/]/i
 export const REDACTED_PRIVATE = '[redacted: private material]'
+/** A study file made by "Download this study": never collected, wherever it is saved. */
+export const STUDY_PACKAGE = /\.humanstudy\.zip$/i
 
 function decoded(s: string): string {
   let out = s
@@ -372,6 +374,8 @@ export function mayCollectFile(o: { rel: string; text?: string; published: boole
   const rel = o.rel.split('\\').join('/')
   const strict = o.published || Boolean(o.hasPrivate)
   if (PRIVATE_MATERIAL.test(decoded(rel))) return false
+  // A downloaded study (study-transfer.ts) saved into a project: its contents may include private files and chats.
+  if (STUDY_PACKAGE.test(decoded(rel))) return false
   if (o.published && /^(?:artifacts\/simulations|runs)(?:\/|$)/.test(rel)) return false
   // an ordinary project (not published, no sources/private/) keeps collecting its PDFs and figures
   if (o.text === undefined) return !strict || o.index.size === 0

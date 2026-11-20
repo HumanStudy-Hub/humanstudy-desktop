@@ -2,7 +2,7 @@
 // unlocks hosted models. Electron-free (storage, encryption and fetch are injected) so it can be
 // tested against a stubbed fetch; src/main/account.ts wires it to safeStorage and userData.
 // Tokens and keys are never logged and never returned to the renderer.
-import type { AccountStatus } from '../preload/types'
+import type { AccountStatus, Allowance } from '../preload/types'
 
 export const DEFAULT_SERVER = 'https://humanstudy-hub.com'
 
@@ -60,12 +60,31 @@ export class AccountError extends Error {
 }
 
 const REFRESH_MARGIN_MS = 60_000
+const ALLOWANCE_TTL_MS = 60_000
+const ALLOWANCE_TIMEOUT_MS = 5_000
+
+/** Validates GET /api/desktop/allowance; anything malformed is treated as unknown (null). */
+export function parseAllowance(v: unknown): Allowance | null {
+  if (!v || typeof v !== 'object') return null
+  const o = v as Record<string, unknown>
+  if (typeof o.available !== 'boolean' || typeof o.percentLeft !== 'number' || !Number.isFinite(o.percentLeft)) return null
+  const requestsLeft = typeof o.requestsLeft === 'number' && Number.isFinite(o.requestsLeft) ? Math.max(0, o.requestsLeft) : 0
+  return {
+    available: o.available,
+    percentLeft: Math.min(100, Math.max(0, Math.round(o.percentLeft))),
+    requestsLeft,
+    revoked: o.revoked === true,
+    expired: o.expired === true,
+  }
+}
 
 export function createAccount(deps: AccountDeps) {
   const server = deps.server.replace(/\/+$/, '')
   const authOrigin = deps.authOrigin ? validAuthOrigin(deps.authOrigin) : undefined
   const now = (): number => (deps.now ? deps.now() : Date.now())
   let config: DesktopConfig | null = null
+  // One silent key request per sign-in or app start; a success re-arms it for the next expiry.
+  let autoUnlockTried = false
 
   // ---- storage ------------------------------------------------------------------------
   function readSecret<T>(field: 'session' | 'desktopKey'): T | null {
@@ -223,19 +242,28 @@ export function createAccount(deps: AccountDeps) {
     // A different account must not inherit the previous account's desktop key.
     if (prev && prev.email.toLowerCase() !== s.email.toLowerCase()) writeSecret('desktopKey', null)
     writeSecret('session', s)
+    autoUnlockTried = false // the caller runs autoUnlock in the background
     return status()
   }
 
-  async function signUp(email: string, password: string): Promise<{ needsConfirmation: boolean }> {
+  async function signUp(email: string, password: string, code: string): Promise<{ needsConfirmation: boolean }> {
     const e = (email ?? '').trim()
+    const c = (code ?? '').trim()
     if (!e || !password) throw new AccountError('Enter your email and password.')
+    if (!c) throw new AccountError('Enter your invitation code.', 'code_required')
     // The website confirms the address at /auth/confirm (allowed in Supabase Auth redirect URLs).
     const origin = authOrigin || (await getConfig()).authOrigin || server
-    const json = await supabase(`signup?redirect_to=${encodeURIComponent(`${origin}/auth/confirm`)}`, { email: e, password })
+    // The code is kept in user metadata; the server checks it when the account first asks for a key.
+    const json = await supabase(`signup?redirect_to=${encodeURIComponent(`${origin}/auth/confirm`)}`, {
+      email: e,
+      password,
+      data: { invitation_code: c },
+    })
     // With email confirmation on, Supabase returns the user without a session.
     const s = sessionFrom(json, e)
     if (s) {
       writeSecret('session', s)
+      autoUnlockTried = false // the caller runs autoUnlock in the background
       return { needsConfirmation: false }
     }
     return { needsConfirmation: true }
@@ -286,6 +314,7 @@ export function createAccount(deps: AccountDeps) {
     const s = getSession()
     writeSecret('session', null)
     writeSecret('desktopKey', null)
+    autoUnlockTried = false
     if (s && s.expiresAt > now()) {
       try {
         await supabase('logout?scope=local', undefined, s.accessToken)
@@ -298,31 +327,66 @@ export function createAccount(deps: AccountDeps) {
 
   async function unlock(code: string): Promise<AccountStatus> {
     const c = (code ?? '').trim()
-    if (!c) throw new AccountError('Enter an invitation code.')
+    if (!c) throw new AccountError('Enter your invitation code.', 'code_required')
+    return requestKey(c)
+  }
+
+  /**
+   * Asks for a desktop key without a code: an invited account (code given at sign-up or redeemed
+   * before) gets one; otherwise nothing changes and the invitation code field stays the fallback.
+   * Never throws. At most one attempt per sign-in or app start until a key is obtained. Callers run
+   * it in the background and publish the new status when it returns true.
+   */
+  async function autoUnlock(): Promise<boolean> {
+    if (autoUnlockTried || !getSession() || keyValid(getKey())) return false
+    autoUnlockTried = true
+    try {
+      await requestKey(undefined, true)
+      autoUnlockTried = false
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  async function requestKey(code?: string, silent = false): Promise<AccountStatus> {
     const token = await accessToken()
     if (!token) throw new AccountError('Sign in first, then enter your code.', 'not_signed_in')
+    // The answer belongs to the account that asked: a sign-out or a different sign-in during the
+    // request must neither receive its key nor be signed out by its 401.
+    const owner = jwtSub(token)
+    const ownerEmail = getSession()?.email.toLowerCase()
+    const sameAccount = (): boolean => {
+      const cur = getSession()
+      if (!cur) return false
+      return owner ? jwtSub(cur.accessToken) === owner : cur.email.toLowerCase() === ownerEmail
+    }
     let res: Response
     try {
       res = await deps.fetch(`${server}/api/desktop/key`, {
         method: 'POST',
         headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ code: c }),
+        body: JSON.stringify(code ? { code } : {}),
+        signal: AbortSignal.timeout(15_000),
       })
     } catch (err) {
       throw new AccountError(`Could not reach HumanStudy Hub (${(err as Error).message}).`, 'offline')
     }
     const json = (await res.json().catch(() => ({}))) as { key?: unknown; expiresAt?: unknown; error?: unknown }
     if (!res.ok) {
-      const code = typeof json.error === 'string' ? json.error : String(res.status)
+      const errCode = typeof json.error === 'string' ? json.error : String(res.status)
       if (res.status === 401) {
-        writeSecret('session', null)
-        throw new AccountError('Your session has ended. Sign in again.', code)
+        // A silent attempt never signs the user out; an explicit unlock reports the ended session.
+        if (!silent && sameAccount()) writeSecret('session', null)
+        throw new AccountError('Your session has ended. Sign in again.', errCode)
       }
-      if (res.status === 403) throw new AccountError('That code is not valid.', code)
-      if (res.status === 503) throw new AccountError('Hosted models are not available yet. Try again later.', code)
-      throw new AccountError(`HumanStudy Hub returned ${res.status}.`, code)
+      if (res.status === 403)
+        throw new AccountError(errCode === 'code_required' ? 'Enter your invitation code.' : 'That code is not valid.', errCode)
+      if (res.status === 503) throw new AccountError('Hosted models are not available yet. Try again later.', errCode)
+      throw new AccountError(`HumanStudy Hub returned ${res.status}.`, errCode)
     }
     if (typeof json.key !== 'string' || !json.key) throw new AccountError('HumanStudy Hub returned no key.')
+    if (!sameAccount()) throw new AccountError('Your account changed. Please try again.', 'account_changed')
     writeSecret('desktopKey', {
       key: json.key,
       expiresAt: typeof json.expiresAt === 'string' ? json.expiresAt : '',
@@ -343,6 +407,41 @@ export function createAccount(deps: AccountDeps) {
     return { server, key: k.key, model, models }
   }
 
+  // Remaining hosted allowance. Never throws: any failure (offline, 401, 404 before the server
+  // ships the endpoint, timeout, malformed body) is null, which the UI shows as nothing. Results,
+  // null included, are cached per key for a minute; concurrent callers share one request.
+  let allowanceCache: { keyId: string; at: number; value: Allowance | null } | null = null
+  let allowanceInFlight: { keyId: string; promise: Promise<Allowance | null> } | null = null
+  async function allowance(refresh = false): Promise<Allowance | null> {
+    try {
+      if (status().modelAccess !== 'hosted') return null
+      const k = getKey()
+      if (!keyValid(k)) return null
+      const keyId = k.key
+      if (allowanceInFlight?.keyId === keyId) return await allowanceInFlight.promise
+      if (!refresh && allowanceCache?.keyId === keyId && now() - allowanceCache.at < ALLOWANCE_TTL_MS) return allowanceCache.value
+      const promise = (async (): Promise<Allowance | null> => {
+        try {
+          const res = await deps.fetch(`${server}/api/desktop/allowance`, {
+            headers: { authorization: `Bearer ${keyId}` },
+            signal: AbortSignal.timeout(ALLOWANCE_TIMEOUT_MS),
+          })
+          if (!res.ok) return null
+          return parseAllowance(await res.json())
+        } catch {
+          return null
+        }
+      })()
+      allowanceInFlight = { keyId, promise }
+      const value = await promise
+      if (allowanceInFlight?.promise === promise) allowanceInFlight = null
+      allowanceCache = { keyId, at: now(), value }
+      return value
+    } catch {
+      return null
+    }
+  }
+
   /**
    * What a PostgREST call on the user's own rows needs (research data): a fresh access token, the
    * Supabase URL and publishable key, and the user id (the JWT `sub`). Null when signed out.
@@ -361,7 +460,7 @@ export function createAccount(deps: AccountDeps) {
     if (!token) return null
     try { return jwtSub(token) || null } catch { return null }
   }
-  return { status, signIn, signUp, signOut, forgotPassword, resendConfirmation, changePassword, unlock, getConfig, hostedAccess, restAuth, researchOwner }
+  return { status, signIn, signUp, signOut, forgotPassword, resendConfirmation, changePassword, unlock, autoUnlock, getConfig, hostedAccess, allowance, restAuth, researchOwner }
 }
 
 function validAuthOrigin(raw: string): string {

@@ -224,6 +224,83 @@ export interface ProjectSummary {
   artifactCount: number
 }
 
+/** "Download this study": what the one-file copy would hold (study-transfer.ts). Sizes are before compression. */
+export interface StudyExportPreview {
+  name: string
+  /** Study files that are always included (program, protocol, package, results, notes, the paper). */
+  study: { files: number; bytes: number }
+  hasPaper: boolean
+  /** The chat history (.humanstudy/threads), included unless the researcher unticks it. */
+  conversations: { count: number; files: number; bytes: number }
+  /** Files the researcher supplied privately (sources/private/ and the like): included, like every project file. */
+  privateFiles: { path: string; bytes: number }[]
+  /** The limits a study file has to stay within (the same ones checked when it is opened). */
+  limits: { maxFiles: number; maxTotalBytes: number; maxFileBytes: number }
+}
+export interface StudyExportOptions {
+  /** False leaves the chat history out; everything else in the project is always included. */
+  conversations: boolean
+}
+/** Plain reasons a study file could not be written or opened; the renderer words them (i18n `transfer.err_*`). */
+export type StudyTransferErrorCode = 'not-package' | 'newer' | 'damaged' | 'unsafe' | 'too-large' | 'not-project' | 'failed'
+export interface StudyTransferFailure { ok: false; code: StudyTransferErrorCode; file?: string; detail?: string }
+export type StudyExportResult = { ok: true; savedPath: string; bytes: number; files: number } | StudyTransferFailure
+export type StudyImportResult =
+  | { ok: true; dir: string; name: string; renamed: boolean; conversations: number; privateFiles: number }
+  | StudyTransferFailure
+
+/** Sharing a study (main/share-layers.ts): three layers, unlike "Download this study" (the researcher's own full
+ *  copy) and private project sync, which include everything and are not sharing. */
+export type ShareLayer = 'overview' | 'experiment'
+export interface ShareLayerState {
+  available: boolean
+  /** Why it is unavailable: no protocol, not Validated and checks not passed, changed after download from the
+   *  library, the research runtime is missing, or the exporter's own plain reason (`blocked`, see `reason`). */
+  code?: 'not-validated' | 'no-protocol' | 'changed-published' | 'blocked' | 'runtime'
+  reason?: string
+  /** The exact public file list of this layer (without results). */
+  files: string[]
+  /** Evidence excerpts withheld and marked "Get from source". */
+  withheld?: number
+  /** Sources the receiver gets restricted wording from (URL or DOI plus hash). */
+  getFromSource?: number
+  /** Layer 2: Validated in the library, or its checks passed on this computer. */
+  validated?: 'library' | 'checks'
+}
+/** Layer 3: one of the researcher's own results or materials (artifacts/), shared only when ticked. */
+export interface ShareResultItem { id: string; kind: 'trial' | 'material'; files: string[]; bytes: number; blocked?: string }
+export interface SharePreview { overview: ShareLayerState; experiment: ShareLayerState; results: ShareResultItem[] }
+export interface ShareOptions { layer: ShareLayer; results: string[] }
+export type ShareResult = { ok: true; savedPath: string; bytes: number; files: number } | { ok: false; code: 'not-project' | 'runtime' | 'failed'; detail?: string }
+
+/** Project sync (main/project-sync.ts): the status shown next to a project when signed in. */
+export type ProjectSyncStatus = 'synced' | 'syncing' | 'not-synced' | 'conflict-copy' | 'behind' | 'deleted' | 'too-large' | 'other-account'
+export interface ProjectSyncEntry {
+  dir: string
+  status: ProjectSyncStatus
+  /** Why a project is not synced yet: retrying after a failure, a file too large for cloud storage, a file name
+   *  another computer cannot store, or a second folder with the same project. */
+  detail?: 'retrying' | 'file-too-large' | 'unsafe-name' | 'duplicate'
+  file?: string
+}
+/** A project in the account's cloud storage. */
+export interface CloudProject { projectId: string; name: string; updatedAt: string; device: string; bytes: number; deletedAt?: string }
+export interface SyncListing {
+  signedIn: boolean
+  /** The cloud could not be reached: local statuses only. */
+  offline: boolean
+  local: ProjectSyncEntry[]
+  /** In the account, not on this computer: opening one downloads it. */
+  cloudOnly: CloudProject[]
+  /** Deleted in the last 30 days: restorable. */
+  deleted: CloudProject[]
+  /** The largest project that syncs (bytes). */
+  maxBytes: number
+}
+/** What opening a project did: the folder to open (renamed when the cloud name changed), and the copy made when both
+ *  this copy and the cloud had changed. */
+export interface SyncOpenResult { dir: string; copy?: { dir: string; name: string; device: string } }
+
 export type Theme = 'light' | 'dark' | 'system'
 export interface Settings {
   theme: Theme
@@ -293,6 +370,16 @@ export interface AccountStatus {
   models?: string[]
 }
 
+/** Remaining hosted model allowance (GET /api/desktop/allowance). */
+export interface Allowance {
+  available: boolean
+  /** 0-100. */
+  percentLeft: number
+  requestsLeft: number
+  revoked: boolean
+  expired: boolean
+}
+
 /** Auto-update state (electron-updater, GitHub Releases). Packaged builds only. */
 export interface UpdateStatus {
   /** The running app version. */
@@ -323,7 +410,7 @@ export interface KernelInstallStatus {
 
 /** A native menu action for the renderer. */
 export interface MenuCommand {
-  command: 'newProject' | 'openFolder' | 'pane' | 'settings' | 'back' | 'projects' | 'closeTab'
+  command: 'newProject' | 'openFolder' | 'pane' | 'settings' | 'back' | 'projects' | 'closeTab' | 'downloadStudy' | 'openStudy'
   /** For 'pane': 'agent' | 'study' | 'paper' | 'files'. */
   arg?: string
   /** Chosen with the item's keyboard accelerator rather than the menu itself. */
@@ -371,6 +458,30 @@ export interface HumanStudyApi {
     rename(dir: string, name: string): Promise<string>
     /** Moves the project folder to the Trash. */
     trash(dir: string): Promise<void>
+    /** What "Download this study" would include. */
+    exportPreview(dir: string): Promise<StudyExportPreview>
+    /** Asks where to save (online: the browser downloads it) and writes <name>.humanstudy.zip; null when cancelled. */
+    exportStudy(dir: string, options: StudyExportOptions): Promise<StudyExportResult | null>
+    /** What each share layer would contain (overview, runnable experiment, ticked results). */
+    sharePreview(dir: string): Promise<SharePreview>
+    /** Asks where to save (online: the browser downloads it) and writes the share ZIP; null when cancelled. */
+    shareStudy(dir: string, options: ShareOptions): Promise<ShareResult | null>
+    /** Picks a downloaded study file (online: uploads it); null when cancelled. */
+    pickStudy(): Promise<string | null>
+    /** Opens a downloaded study as a new project; never changes an existing one. */
+    importStudy(path: string): Promise<StudyImportResult>
+  }
+  sync: {
+    /** Each project's sync status, plus the account's cloud-only and recently deleted projects (signed in only). */
+    list(): Promise<SyncListing>
+    /** Before opening a project: brings it up to date from the cloud when that is safe; never fails. */
+    beforeOpen(dir: string): Promise<SyncOpenResult>
+    /** Downloads a cloud-only project; returns its folder. */
+    download(projectId: string): Promise<string>
+    /** The open project was closed: push its changes now. */
+    closed(dir: string): Promise<void>
+    restore(projectId: string): Promise<void>
+    onChanged(cb: () => void): () => void
   }
   community: {
     /** The library index; cached, refreshed when online. */
@@ -384,14 +495,18 @@ export interface HumanStudyApi {
   account: {
     status(): Promise<AccountStatus>
     signIn(email: string, password: string): Promise<AccountStatus>
-    /** Creates the account; the user must confirm by email before signing in. */
-    signUp(email: string, password: string): Promise<{ needsConfirmation: boolean }>
+    /** Creates the account with its invitation code (entered once); the user confirms by email before signing in. */
+    signUp(email: string, password: string, code: string): Promise<{ needsConfirmation: boolean }>
     forgotPassword(email: string): Promise<void>
     resendConfirmation(email: string): Promise<void>
     changePassword(currentPassword: string, newPassword: string): Promise<AccountStatus>
     signOut(): Promise<AccountStatus>
-    /** Redeems an invitation code for a desktop key that unlocks hosted models. */
+    /** Redeems an invitation code for a desktop key (fallback for accounts created without one). */
     unlock(code: string): Promise<AccountStatus>
+    /** Remaining hosted allowance, or null when unknown (not hosted, offline, server without the endpoint). Cached ~60 s unless refresh. */
+    allowance(refresh?: boolean): Promise<Allowance | null>
+    /** The status changed in the background (a desktop key arrived without a code). */
+    onChanged(cb: (a: AccountStatus) => void): () => void
   }
   settings: {
     get(): Promise<Settings>

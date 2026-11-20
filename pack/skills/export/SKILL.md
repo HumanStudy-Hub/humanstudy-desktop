@@ -51,6 +51,22 @@ Exports are derived from `program.json` and existing artifacts; they add no fact
   show the exact public file list. Explain that the experiment needs its protocol and any missing
   materials to run. The export leaves the saved project intact.
 
+- **Sharing in three layers** (what the app's Download dialog offers under "Share with others"; the
+  same exporter, so prefer pointing the researcher to that dialog):
+  1. Study overview: `community.py --layer overview --output exports/<project>-overview-<date>.zip`
+     (the same as `--program-only`). Always shareable. Excerpts and field wording from sources without an
+     open licence are withheld and marked "Get from source" (URL or DOI plus hash); private paths are removed.
+  2. Runnable experiment: `--layer experiment`. Only for a Validated library study (an unchanged copy the app
+     confirms against the library catalog, `--library-validated <sha256>`) or a protocol whose checks passed
+     in the app (`--checks-passed <sha256>`); otherwise it is refused with a plain reason. Never pass these
+     yourself: send the researcher to the Download dialog's "Share with others" instead. Restricted sources ship as hosted / link / user tiers ("Get from source").
+  3. My results and materials: add `--results <id>` per item the researcher ticked (ids from `--plan`).
+     Never add a result the researcher did not choose.
+  `--plan` prints each layer's exact file list, why a layer is unavailable and which results are blocked.
+  Every shared file is checked by content for restricted or held wording (any run of 8 words or a whole
+  short line, in any readable format; unreadable non-image files are refused). Private project sync to the
+  researcher's own account includes everything and is not sharing.
+
 - **Agent skill (folder)**: for using the study in another AI agent (Claude Code, Codex,
   OpenCode, anything that reads skills). Run
   `python .opencode/skills/export/agent_package.py --output exports/<project>-agent-<date>`.
