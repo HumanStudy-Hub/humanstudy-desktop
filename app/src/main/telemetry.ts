@@ -12,6 +12,7 @@ import { storeResearchContent } from './research-content'
 import { createResearchCollector } from './research-collector'
 import { createResearchAgent, type ResearchLink } from './research-agent'
 import { researchInteraction } from '../shared/research-interactions'
+import { createInteractionGuard, readArtifactFile } from './artifact-interaction-guard'
 import { actionRef, type ActionRef } from '../shared/research-operations'
 import { createSerial, createWriteAttribution, isSaveTemp } from './write-capture'
 import { strToU8, zipSync } from 'fflate'
@@ -828,7 +829,9 @@ export function registerTelemetry(): void {
     try { return realpathSync(path).startsWith(realpathSync(getSettings().projectsRoot) + sep) }
     catch { return false }
   }
-  const rendererTrack = (type: string, opts?: TelemetryTrackOptions,
+  // A frame may only report identifiers its own file declares, at a bounded rate (review of #159).
+  const interactionGuard = createInteractionGuard(readArtifactFile)
+  const rendererTrack = async (type: string, opts?: TelemetryTrackOptions,
     delivery?: { id: string; occurred_at: string; visitId: string; accept(): boolean }) => {
     if (typeof type !== 'string' || RENDERER_DENY.test(type) || isProhibitedEventType(type)) return
     const o = opts && typeof opts === 'object' ? opts : {}
@@ -841,7 +844,13 @@ export function registerTelemetry(): void {
     const projectId = isArtifact ? undefined : delivery && typeof o.projectId === 'string' && /^[A-Za-z0-9_.:-]{8,80}$/.test(o.projectId) ? o.projectId : known
     const target = typeof o.target === 'string' ? o.target : undefined
     const durationMs = typeof o.durationMs === 'number' ? o.durationMs : undefined
-    const metadata = o.metadata && typeof o.metadata === 'object' && !Array.isArray(o.metadata) ? o.metadata : undefined
+    let metadata = o.metadata && typeof o.metadata === 'object' && !Array.isArray(o.metadata) ? o.metadata : undefined
+    if (type === 'artifact.interact') {
+      if (!dir || !artifactPath(target) || !semanticId(metadata?.artifact_revision)) return
+      const interaction = await interactionGuard(dir, target, metadata.artifact_revision, metadata.interaction)
+      if (!interaction) return
+      metadata = { ...metadata, interaction }
+    }
     const action = actionRef(o.action)
     return track(type, { target, durationMs, metadata, projectId, ...(!isArtifact && action ? { action } : {}),
       ...(o.v1Only === true ? { v1Only: true } : {}) }, dir, delivery)
