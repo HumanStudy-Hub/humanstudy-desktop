@@ -46,6 +46,21 @@ const inputPaths = (input: unknown): string => {
 const emptyInput = (v: unknown) => v === undefined || v === null || v === '' ||
   (typeof v === 'object' && !Array.isArray(v) && Object.keys(v as object).length === 0)
 
+/**
+ * Send, then record the outcome without making the caller wait for the record. `record` queues the
+ * capture synchronously (the collector serializes and the quit path drains it); its failure is ignored.
+ */
+export async function dispatchAndRecord<T>(send: () => Promise<T>, record: (outcome: 'sent' | 'failed') => Promise<unknown>): Promise<T> {
+  let outcome: 'sent' | 'failed' = 'failed'
+  try {
+    const value = await send()
+    outcome = 'sent'
+    return value
+  } finally {
+    try { void record(outcome).catch(() => undefined) } catch { /* research data must never break the app */ }
+  }
+}
+
 export function createResearchAgent(capture: Sink) {
   const turns = new Map<string, Turn>()
   const contexts = new Map<string, { project?: string; dir?: string; model: string }>()

@@ -45,7 +45,10 @@ test('real preload and browser JSON HTTP transport preserve omitted community re
   });await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
   const origin='http://127.0.0.1:'+server.address().port
   const browser={exports:{},console,URL,Uint8Array,Event,navigator:{language:'en'},window:{__HS_WEB__:{uploads:'/uploads',sep:'/'},addEventListener(){},dispatchEvent(){}},EventSource:class{addEventListener(){} close(){}},fetch:(url,options)=>nativeFetch(origin+url,options)}
-  vm.runInNewContext(transpile(await readFile(new URL('./browser-electron.ts',import.meta.url),'utf8')),browser)
+  // Bundled: the browser transport imports the research outbox and the shared contract.
+  const [{text:transport}]=(await build({entryPoints:[fileURLToPath(new URL('./browser-electron.ts',import.meta.url))],bundle:true,write:false,format:'cjs',logLevel:'error'})).outputFiles
+  browser.module={exports:{}}
+  vm.runInNewContext(transport,browser)
   vm.runInNewContext(transpile(await readFile(new URL('../src/preload/index.ts',import.meta.url),'utf8')),{require:()=>browser.module.exports,exports:{}})
   const api=browser.window.humanstudy.community
   assert.equal((await api.study(id)).currentRevision,revision)

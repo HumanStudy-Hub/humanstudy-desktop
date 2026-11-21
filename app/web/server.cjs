@@ -58,9 +58,14 @@ try {
 const UPLOADS = join(paths.userData, 'uploads')
 mkdirSync(UPLOADS, { recursive: true })
 const validVisit = value => typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)
-if (validVisit(process.env.HS_VISIT_ID)) process.env.HS_VISIT_ID = process.env.HS_VISIT_ID.toLowerCase()
-else delete process.env.HS_VISIT_ID
-let launchVisit = process.env.HS_VISIT_ID
+// Visit and end reason live in this process only. They are kept out of process.env so the agent kernel and
+// the programs it starts neither inherit nor can rewrite them (and so cannot choose a session's end reason).
+const runtime = globalThis.__humanstudyWebRuntime = { visitId: undefined, endReason: undefined }
+if (validVisit(process.env.HS_VISIT_ID)) runtime.visitId = process.env.HS_VISIT_ID.toLowerCase()
+delete process.env.HS_VISIT_ID
+const STOP_REASON_FILE = process.env.HS_WEB_STOP_REASON_FILE || join(paths.userData, 'web-stop-reason.json')
+delete process.env.HS_WEB_STOP_REASON_FILE
+let launchVisit = runtime.visitId
 let fallbackCanRebind = true
 const workspaceFile = join(paths.userData, 'web-workspace-id')
 try { writeFileSync(workspaceFile, randomUUID(), { mode: 0o600, flag: 'wx' }) }
@@ -75,7 +80,7 @@ function bindVisit(value, fromLaunch = false) {
   const visit = value.toLowerCase()
   if (fromLaunch) launchVisit = visit
   if (fromLaunch || fallbackCanRebind) {
-    process.env.HS_VISIT_ID = visit
+    runtime.visitId = visit
     fallbackCanRebind = false
   }
 }
@@ -283,7 +288,7 @@ const server = http.createServer(async (req, res) => {
         clients.delete(res)
         if (!clients.size && !stopping) {
           disconnectTimer = setTimeout(() => {
-            emitSend('telemetry:webDisconnect', [process.env.HS_VISIT_ID])
+            emitSend('telemetry:webDisconnect', [runtime.visitId])
             fallbackCanRebind = true
           }, disconnectGraceMs)
           disconnectTimer.unref()
@@ -357,11 +362,11 @@ process.on('unhandledRejection', (e) => console.error('unhandled rejection', e))
 // Stopping the sandbox (or start.sh replacing the server): save conversations and stop the agent without
 // asking; a turn in progress is interrupted, as a desktop "Stop and quit" would.
 function signalledReason() {
-  const path = process.env.HS_WEB_STOP_REASON_FILE || join(paths.userData, 'web-stop-reason.json')
+  const path = STOP_REASON_FILE
   try {
     const marker = JSON.parse(readFileSync(path, 'utf8'))
     unlinkSync(path)
-    if (validVisit(marker.visit_id) && marker.visit_id.toLowerCase() === process.env.HS_VISIT_ID &&
+    if (validVisit(marker.visit_id) && marker.visit_id.toLowerCase() === runtime.visitId &&
       (marker.reason === 'timeout' || marker.reason === 'user_stop')) return marker.reason
   } catch { /* a missing or invalid marker is an ordinary close */ }
   return 'closed'
@@ -370,11 +375,11 @@ electron.app.on('before-quit', () => {
   if (stopping) return
   stopping = true
   clearTimeout(disconnectTimer)
-  setTimeout(() => process.exit(process.env.HS_RUNTIME_END_REASON === 'crash' ? 1 : 0), 8000).unref()
+  setTimeout(() => process.exit(runtime.endReason === 'crash' ? 1 : 0), 8000).unref()
 })
 function stop(reason) {
   if (stopping) return
-  process.env.HS_RUNTIME_END_REASON = reason
+  runtime.endReason = reason
   electron.__web.forceQuit = true
   electron.app.quit()
 }

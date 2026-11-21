@@ -31,10 +31,10 @@ async function setup(){
    if(state.failObject)return new Response(null,{status:503})
    state.objectPosts++;objects.set(p,Buffer.from(init.body));state.afterObject?.();return new Response(null,{status:201})
   }
-  if(p==='/rest/v1/research_events'){if(init.method!=='POST')return Response.json([...events.values()].filter(e=>e.owner_id===owner));if(state.holdEvent)await state.holdEvent;const row=JSON.parse(init.body);if(row.id===state.rejectEvent)return new Response(null,{status:400});events.set(row.id,{...row,owner_id:owner});return new Response(null,{status:201})}
+  if(p==='/rest/v1/research_events'){if(init.method!=='POST')return Response.json([...events.values()].filter(e=>e.owner_id===owner));if(state.holdEvent)await state.holdEvent;const row=JSON.parse(init.body);if(state.schemaMissing&&row.visit_id)return Response.json({code:'PGRST204'},{status:400});if(row.id===state.rejectEvent)return new Response(null,{status:400});events.set(row.id,{...row,owner_id:owner});return new Response(null,{status:201})}
   throw Error('Unexpected fixture route '+p)
  }
- const make=(options={})=>createResearchCollector({root:join(root,'queue'),surface:'desktop',appVersion:'test',ownerId:()=>state.owner,auth,allowed:()=>state.allowed,fetch:fetcher,visitId:()=>options.surface==='web' ? VISIT : undefined,...options})
+ const make=(options={})=>createResearchCollector({root:join(root,'queue'),surface:'desktop',appVersion:'test',ownerId:()=>state.owner,auth,allowed:()=>state.allowed,fetch:fetcher,visitId:()=>options.surface==='web' ? ('visit' in options ? options.visit : VISIT) : undefined,...options})
  const source=join(root,'paper.pdf');await writeFile(source,Buffer.from('Original source: αβγ\n'))
  return {root,state,objects,rows,events,consents,make,source}
 }
@@ -195,4 +195,39 @@ test('web retries acknowledge the same atomic row before and after upload or col
  const fresh = await f.make(options).capture({...record,id:undefined})
  assert.notEqual(fresh,id)
  assert.equal(JSON.parse(await readFile(join(events,fresh+'.json'),'utf8')).visit_id,VISIT)
+})
+
+test('a blocked upload adds one checkpoint per sequence position, not one per retry', async () => {
+ const f = await setup(), c = f.make({surface:'web'}), events = join(f.root,'queue',OWNER,'events')
+ await c.capture({event_type:'action.invoke',view:'study',target:'first',metadata:{via:'pointer'}})
+ f.state.schemaMissing = true
+ const checkpoints = async () => (await Promise.all((await readdir(events)).map(async name => JSON.parse(await readFile(join(events,name),'utf8'))))).filter(row => row.event_type === 'delivery.checkpoint')
+ for (let i = 0; i < 4; i++) { await c.flush(); assert.match(c.error(), /visit schema/) }
+ assert.equal((await checkpoints()).length, 1)
+ await c.capture({event_type:'action.invoke',view:'study',target:'second',metadata:{via:'pointer'}})
+ await c.flush(); await c.flush()
+ const pending = await checkpoints()
+ assert.equal(pending.length, 2)
+ assert.ok(pending.every(row => row.visit_id === VISIT))
+ f.state.schemaMissing = false
+ await c.flush()
+ assert.equal(await c.pending(), 0)
+ assert.equal([...f.events.values()].filter(row => row.event_type === 'delivery.checkpoint').length, 2)
+})
+test('a server restarted without a visit reports a rejected row under its own visit and keeps delivering', async () => {
+ const f = await setup(), before = f.make({surface:'web'})
+ const id = await before.capture({event_type:'action.invoke',view:'study',target:'bad',metadata:{via:'pointer'}})
+ await before.capture({event_type:'action.invoke',view:'study',target:'good',metadata:{via:'pointer'}})
+ f.state.rejectEvent = id
+ const restarted = f.make({surface:'web', visit: undefined})
+ assert.equal(await restarted.capture({event_type:'action.invoke',view:'study',target:'no-visit',metadata:{via:'pointer'}}), null)
+ await restarted.flush(); await restarted.flush()
+ assert.ok([...f.events.values()].some(row => row.target === 'good'))
+ const report = [...f.events.values()].find(row => row.event_type === 'delivery.rejected')
+ assert.ok(report)
+ assert.equal(report.visit_id, VISIT)
+ assert.equal(report.metadata.rejected_event_id, id)
+ assert.deepEqual(await readdir(join(f.root,'queue',OWNER,'events')), [])
+ assert.deepEqual(await readdir(join(f.root,'queue',OWNER,'rejected')), [id + '.json'])
+ assert.ok([...f.events.values()].every(row => row.visit_id === VISIT))
 })

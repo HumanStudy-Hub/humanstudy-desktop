@@ -160,6 +160,7 @@ test('the browser commits before POST, reuses the ID after a lost response and w
       tx.objectStore = () => ({
         add: entry => request(() => stored.set(JSON.stringify([entry.workspace, entry.id]), entry)),
         delete: key => request(() => stored.delete(JSON.stringify(key))),
+        getAll: () => request(() => [...stored.values()]),
         index: () => ({ getAll: workspace => request(() => [...stored.values()].filter(entry => entry.workspace === workspace)) }),
       })
       return tx
@@ -209,5 +210,76 @@ test('the browser commits before POST, reuses the ID after a lost response and w
   await until(() => stored.size === 1)
   scope = null
   await offline.refresh()
+  await until(() => stored.size === 0)
+})
+
+test('withdrawal, sign-out or a changed scope also clears rows other workspaces left in this origin', async () => {
+  const { runInNewContext } = await import('node:vm')
+  const { randomUUID } = await import('node:crypto')
+  const { setImmediate: turn } = await import('node:timers/promises')
+  const [{ text }] = (await build({
+    entryPoints: [fileURLToPath(new URL('./research-outbox.ts', import.meta.url))],
+    bundle: true, write: false, format: 'cjs',
+  })).outputFiles
+  const stored = new Map()
+  const put = entry => stored.set(JSON.stringify([entry.workspace, entry.id]), entry)
+  const db = {
+    createObjectStore: () => ({ createIndex() {} }),
+    transaction() {
+      const tx = {}
+      const request = run => {
+        const req = {}
+        setImmediate(() => { req.result = run(); tx.oncomplete() })
+        return req
+      }
+      tx.objectStore = () => ({
+        add: entry => request(() => put(entry)),
+        delete: key => request(() => stored.delete(JSON.stringify(key))),
+        getAll: () => request(() => [...stored.values()]),
+        index: () => ({ getAll: workspace => request(() => [...stored.values()].filter(entry => entry.workspace === workspace)) }),
+      })
+      return tx
+    },
+  }
+  const indexedDB = { open() { const request = { result: db }; queueMicrotask(() => { request.onupgradeneeded(); request.onsuccess() }); return request } }
+  let scope = 'first'
+  const load = (workspace = 'workspace') => {
+    const module = { exports: {} }
+    runInNewContext(text, { module, indexedDB, crypto: { randomUUID }, performance, setTimeout: () => 1, clearTimeout() {} })
+    return module.exports.createResearchOutbox(workspace, visit, scope, async () => { throw Error('offline') }, async () => scope)
+  }
+  const row = (workspace, rowScope) => put({ workspace, visit, scope: rowScope, id: randomUUID(), occurredAt: new Date().toISOString(), order: 0, channel: 'telemetry:track', args: ['x'] })
+  async function until(check) {
+    for (let i = 0; i < 100 && !check(); i++) await turn()
+    assert.ok(check())
+  }
+  const left = () => [...stored.values()].map(entry => `${entry.workspace}:${entry.scope}`).sort()
+
+  // A first grant on a page keeps another workspace's pending rows.
+  scope = null
+  row('other', 'other-scope')
+  const granting = load()
+  scope = 'first'
+  await granting.refresh()
+  await granting.append('telemetry:track', ['mine'])
+  await until(() => stored.size === 2)
+  assert.deepEqual(left(), ['other:other-scope', 'workspace:first'])
+
+  // The account or agreement changes: earlier rows here and in every other workspace go.
+  scope = 'second'
+  await granting.refresh()
+  await until(() => stored.size === 0)
+
+  // Sign-out or withdrawal on a fresh page clears the whole origin, too.
+  row('other', 'other-scope'); row('workspace', 'second')
+  scope = null
+  await load().refresh()
+  await until(() => stored.size === 0)
+
+  // Suspending (consent switched off in this tab) does the same.
+  scope = 'third'
+  const suspended = load()
+  row('other', 'other-scope')
+  suspended.suspend()
   await until(() => stored.size === 0)
 })

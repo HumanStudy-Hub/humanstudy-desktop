@@ -83,7 +83,7 @@ function sourceCollector() {
     const web = webResearchClient()
     sources = createResearchCollector({
       root: web ? join(root, 'web') : root, surface: web ? 'web' : 'desktop', appVersion: app.getVersion(),
-      ...(web ? { previousRoot: root, visitId: () => process.env.HS_VISIT_ID } : {}),
+      ...(web ? { previousRoot: root, visitId: () => webRuntimeState().visitId } : {}),
       auth: () => getAccount().restAuth(), ownerId: () => getAccount().researchOwner(),
       allowed: () => { const s = getTelemetry().status(); return s.consentVersion === 3 && s.usage && s.content },
     })
@@ -100,9 +100,13 @@ export async function settleResearch(final = false): Promise<void> {
   await researchAgent.drain()
   if (final) await sourceCollector().end('closed')
 }
+/** Set by web/server.cjs outside process.env, so the agent and its subprocesses cannot read or set it. */
+type WebRuntimeState = { visitId?: string; endReason?: string }
+const webRuntimeState = (): WebRuntimeState => (globalThis as { __humanstudyWebRuntime?: WebRuntimeState }).__humanstudyWebRuntime ?? {}
+export const webEndReason = (): string | undefined => webRuntimeState().endReason
 export async function finishWebResearch(): Promise<void> {
   await researchAgent.drain()
-  const reason = process.env.HS_RUNTIME_END_REASON as SessionEndReason
+  const reason = webEndReason() as SessionEndReason
   await sourceCollector().end(SESSION_END_REASONS.includes(reason) ? reason : 'closed').catch(() => undefined)
   // A periodic flush may have taken its snapshot before the end event was written.
   await sourceCollector().flush()

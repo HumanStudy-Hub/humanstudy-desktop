@@ -692,7 +692,7 @@ test('review 3 S3: app-owned files are put back before a run; the approval path 
   assert.equal(readFileSync(join(proj, '.opencode/hsenv/hsenv/score.py'), 'utf8'), readFileSync(join(packDir, 'runtime/hsenv/hsenv/score.py'), 'utf8'))
   assert.equal(readFileSync(own, 'utf8'), 'my own rules', 'researcher instructions are not touched')
   const index = readFileSync(join(here, 'index.ts'), 'utf8')
-  const send = index.slice(index.indexOf("ipcMain.handle('kernel:send'"))
+  const send = index.slice(index.indexOf('const sendToKernel = async'))
   assert.ok(send.indexOf('await refreshAppOwned(projectDir)') > 0 && send.indexOf('await refreshAppOwned(projectDir)') < send.indexOf('startModelRelay('))
 })
 
@@ -747,7 +747,7 @@ test('review 4 S1: the trusted run copy holds the engine, the run skill, the san
     assert.ok(rels.includes(rel), rel)
   assert.ok(rels.every((rel) => !rel.startsWith('skills/simulate/')), 'not the package runners')
   const index = readFileSync(join(here, 'index.ts'), 'utf8')
-  const send = index.slice(index.indexOf("ipcMain.handle('kernel:send'"))
+  const send = index.slice(index.indexOf('const sendToKernel = async'))
   assert.match(send, /if \(route === 'protocol'\) await startProtocolRun\(projectDir, approved, binding as ProtocolBinding, relay,/)
   assert.match(send, /await startProtocolRun\(projectDir, approved, binding, undefined,/, 'the pre-relay path too')
   assert.match(index, /files: \[\.\.\.trustedRunFiles\(\), \.\.\.restored\], codeDir: join\(app\.getPath\('userData'\), 'protocol-runs', binding\.runId\)/, 'code outside the project')

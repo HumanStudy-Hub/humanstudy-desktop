@@ -38,7 +38,8 @@ export function createResearchOutbox(workspace: string, visit: string, initialSc
     })
   }
   const entries = () => transaction<Entry[]>('readonly', store => store.index('workspace').getAll(workspace))
-  const remove = (entry: Entry) => transaction('readwrite', store => store.delete([workspace, entry.id]))
+  const everything = () => transaction<Entry[]>('readonly', store => store.getAll())
+  const remove = (entry: Entry) => transaction('readwrite', store => store.delete([entry.workspace, entry.id]))
   let scope = initialScope
   let verifying: Promise<void> | undefined
   let scopeRevision = 0
@@ -49,13 +50,15 @@ export function createResearchOutbox(workspace: string, visit: string, initialSc
   let delay = 1000
 
   function setScope(next: string | null) {
+    const previous = scope
     scopeRevision++
     scope = next
-    if (next || database) {
-      void entries().then(async rows => {
-        if (scope === next) await Promise.all(rows.filter(row => row.scope !== next).map(remove))
-      }).catch(() => undefined)
-    }
+    // Withdrawal, sign-out or a different account/agreement ends every earlier scope in this browser
+    // origin, including rows other workspaces left behind. A first grant keeps other workspaces' rows.
+    const ended = next === null || (previous !== null && previous !== next)
+    void (ended ? everything() : entries()).then(async rows => {
+      if (scope === next) await Promise.all(rows.filter(row => row.scope !== next || (ended && row.workspace !== workspace)).map(remove))
+    }).catch(() => undefined)
   }
 
   function refresh() {
@@ -64,11 +67,8 @@ export function createResearchOutbox(workspace: string, visit: string, initialSc
     verifying = getScope().then(next => {
       if (revision === scopeRevision) {
         const confirmed = typeof next === 'string' ? next : null
+        // A denied/revoked answer opens an existing store even on a fresh page, to remove old consent data.
         setScope(confirmed)
-        // Open an existing store even on a fresh denied/revoked page, to remove old consent data.
-        if (!confirmed) void entries().then(async rows => {
-          if (!scope) await Promise.all(rows.map(remove))
-        }).catch(() => undefined)
       }
     }).catch(() => undefined).finally(() => {
       verifying = undefined

@@ -156,7 +156,9 @@ test('chat captures queued, accepted, and pre-turn rejected submissions under co
   assert.equal((await f.ipc('telemetry:outboxWrite', { ...f.entry, channel: 'telemetry:chatSubmission',
     args: [sid, message, 'queued', { id: randomUUID(), via: 'pointer', target: 'message.queue' }] })).value.status, 'ack')
   assert.equal((await f.ipc('kernel:send', 'unknown_session', message)).ok, false)
-  const rows = await f.local()
+  // The send answers first; its receipt is written behind it on the collector's queue.
+  let rows = await f.local()
+  for (let i = 0; i < 80 && rows.filter(row => row.event_type === 'conversation.submission').length < 3; i++) { await pause(25); rows = await f.local() }
   const submissions = rows.filter(row => row.event_type === 'conversation.submission')
   assert.deepEqual(submissions.map(row => row.metadata.dispatch_outcome).sort(), ['failed', 'queued', 'sent'])
   assert.ok(rows.every(row => row.visit_id === visit))
