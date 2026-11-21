@@ -12,6 +12,7 @@ import { storeResearchContent } from './research-content'
 import { createResearchCollector } from './research-collector'
 import { createResearchAgent, type ResearchLink } from './research-agent'
 import { researchInteraction } from '../shared/research-interactions'
+import { createInteractionGuard, readArtifactFile } from './artifact-interaction-guard'
 import { actionRef, type ActionRef } from '../shared/research-operations'
 import { createSerial, createWriteAttribution, isSaveTemp } from './write-capture'
 import { strToU8, zipSync } from 'fflate'
@@ -795,7 +796,9 @@ export function registerTelemetry(): void {
     await writeFile(pick.filePath, json, 'utf8')
     return pick.filePath
   })
-  ipcMain.handle('telemetry:track', (_e, type: string, opts?: TelemetryTrackOptions) => {
+  // A frame may only report identifiers its own file declares, at a bounded rate (review of #159).
+  const interactionGuard = createInteractionGuard(readArtifactFile)
+  ipcMain.handle('telemetry:track', async (_e, type: string, opts?: TelemetryTrackOptions) => {
     if (typeof type !== 'string' || RENDERER_DENY.test(type)) return
     const o = opts && typeof opts === 'object' ? opts : {}
     // Only ids this process resolved are accepted; otherwise the open project's id is used.
@@ -806,7 +809,13 @@ export function registerTelemetry(): void {
     const dir = isArtifact ? artifactDir : known ? projectIds.get(known) : rendererProjectDir
     const target = typeof o.target === 'string' ? o.target : undefined
     const durationMs = typeof o.durationMs === 'number' ? o.durationMs : undefined
-    const metadata = o.metadata && typeof o.metadata === 'object' && !Array.isArray(o.metadata) ? o.metadata : undefined
+    let metadata = o.metadata && typeof o.metadata === 'object' && !Array.isArray(o.metadata) ? o.metadata : undefined
+    if (type === 'artifact.interact') {
+      if (!dir || !artifactPath(target) || !semanticId(metadata?.artifact_revision)) return
+      const interaction = await interactionGuard(dir, target, metadata.artifact_revision, metadata.interaction)
+      if (!interaction) return
+      metadata = { ...metadata, interaction }
+    }
     const action = actionRef(o.action)
     track(type, { target, durationMs, metadata, projectId: isArtifact ? undefined : known, ...(!isArtifact && action ? { action } : {}), ...(o.v1Only === true ? { v1Only: true } : {}) }, dir)
   })
