@@ -38,6 +38,7 @@ global.fetch = async (input, options = {}) => {
 process.on('message', async ({ id, path, args, method = 'POST' }) => {
   const done = (status, value) => process.send({ id, status, value })
   if (path === 'stall') { stalled = true; return done(200) }
+  if (path === 'env') return done(200, JSON.stringify(Object.keys(process.env).filter(key => /^HS_(?:VISIT_ID|DEADLINE_AT)$/.test(key))))
   if (path === 'crash') { done(200); setImmediate(() => { throw Error('fixture crash') }); return }
   if (path === 'disconnect') { streams.get(args[0])?.emit('close'); return done(200) }
   const req = Readable.from(args === undefined ? [] : [Buffer.from(JSON.stringify(args))])
@@ -57,7 +58,7 @@ require(process.env.TEST_SERVER)
 process.send({ ready: true })
 `
 
-async function setup(t, { envVisit, grant = true } = {}) {
+async function setup(t, { envVisit, grant = true, deadlineAt } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'hs-research-runtime-'))
   const runner = join(dir, 'mock-upstream.cjs')
   const userData = join(dir, 'userData')
@@ -67,7 +68,7 @@ async function setup(t, { envVisit, grant = true } = {}) {
   const child = fork(runner, [], {
     env: { PATH: process.env.PATH, HOME: dir, HS_USER_DATA: userData, HS_WEB_TOKEN: 'fixture-token',
       HS_WEB_DISCONNECT_GRACE_MS: '160', HUMANSTUDY_KERNEL: 'mock', HUMANSTUDY_SERVER: 'http://127.0.0.1',
-      ...(envVisit ? { HS_VISIT_ID: visit } : {}), TEST_SERVER: server, TEST_REMOTE: remote },
+      ...(envVisit ? { HS_VISIT_ID: visit } : {}), ...(deadlineAt ? { HS_DEADLINE_AT: new Date(deadlineAt).toISOString() } : {}), TEST_SERVER: server, TEST_REMOTE: remote },
     execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
   })
   const exited = once(child, 'exit')
@@ -110,7 +111,7 @@ async function setup(t, { envVisit, grant = true } = {}) {
     const lines = await readFile(remote, 'utf8').catch(() => '')
     return lines.trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
   }
-  return { child, exited, request, ipc, entry, events, local, uploaded, userData, uploading: () => uploading }
+  return { child, exited, request, ipc, config, entry, events, local, uploaded, userData, uploading: () => uploading }
 }
 
 test('ACK follows the atomic event write and retry stays idempotent after upload', { timeout: 10_000 }, async t => {
@@ -201,4 +202,27 @@ test('SIGTERM attempts unified upload and exits within its bound if upload stall
   assert.ok(f.uploading(), 'Shutdown never attempted the unified upload')
   assert.ok(performance.now() - started < 7_000, 'Shutdown fell through to the 8-second forced exit')
   assert.ok((await f.local()).some(row => row.event_type === 'session.end'))
+})
+
+// The server ends the visit 25 s before the provider's hard limit; these deadlines leave 3 s for setup.
+const LEAD = 25_000
+for (const hub of [null, 'user_stop']) {
+  test(hub ? 'a Hub stop marker present at the deadline keeps its reason' : 'the provider deadline ends the visit as a timeout before the hard limit', { timeout: 15_000 }, async t => {
+    const deadlineAt = Date.now() + LEAD + 3_000
+    const f = await setup(t, { envVisit: true, deadlineAt })
+    assert.deepEqual(JSON.parse((await f.request('env', undefined, 'GET')).value), [], 'visit and deadline stay out of the environment')
+    const left = (await f.config()).deadlineIn
+    assert.ok(left > LEAD && left <= LEAD + 3_000, 'the page receives the time left')
+    assert.equal((await f.ipc('telemetry:outboxWrite', f.entry)).value.status, 'ack')
+    if (hub) await writeFile(join(f.userData, 'web-stop-reason.json'), JSON.stringify({ visit_id: visit, reason: hub }))
+    assert.equal((await f.exited)[0], 0)
+    assert.ok(Date.now() < deadlineAt - LEAD / 2, 'the workspace ended well before the provider limit')
+    const ends = (await f.uploaded()).filter(row => row.event_type === 'session.end')
+    assert.deepEqual(ends.map(row => [row.visit_id, row.metadata.reason]), [[visit, hub ?? 'timeout']])
+  })
+}
+
+test('no deadline means no countdown and no deadline stop', { timeout: 10_000 }, async t => {
+  const f = await setup(t, { envVisit: true })
+  assert.equal((await f.config()).deadlineIn, null)
 })

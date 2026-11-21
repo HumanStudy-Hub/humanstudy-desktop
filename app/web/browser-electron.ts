@@ -8,7 +8,7 @@ export type IpcRendererEvent = { sender: unknown }
 
 declare global {
   interface Window {
-    __HS_WEB__?: { uploads: string; sep: string; workspace?: string; visit?: string; scope?: string | null }
+    __HS_WEB__?: { uploads: string; sep: string; workspace?: string; visit?: string; scope?: string | null; deadlineIn?: number | null }
   }
 }
 
