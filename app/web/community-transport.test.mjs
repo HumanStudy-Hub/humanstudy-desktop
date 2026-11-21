@@ -18,7 +18,7 @@ test('real preload and browser JSON HTTP transport preserve omitted community re
  const assetFiles=[{path:'program.json',sha256:createHash('sha256').update(bytes).digest('hex'),bytes:bytes.length}]
  const revision=createHash('sha256').update(JSON.stringify(assetFiles.map(({path,sha256})=>({path,sha256})))).digest('hex')
  const entry={id,title:'Transport fixture',authors:[],year:2026,currentRevision:revision,assetRoot:'community/wire/revisions/'+revision,assetFiles}
- const handlers=new Map(), wire=[]; let created=0, server
+ const handlers=new Map(), wire=[], prepared=[]; let created=0, server
  try {
   await build({entryPoints:[fileURLToPath(new URL('../src/main/community.ts',import.meta.url))],bundle:true,platform:'node',format:'esm',outfile:join(temp,'community.mjs')})
   const lib=await import(pathToFileURL(join(temp,'community.mjs')));lib.setCommunityCacheDir(join(temp,'cache'))
@@ -36,6 +36,7 @@ test('real preload and browser JSON HTTP transport preserve omitted community re
   vm.runInNewContext(transpile(registrations),{
    ipcMain:{handle:(name,fn)=>handlers.set(name,fn)},communityStudies:lib.communityStudies,communityStudy:lib.communityStudy,forkCommunityStudy:lib.forkCommunityStudy,
    createProject:async()=>{const dir=join(temp,'project-'+ ++created);await mkdir(dir);return dir},telemetry:{track(){}},projectSync:null,
+   preparePreview:async dir=>{prepared.push(dir)},
   })
   server=createServer(async(req,res)=>{
    const chunks=[];for await(const chunk of req)chunks.push(chunk)
@@ -61,5 +62,6 @@ test('real preload and browser JSON HTTP transport preserve omitted community re
    await assert.rejects(api.fork(id,bad),/different published version/)
   }
   assert.equal(created,1,'explicit wrong revisions must never create a project')
+  assert.deepEqual(prepared,[copied],'preview preparation starts only after a verified fork')
  } finally {globalThis.fetch=nativeFetch;if(server)await new Promise(resolve=>server.close(resolve));await rm(temp,{recursive:true,force:true})}
 })

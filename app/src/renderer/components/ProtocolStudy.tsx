@@ -22,7 +22,7 @@ async function previewRevision(text: string, html: string): Promise<string | nul
   } catch { return null }
 }
 
-export function ProtocolStudy({ text, preview, program, problems = [], previewRequest = 0, onSource, onAsk }: { text: string; preview?: ProjectEntry; program?: HumanProgram | null; problems?: string[]; previewRequest?: number; onSource(ref: SourceRef): void; onAsk?(text: string): void }) {
+export function ProtocolStudy({ text, preview, program, problems = [], previewRequest = 0, preparingPreview = false, onSource, onAsk }: { text: string; preview?: ProjectEntry; program?: HumanProgram | null; problems?: string[]; previewRequest?: number; preparingPreview?: boolean; onSource(ref: SourceRef): void; onAsk?(text: string): void }) {
   const previewSection = useRef<HTMLDetailsElement>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [about, setAbout] = useState(false)
@@ -58,10 +58,10 @@ export function ProtocolStudy({ text, preview, program, problems = [], previewRe
   </section>
   if (research) return <section className="protocol-research-document">
     {research}
-    <details ref={previewSection} className="research-preview"><summary>Participant view</summary>
+    {!preparingPreview && <details ref={previewSection} className="research-preview"><summary>Participant view</summary>
       <p className="muted">{t('protocol.preview_missing')}</p>
       {onAsk && <button className="link" onClick={() => onAsk(t('protocol.preview_request'))}>{t('protocol.preview_action')}</button>}
-    </details>
+    </details>}
   </section>
   if (view?.text === text && preview?.url) return <section className="protocol-document">
     <details className="protocol-overview" onToggle={e => setAbout(e.currentTarget.open)}><summary>{t('protocol.overview')}</summary>
@@ -82,8 +82,8 @@ export function ProtocolStudy({ text, preview, program, problems = [], previewRe
     {typeof p.meta?.scope === 'string' && <p>{p.meta.scope}</p>}
     <div className="row">{sources.map(([id, source]) => <button key={id} className="link" onClick={() => onSource({ file: source?.file, sourceId: id, sourceSha256: source?.sha256, page: 1, quote: '', verified: false })}>{typeof source?.title === 'string' ? source.title : id}</button>)}</div>
     <ol>{(Array.isArray(p.arms) ? p.arms : []).filter(a => a && typeof a.id === 'string').map((arm: any) => <li key={arm.id}><strong>{typeof arm.label === 'string' ? arm.label : arm.id}</strong>{arm.runnable === false && <div>{detail(arm.why ?? arm.not_runnable_reason)}</div>}</li>)}</ol>
-    <p className="muted">{t('protocol.preview_missing')}</p>
-    {onAsk && <button className="link" onClick={() => onAsk(t('protocol.preview_request'))}>{t('protocol.preview_action')}</button>}
+    {!preparingPreview && <p className="muted">{t('protocol.preview_missing')}</p>}
+    {!preparingPreview && onAsk && <button className="link" onClick={() => onAsk(t('protocol.preview_request'))}>{t('protocol.preview_action')}</button>}
     <details><summary>{t('protocol.details')}</summary><pre>{JSON.stringify({ flow: p.flow, stages: p.stages, omitted: p.omitted, analysis: p.analysis }, null, 2)}</pre></details>
   </article>
 }

@@ -203,6 +203,7 @@ export interface ProjectSnapshot {
   program: unknown | null
   programError?: string
   build?: PaperBuildState
+  previewPreparation?: 'preparing' | 'failed'
   artifacts: ProjectFile[]
   exports: ProjectFile[]
   pdf: ProjectFile | null

@@ -1,6 +1,7 @@
 # Vendored sandbox code. Refresh with scripts/sync_hsenv.sh; never edit by hand.
 source: sandbox skills, 2026-11-09 (engine pass 3)
 synced: 2026-11-09
-42f867dad18a3b6f4ac9a94663b65c0c2440a154fe9324671bfcf1c19cef6f34  build_preview.py
+# build_preview.py includes the app's template marker and accepts a pinned protocol snapshot.
+47b3b6952fdffc56164cfe8adb60a569ab5d2ad2c29bf55e14032cdde27ebd45  build_preview.py
 23c6277646714c0591642fccbd3249cd20a3449941d3935a964f3035cab8f641  preview.css
 6f79fd7a2e22d72fef9788b3937df732df4afb4bb17539363ff27938cd5acaa7  preview.js

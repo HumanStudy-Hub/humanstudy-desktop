@@ -72,7 +72,7 @@ const HELPERS = ['skills/build/AUTHORING.md', 'skills/build/AUTHORING.VENDORED',
   'skills/run/run_study.py', 'skills/run/fspec.py', 'skills/run/render.py', 'skills/run/VENDORED',
   'skills/run/app_run.py', 'skills/run/protocol_report.py', 'skills/run/budget.py', 'skills/run/launch.py',
   'skills/preview/build_preview.py', 'skills/preview/preview.css', 'skills/preview/preview.js', 'skills/preview/VENDORED',
-  'skills/preview/make_preview.py']
+  'skills/preview/make_preview.py', 'skills/preview/template-version.txt']
 
 /** Every app-owned file refreshPack keeps at the shipped version: the helpers and the protocol engine. */
 const appOwned = (): string[] => [...HELPERS, ...engineFiles()]
@@ -130,6 +130,18 @@ export function trustedCheckFiles(): [string, string][] {
  *  (`hsenv/checks.py`, `VERSION`): the shipped copy, never the project's editable .opencode copy. */
 export function trustedEngineFiles(): [string, string][] {
   return engineFiles().map((rel) => [rel.slice('runtime/hsenv/'.length), files[PREFIX + rel]])
+}
+
+export const previewTemplateVersion = (): number => Number(files[PREFIX + 'skills/preview/template-version.txt']?.trim())
+
+/** Generator, engine and kit from the shipped pack, in the layout make_preview.py expects. */
+export function trustedPreviewFiles(): [string, string][] {
+  const preview = ['build_preview.py', 'make_preview.py', 'preview.css', 'preview.js', 'template-version.txt']
+  const paths = [...preview.map(name => 'skills/preview/' + name), ...kitFiles()]
+  return [
+    ...trustedEngineFiles().map(([rel, content]): [string, string] => ['hsenv/' + rel, content]),
+    ...paths.map((rel): [string, string] => [rel, files[PREFIX + rel]]),
+  ]
 }
 
 /** What the app runs to measure a protocol run's model budget (protocol-readiness.ts protocolBudget), in the

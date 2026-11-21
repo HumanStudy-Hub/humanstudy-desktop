@@ -43,6 +43,8 @@ CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline
        "font-src data:; media-src data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'")
 CITE_KEYS = ("label", "source", "page", "file", "evidence", "quote", "note", "read")
 GZIP_OVER = 1_500_000          # data block bytes above which it is gzipped (DecompressionStream in the page)
+# Bump template-version.txt when an existing participant preview must be rebuilt.
+TEMPLATE_VERSION = (HERE / "template-version.txt").read_text("utf-8").strip()
 
 
 # ------------------------------------------------------------------------------------------- recording
@@ -332,11 +334,13 @@ def explain(contexts, variants):
     return []
 
 
-def build(study, arms_filter, seed, tries, max_image_kb):
+def build(study, arms_filter, seed, tries, max_image_kb, protocol=None):
     sd = HSENV / "studies" / study
-    if not (sd / "protocol.json").is_file():
-        sys.exit("no protocol: %s" % (sd / "protocol.json"))
-    p = Protocol.load(str(sd))
+    if protocol is None:
+        if not (sd / "protocol.json").is_file():
+            sys.exit("no protocol: %s" % (sd / "protocol.json"))
+        protocol = Protocol.load(str(sd))
+    p = protocol
     arms = [a for a in p.arms if not arms_filter or a["id"] in arms_filter]
     unknown = set(arms_filter or []) - {a["id"] for a in p.arms}
     if unknown:
@@ -503,9 +507,10 @@ def page(data, lang=None):
             '<meta http-equiv="Content-Security-Policy" content="%s">\n'
             '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
             '<meta name="hs-artifact" content="participant-preview">\n'
+            '<meta name="hs-preview-template-version" content="%s">\n'
             "<title>%s</title>\n<style>\n%s</style>\n</head>\n<body>\n"
             '<div class="hs-page" id="app"><p class="hs-sub">%s</p></div>\n'
-            "%s\n<script>\n%s</script>\n</body>\n</html>\n") % (lang, lang, CSP, html.escape(title), css,
+            "%s\n<script>\n%s</script>\n</body>\n</html>\n") % (lang, lang, CSP, TEMPLATE_VERSION, html.escape(title), css,
                                                                PAGE_TXT[lang]["loading"], block, js)
 
 
@@ -531,14 +536,14 @@ def protocol_mode(mod):
     return mod is not None and "protocol" in inspect.signature(mod.inline).parameters
 
 
-def finish(text, protocol_path, mod=None):
+def finish(text, protocol_path, mod=None, protocol_bytes=None):
     """-> (page, problems). With a protocol-mode kit, the page gets the protocol's identity block (ids and SHA-256,
     never screen text) and is checked against protocol.json; with an older kit, the kit's offline check alone."""
     mod = kit_module() if mod is None else mod
     probs = []
     if mod is not None:
         if protocol_mode(mod):
-            raw = Path(protocol_path).read_bytes()
+            raw = Path(protocol_path).read_bytes() if protocol_bytes is None else protocol_bytes
             protocol = json.loads(raw.decode("utf-8"))
             text = mod.inline(text, None, (protocol, hashlib.sha256(raw).hexdigest()))
             probs, _ = mod.check(text, None, protocol)

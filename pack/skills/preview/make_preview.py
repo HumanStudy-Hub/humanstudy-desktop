@@ -30,12 +30,9 @@ PLACEHOLDER_RUN = re.compile("\u2591+")
 NOT_AVAILABLE = {"en": "[text not available]", "zh-CN": "[文字不可用]"}
 
 
-def published(project: Path) -> bool:
+def published(protocol: dict) -> bool:
     """True when protocol.json is a published study with wording held back (distribution.held)."""
-    try:
-        dist = json.loads((project / "protocol.json").read_text(encoding="utf-8")).get("distribution")
-    except (OSError, ValueError, AttributeError):
-        return False
+    dist = protocol.get("distribution")
     return isinstance(dist, dict) and isinstance(dist.get("held"), dict) and bool(dist["held"])
 
 
@@ -48,7 +45,10 @@ def make(project: Path, out: Path, arms=None, seed: int = 1, tries=None, max_ima
     # Its compact CLI cite format clips long notes/quotes; that is unsuitable for source comparison.
     build_preview.slim_cite = lambda c: ({k: c[k] for k in build_preview.CITE_KEYS
                                           if c.get(k) not in (None, "")} or None) if isinstance(c, dict) else None
-    data = build_preview.build(str(project.resolve()), arms, seed, tries, max_image_kb)
+    protocol_path = project / "protocol.json"
+    raw = protocol_path.read_bytes()
+    protocol = json.loads(raw.decode("utf-8"))
+    data = build_preview.build(str(project), arms, seed, tries, max_image_kb, build_preview.Protocol(protocol, project))
     def source_passages(value):
         if isinstance(value, dict):
             cite = value.get("cite")
@@ -68,11 +68,11 @@ def make(project: Path, out: Path, arms=None, seed: int = 1, tries=None, max_ima
     if palette.is_file():
         html = html.replace("</head>", "<style>" + palette.read_text(encoding="utf-8") + "</style></head>", 1)
     html = html.replace("el.getAttribute('data-quote').slice(0, 2000)", "el.getAttribute('data-quote')")
-    if published(project):
+    if published(protocol):
         marker = NOT_AVAILABLE["zh-CN" if (lang or os.environ.get("HS_UI_LANG", "")).startswith("zh") else "en"]
         html = PLACEHOLDER_RUN.sub(marker, html)
-    text, problems = build_preview.finish(html, project / "protocol.json",
-                                          build_preview.kit_module() or _project_kit(project))
+    text, problems = build_preview.finish(html, protocol_path, build_preview.kit_module() or _project_kit(project),
+                                          protocol_bytes=raw)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     for arm in data["arms"]:

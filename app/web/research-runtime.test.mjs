@@ -1,15 +1,16 @@
 // Runs the built web server and real main process with a mock kernel. The request fixture bypasses
 // TCP and replaces the upstream fetch so the tests work offline. Build with node scripts/build-web.mjs.
 import assert from 'node:assert/strict'
-import { fork } from 'node:child_process'
+import { fork, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
+import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as pause } from 'node:timers/promises'
 import { test } from 'node:test'
+import { build } from 'esbuild'
 
 const server = fileURLToPath(new URL('../out/web/server.cjs', import.meta.url))
 const owner = '11111111-1111-4111-8111-111111111111'
@@ -18,12 +19,21 @@ const fixture = `
 const { Readable } = require('node:stream')
 const { EventEmitter } = require('node:events')
 const http = require('node:http')
-const { appendFileSync } = require('node:fs')
+const { appendFileSync, readFileSync } = require('node:fs')
+const library = process.env.TEST_LIBRARY && JSON.parse(readFileSync(process.env.TEST_LIBRARY, 'utf8'))
 const streams = new Map()
 let receive, stalled = false
 http.createServer = fn => { receive = fn; return { listen(_port, _hostname, ready) { ready() } } }
 global.fetch = async (input, options = {}) => {
   const path = new URL(input).pathname
+  if (library) {
+    if (path.endsWith('/research_index.json')) return Response.json({ papers: [library.entry] })
+    if (path.endsWith('/commits/main')) return new Response(library.commit)
+    if (path.endsWith('/commits')) return Response.json([])
+    const prefix = '/' + library.commit + '/' + library.entry.assetRoot + '/'
+    const asset = path.includes(prefix) && library.assets[path.split(prefix)[1]]
+    if (asset) return new Response(asset)
+  }
   if (path === '/api/desktop/config') return Response.json({ supabaseUrl: 'http://127.0.0.1', supabaseKey: 'fixture' })
   if (path === '/auth/v1/user') {
     if (stalled) { process.send({ uploading: true }); return new Promise(() => {}) }
@@ -58,17 +68,21 @@ require(process.env.TEST_SERVER)
 process.send({ ready: true })
 `
 
-async function setup(t, { envVisit, grant = true, deadlineAt } = {}) {
+async function setup(t, { envVisit, grant = true, deadlineAt, library, prepareUserData } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'hs-research-runtime-'))
   const runner = join(dir, 'mock-upstream.cjs')
   const userData = join(dir, 'userData')
   const remote = join(dir, 'uploaded.jsonl')
   const events = join(userData, 'research-v1', 'web', owner, 'events')
+  await prepareUserData?.(dir, userData)
+  const libraryPath = join(dir, 'library.json')
+  if (library) await writeFile(libraryPath, JSON.stringify(library))
   await writeFile(runner, fixture)
   const child = fork(runner, [], {
     env: { PATH: process.env.PATH, HOME: dir, HS_USER_DATA: userData, HS_WEB_TOKEN: 'fixture-token',
       HS_WEB_DISCONNECT_GRACE_MS: '160', HUMANSTUDY_KERNEL: 'mock', HUMANSTUDY_SERVER: 'http://127.0.0.1',
-      ...(envVisit ? { HS_VISIT_ID: visit } : {}), ...(deadlineAt ? { HS_DEADLINE_AT: new Date(deadlineAt).toISOString() } : {}), TEST_SERVER: server, TEST_REMOTE: remote },
+      ...(envVisit ? { HS_VISIT_ID: visit } : {}), ...(deadlineAt ? { HS_DEADLINE_AT: new Date(deadlineAt).toISOString() } : {}),
+      ...(library ? { TEST_LIBRARY: libraryPath } : {}), TEST_SERVER: server, TEST_REMOTE: remote },
     execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
   })
   const exited = once(child, 'exit')
@@ -113,6 +127,101 @@ async function setup(t, { envVisit, grant = true, deadlineAt } = {}) {
   }
   return { child, exited, request, ipc, config, entry, events, local, uploaded, userData, uploading: () => uploading }
 }
+
+test('cloud prepares a verified fork and repairs outdated previews on open', { timeout: 25_000 }, async t => {
+  const python = ['python3.12', 'python3.13', 'python3.11', 'python3'].map(command => spawnSync(command,
+    ['-c', 'import sys; print(sys.executable) if sys.version_info >= (3, 11) else sys.exit(1)'], { encoding: 'utf8' }))
+    .find(probe => probe.status === 0)?.stdout.trim()
+  if (!python || process.platform === 'win32') return t.skip('needs Python 3.11+ and a POSIX runtime fixture')
+  const protocol = await readFile(new URL('../src/main/fixtures/protocol-mini/protocol.json', import.meta.url), 'utf8')
+  const program = '{"schemaVersion":2,"id":"fork-preview"}'
+  const assets = { 'protocol.json': protocol, 'program.json': program }
+  const hash = text => createHash('sha256').update(text).digest('hex')
+  const assetFiles = Object.entries(assets).map(([path, text]) => ({ path, sha256: hash(text), bytes: Buffer.byteLength(text) }))
+  const revision = hash(JSON.stringify(assetFiles.map(({ path, sha256 }) => ({ path, sha256 }))))
+  const id = 'paper_' + 'a'.repeat(24)
+  const entry = { id, title: 'Preview fixture', year: 2026, authors: [], currentRevision: revision, assetFiles,
+    assetRoot: 'community/fixture/revisions/' + revision }
+  const f = await setup(t, {
+    library: { entry, assets, commit: 'c'.repeat(40) },
+    prepareUserData: async (dir, userData) => {
+      const module = join(dir, 'runtime-core.mjs')
+      await build({ entryPoints: [fileURLToPath(new URL('../src/main/runtime-core.ts', import.meta.url))],
+        bundle: true, platform: 'node', format: 'esm', outfile: module })
+      const { runtimeVersion, runtimePaths } = await import(pathToFileURL(module))
+      const lock = await readFile(new URL('../../pack/runtime/requirements.lock', import.meta.url), 'utf8')
+      const runtime = runtimePaths(join(userData, 'runtime', runtimeVersion(lock)), process.platform)
+      await mkdir(dirname(runtime.python), { recursive: true })
+      // Slow only the fixture interpreter so the preparing state and concurrent edit are deterministic.
+      await writeFile(runtime.python, '#!/bin/sh\n/bin/sleep 0.4\nexec "' + python + '" "$@"\n', { mode: 0o755 })
+      await writeFile(runtime.ok, runtimeVersion(lock))
+    },
+  })
+  const until = async (read, predicate) => {
+    for (let i = 0; i < 100; i++) {
+      const value = await read()
+      if (predicate(value)) return value
+      await pause(50)
+    }
+    assert.fail('Preview job did not reach the expected state')
+  }
+  const forked = await f.ipc('community:fork', id, revision)
+  assert.equal(forked.ok, true, JSON.stringify(forked))
+  const dir = forked.value
+  const path = join(dir, 'artifacts', 'preview.html')
+  const read = () => readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error })
+  const snapshot = async () => {
+    const reply = await f.ipc('project:read', dir)
+    assert.equal(reply.ok, true, JSON.stringify(reply))
+    return reply.value
+  }
+  const generated = await until(async () => {
+    const error = (await f.local().catch(() => [])).find(row => row.metadata?.operation === 'project.preview_failed')
+    assert.equal(error?.metadata?.error, undefined, 'fork preview preparation failed')
+    return read()
+  }, html => html.includes('hs.interact'))
+  assert.match(generated, /name="hs-preview-template-version" content="\d+"/)
+  assert.ok(generated.includes(hash(protocol)))
+  await until(snapshot, snap => !snap.previewPreparation)
+  const current = generated + '\n<!-- hand-edited current preview -->'
+  await writeFile(path, current)
+  const inode = (await stat(path)).ino
+  assert.equal((await snapshot()).previewPreparation, undefined)
+  assert.equal(await read(), current)
+  assert.equal((await stat(path)).ino, inode)
+
+  const identity = generated.match(/<script[^>]*id="hs-protocol"[^>]*>[\s\S]*?<\/script>/)[0]
+  const handAuthored = '<meta name="hs-artifact" content="participant-preview">' + identity + '<p>Custom preview</p>'
+  await writeFile(path, handAuthored)
+  assert.equal((await snapshot()).previewPreparation, undefined)
+  assert.equal(await read(), handAuthored)
+
+  const legacy = current.replace(/<meta name="hs-preview-template-version"[^>]*>/, '')
+  await writeFile(path, legacy)
+  assert.equal((await snapshot()).previewPreparation, 'preparing')
+  await until(read, html => !html.includes('hand-edited current preview') && html.includes('hs.interact'))
+  assert.equal((await until(snapshot, snap => !snap.previewPreparation)).program.id, 'fork-preview')
+
+  const wrongHash = generated.replace(hash(protocol), '0'.repeat(64))
+  await writeFile(path, wrongHash)
+  assert.equal((await snapshot()).previewPreparation, 'preparing')
+  await writeFile(path, current)
+  await until(snapshot, snap => !snap.previewPreparation)
+  assert.equal(await read(), current, 'a current edit made while the old preview was being built survives')
+
+  await writeFile(path, wrongHash)
+  assert.equal((await snapshot()).previewPreparation, 'preparing')
+  await until(read, html => html.includes(hash(protocol)))
+  await until(snapshot, snap => !snap.previewPreparation)
+
+  const previous = await read()
+  await writeFile(join(dir, 'protocol.json'), '{"id":"fixture-mini"}')
+  assert.equal((await snapshot()).previewPreparation, 'preparing')
+  const failed = await until(snapshot, snap => snap.previewPreparation === 'failed')
+  assert.equal(failed.program.id, 'fork-preview')
+  assert.equal(await read(), previous, 'a failed build leaves the last artifact on disk')
+  await until(f.local, rows => rows.some(row => row.metadata?.operation === 'project.preview_failed'))
+})
 
 test('ACK follows the atomic event write and retry stays idempotent after upload', { timeout: 10_000 }, async t => {
   const f = await setup(t, { grant: false })

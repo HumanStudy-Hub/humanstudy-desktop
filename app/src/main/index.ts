@@ -40,7 +40,8 @@ import { assertProjectWritePath, saveProjectCopy, saveProjectText } from './prog
 import { createPaperBuilds, isBuildTurn } from './paper-build'
 import { createShutdown, webQuitWithin } from './shutdown-core'
 import { dispatchAndRecord } from './research-agent'
-import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedRunFiles, trustedShareFiles } from './pack'
+import { previewTemplateVersion, refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedPreviewFiles, trustedRunFiles, trustedShareFiles } from './pack'
+import { createPreviewPreparation } from './preview-preparation'
 import { isValidatedProtocol } from '../shared/research-search'
 import { confirmedLibrarySha, heldTextsOf, passedProtocolSha, selectedResults, shareExport, ShareError, shareFileName, sharePlan, type ShareRuntime } from './share-layers'
 import { legacyFileIsolationAvailable, scientificReadiness } from './scientific-readiness'
@@ -103,6 +104,19 @@ let projectSync: SyncEngine | null = null
 // The automatic paper build; its state file is under .humanstudy, which the project watcher ignores.
 const paperBuilds = createPaperBuilds(dir => broadcast('project:changed', dir), async dir => protocolDraftCertificate(
   await readyPython(), trustedEngineFiles(), dir, process.env.HUMANSTUDY_RUNTIME_BIN || ''))
+const preparePreview = createPreviewPreparation({
+  python: readyPython,
+  files: trustedPreviewFiles,
+  version: previewTemplateVersion,
+  settled: (dir, { written, error }) => {
+    if (written) projectSync?.touch(dir)
+    if (error) {
+      console.error('Participant preview preparation failed', error)
+      telemetry.track('project.preview_failed', { target: 'artifacts/preview.html', metadata: { error } }, dir)
+    }
+    broadcast('project:changed', dir)
+  },
+})
 let threadsInitialized = false
 const webRuntime = process.env.HUMANSTUDY_RESEARCH_SURFACE === 'web'
 const shutdown = createShutdown({
@@ -274,6 +288,7 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
   dir = resolve(dir)
   if (!isInside(getSettings().projectsRoot, dir) && !allowedRoots.has(dir))
     throw new Error('project folder is not under the projects folder and was not opened')
+  const previewPreparation = await preparePreview(dir)
   let program: unknown | null = null
   let programError: string | undefined
   const programPath = join(dir, 'program.json')
@@ -307,6 +322,7 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
     program,
     programError,
     build: paperBuilds.readOnly(dir),
+    previewPreparation,
     artifacts: await listDir(join(dir, 'artifacts')),
     exports: await listDir(join(dir, 'exports')),
     pdf,
@@ -912,6 +928,7 @@ app.whenReady().then(() => {
     const dir = await forkCommunityStudy(id, (input) => createProject(input), expectedRevision ?? undefined)
     await projectSync?.claim(dir)
     telemetry.track('project.forked', { target: String(id).slice(0, 80) }, dir)
+    void preparePreview(dir)
     return dir
   })
   ipcMain.handle('community:openExternal', async (_e, url: string) => {
