@@ -338,6 +338,22 @@ svg .hs-funnel-missing { fill: var(--hs-amber-bg); stroke: var(--hs-amber-line);
 
   // ---------- bridge to the app ----------
   function post(msg) { try { window.parent.postMessage(msg, '*') } catch (e) { /* standalone file */ } }
+  // Opt-in controls supply authored identifiers through data-hs-* attributes. Never inspect a
+  // control's value, selected text, displayed label, or raw keyboard input.
+  function interaction(el) {
+    if (!el || window.parent === window) return
+    var step = el.getAttribute('data-hs-step')
+    var id = el.getAttribute('data-hs-control')
+    post({ type: 'hs.interact', action: el.getAttribute('data-hs-action'), controlId: id,
+      label: el.getAttribute('data-hs-label') || id, step: step === null ? null : Number(step),
+      arm: el.getAttribute('data-hs-arm'), valueKind: el.getAttribute('data-hs-kind') || 'none' })
+  }
+  document.addEventListener('change', function (e) {
+    if (e.isTrusted && e.target.matches('[data-hs-control]:not([data-hs-action="submit"])')) interaction(e.target)
+  })
+  document.addEventListener('submit', function (e) {
+    if (e.isTrusted && e.target.matches('form[data-hs-control]')) interaction(e.target)
+  })
   HS.openSource = function (page, quote, programId, file) {
     var m = { type: 'hs.openSource' }
     if (page != null && page !== '') m.page = parseInt(page, 10)
@@ -350,6 +366,8 @@ svg .hs-funnel-missing { fill: var(--hs-amber-bg); stroke: var(--hs-amber-line);
   document.addEventListener('click', function (e) {
     var t = e.target
     if (!t || !t.closest) return
+    var control = t.closest('[data-hs-control]')
+    if (e.isTrusted && control && control.matches('button, a, summary, [role="button"]')) interaction(control)
     var a = t.closest('[data-ask]')
     if (a) { e.preventDefault(); HS.ask(a.getAttribute('data-ask')); return }
     var el = t.closest('.hs-cite,[data-page],[data-program-id]')
@@ -360,6 +378,10 @@ svg .hs-funnel-missing { fill: var(--hs-amber-bg); stroke: var(--hs-amber-line);
     var quote = el.getAttribute('data-quote') || (holder && holder.getAttribute('data-quote'))
     var file = el.getAttribute('data-file') || (holder && holder.getAttribute('data-file'))
     if (!page && pid) { var s = HS.source(pid); if (s) { page = s.page; quote = quote || s.quote; file = file || s.file } }
+    if (e.isTrusted && !control && (pid || page) && window.parent !== window) {
+      post({ type: 'hs.interact', action: 'navigate', controlId: pid || 'source-page-' + page,
+        label: 'source-citation', step: null, arm: null, valueKind: 'none' })
+    }
     e.preventDefault()
     HS.openSource(page, quote, pid, file)
   })

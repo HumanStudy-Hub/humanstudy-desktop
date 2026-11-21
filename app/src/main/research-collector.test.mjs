@@ -144,3 +144,33 @@ test('a slow network upload never blocks durable capture of new interactions',as
  await c.flush();assert.ok([...f.events.values()].some(e=>e.metadata.text==='Persist while upload is slow'));assert.equal(await c.pending(),0)
 })
 test.after(async()=>{await rm(temp,{recursive:true,force:true})})
+
+test('artifact and simulation events use the same consent-gated v1 session and keep semantic metadata', async () => {
+ const f = await setup(), collector = f.make()
+ const action = '44444444-4444-4444-8444-444444444444'
+ const context = { study_id: 'study', study_revision: 'a'.repeat(64), artifact_revision: '100-1000-1000-99' }
+ const artifact = { event_type: 'artifact.interact', project_id: PROJECT, artifact_id: 'artifacts/preview.html',
+  metadata: { ...context, interaction: { action: 'answer', controlId: 'question-1', label: 'response', step: 3, arm: 'control', valueKind: 'text' } } }
+ const lifecycle = { event_type: 'simulation.completed', project_id: PROJECT, action_id: action, caused_by: action, thread_id: 'thread-1',
+  metadata: { run_id: '55555555-5555-4555-8555-555555555555', scope: { study_id: 'study', revision: 'a'.repeat(64), per_condition: 3, model: 'anthropic/model' },
+   outputs: ['artifacts/simulations/one/results.html'], model_request_ids: ['req_1'], exit_code: 0 } }
+
+ f.state.allowed = false
+ assert.equal(await collector.capture(artifact), null)
+ assert.equal(await collector.capture(lifecycle), null)
+ f.state.allowed = true
+ await collector.capture({ id: action, event_type: 'action.invoke', target: 'simulation.run', view: 'workspace', metadata: { via: 'pointer' } })
+ const artifactId = await collector.capture(artifact)
+ const dwellId = await collector.capture({ event_type: 'artifact.dwell', project_id: PROJECT, artifact_id: artifact.artifact_id,
+  duration_ms: 110, metadata: context })
+ const completionId = await collector.capture(lifecycle)
+ await assert.rejects(collector.capture({ ...artifact, metadata: { ...artifact.metadata, interaction: { ...artifact.metadata.interaction, value: 'some text' } } }), /artifact interaction invalid/)
+ await assert.rejects(collector.capture({ ...lifecycle, metadata: { ...lifecycle.metadata, outputs: ['artifacts/simulations/../results.html'] } }), /simulation outputs invalid/)
+ await collector.flush()
+ const rows = [f.events.get(artifactId), f.events.get(dwellId), f.events.get(completionId)]
+ assert.ok(rows.every(row => row.contract_version === '1.1.0' && row.research_session_id === rows[0].research_session_id))
+ assert.deepEqual(rows[0].metadata, artifact.metadata)
+ assert.equal(rows[1].duration_ms, 110)
+ assert.equal(rows[2].caused_by, f.events.get(action).id)
+ assert.deepEqual(rows[2].metadata, lifecycle.metadata)
+})

@@ -53,3 +53,28 @@ export function installCapture(): void {
     runs.set(el, run)
   }, { capture: true, passive: true })
 }
+
+/** Measure an open artifact view across foreground intervals, closing each interval exactly once. */
+export function captureArtifactDwell(onExit: (durationMs: number) => void): () => void {
+  let enteredAt: number | undefined
+  const exit = () => {
+    if (enteredAt === undefined) return
+    const duration = performance.now() - enteredAt
+    enteredAt = undefined
+    onExit(duration)
+  }
+  const visibility = () => {
+    if (document.visibilityState === 'visible') enteredAt ??= performance.now()
+    else exit()
+  }
+  visibility()
+  document.addEventListener('visibilitychange', visibility)
+  window.addEventListener('pagehide', exit)
+  window.addEventListener('pageshow', visibility)
+  return () => {
+    document.removeEventListener('visibilitychange', visibility)
+    window.removeEventListener('pagehide', exit)
+    window.removeEventListener('pageshow', visibility)
+    exit()
+  }
+}

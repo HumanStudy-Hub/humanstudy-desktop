@@ -5,6 +5,9 @@ import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve } from 'node:path'
+import { artifactPath, semanticId, type SimulationStage } from '../shared/research-contract'
+import type { SimulationMetadata } from './simulation-research'
+import { fileVersion } from '../shared/file-version'
 import { storeResearchContent } from './research-content'
 import { createResearchCollector } from './research-collector'
 import { createResearchAgent, type ResearchLink } from './research-agent'
@@ -184,6 +187,14 @@ export function projectIdFor(projectDir: string): string | null {
 /** The project open in the window; renderer events without a project id are attributed to it. */
 let rendererProjectDir: string | undefined
 
+/** Reports keep their originating protocol revision even after the opened study has changed. */
+function artifactContext(projectDir: string, target: unknown, metadata: TelemetryTrackOptions['metadata']) {
+  if (!artifactPath(target) || !/^artifacts\/simulations\/[\w.-]+\/results\.html$/.test(target)) return metadata
+  const run = readJson<{ study?: unknown; protocol_sha256?: unknown }>(join(projectDir, dirname(target), 'run.json'))
+  if (!semanticId(run?.study) || typeof run.protocol_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(run.protocol_sha256)) return metadata
+  return { ...metadata, study_id: run.study, study_revision: run.protocol_sha256 }
+}
+
 /** Track from the main process; `projectDir` makes paths project-relative and sets project_id. */
 export function track(type: string, opts: TelemetryTrackOptions = {}, projectDir?: string): void {
   try {
@@ -191,10 +202,15 @@ export function track(type: string, opts: TelemetryTrackOptions = {}, projectDir
     if (!t.status().usage) return
     const projectId = opts.projectId ?? (projectDir ? (projectIdFor(projectDir) ?? undefined) : undefined)
     const dirFor = projectDir ?? (projectId ? projectIds.get(projectId) : undefined)
+    if (dirFor && (type === 'artifact.interact' || type === 'artifact.dwell'))
+      opts = { ...opts, metadata: artifactContext(dirFor, opts.target, opts.metadata) }
     const unified = researchInteraction(type, opts)
     const ref = actionRef(opts.action)
-    if (unified || ref) researchAgent.interaction(type, { ...opts, ...(typeof opts.target === 'string' && namesPrivatePath(opts.target, false) ? { target: REDACTED_PRIVATE } : {}), action: ref }, { project_id: projectId, dir: dirFor })
-    if (opts.v1Only) return
+    const version = dirFor && unified?.artifact_id
+      ? fileVersions.get(`${getAccount().researchOwner()}:${dirFor}\0${unified.artifact_id}`) : undefined
+    const artifactVersion = version?.revision === unified?.metadata?.artifact_revision ? version?.ordinal : undefined
+    if (unified || ref) researchAgent.interaction(type, { ...opts, ...(typeof opts.target === 'string' && namesPrivatePath(opts.target, false) ? { target: REDACTED_PRIVATE } : {}), action: ref }, { project_id: projectId, dir: dirFor, artifactVersion })
+    if (opts.v1Only || type === 'artifact.interact' || type === 'artifact.dwell') return
     // The private-material boundary, before the metadata is put in a blob or queued.
     let metadata = opts.metadata ? redactCapture({ metadata: opts.metadata }, privateIndex, dirFor ? scopedProject(dirFor) : false).metadata : opts.metadata
     if (metadata && Buffer.byteLength(JSON.stringify(metadata)) > 12_000) {
@@ -257,6 +273,25 @@ export function trackTurnStart(sessionId: string, text: string, ref?: ActionRef)
 export function noteAction(ref: ActionRef | undefined, projectDir?: string): void {
   if (ref) researchAgent.action(ref, { project_id: projectDir ? (projectIdFor(projectDir) ?? undefined) : undefined, dir: projectDir })
 }
+export function simulationPublisher(projectDir: string, threadId: string, ref?: ActionRef) {
+  const owner = getAccount().researchOwner()
+  const allowed = () => {
+    const status = getTelemetry().status()
+    return status.consentVersion === 3 && status.usage && status.content
+  }
+  if (!owner || !ref || !allowed()) return
+  const projectId = projectIdFor(projectDir)
+  if (!projectId) return
+  return (stage: SimulationStage, metadata: SimulationMetadata): void => {
+    try {
+      if (getAccount().researchOwner() !== owner || !allowed()) return
+      noteAction(ref, projectDir)
+      researchAgent.record({ event_type: `simulation.${stage}`, project_id: projectId, thread_id: threadId,
+        action_id: ref.id, caused_by: ref.id, metadata: { ...metadata } }, projectDir)
+    } catch { /* research data must never break the runner */ }
+  }
+}
+
 /** The researcher answered or dismissed a question / replied to a permission (before the kernel call). */
 export function noteAnswer(sessionId: string, questionId: string, ref?: ActionRef): void {
   if (ref) researchAgent.answer(sessionId, questionId, ref)
@@ -512,7 +547,7 @@ const TEXT_EXTS = new Set(['txt', 'md', 'json', 'csv', 'tsv', 'html', 'htm', 'py
 const WATCHED_DIRS = /^(artifacts|exports|package)\//
 const programState = new Map<string, { hash: string; json: unknown; version: number }>()
 const fileHashes = new Map<string, string>()
-const fileVersions = new Map<string, number>()
+const fileVersions = new Map<string, { revision: string; ordinal: number }>()
 const humanWrites = createWriteAttribution<ActionRef>()
 const captureInOrder = createSerial()
 const fsTimers = new Map<string, NodeJS.Timeout>()
@@ -619,12 +654,13 @@ async function snapshotFileNow(projectDir: string, rel: string, owner: string | 
     if (blob) metadata.blob = blob
     metadata.chars = text.length
     const versionKey = key
-    const nextVersion = (fileVersions.get(versionKey) ?? 0) + 1
+    const nextVersion = (fileVersions.get(versionKey)?.ordinal ?? 0) + 1
+    const revision = fileVersion(st)
     if (getAccount().researchOwner() !== owner) return
     const link = researchAgent.versionLink(projectDir, rel, String(metadata.by), humanWrites.action(resolve(path), text))
     const captured = await captureResearch({ event_type: 'artifact.version', project_id: projectIdFor(projectDir), artifact_id: rel,
-      artifact_version: nextVersion, ...linkColumns(link), metadata: { ...link.metadata, by: metadata.by, file: text, hash: createHash('sha256').update(text).digest('hex') } }, { projectDir })
-    if (captured) { fileVersions.set(versionKey, nextVersion); fileHashes.set(key, hash) }
+      artifact_version: nextVersion, ...linkColumns(link), metadata: { ...link.metadata, by: metadata.by, artifact_revision: revision, file: text, hash: createHash('sha256').update(text).digest('hex') } }, { projectDir })
+    if (captured) { fileVersions.set(versionKey, { revision, ordinal: nextVersion }); fileHashes.set(key, hash) }
   } else {
     if (getAccount().researchOwner() !== owner) return
     const project = projectIdFor(projectDir)
@@ -717,7 +753,7 @@ export async function exportMyData(parent?: BrowserWindow | null): Promise<strin
 
 // ---- IPC ------------------------------------------------------------------------------
 /** Renderer events may not impersonate consent records or carry conversation text. */
-const RENDERER_DENY = /^(consent|conversation|kernel|agent|replay)\.|^project\.(program_version|file_written)$/
+const RENDERER_DENY = /^(consent|conversation|kernel|agent|replay)\.|^project\.(program_version|file_written)$|^simulation\.(approved|started|completed|failed|stopped|interrupted)$/
 
 export function registerTelemetry(): void {
   const t = getTelemetry()
@@ -764,12 +800,15 @@ export function registerTelemetry(): void {
     const o = opts && typeof opts === 'object' ? opts : {}
     // Only ids this process resolved are accepted; otherwise the open project's id is used.
     const known = typeof o.projectId === 'string' && projectIds.has(o.projectId) ? o.projectId : undefined
-    const dir = known ? projectIds.get(known) : rendererProjectDir
+    const isArtifact = type === 'artifact.interact' || type === 'artifact.dwell'
+    const artifactDir = isArtifact && typeof o.artifactProjectDir === 'string' ? resolve(o.artifactProjectDir) : undefined
+    if (isArtifact && (!artifactDir || (artifactDir !== rendererProjectDir && ![...projectIds.values()].includes(artifactDir)))) return
+    const dir = isArtifact ? artifactDir : known ? projectIds.get(known) : rendererProjectDir
     const target = typeof o.target === 'string' ? o.target : undefined
     const durationMs = typeof o.durationMs === 'number' ? o.durationMs : undefined
     const metadata = o.metadata && typeof o.metadata === 'object' && !Array.isArray(o.metadata) ? o.metadata : undefined
     const action = actionRef(o.action)
-    track(type, { target, durationMs, metadata, projectId: known, ...(action ? { action } : {}), ...(o.v1Only === true ? { v1Only: true } : {}) }, dir)
+    track(type, { target, durationMs, metadata, projectId: isArtifact ? undefined : known, ...(!isArtifact && action ? { action } : {}), ...(o.v1Only === true ? { v1Only: true } : {}) }, dir)
   })
   // Remembers the open project. Research data adds .humanstudy/project.json's `id` only once usage events are on, so a
   // project is never touched for research without consent; "Download this study" (study-transfer.ts) adds the same

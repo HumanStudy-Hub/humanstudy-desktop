@@ -69,11 +69,12 @@ function loadPosition(dir: string): Position {
 
 export interface WorkspaceSnapshot { projectDir: string; context: WorkspaceContext }
 
+const sha = async (raw: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw))), b => b.toString(16).padStart(2, '0')).join('')
+
 /** The researcher's confirmation, sent as the agent message: the program's hash at the moment of the
  *  click, the study, the five section-12 fields and the plan the Simulation tab showed. */
 async function approveSimulation(dir: string, program: HumanProgram, studyId: string, request: string, plan: { perCondition: number; model: string; route: 'protocol' | 'package'; conditions: string[]; tokenBudget?: number }): Promise<string> {
   const scope = simulationScope(program, studyId)
-  const sha = async (raw: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(raw))), b => b.toString(16).padStart(2, '0')).join('')
   if (plan.route === 'protocol') {
     // The protocol route (v0.8): the approval names protocol.json by the hash of its bytes; the engine runs it.
     const raw = await window.humanstudy.project.readText(`${dir}/protocol.json`)
@@ -172,12 +173,15 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   // Protocol is canonical whenever present; legacy program-only projects keep their renderer.
   const protocolEntry = files.find((f) => f.rel === 'protocol.json')
   const protocolKey = protocolEntry ? `${protocolEntry.path}:${protocolEntry.version ?? `${protocolEntry.mtime}:${protocolEntry.size}`}` : ''
-  const [loadedProtocol, setLoadedProtocol] = useState<{ key: string; text?: string; error?: string } | null>(null)
+  const [loadedProtocol, setLoadedProtocol] = useState<{ key: string; text?: string; revision?: string; error?: string } | null>(null)
   const protocolText = loadedProtocol?.key === protocolKey ? loadedProtocol.text ?? null : null
   useEffect(() => {
     if (!protocolEntry) { setLoadedProtocol(null); return }
     let live = true
-    window.humanstudy.project.readText(protocolEntry.path).then((text) => { if (live) setLoadedProtocol({key: protocolKey, text}) }, (error: unknown) => { if (live) setLoadedProtocol({key: protocolKey, error: String(error)}) })
+    void window.humanstudy.project.readText(protocolEntry.path).then(async text => {
+      const revision = await sha(text).catch(() => undefined)
+      if (live) setLoadedProtocol({ key: protocolKey, text, revision })
+    }, (error: unknown) => { if (live) setLoadedProtocol({ key: protocolKey, error: String(error) }) })
     return () => { live = false }
   }, [protocolKey]) // eslint-disable-line react-hooks/exhaustive-deps
   const hasProtocol = Boolean(protocolEntry)
@@ -446,6 +450,9 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
   const activeFile = active.startsWith('file:') ? (fileByPath.get(active.slice(5)) ?? null) : null
   const studyId = studies.find((s) => s.id === layout.study)?.id ?? studies[0]?.id ?? ''
   const simStudies = protocolEntry ? simProgram ? [{ id: PROTOCOL_STUDY_ID, title: simProgram.title }] : [] : studies
+  const artifactStudy = { id: (protocolEntry ? simProgram?.id : studyId) || undefined,
+    revision: (loadedProtocol?.key === protocolKey ? loadedProtocol.revision : undefined) ??
+      protocolEntry?.version ?? files.find(f => f.rel === 'program.json')?.version }
   const simStudyId = program ? studyId : PROTOCOL_STUDY_ID
   const workspaceSnapshot = useMemo<WorkspaceSnapshot>(() => {
     const st = studies.find(s => s.id === studyId)
@@ -553,6 +560,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
               project={project}
               program={simProgram}
               studyId={simStudyId}
+              artifactStudy={artifactStudy}
               studies={simStudies.map(st => ({ id: st.id, title: st.title }))}
               onStudy={(id) => update((l) => ({ ...l, study: id }))}
               model={model}
@@ -656,6 +664,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
             <FileView
               key={activeFile.path}
               file={activeFile}
+              study={artifactStudy}
               dir={project.dir}
               version={project}
               onDirty={markDirty}
@@ -682,7 +691,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
           {paperSeen && (
             <div className="wb-paper" hidden={active !== 'paper' && !compare}>
               {sourceFile && sourceFile.ext !== 'pdf' && 'rel' in sourceFile
-                ? <FileView key={sourceFile.path} file={sourceFile} dir={project.dir} version={project.tree} onDirty={markDirty} />
+                ? <FileView key={sourceFile.path} file={sourceFile} study={artifactStudy} active={active === 'paper' || compare} dir={project.dir} version={project.tree} onDirty={markDirty} />
                 : <SourceDrawer key={sourcePdf?.path ?? 'no-source'} pdf={sourcePdf} notesPath={notesPath} source={drawerSource ?? startSource} active={active === 'paper' || compare} closeLabel={compare ? t('wb.close_source') : undefined}
                     onClose={() => update(l => ({ ...l, active: 'study', compare: false }))}
                     onPageChange={page => {

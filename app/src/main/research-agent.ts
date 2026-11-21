@@ -138,8 +138,11 @@ export function createResearchAgent(capture: Sink) {
      * A semantic UI event (desktop renderer or main process). One action.invoke per operation: a
      * secondary name of an operation already recorded adds no row; result records link to it.
      */
+    record(event: Parameters<Sink>[0], projectDir: string): void {
+      track(capture(event, { projectDir }))
+    },
     interaction(type: string, opts: { target?: string; durationMs?: number; metadata?: Record<string, unknown>; action?: ActionRef } = {},
-      ctx: { project_id?: string; dir?: string } = {}): void {
+      ctx: { project_id?: string; dir?: string; artifactVersion?: number } = {}): void {
       const unified = researchInteraction(type, opts), ref = opts.action
       if (unified?.event_type === 'action.invoke') {
         const via = ACTION_VIA.includes(unified.metadata?.via as ActionVia) ? unified.metadata!.via as ActionVia : 'system'
@@ -147,7 +150,7 @@ export function createResearchAgent(capture: Sink) {
         action(op, { project_id: ctx.project_id, view: unified.view ?? undefined, dir: ctx.dir, metadata: ref && !ref.primary ? {} : unified.metadata })
       } else if (unified) {
         if (ref) action(ref, { project_id: ctx.project_id, dir: ctx.dir })
-        track(capture({ ...unified, project_id: ctx.project_id, ...(ref ? { action_id: ref.id, caused_by: ref.id } : {}) }, { projectDir: ctx.dir }))
+        track(capture({ ...unified, project_id: ctx.project_id, artifact_version: ctx.artifactVersion, ...(ref ? { action_id: ref.id, caused_by: ref.id } : {}) }, { projectDir: ctx.dir }))
       } else if (ref) action(ref, { project_id: ctx.project_id, dir: ctx.dir })
     },
     bind(sid: string, project?: string, dir?: string, model = 'not-reported') { contexts.set(sid, { project, dir, model }) },

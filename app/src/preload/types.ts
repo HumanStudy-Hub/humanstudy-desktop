@@ -644,6 +644,8 @@ export interface TelemetryRecent {
   status: 'pending' | 'sent' | 'dropped'
 }
 export interface TelemetryTrackOptions {
+  /** An artifact viewer's opened project, preserved across a view switch. Never stored as data. */
+  artifactProjectDir?: string
   target?: string
   durationMs?: number
   metadata?: Record<string, unknown>

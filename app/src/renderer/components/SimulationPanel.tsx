@@ -10,7 +10,8 @@ import { estimateRun, hasParticipantData, headline, isResult, parseProgress, par
 import { packageStamp, readinessStamp, runConfirmation, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
 import { shortModelName } from './ModelPicker'
 import { formatTokens, MAX_PER_CONDITION, protocolRunLimits, runLimits } from '../../shared/run-limits'
-import { listenToArtifact } from '../bridge'
+import { ArtifactFrame, type ArtifactStudy } from './ArtifactFrame'
+import { versionedUrl } from '../../shared/file-version'
 import { getLang, t } from '../i18n'
 import { holdAction, track } from '../telemetry'
 import { formatDuration } from '../format'
@@ -19,6 +20,7 @@ interface Props {
   project: ProjectSnapshot
   program: HumanProgram
   studyId: string
+  artifactStudy?: ArtifactStudy
   studies: { id: string; title: string }[]
   onStudy(id: string): void
   /** The model selected in the app; AI participants use it too. */
@@ -95,13 +97,12 @@ function usePackageReadiness(dir: string, tree: ProjectEntry[], studyId: string,
   return { slugs, readiness: checked?.stamp === stamp ? checked.readiness : null,
     checking: checked?.stamp !== stamp, executing: executing === stamp, check }
 }
-const fileUrl = (tree: ProjectEntry[], path?: string): string | undefined => {
-  if (!path) return undefined
-  for (const e of tree) {
-    if (e.path === path) return e.url
-    if (e.children && path.startsWith(e.path + '/')) { const u = fileUrl(e.children, path); if (u) return u }
+const findFile = (tree: ProjectEntry[], path?: string): ProjectEntry | undefined => {
+  if (!path) return
+  for (const entry of tree) {
+    if (entry.path === path) return entry
+    if (entry.children && path.startsWith(entry.path + '/')) return findFile(entry.children, path)
   }
-  return undefined
 }
 
 const STEPS: SimStage[] = ['preparing', 'trial', 'running', 'scoring', 'writing']
@@ -259,7 +260,7 @@ export function SimulationPanel(props: Props) {
   // distracts from a run in progress.
   const resultFirst = Boolean(current && !isExample && !running && !building)
   const result = current ? (
-    <Result run={current} tree={project.tree} summary={texts[current.id]?.summary ?? null} progress={texts[current.id]?.progress ?? null}
+    <Result run={current} tree={project.tree} study={props.artifactStudy} summary={texts[current.id]?.summary ?? null} progress={texts[current.id]?.progress ?? null}
       onOpen={() => { track('simulation.result_open', { metadata: { how: 'tab', example: isExample } }); props.onOpenFile(current.results!) }}
       onAsk={() => props.onAsk(t('sim.discuss_prompt', { run: current.rel }))} canAsk={canRun} />
   ) : null
@@ -495,10 +496,8 @@ function Progress({ progress, startedAt, now, plan, built, activity, model, onSt
   )
 }
 
-function Result({ run, tree, summary, progress, onOpen, onAsk, canAsk = true }: { run: SimRunFiles; tree: ProjectEntry[]; summary: SimSummary | null; progress: SimProgress | null; onOpen(): void; onAsk(): void; canAsk?: boolean }) {
-  const frame = useRef<HTMLIFrameElement>(null)
-  useEffect(() => listenToArtifact(() => frame.current), [])
-  const url = fileUrl(tree, run.results)
+function Result({ run, tree, study, summary, progress, onOpen, onAsk, canAsk = true }: { run: SimRunFiles; tree: ProjectEntry[]; study?: ArtifactStudy; summary: SimSummary | null; progress: SimProgress | null; onOpen(): void; onAsk(): void; canAsk?: boolean }) {
+  const file = findFile(tree, run.results)
   const when = runDate(run.id) ?? run.mtime
   const model = shortModelName(summary?.model ?? progress?.model ?? '')
   const n = summary?.perCondition ? t('sim.n_each', { n: summary.perCondition }) : progress?.total ? t('sim.n_total', { n: progress.total }) : ''
@@ -517,7 +516,8 @@ function Result({ run, tree, summary, progress, onOpen, onAsk, canAsk = true }: 
       ) : (
         <p className="muted small">{t('sim.no_summary')}</p>
       )}
-      {url && <iframe ref={frame} key={url} className="sim-frame" src={url} sandbox="allow-scripts" title={t('sim.result_title')} />}
+      {file?.url && <ArtifactFrame key={file.path + ':' + file.version} file={file} study={study}
+        className="sim-frame" src={versionedUrl(file.url, file.version)} title={t('sim.result_title')} />}
       <div className="sim-actions">
         <button className="ghost small-btn" onClick={onOpen}>{t('sim.open_tab')}</button>
         <button className="ghost small-btn" disabled={!canAsk} title={canAsk ? undefined : t('sim.sign_in_to_run')} onClick={onAsk}>{t('sim.discuss')}</button>

@@ -9,7 +9,42 @@
  * structural rules again; this file adds the event catalog and per-type requirements.
  */
 
-export const CONTRACT_VERSION = '1.0.0'
+// Only semantic control metadata crosses the frame boundary. IDs and labels are authored
+// identifiers, never DOM text, input values, or keys.
+export const ARTIFACT_ACTIONS = ['navigate', 'choose', 'answer', 'toggle', 'view', 'submit'] as const
+export const ARTIFACT_VALUE_KINDS = ['none', 'choice', 'boolean', 'number', 'text'] as const
+export interface ArtifactInteraction {
+  action: typeof ARTIFACT_ACTIONS[number]
+  controlId: string
+  label: string
+  step: number | null
+  arm: string | null
+  valueKind: typeof ARTIFACT_VALUE_KINDS[number]
+}
+
+export const semanticId = (value: unknown): value is string =>
+  typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,119}$/.test(value)
+
+export function parseArtifactInteraction(input: unknown): ArtifactInteraction | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const d = input as ArtifactInteraction
+  const keys = Object.keys(d)
+  if (keys.length !== 6 || !['action', 'controlId', 'label', 'step', 'arm', 'valueKind'].every(key => keys.includes(key)) ||
+      !ARTIFACT_ACTIONS.includes(d.action) || !ARTIFACT_VALUE_KINDS.includes(d.valueKind) ||
+      !semanticId(d.controlId) || !semanticId(d.label) ||
+      (d.step !== null && (!Number.isSafeInteger(d.step) || d.step < 0 || d.step > 100000)) ||
+      (d.arm !== null && !semanticId(d.arm))) return null
+  return { action: d.action, controlId: d.controlId, label: d.label, step: d.step, arm: d.arm, valueKind: d.valueKind }
+}
+
+export const artifactPath = (value: unknown): value is string =>
+  typeof value === 'string' && value.length <= 200 && /\.html?$/i.test(value) &&
+  !/[:\\\x00-\x1f]/.test(value) && value.split('/').every(part => part && !part.startsWith('.'))
+
+export const SIMULATION_STAGES = ['approved', 'started', 'completed', 'failed', 'stopped', 'interrupted'] as const
+export type SimulationStage = typeof SIMULATION_STAGES[number]
+
+export const CONTRACT_VERSION = '1.1.0'
 
 // ---- enumerations ---------------------------------------------------------------------------
 
@@ -177,6 +212,11 @@ export const EVENTS: Record<string, EventSpec> = {
   // interaction: one per user operation, whatever the input route
   'action.invoke': { dataType: 'interaction', primary: true, requires: ['target', 'view', 'action_id'], metadata: ['via'] },
 
+  'artifact.interact': { dataType: 'interaction', requires: ['artifact_id', 'project_id'],
+    metadata: ['study_id', 'study_revision', 'artifact_revision', 'interaction'] },
+  'artifact.dwell': { dataType: 'navigation', requires: ['artifact_id', 'project_id', 'duration_ms'],
+    metadata: ['study_id', 'study_revision', 'artifact_revision'] },
+
   // navigation
   'view.dwell': { dataType: 'navigation', requires: ['target', 'duration_ms'] },
   'app.foreground': { dataType: 'navigation', requires: ['duration_ms'] },
@@ -213,6 +253,11 @@ export const EVENTS: Record<string, EventSpec> = {
   'tool.end': { dataType: 'agent_execution', requires: ['thread_id', 'tool_call_id', 'target'], metadata: ['status'], content: ['output'] },
   'permission.request': { dataType: 'agent_execution', requires: ['thread_id', 'target'], metadata: ['permission_id'] },
   'permission.decision': { dataType: 'agent_execution', requires: ['thread_id', 'target'], metadata: ['permission_id', 'reply', 'automatic'] },
+
+  ...Object.fromEntries(SIMULATION_STAGES.map(stage => [`simulation.${stage}`, {
+    dataType: 'agent_execution', requires: ['project_id', 'thread_id', 'caused_by'],
+    metadata: ['run_id', 'scope', 'outputs', 'model_request_ids'],
+  } satisfies EventSpec])),
 
   // research knowledge and artifacts
   'program.version': {
@@ -399,6 +444,31 @@ export function validateResearchEvent(input: unknown, now: number = Date.now()):
   if (metaOk) {
     const m = metadata as Record<string, unknown>
     for (const key of spec.metadata ?? []) need(key in m, `${type} requires metadata.${key}`)
+    if (type === 'artifact.interact' || type === 'artifact.dwell') {
+      need(artifactPath(e.artifact_id), 'artifact path invalid')
+      need((m.study_id === null || semanticId(m.study_id)) && (m.study_revision === null || semanticId(m.study_revision)) &&
+        semanticId(m.artifact_revision), 'artifact context invalid')
+      const interaction = type === 'artifact.interact'
+      need(Object.keys(m).length === (interaction ? 4 : 3), 'artifact metadata has unexpected fields')
+      if (interaction) need(parseArtifactInteraction(m.interaction) !== null, 'artifact interaction invalid')
+      need(Array.isArray(refs) && refs.length === 0, 'artifact interaction and dwell do not carry content')
+    }
+    if (type.startsWith('simulation.')) {
+      const scope = m.scope as Record<string, unknown> | null
+      need(typeof m.run_id === 'string' && UUID_RE.test(m.run_id), 'simulation run_id invalid')
+      need(!!scope && Object.keys(scope).length === 4 && semanticId(scope.study_id) &&
+        typeof scope.revision === 'string' && SHA256_RE.test(scope.revision) &&
+        semanticId(scope.model) && Number.isSafeInteger(scope.per_condition) &&
+        Number(scope.per_condition) >= 1 && Number(scope.per_condition) <= 60, 'simulation scope invalid')
+      need(Array.isArray(m.outputs) && m.outputs.length <= 16 && m.outputs.every(path =>
+        typeof path === 'string' && /^artifacts\/simulations\/[\w.-]+\/[\w-]+\.(?:jsonl?|html|md)$/.test(path) &&
+        !path.split('/').some(part => part.startsWith('.'))), 'simulation outputs invalid')
+      need(Array.isArray(m.model_request_ids) && m.model_request_ids.every(semanticId), 'simulation model request IDs invalid')
+      need(m.exit_code === undefined || m.exit_code === null || Number.isSafeInteger(m.exit_code), 'simulation exit code invalid')
+      need(Object.keys(m).every(key => ['run_id', 'scope', 'outputs', 'model_request_ids', 'exit_code', 'part'].includes(key)) &&
+        (m.part === undefined || (Number.isSafeInteger(m.part) && Number(m.part) >= 0)), 'simulation metadata invalid')
+      need(Array.isArray(refs) && refs.length === 0, 'simulation lifecycle does not carry content')
+    }
     if (type === 'action.invoke') need((ACTION_VIA as readonly string[]).includes(m.via as string), 'action.invoke metadata.via invalid')
     const roles = new Set(Array.isArray(refs) ? refs.map((r) => (r as ContentRef)?.role) : [])
     for (const role of spec.content ?? []) {
