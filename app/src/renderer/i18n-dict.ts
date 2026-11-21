@@ -33,7 +33,7 @@ const ROWS: Row[] = [
   ['app.agent', 'Study agent', '研究助手'],
   ['app.workspace', 'Workspace', '工作区'],
   ['session.ends_in', 'Session ends in {n} min', '会话将在 {n} 分钟后结束'],
-  ['session.ending', 'Your work is saved. The session will end soon; you can reopen it from the Hub.', '你的工作已保存。会话即将结束，之后可以从 Hub 重新打开。'],
+  ['session.ending', 'Your work will be saved automatically. The session ends in under 2 minutes; you can reopen it from the Hub.', '你的工作会自动保存。会话将在 2 分钟内结束，之后可以从 Hub 重新打开。'],
   ['app.loading_project', 'Loading project…', '正在加载项目…'],
   ['app.projects', 'Projects', '项目'],
   ['app.back_hint', 'Back to all projects', '返回全部项目'],

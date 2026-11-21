@@ -36,6 +36,6 @@ test('nothing above 10 minutes, minutes left up to 2, then the final notice', t 
 test('both notices exist in English and Chinese', () => {
   assert.equal(translate('en', 'session.ends_in', { n: 7 }), 'Session ends in 7 min')
   assert.equal(translate('zh-CN', 'session.ends_in', { n: 7 }), '会话将在 7 分钟后结束')
-  assert.equal(translate('en', 'session.ending'), 'Your work is saved. The session will end soon; you can reopen it from the Hub.')
-  assert.match(translate('zh-CN', 'session.ending'), /已保存.*Hub/)
+  assert.equal(translate('en', 'session.ending'), 'Your work will be saved automatically. The session ends in under 2 minutes; you can reopen it from the Hub.')
+  assert.equal(translate('zh-CN', 'session.ending'), '你的工作会自动保存。会话将在 2 分钟内结束，之后可以从 Hub 重新打开。')
 })
