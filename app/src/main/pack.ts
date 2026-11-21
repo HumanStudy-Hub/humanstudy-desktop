@@ -132,6 +132,22 @@ export function trustedEngineFiles(): [string, string][] {
   return engineFiles().map((rel) => [rel.slice('runtime/hsenv/'.length), files[PREFIX + rel]])
 }
 
+const PREVIEW_WRAPPER = 'skills/preview/make_preview.py'
+export function previewTemplateVersion(): number {
+  const version = Number(files[PREFIX + PREVIEW_WRAPPER]?.match(/^TEMPLATE_VERSION = (\d+)$/m)?.[1])
+  return Number.isFinite(version) ? version : 0
+}
+
+/** Generator, engine and kit from the shipped pack, in the layout make_preview.py expects. */
+export function trustedPreviewFiles(): [string, string][] {
+  const preview = ['build_preview.py', 'preview.css', 'preview.js']
+  const paths = [...preview.map(name => 'skills/preview/' + name), PREVIEW_WRAPPER, ...kitFiles()]
+  return [
+    ...trustedEngineFiles().map(([rel, content]): [string, string] => ['hsenv/' + rel, content]),
+    ...paths.map((rel): [string, string] => [rel, files[PREFIX + rel]]),
+  ]
+}
+
 /** What the app runs to measure a protocol run's model budget (protocol-readiness.ts protocolBudget), in the
  *  sandbox layout run_study.py expects: the engine under hsenv/, the runner and budget.py under skills/run/. */
 export function trustedBudgetFiles(): [string, string][] {

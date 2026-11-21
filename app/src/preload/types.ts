@@ -203,6 +203,7 @@ export interface ProjectSnapshot {
   program: unknown | null
   programError?: string
   build?: PaperBuildState
+  previewPreparation?: 'preparing' | 'failed'
   artifacts: ProjectFile[]
   exports: ProjectFile[]
   pdf: ProjectFile | null
@@ -526,7 +527,7 @@ export interface HumanStudyApi {
      *  starts in the open conversation. */
     retryBuild(dir: string, action?: ActionRef): Promise<boolean>
     open(): Promise<string | null>
-    read(dir: string): Promise<ProjectSnapshot>
+    read(dir: string, background?: boolean): Promise<ProjectSnapshot>
     reveal(path: string): Promise<void>
     /** The saved versions of a file under artifacts/, exports/ or program.json, oldest first. */
     versions(path: string): Promise<FileVersion[]>
