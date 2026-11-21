@@ -660,6 +660,7 @@ export interface TelemetryApi {
   status(): Promise<TelemetryStatus>
   setConsent(consent: TelemetryConsent): Promise<TelemetryStatus>
   /** Queued only when consent allows; conversation.* and consent.* are main-process only. */
+  chatSubmission?(sessionId: string | undefined, text: string, outcome: 'queued' | 'failed', action: ActionRef): Promise<void>
   track(type: string, opts?: TelemetryTrackOptions): Promise<void>
   /**
    * Marks `dir` as the open project (null: none) and returns its random research id, created in

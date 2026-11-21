@@ -8,6 +8,7 @@ import {pathToFileURL, fileURLToPath } from 'node:url'
 const temp=await mkdtemp(join(tmpdir(),'research-collector-test-'))
 await build({entryPoints:[fileURLToPath(new URL('./research-collector.ts',import.meta.url))],bundle:true,platform:'node',format:'esm',outfile:join(temp,'collector.mjs')})
 const {createResearchCollector}=await import(pathToFileURL(join(temp,'collector.mjs')))
+const VISIT='44444444-4444-4444-8444-444444444444'
 const OWNER='11111111-1111-4111-8111-111111111111',OTHER='22222222-2222-4222-8222-222222222222',PROJECT='33333333-3333-4333-8333-333333333333'
 async function setup(){
  const root=await mkdtemp(join(temp,'case-')), state={owner:OWNER,allowed:true,offline:false,failObject:false,afterObject:null,objectPosts:0,rejectEvent:null},objects=new Map(),rows=new Map(),events=new Map(),consents=[]
@@ -30,10 +31,10 @@ async function setup(){
    if(state.failObject)return new Response(null,{status:503})
    state.objectPosts++;objects.set(p,Buffer.from(init.body));state.afterObject?.();return new Response(null,{status:201})
   }
-  if(p==='/rest/v1/research_events'){if(init.method!=='POST')return Response.json([...events.values()].filter(e=>e.owner_id===owner));if(state.holdEvent)await state.holdEvent;const row=JSON.parse(init.body);if(row.id===state.rejectEvent)return new Response(null,{status:400});events.set(row.id,{...row,owner_id:owner});return new Response(null,{status:201})}
+  if(p==='/rest/v1/research_events'){if(init.method!=='POST')return Response.json([...events.values()].filter(e=>e.owner_id===owner));if(state.holdEvent)await state.holdEvent;const row=JSON.parse(init.body);if(state.schemaMissing&&row.visit_id)return Response.json({code:'PGRST204'},{status:400});if(row.id===state.rejectEvent)return new Response(null,{status:400});events.set(row.id,{...row,owner_id:owner});return new Response(null,{status:201})}
   throw Error('Unexpected fixture route '+p)
  }
- const make=(options={})=>createResearchCollector({root:join(root,'queue'),surface:'desktop',appVersion:'test',ownerId:()=>state.owner,auth,allowed:()=>state.allowed,fetch:fetcher,...options})
+ const make=(options={})=>createResearchCollector({root:join(root,'queue'),surface:'desktop',appVersion:'test',ownerId:()=>state.owner,auth,allowed:()=>state.allowed,fetch:fetcher,visitId:()=>options.surface==='web' ? ('visit' in options ? options.visit : VISIT) : undefined,...options})
  const source=join(root,'paper.pdf');await writeFile(source,Buffer.from('Original source: αβγ\n'))
  return {root,state,objects,rows,events,consents,make,source}
 }
@@ -46,7 +47,7 @@ test('browser sandbox records use web consent and attribution while the previous
  assert.equal(f.events.has(previousId),false)
  assert.equal((await browser.pending()),2)
  assert.deepEqual(f.consents.map(consent=>consent.surface),['web'])
- assert.ok([...f.events.values()].every(row=>row.surface==='web'&&row.platform==='browser'))
+ assert.ok([...f.events.values()].every(row=>row.surface==='web'&&row.platform==='browser'&&row.visit_id===VISIT))
  assert.ok([...f.rows.values()].every(row=>row.surface==='web'))
  const files=await browser.exportFiles()
  const archived=JSON.parse(Buffer.from(files[`research-v1/previous-local/events/${previousId}.json`]).toString())
@@ -168,9 +169,65 @@ test('artifact and simulation events use the same consent-gated v1 session and k
  await assert.rejects(collector.capture({ ...lifecycle, metadata: { ...lifecycle.metadata, outputs: ['artifacts/simulations/../results.html'] } }), /simulation outputs invalid/)
  await collector.flush()
  const rows = [f.events.get(artifactId), f.events.get(dwellId), f.events.get(completionId)]
- assert.ok(rows.every(row => row.contract_version === '1.1.0' && row.research_session_id === rows[0].research_session_id))
+ assert.ok(rows.every(row => row.contract_version === '1.2.0' && row.research_session_id === rows[0].research_session_id))
  assert.deepEqual(rows[0].metadata, artifact.metadata)
  assert.equal(rows[1].duration_ms, 110)
  assert.equal(rows[2].caused_by, f.events.get(action).id)
  assert.deepEqual(rows[2].metadata, lifecycle.metadata)
+})
+
+
+test('web retries acknowledge the same atomic row before and after upload or collector restart', async () => {
+ const f = await setup(), options = {surface:'web'}, c = f.make(options)
+ const id = '4ec5671c-4cf6-43ca-bb99-02228f5a1059'
+ const record = {id,event_type:'action.invoke',view:'study',target:'saved',metadata:{via:'pointer'}}
+ const events = join(f.root,'queue',OWNER,'events')
+ const first = await c.capture(record)
+ const saved = JSON.parse(await readFile(join(events,first+'.json'),'utf8'))
+ assert.equal(saved.visit_id,VISIT)
+ assert.equal(saved.client_seq,2)
+ assert.equal(await f.make(options).capture(record),id)
+ await c.flush()
+ assert.equal(await f.make(options).capture(record),id)
+ assert.deepEqual(await readdir(events),[])
+ assert.equal(f.events.get(id).research_session_id,saved.research_session_id)
+ assert.equal(f.events.get(id).client_seq,saved.client_seq)
+ const fresh = await f.make(options).capture({...record,id:undefined})
+ assert.notEqual(fresh,id)
+ assert.equal(JSON.parse(await readFile(join(events,fresh+'.json'),'utf8')).visit_id,VISIT)
+})
+
+test('a blocked upload adds one checkpoint per sequence position, not one per retry', async () => {
+ const f = await setup(), c = f.make({surface:'web'}), events = join(f.root,'queue',OWNER,'events')
+ await c.capture({event_type:'action.invoke',view:'study',target:'first',metadata:{via:'pointer'}})
+ f.state.schemaMissing = true
+ const checkpoints = async () => (await Promise.all((await readdir(events)).map(async name => JSON.parse(await readFile(join(events,name),'utf8'))))).filter(row => row.event_type === 'delivery.checkpoint')
+ for (let i = 0; i < 4; i++) { await c.flush(); assert.match(c.error(), /visit schema/) }
+ assert.equal((await checkpoints()).length, 1)
+ await c.capture({event_type:'action.invoke',view:'study',target:'second',metadata:{via:'pointer'}})
+ await c.flush(); await c.flush()
+ const pending = await checkpoints()
+ assert.equal(pending.length, 2)
+ assert.ok(pending.every(row => row.visit_id === VISIT))
+ f.state.schemaMissing = false
+ await c.flush()
+ assert.equal(await c.pending(), 0)
+ assert.equal([...f.events.values()].filter(row => row.event_type === 'delivery.checkpoint').length, 2)
+})
+test('a server restarted without a visit reports a rejected row under its own visit and keeps delivering', async () => {
+ const f = await setup(), before = f.make({surface:'web'})
+ const id = await before.capture({event_type:'action.invoke',view:'study',target:'bad',metadata:{via:'pointer'}})
+ await before.capture({event_type:'action.invoke',view:'study',target:'good',metadata:{via:'pointer'}})
+ f.state.rejectEvent = id
+ const restarted = f.make({surface:'web', visit: undefined})
+ assert.equal(await restarted.capture({event_type:'action.invoke',view:'study',target:'no-visit',metadata:{via:'pointer'}}), null)
+ await restarted.flush(); await restarted.flush()
+ assert.ok([...f.events.values()].some(row => row.target === 'good'))
+ const report = [...f.events.values()].find(row => row.event_type === 'delivery.rejected')
+ assert.ok(report)
+ assert.equal(report.visit_id, VISIT)
+ assert.equal(report.metadata.rejected_event_id, id)
+ assert.deepEqual(await readdir(join(f.root,'queue',OWNER,'events')), [])
+ assert.deepEqual(await readdir(join(f.root,'queue',OWNER,'rejected')), [id + '.json'])
+ assert.ok([...f.events.values()].every(row => row.visit_id === VISIT))
 })

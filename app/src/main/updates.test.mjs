@@ -102,3 +102,18 @@ const waiting=delayed.run();await new Promise(r=>setImmediate(r))
 delayed.failed(Error('native error while saving'));assert.equal(rollbackDuringSave,0)
 finishPrepare(true);await waiting;assert.equal(rollbackDuringSave,1);assert.equal(lateLaunches,0)
 console.log('second-save and installer failure rollback/retry ok')
+{ // web stop: project sync runs beside research delivery with a fair share of the budget
+  const order=[];let syncMs
+  const t0=Date.now()
+  await S.webQuitWithin({prepare:async()=>{order.push('prepare')},
+    research:()=>new Promise(r=>setTimeout(()=>{order.push('research');r()},120)),
+    sync:ms=>{syncMs=ms;order.push('sync start');return new Promise(r=>setTimeout(()=>{order.push('sync');r()},120))}},
+    {prepareMs:200,totalMs:1000,syncMs:600})
+  assert.deepEqual(order.slice(0,2),['prepare','sync start']);assert.ok(Date.now()-t0<220,'research and sync ran one after the other')
+  assert.equal(syncMs,600)
+  // A stalled prepare and stalled deliveries still finish inside the total budget.
+  const t1=Date.now();let late
+  await S.webQuitWithin({prepare:()=>new Promise(()=>{}),research:()=>new Promise(()=>{}),sync:ms=>{late=ms;return new Promise(()=>{})}},{prepareMs:100,totalMs:300,syncMs:4000})
+  assert.ok(Date.now()-t1<400);assert.ok(late<=200&&late>0,'sync gets only what is left of the budget')
+  console.log('web quit budget ok')
+}

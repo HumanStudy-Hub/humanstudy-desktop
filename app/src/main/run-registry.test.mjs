@@ -34,7 +34,7 @@ test('two relays on one session: the old run ending forgets and frees only its o
 test('the main process uses owner-checked removal for relays and projects, and no descriptor for protocol runs', async () => {
   const { readFileSync } = await import('node:fs')
   const index = readFileSync(join(here, 'index.ts'), 'utf8')
-  const send = index.slice(index.indexOf("ipcMain.handle('kernel:send'"))
+  const send = index.slice(index.indexOf('const sendToKernel = async'))
   assert.match(send, /publish: route !== 'protocol'/)
   assert.match(send, /onClose: \(\) => \{ if \(ownClose\) runs\.forget\(id, ownClose\); runs\.release\(projectDir!, owner\) \}/)
   assert.match(send, /startProtocolRun\(projectDir, approved, binding as ProtocolBinding, relay, \(\) => \{ runs\.forget\(id, relay\.close\); void relay\.close\(\) \}\)/)

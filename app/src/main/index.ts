@@ -38,7 +38,8 @@ import { isVersioned, readVersion, relOf, snapshot, versionsOf } from './version
 import { createThreads, threads } from './threads'
 import { assertProjectWritePath, saveProjectCopy, saveProjectText } from './program-save'
 import { createPaperBuilds, isBuildTurn } from './paper-build'
-import { createShutdown } from './shutdown-core'
+import { createShutdown, webQuitWithin } from './shutdown-core'
+import { dispatchAndRecord } from './research-agent'
 import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedRunFiles, trustedShareFiles } from './pack'
 import { isValidatedProtocol } from '../shared/research-search'
 import { confirmedLibrarySha, heldTextsOf, passedProtocolSha, selectedResults, shareExport, ShareError, shareFileName, sharePlan, type ShareRuntime } from './share-layers'
@@ -103,6 +104,7 @@ let projectSync: SyncEngine | null = null
 const paperBuilds = createPaperBuilds(dir => broadcast('project:changed', dir), async dir => protocolDraftCertificate(
   await readyPython(), trustedEngineFiles(), dir, process.env.HUMANSTUDY_RUNTIME_BIN || ''))
 let threadsInitialized = false
+const webRuntime = process.env.HUMANSTUDY_RESEARCH_SURFACE === 'web'
 const shutdown = createShutdown({
   busy: () => activeTurns.size > 0,
   confirm: async restart => {
@@ -117,9 +119,10 @@ const shutdown = createShutdown({
   },
   flush: async () => {
     if (threadsInitialized) await threads().flush()
-    await telemetry.settleResearch(activeTurns.size === 0 && activeRunResearch.size === 0)
-    // Best effort and bounded: a sync that cannot finish now runs on the next start.
-    await projectSync?.flushAll(8_000).catch(() => undefined)
+    await telemetry.settleResearch(!webRuntime && activeTurns.size === 0 && activeRunResearch.size === 0)
+    // Best effort and bounded: a sync that cannot finish now runs on the next start. The web sandbox
+    // syncs after the agent stops, alongside research delivery (webQuitWithin), not inside prepare.
+    if (!webRuntime) await projectSync?.flushAll(8_000).catch(() => undefined)
   },
   quiesce: async () => {
     // Preserve kernel/session bindings until exit so an unsuccessful quit remains usable.
@@ -1089,7 +1092,7 @@ app.whenReady().then(() => {
     })
   }
 
-  ipcMain.handle('kernel:send', async (_e, id: string, text: string, workspace?: WorkspaceContext, action?: unknown) => {
+  const sendToKernel = async (id: string, text: string, workspace?: WorkspaceContext, action?: unknown) => {
     if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
     const k = kernelFor(id)
     // A simulation approval only reaches the agent when the package can run (the Simulation tab checks
@@ -1173,6 +1176,16 @@ app.whenReady().then(() => {
     const purpose = isBuildTurn(buildState, id, actionRef(action)?.target) ? 'build' as const : undefined
     try { await k.send(id, prompt, { purpose }) }
     catch (error) { if (startedRelay) await closeRunRelay(id); if (!alreadyActive) activeTurns.delete(id); paperBuilds.sendFailed(id, error); throw error }
+  }
+  ipcMain.handle('kernel:send', async (_e, id: string, text: string, workspace?: WorkspaceContext, action?: unknown) => {
+    if (!webRuntime) return sendToKernel(id, text, workspace, action)
+    const ref = actionRef(action) ?? {
+      id: randomUUID(), via: 'system' as const,
+      target: typeof text === 'string' && text.startsWith('[Simulation scope approved]') ? 'simulation.run' : 'composer.send',
+    }
+    // The receipt joins the collector's serialized queue (drained at quit); the reply never waits for it.
+    return dispatchAndRecord(() => sendToKernel(id, text, workspace, ref),
+      outcome => telemetry.trackChatSubmission(id, text, outcome, ref))
   })
   ipcMain.handle('kernel:export', async (_e,sid:string) => {
     const k=kernelFor(sid)
@@ -1299,10 +1312,28 @@ app.whenReady().then(() => {
   })
 })
 
+let webQuitReady = false
+let webQuit: Promise<void> | undefined
 app.on('before-quit', event => {
   // Ask about unsaved edits before the kernels are stopped, so Cancel leaves everything running.
   if (!confirmDiscardAll()) return event.preventDefault()
-  if (!primaryInstance || shutdown.ready()) return
+  if (!primaryInstance) return
+  if (webRuntime) {
+    if (webQuitReady) return
+    event.preventDefault()
+    // Leave time for delivery even if stopping the agent or saving its state stalls.
+    webQuit ??= webQuitWithin({
+      prepare: () => shutdown.prepare(false),
+      research: () => telemetry.finishWebResearch(),
+      sync: ms => projectSync?.flushAll(ms) ?? Promise.resolve(),
+    }).finally(() => {
+      webQuitReady = true
+      if (telemetry.webEndReason() === 'crash') app.exit(1)
+      else app.quit()
+    })
+    return
+  }
+  if (shutdown.ready()) return
   event.preventDefault()
   void shutdown.prepare(false).then(ready => {
     if (ready) app.quit()

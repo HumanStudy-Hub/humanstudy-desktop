@@ -44,7 +44,12 @@ export const artifactPath = (value: unknown): value is string =>
 export const SIMULATION_STAGES = ['approved', 'started', 'completed', 'failed', 'stopped', 'interrupted'] as const
 export type SimulationStage = typeof SIMULATION_STAGES[number]
 
-export const CONTRACT_VERSION = '1.1.0'
+export const CONTRACT_VERSION = '1.2.0'
+
+export const SESSION_END_REASONS = ['timeout', 'user_stop', 'disconnect', 'crash', 'closed'] as const
+export type SessionEndReason = (typeof SESSION_END_REASONS)[number]
+export const DISPATCH_OUTCOMES = ['sent', 'queued', 'failed'] as const
+export type DispatchOutcome = (typeof DISPATCH_OUTCOMES)[number]
 
 // ---- enumerations ---------------------------------------------------------------------------
 
@@ -111,6 +116,7 @@ export interface ResearchEvent {
   surface: Surface
   install_id: string
   research_session_id: string
+  visit_id?: string | null
   client_seq: number
   data_type: DataType
   event_type: string
@@ -235,6 +241,8 @@ export const EVENTS: Record<string, EventSpec> = {
     metadata: ['role', 'part', 'part_kind', 'status'],
     content: ['text'],
   },
+  'conversation.submission': { dataType: 'conversation', requires: ['message_id', 'action_id'],
+    metadata: ['dispatch_outcome'], content: ['text'] },
   'conversation.question': {
     dataType: 'conversation',
     requires: ['thread_id', 'message_id'],
@@ -342,6 +350,7 @@ export function scrubResearchValue(value: unknown, ctx: { projectDir?: string; e
 // ---- validation -----------------------------------------------------------------------------
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export const researchUuid = (value: unknown): value is string => typeof value === 'string' && UUID_RE.test(value)
 const SHA256_RE = /^[0-9a-f]{64}$/
 const EVENT_TYPE_RE = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){1,3}$/
 const ROLE_RE = /^[a-z][a-z0-9_.-]{0,39}$/
@@ -403,6 +412,10 @@ export function validateResearchEvent(input: unknown, now: number = Date.now()):
   const at = typeof e.occurred_at === 'string' ? Date.parse(e.occurred_at) : NaN
   need(Number.isFinite(at), 'occurred_at invalid')
   need(!(at > now + LIMITS.futureSkewMs), 'occurred_at is in the future')
+  optional('visit_id', UUID_RE)
+  const browserRuntime = e.surface === 'web' && e.platform === 'browser' &&
+    /^1\.(?:[2-9]|[1-9]\d+)\./.test(e.contract_version ?? '')
+  if (browserRuntime) need(researchUuid(e.visit_id), 'web events require visit_id')
   optional('project_id', PROJECT_RE)
   optional('view', VIEW_RE)
   optional('action_id', UUID_RE)
@@ -469,6 +482,13 @@ export function validateResearchEvent(input: unknown, now: number = Date.now()):
         (m.part === undefined || (Number.isSafeInteger(m.part) && Number(m.part) >= 0)), 'simulation metadata invalid')
       need(Array.isArray(refs) && refs.length === 0, 'simulation lifecycle does not carry content')
     }
+    if (type === 'session.end' && browserRuntime) {
+      need(SESSION_END_REASONS.includes(m.reason as SessionEndReason), 'session.end reason invalid')
+      need(Number.isSafeInteger(m.captured_through_seq) && Number(m.captured_through_seq) >= 1 &&
+        Number(m.captured_through_seq) <= Number(e.client_seq), 'session.end captured_through_seq invalid')
+    }
+    if (type === 'conversation.submission')
+      need(DISPATCH_OUTCOMES.includes(m.dispatch_outcome as DispatchOutcome), 'conversation.submission dispatch_outcome invalid')
     if (type === 'action.invoke') need((ACTION_VIA as readonly string[]).includes(m.via as string), 'action.invoke metadata.via invalid')
     const roles = new Set(Array.isArray(refs) ? refs.map((r) => (r as ContentRef)?.role) : [])
     for (const role of spec.content ?? []) {

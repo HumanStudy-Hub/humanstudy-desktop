@@ -10,11 +10,12 @@ import { randomUUID } from 'node:crypto'
 import type { KernelEvent } from './kernel-types'
 import type { ResearchCapture } from './research-collector'
 import type { ActionRef } from '../shared/research-operations'
-import { ACTION_VIA, type ActionVia } from '../shared/research-contract'
+import { ACTION_VIA, type ActionVia, type DispatchOutcome } from '../shared/research-contract'
 import { researchInteraction } from '../shared/research-interactions'
 import { namesPrivatePath, REDACTED_PRIVATE } from './telemetry-core'
 
-type Sink = (event: ResearchCapture, context?: { projectDir?: string }) => Promise<unknown>
+type Sink = (event: ResearchCapture, context?: { projectDir?: string; visitId?: string; accept?(): boolean }) => Promise<unknown>
+type Delivery = { id: string; occurred_at: string; visitId: string; accept(): boolean }
 type Turn = { started: number; message: string; text: string; failed: boolean; action: string; userMessage: string; userEvent?: string
   native?: string; nativeUser?: string; parts: Set<string>; partOf: Map<string, number>
   project?: string; dir?: string; model: string; timer?: ReturnType<typeof setTimeout> }
@@ -45,6 +46,21 @@ const inputPaths = (input: unknown): string => {
 const emptyInput = (v: unknown) => v === undefined || v === null || v === '' ||
   (typeof v === 'object' && !Array.isArray(v) && Object.keys(v as object).length === 0)
 
+/**
+ * Send, then record the outcome without making the caller wait for the record. `record` queues the
+ * capture synchronously (the collector serializes and the quit path drains it); its failure is ignored.
+ */
+export async function dispatchAndRecord<T>(send: () => Promise<T>, record: (outcome: 'sent' | 'failed') => Promise<unknown>): Promise<T> {
+  let outcome: 'sent' | 'failed' = 'failed'
+  try {
+    const value = await send()
+    outcome = 'sent'
+    return value
+  } finally {
+    try { void record(outcome).catch(() => undefined) } catch { /* research data must never break the app */ }
+  }
+}
+
 export function createResearchAgent(capture: Sink) {
   const turns = new Map<string, Turn>()
   const contexts = new Map<string, { project?: string; dir?: string; model: string }>()
@@ -55,7 +71,11 @@ export function createResearchAgent(capture: Sink) {
   const emitted = new Set<string>()
   const replies = new Map<string, ActionRef>() // `${sid}:q:${id}` / `${sid}:p:${id}` -> the answering operation
   const promises = new Set<Promise<unknown>>()
-  const track = (promise: Promise<unknown>) => { promises.add(promise); void promise.catch(() => undefined).finally(() => promises.delete(promise)) }
+  const track = <T>(promise: Promise<T>): Promise<T> => {
+    promises.add(promise)
+    void promise.catch(() => undefined).finally(() => promises.delete(promise))
+    return promise
+  }
   const emit = (sid: string, fields: ResearchCapture): string => {
     const t = turns.get(sid), ctx = t ?? contexts.get(sid)
     const id = fields.id ?? randomUUID()
@@ -69,14 +89,19 @@ export function createResearchAgent(capture: Sink) {
     return id
   }
   /** Record an operation's single action.invoke, once, whichever path reports it first. */
-  function action(ref: ActionRef, fields: { project_id?: string; thread_id?: string; view?: string; metadata?: Record<string, unknown>; dir?: string } = {}): string {
+  type ActionFields = { project_id?: string; thread_id?: string; view?: string; metadata?: Record<string, unknown>; dir?: string }
+  function writeAction(ref: ActionRef, fields: ActionFields, delivery?: Delivery): Promise<unknown> {
+    const ctx = fields.thread_id ? contexts.get(fields.thread_id) : undefined
+    return capture({ id: ref.id, event_type: 'action.invoke', target: ref.target, view: fields.view ?? 'workspace',
+      project_id: fields.project_id ?? ctx?.project, ...(fields.thread_id ? { thread_id: fields.thread_id } : {}),
+      ...(delivery ? { occurred_at: delivery.occurred_at } : {}),
+      metadata: { ...fields.metadata, via: ref.via, ...(ref.parent ? { parent_action_id: ref.parent } : {}) } }, { projectDir: fields.dir ?? ctx?.dir, accept: delivery?.accept, visitId: delivery?.visitId })
+  }
+  function action(ref: ActionRef, fields: ActionFields = {}): string {
     if (emitted.has(ref.id)) return ref.id
     emitted.add(ref.id)
     if (emitted.size > REMEMBERED) emitted.delete(emitted.values().next().value as string)
-    const ctx = fields.thread_id ? contexts.get(fields.thread_id) : undefined
-    track(capture({ id: ref.id, event_type: 'action.invoke', target: ref.target, view: fields.view ?? 'workspace',
-      project_id: fields.project_id ?? ctx?.project, ...(fields.thread_id ? { thread_id: fields.thread_id } : {}),
-      metadata: { ...fields.metadata, via: ref.via, ...(ref.parent ? { parent_action_id: ref.parent } : {}) } }, { projectDir: fields.dir ?? ctx?.dir }))
+    track(writeAction(ref, fields))
     return ref.id
   }
   const systemRef = (target: string): ActionRef => ({ id: randomUUID(), target, via: 'system' })
@@ -142,16 +167,27 @@ export function createResearchAgent(capture: Sink) {
       track(capture(event, { projectDir }))
     },
     interaction(type: string, opts: { target?: string; durationMs?: number; metadata?: Record<string, unknown>; action?: ActionRef } = {},
-      ctx: { project_id?: string; dir?: string; artifactVersion?: number } = {}): void {
+      ctx: { project_id?: string; dir?: string; artifactVersion?: number } = {},
+      delivery?: Delivery): Promise<unknown> | undefined {
       const unified = researchInteraction(type, opts), ref = opts.action
       if (unified?.event_type === 'action.invoke') {
         const via = ACTION_VIA.includes(unified.metadata?.via as ActionVia) ? unified.metadata!.via as ActionVia : 'system'
-        const op: ActionRef = ref ? (ref.primary ? { ...ref, target: unified.target! } : ref) : { id: randomUUID(), target: unified.target!, via }
-        action(op, { project_id: ctx.project_id, view: unified.view ?? undefined, dir: ctx.dir, metadata: ref && !ref.primary ? {} : unified.metadata })
+        const op: ActionRef = ref ? (ref.primary ? { ...ref, target: unified.target! } : ref) : { id: delivery?.id ?? randomUUID(), target: unified.target!, via }
+        const fields = { project_id: ctx.project_id, view: unified.view ?? undefined, dir: ctx.dir, metadata: ref && !ref.primary ? {} : unified.metadata }
+        if (delivery) return track(writeAction(op, fields, delivery))
+        action(op, fields)
       } else if (unified) {
+        if (delivery) return track(Promise.all([
+          ...(ref ? [writeAction(ref, ctx, delivery)] : []),
+          capture({ ...unified, id: delivery.id, occurred_at: delivery.occurred_at, project_id: ctx.project_id, artifact_version: ctx.artifactVersion,
+            ...(ref ? { action_id: ref.id, caused_by: ref.id } : {}) }, { projectDir: ctx.dir, accept: delivery.accept, visitId: delivery.visitId }),
+        ]).then(rows => rows.every(Boolean) ? delivery.id : null))
         if (ref) action(ref, { project_id: ctx.project_id, dir: ctx.dir })
         track(capture({ ...unified, project_id: ctx.project_id, artifact_version: ctx.artifactVersion, ...(ref ? { action_id: ref.id, caused_by: ref.id } : {}) }, { projectDir: ctx.dir }))
-      } else if (ref) action(ref, { project_id: ctx.project_id, dir: ctx.dir })
+      } else if (ref) {
+        if (delivery) return track(writeAction(ref, ctx, delivery))
+        action(ref, ctx)
+      }
     },
     bind(sid: string, project?: string, dir?: string, model = 'not-reported') { contexts.set(sid, { project, dir, model }) },
     /** A submitted message. `ref` is the user operation or command that sent it. */
@@ -173,6 +209,22 @@ export function createResearchAgent(capture: Sink) {
       t.userEvent = emit(sid, { event_type: 'conversation.message', message_id: t.userMessage, caused_by: turnStart,
         metadata: { role: 'user', part: 0, part_kind: 'text', status: 'complete', text } })
       return op.id
+    },
+    submission(sid: string | undefined, text: string, outcome: DispatchOutcome, ref?: ActionRef,
+      delivery?: Delivery): Promise<unknown> {
+      const op = ref ?? systemRef('composer.send')
+      const ctx = sid ? contexts.get(sid) : undefined
+      const thread_id = sid && /^[A-Za-z0-9_.:-]{1,120}$/.test(sid) ? sid : undefined
+      const fields = { thread_id, view: 'agent', project_id: ctx?.project, dir: ctx?.dir }
+      const save = async () => {
+        if (delivery) {
+          if (!await writeAction(op, fields, delivery)) return null
+        } else action(op, fields)
+        return capture({ event_type: 'conversation.submission', ...(delivery ? { id: delivery.id, occurred_at: delivery.occurred_at } : {}),
+          thread_id, project_id: ctx?.project, message_id: op.id, action_id: op.id, caused_by: op.id,
+          metadata: { dispatch_outcome: outcome, text } }, { projectDir: ctx?.dir, accept: delivery?.accept, visitId: delivery?.visitId })
+      }
+      return track(save())
     },
     /** The researcher (or a headless command) answered or dismissed a question. Call before the kernel. */
     answer(sid: string, questionId: string, ref: ActionRef, fields: Parameters<typeof action>[1] = {}) {

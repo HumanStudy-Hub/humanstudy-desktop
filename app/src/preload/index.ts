@@ -115,6 +115,7 @@ const api: HumanStudyApi = {
   telemetry: {
     status: () => ipcRenderer.invoke('telemetry:status'),
     setConsent: (consent) => ipcRenderer.invoke('telemetry:setConsent', consent),
+    chatSubmission: (id, text, outcome, action) => ipcRenderer.invoke('telemetry:chatSubmission', id, text, outcome, action),
     track: (type, opts) => ipcRenderer.invoke('telemetry:track', type, opts),
     projectId: (dir) => ipcRenderer.invoke('telemetry:projectId', dir),
     recent: () => ipcRenderer.invoke('telemetry:recent'),
