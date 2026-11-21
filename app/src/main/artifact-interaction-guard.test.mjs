@@ -38,7 +38,9 @@ test('a hostile artifact cannot spell typed text through the fields', () => {
   assert.deepEqual(screenInteraction(v, event({ label: 'typed-text', arm: 'typed', step: 99 })), event({ label: 'unknown' }))
   // Substrings of the code are not declarations, and neither are pages the file never cites.
   assert.equal(screenInteraction(v, event({ controlId: 'olou' })).controlId, 'unknown')
-  assert.equal(screenInteraction(v, event({ controlId: 'source-page-13' })).controlId, 'unknown')
+  // A citation to a page the file never names keeps the click but not the number.
+  assert.deepEqual(screenInteraction(v, event({ action: 'navigate', controlId: 'source-page-13', label: 'source-citation', valueKind: 'none' })),
+    event({ action: 'navigate', controlId: 'source-page', label: 'source-citation', valueKind: 'none' }))
   // Over-long labels are refused even when they appear in the file.
   const long = 'x'.repeat(41)
   assert.equal(screenInteraction(artifactVocabulary(`${page}<i data-x="${long}"></i>`), event({ label: long })).label, 'unknown')
@@ -97,4 +99,42 @@ test('the guard reads each revision once, caps volume and drops quick duplicates
   assert.equal(reads, 2)
   // An unreadable artifact reports nothing.
   assert.equal(await createInteractionGuard(async () => null)('/p', 'artifacts/b.html', 'r1', event()), null)
+})
+
+test('the shipped sample results page: citations built at runtime by HS.cite are kept', async () => {
+  const html = await readFile(fileURLToPath(new URL('../../resources/sample/example-simulation/results.html', import.meta.url)), 'utf8')
+  const v = artifactVocabulary(html)
+  assert.equal(v.preview, undefined)
+  const cite = (controlId) => ({ action: 'navigate', controlId, label: 'source-citation', step: null, arm: null, valueKind: 'none' })
+  // A program item's citation posts its program id, which the embedded program declares.
+  const pid = html.match(/"id": ?"(exp-1)"/)[1]
+  assert.deepEqual(screenInteraction(v, cite(pid)), cite(pid))
+  // The sample's evidence has no page numbers, so a page-only citation keeps only that it was a citation.
+  assert.deepEqual(screenInteraction(v, cite('source-page-5')), cite('source-page'))
+  // Pages and steps named in embedded JSON (rendered into data-page / data-hs-step at runtime) are kept.
+  const withPages = html.replace('"page": null', '"page": 7').replace('</body>', '<script type="application/json">{"pages":[9, 10],"step":4}</script></body>')
+  const w = artifactVocabulary(withPages)
+  for (const page of [7, 9, 10]) assert.deepEqual(screenInteraction(w, cite(`source-page-${page}`)), cite(`source-page-${page}`))
+  assert.deepEqual(screenInteraction(w, cite('source-page-8')), cite('source-page'))
+  assert.equal(screenInteraction(w, { ...cite(pid), step: 4 }).step, 4)
+  assert.equal(screenInteraction(w, { ...cite(pid), step: 5 }).step, null)
+})
+
+test('draft and history views report nothing, and a failed read is retried', async () => {
+  let reads = 0, text = null
+  const guard = createInteractionGuard(async () => { reads++; return text })
+  assert.equal(await guard('/p', 'artifacts/a.html', 'draft', event()), null)
+  assert.equal(await guard('/p', 'artifacts/a.html', 'history:abc', event()), null)
+  assert.equal(reads, 0, 'the on-disk file is never read for in-memory text')
+  assert.equal(await guard('/p', 'artifacts/a.html', 'r1', event()), null, 'unreadable')
+  await new Promise(resolve => setImmediate(resolve))
+  text = page
+  assert.deepEqual(await guard('/p', 'artifacts/a.html', 'r1', event()), event(), 'read again after a failure')
+  assert.equal(reads, 2)
+})
+
+test('a compressed preview block cannot expand without bound', () => {
+  const huge = gzipSync(Buffer.from(JSON.stringify({ arms: [{ id: 'a', pad: 'x'.repeat(9 * 1024 * 1024) }], screens: {} })))
+  const html = `<meta name="hs-artifact" content="participant-preview"><script type="application/json" id="hs-preview" data-encoding="gzip+base64">"${huge.toString('base64')}"</script>`
+  assert.equal(artifactVocabulary(html).preview, undefined, 'over the limit: treated as an ordinary page')
 })

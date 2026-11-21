@@ -11,18 +11,23 @@ import { parseArtifactInteraction, semanticId, type ArtifactInteraction } from '
 export const MAX_LABEL = 40
 export const MAX_EVENTS_PER_REVISION = 500
 export const DUPLICATE_WINDOW_MS = 1000
-const MAX_FILE_BYTES = 20 * 1024 * 1024
+const MAX_FILE_BYTES = 5 * 1024 * 1024
+// A compressed preview block may not expand past this (decompression bomb).
+const MAX_PREVIEW_JSON_BYTES = 8 * 1024 * 1024
 const MAX_CACHED = 32
 const UNKNOWN = 'unknown'
 // Constant labels the artifact kit posts itself; they carry no information from the page.
 const KIT_LABELS = ['source-citation']
+// A citation to a page the file does not list keeps the click, not the number.
+const UNLISTED_PAGE = 'source-page'
 
 export interface ArtifactVocabulary {
   /** Quoted string literals in the file (for the preview: in its code, not in its data block). */
   literals: Set<string>
-  /** Page numbers named by data-page attributes (the kit's `source-page-N` control ids). */
+  /** Page numbers the file names: data-page attributes, or "page"/"pages" in its embedded JSON (HS.cite
+   *  builds data-page at runtime). These are the kit's `source-page-N` control ids. */
   pages: Set<string>
-  /** Literal data-hs-step values (generic artifacts). */
+  /** data-hs-step attribute values, or "step" numbers in embedded JSON (generic artifacts). */
   steps: Set<number>
   /** The participant preview's embedded protocol, when the file is one. */
   preview?: { responses: Set<string>; arms: Set<string>; controls: Set<string>; maxStep: number }
@@ -47,7 +52,7 @@ function previewData(match: RegExpMatchArray): PreviewData | null {
   try {
     if (!match[1]) return JSON.parse(match[2])
     const blob = JSON.parse(match[2])
-    return typeof blob === 'string' ? JSON.parse(gunzipSync(Buffer.from(blob, 'base64')).toString('utf8')) : null
+    return typeof blob === 'string' ? JSON.parse(gunzipSync(Buffer.from(blob, 'base64'), { maxOutputLength: MAX_PREVIEW_JSON_BYTES }).toString('utf8')) : null
   } catch { return null }
 }
 
@@ -55,8 +60,10 @@ function previewData(match: RegExpMatchArray): PreviewData | null {
 export function artifactVocabulary(html: string): ArtifactVocabulary {
   const pages = new Set<string>()
   for (const m of html.matchAll(/data-page=["']?(\d{1,6})["']?/g)) pages.add(String(Number(m[1])))
+  for (const m of html.matchAll(/"pages?"\s*:\s*(\[[\d\s,"]{0,400}\]|"?\d{1,6}"?)/g))
+    for (const n of m[1].match(/\d{1,6}/g) ?? []) pages.add(String(Number(n)))
   const steps = new Set<number>()
-  for (const m of html.matchAll(/data-hs-step=["']?(\d{1,6})["']?/g)) steps.add(Number(m[1]))
+  for (const m of html.matchAll(/data-hs-step=["']?(\d{1,6})["']?|"step"\s*:\s*"?(\d{1,6})"?/g)) steps.add(Number(m[1] ?? m[2]))
   const block = /<meta name="hs-artifact" content="participant-preview">/.test(html) ? html.match(PREVIEW_BLOCK) : null
   const data = block && previewData(block)
   if (!block || !data || typeof data !== 'object') return { literals: literals(html), pages, steps }
@@ -85,14 +92,22 @@ function knownControl(v: ArtifactVocabulary, i: ArtifactInteraction): boolean {
     if (i.action === 'answer') return v.preview.responses.has(i.controlId)
     return v.preview.controls.has(i.controlId) || v.literals.has(i.controlId)
   }
-  const page = /^source-page-(\d{1,6})$/.exec(i.controlId)
-  return v.literals.has(i.controlId) || (page !== null && v.pages.has(String(Number(page[1]))))
+  // Citation ids were already reduced to listed pages or `source-page` by citation().
+  return v.literals.has(i.controlId) || i.controlId === UNLISTED_PAGE || /^source-page-\d{1,6}$/.test(i.controlId)
+}
+
+/** The kit's citation ids: a listed page keeps its number, an unlisted one becomes `source-page`. */
+function citation(v: ArtifactVocabulary, controlId: string): string {
+  const page = /^source-page-(\d{1,6})$/.exec(controlId)
+  return !page || v.preview || v.literals.has(controlId) ? controlId
+    : v.pages.has(String(Number(page[1]))) ? controlId : UNLISTED_PAGE
 }
 
 /** The interaction with every field the file does not declare replaced; null if the shape is invalid. */
 export function screenInteraction(v: ArtifactVocabulary, input: unknown): ArtifactInteraction | null {
-  const i = parseArtifactInteraction(input)
-  if (!i) return null
+  const parsed = parseArtifactInteraction(input)
+  if (!parsed) return null
+  const i = { ...parsed, controlId: citation(v, parsed.controlId) }
   if (!knownControl(v, i)) return { ...i, controlId: UNKNOWN, label: UNKNOWN, arm: null, step: null }
   const label = i.label.length <= MAX_LABEL && (i.label === i.controlId || v.literals.has(i.label) || KIT_LABELS.includes(i.label))
     ? i.label : UNKNOWN
@@ -103,6 +118,9 @@ export function screenInteraction(v: ArtifactVocabulary, input: unknown): Artifa
   return { ...i, label, arm, step }
 }
 
+/** Revisions that name the file on disk (FileView uses `draft` and `history:<id>` for in-memory text). */
+export const onDiskRevision = (revision: string): boolean => revision !== 'draft' && !revision.startsWith('history:')
+
 export type ReadArtifact = (projectDir: string, rel: string) => Promise<string | null>
 
 /** One guard per app session: vocabularies cached per artifact revision, volume bounded per revision. */
@@ -110,12 +128,18 @@ export function createInteractionGuard(read: ReadArtifact, now: () => number = D
   const vocabularies = new Map<string, Promise<ArtifactVocabulary | null>>()
   const volume = new Map<string, { count: number; last?: string; at: number }>()
   return async (projectDir: string, rel: string, revision: string, input: unknown): Promise<ArtifactInteraction | null> => {
+    // A draft or an older version is shown from text the renderer holds, not the file on disk, so
+    // the file cannot vouch for its ids: such views report no interactions.
+    if (!onDiskRevision(revision)) return null
     const key = `${projectDir}\0${rel}\0${revision}`
     let vocabulary = vocabularies.get(key)
     if (!vocabulary) {
-      vocabulary = read(projectDir, rel).then(text => text === null ? null : artifactVocabulary(text)).catch(() => null)
-      vocabularies.set(key, vocabulary)
+      const reading = read(projectDir, rel).then(text => text === null ? null : artifactVocabulary(text)).catch(() => null)
+      vocabulary = reading
+      vocabularies.set(key, reading)
       if (vocabularies.size > MAX_CACHED) vocabularies.delete(vocabularies.keys().next().value as string)
+      // A failed read is not remembered; the next event tries again.
+      void reading.then(result => { if (!result && vocabularies.get(key) === reading) vocabularies.delete(key) })
     }
     const v = await vocabulary
     if (!v) return null
