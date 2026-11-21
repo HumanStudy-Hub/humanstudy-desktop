@@ -96,7 +96,7 @@ details.tech ul { margin: 6px 0 0; padding-left: 18px; font-family: var(--hs-mon
 .opts label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
 .opts label input { margin-top: .3em; flex: none; }
 .btnopts { display: flex; flex-wrap: wrap; gap: 6px; }
-.btnopts span { border: 1px solid var(--hs-line-strong); border-radius: 6px; padding: 4px 12px; }
+.btnopts button { font: inherit; color: inherit; background: transparent; cursor: pointer; border: 1px solid var(--hs-line-strong); border-radius: 6px; padding: 4px 12px; }
 .screen select, .screen input[type=text], .screen input[type=number], .screen textarea { background: transparent; color: inherit; border: 1px solid var(--hs-line-strong); border-radius: 4px; padding: 4px 6px; font: inherit; max-width: 100%; }
 .screen textarea { width: 100%; min-height: 70px; }
 .slider { max-width: 560px; }
@@ -111,7 +111,7 @@ table.matrix th { font-weight: 500; font-size: .88em; padding: 4px 6px; vertical
 table.matrix td { padding: 6px; border-top: 1px solid var(--hs-line); text-align: center; }
 table.matrix td.rowq { text-align: left; min-width: 10em; }
 .cont { display: flex; justify-content: flex-end; margin-top: 14px; }
-.cont span { background: var(--hs-accent); color: var(--hs-bg); padding: 6px 16px; border-radius: 6px; font-size: 14px; }
+.cont button { font-family: inherit; cursor: pointer; border: 0; background: var(--hs-accent); color: var(--hs-bg); padding: 6px 16px; border-radius: 6px; font-size: 14px; }
 .cont.inline { justify-content: flex-start; }
 /* provenance marks (operator layer; participants never saw them) */
 .mk { position: relative; border-radius: 3px; cursor: help; }

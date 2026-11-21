@@ -11,7 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const out = mkdtempSync(join(tmpdir(), 'bridge-test-'))
 await build({
-  stdin: { contents: `export * from './bridge'; export { artifactSourceRef } from './artifact-source'`, resolveDir: here, loader: 'ts' },
+  stdin: { contents: `export * from './bridge'; export { captureArtifactDwell } from './capture'; export { artifactSourceRef } from './artifact-source'`, resolveDir: here, loader: 'ts' },
   bundle: true, platform: 'node', format: 'esm', outfile: join(out, 'b.mjs'), logLevel: 'error',
 })
 const B = await import(pathToFileURL(join(out, 'b.mjs')).href)
@@ -87,4 +87,75 @@ test('artifactSourceRef: explicit page wins; otherwise the item\'s first cited s
   assert.equal(own.page, 12); assert.equal(own.quote, 'table cell'); assert.equal(own.sourceId, undefined)
   assert.equal(B.artifactSourceRef(null, { page: 2 }).page, 2)
   assert.equal(B.artifactSourceRef(program, { programId: 'unknown' }).page, 1)
+})
+
+test('semantic interaction accepts an exact allowlisted shape from its own opaque frame', () => {
+  const win = {}, frame = { contentWindow: win }
+  const data = { type: 'hs.interact', action: 'answer', controlId: 'q1', label: 'response', step: 0, arm: 'control', valueKind: 'text' }
+  assert.deepEqual(B.acceptFrom({ source: win, origin: 'null', data }, frame), data)
+  assert.equal(B.acceptFrom({ source: {}, origin: 'null', data }, frame), null)
+  assert.equal(B.acceptFrom({ source: win, origin: 'hsfile://local', data }, frame), null)
+  for (const fields of [{ action: 'keypress' }, { value: 'typed response' }, { key: 'a' }, { study_id: 'forged-study' },
+    { label: 'a typed phrase' }, { controlId: '/a/b' }, { step: undefined }, { step: -1 }, { arm: undefined }, { valueKind: 'object' }]) {
+    assert.equal(B.parseBridgeMessage({ ...data, ...fields }), null)
+  }
+})
+
+test('interaction budget is bounded per frame and refills over time', () => {
+  const first = B.artifactRateLimit(), second = B.artifactRateLimit()
+  for (let i = 0; i < 12; i++) assert.equal(first(0), true)
+  assert.equal(first(0), false)
+  assert.equal(second(0), true)
+  assert.equal(first(100), false)
+  assert.equal(first(200), true)
+  assert.equal(first(200), false)
+})
+
+test('artifact dwell measures visible intervals and closes them on hide or unmount', () => {
+  const old = { window: globalThis.window, document: globalThis.document }
+  const elapsed = []
+  try {
+    globalThis.window = new EventTarget()
+    globalThis.document = Object.assign(new EventTarget(), { visibilityState: 'visible' })
+    const dispose = B.captureArtifactDwell(ms => elapsed.push(ms))
+    document.visibilityState = 'hidden'
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('pagehide'))
+    assert.equal(elapsed.length, 1)
+    document.visibilityState = 'visible'
+    document.dispatchEvent(new Event('visibilitychange'))
+    dispose()
+    window.dispatchEvent(new Event('pagehide'))
+    assert.equal(elapsed.length, 2)
+    assert.ok(elapsed.every(ms => ms >= 0))
+  } finally { Object.assign(globalThis, old) }
+})
+
+test('the shipped preview reports control semantics without reading participant text', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const { runInNewContext } = await import('node:vm')
+  const html = await readFile(new URL('../../resources/protocol-sample/artifacts/preview.html', import.meta.url), 'utf8')
+  const script = html.match(/<script>\s*(\/\* Participant preview renderer[\s\S]*?)<\/script>/)[1]
+  const data = JSON.parse(html.match(/<script[^>]*id="hs-preview"[^>]*>([\s\S]*?)<\/script>/)[1])
+  const handlers = {}, messages = []
+  const app = { innerHTML: '', querySelectorAll: () => [] }
+  const document = {
+    getElementById: id => id === 'app' ? app : { textContent: JSON.stringify(data), getAttribute: () => null },
+    documentElement: { getAttribute: () => 'en', removeAttribute() {} },
+    body: { classList: { toggle() {} } },
+    addEventListener: (name, handler) => { handlers[name] = handler },
+  }
+  const window = { parent: { postMessage: message => messages.push(B.parseBridgeMessage(message)) }, addEventListener() {} }
+  runInNewContext(script, { document, window })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.doesNotMatch(app.innerHTML, /hs-error/)
+  const response = { getAttribute: () => 'authored-question' }
+  const target = { id: '', closest: () => response, matches: selector => selector.includes('textarea'),
+    get value() { throw new Error('The artifact must not read a participant answer') } }
+  handlers.change({ target, isTrusted: true })
+  assert.equal(messages.length, 1)
+  assert.equal(messages[0].action, 'answer')
+  assert.equal(messages[0].valueKind, 'text')
+  assert.equal(messages[0].controlId, 'authored-question')
+  assert.equal(messages[0].step, 0)
 })

@@ -7,6 +7,8 @@ description: Make an interactive, self-contained HTML view of the study in artif
 
 ## Protocol projects (default)
 
+For interactive artifact controls, annotate the control with `data-hs-control` (stable ID) and `data-hs-action` (`navigate`, `choose`, `answer`, `toggle`, `view`, or `submit`). You can also set `data-hs-label` (a fixed identifier, defaulting to the control ID), `data-hs-step` (zero-based), `data-hs-arm` (condition ID), and `data-hs-kind` (`none`, `choice`, `boolean`, `number`, or `text`). Keep these attributes static and authored. The kit reports only semantic events and never reads input values.
+
 For a paired project, program.json holds scholarly claims and protocol.json is canonical for execution. Use skills/preview to show actual participant pages and condition comparisons; use the artifact kit in protocol mode for other requested views, bound to the current protocol bytes. Cite the correct source file/page. Show flow operators and conditions only as specified; never flatten a repeat, interaction or conditional path into a made-up linear design. Use the scholarly program for paper-level understanding; never duplicate executable flow in it solely to render a view. The program-specific procedure below is for legacy projects only.
 
 

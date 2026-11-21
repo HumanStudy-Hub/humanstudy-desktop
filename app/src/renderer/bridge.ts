@@ -1,12 +1,16 @@
 // Messages from artifact iframes to the app. Artifacts run sandboxed (allow-scripts, no same-origin,
-// no network), so the only thing they can do is post one of two requests, validated here:
+// no network), so the only thing they can do is post a request, validated here:
 //   {type:'hs.openSource', page?, quote?, programId?, file?}  open the cited source at a page
 //   {type:'hs.ask', text}                                     prefill the chat with a question
+//   {type:'hs.interact', action, controlId, label, step, arm, valueKind}  semantic interaction
 // Viewers call `listenToArtifact(frame)`; the app (or Workbench) subscribes with onOpenSource/onAsk.
+
+import { parseArtifactInteraction, type ArtifactInteraction } from '../shared/research-contract'
 
 export interface OpenSourceRequest { page?: number; quote?: string; programId?: string; file?: string }
 export interface AskRequest { text: string }
 export type BridgeMessage = ({ type: 'hs.openSource' } & OpenSourceRequest) | ({ type: 'hs.ask' } & AskRequest)
+  | ({ type: 'hs.interact' } & ArtifactInteraction)
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}(\/[A-Za-z0-9][A-Za-z0-9._:-]{0,99})?$/
 const MAX_QUOTE = 4 * 1024 * 1024 // reject oversized messages; never shorten a source passage
@@ -23,6 +27,11 @@ function safeFile(v: unknown): string | undefined {
 export function parseBridgeMessage(data: unknown): BridgeMessage | null {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return null
   const d = data as Record<string, unknown>
+  if (d.type === 'hs.interact') {
+    const { type: _type, ...payload } = d
+    const interaction = parseArtifactInteraction(payload)
+    return interaction && { type: 'hs.interact', ...interaction }
+  }
   if (d.type === 'hs.ask') {
     if (typeof d.text !== 'string') return null
     const text = d.text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim().slice(0, MAX_ASK)
@@ -57,7 +66,9 @@ export function parseBridgeMessage(data: unknown): BridgeMessage | null {
 export function acceptFrom(event: { source: unknown; origin: string; data: unknown }, frame: { contentWindow: unknown } | null): BridgeMessage | null {
   if (!frame || !frame.contentWindow || event.source !== frame.contentWindow) return null
   if (event.origin !== 'null' && !event.origin.startsWith('hsfile:')) return null
-  return parseBridgeMessage(event.data)
+  const msg = parseBridgeMessage(event.data)
+  // An allow-scripts frame without allow-same-origin always has an opaque origin.
+  return msg?.type === 'hs.interact' && event.origin !== 'null' ? null : msg
 }
 
 type Listener<T> = (v: T) => void
@@ -84,15 +95,31 @@ export function dispatchBridge(msg: BridgeMessage, now = Date.now()): void {
     askListeners.forEach((cb) => cb({ text: msg.text }))
     return
   }
-  const { type: _t, ...req } = msg
-  openListeners.forEach((cb) => cb(req))
+  if (msg.type === 'hs.openSource') {
+    const { type: _t, ...req } = msg
+    openListeners.forEach((cb) => cb(req))
+  }
+}
+
+/** Limit one frame to a burst of 12 actions, refilling at six per second. */
+export function artifactRateLimit() {
+  let tokens = 12
+  let last: number | undefined
+  return (now: number) => {
+    if (last !== undefined) tokens = Math.min(12, tokens + Math.max(0, now - last) * 0.006)
+    last = now
+    if (tokens < 1) return false
+    tokens--
+    return true
+  }
 }
 
 /** Listen to one artifact frame; returns a cleanup for useEffect. */
-export function listenToArtifact(getFrame: () => HTMLIFrameElement | null): () => void {
+export function listenToArtifact(getFrame: () => HTMLIFrameElement | null, onMessage = dispatchBridge): () => void {
+  const allow = artifactRateLimit()
   const handler = (event: MessageEvent) => {
     const msg = acceptFrom(event, getFrame())
-    if (msg) dispatchBridge(msg)
+    if (msg && (msg.type !== 'hs.interact' || allow(performance.now()))) onMessage(msg)
   }
   window.addEventListener('message', handler)
   return () => window.removeEventListener('message', handler)

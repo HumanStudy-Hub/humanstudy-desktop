@@ -53,6 +53,7 @@ const fakeModel = async (sample = false, observe = () => {}) => {
     const page = body.messages.at(-1).content
     observe(body.messages)
     res.setHeader('content-type', 'application/json')
+    res.setHeader('x-humanstudy-request-id', 'req_stub_request')
     const current = [...page.matchAll(/Question (r[0-9]+) \(/g)].at(-1)?.[1]
     const reply = sample ? JSON.stringify(current ? { [current]: 'o1' } : {}) : page.includes('r1') ? '{"r1": "o1"}' : '{}'
     res.end(JSON.stringify({ choices: [{ message: { content: reply }, finish_reason: 'stop' }], usage: { total_tokens: 10 } }))
@@ -125,7 +126,8 @@ test('macOS: the app runs the protocol confined, through the relay only, and the
       onExit: () => { void relay.close() } })
     assert.equal(await exited(child), 0, readFileSync(join(runDir, 'run.log'), 'utf8'))
     assert.equal(JSON.parse(readFileSync(join(runDir, 'progress.json'), 'utf8')).stage, 'done', readFileSync(join(runDir, 'run.log'), 'utf8'))
-    assert.ok(readFileSync(join(runDir, 'llm-usage.jsonl'), 'utf8').length > 0, 'the run used the relay')
+    const usage = readFileSync(join(runDir, 'llm-usage.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+    assert.ok(usage.length > 0 && usage.every(call => call.request_id === 'req_stub_request'), 'the relay retained the hosted request ID')
     for (const f of walk(runDir)) assert.ok(!readFileSync(f, 'utf8').includes('fake-upstream-sentinel'), f)
     await new Promise((res) => setTimeout(res, 100))
     assert.ok(closed, 'the run gave its model access back')

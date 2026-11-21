@@ -20,7 +20,7 @@ import { join } from 'node:path'
 const PREFIX = '../../../pack/'
 const files = import.meta.glob(
   ['../../../pack/AGENTS.md', '../../../pack/PROJECT_FORMAT.md', '../../../pack/schema/**/*', '../../../pack/skills/**/*', '../../../pack/artifact-kit/*',
-    '../../../pack/runtime/hsenv/**/*', '../../../pack/runtime/lib/hs_original_text.py', '!**/__pycache__/**', '!**/*.pyc'],
+    '../../../pack/runtime/hsenv/**/*', '../../../pack/runtime/lib/hs_original_text.py', '../../../pack/runtime/lib/humanstudy_llm.py', '!**/__pycache__/**', '!**/*.pyc'],
   { query: '?raw', import: 'default', eager: true }
 ) as Record<string, string>
 
@@ -178,10 +178,12 @@ export function trustedOriginalTextFiles(): [string, string][] {
  *  under artifact-kit/. Written by the main process outside the project, so the agent cannot change what runs. */
 export function trustedRunFiles(): [string, string][] {
   const run = ['run_study.py', 'fspec.py', 'render.py', 'app_run.py', 'protocol_report.py', 'launch.py'].map((f) => 'skills/run/' + f)
+  const client = files[PREFIX + 'runtime/lib/humanstudy_llm.py']
   const pick = (rel: string): [string, string][] => (files[PREFIX + rel] !== undefined ? [[rel, files[PREFIX + rel]]] : [])
   return [
     ...engineFiles().map((rel): [string, string] => ['hsenv/' + rel.slice('runtime/hsenv/'.length), files[PREFIX + rel]]),
     ...run.flatMap(pick), ...pick('skills/build/sandbox_run.py'),
+    ...(client !== undefined ? [['skills/run/humanstudy_llm.py', client] as [string, string]] : []),
     ...kitFiles().flatMap(pick),
   ]
 }

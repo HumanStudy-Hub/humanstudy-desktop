@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs'
 import { mkdir, readFile, readdir, rename, stat, writeFile, unlink } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { gzipSync, gunzipSync } from 'node:zlib'
-import { CONTENT_BUCKET, EVENTS, LIMITS, MANIFEST_FORMAT, scrubResearchString, scrubResearchValue, validateResearchEvent, type ResearchEvent, type ResearchContentRow, type ContentRef } from '../shared/research-contract'
+import { CONTRACT_VERSION, CONTENT_BUCKET, EVENTS, LIMITS, MANIFEST_FORMAT, scrubResearchString, scrubResearchValue, validateResearchEvent, type ResearchEvent, type ResearchContentRow, type ContentRef } from '../shared/research-contract'
 
 export const SOURCE_CONSENT_VERSION = 3
 export interface ResearchAuth { supabaseUrl: string; supabaseKey: string; accessToken: string; userId: string }
@@ -113,7 +113,7 @@ export function createResearchCollector(options: Options) {
     }
     if (session.seq === 0 && fields.event_type !== 'session.start') await enqueue(auth, root, { event_type: 'session.start', data_type: 'session', metadata: { collection_mode: 'interaction-events' } })
     const row: ResearchEvent = {
-      id: randomUUID(), contract_version: '1.0.0', surface: options.surface, install_id: session.install,
+      id: randomUUID(), contract_version: CONTRACT_VERSION, surface: options.surface, install_id: session.install,
       research_session_id: session.id, client_seq: session.seq + 1, occurred_at: new Date().toISOString(),
       metadata: {}, content_refs: [], app_version: options.appVersion, collector_version: 'research-collector/1.0.0',
       consent_version: SOURCE_CONSENT_VERSION, platform: options.surface === 'web' ? 'browser' : process.platform as 'darwin' | 'win32' | 'linux', ...fields,
@@ -134,6 +134,10 @@ export function createResearchCollector(options: Options) {
       if (!spec) throw new Error('Unknown research event type: ' + fields.event_type)
       const root = await ownerDir(owner)
       const metadata = scrubResearchValue(fields.metadata ?? {}, context) as Record<string, unknown>
+      if (fields.event_type.startsWith('simulation.') && Array.isArray(metadata.model_request_ids)) {
+        // Redaction can remove a token-shaped value. Keep the lifecycle and its remaining request IDs.
+        metadata.model_request_ids = metadata.model_request_ids.filter(id => id !== '[secret]' && id !== '[email]')
+      }
       const refs = [...(fields.content_refs ?? [])]
       for (const [key, value] of Object.entries(metadata)) {
         if (typeof value === 'string' && Buffer.byteLength(value) > LIMITS.inlineTextBytes) {

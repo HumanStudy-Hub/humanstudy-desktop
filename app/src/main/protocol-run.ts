@@ -64,7 +64,8 @@ export async function markEnded(runDir: string, code: number | null): Promise<vo
  *  `relay` absent: the pre-relay path (Linux, Windows), with `env` carrying the app's simulation environment. */
 export async function launchProtocolRun(o: {
   python: string; files: [string, string][]; codeDir: string; project: string; runDir: string; binding: Binding;
-  plan: ProtocolRunPlan; relay?: RelayAccess; env?: NodeJS.ProcessEnv; onExit?(code: number | null): void
+  plan: ProtocolRunPlan; relay?: RelayAccess; env?: NodeJS.ProcessEnv; onExit?(code: number | null, signal: NodeJS.Signals | null): void
+  onStart?(): void
   /** The app's language for the run's messages and results page ('zh-CN' or 'en'). */
   lang?: string
 }) {
@@ -103,15 +104,16 @@ export async function launchProtocolRun(o: {
   const child = spawn(o.python, ['-I', '-B', '-X', 'utf8', join(o.codeDir, 'skills', 'run', 'launch.py'), o.runDir, o.project, o.codeDir],
     { cwd: o.runDir, env, stdio: 'ignore', detached: process.platform !== 'win32', windowsHide: true })
   let ended = false
-  const end = async (code: number | null) => {
+  const end = async (code: number | null, signal: NodeJS.Signals | null) => {
     if (ended) return
     ended = true
     if (code !== 0) await markEnded(o.runDir, code).catch(() => undefined)
     await rm(o.codeDir, { recursive: true, force: true }).catch(() => undefined)   // per-run copy: gone with the run
-    o.onExit?.(code)
+    o.onExit?.(code, signal)
   }
-  child.once('exit', (code) => void end(code))
-  child.once('error', () => void end(null))
+  child.once('spawn', () => o.onStart?.())
+  child.once('exit', (code, signal) => void end(code, signal))
+  child.once('error', () => void end(null, null))
   return child
 }
 

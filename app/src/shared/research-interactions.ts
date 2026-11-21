@@ -1,9 +1,20 @@
 // Compatibility adapter for existing semantic UI instrumentation. No raw input/pointer samples.
-import { isProhibitedEventType, type ResearchEvent } from './research-contract'
+import { artifactPath, isProhibitedEventType, parseArtifactInteraction, semanticId, type ResearchEvent } from './research-contract'
+
 export function researchInteraction(type: string, opts: { target?: string; durationMs?: number; metadata?: Record<string, unknown> } = {}): Partial<ResearchEvent> & Pick<ResearchEvent, 'event_type'> | null {
   if (isProhibitedEventType(type) || /^(conversation|kernel|agent|replay|consent)\.|^composer\.|^project\.(program_version|file_written)$/.test(type) || type === 'composer.typing_start') return null
   const metadata = { operation: type, ...opts.metadata }, target = opts.target || type
   const duration = typeof opts.durationMs === 'number' ? Math.max(0, Math.min(86400000, Math.round(opts.durationMs))) : undefined
+  if (type === 'artifact.interact' || type === 'artifact.dwell') {
+    const m = opts.metadata
+    if (!artifactPath(opts.target) || !semanticId(m?.artifact_revision)) return null
+    const context = { artifact_revision: m.artifact_revision, study_id: semanticId(m.study_id) ? m.study_id : null,
+      study_revision: semanticId(m.study_revision) ? m.study_revision : null }
+    if (type === 'artifact.dwell') return duration === undefined ? null :
+      { event_type: type, artifact_id: opts.target, duration_ms: duration, metadata: context }
+    const interaction = parseArtifactInteraction(m.interaction)
+    return interaction ? { event_type: type, artifact_id: opts.target, metadata: { ...context, interaction } } : null
+  }
   if (type === 'source.annotated' || type === 'source.annotation_removed') return { event_type: 'annotation.commit', view: 'paper',
     metadata: { ...metadata, annotation_id: opts.metadata?.annotation_id ?? 'not-reported', op: type === 'source.annotated' ? 'add' : 'remove',
       anchor: opts.metadata?.anchor ?? opts.metadata?.pages ?? null } }
