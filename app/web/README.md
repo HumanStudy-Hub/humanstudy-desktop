@@ -17,6 +17,7 @@ browser ──▶ https://<sandbox>.vercel.run
 |---|---|
 | `electron-shim.cjs` | The `electron` module in Node: `app`, `BrowserWindow`, `ipcMain`, `dialog`, `shell`, `safeStorage`, `protocol`, `net`; dialogs never block, `shell.openExternal` opens a tab in the browser. |
 | `electron-updater-shim.cjs` | No self-update: the sandbox image is updated by the launcher. |
+| `deadline.cjs` | The provider deadline (`HS_DEADLINE_AT` from the launcher): the server ends the visit as a timeout 25 s before the sandbox's hard limit, through the normal bounded quit; the page shows the time left. |
 | `server.cjs` | HTTP server around the main process: token auth (cookie after `/?t=`), IPC, a resumable event stream (`Last-Event-ID`), project files, uploads, downloads, and `/__seed`, which the launcher uses to sign the app in as the website's user. |
 | `browser-electron.ts` | The `electron` module the preload (`src/preload/index.ts`) is compiled against for the browser: `ipcRenderer` over fetch/SSE, `webUtils.getPathForFile` uploads, file pickers, downloads, the "session ended" notice. |
 | `image/setup.sh`, `image/start.sh` | Build the sandbox base image; start the server in it. |

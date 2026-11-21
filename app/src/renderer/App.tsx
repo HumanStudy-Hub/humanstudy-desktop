@@ -11,6 +11,7 @@ import { useSession } from './useSession'
 import { useKernelInstall } from './useKernelInstall'
 import { ThreadMenu } from './components/Threads'
 import { UpdateNotice, useUpdateStatus } from './components/Updates'
+import { SessionDeadline } from './components/SessionDeadline'
 import { AgreementDialog } from './components/ResearchData'
 import { beginMenuCommand, claimAction, lap, setTelemetryProject, track } from './telemetry'
 import { t, useLang } from './i18n'
@@ -553,6 +554,7 @@ export default function App() {
         {transferDialogs}
         {consent}
         <UpdateNotice />
+        <SessionDeadline />
       </div>
     )
 
@@ -663,6 +665,7 @@ export default function App() {
       {transferDialogs}
       {consent}
       <UpdateNotice />
+      <SessionDeadline />
     </div>
   )
 }
