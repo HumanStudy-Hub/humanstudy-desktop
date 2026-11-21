@@ -334,8 +334,8 @@ export default function App() {
 
   const watchedProject = project?.dir
   const preparingPreview = project?.previewPreparation === 'preparing'
-  const refreshProject = useCallback((dir: string) => {
-    void window.humanstudy.project.read(dir)
+  const refreshProject = useCallback((dir: string, background = true) => {
+    void window.humanstudy.project.read(dir, background)
       .then(snap => setProject(prev => prev?.dir === snap.dir && JSON.stringify(prev) !== JSON.stringify(snap) ? snap : prev))
       .catch(() => undefined)
   }, [])
@@ -356,7 +356,7 @@ export default function App() {
     const dir = project?.dir
     if (!dir || Date.now() - lastCheck.current < 800) return
     lastCheck.current = Date.now()
-    refreshProject(dir)
+    refreshProject(dir, false)
   }, [project?.dir, refreshProject])
   useEffect(() => {
     const visible = () => {

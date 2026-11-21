@@ -20,10 +20,14 @@ import os
 import re
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 os.environ["HSENV_PRIVATE_CONFIG"] = ""   # never the engine's private sidecar in the app (before any hsenv import)
 
 HERE = Path(__file__).resolve().parent
+# Bump when an existing app-generated preview needs to be rebuilt. pack.ts reads this value.
+TEMPLATE_VERSION = 1
 # A published study holds back wording it may not redistribute: each held text is a run of U+2591 of the same
 # length until the app fills it in on the researcher's computer. The preview shows plainly what is missing.
 PLACEHOLDER_RUN = re.compile("\u2591+")
@@ -43,12 +47,17 @@ def make(project: Path, out: Path, arms=None, seed: int = 1, tries=None, max_ima
     import build_preview   # vendored; finds the engine in .opencode/hsenv and the kit in .opencode/artifact-kit
     # Keep the vendored renderer untouched while preserving complete source passages in the app view.
     # Its compact CLI cite format clips long notes/quotes; that is unsuitable for source comparison.
-    build_preview.slim_cite = lambda c: ({k: c[k] for k in build_preview.CITE_KEYS
-                                          if c.get(k) not in (None, "")} or None) if isinstance(c, dict) else None
+    def full_cite(c):
+        if not isinstance(c, dict):
+            return None
+        return {k: c[k] for k in build_preview.CITE_KEYS if c.get(k) not in (None, "")} or None
+
     protocol_path = project / "protocol.json"
     raw = protocol_path.read_bytes()
     protocol = json.loads(raw.decode("utf-8"))
-    data = build_preview.build(str(project), arms, seed, tries, max_image_kb, build_preview.Protocol(protocol, project))
+    loaded = build_preview.Protocol(protocol, project)
+    with patch.object(build_preview, "slim_cite", full_cite), patch.object(build_preview.Protocol, "load", return_value=loaded):
+        data = build_preview.build(str(project), arms, seed, tries, max_image_kb)
     def source_passages(value):
         if isinstance(value, dict):
             cite = value.get("cite")
@@ -64,6 +73,8 @@ def make(project: Path, out: Path, arms=None, seed: int = 1, tries=None, max_ima
     source_passages(data)
     # The same finishing step as the sandbox CLI: the protocol's identity block, then the kit's protocol-mode check.
     html = build_preview.page(data, lang)
+    template = f'<meta name="hs-preview-template-version" content="{TEMPLATE_VERSION}">\n'
+    html = html.replace("</head>", template + "</head>", 1)
     palette = HERE.parent.parent / "artifact-kit" / "palette.css"
     if palette.is_file():
         html = html.replace("</head>", "<style>" + palette.read_text(encoding="utf-8") + "</style></head>", 1)
@@ -71,8 +82,13 @@ def make(project: Path, out: Path, arms=None, seed: int = 1, tries=None, max_ima
     if published(protocol):
         marker = NOT_AVAILABLE["zh-CN" if (lang or os.environ.get("HS_UI_LANG", "")).startswith("zh") else "en"]
         html = PLACEHOLDER_RUN.sub(marker, html)
-    text, problems = build_preview.finish(html, protocol_path, build_preview.kit_module() or _project_kit(project),
-                                          protocol_bytes=raw)
+    kit = build_preview.kit_module()
+    if not build_preview.protocol_mode(kit):
+        return ["The preview's protocol artifact kit is unavailable."]
+    with TemporaryDirectory() as tmp:
+        snapshot = Path(tmp) / "protocol.json"
+        snapshot.write_bytes(raw)
+        text, problems = build_preview.finish(html, snapshot, kit)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     for arm in data["arms"]:
@@ -81,12 +97,6 @@ def make(project: Path, out: Path, arms=None, seed: int = 1, tries=None, max_ima
     for x in data.get("engine_problems") or []:
         print("  engine problem: " + x)
     return problems
-
-
-def _project_kit(project: Path):
-    sys.path.insert(0, str(project / ".opencode" / "artifact-kit"))
-    import inline
-    return inline
 
 
 def main(argv=None) -> int:
@@ -100,7 +110,11 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     project = Path(a.project).resolve()
     out = Path(a.out) if Path(a.out).is_absolute() else project / a.out
-    problems = make(project, out, a.arms, a.seed, a.tries, lang=a.lang)
+    try:
+        problems = make(project, out, a.arms, a.seed, a.tries, lang=a.lang)
+    except OSError:
+        print("FAIL: could not read or write participant preview files.", file=sys.stderr)
+        return 2
     if problems:
         print("FAIL %s - %d problem(s):" % (out, len(problems)))
         for p in problems:

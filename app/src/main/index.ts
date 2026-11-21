@@ -45,7 +45,7 @@ import { createPreviewPreparation } from './preview-preparation'
 import { isValidatedProtocol } from '../shared/research-search'
 import { confirmedLibrarySha, heldTextsOf, passedProtocolSha, selectedResults, shareExport, ShareError, shareFileName, sharePlan, type ShareRuntime } from './share-layers'
 import { legacyFileIsolationAvailable, scientificReadiness } from './scientific-readiness'
-import { readyPython } from './runtime-install'
+import { onRuntimeProgress, readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf, protocolProblems } from './package-readiness'
 import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, restoredRunFiles, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
@@ -102,14 +102,21 @@ const activeTurns = new Set<string>()
 /** Project sync (project-sync.ts), set up when the app is ready. */
 let projectSync: SyncEngine | null = null
 // The automatic paper build; its state file is under .humanstudy, which the project watcher ignores.
-const paperBuilds = createPaperBuilds(dir => broadcast('project:changed', dir), async dir => protocolDraftCertificate(
+const paperBuilds = createPaperBuilds(dir => {
+  previewPreparation.resume(dir)
+  broadcast('project:changed', dir)
+}, async dir => protocolDraftCertificate(
   await readyPython(), trustedEngineFiles(), dir, process.env.HUMANSTUDY_RUNTIME_BIN || ''))
-const preparePreview = createPreviewPreparation({
+const previewPreparation = createPreviewPreparation({
   python: readyPython,
   files: trustedPreviewFiles,
   version: previewTemplateVersion,
+  busy: dir => shutdown.closing() || projectTurnActive(dir) || paperBuilds.isRunning(dir),
   settled: (dir, { written, error }) => {
-    if (written) projectSync?.touch(dir)
+    if (written) {
+      projectSync?.touch(dir)
+      telemetry.track('project.preview_prepared', { target: 'artifacts/preview.html' }, dir)
+    }
     if (error) {
       console.error('Participant preview preparation failed', error)
       telemetry.track('project.preview_failed', { target: 'artifacts/preview.html', metadata: { error } }, dir)
@@ -117,6 +124,11 @@ const preparePreview = createPreviewPreparation({
     broadcast('project:changed', dir)
   },
 })
+const preparePreview = previewPreparation.prepare
+function projectTurnActive(dir: string): boolean {
+  return [...activeTurns].some(sid => sessionProject.get(sid) === dir)
+}
+
 let threadsInitialized = false
 const webRuntime = process.env.HUMANSTUDY_RESEARCH_SURFACE === 'web'
 const shutdown = createShutdown({
@@ -165,6 +177,10 @@ function currentKernel(): Kernel {
       }
       else if (e.type === 'text' || e.type === 'tool' || (e.type === 'status' && e.text === 'busy') || (e.type === 'question' && !e.question?.resolved) || (e.type === 'permission' && !e.permission?.resolved)) activeTurns.add(e.sessionId)
       try { void Promise.resolve(paperBuilds.event(e)).catch(err => console.error('paper build check', err)) } catch (err) { console.error('paper build state', err) } // never blocks events
+      if (e.type === 'done') {
+        const dir = sessionProject.get(e.sessionId)
+        if (dir) previewPreparation.resume(dir)
+      }
       threads().onEvent(e) // record before the renderer hears about it
       broadcast('kernel:event', e)
     })
@@ -284,11 +300,11 @@ function ownedPath(p: string): string {
   return q
 }
 
-async function readProject(dir: string): Promise<ProjectSnapshot> {
+async function readProject(dir: string, refreshPreview: boolean): Promise<ProjectSnapshot> {
   dir = resolve(dir)
   if (!isInside(getSettings().projectsRoot, dir) && !allowedRoots.has(dir))
     throw new Error('project folder is not under the projects folder and was not opened')
-  const previewPreparation = await preparePreview(dir)
+  const previewPreparation = await preparePreview(dir, refreshPreview)
   let program: unknown | null = null
   let programError: string | undefined
   const programPath = join(dir, 'program.json')
@@ -566,8 +582,8 @@ app.whenReady().then(() => {
     if (picked) allowedRoots.add(resolve(picked))
     return picked
   })
-  ipcMain.handle('project:read', async (_e, dir: string) => {
-    const snap = await readProject(dir)
+  ipcMain.handle('project:read', async (_e, dir: string, refreshPreview?: boolean) => {
+    const snap = await readProject(dir, refreshPreview === true)
     watchProject(snap.dir)
     telemetry.noteProjectFiles(snap)
     return snap
@@ -745,7 +761,7 @@ app.whenReady().then(() => {
     appVersion: app.getVersion(),
     // The app's agent files never travel (they can hold a provider key): install this version's.
     afterInstall: (dir) => refreshPack(dir),
-    busy: (dir) => [...activeTurns].some((sid) => sessionProject.get(sid) === dir),
+    busy: projectTurnActive,
     release: async (dir) => {
       unwatch(dir)
       if (threadsInitialized) await threads().forgetDir(dir)
@@ -1192,7 +1208,13 @@ app.whenReady().then(() => {
     const buildState = projectDir ? paperBuilds.read(projectDir) : undefined
     const purpose = isBuildTurn(buildState, id, actionRef(action)?.target) ? 'build' as const : undefined
     try { await k.send(id, prompt, { purpose }) }
-    catch (error) { if (startedRelay) await closeRunRelay(id); if (!alreadyActive) activeTurns.delete(id); paperBuilds.sendFailed(id, error); throw error }
+    catch (error) {
+      if (startedRelay) await closeRunRelay(id)
+      if (!alreadyActive) activeTurns.delete(id)
+      paperBuilds.sendFailed(id, error)
+      if (projectDir) previewPreparation.resume(projectDir)
+      throw error
+    }
   }
   ipcMain.handle('kernel:send', async (_e, id: string, text: string, workspace?: WorkspaceContext, action?: unknown) => {
     if (!webRuntime) return sendToKernel(id, text, workspace, action)
@@ -1229,13 +1251,22 @@ app.whenReady().then(() => {
       if(!last)throw Error('There is no earlier user turn to undo.')
       operation={...request,input:{...request.input,messageID:last.info.id}}
     }
-    if(NATIVE_TURNS.has(request.operation)){
+    const startsTurn = NATIVE_TURNS.has(request.operation)
+    const alreadyActive = activeTurns.has(sid)
+    if(startsTurn){
       activeTurns.add(sid)
       if(request.operation!=='compact')threads().beforeSend(sid, request.operation==='shell' ? '!'+String(request.input?.command??'') : '/'+String(request.input?.command??'')+' '+String(request.input?.arguments??''))
       telemetry.trackTurnStart(sid,'/'+request.operation,ref)
     } else if (ref && (ref.via !== 'system' || NATIVE_MUTATIONS.has(request.operation))) telemetry.noteAction(ref, sessionProject.get(sid)) // background reads are not operations
     telemetry.track('agent.native_action',{target:request.operation})
-    const result=await k.native(sid,operation)
+    const result = await k.native(sid, operation).catch(error => {
+      if (startsTurn && !alreadyActive) {
+        activeTurns.delete(sid)
+        const dir = sessionProject.get(sid)
+        if (dir) previewPreparation.resume(dir)
+      }
+      throw error
+    })
     if(request.operation==='select'){threads().rememberSelection(sid,result as NativeSelection);telemetry.track('agent.configuration',{metadata:result as Record<string,unknown>})}
     if(['open','fork','undo','redo'].includes(request.operation)){
       const next=['open','fork'].includes(request.operation)?(result as {id:string}).id:sid
@@ -1304,6 +1335,7 @@ app.whenReady().then(() => {
     await ensureAssistant().catch((err) => console.error('assistant install failed', err))
   })
   onInstallProgress((s) => broadcast('kernel:installProgress', s))
+  onRuntimeProgress(s => { if (s.state === 'ready') previewPreparation.runtimeReady() })
   // First run: start the download in the background so it is usually done before the first message.
   if (process.env.HUMANSTUDY_KERNEL !== 'mock') void ensureAssistant().catch((err) => console.error('assistant install failed', err))
   ipcMain.handle('app:info', () => ({

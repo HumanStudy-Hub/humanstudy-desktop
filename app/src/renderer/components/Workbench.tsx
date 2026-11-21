@@ -605,7 +605,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
                 {project.previewPreparation && <p className="muted small program-notice" role="status">
                   {t(project.previewPreparation === 'preparing' ? 'protocol.preview_preparing' : 'protocol.preview_failed')}
                 </p>}
-                {protocolText || showResearchDespiteReadError ? <ProtocolStudy key={project.dir} previewRequest={previewRequest?.dir === project.dir ? previewRequest.token : 0} text={protocolText ?? ''} program={researchProgram} problems={problems} preview={project.previewPreparation ? undefined : files.find(f => f.rel === 'artifacts/preview.html')}
+                {protocolText || showResearchDespiteReadError ? <ProtocolStudy key={project.dir} previewRequest={previewRequest?.dir === project.dir ? previewRequest.token : 0} text={protocolText ?? ''} program={researchProgram} problems={problems} preview={project.previewPreparation === 'preparing' ? undefined : files.find(f => f.rel === 'artifacts/preview.html')}
                   preparingPreview={project.previewPreparation === 'preparing'}
                   onAsk={docProps.onPrefill}
                   onSource={ref => { rememberHere(); docProps.onSource('protocol', ref); update(l => ({ ...l, active: 'study', compare: true })) }} />

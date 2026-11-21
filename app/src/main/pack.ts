@@ -72,7 +72,7 @@ const HELPERS = ['skills/build/AUTHORING.md', 'skills/build/AUTHORING.VENDORED',
   'skills/run/run_study.py', 'skills/run/fspec.py', 'skills/run/render.py', 'skills/run/VENDORED',
   'skills/run/app_run.py', 'skills/run/protocol_report.py', 'skills/run/budget.py', 'skills/run/launch.py',
   'skills/preview/build_preview.py', 'skills/preview/preview.css', 'skills/preview/preview.js', 'skills/preview/VENDORED',
-  'skills/preview/make_preview.py', 'skills/preview/template-version.txt']
+  'skills/preview/make_preview.py']
 
 /** Every app-owned file refreshPack keeps at the shipped version: the helpers and the protocol engine. */
 const appOwned = (): string[] => [...HELPERS, ...engineFiles()]
@@ -132,12 +132,16 @@ export function trustedEngineFiles(): [string, string][] {
   return engineFiles().map((rel) => [rel.slice('runtime/hsenv/'.length), files[PREFIX + rel]])
 }
 
-export const previewTemplateVersion = (): number => Number(files[PREFIX + 'skills/preview/template-version.txt']?.trim())
+const PREVIEW_WRAPPER = 'skills/preview/make_preview.py'
+export function previewTemplateVersion(): number {
+  const version = Number(files[PREFIX + PREVIEW_WRAPPER]?.match(/^TEMPLATE_VERSION = (\d+)$/m)?.[1])
+  return Number.isFinite(version) ? version : 0
+}
 
 /** Generator, engine and kit from the shipped pack, in the layout make_preview.py expects. */
 export function trustedPreviewFiles(): [string, string][] {
-  const preview = ['build_preview.py', 'make_preview.py', 'preview.css', 'preview.js', 'template-version.txt']
-  const paths = [...preview.map(name => 'skills/preview/' + name), ...kitFiles()]
+  const preview = ['build_preview.py', 'preview.css', 'preview.js']
+  const paths = [...preview.map(name => 'skills/preview/' + name), PREVIEW_WRAPPER, ...kitFiles()]
   return [
     ...trustedEngineFiles().map(([rel, content]): [string, string] => ['hsenv/' + rel, content]),
     ...paths.map((rel): [string, string] => [rel, files[PREFIX + rel]]),

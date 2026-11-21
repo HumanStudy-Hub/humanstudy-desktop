@@ -169,6 +169,7 @@ test('cloud prepares a verified fork and repairs outdated previews on open', { t
   assert.equal(forked.ok, true, JSON.stringify(forked))
   const dir = forked.value
   const path = join(dir, 'artifacts', 'preview.html')
+  const backup = join(dir, 'artifacts', 'preview.prev.html')
   const read = () => readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error })
   const snapshot = async () => {
     const reply = await f.ipc('project:read', dir)
@@ -182,6 +183,11 @@ test('cloud prepares a verified fork and repairs outdated previews on open', { t
   }, html => html.includes('hs.interact'))
   assert.match(generated, /name="hs-preview-template-version" content="\d+"/)
   assert.ok(generated.includes(hash(protocol)))
+  const prepared = await until(f.local, rows => rows.find(row => row.metadata?.operation === 'project.preview_prepared'))
+  const success = prepared.find(row => row.metadata?.operation === 'project.preview_prepared')
+  assert.equal(success.target, 'artifacts/preview.html')
+  assert.deepEqual(success.metadata, { operation: 'project.preview_prepared', via: 'system' })
+  await assert.rejects(stat(backup), { code: 'ENOENT' })
   await until(snapshot, snap => !snap.previewPreparation)
   const current = generated + '\n<!-- hand-edited current preview -->'
   await writeFile(path, current)
@@ -190,17 +196,24 @@ test('cloud prepares a verified fork and repairs outdated previews on open', { t
   assert.equal(await read(), current)
   assert.equal((await stat(path)).ino, inode)
 
-  const identity = generated.match(/<script[^>]*id="hs-protocol"[^>]*>[\s\S]*?<\/script>/)[0]
-  const handAuthored = '<meta name="hs-artifact" content="participant-preview">' + identity + '<p>Custom preview</p>'
+  const handAuthored = '<html><head><meta name="hs-artifact" content="participant-preview">' +
+    '<!-- <meta name="hs-preview-template-version" content="0"> --></head><body><p>Custom preview</p></body></html>'
   await writeFile(path, handAuthored)
   assert.equal((await snapshot()).previewPreparation, undefined)
   assert.equal(await read(), handAuthored)
 
   const legacy = current.replace(/<meta name="hs-preview-template-version"[^>]*>/, '')
   await writeFile(path, legacy)
+  assert.equal((await snapshot()).previewPreparation, undefined)
+  assert.equal(await read(), legacy)
+  await assert.rejects(stat(backup), { code: 'ENOENT' })
+
+  const old = current.replace(/name="hs-preview-template-version" content="\d+"/, 'name="hs-preview-template-version" content="0"')
+  await writeFile(path, old)
   assert.equal((await snapshot()).previewPreparation, 'preparing')
   await until(read, html => !html.includes('hand-edited current preview') && html.includes('hs.interact'))
   assert.equal((await until(snapshot, snap => !snap.previewPreparation)).program.id, 'fork-preview')
+  assert.equal(await readFile(backup, 'utf8'), old)
 
   const wrongHash = generated.replace(hash(protocol), '0'.repeat(64))
   await writeFile(path, wrongHash)
@@ -208,9 +221,33 @@ test('cloud prepares a verified fork and repairs outdated previews on open', { t
   await writeFile(path, current)
   await until(snapshot, snap => !snap.previewPreparation)
   assert.equal(await read(), current, 'a current edit made while the old preview was being built survives')
+  assert.equal(await readFile(backup, 'utf8'), old)
 
   await writeFile(path, wrongHash)
   assert.equal((await snapshot()).previewPreparation, 'preparing')
+  await until(read, html => html.includes(hash(protocol)))
+  await until(snapshot, snap => !snap.previewPreparation)
+  assert.equal(await readFile(backup, 'utf8'), wrongHash)
+
+  // Hold the mock turn open until it is explicitly aborted. The job must restart without a project read.
+  const { kernelSessionId: sid } = (await f.ipc('threads:create', dir)).value
+  assert.equal((await f.ipc('kernel:send', sid, 'Ask question')).ok, true)
+  await rm(path)
+  assert.equal((await snapshot()).previewPreparation, undefined)
+  assert.equal((await snapshot()).previewPreparation, undefined)
+  await pause(650)
+  assert.equal(await read(), '')
+  assert.equal((await f.ipc('kernel:abort', sid)).ok, true)
+  await until(read, html => html.includes(hash(protocol)))
+  await until(snapshot, snap => !snap.previewPreparation)
+
+  const buildState = join(dir, '.humanstudy', 'paper-build.json')
+  await writeFile(buildState, '{"status":"pending","phase":"reading"}')
+  assert.equal((await f.ipc('project:startBuild', dir, sid)).value, true)
+  await rm(path)
+  assert.equal((await snapshot()).previewPreparation, undefined)
+  assert.equal(await read(), '')
+  assert.equal((await f.ipc('project:releaseBuild', dir, sid)).ok, true)
   await until(read, html => html.includes(hash(protocol)))
   await until(snapshot, snap => !snap.previewPreparation)
 
