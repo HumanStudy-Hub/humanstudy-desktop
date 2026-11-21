@@ -45,3 +45,19 @@ export function createShutdown(options: {
     },
   }
 }
+
+
+/** Keep the deadline live even when a stalled upload is the only outstanding work. */
+export async function flushWithin(flush: () => Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      new Promise<void>(resolve => { timer = setTimeout(resolve, ms) }),
+      Promise.resolve().then(flush),
+    ])
+  } catch {
+    // Capture and upload retain their pending work on disk.
+  } finally {
+    clearTimeout(timer)
+  }
+}

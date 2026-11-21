@@ -83,6 +83,7 @@
       "linkage": "required",
       "event_types": {
         "conversation.message": { "desktop": "research-agent.ts start (user, full text) / checkpoint (assistant, partial + final segments)", "headless": "same adapter via headless-research.mjs onRequest" },
+        "conversation.submission": { "desktop": "not_applicable", "headless": "not_applicable", "web": "kernel:send dispatch result and submitted queue/pre-dispatch decisions through the browser outbox" },
         "conversation.question": { "desktop": "research-agent.ts event(question); answers link to the answering operation (agent.answer before kernel.answerQuestion)", "headless": "same; answer / reject-question commands" },
         "conversation.error": { "desktop": "research-agent.ts event(error)", "headless": "same adapter" }
       }

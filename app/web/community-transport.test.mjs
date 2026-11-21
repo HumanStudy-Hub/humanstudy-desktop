@@ -46,7 +46,7 @@ test('real preload and browser JSON HTTP transport preserve omitted community re
   const origin='http://127.0.0.1:'+server.address().port
   const browser={exports:{},console,URL,Uint8Array,Event,navigator:{language:'en'},window:{__HS_WEB__:{uploads:'/uploads',sep:'/'},addEventListener(){},dispatchEvent(){}},EventSource:class{addEventListener(){} close(){}},fetch:(url,options)=>nativeFetch(origin+url,options)}
   vm.runInNewContext(transpile(await readFile(new URL('./browser-electron.ts',import.meta.url),'utf8')),browser)
-  vm.runInNewContext(transpile(await readFile(new URL('../src/preload/index.ts',import.meta.url),'utf8')),{require:()=>browser.exports,exports:{}})
+  vm.runInNewContext(transpile(await readFile(new URL('../src/preload/index.ts',import.meta.url),'utf8')),{require:()=>browser.module.exports,exports:{}})
   const api=browser.window.humanstudy.community
   assert.equal((await api.study(id)).currentRevision,revision)
   assert.equal(wire.at(-1).args[1],null,'actual JSON array encodes omitted revision as null')

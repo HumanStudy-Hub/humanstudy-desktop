@@ -5,5 +5,5 @@
     "strict": true, "esModuleInterop": true, "skipLibCheck": true, "resolveJsonModule": true,
     "types": ["vite/client"], "noEmit": true
   },
-  "include": ["src/renderer/**/*", "src/shared/**/*", "src/preload/types.ts"]
+  "include": ["src/renderer/**/*", "src/shared/**/*", "src/preload/types.ts", "web/browser-electron.ts"]
 }

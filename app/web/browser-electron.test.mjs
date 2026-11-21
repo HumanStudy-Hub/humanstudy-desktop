@@ -1,27 +1,28 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 import vm from 'node:vm'
-const require = createRequire(import.meta.url)
-const ts = require('typescript')
-const source = ts.transpileModule(readFileSync(new URL('./browser-electron.ts', import.meta.url), 'utf8'), {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-}).outputText
-function harness() {
+import { randomUUID } from 'node:crypto'
+import { build } from 'esbuild'
+import { fileURLToPath } from 'node:url'
+const [{ text: source }] = (await build({
+  entryPoints: [fileURLToPath(new URL('./browser-electron.ts', import.meta.url))],
+  bundle: true, write: false, format: 'cjs',
+})).outputFiles
+function harness({ config = { uploads: '/uploads', sep: '/' }, href = 'https://workspace.test/', stored = new Map() } = {}) {
   const pending = [], calls = [], elements = []
-  let events
+  let events, eventUrl
   const make = tag => ({ tag, children: [], style: {}, attrs: {}, listeners: {},
     setAttribute(k, v) { this.attrs[k] = v }, appendChild(v) { this.children.push(v) },
     addEventListener(k, fn) { this.listeners[k] = fn }, remove() { this.removed = true }, click() {},
   })
   const body = make('body')
   const exports = {}
-  const context = { exports, console, URL, Uint8Array, Event, navigator: { language: 'en' },
-    crypto: { randomUUID: () => `upload-${pending.length}` },
+  const context = { module: { exports }, exports, console, URL, clearTimeout, Uint8Array, Event, navigator: { language: 'en' },
+    crypto: { randomUUID: config.workspace ? randomUUID : () => `upload-${pending.length}` },
+    sessionStorage: { getItem: key => stored.get(key), setItem: (key, value) => stored.set(key, value) },
     document: { body, createElement(tag) { const e = make(tag); elements.push(e); return e }, createTextNode: text => ({ text }) },
-    window: { __HS_WEB__: { uploads: '/uploads', sep: '/' }, addEventListener() {}, dispatchEvent() {}, open: () => null },
-    EventSource: class { constructor() { events = this } addEventListener() {} close() {} },
+    window: { __HS_WEB__: config, location: { href }, addEventListener() {}, dispatchEvent() {}, open: () => null },
+    EventSource: class { constructor(url) { events = this; eventUrl = url } addEventListener() {} close() {} },
     fetch: async (url, options) => {
       calls.push({ url, options })
       if (url.startsWith('/upload/')) return new Promise(resolve => pending.push(resolve))
@@ -29,7 +30,7 @@ function harness() {
     },
   }
   vm.runInNewContext(source, context)
-  return { ...exports, pending, calls, elements, body, emit: data => events.onmessage({ data: JSON.stringify(data) }) }
+  return { ...context.module.exports, pending, calls, elements, body, eventUrl, emit: data => events.onmessage({ data: JSON.stringify(data) }) }
 }
 const settle = () => new Promise(resolve => setImmediate(resolve))
 
@@ -68,4 +69,15 @@ test('blocked external popups leave an actionable safe link instead of silently 
   const count = h.body.children.length
   h.emit({ c: 'web:openExternal', p: 'javascript:alert(1)' })
   assert.equal(h.body.children.length, count)
+})
+
+
+test('visit fallback survives reload within a workspace and differs in a fresh browser session', () => {
+  const config = { uploads: '/uploads', sep: '/', workspace: 'fixture' }
+  const stored = new Map()
+  const first = harness({ config, stored }).eventUrl
+  assert.match(first, /^\/events\?hs_visit=[0-9a-f-]{36}$/)
+  assert.equal(harness({ config, stored }).eventUrl, first)
+  assert.notEqual(harness({ config }).eventUrl, first)
+  assert.notEqual(harness({ config: { ...config, workspace: 'other' }, stored }).eventUrl, first)
 })
