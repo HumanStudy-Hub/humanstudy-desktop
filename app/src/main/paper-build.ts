@@ -191,6 +191,10 @@ export function createPaperBuilds(changed: (dir: string) => void, checkProtocol?
   return {
     read,
     readOnly: (dir: string) => read(dir, false),
+    isRunning(dir: string): boolean {
+      const state = readPaperBuild(dir)
+      return state?.status === 'running' && live.has(state.sessionId ?? '')
+    },
     async snapshot(dir: string): Promise<PaperBuildState | undefined> {
       const state = readPaperBuild(dir)
       if (state?.status === 'complete' && state.validationRoute === 'protocol' && checkProtocol) {

@@ -10,13 +10,13 @@
 //   GET  /download/<path>      a file a save dialog wrote (save a copy, export)
 //
 // Environment: HS_WEB_TOKEN (required unless HS_WEB_INSECURE=1), PORT, HS_USER_DATA, HS_APP_ROOT,
-// HS_RENDERER_DIR, HS_MAIN, HS_APP_VERSION. Everything else is the desktop app's own environment.
+// HS_RENDERER_DIR, HS_MAIN, HS_APP_VERSION; from the Hub launcher HS_VISIT_ID and HS_DEADLINE_AT. Everything else is the desktop app's own environment.
 'use strict'
 const Module = require('node:module')
 const http = require('node:http')
-const { createReadStream, createWriteStream, mkdirSync, readFileSync, statSync, writeFileSync } = require('node:fs')
+const { createReadStream, createWriteStream, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } = require('node:fs')
 const { join, resolve, sep, basename } = require('node:path')
-const { timingSafeEqual } = require('node:crypto')
+const { randomUUID, timingSafeEqual } = require('node:crypto')
 const { Readable } = require('node:stream')
 const { pipeline } = require('node:stream/promises')
 
@@ -30,6 +30,7 @@ Module._resolveFilename = function (request, ...rest) {
   return resolveFilename.call(this, request, ...rest)
 }
 const electron = require(SHIM)
+const { parseDeadline, armDeadline } = require(join(HERE, 'deadline.cjs'))
 const { bus, invoke, emitSend, protocols, contentType, paths } = electron.__web
 
 // Both sessions originate in the launcher's authenticated Supabase exchange.
@@ -57,6 +58,36 @@ try {
 }
 const UPLOADS = join(paths.userData, 'uploads')
 mkdirSync(UPLOADS, { recursive: true })
+const validVisit = value => typeof value === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)
+// Visit, provider deadline and end reason live in this process only. They are kept out of process.env so the
+// agent kernel and the programs it starts neither inherit nor can rewrite them (and so cannot choose a
+// session's end reason or when it ends).
+const runtime = globalThis.__humanstudyWebRuntime = { visitId: undefined, deadlineAt: undefined, endReason: undefined }
+if (validVisit(process.env.HS_VISIT_ID)) runtime.visitId = process.env.HS_VISIT_ID.toLowerCase()
+delete process.env.HS_VISIT_ID
+runtime.deadlineAt = parseDeadline(process.env.HS_DEADLINE_AT)
+delete process.env.HS_DEADLINE_AT
+const STOP_REASON_FILE = process.env.HS_WEB_STOP_REASON_FILE || join(paths.userData, 'web-stop-reason.json')
+delete process.env.HS_WEB_STOP_REASON_FILE
+let launchVisit = runtime.visitId
+let fallbackCanRebind = true
+const workspaceFile = join(paths.userData, 'web-workspace-id')
+try { writeFileSync(workspaceFile, randomUUID(), { mode: 0o600, flag: 'wx' }) }
+catch (error) { if (error.code !== 'EEXIST') throw error }
+const workspace = readFileSync(workspaceFile, 'utf8')
+let disconnectTimer
+let stopping = false
+const requestedGrace = Number(process.env.HS_WEB_DISCONNECT_GRACE_MS)
+const disconnectGraceMs = Number.isSafeInteger(requestedGrace) && requestedGrace > 0 ? requestedGrace : 30_000
+function bindVisit(value, fromLaunch = false) {
+  if (!validVisit(value) || launchVisit) return
+  const visit = value.toLowerCase()
+  if (fromLaunch) launchVisit = visit
+  if (fromLaunch || fallbackCanRebind) {
+    runtime.visitId = visit
+    fallbackCanRebind = false
+  }
+}
 
 // ---- events: a replay buffer so a dropped connection resumes where it left off -------------------
 // Bounded by count and size: streamed agent text and project snapshots can be large.
@@ -179,6 +210,12 @@ const server = http.createServer(async (req, res) => {
     }
     if (!authorised(req)) { res.writeHead(401, { 'Content-Type': 'text/plain' }); return res.end('This session has ended. Open HumanStudy Hub again from humanstudy-hub.com.') }
 
+    if (path === '/' || path === '/index.html') bindVisit(url.searchParams.get('hs_visit'), true)
+    if (path === '/events') bindVisit(url.searchParams.get('hs_visit'))
+    if (path.startsWith('/ipc/')) bindVisit(req.headers['x-hs-visit'])
+    if (stopping && (path === '/events' || (path.startsWith('/ipc/') && dec(path.slice(5)) !== 'kernel:send')))
+      return json(res, 503, { ok: false, error: { message: 'The workspace is stopping.' } })
+
     // The launcher (humanstudy-hub.com) signs the app in as the website's user: a session of its own and,
     // when the user has hosted access, a desktop key. Same file and encryption as the desktop's account.ts.
     if (req.method === 'POST' && path === '/__seed') {
@@ -217,7 +254,12 @@ const server = http.createServer(async (req, res) => {
       const channel = dec(path.slice(5)) ?? ''
       const { args } = JSON.parse((await body(req, 16 << 20)).toString('utf8') || '{}')
       try {
+        if (channel === 'telemetry:outboxWrite') {
+          if (stopping) return json(res, 503, { ok: false, error: { message: 'The workspace is stopping.' } })
+          if (args?.[0]?.workspace !== workspace) return json(res, 409, { ok: false, error: { message: 'This workspace has changed.' } })
+        }
         const value = await invoke(channel, decode(Array.isArray(args) ? args : []))
+        if (channel === 'telemetry:setConsent' || /^account:sign(?:In|Up|Out)$/.test(channel)) bus.emit('send', 'web:researchScope', {})
         return json(res, 200, { ok: true, value: encode(value) })
       } catch (e) {
         return json(res, 200, { ok: false, error: { name: e?.name || 'Error', message: e?.message ?? String(e) } })
@@ -225,7 +267,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && path.startsWith('/send/')) {
       const { args } = JSON.parse((await body(req, 1 << 20)).toString('utf8') || '{}')
-      emitSend(dec(path.slice(6)) ?? '', decode(Array.isArray(args) ? args : []))
+      const channel = dec(path.slice(6)) ?? ''
+      if (channel === 'telemetry:webDisconnect') return notFound(res)
+      emitSend(channel, decode(Array.isArray(args) ? args : []))
       return json(res, 200, { ok: true })
     }
     if (path === '/events') {
@@ -240,9 +284,20 @@ const server = http.createServer(async (req, res) => {
         if (last > seq || (ring.length && ring[0].id > last + 1)) res.write(`event: reset\ndata: {}\n\n`)
         for (const ev of ring) if (ev.id > last) write(res, ev)
       }
+      clearTimeout(disconnectTimer)
       clients.add(res)
       const beat = setInterval(() => res.write(': beat\n\n'), 15000)
-      req.on('close', () => { clearInterval(beat); clients.delete(res) })
+      res.on('close', () => {
+        clearInterval(beat)
+        clients.delete(res)
+        if (!clients.size && !stopping) {
+          disconnectTimer = setTimeout(() => {
+            emitSend('telemetry:webDisconnect', [runtime.visitId])
+            fallbackCanRebind = true
+          }, disconnectGraceMs)
+          disconnectTimer.unref()
+        }
+      })
       return
     }
     if (path.startsWith('/hsfile/')) {
@@ -285,8 +340,11 @@ const server = http.createServer(async (req, res) => {
       return sendFile(res, file, { 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(basename(file))}`, 'Cache-Control': 'no-store' })
     }
     if (path === '/web-config.js') {
+      const scope = await invoke('telemetry:outboxScope', []).catch(() => null)
       res.writeHead(200, { 'Content-Type': 'text/javascript', 'Cache-Control': 'no-store' })
-      return res.end(`window.__HS_WEB__=${JSON.stringify({ uploads: UPLOADS, sep })};`)
+      // The deadline goes as time remaining, so the page's own clock does not have to agree with this one.
+      const deadlineIn = runtime.deadlineAt === undefined ? null : Math.max(0, runtime.deadlineAt - Date.now())
+      return res.end(`window.__HS_WEB__=${JSON.stringify({ uploads: UPLOADS, sep, workspace, visit: launchVisit, scope, deadlineIn })};`)
     }
     if (path === '/' || path === '/index.html') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
@@ -309,10 +367,38 @@ server.headersTimeout = 60_000
 process.on('unhandledRejection', (e) => console.error('unhandled rejection', e))
 // Stopping the sandbox (or start.sh replacing the server): save conversations and stop the agent without
 // asking; a turn in progress is interrupted, as a desktop "Stop and quit" would.
-process.on('SIGTERM', () => {
+// The Hub's stop marker for the active visit, consumed once. Null when there is none (or it names another visit).
+function hubReason() {
+  const path = STOP_REASON_FILE
+  try {
+    const marker = JSON.parse(readFileSync(path, 'utf8'))
+    unlinkSync(path)
+    if (validVisit(marker.visit_id) && marker.visit_id.toLowerCase() === runtime.visitId &&
+      (marker.reason === 'timeout' || marker.reason === 'user_stop')) return marker.reason
+  } catch { /* a missing or invalid marker is an ordinary close */ }
+  return null
+}
+const signalledReason = () => hubReason() ?? 'closed'
+electron.app.on('before-quit', () => {
+  if (stopping) return
+  stopping = true
+  clearTimeout(disconnectTimer)
+  setTimeout(() => process.exit(runtime.endReason === 'crash' ? 1 : 0), 8000).unref()
+})
+function stop(reason) {
+  if (stopping) return
+  runtime.endReason = reason
   electron.__web.forceQuit = true
   electron.app.quit()
-  setTimeout(() => process.exit(0), 8000).unref()
+}
+delete process.env.HS_RUNTIME_END_REASON
+process.on('SIGTERM', () => stop(signalledReason()))
+// Shortly before the provider's hard limit, end the visit as the Hub's timeout would, through the same
+// bounded quit. A Hub stop already decided (its marker is present) keeps its own reason.
+armDeadline(runtime.deadlineAt, () => stop(hubReason() ?? 'timeout'))
+process.on('uncaughtException', () => {
+  console.error('humanstudy web: uncaught exception, stopping workspace')
+  stop('crash')
 })
 
 // Set by this trusted host, never by renderer IPC or user settings.

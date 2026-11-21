@@ -12,3 +12,6 @@
 .update-line.error { color: var(--danger); }
 .update-bar { height: 3px; margin-top: 8px; border-radius: 2px; background: var(--bg-sunk); overflow: hidden; }
 .update-bar span { display: block; height: 100%; background: var(--accent); transition: width 0.3s ease; }
+/* The online session's time-left notice sits above an update notice if both show. */
+.session-deadline { bottom: 64px; padding-right: 14px; }
+.session-deadline.final { max-width: 360px; }

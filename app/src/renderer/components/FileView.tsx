@@ -11,7 +11,8 @@ import { Markdown } from './Markdown'
 import { CsvTable, useVersions } from './Previews'
 import { copyText } from './Markdown'
 import { resultTitle } from '../results'
-import { listenToArtifact, withArtifactCsp } from '../bridge'
+import { withArtifactCsp } from '../bridge'
+import { ArtifactFrame, type ArtifactStudy } from './ArtifactFrame'
 import { getDraft, isDirty, setDraft, toDisk } from '../drafts'
 import { versionedUrl } from '../../shared/file-version'
 import { WEB_EDITION } from '../edition'
@@ -22,12 +23,14 @@ const IMAGE = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'])
 interface Props {
   file: ProjectEntry
   dir: string
+  study?: ArtifactStudy
+  active?: boolean
   /** Changes whenever the project folder changed on disk. */
   version: unknown
   onDirty(path: string, dirty: boolean): void
 }
 
-export function FileView({ file, version, onDirty }: Props) {
+export function FileView({ file, version, onDirty, study, active = true }: Props) {
   const isHtml = file.ext === 'html' || file.ext === 'htm'
   const isText = TEXT.has(file.ext)
   const isMd = file.ext === 'md' || file.ext === 'markdown'
@@ -46,10 +49,6 @@ export function FileView({ file, version, onDirty }: Props) {
   const [viewing, setViewing] = useState<{ id: string; text: string } | null>(null)
   const [copied, setCopied] = useState(false)
   const latest = versions[versions.length - 1]
-  // Artifact views may ask the app to open a cited page or prefill the chat (see bridge.ts).
-  const frame = useRef<HTMLIFrameElement>(null)
-  useEffect(() => (isHtml ? listenToArtifact(() => frame.current) : undefined), [isHtml])
-
   const dirty = isDirty(text, saved)
 
   useEffect(() => onDirty(file.path, dirty), [dirty, file.path, onDirty])
@@ -233,7 +232,7 @@ export function FileView({ file, version, onDirty }: Props) {
         isMd ? (
           <div className="file-md"><Markdown text={viewing.text} /></div>
         ) : isHtml && mode === 'preview' ? (
-          <iframe ref={frame} className="artifact-frame" src={`data:text/html;charset=utf-8,${encodeURIComponent(withArtifactCsp(viewing.text))}`} sandbox="allow-scripts" title={file.name} />
+          <ArtifactFrame file={file} revision={`history:${viewing.id}`} study={study} active={active} className="artifact-frame" src={`data:text/html;charset=utf-8,${encodeURIComponent(withArtifactCsp(viewing.text))}`} title={file.name} />
         ) : (
           <pre className="file-old">{viewing.text}</pre>
         )
@@ -242,7 +241,10 @@ export function FileView({ file, version, onDirty }: Props) {
       ) : mode === 'preview' && isCsv ? (
         <div className="file-csv">{saved === null ? <p className="muted">{t('common.loading')}</p> : <CsvTable text={text} rows={200} cols={30} />}</div>
       ) : mode === 'preview' ? (
-        <iframe ref={frame} key={file.version ?? file.mtime ?? 0} className="artifact-frame" src={dirty ? `data:text/html;charset=utf-8,${encodeURIComponent(withArtifactCsp(text))}` : file.url && versionedUrl(file.url, file.version)} sandbox="allow-scripts" title={file.name} />
+        (dirty || file.url) && <ArtifactFrame key={file.version ?? file.mtime ?? 0} file={file}
+          revision={dirty ? 'draft' : undefined} study={study} active={active} className="artifact-frame"
+          src={dirty ? `data:text/html;charset=utf-8,${encodeURIComponent(withArtifactCsp(text))}` : versionedUrl(file.url!, file.version)}
+          title={file.name} />
       ) : saved === null && !error ? (
         <p className="muted pad">{t('common.loading')}</p>
       ) : (

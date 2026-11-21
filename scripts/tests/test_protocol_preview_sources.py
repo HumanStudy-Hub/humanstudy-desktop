@@ -10,6 +10,22 @@ import unittest
 ROOT=Path(__file__).resolve().parents[2]
 
 class PreviewSources(unittest.TestCase):
+    def test_app_wrapper_never_falls_back_to_the_projects_kit(self):
+        with tempfile.TemporaryDirectory() as td:
+            work=Path(td)/'app'
+            project=Path(td)/'project'
+            shutil.copytree(ROOT/'pack/runtime/hsenv',work/'hsenv',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+            shutil.copytree(ROOT/'pack/skills/preview',work/'skills/preview',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+            kit=project/'.opencode/artifact-kit'
+            kit.mkdir(parents=True)
+            (kit/'inline.py').write_text('from pathlib import Path\nPath("project-kit-imported").touch()\n')
+            shutil.copyfile(ROOT/'app/src/main/fixtures/protocol-mini/protocol.json',project/'protocol.json')
+            result=subprocess.run([sys.executable,'-I','-B',str(work/'skills/preview/make_preview.py')],
+                                  cwd=project,capture_output=True,text=True)
+            self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+            self.assertIn("protocol artifact kit is unavailable",result.stdout)
+            self.assertFalse((project/'project-kit-imported').exists())
+
     def test_full_passage_and_note_survive_the_preview_and_click_payload(self):
         with tempfile.TemporaryDirectory() as td:
             project=Path(td)

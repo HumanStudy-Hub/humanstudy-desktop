@@ -365,7 +365,7 @@
   function renderResp(r, name) {
     var p = prov(r.cite, r.ref, 'question')
     var ps = parseStyle(r.prompt_style)
-    var h = '<div class="q">'
+    var h = '<div class="q" data-response-id="' + esc(r.id) + '">'
     if (r.prompt != null && r.prompt !== '') {
       h += '<div class="prompt' + ps.cls + p.cls + '"' + p.attrs + (ps.css ? ' style="' + esc(ps.css) + '"' : '') + '>' +
         richText(r.prompt, r.prompt_spans) + (r.required ? '<span class="req" title="' + esc(t('required')) + '">*</span>' : '') + p.chip + '</div>'
@@ -382,7 +382,7 @@
         h += '<select><option>' + (r.start === null ? '' : '—') + '</option>' + opts.map(function (o) { return '<option>' + esc(o.label) + '</option>' }).join('') + '</select>'
         h += '<div class="ddlist"><div class="wnote">' + esc(t('ddNote')) + '</div>' + opts.map(function (o) { return '<div>' + optLabel(r, o) + '</div>' }).join('') + '</div>'
       } else if (/buttons/.test(w)) {
-        h += '<div class="btnopts">' + opts.map(function (o) { return '<span>' + optLabel(r, o) + '</span>' }).join('') + '</div>'
+        h += '<div class="btnopts">' + opts.map(function (o) { return '<button type="button" data-answer-choice>' + optLabel(r, o) + '</button>' }).join('') + '</div>'
       } else {
         var horiz = /horizontal|likert|^horizontal$/.test(w) || (k === 'scale')
         h += '<div class="opts' + (horiz ? ' h' : '') + '"' + (typeof r.columns === 'number' ? ' style="display:grid;grid-template-columns:repeat(' + r.columns + ',minmax(0,1fr))"' : '') + '>' +
@@ -427,7 +427,7 @@
     var h = '<table class="matrix"><thead><tr><th></th>' + opts.map(function (o) { return '<th>' + optLabel(rs[0], o) + '</th>' }).join('') + '</tr></thead><tbody>'
     rs.forEach(function (r, i) {
       var p = prov(r.cite, r.ref, 'question')
-      h += '<tr><td class="rowq' + p.cls + '"' + p.attrs + '>' + richText(r.prompt, r.prompt_spans) + (r.required ? '<span class="req">*</span>' : '') + p.chip + '</td>' +
+      h += '<tr data-response-id="' + esc(r.id) + '"><td class="rowq' + p.cls + '"' + p.attrs + '>' + richText(r.prompt, r.prompt_spans) + (r.required ? '<span class="req">*</span>' : '') + p.chip + '</td>' +
         opts.map(function () { return '<td><input type="radio" name="m' + name + '_' + i + '" aria-label="option"></td>' }).join('') + '</tr>'
     })
     return h + '</tbody></table>' + wnote([rs[0].shuffled ? t('shuffledCols') : null, rs.some(function (r) { return r.shuffled_with_others }) ? t('shuffledRows') : null])
@@ -449,7 +449,7 @@
     var tm = sc.timing || {}
     if (sc.button == null && /^(auto|timed|none|wait|link)$/.test(tm.advance || '')) return ''
     var label = sc.button != null ? sc.button : '→'
-    return '<div class="cont' + (inline ? ' inline' : '') + '"><span' + (sc.button == null ? ' data-tip="' + esc(t('noBtnLabel')) + '"' : '') + '>' + esc(label) + '</span></div>'
+    return '<div class="cont' + (inline ? ' inline' : '') + '"><button type="button" data-preview-submit' + (sc.button == null ? ' data-tip="' + esc(t('noBtnLabel')) + '"' : '') + '>' + esc(label) + '</button></div>'
   }
   function renderScreen(sc, name) {
     var items = {}, resps = {}
@@ -590,7 +590,7 @@
     if (D.tries) rows.push(t('techTries', D.tries))
     rows.push(t('techProtocol', D.study, D.version == null ? '—' : D.version, D.built))
     if ((D.engine_problems || []).length) rows.push(t('techEngine', D.engine_problems.join(' | ')))
-    return '<details class="tech"><summary>' + esc(t('tech')) + '</summary><ul>' +
+    return '<details class="tech"><summary data-preview-toggle="technical-details">' + esc(t('tech')) + '</summary><ul>' +
       rows.map(function (r) { return '<li>' + esc(r) + '</li>' }).join('') + '</ul></details>'
   }
   function participantView() {
@@ -677,12 +677,39 @@
   }
 
   // ---------- events ----------
+  function interact(action, controlId, label, valueKind) {
+    if (window.parent === window) return
+    var participant = S.view === 'participant'
+    var p = participant && part()
+    post({ type: 'hs.interact', action: action, controlId: controlId, label: label,
+      step: p && p.screens.length ? S.scr : null, arm: participant && arm() ? arm().id : null, valueKind: valueKind })
+  }
+  function navigate(destination, controlId, trusted) {
+    S.scr = destination
+    if (trusted) interact('navigate', controlId, controlId, 'choice')
+    render()
+  }
   document.addEventListener('change', function (e) {
-    var t = e.target
-    if (t.id === 'arm') { S.arm = +t.value; S.pid = 0; S.scr = 0; render() }
-    else if (t.id === 'pid') { S.pid = +t.value; S.scr = 0; render() }
-    else if (t.id === 'jump') { S.scr = +t.value; render() }
-    else if (t.id === 'marks') { S.marks = t.checked; render() }
+    if (!e.isTrusted || !D) return
+    var el = e.target
+    if (el.id === 'arm') {
+      S.arm = +el.value; S.pid = 0; S.scr = 0
+      interact('choose', 'arm', 'condition', 'choice'); render()
+    } else if (el.id === 'pid') {
+      S.pid = +el.value; S.scr = 0
+      interact('choose', 'member', 'participant', 'choice'); render()
+    } else if (el.id === 'jump') navigate(+el.value, 'jump', e.isTrusted)
+    else if (el.id === 'marks') {
+      S.marks = el.checked
+      interact('toggle', 'marks', 'source-marks', 'boolean'); render()
+    } else {
+      var response = el.closest('[data-response-id]')
+      if (!response) return
+      var kind = el.matches('select, input[type="radio"], input[type="checkbox"]') ? 'choice'
+        : el.matches('input[type="range"], input[type="number"]') ? 'number'
+        : el.matches('textarea, input[type="text"]') ? 'text' : null
+      if (kind) interact('answer', response.getAttribute('data-response-id'), 'response', kind)
+    }
   })
   document.addEventListener('toggle', function (e) {
     var d = e.target
@@ -703,10 +730,32 @@
   document.addEventListener('click', function (e) {
     var t = e.target
     if (!t || !t.closest) return
-    if (t.closest('[data-view]')) { S.view = t.closest('[data-view]').getAttribute('data-view'); render(); return }
-    if (t.id === 'prev') { S.scr--; render(); return }
-    if (t.id === 'next') { S.scr++; render(); return }
-    if (t.id === 'theme') { S.theme = isDark() ? 'light' : 'dark'; applyTheme(); render(); return }
+    var tab = t.closest('[data-view]')
+    if (tab) {
+      S.view = tab.getAttribute('data-view')
+      if (e.isTrusted) interact('view', S.view, S.view, 'choice')
+      render(); return
+    }
+    if (t.id === 'prev') { navigate(S.scr - 1, 'previous', e.isTrusted); return }
+    if (t.id === 'next') { navigate(S.scr + 1, 'next', e.isTrusted); return }
+    if (t.id === 'theme') {
+      S.theme = isDark() ? 'light' : 'dark'
+      if (e.isTrusted) interact('toggle', 'theme', 'appearance', 'boolean')
+      applyTheme(); render(); return
+    }
+    if (e.isTrusted) {
+      var response = t.closest('[data-answer-choice]') && t.closest('[data-response-id]')
+      if (response) interact('answer', response.getAttribute('data-response-id'), 'response', 'choice')
+      if (t.closest('[data-preview-submit]')) interact('submit', 'continue', 'continue', 'none')
+      var summary = t.closest('summary')
+      if (summary) {
+        var details = summary.parentElement
+        var id = summary.getAttribute('data-preview-toggle')
+        if (details.hasAttribute('data-k')) id = 'variant-' + details.getAttribute('data-k') + '-' + details.getAttribute('data-v')
+        if (details.hasAttribute('data-pk')) id = 'partial-' + details.getAttribute('data-pk') + '-' + details.getAttribute('data-pi')
+        if (id) interact('toggle', id, 'details', 'boolean')
+      }
+    }
     var el = t.closest('[data-page],[data-program-id]')
     if (!el || t.closest('input,select,textarea,summary')) return
     var m = { type: 'hs.openSource' }
@@ -720,8 +769,8 @@
     if (S.view !== 'participant' || /INPUT|SELECT|TEXTAREA/.test((e.target && e.target.tagName) || '')) return
     var p = part()
     if (!p) return
-    if (e.key === 'ArrowRight' && S.scr < p.screens.length - 1) { S.scr++; render() }
-    else if (e.key === 'ArrowLeft' && S.scr > 0) { S.scr--; render() }
+    if (e.key === 'ArrowRight' && S.scr < p.screens.length - 1) { navigate(S.scr + 1, 'next', e.isTrusted) }
+    else if (e.key === 'ArrowLeft' && S.scr > 0) { navigate(S.scr - 1, 'previous', e.isTrusted) }
   })
   var tip = null
   function showTip(e) {

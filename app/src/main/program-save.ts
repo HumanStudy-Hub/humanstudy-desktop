@@ -21,7 +21,11 @@ export async function assertProjectWritePath(root: string, target: string): Prom
   }
 }
 
-export async function saveProjectText(path: string, text: string, options: { ifUnchanged?: string | null; beforeWrite?: () => Promise<void> } = {}): Promise<void> {
+export async function saveProjectText(path: string, text: string, options: {
+  ifUnchanged?: string | null
+  beforeWrite?: () => Promise<void>
+  beforeReplace?: () => Promise<void>
+} = {}): Promise<void> {
   const program = ['program.json', 'protocol.json'].includes(basename(path).toLowerCase())
   if (program) JSON.parse(text.replace(/^\uFEFF/, ''))
   await mkdir(dirname(path), { recursive: true })
@@ -40,18 +44,19 @@ export async function saveProjectText(path: string, text: string, options: { ifU
       if (previous && !previous.isFile()) throw Error('The save target is not a regular file.')
       const handle = await open(tmp, 'wx', previous ? previous.mode & 0o777 : 0o666)
       try { await handle.writeFile(text, 'utf8'); await handle.sync() } finally { await handle.close() }
-    })
+    }, options.beforeReplace)
   }
   await withProgramLock(path, save)
 }
 
 
 /** Replace the directory entry, including when the previous target has other hard links. */
-async function replaceFile(path: string, stage: (tmp: string) => Promise<void>): Promise<void> {
+async function replaceFile(path: string, stage: (tmp: string) => Promise<void>, beforeReplace?: () => Promise<void>): Promise<void> {
   const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`
   try {
     await stage(tmp)
     for (let attempt = 0; ; attempt++) {
+      if (beforeReplace) await beforeReplace()
       try { await rename(tmp, path); break }
       catch (error) {
         if (!['EACCES', 'EPERM', 'EBUSY'].includes((error as NodeJS.ErrnoException).code ?? '') || attempt >= 9) throw error

@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs'
 import { mkdir, readFile, readdir, rename, stat, writeFile, unlink } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { gzipSync, gunzipSync } from 'node:zlib'
-import { CONTENT_BUCKET, EVENTS, LIMITS, MANIFEST_FORMAT, scrubResearchString, scrubResearchValue, validateResearchEvent, type ResearchEvent, type ResearchContentRow, type ContentRef } from '../shared/research-contract'
+import { CONTRACT_VERSION, CONTENT_BUCKET, EVENTS, LIMITS, MANIFEST_FORMAT, researchUuid, scrubResearchString, scrubResearchValue, validateResearchEvent, type ResearchEvent, type ResearchContentRow, type ContentRef } from '../shared/research-contract'
 
 export const SOURCE_CONSENT_VERSION = 3
 export interface ResearchAuth { supabaseUrl: string; supabaseKey: string; accessToken: string; userId: string }
@@ -17,6 +17,7 @@ interface Options {
   /** Aborts requests when a headless project enters a protected state. */
   deliverySignal?: AbortSignal
   appVersion: string
+  visitId?(): string | undefined
   auth(): Promise<ResearchAuth | null>
   allowed(): boolean
   /** Local signed-in identity, available offline; never a credential. */
@@ -41,7 +42,9 @@ export function createResearchCollector(options: Options) {
   const fetcher = options.fetch ?? fetch
   let chain: Promise<unknown> = Promise.resolve(), flushing: Promise<void> | null = null
   let lastError: string | undefined
-  const sessions = new Map<string, { id: string; seq: number; install: string }>()
+  const sessions = new Map<string, { id: string; seq: number; install: string; owner: string; visit?: string }>()
+  const sessionKey = (owner: string, visit = options.visitId?.()) => `${owner}:${visit ?? ''}`
+  const checkpoints = new Map<string, { id: string; seq: number }>()
   const run = <T>(fn: () => Promise<T>): Promise<T> => {
     const next = chain.then(fn); chain = next.catch(e => { lastError = e instanceof Error ? e.message : 'Research capture needs retry.' }); return next
   }
@@ -54,7 +57,7 @@ export function createResearchCollector(options: Options) {
     return auth
   }
   async function localOwner(): Promise<string | null> {
-    if (!options.allowed()) return null
+    if (!options.allowed() || (options.surface === 'web' && !researchUuid(options.visitId?.()))) return null
     const id = options.ownerId ? options.ownerId() : (await options.auth())?.userId
     return id && uuid.test(id) ? id : null
   }
@@ -104,36 +107,62 @@ export function createResearchCollector(options: Options) {
     }
     return { role, sha256, bytes: raw.length, mime: 'text/plain' }
   }
-  async function enqueue(auth: Pick<ResearchAuth, 'userId'>, root: string, fields: Partial<ResearchEvent> & Pick<ResearchEvent, 'event_type' | 'data_type'>) {
-    let session = sessions.get(auth.userId)
-    if (!session) {
-      const saved = await json<{ install: string }>(join(root, 'install.json'))
-      session = { id: randomUUID(), seq: 0, install: saved?.install ?? randomUUID() }; sessions.set(auth.userId, session)
+  async function enqueue(auth: Pick<ResearchAuth, 'userId'>, root: string, fields: Partial<ResearchEvent> & Pick<ResearchEvent, 'event_type' | 'data_type'>,
+    visit = options.visitId?.()) {
+    const key = sessionKey(auth.userId, visit)
+    const existing = sessions.get(key)
+    const session = existing ?? { id: randomUUID(), seq: 0, install: (await json<{ install: string }>(join(root, 'install.json')))?.install ?? randomUUID(), owner: auth.userId, visit }
+    const build = (next: Partial<ResearchEvent> & Pick<ResearchEvent, 'event_type' | 'data_type'>, seq: number): ResearchEvent => {
+      const row: ResearchEvent = {
+        id: randomUUID(), contract_version: CONTRACT_VERSION, surface: options.surface, install_id: session.install,
+        research_session_id: session.id, client_seq: seq, occurred_at: new Date().toISOString(),
+        metadata: {}, content_refs: [], app_version: options.appVersion, collector_version: 'research-collector/1.0.0',
+        consent_version: SOURCE_CONSENT_VERSION, platform: options.surface === 'web' ? 'browser' : process.platform as 'darwin' | 'win32' | 'linux', ...next,
+      }
+      if (options.surface === 'web') row.visit_id = visit
+      const errors = validateResearchEvent(row)
+      if (errors.length) throw new Error(`Invalid research event: ${errors.join('; ')}`)
+      return row
+    }
+    // Validate every row before a session exists: an invalid row (for example a web row without a
+    // visit) must not leave an empty session behind that later rows would join.
+    const rows: ResearchEvent[] = []
+    if (session.seq === 0 && fields.event_type !== 'session.start')
+      rows.push(build({ event_type: 'session.start', data_type: 'session', metadata: { collection_mode: 'interaction-events' } }, 1))
+    rows.push(build(fields, session.seq + rows.length + 1))
+    if (!existing) {
+      sessions.set(key, session)
       await atomic(join(root, 'install.json'), JSON.stringify({ install: session.install }))
     }
-    if (session.seq === 0 && fields.event_type !== 'session.start') await enqueue(auth, root, { event_type: 'session.start', data_type: 'session', metadata: { collection_mode: 'interaction-events' } })
-    const row: ResearchEvent = {
-      id: randomUUID(), contract_version: '1.0.0', surface: options.surface, install_id: session.install,
-      research_session_id: session.id, client_seq: session.seq + 1, occurred_at: new Date().toISOString(),
-      metadata: {}, content_refs: [], app_version: options.appVersion, collector_version: 'research-collector/1.0.0',
-      consent_version: SOURCE_CONSENT_VERSION, platform: options.surface === 'web' ? 'browser' : process.platform as 'darwin' | 'win32' | 'linux', ...fields,
+    for (const row of rows) {
+      await atomic(join(root, 'events', row.id + '.json'), JSON.stringify(row))
+      session.seq++
     }
-    const errors = validateResearchEvent(row)
-    if (errors.length) throw new Error(`Invalid research event: ${errors.join('; ')}`)
-    await atomic(join(root, 'events', row.id + '.json'), JSON.stringify(row))
-    session.seq++
-    return row.id
+    return rows[rows.length - 1].id
   }
   /** Persist one complete semantic event. Large values are referenced, never clipped. */
-  function capture(fields: ResearchCapture, context: { projectDir?: string; email?: string | null } = {}): Promise<string | null> {
+  function capture(fields: ResearchCapture, context: { projectDir?: string; email?: string | null; visitId?: string; accept?(): boolean } = {}): Promise<string | null> {
     const capturedOwner = localOwner() // bind at invocation, not when the serialized queue reaches it
     return run(async () => {
       const owner = await capturedOwner
-      if (!owner || await localOwner() !== owner) return null
+      if (!owner || await localOwner() !== owner || context.accept?.() === false) return null
       const spec = EVENTS[fields.event_type]
       if (!spec) throw new Error('Unknown research event type: ' + fields.event_type)
       const root = await ownerDir(owner)
+      // The event file is the receipt until upload writes its durable replacement.
+      const id = fields.id ?? randomUUID()
+      if (options.surface === 'web' && researchUuid(id)) {
+        for (const path of [join(root, 'events', id + '.json'), join(root, 'receipts', id)]) {
+          try { await stat(path); return id } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+          }
+        }
+      }
       const metadata = scrubResearchValue(fields.metadata ?? {}, context) as Record<string, unknown>
+      if (fields.event_type.startsWith('simulation.') && Array.isArray(metadata.model_request_ids)) {
+        // Redaction can remove a token-shaped value. Keep the lifecycle and its remaining request IDs.
+        metadata.model_request_ids = metadata.model_request_ids.filter(id => id !== '[secret]' && id !== '[email]')
+      }
       const refs = [...(fields.content_refs ?? [])]
       for (const [key, value] of Object.entries(metadata)) {
         if (typeof value === 'string' && Buffer.byteLength(value) > LIMITS.inlineTextBytes) {
@@ -151,20 +180,23 @@ export function createResearchCollector(options: Options) {
           else if (typeof value === 'object' && value !== null) metadata[key] = { content_ref: ref.sha256, key }
         }
       }
-      if (await localOwner() !== owner) return null
-      const id = fields.id ?? randomUUID()
+      if (await localOwner() !== owner || context.accept?.() === false) return null
       return enqueue({ userId: owner }, root, { ...fields, id, data_type: spec.dataType,
         ...(fields.target ? { target: scrubResearchString(fields.target, context) } : {}),
-        ...(spec.primary ? { action_id: id } : {}), metadata, content_refs: refs })
+        ...(spec.primary ? { action_id: id } : {}), metadata, content_refs: refs }, context.visitId)
     })
   }
-  async function end(reason = 'closed'): Promise<void> {
+  async function end(reason = 'closed', onlyVisit?: string): Promise<void> {
     const owner = await localOwner(); if (!owner) return
     await run(async () => {
-      const session = sessions.get(owner); if (!session) return
-      await enqueue({ userId: owner }, await ownerDir(owner), { event_type: 'session.end', data_type: 'session',
-        metadata: { reason, captured_through_seq: session.seq } })
-      sessions.delete(owner)
+      if (await localOwner() !== owner) return
+      for (const [key, session] of sessions) {
+        if (session.owner !== owner || (onlyVisit && session.visit !== onlyVisit)) continue
+        if (session.seq === 0) { sessions.delete(key); continue }
+        await enqueue({ userId: owner }, await ownerDir(owner), { event_type: 'session.end', data_type: 'session',
+          metadata: { reason: session.visit && session.visit !== (onlyVisit ?? options.visitId?.()) ? 'closed' : reason, captured_through_seq: session.seq } }, session.visit)
+        sessions.delete(key)
+      }
     })
   }
   /** Version generated files; sanitize text, preserve opaque bytes. Sources use queueSource. */
@@ -292,36 +324,55 @@ export function createResearchCollector(options: Options) {
       if (!agreed.ok) throw new Error(`Could not record the source agreement (${agreed.status}).`)
       let files = (await readdir(join(root, 'events'))).filter(f => f.endsWith('.json'))
       if (files.length) await run(async () => {
-        const session = sessions.get(auth!.userId)
+        const key = sessionKey(auth!.userId), session = sessions.get(key)
         if (!session) return
-        await enqueue(auth!, root, { event_type: 'delivery.checkpoint', data_type: 'session', metadata: {
+        // A blocked upload retries every pass; one pending checkpoint per sequence position is enough.
+        const last = checkpoints.get(key)
+        if (last && last.seq === session.seq && files.includes(last.id + '.json')) return
+        const id = await enqueue(auth!, root, { event_type: 'delivery.checkpoint', data_type: 'session', metadata: {
           captured_through_seq: session.seq, pending_events: files.length,
-          pending_content: (await readdir(join(root, 'content'))).filter(f => f.endsWith('.json')).length } })
+          pending_content: (await readdir(join(root, 'content'))).filter(f => f.endsWith('.json')).length } }, session.visit)
+        checkpoints.set(key, { id, seq: session.seq })
       })
       files = (await readdir(join(root, 'events'))).filter(f => f.endsWith('.json'))
       const pendingRows = await Promise.all(files.map(async file => ({ file, row: await json<ResearchEvent>(join(root, 'events', file)) })))
       pendingRows.sort((a, b) => (a.row?.research_session_id ?? '').localeCompare(b.row?.research_session_id ?? '') || (a.row?.client_seq ?? 0) - (b.row?.client_seq ?? 0))
       let rejection: string | undefined = (await readdir(join(root, 'rejected'))).length
         ? 'A rejected research record is retained locally for review.' : undefined
+      const removePending = (file: string, row: ResearchEvent) => run(async () => {
+        ensureDelivery()
+        if (options.surface === 'web') {
+          const receipts = join(root, 'receipts')
+          await mkdir(receipts, { recursive: true, mode: 0o700 })
+          await atomic(join(receipts, row.id), '')
+        }
+        await unlink(join(root, 'events', file))
+      })
       for (const { file, row } of pendingRows) {
         if (!row) { rejection = 'A corrupt event was retained for local recovery.'; continue }
         for (const ref of row.content_refs) await upload(auth, root, ref.sha256)
         auth = await fresh(auth)
         const stored = await deliveryRequest(auth, '/rest/v1/research_events?on_conflict=id', { method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'resolution=ignore-duplicates,return=minimal' }, body: JSON.stringify(row) })
         if (!stored.ok) {
+          if (row.visit_id && stored.status === 400 && (await stored.clone().json().catch(() => null))?.code === 'PGRST204')
+            throw new Error('The research visit schema is unavailable; pending events remain local.')
           if ([400, 413, 422].includes(stored.status)) {
             // Isolate exactly one rejected record; preserve its complete original and report the gap.
             await atomic(join(root, 'rejected', file), JSON.stringify({ row, status: stored.status, rejected_at: new Date().toISOString() }))
-            await enqueue(auth, root, { event_type: 'delivery.rejected', data_type: 'session', metadata: {
-              rejected_event_id: row.id, rejected_seq: row.client_seq, rejected_session_id: row.research_session_id, status: stored.status } })
+            // The report belongs to the visit of the row it describes, not to whichever visit this
+            // process now serves (a restarted server may have none). If the report itself cannot be
+            // written, the quarantined original still records the gap and the queue keeps moving.
+            await run(() => enqueue(auth!, root, { event_type: 'delivery.rejected', data_type: 'session', metadata: {
+              rejected_event_id: row.id, rejected_seq: row.client_seq, rejected_session_id: row.research_session_id, status: stored.status } },
+            researchUuid(row.visit_id) ? row.visit_id! : undefined)).catch(() => undefined)
             ensureDelivery()
-            await unlink(join(root, 'events', file)); rejection = 'A rejected research record is retained locally for review.'
+            await removePending(file, row); rejection = 'A rejected research record is retained locally for review.'
             continue
           }
           throw new Error(`Research event delivery failed (${stored.status}); retained locally.`)
         }
         ensureDelivery()
-        await unlink(join(root, 'events', file))
+        await removePending(file, row)
       }
       // Only acknowledged content is eligible for local cleanup. Unsent bytes are never pruned.
       await run(async () => {

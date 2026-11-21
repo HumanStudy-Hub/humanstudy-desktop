@@ -38,12 +38,14 @@ import { isVersioned, readVersion, relOf, snapshot, versionsOf } from './version
 import { createThreads, threads } from './threads'
 import { assertProjectWritePath, saveProjectCopy, saveProjectText } from './program-save'
 import { createPaperBuilds, isBuildTurn } from './paper-build'
-import { createShutdown } from './shutdown-core'
-import { refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedRunFiles, trustedShareFiles } from './pack'
+import { createShutdown, webQuitWithin } from './shutdown-core'
+import { dispatchAndRecord } from './research-agent'
+import { previewTemplateVersion, refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedPreviewFiles, trustedRunFiles, trustedShareFiles } from './pack'
+import { createPreviewPreparation } from './preview-preparation'
 import { isValidatedProtocol } from '../shared/research-search'
 import { confirmedLibrarySha, heldTextsOf, passedProtocolSha, selectedResults, shareExport, ShareError, shareFileName, sharePlan, type ShareRuntime } from './share-layers'
 import { legacyFileIsolationAvailable, scientificReadiness } from './scientific-readiness'
-import { readyPython } from './runtime-install'
+import { onRuntimeProgress, readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf, protocolProblems } from './package-readiness'
 import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, restoredRunFiles, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
@@ -54,7 +56,9 @@ import { closeProjectRelays, isRunStop } from './run-stop'
 import { RunRegistry } from './run-registry'
 import { launchProtocolRun, newRunFolder, sweepRunCopies, type Binding as ProtocolBinding } from './protocol-run'
 import type { Kernel, KernelEvent } from './kernel-types'
-import { actionRef } from '../shared/research-operations'
+import { simulationResearch } from './simulation-research'
+import { semanticId } from '../shared/research-contract'
+import { actionRef, type ActionRef } from '../shared/research-operations'
 import { withPrivateCopyNote } from '../shared/workspace-context'
 import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, ShareOptions, ShareResult, SharePreview, StudyExportOptions, StudyExportResult, StudyImportResult, StudyTransferFailure, UnsavedPrompt, WorkspaceContext } from '../preload/types'
 
@@ -63,6 +67,8 @@ import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, ShareOptions
 const RELAY = relaySupported()
 const runs = new RunRegistry()
 const runRelays = runs.relays
+type RunResearch = ReturnType<typeof simulationResearch>
+const activeRunResearch = new Map<string, RunResearch>()
 async function closeRunRelay(id: string) {
   await runs.closeCurrent(id)   // the relay's onClose frees its project (owner-checked)
 }
@@ -96,9 +102,35 @@ const activeTurns = new Set<string>()
 /** Project sync (project-sync.ts), set up when the app is ready. */
 let projectSync: SyncEngine | null = null
 // The automatic paper build; its state file is under .humanstudy, which the project watcher ignores.
-const paperBuilds = createPaperBuilds(dir => broadcast('project:changed', dir), async dir => protocolDraftCertificate(
+const paperBuilds = createPaperBuilds(dir => {
+  previewPreparation.resume(dir)
+  broadcast('project:changed', dir)
+}, async dir => protocolDraftCertificate(
   await readyPython(), trustedEngineFiles(), dir, process.env.HUMANSTUDY_RUNTIME_BIN || ''))
+const previewPreparation = createPreviewPreparation({
+  python: readyPython,
+  files: trustedPreviewFiles,
+  version: previewTemplateVersion,
+  busy: dir => shutdown.closing() || projectTurnActive(dir) || paperBuilds.isRunning(dir),
+  settled: (dir, { written, error }) => {
+    if (written) {
+      projectSync?.touch(dir)
+      telemetry.track('project.preview_prepared', { target: 'artifacts/preview.html' }, dir)
+    }
+    if (error) {
+      console.error('Participant preview preparation failed', error)
+      telemetry.track('project.preview_failed', { target: 'artifacts/preview.html', metadata: { error } }, dir)
+    }
+    broadcast('project:changed', dir)
+  },
+})
+const preparePreview = previewPreparation.prepare
+function projectTurnActive(dir: string): boolean {
+  return [...activeTurns].some(sid => sessionProject.get(sid) === dir)
+}
+
 let threadsInitialized = false
+const webRuntime = process.env.HUMANSTUDY_RESEARCH_SURFACE === 'web'
 const shutdown = createShutdown({
   busy: () => activeTurns.size > 0,
   confirm: async restart => {
@@ -113,13 +145,16 @@ const shutdown = createShutdown({
   },
   flush: async () => {
     if (threadsInitialized) await threads().flush()
-    await telemetry.settleResearch(activeTurns.size === 0)
-    // Best effort and bounded: a sync that cannot finish now runs on the next start.
-    await projectSync?.flushAll(8_000).catch(() => undefined)
+    await telemetry.settleResearch(!webRuntime && activeTurns.size === 0 && activeRunResearch.size === 0)
+    // Best effort and bounded: a sync that cannot finish now runs on the next start. The web sandbox
+    // syncs after the agent stops, alongside research delivery (webQuitWithin), not inside prepare.
+    if (!webRuntime) await projectSync?.flushAll(8_000).catch(() => undefined)
   },
   quiesce: async () => {
     // Preserve kernel/session bindings until exit so an unsuccessful quit remains usable.
     await Promise.all([...activeTurns].map(id => kernelFor(id).abort(id)))
+    await Promise.all([...activeRunResearch.values()].map(run => run.interrupt()))
+    activeRunResearch.clear()
   },
   failed: error => {
     console.error('shutdown: could not save', error)
@@ -142,6 +177,10 @@ function currentKernel(): Kernel {
       }
       else if (e.type === 'text' || e.type === 'tool' || (e.type === 'status' && e.text === 'busy') || (e.type === 'question' && !e.question?.resolved) || (e.type === 'permission' && !e.permission?.resolved)) activeTurns.add(e.sessionId)
       try { void Promise.resolve(paperBuilds.event(e)).catch(err => console.error('paper build check', err)) } catch (err) { console.error('paper build state', err) } // never blocks events
+      if (e.type === 'done') {
+        const dir = sessionProject.get(e.sessionId)
+        if (dir) previewPreparation.resume(dir)
+      }
       threads().onEvent(e) // record before the renderer hears about it
       broadcast('kernel:event', e)
     })
@@ -261,10 +300,11 @@ function ownedPath(p: string): string {
   return q
 }
 
-async function readProject(dir: string): Promise<ProjectSnapshot> {
+async function readProject(dir: string, refreshPreview: boolean): Promise<ProjectSnapshot> {
   dir = resolve(dir)
   if (!isInside(getSettings().projectsRoot, dir) && !allowedRoots.has(dir))
     throw new Error('project folder is not under the projects folder and was not opened')
+  const previewPreparation = await preparePreview(dir, refreshPreview)
   let program: unknown | null = null
   let programError: string | undefined
   const programPath = join(dir, 'program.json')
@@ -298,6 +338,7 @@ async function readProject(dir: string): Promise<ProjectSnapshot> {
     program,
     programError,
     build: paperBuilds.readOnly(dir),
+    previewPreparation,
     artifacts: await listDir(join(dir, 'artifacts')),
     exports: await listDir(join(dir, 'exports')),
     pdf,
@@ -541,8 +582,8 @@ app.whenReady().then(() => {
     if (picked) allowedRoots.add(resolve(picked))
     return picked
   })
-  ipcMain.handle('project:read', async (_e, dir: string) => {
-    const snap = await readProject(dir)
+  ipcMain.handle('project:read', async (_e, dir: string, refreshPreview?: boolean) => {
+    const snap = await readProject(dir, refreshPreview === true)
     watchProject(snap.dir)
     telemetry.noteProjectFiles(snap)
     return snap
@@ -720,7 +761,7 @@ app.whenReady().then(() => {
     appVersion: app.getVersion(),
     // The app's agent files never travel (they can hold a provider key): install this version's.
     afterInstall: (dir) => refreshPack(dir),
-    busy: (dir) => [...activeTurns].some((sid) => sessionProject.get(sid) === dir),
+    busy: projectTurnActive,
     release: async (dir) => {
       unwatch(dir)
       if (threadsInitialized) await threads().forgetDir(dir)
@@ -903,6 +944,7 @@ app.whenReady().then(() => {
     const dir = await forkCommunityStudy(id, (input) => createProject(input), expectedRevision ?? undefined)
     await projectSync?.claim(dir)
     telemetry.track('project.forked', { target: String(id).slice(0, 80) }, dir)
+    void preparePreview(dir)
     return dir
   })
   ipcMain.handle('community:openExternal', async (_e, url: string) => {
@@ -1037,6 +1079,29 @@ app.whenReady().then(() => {
     return id
   })
   threadsInitialized = true
+  async function approveRunResearch(projectDir: string, threadId: string, binding: ProtocolBinding,
+    plan: { perCondition?: unknown; model?: unknown } | undefined, initiator?: ActionRef): Promise<RunResearch | undefined> {
+    const publish = telemetry.simulationPublisher(projectDir, threadId, initiator)
+    if (!publish || !semanticId(plan?.model) || !Number.isSafeInteger(plan.perCondition) ||
+      Number(plan.perCondition) < 1 || Number(plan.perCondition) > 60) return
+    const bytes = await readFile(join(projectDir, 'protocol.json')).catch(() => null)
+    if (!bytes || createHash('sha256').update(bytes).digest('hex') !== binding.protocolSha256) return
+    let studyId: unknown
+    try { studyId = JSON.parse(bytes.toString('utf8'))?.id } catch { /* the runner handles an invalid study */ }
+    const research = simulationResearch(binding.runId, {
+      study_id: semanticId(studyId) ? studyId : 'protocol', revision: binding.protocolSha256,
+      per_condition: Number(plan.perCondition), model: plan.model,
+    }, publish)
+    activeRunResearch.set(binding.runId, research)
+    return research
+  }
+
+  async function finishRunResearch(binding: ProtocolBinding, code: number | null, signal: NodeJS.Signals | null = null) {
+    const research = activeRunResearch.get(binding.runId)
+    try { await research?.finish(code, signal) }
+    finally { activeRunResearch.delete(binding.runId) }
+  }
+
   /** An approved protocol run, started here from the app's trusted copy (review 4, S1), never by the agent: the
    *  run folder and plan.json come from the checked approval, and the run ends its relay when it exits. */
   async function startProtocolRun(projectDir: string, approved: { lang?: unknown; plan?: { perCondition?: unknown; model?: unknown; conditions?: unknown } }, binding: ProtocolBinding, relay: { baseURL: string; token: string; model: string; expiresAt: number } | undefined, ended: () => void) {
@@ -1052,13 +1117,15 @@ app.whenReady().then(() => {
       plan: { perArm: per as number, arms: null, seeds: [1], temperature: 1.0 },
       relay: relay ? { baseURL: relay.baseURL, token: relay.token, model: relay.model, expiresAt: relay.expiresAt } : undefined,
       // Pre-relay path: the same environment the agent's runs get there (the run confirmation said the key is readable).
-      env: relay ? { PATH: (process.env.HUMANSTUDY_RUNTIME_BIN ? process.env.HUMANSTUDY_RUNTIME_BIN + (process.platform === 'win32' ? ';' : ':') : '') + (process.env.PATH ?? '') } : { ...process.env },
-      onExit: ended,
+      env: relay ? { PATH: (process.env.HUMANSTUDY_RUNTIME_BIN ? process.env.HUMANSTUDY_RUNTIME_BIN + (process.platform === 'win32' ? ';' : ':') : '') + (process.env.PATH ?? '') } : { ...process.env,
+        ...(typeof approved.plan?.model === 'string' && approved.plan.model ? { HUMANSTUDY_SIM_MODEL: approved.plan.model } : {}) },
+      onStart: () => activeRunResearch.get(binding.runId)?.started(runDir),
+      onExit: (code, signal) => { void finishRunResearch(binding, code, signal); ended() },
       lang: approved.lang === 'zh-CN' ? 'zh-CN' : 'en',
     })
   }
 
-  ipcMain.handle('kernel:send', async (_e, id: string, text: string, workspace?: WorkspaceContext, action?: unknown) => {
+  const sendToKernel = async (id: string, text: string, workspace?: WorkspaceContext, action?: unknown) => {
     if (shutdown.closing()) throw new Error('The app is saving before closing. Please wait.')
     const k = kernelFor(id)
     // A simulation approval only reaches the agent when the package can run (the Simulation tab checks
@@ -1070,6 +1137,8 @@ app.whenReady().then(() => {
     // code; put that copy back at the shipped version before any model access exists (review 3, S3).
     if (projectDir && text.startsWith('[Simulation scope approved]')) await refreshAppOwned(projectDir)
     let startedRelay = false
+    let protocolBinding: ProtocolBinding | undefined
+    let initiatingAction = actionRef(action)
     if (RELAY && text.startsWith('[Simulation scope approved]')) {
       const owner = projectDir ? runs.claim(projectDir) : null
       if (!projectDir || !owner) throw Error('A simulation is already active in this project.')
@@ -1088,7 +1157,12 @@ app.whenReady().then(() => {
         // hands them to the run, and skills/run refuses anything else.
         const route: 'protocol' | 'package' = approved.route === 'protocol' || (approved.route === undefined && approved.protocolHash !== undefined) ? 'protocol' : 'package'
         const binding = { route, runId: randomUUID(), approvedAt: Date.now(), ...(route === 'protocol' ? { protocolSha256: createHash('sha256').update(await readFile(join(projectDir, 'protocol.json'))).digest('hex') } : {}) }
-        if (route === 'protocol' && binding.protocolSha256 !== approved.protocolHash) throw Error('The study changed after approval. Review the simulation scope again.')
+        if (route === 'protocol') {
+          if (binding.protocolSha256 !== approved.protocolHash) throw Error('The study changed after approval. Review the simulation scope again.')
+          protocolBinding = binding as ProtocolBinding
+          initiatingAction ??= { id: randomUUID(), target: 'simulation.run', via: 'system' }
+          await approveRunResearch(projectDir, id, protocolBinding, approved.plan, initiatingAction)
+        }
         // A protocol run gets its capability from the app directly: no descriptor for the agent (review 5, M3).
         // Removals are by owner, so this relay closing late never frees the next run's (review 5, M2).
         let ownClose: (() => Promise<void>) | undefined
@@ -1100,7 +1174,12 @@ app.whenReady().then(() => {
         runs.register(id, { project: projectDir, close: relay.close })
         startedRelay = true
         if (route === 'protocol') await startProtocolRun(projectDir, approved, binding as ProtocolBinding, relay, () => { runs.forget(id, relay.close); void relay.close() })
-      } catch (error) { if (startedRelay) await closeRunRelay(id); runs.release(projectDir, owner); throw error }
+      } catch (error) {
+        if (protocolBinding) await finishRunResearch(protocolBinding, null)
+        if (startedRelay) await closeRunRelay(id)
+        runs.release(projectDir, owner)
+        throw error
+      }
     } else if (projectDir && text.startsWith('[Simulation scope approved]')) {
       // Pre-relay path (Linux, Windows): no relay, but a protocol run is still started by the app from its trusted copy.
       const approved = JSON.parse(text.split('\n')[1])
@@ -1111,18 +1190,41 @@ app.whenReady().then(() => {
         // No relay here, so no cap: one protocol run per project at a time, held until its process exits (review 5, S5).
         const owner = runs.claim(projectDir)
         if (!owner) throw Error('A simulation is already active in this project.')
-        try { await startProtocolRun(projectDir, approved, binding, undefined, () => runs.release(projectDir, owner)) }
-        catch (error) { runs.release(projectDir, owner); throw error }
+        try {
+          initiatingAction ??= { id: randomUUID(), target: 'simulation.run', via: 'system' }
+          await approveRunResearch(projectDir, id, binding, approved.plan, initiatingAction)
+          await startProtocolRun(projectDir, approved, binding, undefined, () => runs.release(projectDir, owner))
+        } catch (error) {
+          await finishRunResearch(binding, null)
+          runs.release(projectDir, owner)
+          throw error
+        }
       }
     }
-    telemetry.trackTurnStart(id, text, actionRef(action))
+    telemetry.trackTurnStart(id, text, initiatingAction)
     const prompt = withPrivateCopyNote(threads().beforeSend(id, text, workspace), text, projectDir ? privateImports.get(resolve(projectDir)) ?? [] : [])
     const alreadyActive = activeTurns.has(id)
     activeTurns.add(id)
     const buildState = projectDir ? paperBuilds.read(projectDir) : undefined
     const purpose = isBuildTurn(buildState, id, actionRef(action)?.target) ? 'build' as const : undefined
     try { await k.send(id, prompt, { purpose }) }
-    catch (error) { if (startedRelay) await closeRunRelay(id); if (!alreadyActive) activeTurns.delete(id); paperBuilds.sendFailed(id, error); throw error }
+    catch (error) {
+      if (startedRelay) await closeRunRelay(id)
+      if (!alreadyActive) activeTurns.delete(id)
+      paperBuilds.sendFailed(id, error)
+      if (projectDir) previewPreparation.resume(projectDir)
+      throw error
+    }
+  }
+  ipcMain.handle('kernel:send', async (_e, id: string, text: string, workspace?: WorkspaceContext, action?: unknown) => {
+    if (!webRuntime) return sendToKernel(id, text, workspace, action)
+    const ref = actionRef(action) ?? {
+      id: randomUUID(), via: 'system' as const,
+      target: typeof text === 'string' && text.startsWith('[Simulation scope approved]') ? 'simulation.run' : 'composer.send',
+    }
+    // The receipt joins the collector's serialized queue (drained at quit); the reply never waits for it.
+    return dispatchAndRecord(() => sendToKernel(id, text, workspace, ref),
+      outcome => telemetry.trackChatSubmission(id, text, outcome, ref))
   })
   ipcMain.handle('kernel:export', async (_e,sid:string) => {
     const k=kernelFor(sid)
@@ -1149,13 +1251,22 @@ app.whenReady().then(() => {
       if(!last)throw Error('There is no earlier user turn to undo.')
       operation={...request,input:{...request.input,messageID:last.info.id}}
     }
-    if(NATIVE_TURNS.has(request.operation)){
+    const startsTurn = NATIVE_TURNS.has(request.operation)
+    const alreadyActive = activeTurns.has(sid)
+    if(startsTurn){
       activeTurns.add(sid)
       if(request.operation!=='compact')threads().beforeSend(sid, request.operation==='shell' ? '!'+String(request.input?.command??'') : '/'+String(request.input?.command??'')+' '+String(request.input?.arguments??''))
       telemetry.trackTurnStart(sid,'/'+request.operation,ref)
     } else if (ref && (ref.via !== 'system' || NATIVE_MUTATIONS.has(request.operation))) telemetry.noteAction(ref, sessionProject.get(sid)) // background reads are not operations
     telemetry.track('agent.native_action',{target:request.operation})
-    const result=await k.native(sid,operation)
+    const result = await k.native(sid, operation).catch(error => {
+      if (startsTurn && !alreadyActive) {
+        activeTurns.delete(sid)
+        const dir = sessionProject.get(sid)
+        if (dir) previewPreparation.resume(dir)
+      }
+      throw error
+    })
     if(request.operation==='select'){threads().rememberSelection(sid,result as NativeSelection);telemetry.track('agent.configuration',{metadata:result as Record<string,unknown>})}
     if(['open','fork','undo','redo'].includes(request.operation)){
       const next=['open','fork'].includes(request.operation)?(result as {id:string}).id:sid
@@ -1224,6 +1335,7 @@ app.whenReady().then(() => {
     await ensureAssistant().catch((err) => console.error('assistant install failed', err))
   })
   onInstallProgress((s) => broadcast('kernel:installProgress', s))
+  onRuntimeProgress(s => { if (s.state === 'ready') previewPreparation.runtimeReady() })
   // First run: start the download in the background so it is usually done before the first message.
   if (process.env.HUMANSTUDY_KERNEL !== 'mock') void ensureAssistant().catch((err) => console.error('assistant install failed', err))
   ipcMain.handle('app:info', () => ({
@@ -1249,10 +1361,28 @@ app.whenReady().then(() => {
   })
 })
 
+let webQuitReady = false
+let webQuit: Promise<void> | undefined
 app.on('before-quit', event => {
   // Ask about unsaved edits before the kernels are stopped, so Cancel leaves everything running.
   if (!confirmDiscardAll()) return event.preventDefault()
-  if (!primaryInstance || shutdown.ready()) return
+  if (!primaryInstance) return
+  if (webRuntime) {
+    if (webQuitReady) return
+    event.preventDefault()
+    // Leave time for delivery even if stopping the agent or saving its state stalls.
+    webQuit ??= webQuitWithin({
+      prepare: () => shutdown.prepare(false),
+      research: () => telemetry.finishWebResearch(),
+      sync: ms => projectSync?.flushAll(ms) ?? Promise.resolve(),
+    }).finally(() => {
+      webQuitReady = true
+      if (telemetry.webEndReason() === 'crash') app.exit(1)
+      else app.quit()
+    })
+    return
+  }
+  if (shutdown.ready()) return
   event.preventDefault()
   void shutdown.prepare(false).then(ready => {
     if (ready) app.quit()

@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import threading
 import time
 import urllib.error
@@ -109,6 +110,13 @@ def usage_log_path() -> Path:
     return base / ".humanstudy" / "tmp" / "llm-usage.jsonl"
 
 
+def _request_id(headers, fallback=None):
+    if headers is not None:
+        fallback = (headers.get("x-humanstudy-request-id") or headers.get("x-request-id")
+                    or headers.get("request-id") or fallback)
+    return fallback if isinstance(fallback, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/#-]{0,119}", fallback) else None
+
+
 def _log(entry: dict) -> None:
     try:
         path = usage_log_path()
@@ -185,6 +193,7 @@ def chat(
                 req = urllib.request.Request(base + "/chat/completions", data=data, headers=headers, method="POST")
                 with urllib.request.urlopen(req, timeout=timeout) as res:
                     payload = json.loads(res.read().decode("utf-8"))
+                    request_id = _request_id(res.headers, payload.get("id"))
                 choice = (payload.get("choices") or [{}])[0]
                 text = (choice.get("message") or {}).get("content")
                 if text is None:
@@ -197,6 +206,7 @@ def chat(
                     "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z",
                     "model": payload.get("model") or body["model"],
                     "ok": True,
+                    **({"request_id": request_id} if request_id else {}),
                     "attempts": attempt + 1,
                     "ms": int((time.time() - started) * 1000),
                     "prompt_tokens": u.get("prompt_tokens"),
@@ -209,6 +219,9 @@ def chat(
                 return payload if full else text
             except urllib.error.HTTPError as e:
                 last_status = e.code
+                request_id = _request_id(e.headers)
+                if request_id:
+                    _log({"request_id": request_id, "upstream_status": e.code})
                 detail = e.read().decode("utf-8", "replace")[:300]
                 last = f"HTTP {e.code}: {detail}"
                 retry_after = e.headers.get("retry-after")

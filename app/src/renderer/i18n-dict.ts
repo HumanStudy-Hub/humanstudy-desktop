@@ -32,6 +32,8 @@ const ROWS: Row[] = [
   // ---- app shell
   ['app.agent', 'Study agent', '研究助手'],
   ['app.workspace', 'Workspace', '工作区'],
+  ['session.ends_in', 'Session ends in {n} min', '会话将在 {n} 分钟后结束'],
+  ['session.ending', 'Your work will be saved automatically. The session ends in under 2 minutes; you can reopen it from the Hub.', '你的工作会自动保存。会话将在 2 分钟内结束，之后可以从 Hub 重新打开。'],
   ['app.loading_project', 'Loading project…', '正在加载项目…'],
   ['app.projects', 'Projects', '项目'],
   ['app.back_hint', 'Back to all projects', '返回全部项目'],
@@ -538,6 +540,8 @@ const ROWS: Row[] = [
   ['protocol.invalid', 'This study file cannot be read. Ask the agent to check it.', '无法读取研究文件，请让助手检查。'],
   ['protocol.loading', 'Opening study…', '正在打开研究…'],
   ['protocol.preview_missing', 'The participant view has not been prepared for this revision yet. The study and its sources are saved.', '此版本尚未生成被试视图；研究方案和原文已保存。'],
+  ['protocol.preview_preparing', 'Preparing participant preview…', '正在生成被试预览…'],
+  ['protocol.preview_failed', 'The participant preview could not be prepared. You can still read the study.', '无法生成被试预览。你仍可阅读研究文档。'],
   ['protocol.preview_action', 'Prepare participant view', '生成被试视图'],
   ['protocol.preview_request', 'Prepare the participant preview for the current protocol.json with the preview skill. Preserve the protocol and all source wording. Do not run a simulation.', '请用 preview 技能为当前 protocol.json 生成被试视图，保留方案和所有原文。不要运行模拟。'],
   ['protocol.overview', 'About this study', '关于这项研究'],

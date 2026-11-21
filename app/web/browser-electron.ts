@@ -1,15 +1,32 @@
 // The `electron` module for the web build of the preload (src/preload/index.ts, unchanged): the same
 // window.humanstudy, with ipcRenderer over HTTP to web/server.cjs and events over server-sent events.
+import { researchUuid } from '../src/shared/research-contract'
+import { createResearchOutbox } from './research-outbox'
+
 type Handler = (event: unknown, ...args: unknown[]) => void
 export type IpcRendererEvent = { sender: unknown }
 
 declare global {
   interface Window {
-    __HS_WEB__?: { uploads: string; sep: string }
+    __HS_WEB__?: { uploads: string; sep: string; workspace?: string; visit?: string; scope?: string | null; deadlineIn?: number | null }
   }
 }
 
-const config = window.__HS_WEB__ ?? { uploads: '/uploads', sep: '/' }
+const config: NonNullable<Window['__HS_WEB__']> = window.__HS_WEB__ ?? { uploads: '/uploads', sep: '/' }
+function browserVisit(workspace: string): string {
+  const key = 'humanstudy.visit.' + workspace
+  const launched = config.visit ?? new URL(window.location.href).searchParams.get('hs_visit')
+  try {
+    const previous = sessionStorage.getItem(key)
+    const visit = researchUuid(launched) ? launched : researchUuid(previous) ? previous : crypto.randomUUID()
+    sessionStorage.setItem(key, visit)
+    return visit
+  } catch { return researchUuid(launched) ? launched : crypto.randomUUID() }
+}
+const visit = config.workspace ? browserVisit(config.workspace).toLowerCase() : undefined
+const outbox = config.workspace && visit ? createResearchOutbox(config.workspace, visit, config.scope ?? null,
+  entry => call('telemetry:outboxWrite', [entry], AbortSignal.timeout(10_000)),
+  () => call('telemetry:outboxScope', [], AbortSignal.timeout(10_000))) : undefined
 
 // ---- values: bytes are tagged, project file URLs become same-origin paths ------------------------
 const HSFILE = 'hsfile://local/'
@@ -88,7 +105,7 @@ function download(value: unknown): void {
 }
 const SAVES = new Set(['project:saveCopy', 'kernel:export', 'telemetry:saveExport', 'projects:exportStudy', 'projects:shareStudy'])
 
-async function call(channel: string, args: unknown[]): Promise<unknown> {
+async function call(channel: string, args: unknown[], signal?: AbortSignal): Promise<unknown> {
   // A call that names a picked file waits for its upload; a failed upload fails only the calls that use it.
   const paths = new Set<string>()
   const collect = (value: unknown): void => {
@@ -105,9 +122,10 @@ async function call(channel: string, args: unknown[]): Promise<unknown> {
   try {
     res = await fetch('/ipc/' + encodeURIComponent(channel), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...(visit ? { 'X-HS-Visit': visit } : {}) },
       body: JSON.stringify({ args: encode(args) }),
       credentials: 'same-origin',
+      signal,
     })
   } catch {
     throw new Error(`Error invoking remote method '${channel}': Error: The connection to HumanStudy Hub was lost. Check your network and try again.`)
@@ -181,12 +199,13 @@ const connection = {
 }
 function connect(): void {
   if (connection.source) return
-  const es = new EventSource('/events', { withCredentials: true })
+  const es = new EventSource(visit ? '/events?hs_visit=' + visit : '/events', { withCredentials: true })
   connection.source = es
   es.onmessage = (m) => {
     let msg: { c: string; p: unknown }
     try { msg = JSON.parse(m.data) } catch { return }
     if (msg.c === 'web:openExternal') { openExternal(msg.p); return }
+    if (msg.c === 'web:researchScope' || msg.c === 'account:changed' || msg.c === 'web:account') void outbox?.refresh()
     const payload = decode(msg.p)
     for (const h of handlers.get(msg.c) ?? []) {
       try { h({ sender: null }, payload) } catch (e) { console.error(e) }
@@ -197,9 +216,12 @@ function connect(): void {
   // EventSource reconnects by itself and resumes from the last event id; a server that stays gone means
   // the sandbox stopped.
   es.onerror = () => { void checkAlive() }
-  es.onopen = () => { failures = 0 }
+  es.onopen = () => { failures = 0; void outbox?.refresh() }
 }
 connect()
+outbox?.replay()
+window.addEventListener('online', () => void outbox?.refresh())
+window.addEventListener('focus', () => void outbox?.refresh())
 
 let unsaved = false
 window.addEventListener('beforeunload', (e) => { if (unsaved) { e.preventDefault(); e.returnValue = '' } })
@@ -211,7 +233,19 @@ export const ipcRenderer = {
     // Folder pickers have no web equivalent: projects live in the sandbox's projects folder.
     if (channel === 'project:open' || channel === 'settings:pickProjectsRoot') return Promise.resolve(null)
     if (channel === 'project:reveal') return Promise.resolve(undefined)
+    if (channel === 'telemetry:track' || channel === 'telemetry:chatSubmission')
+      return outbox?.append(channel, args) ?? Promise.resolve(undefined)
+    if (channel === 'telemetry:setConsent') {
+      const consent = args[0] as { usage?: boolean; content?: boolean } | undefined
+      if (!consent?.usage || !consent.content) outbox?.suspend()
+    }
+    if (channel === 'kernel:send' && outbox && navigator.onLine === false && typeof args[1] === 'string') {
+      void outbox.append('telemetry:chatSubmission', [args[0], args[1], 'failed', args[3]])
+      return Promise.reject(new Error('The connection to HumanStudy Hub was lost. Check your network and try again.'))
+    }
     const p = call(channel, args)
+    if (channel === 'telemetry:setConsent' || /^account:sign(?:In|Up|Out)$/.test(channel))
+      void p.then(() => outbox?.refresh(), () => outbox?.refresh())
     if (SAVES.has(channel)) void p.then(download, () => undefined)
     return p
   },

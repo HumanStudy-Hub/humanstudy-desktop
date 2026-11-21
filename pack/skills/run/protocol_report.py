@@ -315,7 +315,7 @@ def scores_card(run: dict, rewards: dict | None, partial: bool = False, lang: st
                    f'{"<br><code class=hs-code>" + _esc(X["reason"]) + ": " + _esc(why) + "</code>" if why else ""}</td>'
                    f'<td><span class="hs-sub">{_esc(" · ".join(flags))}</span></td></tr>')
     text = ev.get("text_report")
-    pre = (f'<details><summary class="hs-sub">{X["text"]}</summary><pre>{_esc(chr(10).join(map(str, text)))}</pre></details>'
+    pre = (f'<details><summary class="hs-sub" data-hs-control="reward-details" data-hs-action="toggle" data-hs-kind="boolean">{X["text"]}</summary><pre>{_esc(chr(10).join(map(str, text)))}</pre></details>'
            if isinstance(text, list) and text and strict else "")   # its lines carry passed=…: only on a strict official run
     return (f'<div class="hs-card"><h2 class="hs-h2">{X["scores"]} — {_esc(X["scope"])}</h2>'
             f'<p class="hs-sub">{_esc("; ".join(head))}</p>{basis_line}'
@@ -408,7 +408,7 @@ details pre {{ white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; 
 </table>
 <p class="hs-sub">{html.escape(T["note"])}</p>
 </div>
-<details class="hs-card"><summary>{html.escape(T["tech"])}</summary>
+<details class="hs-card"><summary data-hs-control="technical-details" data-hs-action="toggle" data-hs-kind="boolean">{html.escape(T["tech"])}</summary>
 {rew}
 <div class="hs-card"><h2 class="hs-h2">{html.escape(T["what_ran"])}</h2><table class="hs-results hs-what">{man}</table></div>
 </details>
