@@ -65,6 +65,42 @@ test('a launch failure produces a terminal result without a started event', asyn
   assert.deepEqual(stages, ['approved', 'failed'])
 })
 
+for (const method of ['finish', 'quit']) {
+  test(`a failed journal write does not block ${method}`, async () => {
+    const stages = []
+    const run = simulationResearch(runId, scope, stage => stages.push(stage))
+    run.started(temp, Promise.reject(Error('journal unavailable')))
+    if (method === 'finish') await run.finish(0, null)
+    else await run.quit()
+    assert.deepEqual(stages, ['approved', 'started', method === 'finish' ? 'failed' : 'interrupted'])
+  })
+}
+
+test('reconciliation rejects a reused PID and a previous boot', async () => {
+  const root = await mkdtemp(join(temp, 'identity-'))
+  const journal = detachedRunJournal(root)
+  const marker = join(root, runId + '.json')
+  await journal.remember(runId, { runDir: root, scope, pid: process.pid })
+  const run = JSON.parse(await readFile(marker, 'utf8'))
+  if (process.platform === 'linux') {
+    assert.equal(run.bootId, (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim())
+    assert.ok(run.processStartTime)
+  }
+  const stages = []
+  const publisher = () => stage => stages.push(stage)
+  if (run.processStartTime) {
+    await journal.reconcile(publisher)
+    assert.deepEqual(stages, [], 'identity still matches the live process')
+  }
+  for (const stale of [{ processStartTime: 'other process' }, { bootId: 'previous boot' }]) {
+    stages.length = 0
+    await writeFile(marker, JSON.stringify({ ...run, ...stale }))
+    await journal.reconcile(publisher)
+    assert.deepEqual(stages, ['interrupted'])
+    assert.deepEqual(await readdir(root), [])
+  }
+})
+
 test('large request lists are preserved in bounded parts', async () => {
   const dir = join(temp, 'many')
   await mkdir(dir)

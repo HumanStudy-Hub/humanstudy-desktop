@@ -645,7 +645,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   }
   /** Project mode never shows a prompt (an unnoticed prompt left a hosted workspace idle until its
    *  time limit): inside-project actions are approved once, everything else is rejected with a short
-   *  reason the agent sees, so it can do the step another way until it reaches the per-turn limit. */
+   *  reason the agent sees, so it can do the step another way until it reaches the consecutive reject limit. */
   private autoDecide(sessionId: string, s: SessionState, perm: KernelPermission): void {
     if (s.recovery.autoRejects < AUTO_REJECT_LIMIT && isAutoApproved(s.server.dir, perm)) this.autoApprove(sessionId, s, perm)
     else this.autoReject(sessionId, s, perm)
@@ -691,6 +691,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   private autoApprove(sessionId: string, s: SessionState, perm: KernelPermission): void {
     if (s.stopping || this.autoReplies.has(perm.id)) return
     this.autoReplies.add(perm.id)
+    s.recovery.autoRejects = 0
     // One call only: an Auto approval must not become a permanent native permission
     // grant that would silently survive switching Auto off.
     this.replyTo(s.server, sessionId, perm.id, 'once').then(() => {

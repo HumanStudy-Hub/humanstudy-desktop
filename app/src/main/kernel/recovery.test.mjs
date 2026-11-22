@@ -240,6 +240,14 @@ await scenario('automatic-reject-limit-stops-turn', async ({ k, events, requests
     sessionID: 's', id: 'outside-' + i, permission: 'external_directory', patterns: ['/outside-' + i],
   } })
   await k.send('s', 'Build')
+  ask('before-1'); await tick()
+  ask('before-2'); await tick()
+  k.handle({ type: 'permission.asked', properties: {
+    sessionID: 's', id: 'inside', permission: 'bash', patterns: ['ls'],
+  } })
+  await tick()
+  assert.deepEqual(replies.map(({ reply }) => reply), ['reject', 'reject', 'once'])
+  replies.length = 0
   for (let i = 1; i <= 6; i++) { ask(i); await tick() }
   assert.ok(replies.slice(0, 5).every(reply => reply.reply === 'reject' && reply.message))
   assert.deepEqual(replies[5], { reply: 'reject', message: undefined })

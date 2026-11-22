@@ -138,7 +138,10 @@ async function call(channel: string, args: unknown[], signal?: AbortSignal): Pro
     throw new Error(`Error invoking remote method '${channel}': Error: This session has ended. Open HumanStudy Hub again.`)
   }
   const out = (await res.json().catch(() => null)) as { ok: boolean; value?: unknown; error?: { name?: string; message: string } } | null
-  if (res.status !== 200 || !out || typeof out.ok !== 'boolean') throw new IpcTransportError(`Error invoking remote method '${channel}': Error: HumanStudy Hub did not answer (${res.status}).`)
+  if (res.status !== 200 || !out || typeof out.ok !== 'boolean') {
+    const message = typeof out?.error?.message === 'string' ? out.error.message : `HumanStudy Hub did not answer (${res.status}).`
+    throw new IpcTransportError(`Error invoking remote method '${channel}': Error: ${message}`)
+  }
   if (!out.ok) throw new Error(`Error invoking remote method '${channel}': ${out.error?.name || 'Error'}: ${out.error?.message ?? 'failed'}`)
   return decode(out.value)
 }

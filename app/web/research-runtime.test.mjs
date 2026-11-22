@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import { fork, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -20,6 +20,14 @@ const { Readable } = require('node:stream')
 const { EventEmitter } = require('node:events')
 const http = require('node:http')
 const { appendFileSync, readFileSync } = require('node:fs')
+if (process.env.TEST_PRE_RELAY) {
+  const fs = require('node:fs')
+  const stat = fs.statSync
+  fs.statSync = (path, ...args) => {
+    if (path === '/usr/bin/sandbox-exec') throw Object.assign(Error('fixture pre-relay runtime'), { code: 'ENOENT' })
+    return stat(path, ...args)
+  }
+}
 const library = process.env.TEST_LIBRARY && JSON.parse(readFileSync(process.env.TEST_LIBRARY, 'utf8'))
 const streams = new Map()
 let receive, stalled = false
@@ -68,7 +76,7 @@ require(process.env.TEST_SERVER)
 process.send({ ready: true })
 `
 
-async function setup(t, { envVisit, grant = true, deadlineAt, library, prepareUserData } = {}) {
+async function setup(t, { envVisit, grant = true, deadlineAt, library, prepareUserData, preRelay } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'hs-research-runtime-'))
   const runner = join(dir, 'mock-upstream.cjs')
   const userData = join(dir, 'userData')
@@ -82,6 +90,7 @@ async function setup(t, { envVisit, grant = true, deadlineAt, library, prepareUs
     env: { PATH: process.env.PATH, HOME: dir, HS_USER_DATA: userData, HS_WEB_TOKEN: 'fixture-token',
       HS_WEB_DISCONNECT_GRACE_MS: '160', HUMANSTUDY_KERNEL: 'mock', HUMANSTUDY_SERVER: 'http://127.0.0.1',
       ...(envVisit ? { HS_VISIT_ID: visit } : {}), ...(deadlineAt ? { HS_DEADLINE_AT: new Date(deadlineAt).toISOString() } : {}),
+      ...(preRelay ? { TEST_PRE_RELAY: '1' } : {}),
       ...(library ? { TEST_LIBRARY: libraryPath } : {}), TEST_SERVER: server, TEST_REMOTE: remote },
     execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
   })
@@ -301,7 +310,11 @@ test('outbox ignores permanent drops and validation errors, but records long fil
   assert.deepEqual((await write(['file.open', { target: rel }], longId)).value, { status: 'ack', id: longId })
   assert.equal((await f.local()).find(row => row.id === longId).target, rel.slice(0, 160))
 
-  assert.equal((await write(artifact('r1'))).value.status, 'ack')
+  const replayId = randomUUID()
+  await rename(dir, dir + '-pending')
+  assert.deepEqual((await write(artifact('r1'), replayId)).value, { status: 'retry' })
+  await rename(dir + '-pending', dir)
+  assert.deepEqual((await write(artifact('r1'), replayId)).value, { status: 'ack', id: replayId })
   const duplicate = randomUUID()
   assert.deepEqual((await write(artifact('r1'), duplicate)).value, { status: 'ignored' })
   await pause(1050)
@@ -358,6 +371,78 @@ test('a transport fallback shares the durable receipt of a dispatched send', { t
   const rows = (await f.uploaded()).filter(row => row.event_type === 'conversation.submission')
   assert.deepEqual(rows.map(row => [row.action_id, row.metadata.dispatch_outcome]), [[action.id, 'sent'], [failed.args[3].id, 'failed']])
 })
+
+for (const reason of ['user_stop', 'closed']) {
+  const name = reason === 'closed' ? 'a server replacement leaves the detached run open for reconciliation'
+    : 'a sandbox stop kills the detached runner and delivers its interruption before exit'
+  test(name, { timeout: 15_000 }, t => checkDetachedRunOnQuit(t, reason))
+}
+
+async function checkDetachedRunOnQuit(t, reason) {
+  const python = ['python3.12', 'python3.13', 'python3.11', 'python3'].map(command => spawnSync(command,
+    ['-c', 'import sys; print(sys.executable) if sys.version_info >= (3, 11) else sys.exit(1)'], { encoding: 'utf8' }))
+    .find(probe => probe.status === 0)?.stdout.trim()
+  if (!python || process.platform === 'win32') return t.skip('needs Python 3.11+ and a POSIX runtime fixture')
+  let protocolRunLimits
+  const f = await setup(t, {
+    envVisit: true, preRelay: true,
+    prepareUserData: async (dir, userData) => {
+      const module = join(dir, 'run-fixture.mjs')
+      await build({
+        stdin: { resolveDir: fileURLToPath(new URL('../src', import.meta.url)),
+          contents: "export * from './main/runtime-core'; export * from './shared/run-limits'" },
+        bundle: true, platform: 'node', format: 'esm', outfile: module,
+      })
+      const runtimeModule = await import(pathToFileURL(module))
+      protocolRunLimits = runtimeModule.protocolRunLimits
+      const lock = await readFile(new URL('../../pack/runtime/requirements.lock', import.meta.url), 'utf8')
+      const version = runtimeModule.runtimeVersion(lock)
+      const runtime = runtimeModule.runtimePaths(join(userData, 'runtime', version), process.platform)
+      await mkdir(dirname(runtime.python), { recursive: true })
+      // Validate the real protocol, then use a sleeping runner with no model access.
+      await writeFile(runtime.python, `#!/bin/sh
+case "$6" in
+  *'receipt, script = sys.argv'*) exec "${python}" -c 'import os,pathlib,time; pathlib.Path("fixture.pid").write_text(str(os.getpid())); time.sleep(30)' ;;
+esac
+exec "${python}" "$@"
+`, { mode: 0o755 })
+      await writeFile(runtime.ok, version)
+    },
+  })
+  const dir = (await f.ipc('projects:create', { name: 'Run stop fixture', sample: true })).value
+  const protocol = await readFile(new URL('../src/main/fixtures/protocol-mini/protocol.json', import.meta.url))
+  await writeFile(join(dir, 'protocol.json'), protocol)
+  const readiness = (await f.ipc('project:packageReadiness', dir, undefined, true)).value.protocol
+  assert.equal(readiness.ready, true, JSON.stringify(readiness.problems))
+  const { kernelSessionId: sid } = (await f.ipc('threads:create', dir)).value
+  const approval = { route: 'protocol', protocolHash: createHash('sha256').update(protocol).digest('hex'),
+    plan: { perCondition: 1, tokenBudget: protocolRunLimits(readiness.budget, 1).tokens, model: 'fixture/model' } }
+  const sent = await f.ipc('kernel:send', sid, '[Simulation scope approved]\n' + JSON.stringify(approval))
+  assert.equal(sent.ok, true, JSON.stringify(sent))
+  const runs = join(dir, 'artifacts', 'simulations')
+  const runDir = join(runs, (await readdir(runs)).find(name => name !== '.operator'))
+  let pid
+  for (let i = 0; i < 80 && !pid; i++) {
+    pid = Number(await readFile(join(runDir, 'fixture.pid'), 'utf8').catch(() => ''))
+    if (!pid) await pause(25)
+  }
+  assert.ok(pid, 'the detached runner started')
+  t.after(() => { try { process.kill(-pid, 'SIGKILL') } catch {} })
+  if (reason !== 'closed') await writeFile(join(f.userData, 'web-stop-reason.json'), JSON.stringify({ visit_id: visit, reason }))
+  f.child.kill('SIGTERM')
+  assert.equal((await f.exited)[0], 0)
+  const rows = (await f.uploaded()).filter(row => row.event_type.startsWith('simulation.'))
+  const expected = ['simulation.approved', 'simulation.started']
+  if (reason === 'closed') {
+    assert.doesNotThrow(() => process.kill(pid, 0))
+    assert.ok((await readdir(join(f.userData, 'protocol-run-research'))).includes(rows[0].metadata.run_id + '.json'))
+  } else {
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' })
+    expected.push('simulation.interrupted')
+  }
+  assert.deepEqual(rows.map(row => row.event_type), expected)
+  assert.ok(rows.every(row => row.metadata.run_id === rows[0].metadata.run_id))
+}
 
 for (const reason of ['closed', 'timeout', 'user_stop', 'crash', 'disconnect']) {
   test('session end records ' + reason, { timeout: 10_000 }, async t => {

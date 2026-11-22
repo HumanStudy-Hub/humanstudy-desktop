@@ -68,6 +68,8 @@ const runs = new RunRegistry()
 const runRelays = runs.relays
 type RunResearch = ReturnType<typeof simulationResearch> & { detached?: Omit<DetachedRunResearch, 'runDir' | 'pid'> }
 const activeRunResearch = new Map<string, RunResearch>()
+const webRunStops = new Map<string, () => Promise<void>>()
+let reconcileDetachedRuns: ((sandboxStop?: boolean) => Promise<void>) | undefined
 async function closeRunRelay(id: string) {
   await runs.closeCurrent(id)   // the relay's onClose frees its project (owner-checked)
 }
@@ -151,7 +153,23 @@ const shutdown = createShutdown({
   },
   quiesce: async () => {
     // Preserve kernel/session bindings until exit so an unsuccessful quit remains usable.
-    await Promise.all([...activeTurns].map(id => kernelFor(id).abort(id)))
+    const reason = telemetry.webEndReason()
+    const sandboxStop = webRuntime && (reason === 'timeout' || reason === 'user_stop')
+    const abortTurns = () => Promise.all([...activeTurns].map(id => kernelFor(id).abort(id)))
+    if (sandboxStop) {
+      const runs = [...activeRunResearch].filter(([id]) => !webRunStops.has(id))
+      const stopRuns = async () => {
+        await Promise.allSettled([
+          ...[...webRunStops.values()].map(stop => stop()),
+          ...runs.map(([, run]) => run.interrupt()),
+        ])
+        // A server restart can leave a run owned by the previous process.
+        await reconcileDetachedRuns?.(true)
+      }
+      await Promise.all([abortTurns(), stopRuns()])
+      return
+    }
+    await abortTurns()
     await Promise.all([...activeRunResearch].map(async ([id, run]) => {
       await run.quit()
       if (!run.detached) activeRunResearch.delete(id)
@@ -547,7 +565,9 @@ app.whenReady().then(() => {
   if (!primaryInstance) return
   applyCredentials()
   const runJournal = detachedRunJournal(join(app.getPath('userData'), 'protocol-run-research'))
-  void runJournal.reconcile(run => telemetry.simulationPublisher(run.projectDir, run.threadId, run.action, run.researchScope, run.visitId))
+  reconcileDetachedRuns = sandboxStop => runJournal.reconcile(run =>
+    telemetry.simulationPublisher(run.projectDir, run.threadId, run.action, run.researchScope, run.visitId), sandboxStop)
+  void reconcileDetachedRuns()
   try {
     applySettings()
   } catch (e) {
@@ -1103,10 +1123,10 @@ app.whenReady().then(() => {
     return research
   }
 
-  async function finishRunResearch(binding: ProtocolBinding, code: number | null, signal: NodeJS.Signals | null = null) {
+  async function finishRunResearch(binding: ProtocolBinding, code: number | null, signal: NodeJS.Signals | null = null, interrupted = false) {
     const research = activeRunResearch.get(binding.runId)
     try {
-      const saved = await research?.finish(code, signal)
+      const saved = await research?.finish(code, signal, interrupted)
       if (saved && research?.detached) await runJournal.forget(binding.runId)
     } catch { /* a detached run's journal remains for startup reconciliation */ }
     finally { activeRunResearch.delete(binding.runId) }
@@ -1136,8 +1156,18 @@ app.whenReady().then(() => {
         if (shutdown.closing()) throw Error('The app is saving before closing. Please wait.')
       },
       exitFile: detached ? runJournal.exitFile(binding.runId) : undefined,
-      onStart: pid => research?.started(runDir, detached && runJournal.remember(binding.runId, { ...detached, runDir, pid })),
-      onExit: (code, signal) => { void finishRunResearch(binding, code, signal); ended() },
+      onStart: (pid, interrupt) => {
+        if (webRuntime) webRunStops.set(binding.runId, async () => {
+          try { interrupt() }
+          finally { await finishRunResearch(binding, null, null, true) }
+        })
+        research?.started(runDir, detached && runJournal.remember(binding.runId, { ...detached, runDir, pid }))
+      },
+      onExit: (code, signal) => {
+        webRunStops.delete(binding.runId)
+        void finishRunResearch(binding, code, signal)
+        ended()
+      },
       lang: approved.lang === 'zh-CN' ? 'zh-CN' : 'en',
     })
   }

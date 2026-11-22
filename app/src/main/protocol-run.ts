@@ -59,6 +59,12 @@ const RECORD_EXIT = [
 ].join('\n')
 
 const TERMINAL = new Set(['done', 'failed', 'stopped'])
+
+export function killRunGroup(pid: number): void {
+  try { process.kill(process.platform === 'win32' ? pid : -pid, 'SIGKILL') }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
+}
+
 /** A run that ended without a final stage (it was refused or broke before it could write one) is marked failed
  *  with the end of its log, so the tab and the agent stop waiting (review 5, S2). */
 export async function markEnded(runDir: string, code: number | null): Promise<void> {
@@ -80,7 +86,7 @@ export async function markEnded(runDir: string, code: number | null): Promise<vo
 export async function launchProtocolRun(o: {
   python: string; files: [string, string][]; codeDir: string; project: string; runDir: string; binding: Binding;
   plan: ProtocolRunPlan; relay?: RelayAccess; env?: NodeJS.ProcessEnv; onExit?(code: number | null, signal: NodeJS.Signals | null): void
-  onStart?(pid: number): void
+  onStart?(pid: number, interrupt: () => void): void
   beforeSpawn?(): void
   exitFile?: string
   /** The app's language for the run's messages and results page ('zh-CN' or 'en'). */
@@ -124,16 +130,24 @@ export async function launchProtocolRun(o: {
   const child = spawn(o.python, ['-I', '-B', '-X', 'utf8', ...entry, o.runDir, o.project, o.codeDir],
     { cwd: o.runDir, env, stdio: 'ignore', detached: process.platform !== 'win32', windowsHide: true })
   let ended = false
+  let interrupted = false
   const end = async (code: number | null, signal: NodeJS.Signals | null) => {
     if (ended) return
     ended = true
-    if (code !== 0) await markEnded(o.runDir, code).catch(() => undefined)
+    if (code !== 0 && !interrupted) await markEnded(o.runDir, code).catch(() => undefined)
     await rm(o.codeDir, { recursive: true, force: true }).catch(() => undefined)   // per-run copy: gone with the run
     o.onExit?.(code, signal)
   }
   child.once('exit', (code, signal) => void end(code, signal))
   child.once('error', () => void end(null, null))
-  if (child.pid !== undefined) o.onStart?.(child.pid)
+  if (child.pid !== undefined) {
+    const pid = child.pid
+    o.onStart?.(pid, () => {
+      if (ended || interrupted) return
+      interrupted = true
+      killRunGroup(pid)
+    })
+  }
   return child
 }
 

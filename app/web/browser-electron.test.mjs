@@ -89,6 +89,7 @@ test('a transport-failed send while online adds one failed submission with the d
     respond(url) {
       if (url !== '/ipc/kernel%3Asend') return
       if (++sends === 1) throw new TypeError('connection lost')
+      if (sends === 3) return { status: 503, json: async () => ({ ok: false, error: { message: 'The workspace is stopping.' } }) }
       return { status: 200, json: async () => ({ ok: false, error: { message: 'main process refusal' } }) }
     },
   })
@@ -103,4 +104,8 @@ test('a transport-failed send while online adds one failed submission with the d
   assert.equal(entry.channel, 'telemetry:chatSubmission')
   assert.deepEqual(entry.args, ['session', 'first message', 'failed', args(dispatch)[3]])
   assert.match(entry.args[3].id, /^[0-9a-f-]{36}$/)
+  await assert.rejects(h.ipcRenderer.invoke('kernel:send', 'session', 'third message'), /The workspace is stopping\./)
+  await settle()
+  const failed = h.calls.filter(call => call.url === '/ipc/telemetry%3AoutboxWrite').map(call => args(call)[0].args[1])
+  assert.deepEqual(failed, ['first message', 'third message'])
 })

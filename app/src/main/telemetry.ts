@@ -857,6 +857,9 @@ export function registerTelemetry(): void {
     const known = typeof o.projectId === 'string' && projectIds.has(o.projectId) ? o.projectId : undefined
     const isArtifact = type === 'artifact.interact' || type === 'artifact.dwell'
     const artifactDir = isArtifact && typeof o.artifactProjectDir === 'string' ? resolve(o.artifactProjectDir) : undefined
+    // The browser can replay before the project has been downloaded into this sandbox.
+    if (delivery && artifactDir?.startsWith(resolve(getSettings().projectsRoot) + sep) &&
+      await stat(artifactDir).then(() => false, error => error.code === 'ENOENT')) return null
     if (isArtifact && (!artifactDir || (artifactDir !== rendererProjectDir && ![...projectIds.values()].includes(artifactDir) &&
       !(delivery && inProjects(artifactDir) && existsSync(join(artifactDir, '.humanstudy', 'project.json')))))) return DROPPED
     const dir = isArtifact ? artifactDir : known ? projectIds.get(known) : delivery ? undefined : rendererProjectDir
