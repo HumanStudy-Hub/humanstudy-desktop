@@ -5,14 +5,14 @@ import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
-import { artifactPath, isProhibitedEventType, LIMITS, researchUuid, semanticId, SESSION_END_REASONS, type DispatchOutcome, type SessionEndReason, type SimulationStage } from '../shared/research-contract'
+import { artifactPath, isProhibitedEventType, LIMITS, researchUuid, semanticId, SESSION_END_REASONS, type SessionEndReason, type SimulationStage } from '../shared/research-contract'
 import type { SimulationMetadata } from './simulation-research'
 import { fileVersion } from '../shared/file-version'
 import { storeResearchContent } from './research-content'
-import { createResearchCollector } from './research-collector'
-import { createResearchAgent, type ResearchLink } from './research-agent'
+import { createResearchCollector, InvalidResearchEvent } from './research-collector'
+import { createResearchAgent, dispatchAndRecord, researchReceiptId, type ResearchLink } from './research-agent'
 import { researchInteraction } from '../shared/research-interactions'
-import { createInteractionGuard, readArtifactFile } from './artifact-interaction-guard'
+import { createInteractionGuard, DROPPED_INTERACTION as DROPPED, readArtifactFile } from './artifact-interaction-guard'
 import { actionRef, type ActionRef } from '../shared/research-operations'
 import { createSerial, createWriteAttribution, isSaveTemp } from './write-capture'
 import { strToU8, zipSync } from 'fflate'
@@ -114,9 +114,24 @@ export async function finishWebResearch(): Promise<void> {
   await sourceCollector().flush()
 }
 
-export function trackChatSubmission(sid: string | undefined, text: unknown, outcome: DispatchOutcome, ref?: ActionRef): Promise<unknown> {
-  if (!webResearchClient() || typeof text !== 'string' || !text.trim()) return Promise.resolve(null)
-  return researchAgent.submission(sid, text, outcome, ref)
+const webDispatches = new Map<string, Promise<unknown>>()
+
+export function dispatchWebChat<T>(sid: string, text: string, ref: ActionRef, send: () => Promise<T>): Promise<T> {
+  const owner = getAccount().researchOwner()
+  const key = `${owner}:${ref.id}`
+  const scope = researchScope()
+  let receipt: Promise<unknown> | undefined
+  const result = dispatchAndRecord(send, outcome => {
+    receipt = scope && researchScope() === scope && typeof text === 'string' && text.trim()
+      ? researchAgent.submission(sid, text, outcome, ref) : Promise.resolve(null)
+    return receipt
+  })
+  // Register before a browser fallback can be handled. A lost response may arrive while dispatch
+  // is still in flight, so let the authoritative outcome join the collector first.
+  const pending = result.catch(() => undefined).then(() => receipt).catch(() => undefined)
+  webDispatches.set(key, pending)
+  void pending.then(() => { if (webDispatches.get(key) === pending) webDispatches.delete(key) })
+  return result
 }
 
 /** Sources a researcher operation put into a project (import, create from PDF), keyed by absolute path. */
@@ -217,10 +232,10 @@ function artifactContext(projectDir: string, target: unknown, metadata: Telemetr
 
 /** Track from the main process; `projectDir` makes paths project-relative and sets project_id. */
 export function track(type: string, opts: TelemetryTrackOptions = {}, projectDir?: string,
-  delivery?: { id: string; occurred_at: string; visitId: string; accept(): boolean }): Promise<unknown> | undefined {
+  delivery?: { id: string; occurred_at: string; visitId: string; accept(): boolean }): Promise<unknown> | typeof DROPPED {
   try {
     const t = getTelemetry()
-    if (!t.status().usage) return
+    if (!t.status().usage) return DROPPED
     const projectId = opts.projectId ?? (projectDir ? (projectIdFor(projectDir) ?? undefined) : undefined)
     const dirFor = projectDir ?? (projectId ? projectIds.get(projectId) : undefined)
     if (dirFor && (type === 'artifact.interact' || type === 'artifact.dwell'))
@@ -231,7 +246,7 @@ export function track(type: string, opts: TelemetryTrackOptions = {}, projectDir
       ? fileVersions.get(`${getAccount().researchOwner()}:${dirFor}\0${unified.artifact_id}`) : undefined
     const artifactVersion = version?.revision === unified?.metadata?.artifact_revision ? version?.ordinal : undefined
     const persisted = unified || ref ? researchAgent.interaction(type, { ...opts, ...(typeof opts.target === 'string' && namesPrivatePath(opts.target, false) ? { target: REDACTED_PRIVATE } : {}), action: ref }, { project_id: projectId, dir: dirFor, artifactVersion }, delivery) : undefined
-    if (delivery || opts.v1Only || type === 'artifact.interact' || type === 'artifact.dwell') return persisted
+    if (delivery || opts.v1Only || type === 'artifact.interact' || type === 'artifact.dwell') return persisted ?? DROPPED
     // The private-material boundary, before the metadata is put in a blob or queued.
     let metadata = opts.metadata ? redactCapture({ metadata: opts.metadata }, privateIndex, dirFor ? scopedProject(dirFor) : false).metadata : opts.metadata
     if (metadata && Buffer.byteLength(JSON.stringify(metadata)) > 12_000) {
@@ -242,9 +257,10 @@ export function track(type: string, opts: TelemetryTrackOptions = {}, projectDir
     // a withheld file's name (sources/private/…) is not logged either
     if (typeof legacy.target === 'string' && namesPrivatePath(legacy.target, false)) legacy.target = REDACTED_PRIVATE
     t.track(type, { ...legacy, metadata, projectId }, { projectDir: dirFor })
-    return persisted
-  } catch {
-    /* research data must never break the app */
+    return persisted ?? DROPPED
+  } catch (error) {
+    if (delivery) throw error
+    return DROPPED
   }
 }
 
@@ -295,22 +311,29 @@ export function trackTurnStart(sessionId: string, text: string, ref?: ActionRef)
 export function noteAction(ref: ActionRef | undefined, projectDir?: string): void {
   if (ref) researchAgent.action(ref, { project_id: projectDir ? (projectIdFor(projectDir) ?? undefined) : undefined, dir: projectDir })
 }
-export function simulationPublisher(projectDir: string, threadId: string, ref?: ActionRef) {
-  const owner = getAccount().researchOwner()
-  const allowed = () => {
-    const status = getTelemetry().status()
-    return status.consentVersion === 3 && status.usage && status.content
-  }
-  if (!owner || !ref || !allowed()) return
+function researchScope(): string | null {
+  const owner = getAccount().researchOwner(), status = getTelemetry().status()
+  if (!owner || status.consentVersion !== 3 || !status.usage || !status.content || !status.decidedAt) return null
+  return createHash('sha256').update(JSON.stringify([owner, status.consentVersion, status.decidedAt])).digest('hex')
+}
+
+export function simulationContext() {
+  return { researchScope: researchScope(), visitId: webRuntimeState().visitId }
+}
+
+export function simulationPublisher(projectDir: string, threadId: string, ref?: ActionRef,
+  scope = researchScope(), visitId = webRuntimeState().visitId) {
+  if (!scope || !ref || scope !== researchScope()) return
   const projectId = projectIdFor(projectDir)
   if (!projectId) return
-  return (stage: SimulationStage, metadata: SimulationMetadata): void => {
-    try {
-      if (getAccount().researchOwner() !== owner || !allowed()) return
-      noteAction(ref, projectDir)
-      researchAgent.record({ event_type: `simulation.${stage}`, project_id: projectId, thread_id: threadId,
-        action_id: ref.id, caused_by: ref.id, metadata: { ...metadata } }, projectDir)
-    } catch { /* research data must never break the runner */ }
+  const accept = () => scope === researchScope()
+  return (stage: SimulationStage, metadata: SimulationMetadata) => {
+    if (!accept()) return Promise.resolve(null)
+    if (stage === 'approved') noteAction(ref, projectDir)
+    const phase = stage === 'approved' || stage === 'started' ? stage : 'terminal'
+    const id = researchReceiptId(`simulation:${metadata.run_id}:${phase}:${metadata.part ?? 0}`)
+    return researchAgent.record({ id, event_type: `simulation.${stage}`, project_id: projectId, thread_id: threadId,
+      action_id: ref.id, caused_by: ref.id, metadata: { ...metadata } }, { projectDir, visitId, accept })
   }
 }
 
@@ -817,11 +840,7 @@ export function registerTelemetry(): void {
     await writeFile(pick.filePath, json, 'utf8')
     return pick.filePath
   })
-  const outboxScope = (): string | null => {
-    const owner = getAccount().researchOwner(), status = t.status()
-    if (!webResearchClient() || !owner || !status.usage || !status.content || !status.decidedAt) return null
-    return createHash('sha256').update(JSON.stringify([owner, status.consentVersion, status.decidedAt])).digest('hex')
-  }
+  const outboxScope = () => webResearchClient() ? researchScope() : null
   ipcMain.handle('telemetry:outboxScope', outboxScope)
   // Browser preload handles submitted text through the consent-scoped outbox.
   ipcMain.handle('telemetry:chatSubmission', () => undefined)
@@ -833,22 +852,22 @@ export function registerTelemetry(): void {
   const interactionGuard = createInteractionGuard(readArtifactFile)
   const rendererTrack = async (type: string, opts?: TelemetryTrackOptions,
     delivery?: { id: string; occurred_at: string; visitId: string; accept(): boolean }) => {
-    if (typeof type !== 'string' || RENDERER_DENY.test(type) || isProhibitedEventType(type)) return
+    if (typeof type !== 'string' || RENDERER_DENY.test(type) || isProhibitedEventType(type)) return DROPPED
     const o = opts && typeof opts === 'object' ? opts : {}
     const known = typeof o.projectId === 'string' && projectIds.has(o.projectId) ? o.projectId : undefined
     const isArtifact = type === 'artifact.interact' || type === 'artifact.dwell'
     const artifactDir = isArtifact && typeof o.artifactProjectDir === 'string' ? resolve(o.artifactProjectDir) : undefined
     if (isArtifact && (!artifactDir || (artifactDir !== rendererProjectDir && ![...projectIds.values()].includes(artifactDir) &&
-      !(delivery && inProjects(artifactDir) && existsSync(join(artifactDir, '.humanstudy', 'project.json')))))) return
+      !(delivery && inProjects(artifactDir) && existsSync(join(artifactDir, '.humanstudy', 'project.json')))))) return DROPPED
     const dir = isArtifact ? artifactDir : known ? projectIds.get(known) : delivery ? undefined : rendererProjectDir
     const projectId = isArtifact ? undefined : delivery && typeof o.projectId === 'string' && /^[A-Za-z0-9_.:-]{8,80}$/.test(o.projectId) ? o.projectId : known
     const target = typeof o.target === 'string' ? o.target : undefined
     const durationMs = typeof o.durationMs === 'number' ? o.durationMs : undefined
     let metadata = o.metadata && typeof o.metadata === 'object' && !Array.isArray(o.metadata) ? o.metadata : undefined
     if (type === 'artifact.interact') {
-      if (!dir || !artifactPath(target) || !semanticId(metadata?.artifact_revision)) return
-      const interaction = await interactionGuard(dir, target, metadata.artifact_revision, metadata.interaction)
-      if (!interaction) return
+      if (!dir || !artifactPath(target) || !semanticId(metadata?.artifact_revision)) return DROPPED
+      const interaction = await interactionGuard(dir, target, metadata.artifact_revision, metadata.interaction, delivery?.id)
+      if (interaction === DROPPED) return DROPPED
       metadata = { ...metadata, interaction }
     }
     const action = actionRef(o.action)
@@ -866,17 +885,25 @@ export function registerTelemetry(): void {
     const accept = () => typeof scope === 'string' && scope === outboxScope()
     if (!accept()) return { status: 'scope_changed' }
     const delivery = { id, accept, visitId: visit.toLowerCase(), occurred_at: new Date(Math.min(occurred, Date.now() + LIMITS.futureSkewMs)).toISOString() }
-    let pending: Promise<unknown> | undefined
+    let pending: Promise<unknown> | typeof DROPPED = DROPPED
     if (channel === 'telemetry:track') pending = rendererTrack(args[0], args[1], delivery)
     if (channel === 'telemetry:chatSubmission') {
       const [sid, value, outcome, ref] = args
-      if (typeof value === 'string' && value.trim() && (outcome === 'queued' || outcome === 'failed'))
-        pending = researchAgent.submission(typeof sid === 'string' ? sid : undefined, value, outcome,
-          actionRef(ref) ?? { id, target: 'composer.send', via: 'system' }, delivery)
+      if (typeof value === 'string' && value.trim() && (outcome === 'queued' || outcome === 'failed')) {
+        const op = actionRef(ref) ?? { id, target: 'composer.send', via: 'system' as const }
+        const dispatch = outcome === 'failed' ? webDispatches.get(`${getAccount().researchOwner()}:${op.id}`) : undefined
+        if (dispatch) await dispatch
+        pending = researchAgent.submission(typeof sid === 'string' ? sid : undefined, value, outcome, op, delivery)
+      }
     }
-    if (!pending) return { status: 'ignored' }
-    const saved = await pending
-    return saved ? { status: 'ack', id } : { status: accept() ? 'retry' : 'scope_changed' }
+    try {
+      const saved = await pending
+      if (saved === DROPPED) return { status: 'ignored' }
+      return saved ? { status: 'ack', id } : { status: accept() ? 'retry' : 'scope_changed' }
+    } catch (error) {
+      if (error instanceof InvalidResearchEvent) return { status: 'ignored' }
+      throw error
+    }
   })
   ipcMain.on('telemetry:webDisconnect', (_event, visit: unknown) => {
     if (webResearchClient() && researchUuid(visit)) void researchAgent.drain().then(() => sourceCollector().end('disconnect', visit))

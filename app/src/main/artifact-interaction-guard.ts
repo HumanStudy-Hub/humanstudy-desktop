@@ -8,6 +8,7 @@ import { join, resolve, sep } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { parseArtifactInteraction, semanticId, type ArtifactInteraction } from '../shared/research-contract'
 
+export const DROPPED_INTERACTION = 'dropped'
 export const MAX_LABEL = 40
 export const MAX_EVENTS_PER_REVISION = 500
 export const DUPLICATE_WINDOW_MS = 1000
@@ -127,11 +128,24 @@ export type ReadArtifact = (projectDir: string, rel: string) => Promise<string |
 export function createInteractionGuard(read: ReadArtifact, now: () => number = Date.now) {
   const vocabularies = new Map<string, Promise<ArtifactVocabulary | null>>()
   const volume = new Map<string, { count: number; last?: string; at: number }>()
-  return async (projectDir: string, rel: string, revision: string, input: unknown): Promise<ArtifactInteraction | null> => {
+  // A retry after a lost ACK keeps its original decision, even outside the dedupe window.
+  type Decision = ArtifactInteraction | typeof DROPPED_INTERACTION
+  const decisions = new Map<string, Decision>()
+  return async (projectDir: string, rel: string, revision: string, input: unknown, deliveryId?: string): Promise<Decision> => {
     // A draft or an older version is shown from text the renderer holds, not the file on disk, so
     // the file cannot vouch for its ids: such views report no interactions.
-    if (!onDiskRevision(revision)) return null
+    if (!onDiskRevision(revision)) return DROPPED_INTERACTION
     const key = `${projectDir}\0${rel}\0${revision}`
+    const deliveryKey = deliveryId ? `${key}\0${deliveryId}` : undefined
+    const prior = deliveryKey && decisions.get(deliveryKey)
+    if (prior) return prior
+    const remember = (decision: Decision) => {
+      if (deliveryKey) {
+        decisions.set(deliveryKey, decision)
+        if (decisions.size > 5000) decisions.delete(decisions.keys().next().value!)
+      }
+      return decision
+    }
     let vocabulary = vocabularies.get(key)
     if (!vocabulary) {
       const reading = read(projectDir, rel).then(text => text === null ? null : artifactVocabulary(text)).catch(() => null)
@@ -142,18 +156,20 @@ export function createInteractionGuard(read: ReadArtifact, now: () => number = D
       void reading.then(result => { if (!result && vocabularies.get(key) === reading) vocabularies.delete(key) })
     }
     const v = await vocabulary
-    if (!v) return null
+    const concurrent = deliveryKey && decisions.get(deliveryKey)
+    if (concurrent) return concurrent
+    if (!v) return remember(DROPPED_INTERACTION)
     const interaction = screenInteraction(v, input)
-    if (!interaction) return null
+    if (!interaction) return remember(DROPPED_INTERACTION)
     const state = volume.get(key) ?? { count: 0, at: -Infinity }
     volume.set(key, state)
     const signature = JSON.stringify(interaction), t = now()
-    if (state.last === signature && t - state.at < DUPLICATE_WINDOW_MS) { state.at = t; return null }
-    if (state.count >= MAX_EVENTS_PER_REVISION) return null
+    if (state.last === signature && t - state.at < DUPLICATE_WINDOW_MS) { state.at = t; return remember(DROPPED_INTERACTION) }
+    if (state.count >= MAX_EVENTS_PER_REVISION) return remember(DROPPED_INTERACTION)
     state.count++
     state.last = signature
     state.at = t
-    return interaction
+    return remember(interaction)
   }
 }
 

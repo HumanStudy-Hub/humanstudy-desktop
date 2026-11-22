@@ -484,6 +484,7 @@ const ROWS: Row[] = [
   ['perm.done_once', 'Allowed once', '已允许一次'],
   ['perm.done_always', 'Always allowed in this project', '已在此项目中始终允许'],
   ['perm.done_denied', 'Not allowed', '已拒绝'],
+  ['perm.auto_reject_limit', 'The assistant kept trying actions outside this project and was stopped.', '助手反复尝试在此项目范围之外执行操作，已被停止。'],
   ['perm.doom_loop', 'The assistant repeated the same step and was stopped.', '助手重复执行了同一步骤，已被停止。'],
   ['perm.expired', 'Not answered', '未回应'],
 

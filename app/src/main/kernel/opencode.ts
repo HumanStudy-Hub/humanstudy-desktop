@@ -152,7 +152,7 @@ interface SessionState {
   pendingPermissions: Map<string, KernelPermission>
   /** When this session last sent an automatic reject; opencode's cascade rejects follow it. */
   lastAutoReject?: number
-  recovery: { epoch: number; attempts: number; pending: boolean; running: boolean; cancelled: boolean; progress: boolean; reason?: 'output_limit' | 'invalid_tool_call' | 'declined_tool_call'; assistantId?: string }
+  recovery: { epoch: number; attempts: number; autoRejects: number; autoRejectLimitId?: string; pending: boolean; running: boolean; cancelled: boolean; progress: boolean; reason?: 'output_limit' | 'invalid_tool_call' | 'declined_tool_call'; assistantId?: string }
   expectUserIdentity?: boolean
   selection?: NativeSelection
   /** Per-turn default; does not change the researcher's model selection for the next chat. */
@@ -176,6 +176,8 @@ export interface OpencodeOptions {
    *  /usr/bin/sandbox-exec). Off: the pre-relay path, where simulation code can read the key. */
   relay?: boolean
 }
+
+const AUTO_REJECT_LIMIT = 6
 
 export class OpencodeKernel implements Kernel {
   readonly name = 'opencode'
@@ -295,7 +297,7 @@ export class OpencodeKernel implements Kernel {
       lastActivity: this.clock(), lastProbe: 0, stalled: false,
       title: '',
       pendingPermissions: new Map(),
-      recovery: { epoch: 0, attempts: 0, pending: false, running: false, cancelled: true, progress: false },
+      recovery: { epoch: 0, attempts: 0, autoRejects: 0, pending: false, running: false, cancelled: true, progress: false },
     })
   }
 
@@ -407,7 +409,8 @@ export class OpencodeKernel implements Kernel {
     s.expectUserIdentity = true
     s.failed = false
     s.lastActivity = this.clock(); s.lastProbe = 0; s.idleSince = undefined; s.stalled = false
-    s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, pending: false, running: false, cancelled: false, progress: false }
+    s.lastAutoReject = undefined
+    s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, autoRejects: 0, pending: false, running: false, cancelled: false, progress: false }
     s.inFlight = true
     try {
       await this.request(s.server, 'POST', `/session/${encodeURIComponent(sessionId)}/prompt_async`, {
@@ -490,7 +493,8 @@ export class OpencodeKernel implements Kernel {
       s.turnModel = s.selection?.model ?? (this.provider ? { providerID: this.provider, modelID: this.model } : undefined)
       s.turnBaseline = new Set(s.roles.keys()); s.inFlight = true; s.awaitingAssistant = true; s.expectUserIdentity = request.operation!=='compact'; s.failed = false
       s.lastActivity = this.clock(); s.lastProbe = 0; s.idleSince = undefined; s.stalled = false
-      s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, pending: false, running: false, cancelled: request.operation === 'compact', progress: false }
+      s.lastAutoReject = undefined
+      s.recovery = { epoch: s.recovery.epoch + 1, attempts: 0, autoRejects: 0, pending: false, running: false, cancelled: request.operation === 'compact', progress: false }
       this.emitter.emit({sessionId,type:'status',text:request.operation === 'compact' ? 'compacting' : 'busy'})
     }
     try {
@@ -641,9 +645,9 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   }
   /** Project mode never shows a prompt (an unnoticed prompt left a hosted workspace idle until its
    *  time limit): inside-project actions are approved once, everything else is rejected with a short
-   *  reason the agent sees, so it can do the step another way and the turn continues. */
+   *  reason the agent sees, so it can do the step another way until it reaches the per-turn limit. */
   private autoDecide(sessionId: string, s: SessionState, perm: KernelPermission): void {
-    if (isAutoApproved(s.server.dir, perm)) this.autoApprove(sessionId, s, perm)
+    if (s.recovery.autoRejects < AUTO_REJECT_LIMIT && isAutoApproved(s.server.dir, perm)) this.autoApprove(sessionId, s, perm)
     else this.autoReject(sessionId, s, perm)
   }
   /** Ids rejected automatically; their `permission.replied` must not cancel the turn's recovery. Bounded. */
@@ -663,15 +667,17 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     this.autoReplies.add(perm.id)
     this.autoRejected.add(perm.id)
     if (this.autoRejected.size > 4096) this.autoRejected.delete(this.autoRejected.values().next().value as string)
-    // A repeated identical tool call (opencode's doom_loop) is rejected without a message, which ends the turn: a reject
-    // with feedback would continue the loop and keep spending (hosted) requests. No automatic recovery follows; the
-    // renderer shows a short note (Permission.tsx, perm.doom_loop).
-    const stop = perm.type === 'doom_loop'
+    // After too many rejects or an OpenCode doom_loop request, a plain reject ends the turn.
+    // Cancel recovery before replying so a cascading reject cannot schedule another request.
+    const hitLimit = ++s.recovery.autoRejects === AUTO_REJECT_LIMIT && perm.type !== 'doom_loop'
+    if (hitLimit) s.recovery.autoRejectLimitId = perm.id
+    const stop = s.recovery.autoRejects >= AUTO_REJECT_LIMIT || perm.type === 'doom_loop'
+    const decision = hitLimit ? { ...perm, type: 'auto_reject_limit' } : perm
     if (stop) { s.recovery.cancelled = true; s.recovery.pending = false }
-    else s.lastAutoReject = this.clock()
+    s.lastAutoReject = this.clock()
     this.replyTo(s.server, sessionId, perm.id, 'reject', stop ? undefined : autoRejectMessage(perm)).then(() => {
       s.pendingPermissions.delete(perm.id)
-      if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'reject' } })
+      if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...decision, automatic: true, resolved: 'reject' } })
     }, (error) => {
       // Already answered: opencode's cascade from our other reject (two disallowed calls in parallel)
       // ended the loop with a plain reject. Nothing to show; resume like any cascade.
@@ -1326,6 +1332,7 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       }
 
       case 'permission.replied': {
+        const pending = s.pendingPermissions.get(p.requestID)
         if (p.requestID) s.pendingPermissions.delete(p.requestID)
         // opencode rejects the session's other pending requests along with one reject; after our own
         // automatic reject those cascade rejects are not a researcher's decision either.
@@ -1335,8 +1342,10 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         if ((p.reply ?? p.response) === 'reject' && !(p.requestID && this.autoRejected.has(p.requestID)) && !cascade) { s.recovery.cancelled = true; s.recovery.pending = false }
         if (cascade && p.requestID && !this.autoRejected.has(p.requestID)) this.resumeAfterCascade(s)
         const reply = p.reply ?? p.response
-        if (p.requestID && (reply === 'once' || reply === 'always' || reply === 'reject') && this.reportResolved(p.requestID))
-          emit({ type: 'permission', permission: { id: p.requestID, type: '', resolved: reply, ...(automatic ? { automatic: true } : {}) } })
+        if (p.requestID && (reply === 'once' || reply === 'always' || reply === 'reject') && this.reportResolved(p.requestID)) {
+          const type = s.recovery.autoRejectLimitId === p.requestID ? 'auto_reject_limit' : pending?.type === 'doom_loop' ? pending.type : ''
+          emit({ type: 'permission', permission: { id: p.requestID, type, resolved: reply, ...(automatic ? { automatic: true } : {}) } })
+        }
         return
       }
     }

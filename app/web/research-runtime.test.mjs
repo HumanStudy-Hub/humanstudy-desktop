@@ -281,6 +281,34 @@ test('ACK follows the atomic event write and retry stays idempotent after upload
   assert.deepEqual(await f.local(), [])
 })
 
+test('outbox ignores permanent drops and validation errors, but records long file targets', { timeout: 10_000 }, async t => {
+  const f = await setup(t)
+  const dir = (await f.ipc('projects:create', { name: 'Outbox fixture', sample: true })).value
+  const target = 'artifacts/outbox.html'
+  await mkdir(join(dir, 'artifacts'), { recursive: true })
+  await writeFile(join(dir, target), '<button data-hs-control="next">Next</button>')
+  const artifact = (revision, interaction = { action: 'navigate', controlId: 'next', label: 'next', step: null, arm: null, valueKind: 'none' }) =>
+    ['artifact.interact', { target, artifactProjectDir: dir, metadata: { artifact_revision: revision, interaction } }]
+  const write = (args, id = randomUUID()) => f.ipc('telemetry:outboxWrite', { ...f.entry, args, id })
+  for (const args of [['agent.turn_start'], ['app.session_start'], artifact('draft'), artifact('history:older'), artifact('r1', {})])
+    assert.deepEqual((await write(args)).value, { status: 'ignored' })
+
+  // This revision passes the semantic ID check, but is invalid after token-shaped text is scrubbed.
+  const invalid = ['artifact.dwell', { target, artifactProjectDir: dir, durationMs: 100, metadata: { artifact_revision: 'sk-' + 'x'.repeat(20) } }]
+  assert.deepEqual(await write(invalid), { ok: true, value: { status: 'ignored' } })
+  const rel = 'reports/' + 'long-name/'.repeat(19) + 'notes.md'
+  const longId = randomUUID()
+  assert.deepEqual((await write(['file.open', { target: rel }], longId)).value, { status: 'ack', id: longId })
+  assert.equal((await f.local()).find(row => row.id === longId).target, rel.slice(0, 160))
+
+  assert.equal((await write(artifact('r1'))).value.status, 'ack')
+  const duplicate = randomUUID()
+  assert.deepEqual((await write(artifact('r1'), duplicate)).value, { status: 'ignored' })
+  await pause(1050)
+  assert.deepEqual((await write(artifact('r1'), duplicate)).value, { status: 'ignored' })
+  assert.equal((await f.local()).filter(row => row.event_type === 'artifact.interact').length, 1)
+})
+
 test('late browser events retain their original visit while sandbox events use the active visit', { timeout: 10_000 }, async t => {
   const f = await setup(t, { envVisit: true })
   assert.equal((await f.ipc('telemetry:outboxWrite', f.entry)).value.status, 'ack')
@@ -311,6 +339,24 @@ test('chat captures queued, accepted, and pre-turn rejected submissions under co
   assert.ok(rows.every(row => row.visit_id === visit))
   assert.ok(submissions.every(row => row.metadata.text === 'Research question from [email]' && rows.some(action => action.id === row.action_id)))
   assert.equal(rows.filter(row => row.event_type === 'agent.turn_start').length, 1)
+})
+
+test('a transport fallback shares the durable receipt of a dispatched send', { timeout: 10_000 }, async t => {
+  const f = await setup(t, { envVisit: true })
+  const dir = (await f.ipc('projects:create', { name: 'Receipt fixture', sample: true })).value
+  const { kernelSessionId: sid } = (await f.ipc('threads:create', dir)).value
+  const action = { id: randomUUID(), via: 'pointer', target: 'composer.send' }
+  const text = 'A submitted fixture message'
+  assert.equal((await f.ipc('kernel:send', sid, text, undefined, action)).ok, true)
+  await f.ipc('telemetry:flush')
+  const fallback = { ...f.entry, channel: 'telemetry:chatSubmission', args: [sid, text, 'failed', action] }
+  assert.deepEqual((await f.ipc('telemetry:outboxWrite', fallback)).value, { status: 'ack', id: fallback.id })
+  const failed = { ...fallback, id: randomUUID(), args: [sid, text, 'failed', { ...action, id: randomUUID() }] }
+  for (const id of [failed.id, randomUUID()])
+    assert.equal((await f.ipc('telemetry:outboxWrite', { ...failed, id })).value.status, 'ack')
+  await f.ipc('telemetry:flush')
+  const rows = (await f.uploaded()).filter(row => row.event_type === 'conversation.submission')
+  assert.deepEqual(rows.map(row => [row.action_id, row.metadata.dispatch_outcome]), [[action.id, 'sent'], [failed.args[3].id, 'failed']])
 })
 
 for (const reason of ['closed', 'timeout', 'user_stop', 'crash', 'disconnect']) {
