@@ -39,7 +39,6 @@ import { createThreads, threads } from './threads'
 import { assertProjectWritePath, saveProjectCopy, saveProjectText } from './program-save'
 import { createPaperBuilds, isBuildTurn } from './paper-build'
 import { createShutdown, webQuitWithin } from './shutdown-core'
-import { dispatchAndRecord } from './research-agent'
 import { previewTemplateVersion, refreshAppOwned, refreshPack, trustedBudgetFiles, trustedCheckFiles, trustedEngineFiles, trustedOriginalTextFiles, trustedPreviewFiles, trustedRunFiles, trustedShareFiles } from './pack'
 import { createPreviewPreparation } from './preview-preparation'
 import { isValidatedProtocol } from '../shared/research-search'
@@ -56,7 +55,7 @@ import { closeProjectRelays, isRunStop } from './run-stop'
 import { RunRegistry } from './run-registry'
 import { launchProtocolRun, newRunFolder, sweepRunCopies, type Binding as ProtocolBinding } from './protocol-run'
 import type { Kernel, KernelEvent } from './kernel-types'
-import { simulationResearch } from './simulation-research'
+import { detachedRunJournal, simulationResearch, type DetachedRunResearch } from './simulation-research'
 import { semanticId } from '../shared/research-contract'
 import { actionRef, type ActionRef } from '../shared/research-operations'
 import { withPrivateCopyNote } from '../shared/workspace-context'
@@ -67,8 +66,10 @@ import type { ProjectEntry, ProjectFile, ProjectSnapshot, Settings, ShareOptions
 const RELAY = relaySupported()
 const runs = new RunRegistry()
 const runRelays = runs.relays
-type RunResearch = ReturnType<typeof simulationResearch>
+type RunResearch = ReturnType<typeof simulationResearch> & { detached?: Omit<DetachedRunResearch, 'runDir' | 'pid'> }
 const activeRunResearch = new Map<string, RunResearch>()
+const webRunStops = new Map<string, () => Promise<void>>()
+let reconcileDetachedRuns: ((sandboxStop?: boolean) => Promise<void>) | undefined
 async function closeRunRelay(id: string) {
   await runs.closeCurrent(id)   // the relay's onClose frees its project (owner-checked)
 }
@@ -152,9 +153,27 @@ const shutdown = createShutdown({
   },
   quiesce: async () => {
     // Preserve kernel/session bindings until exit so an unsuccessful quit remains usable.
-    await Promise.all([...activeTurns].map(id => kernelFor(id).abort(id)))
-    await Promise.all([...activeRunResearch.values()].map(run => run.interrupt()))
-    activeRunResearch.clear()
+    const reason = telemetry.webEndReason()
+    const sandboxStop = webRuntime && (reason === 'timeout' || reason === 'user_stop')
+    const abortTurns = () => Promise.all([...activeTurns].map(id => kernelFor(id).abort(id)))
+    if (sandboxStop) {
+      const runs = [...activeRunResearch].filter(([id]) => !webRunStops.has(id))
+      const stopRuns = async () => {
+        await Promise.allSettled([
+          ...[...webRunStops.values()].map(stop => stop()),
+          ...runs.map(([, run]) => run.interrupt()),
+        ])
+        // A server restart can leave a run owned by the previous process.
+        await reconcileDetachedRuns?.(true)
+      }
+      await Promise.all([abortTurns(), stopRuns()])
+      return
+    }
+    await abortTurns()
+    await Promise.all([...activeRunResearch].map(async ([id, run]) => {
+      await run.quit()
+      if (!run.detached) activeRunResearch.delete(id)
+    }))
   },
   failed: error => {
     console.error('shutdown: could not save', error)
@@ -545,6 +564,10 @@ app.whenReady().then(() => {
   })
   if (!primaryInstance) return
   applyCredentials()
+  const runJournal = detachedRunJournal(join(app.getPath('userData'), 'protocol-run-research'))
+  reconcileDetachedRuns = sandboxStop => runJournal.reconcile(run =>
+    telemetry.simulationPublisher(run.projectDir, run.threadId, run.action, run.researchScope, run.visitId), sandboxStop)
+  void reconcileDetachedRuns()
   try {
     applySettings()
   } catch (e) {
@@ -1080,25 +1103,32 @@ app.whenReady().then(() => {
   })
   threadsInitialized = true
   async function approveRunResearch(projectDir: string, threadId: string, binding: ProtocolBinding,
-    plan: { perCondition?: unknown; model?: unknown } | undefined, initiator?: ActionRef): Promise<RunResearch | undefined> {
-    const publish = telemetry.simulationPublisher(projectDir, threadId, initiator)
+    plan: { perCondition?: unknown; model?: unknown } | undefined, initiator: ActionRef, detached = false): Promise<RunResearch | undefined> {
+    const context = telemetry.simulationContext()
+    if (!context.researchScope) return
+    const publish = telemetry.simulationPublisher(projectDir, threadId, initiator, context.researchScope, context.visitId)
     if (!publish || !semanticId(plan?.model) || !Number.isSafeInteger(plan.perCondition) ||
       Number(plan.perCondition) < 1 || Number(plan.perCondition) > 60) return
     const bytes = await readFile(join(projectDir, 'protocol.json')).catch(() => null)
     if (!bytes || createHash('sha256').update(bytes).digest('hex') !== binding.protocolSha256) return
     let studyId: unknown
     try { studyId = JSON.parse(bytes.toString('utf8'))?.id } catch { /* the runner handles an invalid study */ }
-    const research = simulationResearch(binding.runId, {
+    const scope = {
       study_id: semanticId(studyId) ? studyId : 'protocol', revision: binding.protocolSha256,
       per_condition: Number(plan.perCondition), model: plan.model,
-    }, publish)
+    }
+    const research: RunResearch = simulationResearch(binding.runId, scope, publish)
+    if (detached) research.detached = { ...context, researchScope: context.researchScope, projectDir, threadId, action: initiator, scope }
     activeRunResearch.set(binding.runId, research)
     return research
   }
 
-  async function finishRunResearch(binding: ProtocolBinding, code: number | null, signal: NodeJS.Signals | null = null) {
+  async function finishRunResearch(binding: ProtocolBinding, code: number | null, signal: NodeJS.Signals | null = null, interrupted = false) {
     const research = activeRunResearch.get(binding.runId)
-    try { await research?.finish(code, signal) }
+    try {
+      const saved = await research?.finish(code, signal, interrupted)
+      if (saved && research?.detached) await runJournal.forget(binding.runId)
+    } catch { /* a detached run's journal remains for startup reconciliation */ }
     finally { activeRunResearch.delete(binding.runId) }
   }
 
@@ -1112,6 +1142,9 @@ app.whenReady().then(() => {
     const runDir = newRunFolder(projectDir)
     // A published study runs from its wording restored on this computer for exactly the approved version.
     const restored = await restoredRunFiles(projectDir, originalTextCache(), binding.protocolSha256)
+    const research = activeRunResearch.get(binding.runId)
+    const detached = research?.detached
+    if (detached) await runJournal.prepare()
     await launchProtocolRun({
       python, files: [...trustedRunFiles(), ...restored], codeDir: join(app.getPath('userData'), 'protocol-runs', binding.runId), project: projectDir, runDir, binding,
       plan: { perArm: per as number, arms: null, seeds: [1], temperature: 1.0 },
@@ -1119,8 +1152,22 @@ app.whenReady().then(() => {
       // Pre-relay path: the same environment the agent's runs get there (the run confirmation said the key is readable).
       env: relay ? { PATH: (process.env.HUMANSTUDY_RUNTIME_BIN ? process.env.HUMANSTUDY_RUNTIME_BIN + (process.platform === 'win32' ? ';' : ':') : '') + (process.env.PATH ?? '') } : { ...process.env,
         ...(typeof approved.plan?.model === 'string' && approved.plan.model ? { HUMANSTUDY_SIM_MODEL: approved.plan.model } : {}) },
-      onStart: () => activeRunResearch.get(binding.runId)?.started(runDir),
-      onExit: (code, signal) => { void finishRunResearch(binding, code, signal); ended() },
+      beforeSpawn: () => {
+        if (shutdown.closing()) throw Error('The app is saving before closing. Please wait.')
+      },
+      exitFile: detached ? runJournal.exitFile(binding.runId) : undefined,
+      onStart: (pid, interrupt) => {
+        if (webRuntime) webRunStops.set(binding.runId, async () => {
+          try { interrupt() }
+          finally { await finishRunResearch(binding, null, null, true) }
+        })
+        research?.started(runDir, detached && runJournal.remember(binding.runId, { ...detached, runDir, pid }))
+      },
+      onExit: (code, signal) => {
+        webRunStops.delete(binding.runId)
+        void finishRunResearch(binding, code, signal)
+        ended()
+      },
       lang: approved.lang === 'zh-CN' ? 'zh-CN' : 'en',
     })
   }
@@ -1192,7 +1239,7 @@ app.whenReady().then(() => {
         if (!owner) throw Error('A simulation is already active in this project.')
         try {
           initiatingAction ??= { id: randomUUID(), target: 'simulation.run', via: 'system' }
-          await approveRunResearch(projectDir, id, binding, approved.plan, initiatingAction)
+          await approveRunResearch(projectDir, id, binding, approved.plan, initiatingAction, true)
           await startProtocolRun(projectDir, approved, binding, undefined, () => runs.release(projectDir, owner))
         } catch (error) {
           await finishRunResearch(binding, null)
@@ -1223,8 +1270,7 @@ app.whenReady().then(() => {
       target: typeof text === 'string' && text.startsWith('[Simulation scope approved]') ? 'simulation.run' : 'composer.send',
     }
     // The receipt joins the collector's serialized queue (drained at quit); the reply never waits for it.
-    return dispatchAndRecord(() => sendToKernel(id, text, workspace, ref),
-      outcome => telemetry.trackChatSubmission(id, text, outcome, ref))
+    return telemetry.dispatchWebChat(id, text, ref, () => sendToKernel(id, text, workspace, ref))
   })
   ipcMain.handle('kernel:export', async (_e,sid:string) => {
     const k=kernelFor(sid)

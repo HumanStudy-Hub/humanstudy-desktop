@@ -8,7 +8,7 @@ const [{ text: source }] = (await build({
   entryPoints: [fileURLToPath(new URL('./browser-electron.ts', import.meta.url))],
   bundle: true, write: false, format: 'cjs',
 })).outputFiles
-function harness({ config = { uploads: '/uploads', sep: '/' }, href = 'https://workspace.test/', stored = new Map() } = {}) {
+function harness({ config = { uploads: '/uploads', sep: '/' }, href = 'https://workspace.test/', stored = new Map(), respond } = {}) {
   const pending = [], calls = [], elements = []
   let events, eventUrl
   const make = tag => ({ tag, children: [], style: {}, attrs: {}, listeners: {},
@@ -17,7 +17,7 @@ function harness({ config = { uploads: '/uploads', sep: '/' }, href = 'https://w
   })
   const body = make('body')
   const exports = {}
-  const context = { module: { exports }, exports, console, URL, clearTimeout, Uint8Array, Event, navigator: { language: 'en' },
+  const context = { module: { exports }, exports, console, URL, clearTimeout, setTimeout: () => 1, Uint8Array, Event, AbortSignal, performance, navigator: { language: 'en', onLine: true },
     crypto: { randomUUID: config.workspace ? randomUUID : () => `upload-${pending.length}` },
     sessionStorage: { getItem: key => stored.get(key), setItem: (key, value) => stored.set(key, value) },
     document: { body, createElement(tag) { const e = make(tag); elements.push(e); return e }, createTextNode: text => ({ text }) },
@@ -26,7 +26,7 @@ function harness({ config = { uploads: '/uploads', sep: '/' }, href = 'https://w
     fetch: async (url, options) => {
       calls.push({ url, options })
       if (url.startsWith('/upload/')) return new Promise(resolve => pending.push(resolve))
-      return { status: 200, json: async () => ({ ok: true, value: 'ok' }) }
+      return respond?.(url, options) ?? { status: 200, json: async () => ({ ok: true, value: 'ok' }) }
     },
   }
   vm.runInNewContext(source, context)
@@ -80,4 +80,32 @@ test('visit fallback survives reload within a workspace and differs in a fresh b
   assert.equal(harness({ config, stored }).eventUrl, first)
   assert.notEqual(harness({ config }).eventUrl, first)
   assert.notEqual(harness({ config: { ...config, workspace: 'other' }, stored }).eventUrl, first)
+})
+
+test('a transport-failed send while online adds one failed submission with the dispatch action', async () => {
+  let sends = 0
+  const h = harness({
+    config: { uploads: '/uploads', sep: '/', workspace: 'fixture', scope: 'consented' },
+    respond(url) {
+      if (url !== '/ipc/kernel%3Asend') return
+      if (++sends === 1) throw new TypeError('connection lost')
+      if (sends === 3) return { status: 503, json: async () => ({ ok: false, error: { message: 'The workspace is stopping.' } }) }
+      return { status: 200, json: async () => ({ ok: false, error: { message: 'main process refusal' } }) }
+    },
+  })
+  await assert.rejects(h.ipcRenderer.invoke('kernel:send', 'session', 'first message'), /connection to HumanStudy Hub was lost/)
+  await assert.rejects(h.ipcRenderer.invoke('kernel:send', 'session', 'second message'), /main process refusal/)
+  await settle()
+  const args = call => JSON.parse(call.options.body).args
+  const dispatch = h.calls.find(call => call.url === '/ipc/kernel%3Asend')
+  const writes = h.calls.filter(call => call.url === '/ipc/telemetry%3AoutboxWrite')
+  assert.equal(writes.length, 1)
+  const [entry] = args(writes[0])
+  assert.equal(entry.channel, 'telemetry:chatSubmission')
+  assert.deepEqual(entry.args, ['session', 'first message', 'failed', args(dispatch)[3]])
+  assert.match(entry.args[3].id, /^[0-9a-f-]{36}$/)
+  await assert.rejects(h.ipcRenderer.invoke('kernel:send', 'session', 'third message'), /The workspace is stopping\./)
+  await settle()
+  const failed = h.calls.filter(call => call.url === '/ipc/telemetry%3AoutboxWrite').map(call => args(call)[0].args[1])
+  assert.deepEqual(failed, ['first message', 'third message'])
 })

@@ -12,7 +12,7 @@ await build({
   entryPoints: [fileURLToPath(new URL('artifact-interaction-guard.ts', import.meta.url))],
   bundle: true, platform: 'node', format: 'esm', outfile: join(temp, 'bundle.mjs'),
 })
-const { artifactVocabulary, screenInteraction, createInteractionGuard, MAX_EVENTS_PER_REVISION } =
+const { artifactVocabulary, screenInteraction, createInteractionGuard, DROPPED_INTERACTION, MAX_EVENTS_PER_REVISION } =
   await import(pathToFileURL(join(temp, 'bundle.mjs')).href)
 test.after(() => rm(temp, { recursive: true, force: true }))
 
@@ -81,9 +81,9 @@ test('the guard reads each revision once, caps volume and drops quick duplicates
   let reads = 0, clock = 0
   const guard = createInteractionGuard(async () => { reads++; return page }, () => clock)
   assert.deepEqual(await guard('/p', 'artifacts/a.html', 'r1', event()), event())
-  assert.equal(await guard('/p', 'artifacts/a.html', 'r1', event()), null, 'duplicate within 1 s')
+  assert.equal(await guard('/p', 'artifacts/a.html', 'r1', event()), DROPPED_INTERACTION, 'duplicate within 1 s')
   clock += 999
-  assert.equal(await guard('/p', 'artifacts/a.html', 'r1', event()), null, 'a held repeat stays one event')
+  assert.equal(await guard('/p', 'artifacts/a.html', 'r1', event()), DROPPED_INTERACTION, 'a held repeat stays one event')
   clock += 1000
   assert.deepEqual(await guard('/p', 'artifacts/a.html', 'r1', event()), event(), 'after a pause it counts again')
   assert.equal(reads, 1)
@@ -93,12 +93,12 @@ test('the guard reads each revision once, caps volume and drops quick duplicates
     assert.ok(await guard('/p', 'artifacts/a.html', 'r1', event({ step: i % 2 ? null : 2 })), `event ${i}`)
   }
   clock += 5000
-  assert.equal(await guard('/p', 'artifacts/a.html', 'r1', event({ controlId: 'next-step', label: 'next-step' })), null, 'cap reached')
+  assert.equal(await guard('/p', 'artifacts/a.html', 'r1', event({ controlId: 'next-step', label: 'next-step' })), DROPPED_INTERACTION, 'cap reached')
   // A new revision is read again and has its own allowance.
   assert.deepEqual(await guard('/p', 'artifacts/a.html', 'r2', event()), event())
   assert.equal(reads, 2)
   // An unreadable artifact reports nothing.
-  assert.equal(await createInteractionGuard(async () => null)('/p', 'artifacts/b.html', 'r1', event()), null)
+  assert.equal(await createInteractionGuard(async () => null)('/p', 'artifacts/b.html', 'r1', event()), DROPPED_INTERACTION)
 })
 
 test('the shipped sample results page: citations built at runtime by HS.cite are kept', async () => {
@@ -123,10 +123,10 @@ test('the shipped sample results page: citations built at runtime by HS.cite are
 test('draft and history views report nothing, and a failed read is retried', async () => {
   let reads = 0, text = null
   const guard = createInteractionGuard(async () => { reads++; return text })
-  assert.equal(await guard('/p', 'artifacts/a.html', 'draft', event()), null)
-  assert.equal(await guard('/p', 'artifacts/a.html', 'history:abc', event()), null)
+  assert.equal(await guard('/p', 'artifacts/a.html', 'draft', event()), DROPPED_INTERACTION)
+  assert.equal(await guard('/p', 'artifacts/a.html', 'history:abc', event()), DROPPED_INTERACTION)
   assert.equal(reads, 0, 'the on-disk file is never read for in-memory text')
-  assert.equal(await guard('/p', 'artifacts/a.html', 'r1', event()), null, 'unreadable')
+  assert.equal(await guard('/p', 'artifacts/a.html', 'r1', event()), DROPPED_INTERACTION, 'unreadable')
   await new Promise(resolve => setImmediate(resolve))
   text = page
   assert.deepEqual(await guard('/p', 'artifacts/a.html', 'r1', event()), event(), 'read again after a failure')
@@ -137,4 +137,16 @@ test('a compressed preview block cannot expand without bound', () => {
   const huge = gzipSync(Buffer.from(JSON.stringify({ arms: [{ id: 'a', pad: 'x'.repeat(9 * 1024 * 1024) }], screens: {} })))
   const html = `<meta name="hs-artifact" content="participant-preview"><script type="application/json" id="hs-preview" data-encoding="gzip+base64">"${huge.toString('base64')}"</script>`
   assert.equal(artifactVocabulary(html).preview, undefined, 'over the limit: treated as an ordinary page')
+})
+
+test('a replay preserves the guard decision after the dedupe window', async () => {
+  let now = 0
+  const guard = createInteractionGuard(async () => page, () => now)
+  const deliver = id => guard('/p', 'artifacts/a.html', 'r1', event(), id)
+  assert.deepEqual(await deliver('first'), event())
+  assert.equal(await deliver('duplicate'), DROPPED_INTERACTION)
+  now += 2000
+  assert.equal(await deliver('duplicate'), DROPPED_INTERACTION)
+  assert.deepEqual(await deliver('first'), event())
+  assert.deepEqual(await deliver('new-event'), event())
 })

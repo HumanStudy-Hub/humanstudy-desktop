@@ -205,6 +205,14 @@ test('the browser commits before POST, reuses the ID after a lost response and w
   await until(() => stored.size === 0)
   assert.equal(posted[2].id, posted[0].id)
 
+  const discarded = load(() => ({ status: 'ignored' }))
+  await discarded.append('telemetry:track', ['dropped'])
+  await discarded.append('telemetry:track', ['invalid'])
+  await until(() => posted.length === 5 && stored.size === 0)
+  discarded.replay()
+  await turn()
+  assert.equal(posted.length, 5, 'ignored entries are removed and cannot be replayed')
+
   const offline = load(() => { throw Error('offline') })
   await offline.append('telemetry:track', ['withdrawn-click'])
   await until(() => stored.size === 1)

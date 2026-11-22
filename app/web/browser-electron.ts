@@ -1,6 +1,7 @@
 // The `electron` module for the web build of the preload (src/preload/index.ts, unchanged): the same
 // window.humanstudy, with ipcRenderer over HTTP to web/server.cjs and events over server-sent events.
 import { researchUuid } from '../src/shared/research-contract'
+import { actionRef } from '../src/shared/research-operations'
 import { createResearchOutbox } from './research-outbox'
 
 type Handler = (event: unknown, ...args: unknown[]) => void
@@ -105,6 +106,8 @@ function download(value: unknown): void {
 }
 const SAVES = new Set(['project:saveCopy', 'kernel:export', 'telemetry:saveExport', 'projects:exportStudy', 'projects:shareStudy'])
 
+class IpcTransportError extends Error {}
+
 async function call(channel: string, args: unknown[], signal?: AbortSignal): Promise<unknown> {
   // A call that names a picked file waits for its upload; a failed upload fails only the calls that use it.
   const paths = new Set<string>()
@@ -128,14 +131,17 @@ async function call(channel: string, args: unknown[], signal?: AbortSignal): Pro
       signal,
     })
   } catch {
-    throw new Error(`Error invoking remote method '${channel}': Error: The connection to HumanStudy Hub was lost. Check your network and try again.`)
+    throw new IpcTransportError(`Error invoking remote method '${channel}': Error: The connection to HumanStudy Hub was lost. Check your network and try again.`)
   }
   if (res.status === 401) {
     connection.ended()
     throw new Error(`Error invoking remote method '${channel}': Error: This session has ended. Open HumanStudy Hub again.`)
   }
   const out = (await res.json().catch(() => null)) as { ok: boolean; value?: unknown; error?: { name?: string; message: string } } | null
-  if (!out) throw new Error(`Error invoking remote method '${channel}': Error: HumanStudy Hub did not answer (${res.status}).`)
+  if (res.status !== 200 || !out || typeof out.ok !== 'boolean') {
+    const message = typeof out?.error?.message === 'string' ? out.error.message : `HumanStudy Hub did not answer (${res.status}).`
+    throw new IpcTransportError(`Error invoking remote method '${channel}': Error: ${message}`)
+  }
   if (!out.ok) throw new Error(`Error invoking remote method '${channel}': ${out.error?.name || 'Error'}: ${out.error?.message ?? 'failed'}`)
   return decode(out.value)
 }
@@ -239,9 +245,19 @@ export const ipcRenderer = {
       const consent = args[0] as { usage?: boolean; content?: boolean } | undefined
       if (!consent?.usage || !consent.content) outbox?.suspend()
     }
-    if (channel === 'kernel:send' && outbox && navigator.onLine === false && typeof args[1] === 'string') {
-      void outbox.append('telemetry:chatSubmission', [args[0], args[1], 'failed', args[3]])
-      return Promise.reject(new Error('The connection to HumanStudy Hub was lost. Check your network and try again.'))
+    if (channel === 'kernel:send' && outbox && typeof args[1] === 'string') {
+      const [sid, value, workspace, action] = args
+      const ref = actionRef(action) ?? { id: crypto.randomUUID(), via: 'system',
+        target: args[1].startsWith('[Simulation scope approved]') ? 'simulation.run' : 'composer.send' }
+      const recordFailure = outbox.deferredAppend('telemetry:chatSubmission', [sid, value, 'failed', ref])
+      if (navigator.onLine === false) {
+        void recordFailure()
+        return Promise.reject(new Error('The connection to HumanStudy Hub was lost. Check your network and try again.'))
+      }
+      return call(channel, [sid, value, workspace, ref]).catch(error => {
+        if (error instanceof IpcTransportError) void recordFailure()
+        throw error
+      })
     }
     const p = call(channel, args)
     if (channel === 'telemetry:setConsent' || /^account:sign(?:In|Up|Out)$/.test(channel))

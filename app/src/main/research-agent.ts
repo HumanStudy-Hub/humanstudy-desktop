@@ -6,7 +6,7 @@
 // path reports it (`action`). Downstream records carry its id as action_id, the record that caused
 // them as caused_by and an enclosing operation as metadata.parent_action_id. thread_id is the native
 // OpenCode session id; message/part/tool-call ids are OpenCode's own when reported.
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { KernelEvent } from './kernel-types'
 import type { ResearchCapture } from './research-collector'
 import type { ActionRef } from '../shared/research-operations'
@@ -60,6 +60,13 @@ export async function dispatchAndRecord<T>(send: () => Promise<T>, record: (outc
     try { void record(outcome).catch(() => undefined) } catch { /* research data must never break the app */ }
   }
 }
+
+/** Stable UUID for an event with a durable retry key, distinct from its action id. */
+export function researchReceiptId(key: string): string {
+  const hex = createHash('sha256').update(key).digest('hex')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+}
+const submissionReceipt = (actionId: string) => researchReceiptId('chat-submission:' + actionId)
 
 export function createResearchAgent(capture: Sink) {
   const turns = new Map<string, Turn>()
@@ -163,8 +170,8 @@ export function createResearchAgent(capture: Sink) {
      * A semantic UI event (desktop renderer or main process). One action.invoke per operation: a
      * secondary name of an operation already recorded adds no row; result records link to it.
      */
-    record(event: Parameters<Sink>[0], projectDir: string): void {
-      track(capture(event, { projectDir }))
+    record(event: Parameters<Sink>[0], context: Parameters<Sink>[1]): Promise<unknown> {
+      return track(capture(event, context))
     },
     interaction(type: string, opts: { target?: string; durationMs?: number; metadata?: Record<string, unknown>; action?: ActionRef } = {},
       ctx: { project_id?: string; dir?: string; artifactVersion?: number } = {},
@@ -216,11 +223,13 @@ export function createResearchAgent(capture: Sink) {
       const ctx = sid ? contexts.get(sid) : undefined
       const thread_id = sid && /^[A-Za-z0-9_.:-]{1,120}$/.test(sid) ? sid : undefined
       const fields = { thread_id, view: 'agent', project_id: ctx?.project, dir: ctx?.dir }
+      // A send and the browser's fallback for its lost response share one receipt.
+      const receipt = outcome === 'queued' ? delivery?.id : submissionReceipt(op.id)
       const save = async () => {
         if (delivery) {
           if (!await writeAction(op, fields, delivery)) return null
         } else action(op, fields)
-        return capture({ event_type: 'conversation.submission', ...(delivery ? { id: delivery.id, occurred_at: delivery.occurred_at } : {}),
+        return capture({ event_type: 'conversation.submission', ...(receipt ? { id: receipt } : {}), ...(delivery ? { occurred_at: delivery.occurred_at } : {}),
           thread_id, project_id: ctx?.project, message_id: op.id, action_id: op.id, caused_by: op.id,
           metadata: { dispatch_outcome: outcome, text } }, { projectDir: ctx?.dir, accept: delivery?.accept, visitId: delivery?.visitId })
       }

@@ -62,6 +62,7 @@ export function createPreviewPreparation(options: {
 }) {
   const running = new Set<string>()
   const checking = new Map<string, Promise<Status>>()
+  const current = new Map<string, string>()
   const failed = new Map<string, string>()
   // The refresh triggered by a failure still needs to show its status. A new preparation
   // request clears this display state and retries immediately.
@@ -79,19 +80,23 @@ export function createPreviewPreparation(options: {
     const preview = join(dir, 'artifacts', 'preview.html')
     try {
       const protocolInfo = await fileInfo(protocol)
-      if (!protocolInfo) { failed.delete(dir); return undefined }
+      if (!protocolInfo) { current.delete(dir); failed.delete(dir); return undefined }
       await assertProjectWritePath(dir, preview)
       const previewInfo = await fileInfo(preview)
+      const version = options.version()
+      const stamp = JSON.stringify([version, ...[protocolInfo, previewInfo].map(info =>
+        info && [info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs])])
+      if (current.get(dir) === stamp) return undefined
+      if (failed.get(dir) === stamp) return 'failed'
+      current.delete(dir)
       const previous = await fileBytes(preview)
       const previousHtml = previous?.toString('utf8')
       const previousVersion = previousHtml === undefined ? null : templateVersion(previousHtml)
       if (previousHtml !== undefined && previousVersion === null) {
         failed.delete(dir)
+        current.set(dir, stamp)
         return undefined
       }
-      const stamp = JSON.stringify([protocolInfo, previewInfo].map(info =>
-        info && [info.ino, info.size, info.mtimeMs, info.ctimeMs]))
-      if (failed.get(dir) === stamp) return 'failed'
       await assertProjectWritePath(dir, protocol)
       const raw = await fileBytes(protocol)
       if (!raw) return undefined
@@ -104,10 +109,10 @@ export function createPreviewPreparation(options: {
         return 'failed'
       }
       const hash = createHash('sha256').update(raw).digest('hex')
-      const version = options.version()
       if (previousHtml !== undefined && previousVersion !== null &&
           previousVersion >= version && protocolIdentity(previousHtml)?.sha256 === hash) {
         failed.delete(dir)
+        current.set(dir, stamp)
         return undefined
       }
       running.add(dir)

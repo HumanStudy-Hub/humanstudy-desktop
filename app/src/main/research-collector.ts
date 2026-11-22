@@ -26,6 +26,8 @@ interface Options {
 }
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export class InvalidResearchEvent extends Error {}
+
 export type ResearchCapture = Partial<ResearchEvent> & Pick<ResearchEvent, 'event_type'>
 /** Causal columns a caller attaches to a captured version or import (see research-agent.ts). */
 export interface CaptureLink { action_id?: string; caused_by?: string; thread_id?: string; tool_call_id?: string; metadata?: Record<string, unknown> }
@@ -121,7 +123,7 @@ export function createResearchCollector(options: Options) {
       }
       if (options.surface === 'web') row.visit_id = visit
       const errors = validateResearchEvent(row)
-      if (errors.length) throw new Error(`Invalid research event: ${errors.join('; ')}`)
+      if (errors.length) throw new InvalidResearchEvent(`Invalid research event: ${errors.join('; ')}`)
       return row
     }
     // Validate every row before a session exists: an invalid row (for example a web row without a
@@ -147,11 +149,11 @@ export function createResearchCollector(options: Options) {
       const owner = await capturedOwner
       if (!owner || await localOwner() !== owner || context.accept?.() === false) return null
       const spec = EVENTS[fields.event_type]
-      if (!spec) throw new Error('Unknown research event type: ' + fields.event_type)
+      if (!spec) throw new InvalidResearchEvent('Unknown research event type: ' + fields.event_type)
       const root = await ownerDir(owner)
       // The event file is the receipt until upload writes its durable replacement.
       const id = fields.id ?? randomUUID()
-      if (options.surface === 'web' && researchUuid(id)) {
+      if ((options.surface === 'web' || fields.event_type.startsWith('simulation.')) && researchUuid(id)) {
         for (const path of [join(root, 'events', id + '.json'), join(root, 'receipts', id)]) {
           try { await stat(path); return id } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
@@ -181,8 +183,10 @@ export function createResearchCollector(options: Options) {
         }
       }
       if (await localOwner() !== owner || context.accept?.() === false) return null
-      return enqueue({ userId: owner }, root, { ...fields, id, data_type: spec.dataType,
-        ...(fields.target ? { target: scrubResearchString(fields.target, context) } : {}),
+      const target = fields.target
+        ? scrubResearchString(fields.target, context).slice(0, LIMITS.targetChars).replace(/[\uD800-\uDBFF]$/, '')
+        : fields.target
+      return enqueue({ userId: owner }, root, { ...fields, id, target, data_type: spec.dataType,
         ...(spec.primary ? { action_id: id } : {}), metadata, content_refs: refs }, context.visitId)
     })
   }
@@ -341,7 +345,7 @@ export function createResearchCollector(options: Options) {
         ? 'A rejected research record is retained locally for review.' : undefined
       const removePending = (file: string, row: ResearchEvent) => run(async () => {
         ensureDelivery()
-        if (options.surface === 'web') {
+        if (options.surface === 'web' || row.event_type.startsWith('simulation.')) {
           const receipts = join(root, 'receipts')
           await mkdir(receipts, { recursive: true, mode: 0o700 })
           await atomic(join(receipts, row.id), '')

@@ -228,6 +228,39 @@ await scenario('two-parallel-disallowed-calls-resume-once', async ({ k, events, 
   assert.equal(requests.length, 2, 'recovery queued once')
   assert.match(requests[1].body.parts[0].text, /declined automatically/)
 })
+await scenario('automatic-reject-limit-stops-turn', async ({ k, events, requests, finish, idle }) => {
+  k.setPermissionMode('project')
+  const replies = []
+  k.replyTo = async (_server, _sid, id, reply, message) => {
+    replies.push({ reply, message })
+    // The SSE result can arrive before the POST resolves.
+    k.handle({ type: 'permission.replied', properties: { sessionID: 's', requestID: id, reply } })
+  }
+  const ask = i => k.handle({ type: 'permission.asked', properties: {
+    sessionID: 's', id: 'outside-' + i, permission: 'external_directory', patterns: ['/outside-' + i],
+  } })
+  await k.send('s', 'Build')
+  ask('before-1'); await tick()
+  ask('before-2'); await tick()
+  k.handle({ type: 'permission.asked', properties: {
+    sessionID: 's', id: 'inside', permission: 'bash', patterns: ['ls'],
+  } })
+  await tick()
+  assert.deepEqual(replies.map(({ reply }) => reply), ['reject', 'reject', 'once'])
+  replies.length = 0
+  for (let i = 1; i <= 6; i++) { ask(i); await tick() }
+  assert.ok(replies.slice(0, 5).every(reply => reply.reply === 'reject' && reply.message))
+  assert.deepEqual(replies[5], { reply: 'reject', message: undefined })
+  assert.ok(events.some(e => e.permission?.id === 'outside-6' && e.permission.type === 'auto_reject_limit' && e.permission.resolved === 'reject'))
+  k.handle({ type: 'permission.replied', properties: { sessionID: 's', requestID: 'cascade', reply: 'reject' } })
+  finish(); idle(); await tick()
+  assert.equal(requests.filter(r => r.path.endsWith('prompt_async')).length, 1)
+  assert.equal(events.filter(e => e.type === 'done').length, 1)
+
+  await k.send('s', 'Next task')
+  ask(7); await tick()
+  assert.match(replies[6].message, /inside this project folder/, 'a new turn starts with a fresh limit')
+})
 await scenario('dismissed-question-stops-turn', async ({ k, events, requests, idle }) => {
   k.replyTo = async () => {}
   await k.send('s', 'Build')

@@ -118,5 +118,9 @@ export function createResearchOutbox(workspace: string, visit: string, initialSc
       if (scope === entry.scope) await send(entry).catch(() => undefined)
     }
   }
-  return { append, refresh, replay, suspend: () => setScope(null) }
+  function deferredAppend(channel: string, args: unknown[]) {
+    const originalScope = scope
+    return () => originalScope === scope ? append(channel, args) : undefined
+  }
+  return { append, deferredAppend, refresh, replay, suspend: () => setScope(null) }
 }
