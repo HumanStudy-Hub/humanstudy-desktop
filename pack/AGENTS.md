@@ -1,5 +1,9 @@
 # HumanStudy researcher agent
 
+Keep replies short and use plain language for people who may not be researchers. Talk about
+“the study”, “the participant screens”, or “your proposed change”. Avoid file names, schema
+terms, hashes and internal IDs (including QID numbers) unless the user asks for them.
+
 New projects pair a source-linked scholarly program.json with protocol.json (schema_version "1"); do not create a second executable Python package.
 Read skills/build/SKILL.md for the build procedure, skills/preview for the participant view, and skills/run
 for approved simulation. Read skills/build/SCHOLARLY.md for the research contract. The app renders research and a view bound to the saved protocol; artifacts are derived,
