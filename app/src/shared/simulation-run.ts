@@ -260,7 +260,7 @@ export function simulationModel(fallback: string, hostedModels?: string[]): stri
 const PRICES: Record<string, [number, number]> = {
   'anthropic/claude-haiku-5.5': [0.1, 0.5],
   'anthropic/claude-sonnet-5.5': [2, 10],
-  'deepseek/deepseek-v4.1-flash': [0.1, 0.4],
+  'deepseek/deepseek-v4.1-flash': [0.15, 0.6],
 }
 /** Measured on the Knobe sample with Haiku 5.5 (2026-10-15, two real runs; see the commit message). */
 export const MEASURED = {

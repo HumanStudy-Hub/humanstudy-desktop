@@ -641,6 +641,29 @@ class Session:
             return value, None
         raise ProtocolError("unknown response kind %s" % kind)
 
+    def synthetic_text_id(self, field_id, identity):
+        """Return a stable administrative value accepted by this field, or None."""
+        field = next(r for r in self._page["responses"] if r["view"]["id"] == field_id)
+        minimum = int(field["view"].get("min_chars", 0))
+        rule = field["def"].get("validate") or {}
+        digest = hashlib.sha256(identity.encode()).digest()
+        value = identity + rule.get("contains", "")
+        padding = max(0, minimum - len(value))
+        value += (digest.hex() * ((padding + 63) // 64))[:padding]
+        if not self._validate(field, value)[1]:
+            return value
+        # Common platform formats specify a single character class and a width.
+        match = re.fullmatch(r"\^?(\[[^\]]+\]|\\[dw])\{(\d+)(?:,(\d*))?\}\$?", rule.get("pattern", ""))
+        if match:
+            alphabet = [c for c in "0123456789abcdefABCDEFghijklmnopqrstuvwxyzGHIJKLMNOPQRSTUVWXYZ_-"
+                        if re.fullmatch(match[1], c)]
+            width = max(minimum, int(match[2]))
+            if alphabet and width <= 4096:
+                value = "".join(alphabet[digest[i % len(digest)] % len(alphabet)] for i in range(width))
+                if not self._validate(field, value)[1]:
+                    return value
+        return None
+
     def step(self, answers, system_filled=None):
         if self._page is None:
             raise RuntimeError("session is done")

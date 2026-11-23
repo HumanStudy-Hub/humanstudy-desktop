@@ -146,8 +146,8 @@ assert.equal(S.simulationModel('fallback', ['other']), 'fallback')
 assert.equal(S.simulationModel('fallback'), 'fallback')
 const small = S.estimateRun({ conditions: 2, perCondition: 10, model: 'anthropic/claude-haiku-5.5', needsBuild: false })
 const hostedEstimate = S.estimateRun({ conditions: 2, perCondition: 10, model: flash, assistantModel: 'anthropic/claude-haiku-5.5', needsBuild: false })
-const outputSavings = 20 * S.MEASURED.participantOut * (0.5 - 0.4) / 1e6
-assert.ok(Math.abs(small.cost[1] - hostedEstimate.cost[1] - 2 * outputSavings) < 1e-12)
+const capDifference = 20 * (S.MEASURED.participantIn * 0.05 + S.MEASURED.participantOut * 0.1) / 1e6
+assert.ok(Math.abs(hostedEstimate.cost[1] - small.cost[1] - 2 * capDifference) < 1e-12)
 const big = S.estimateRun({ conditions: 2, perCondition: 60, model: 'anthropic/claude-haiku-5.5', needsBuild: false })
 const sonnet = S.estimateRun({ conditions: 2, perCondition: 10, model: 'anthropic/claude-sonnet-5.5', needsBuild: false })
 const withBuild = S.estimateRun({ conditions: 2, perCondition: 10, model: 'anthropic/claude-haiku-5.5', needsBuild: true })

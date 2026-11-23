@@ -198,8 +198,8 @@ def chat(
                 choice = (payload.get("choices") or [{}])[0]
                 text = (choice.get("message") or {}).get("content")
                 if isinstance(text, list):  # content parts
-                    text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
-                empty = text is None or not text.strip()
+                    text = "".join(p["text"] for p in text if isinstance(p, dict) and isinstance(p.get("text"), str))
+                empty = not isinstance(text, str) or not text.strip()
                 u = payload.get("usage") or {}
                 finish = choice.get("finish_reason")
                 _log({
@@ -219,6 +219,8 @@ def chat(
                 })
                 if not empty:
                     return payload if full else text
+                if finish in ("length", "content_filter"):
+                    raise LLMError(f"the model returned no content (finish_reason={finish})")
                 empty_replies += 1
                 if empty_replies >= 3 or attempt == MAX_ATTEMPTS - 1:
                     raise LLMError(f"the model returned no content after {attempt + 1} attempt(s)")

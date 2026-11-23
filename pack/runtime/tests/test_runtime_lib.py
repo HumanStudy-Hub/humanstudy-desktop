@@ -90,8 +90,8 @@ class FakeProxy(BaseHTTPRequestHandler):
 
 
 class EmptyReplyTests(unittest.TestCase):
-    def call(self, contents):
-        replies = [io.BytesIO(json.dumps({"id": str(i), "choices": [{"message": {"content": content}}],
+    def call(self, contents, finish="stop"):
+        replies = [io.BytesIO(json.dumps({"id": str(i), "choices": [{"message": {"content": content}, "finish_reason": finish}],
                                          "usage": {"total_tokens": 10}}).encode())
                    for i, content in enumerate(contents)]
         for reply in replies:
@@ -107,14 +107,21 @@ class EmptyReplyTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(H.LLMError, "no content"):
                         H.llm("test")
-                self.assertEqual(sleep.call_count, 2)
+                self.assertEqual(sleep.call_count, len(contents) - 1)
             rows = [json.loads(line) for line in path.read_text().splitlines()]
-            self.assertEqual([row["attempts"] for row in rows], [1, 2, 3])
-            self.assertEqual([row["ok"] for row in rows], [False, False, contents[-1] == "ok"])
+            self.assertEqual([row["attempts"] for row in rows], list(range(1, len(contents) + 1)))
+            self.assertEqual([row["ok"] for row in rows], [False] * (len(contents) - 1) + [contents[-1] == "ok"])
             self.assertTrue(all(row["total_tokens"] == 10 for row in rows))
 
     def test_recovers(self):
         self.call([None, " ", "ok"])
+
+    def test_terminal_finish(self):
+        for reason in ("length", "content_filter"):
+            self.call([None], reason)
+
+    def test_malformed_content(self):
+        self.call([{}, [{"text": 123}], "ok"])
 
     def test_exhausted(self):
         self.call([None, "", []])

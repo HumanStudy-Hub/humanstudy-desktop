@@ -359,9 +359,9 @@ class Participant:
 
 # The response schema has no platform identifier kind. Match only direct ID requests.
 _PLATFORM_ID = re.compile(
-    r"(?:(?:please\s+)?(?:enter|provide|type(?: in)?|what is|what's)\s+)?"
+    r"(?:(?:please\s+)?(?:paste|enter|provide|type(?: in)?|what is|what's)\s+)?"
     r"(?:(?:your|the)\s+)?(?:prolific(?: participant)?|(?:mturk |amazon mechanical turk )?worker|"
-    r"mturk|participant|subject)\s+id(?:entifier)?[\s:?.!*]*", re.I)
+    r"mturk|participant|subject)\s+id(?:entifier)?(?:\s+(?:below|here|in the (?:box|field)))?[\s:?.!*]*", re.I)
 
 
 def _screen_sha(state):
@@ -460,9 +460,14 @@ class Runner:
         if self.fdesc["spec"].get("fill_platform_ids"):
             for r in screen.get("responses", []):
                 if r["kind"] == "text" and r.get("required") and _PLATFORM_ID.fullmatch(r["prompt"].strip()):
-                    system_filled[r["id"]] = "AI-participant-%s-%s" % (part.opaque, pid)
+                    value = part.member(pid).synthetic_text_id(r["id"], "AI-participant-%s-%s" % (part.opaque, pid))
+                    if value is None:
+                        return {"platform_refused": True}, False
+                    system_filled[r["id"]] = value
         remaining = [r for r in screen.get("responses", []) if r["id"] not in system_filled]
         model_state = dict(state, screen=dict(screen, responses=remaining)) if system_filled else state
+        if system_filled and model_state.get("error"):
+            model_state["error"] = {k: v for k, v in state["error"].items() if k not in system_filled}
         call_model = not system_filled or bool(remaining)
         last = None
         for k in range(1 + self.fdesc["retries"]):
@@ -602,6 +607,9 @@ class Runner:
                 steps_fh.write("".join(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in new_rows))
                 steps_fh.flush()
             for (part, pid, st), (row, _) in zip(calls, results):   # applied in participant order
+                if row.get("platform_refused"):
+                    part.error = "platform ID refused by protocol validation"
+                    continue
                 if "failed" in row:
                     part.error = "f failed after %d tries: %s" % (1 + self.fdesc["retries"], row["failed"])
                     part.f_errors.setdefault(pid, []).append(row)   # operator side only
@@ -623,7 +631,9 @@ class Runner:
                 if row.get("note") is not None:
                     entry["note"] = row["note"]
                 part.transcript[pid].append(entry)
-                if err and part.attempt[pid] >= self.fdesc["max_refusals"]:
+                if err and set(err).intersection(row.get("system_filled", {})):
+                    part.error = "platform ID refused by protocol validation"
+                elif err and part.attempt[pid] >= self.fdesc["max_refusals"]:
                     part.error = "stuck: the page refused %d answer sets in a row (%s)" % (
                         part.attempt[pid], json.dumps(err, ensure_ascii=False)[:200])
             still = []

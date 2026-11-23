@@ -3,7 +3,7 @@ source: github.com/HumanStudy-Hub/hsenv dev commit 433fd3fb06ad86a89b91f0bb61fe2
 # Includes the desktop simulation platform-ID change.
 synced: 2026-11-12
 9c4ed34960789fb18351512d30b9c5879f36a33a0f7206bcbf89172eee541291  hsenv/__init__.py
-cd1894e2c002eb4fc864c0417a702a50669d825079dd900c19db0cd5d77f47c7  hsenv/engine.py
+530b8859897036678b607ee587747fb28bc878ab841f8bbae6ff726e60670f5e  hsenv/engine.py
 1ab2b19da24a40c17c4a9e32b9c95f59e0f76e883bc9991bad6738ca0f55150b  hsenv/expr.py
 12408520f8eb99f6025c6929696770d1a9dba2698f7936054ce6fd644ac95f55  hsenv/checks.py
 e2d266af52ff23402630f2082dd8f314c7a9c7332f508f32d68962e1d9b81bda  hsenv/effects_core.py
