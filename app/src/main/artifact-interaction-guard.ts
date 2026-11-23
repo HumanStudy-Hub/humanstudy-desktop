@@ -10,6 +10,8 @@ import { parseArtifactInteraction, semanticId, type ArtifactInteraction } from '
 
 export const DROPPED_INTERACTION = 'dropped'
 export const MAX_LABEL = 40
+// ~10 minutes of outbox backoff: long enough for a fresh workspace to download the project.
+const MAX_TRANSIENT_TRIES = 40
 export const MAX_EVENTS_PER_REVISION = 500
 export const DUPLICATE_WINDOW_MS = 1000
 const MAX_FILE_BYTES = 5 * 1024 * 1024
@@ -130,6 +132,7 @@ export function createInteractionGuard(read: ReadArtifact, now: () => number = D
   const volume = new Map<string, { count: number; last?: string; at: number }>()
   // A retry after a lost ACK keeps its original decision, even outside the dedupe window.
   type Decision = ArtifactInteraction | typeof DROPPED_INTERACTION
+  const transientTries = new Map<string, number>()
   const decisions = new Map<string, Decision>()
   return async (projectDir: string, rel: string, revision: string, input: unknown, deliveryId?: string): Promise<Decision | null> => {
     // A draft or an older version is shown from text the renderer holds, not the file on disk, so
@@ -156,8 +159,18 @@ export function createInteractionGuard(read: ReadArtifact, now: () => number = D
     let v: ArtifactVocabulary | null
     try {
       v = await vocabulary
-    } catch {
+    } catch (error) {
       if (vocabularies.get(key) === vocabulary) vocabularies.delete(key)
+      // Read errors (incl. ENOENT while a fresh workspace is still downloading the project) are retried,
+      // but each delivery only a bounded number of times so a deleted artifact cannot replay forever.
+      const code = (error as NodeJS.ErrnoException | undefined)?.code
+      if (code === 'ENOTDIR' || code === 'EISDIR') return remember(DROPPED_INTERACTION)
+      if (deliveryKey) {
+        const tries = (transientTries.get(deliveryKey) ?? 0) + 1
+        transientTries.set(deliveryKey, tries)
+        if (transientTries.size > 5000) transientTries.delete(transientTries.keys().next().value!)
+        if (tries > MAX_TRANSIENT_TRIES) return remember(DROPPED_INTERACTION)
+      }
       return null // Retry this delivery without consuming its id or volume allowance.
     }
     const concurrent = deliveryKey && decisions.get(deliveryKey)

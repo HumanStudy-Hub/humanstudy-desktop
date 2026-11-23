@@ -151,3 +151,10 @@ test('a replay preserves the guard decision after the dedupe window', async () =
   assert.deepEqual(await deliver('first'), event())
   assert.deepEqual(await deliver('new-event'), event())
 })
+
+test('a delivery whose artifact never becomes readable stops retrying after a bounded number of attempts', async () => {
+  const guard = createInteractionGuard(async () => { const e = new Error('gone'); e.code = 'ENOENT'; throw e })
+  let decision
+  for (let i = 0; i < 41; i++) decision = await guard('/p', 'artifacts/gone.html', 'r1', event(), 'stuck-delivery')
+  assert.equal(decision, DROPPED_INTERACTION)
+})
