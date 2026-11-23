@@ -85,7 +85,8 @@ test('the app refuses to start a run whose protocol changed after approval', asy
 
 test('pre-relay path: the app runs the protocol from its trusted copy; agent-written code in the project never runs', { skip: !python }, async () => {
   const dir = project()
-  const server = await fakeModel()
+  const prompts = []
+  const server = await fakeModel(false, messages => prompts.push(JSON.stringify(messages)))
   try {
     const runDir = R.newRunFolder(dir)
     const binding = { route: 'protocol', runId: 'run-1', approvedAt: Date.now(), protocolSha256: sha(join(dir, 'protocol.json')) }
@@ -101,6 +102,7 @@ test('pre-relay path: the app runs the protocol from its trusted copy; agent-wri
     assert.ok(existsSync(join(runDir, 'results.html')) && existsSync(join(runDir, 'summary.json')))
     const meta = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8'))
     assert.equal(meta.app.runId, 'run-1')
+    assert.ok(prompts.every(prompt => !prompt.includes('Prolific ID')))
     // Long, real, case-folded paths: Windows' temp folder can come as an 8.3 short name (RUNNER~1). The copy is gone
     // by now (removed when the run ended), so its still-existing parent is resolved.
     const norm = (p) => p.replace(/\\/g, '/').toLowerCase()

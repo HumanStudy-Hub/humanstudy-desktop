@@ -1,3 +1,4 @@
+import { simulationModel } from '../shared/simulation-run'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { guidePrompts } from './sample-guide-flow'
 import type { AccountStatus, ProjectSnapshot, Settings, TelemetryStatus, WorkspaceContext } from '../preload/types'
@@ -640,7 +641,8 @@ export default function App() {
               canRun={Boolean(hasAccess)}
               onSendAgent={text => sendInWorkspace(text, session.busy ? session.enqueue : session.send)}
               onStopAgent={() => void session.abort()}
-              model={settings?.model ?? ''}
+              assistantModel={settings?.model ?? ''}
+              model={simulationModel(settings?.model ?? '', account?.modelAccess === 'hosted' ? account.models : undefined)}
               agentBusy={session.busy}
               // Only the conversation that runs the build can make it wait (another open thread may have its own question).
               agentWaiting={Boolean(session.id && session.id === project?.build?.sessionId && (session.waitingForQuestion || session.waitingForPermission))}

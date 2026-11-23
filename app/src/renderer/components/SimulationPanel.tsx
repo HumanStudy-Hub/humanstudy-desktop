@@ -25,7 +25,8 @@ interface Props {
   artifactStudy?: ArtifactStudy
   studies: { id: string; title: string }[]
   onStudy(id: string): void
-  /** The model selected in the app; AI participants use it too. */
+  /** The assistant and participant models used to price their respective calls. */
+  assistantModel?: string
   model: string
   agentBusy: boolean
   agentThreadId?: string
@@ -147,7 +148,7 @@ export function SimulationPanel(props: Props) {
   // A protocol run: one call per page for every member of every group (the measured budget), not the package's few calls.
   const budgetArms = route === 'protocol' ? Object.values(readiness?.protocol?.budget?.arms ?? {}) : []
   const members = budgetArms.reduce((n, a) => n + a.group_size, 0)
-  const estimate = estimateRun({ conditions: members || runConditions.length || plan.conditions.length, perCondition, model, needsBuild: !built,
+  const estimate = estimateRun({ conditions: members || runConditions.length || plan.conditions.length, perCondition, model, assistantModel: props.assistantModel, needsBuild: !built,
     ...(members ? { callsPerParticipant: Math.max(1, Math.round(budgetArms.reduce((n, a) => n + a.group_size * a.calls, 0) / members)) } : {}) })
   // The relay's cap and lifetime for this plan, computed exactly as the main process will (macOS wording).
   // A protocol run is sized from its measured budget (pages per participant, growing prompts, group size), the

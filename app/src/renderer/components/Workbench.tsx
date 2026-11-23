@@ -107,6 +107,7 @@ interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSour
   onSendAgent?(text: string): void
   onStopAgent?(): void
   /** The model selected in the app, whether the agent is working, and what it is doing. */
+  assistantModel?: string
   model?: string
   agentBusy?: boolean
   /** The agent stopped to ask the researcher (a question or a permission). */
@@ -138,7 +139,7 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, source, onRestoreSource, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, canRun = true, modelAccess, onSendAgent, onStopAgent, model = '', agentBusy = false, agentWaiting = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
+export function Workbench({ ref, project, source, onRestoreSource, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, canRun = true, modelAccess, onSendAgent, onStopAgent, model = '', assistantModel, agentBusy = false, agentWaiting = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
   // Tolerant: one slip by the agent sets that detail aside and the document still renders.
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
@@ -565,6 +566,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
               studies={simStudies.map(st => ({ id: st.id, title: st.title }))}
               onStudy={(id) => update((l) => ({ ...l, study: id }))}
               model={model}
+              assistantModel={assistantModel}
               agentBusy={agentBusy}
               agentThreadId={agentThreadId}
               agentTurnKey={agentTurnKey}
