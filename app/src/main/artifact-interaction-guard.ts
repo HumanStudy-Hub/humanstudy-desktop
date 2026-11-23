@@ -2,7 +2,7 @@
 // checks the message shape, so a hostile artifact could still spell out typed text through controlId,
 // label or arm, one event at a time. Here the main process accepts only identifiers that the artifact
 // file itself declares (read once per artifact revision), and bounds how many events one revision can
-// produce. Anything else is kept as controlId "unknown" with no usable label or arm.
+// produce.
 import { readFile, stat } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { gunzipSync } from 'node:zlib'
@@ -105,11 +105,11 @@ function citation(v: ArtifactVocabulary, controlId: string): string {
 }
 
 /** The interaction with every field the file does not declare replaced; null if the shape is invalid. */
-export function screenInteraction(v: ArtifactVocabulary, input: unknown): ArtifactInteraction | null {
+export function screenInteraction(v: ArtifactVocabulary, input: unknown, dropUnknown = false): ArtifactInteraction | null {
   const parsed = parseArtifactInteraction(input)
   if (!parsed) return null
   const i = { ...parsed, controlId: citation(v, parsed.controlId) }
-  if (!knownControl(v, i)) return { ...i, controlId: UNKNOWN, label: UNKNOWN, arm: null, step: null }
+  if (!knownControl(v, i)) return dropUnknown ? null : { ...i, controlId: UNKNOWN, label: UNKNOWN, arm: null, step: null }
   const label = i.label.length <= MAX_LABEL && (i.label === i.controlId || v.literals.has(i.label) || KIT_LABELS.includes(i.label))
     ? i.label : UNKNOWN
   const arm = i.arm !== null && (v.preview ? v.preview.arms.has(i.arm) : v.literals.has(i.arm)) ? i.arm : null
@@ -131,7 +131,7 @@ export function createInteractionGuard(read: ReadArtifact, now: () => number = D
   // A retry after a lost ACK keeps its original decision, even outside the dedupe window.
   type Decision = ArtifactInteraction | typeof DROPPED_INTERACTION
   const decisions = new Map<string, Decision>()
-  return async (projectDir: string, rel: string, revision: string, input: unknown, deliveryId?: string): Promise<Decision> => {
+  return async (projectDir: string, rel: string, revision: string, input: unknown, deliveryId?: string): Promise<Decision | null> => {
     // A draft or an older version is shown from text the renderer holds, not the file on disk, so
     // the file cannot vouch for its ids: such views report no interactions.
     if (!onDiskRevision(revision)) return DROPPED_INTERACTION
@@ -148,18 +148,22 @@ export function createInteractionGuard(read: ReadArtifact, now: () => number = D
     }
     let vocabulary = vocabularies.get(key)
     if (!vocabulary) {
-      const reading = read(projectDir, rel).then(text => text === null ? null : artifactVocabulary(text)).catch(() => null)
+      const reading = read(projectDir, rel).then(text => text === null ? null : artifactVocabulary(text))
       vocabulary = reading
       vocabularies.set(key, reading)
       if (vocabularies.size > MAX_CACHED) vocabularies.delete(vocabularies.keys().next().value as string)
-      // A failed read is not remembered; the next event tries again.
-      void reading.then(result => { if (!result && vocabularies.get(key) === reading) vocabularies.delete(key) })
     }
-    const v = await vocabulary
+    let v: ArtifactVocabulary | null
+    try {
+      v = await vocabulary
+    } catch {
+      if (vocabularies.get(key) === vocabulary) vocabularies.delete(key)
+      return null // Retry this delivery without consuming its id or volume allowance.
+    }
     const concurrent = deliveryKey && decisions.get(deliveryKey)
     if (concurrent) return concurrent
     if (!v) return remember(DROPPED_INTERACTION)
-    const interaction = screenInteraction(v, input)
+    const interaction = screenInteraction(v, input, true)
     if (!interaction) return remember(DROPPED_INTERACTION)
     const state = volume.get(key) ?? { count: 0, at: -Infinity }
     volume.set(key, state)
@@ -178,7 +182,7 @@ export async function readArtifactFile(projectDir: string, rel: string): Promise
   const root = resolve(projectDir)
   const path = resolve(join(root, rel))
   if (!path.startsWith(root + sep)) return null
-  const st = await stat(path).catch(() => null)
-  if (!st?.isFile() || st.size > MAX_FILE_BYTES) return null
+  const st = await stat(path)
+  if (!st.isFile() || st.size > MAX_FILE_BYTES) return null
   return readFile(path, 'utf8')
 }

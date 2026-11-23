@@ -135,7 +135,7 @@ async function call(channel: string, args: unknown[], signal?: AbortSignal): Pro
   }
   if (res.status === 401) {
     connection.ended()
-    throw new Error(`Error invoking remote method '${channel}': Error: This session has ended. Open HumanStudy Hub again.`)
+    throw new IpcTransportError(`Error invoking remote method '${channel}': Error: This session has ended. Open HumanStudy Hub again.`)
   }
   const out = (await res.json().catch(() => null)) as { ok: boolean; value?: unknown; error?: { name?: string; message: string } } | null
   if (res.status !== 200 || !out || typeof out.ok !== 'boolean') {

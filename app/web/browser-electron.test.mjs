@@ -109,3 +109,24 @@ test('a transport-failed send while online adds one failed submission with the d
   const failed = h.calls.filter(call => call.url === '/ipc/telemetry%3AoutboxWrite').map(call => args(call)[0].args[1])
   assert.deepEqual(failed, ['first message', 'third message'])
 })
+
+for (const status of [401, 403, 409, 503]) {
+  test(`HTTP ${status} records the failed submission once with the original action`, async () => {
+    const h = harness({
+      config: { workspace: 'fixture', scope: 'consented' },
+      respond(url) {
+        if (url === '/ipc/kernel%3Asend') return { status, json: async () => ({ ok: false }) }
+      },
+    })
+    await assert.rejects(h.ipcRenderer.invoke('kernel:send', 'session', 'message'))
+    await settle()
+    const requests = url => h.calls.filter(call => call.url === url).map(call => JSON.parse(call.options.body).args)
+    const sends = requests('/ipc/kernel%3Asend')
+    assert.equal(sends.length, 1)
+    const writes = requests('/ipc/telemetry%3AoutboxWrite')
+    assert.equal(writes.length, 1)
+    const [[entry]] = writes
+    assert.equal(entry.channel, 'telemetry:chatSubmission')
+    assert.deepEqual(entry.args, ['session', 'message', 'failed', sends[0][3]])
+  })
+}

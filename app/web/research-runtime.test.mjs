@@ -295,10 +295,13 @@ test('outbox ignores permanent drops and validation errors, but records long fil
   const dir = (await f.ipc('projects:create', { name: 'Outbox fixture', sample: true })).value
   const target = 'artifacts/outbox.html'
   await mkdir(join(dir, 'artifacts'), { recursive: true })
-  await writeFile(join(dir, target), '<button data-hs-control="next">Next</button>')
   const artifact = (revision, interaction = { action: 'navigate', controlId: 'next', label: 'next', step: null, arm: null, valueKind: 'none' }) =>
     ['artifact.interact', { target, artifactProjectDir: dir, metadata: { artifact_revision: revision, interaction } }]
   const write = (args, id = randomUUID()) => f.ipc('telemetry:outboxWrite', { ...f.entry, args, id })
+  const pendingId = randomUUID()
+  assert.deepEqual((await write(artifact('pending'), pendingId)).value, { status: 'retry' })
+  await writeFile(join(dir, target), '<button data-hs-control="next">Next</button>')
+  assert.deepEqual((await write(artifact('pending'), pendingId)).value, { status: 'ack', id: pendingId })
   for (const args of [['agent.turn_start'], ['app.session_start'], artifact('draft'), artifact('history:older'), artifact('r1', {})])
     assert.deepEqual((await write(args)).value, { status: 'ignored' })
 
@@ -319,7 +322,7 @@ test('outbox ignores permanent drops and validation errors, but records long fil
   assert.deepEqual((await write(artifact('r1'), duplicate)).value, { status: 'ignored' })
   await pause(1050)
   assert.deepEqual((await write(artifact('r1'), duplicate)).value, { status: 'ignored' })
-  assert.equal((await f.local()).filter(row => row.event_type === 'artifact.interact').length, 1)
+  assert.equal((await f.local()).filter(row => row.event_type === 'artifact.interact').length, 2)
 })
 
 test('late browser events retain their original visit while sandbox events use the active visit', { timeout: 10_000 }, async t => {
