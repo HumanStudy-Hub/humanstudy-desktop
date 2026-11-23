@@ -457,7 +457,7 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     # retries 0: humanstudy_llm already retries 429/5xx; a call that still fails (a refusal, the token cap) ends
     # that participant as incomplete instead of being asked again.
     spec = {"kind": "llm", "name": "desktop model", "model": model or "unknown", "renderer": "default",
-            "temperature": plan.get("temperature", 1.0), "retries": 0,
+            "temperature": plan.get("temperature", 1.0), "retries": 0, "fill_platform_ids": True,
             "host": "the desktop app's model relay (humanstudy_llm), passed in-process"}
     # The floor baseline's cache stays inside this run folder (run_study keeps it beside the run folders, which the
     # macOS sandbox does not let the run write, and which the Simulation tab would list as a run).

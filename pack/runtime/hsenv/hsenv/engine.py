@@ -641,10 +641,34 @@ class Session:
             return value, None
         raise ProtocolError("unknown response kind %s" % kind)
 
-    def step(self, answers):
+    def synthetic_text_id(self, field_id, identity):
+        """Return a stable administrative value accepted by this field, or None."""
+        field = next(r for r in self._page["responses"] if r["view"]["id"] == field_id)
+        minimum = int(field["view"].get("min_chars", 0))
+        rule = field["def"].get("validate") or {}
+        digest = hashlib.sha256(identity.encode()).digest()
+        value = identity + rule.get("contains", "")
+        padding = max(0, minimum - len(value))
+        value += (digest.hex() * ((padding + 63) // 64))[:padding]
+        if not self._validate(field, value)[1]:
+            return value
+        # Common platform formats specify a single character class and a width.
+        match = re.fullmatch(r"\^?(\[[^\]]+\]|\\[dw])\{(\d+)(?:,(\d*))?\}\$?", rule.get("pattern", ""))
+        if match:
+            alphabet = [c for c in "0123456789abcdefABCDEFghijklmnopqrstuvwxyzGHIJKLMNOPQRSTUVWXYZ_-"
+                        if re.fullmatch(match[1], c)]
+            width = max(minimum, int(match[2]))
+            if alphabet and width <= 4096:
+                value = "".join(alphabet[digest[i % len(digest)] % len(alphabet)] for i in range(width))
+                if not self._validate(field, value)[1]:
+                    return value
+        return None
+
+    def step(self, answers, system_filled=None):
         if self._page is None:
             raise RuntimeError("session is done")
         answers = dict(answers or {})
+        answers.update(system_filled or {})
         elapsed = answers.pop("_elapsed_ms", None)   # time on this screen, as reported by the simulator (optional)
         if elapsed is not None and (isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or elapsed < 0):
             return dict(self._state, error={"_elapsed_ms": "must be a non-negative number of milliseconds"})
@@ -661,7 +685,8 @@ class Session:
             errors.update({k: "not on this screen" for k in unknown})
         if errors:
             self.refused.append({"step": self.step_no, "stages": list(self._page["names"]),
-                                 "answers": {r["def"]["id"]: answers.get(r["view"]["id"]) for r in self._page["responses"]},
+                                 "answers": {r["def"]["id"]: answers.get(r["view"]["id"]) for r in self._page["responses"]
+                                             if r["view"]["id"] not in (system_filled or {})},
                                  "errors": sorted(errors)})
             # one message for the page when only answers are missing (e.g. a single line under the button)
             page_msg = next((self.p.stages[n].get("required_message_page") for n in self._page["names"]
@@ -700,6 +725,8 @@ class Session:
                 self.refused.append({"step": self.step_no, "stages": list(self._page["names"]), "errors": ["page"]})
                 return dict(self._state, error={"page": bad[0].get("message") or "this page is not complete"})
         for r, val in stored:
+            if system_filled and r["view"]["id"] in system_filled:
+                continue  # Administrative values validate the page but never enter answer history or scoring.
             typed = val.get("text") if isinstance(val, dict) and "code" in val else None
             if typed is None and r["view"]["id"] in self._typed:
                 typed = self._typed.pop(r["view"]["id"])
@@ -849,9 +876,9 @@ class GroupSession:
         self._release()
         return self.states()
 
-    def step(self, pid, answers):
+    def step(self, pid, answers, system_filled=None):
         m = next(x for x in self.members if x.pid == pid)
-        st = m.step(answers)
+        st = m.step(answers, system_filled)
         if st.get("error"):
             return dict(self.states(), **{pid: st})
         self._release()

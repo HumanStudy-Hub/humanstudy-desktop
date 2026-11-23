@@ -89,6 +89,44 @@ class FakeProxy(BaseHTTPRequestHandler):
         self.wfile.write(out)
 
 
+class EmptyReplyTests(unittest.TestCase):
+    def call(self, contents, finish="stop"):
+        replies = [io.BytesIO(json.dumps({"id": str(i), "choices": [{"message": {"content": content}, "finish_reason": finish}],
+                                         "usage": {"total_tokens": 10}}).encode())
+                   for i, content in enumerate(contents)]
+        for reply in replies:
+            reply.headers = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "llm-usage.jsonl"
+            with patch.dict(os.environ, {"HUMANSTUDY_PROJECT_DIR": tmp, "HUMANSTUDY_LLM_USAGE_LOG": str(path)}), \
+                 patch.object(H, "_config", return_value=("http://stub", {})), \
+                 patch.object(H.urllib.request, "urlopen", side_effect=replies), \
+                 patch.object(H.time, "sleep") as sleep:
+                if contents[-1] == "ok":
+                    self.assertEqual(H.llm("test"), "ok")
+                else:
+                    with self.assertRaisesRegex(H.LLMError, "no content"):
+                        H.llm("test")
+                self.assertEqual(sleep.call_count, len(contents) - 1)
+            rows = [json.loads(line) for line in path.read_text().splitlines()]
+            self.assertEqual([row["attempts"] for row in rows], list(range(1, len(contents) + 1)))
+            self.assertEqual([row["ok"] for row in rows], [False] * (len(contents) - 1) + [contents[-1] == "ok"])
+            self.assertTrue(all(row["total_tokens"] == 10 for row in rows))
+
+    def test_recovers(self):
+        self.call([None, " ", "ok"])
+
+    def test_terminal_finish(self):
+        for reason in ("length", "content_filter"):
+            self.call([None], reason)
+
+    def test_malformed_content(self):
+        self.call([{}, [{"text": 123}], "ok"])
+
+    def test_exhausted(self):
+        self.call([None, "", []])
+
+
 class LLMTests(unittest.TestCase):
     def setUp(self):
         FakeProxy.calls, FakeProxy.fail_first, FakeProxy.active, FakeProxy.peak = [], 0, 0, 0

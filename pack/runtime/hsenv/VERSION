@@ -1,8 +1,9 @@
 # Vendored hsenv engine. Refresh with scripts/sync_hsenv.sh; never edit by hand.
 source: github.com/HumanStudy-Hub/hsenv dev commit 433fd3fb06ad86a89b91f0bb61fe2e197a52fad8 (API compatible with tag v0.8.1)
+# Includes the desktop simulation platform-ID change.
 synced: 2026-11-12
 9c4ed34960789fb18351512d30b9c5879f36a33a0f7206bcbf89172eee541291  hsenv/__init__.py
-d1ffc33b229aefe93890cda541481a5d5796ed33692baf75e89de21bca13d6f2  hsenv/engine.py
+530b8859897036678b607ee587747fb28bc878ab841f8bbae6ff726e60670f5e  hsenv/engine.py
 1ab2b19da24a40c17c4a9e32b9c95f59e0f76e883bc9991bad6738ca0f55150b  hsenv/expr.py
 12408520f8eb99f6025c6929696770d1a9dba2698f7936054ce6fd644ac95f55  hsenv/checks.py
 e2d266af52ff23402630f2082dd8f314c7a9c7332f508f32d68962e1d9b81bda  hsenv/effects_core.py

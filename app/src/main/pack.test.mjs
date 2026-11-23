@@ -286,6 +286,7 @@ test('a protocol run with a stub f ends to end: records, effects, a results page
   const stub = `import sys, json; from pathlib import Path
 sys.path.insert(0, '.opencode/skills/run'); import app_run
 def complete(messages):
+    assert all(label not in messages[-1]['content'] for label in ('Prolific ID', 'MTurk Worker ID', 'AI-participant-'))
     assert messages[0]['role'] == 'system' and 'JSON' in messages[0]['content']
     return '{"r1": "o1"}' if 'r1' in messages[-1]['content'] else '{}'
 run = Path(sys.argv[1]).resolve()
@@ -300,6 +301,18 @@ print(json.dumps({'status': meta['status'], 'completed': meta['participants']['c
   const meta = JSON.parse(readFileSync(join(proj, run, 'run.json'), 'utf8'))
   assert.equal(meta.protocol_sha256, hash)
   assert.equal(meta.f.model, 'stub')
+  const rows = file => readFileSync(join(proj, run, file), 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  for (const { transcript } of rows('records.jsonl')) {
+    const registration = transcript.at(-1)
+    assert.deepEqual(registration.answers, {})
+    assert.match(Object.values(registration.system_filled)[0], /^AI-participant-/)
+    assert.equal(registration.timing.f_tries, 0)
+    const mixedPage = transcript.at(-2)
+    assert.deepEqual(Object.values(mixedPage.answers), ['o1'])
+    assert.deepEqual(Object.values(mixedPage.system_filled), Object.values(registration.system_filled))
+  }
+  for (const { record } of rows('operator.jsonl'))
+    assert.ok(record.answers.every(answer => answer.stage !== 'registration' && answer.response !== 'worker'))
   assert.equal(JSON.parse(readFileSync(join(proj, run, 'progress.json'), 'utf8')).stage, 'done')
   const page = readFileSync(join(proj, run, 'results.html'), 'utf8')
   assert.match(page, /Simulation with AI participants — not data from people\. A comparison with the paper(?:'|&#x27;)s printed numbers, not a leaderboard\./)

@@ -186,6 +186,7 @@ def chat(
     last = "unknown error"
     last_status: int | None = None
     started = time.time()
+    empty_replies = 0
     with _semaphore():
         for attempt in range(MAX_ATTEMPTS):
             retry_after = None
@@ -196,16 +197,16 @@ def chat(
                     request_id = _request_id(res.headers, payload.get("id"))
                 choice = (payload.get("choices") or [{}])[0]
                 text = (choice.get("message") or {}).get("content")
-                if text is None:
-                    raise LLMError("the model returned no content", None)
                 if isinstance(text, list):  # content parts
-                    text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+                    text = "".join(p["text"] for p in text if isinstance(p, dict) and isinstance(p.get("text"), str))
+                empty = not isinstance(text, str) or not text.strip()
                 u = payload.get("usage") or {}
                 finish = choice.get("finish_reason")
                 _log({
                     "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z",
                     "model": payload.get("model") or body["model"],
-                    "ok": True,
+                    "ok": not empty,
+                    **({"error": "the model returned no content"} if empty else {}),
                     **({"request_id": request_id} if request_id else {}),
                     "attempts": attempt + 1,
                     "ms": int((time.time() - started) * 1000),
@@ -216,7 +217,13 @@ def chat(
                     "finish_reason": finish,
                     "truncated": finish == "length",
                 })
-                return payload if full else text
+                if not empty:
+                    return payload if full else text
+                if finish in ("length", "content_filter"):
+                    raise LLMError(f"the model returned no content (finish_reason={finish})")
+                empty_replies += 1
+                if empty_replies >= 3 or attempt == MAX_ATTEMPTS - 1:
+                    raise LLMError(f"the model returned no content after {attempt + 1} attempt(s)")
             except urllib.error.HTTPError as e:
                 last_status = e.code
                 request_id = _request_id(e.headers)
