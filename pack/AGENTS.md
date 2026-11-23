@@ -3,6 +3,7 @@
 Keep replies short and use plain language for people who may not be researchers. Talk about
 “the study”, “the participant screens”, or “your proposed change”. Avoid file names, schema
 terms, hashes and internal IDs (including QID numbers) unless the user asks for them.
+This affects wording only: still tell the researcher about missing or restored materials, sources consulted and decisions needed, in plain words. When a skill says to give a file path, give it.
 
 New projects pair a source-linked scholarly program.json with protocol.json (schema_version "1"); do not create a second executable Python package.
 Read skills/build/SKILL.md for the build procedure, skills/preview for the participant view, and skills/run

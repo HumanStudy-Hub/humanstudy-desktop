@@ -4,7 +4,7 @@
 // pressing "Run simulation" is the confirmation of exactly what this screen shows.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { HumanProgram } from '../../shared/human-program'
-import type { Allowance, ProjectEntry, ProjectSnapshot } from '../../preload/types'
+import type { AccountStatus, Allowance, ProjectEntry, ProjectSnapshot } from '../../preload/types'
 import { simulationScope, simulationLimits } from '../../shared/simulation-scope'
 import { estimateRun, hasParticipantData, headline, isResult, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
 import { packageStamp, readinessStamp, runConfirmation, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
@@ -34,6 +34,7 @@ interface Props {
   agentActivity?: string
   /** Model access (signed in, as App.tsx decides it): without it Run is disabled and says so. */
   canRun?: boolean
+  modelAccess?: AccountStatus['modelAccess']
   /** route: which runnable form the approval names (protocol.json through the engine, or package/). */
   onRun(perCondition: number, route: 'protocol' | 'package', conditions: string[], tokenBudget?: number): Promise<void>
   onBuild(): void
@@ -125,9 +126,6 @@ export function SimulationPanel(props: Props) {
   // The program's section-12 scope gates a package run; a protocol run is gated by the protocol's own checks and
   // its measured budget (a protocol-only project has no section 12).
   const scopeReady = route === 'protocol' || scope.ready
-  const confirmation = WEB_EDITION
-    ? { notice: 'sim.run_notice_cloud', note: 'sim.note_cloud', detail: null }
-    : runConfirmation(readiness)
   const [allowance, setAllowance] = useState<Allowance | null>(null)
   useEffect(() => {
     if (!WEB_EDITION || agentBusy) return
@@ -137,8 +135,13 @@ export function SimulationPanel(props: Props) {
       () => { if (live) setAllowance(null) },
     )
     return () => { live = false }
-  }, [agentBusy])
-  const meter = allowanceMessage(allowance, 'settings')
+  }, [agentBusy, props.modelAccess])
+  const ownKey = props.modelAccess === 'own-key'
+  const hosted = WEB_EDITION && !ownKey && (props.modelAccess === 'hosted' || allowance?.available)
+  const confirmation = WEB_EDITION
+    ? { notice: ownKey ? 'sim.run_notice_cloud_key' : hosted ? 'sim.run_notice_cloud' : null, note: 'sim.note_cloud', detail: null }
+    : runConfirmation(readiness)
+  const meter = allowanceMessage(allowance, 'simulation')
   const [perCondition, setPerCondition] = useState(plan.defaultPerCondition)
   useEffect(() => setPerCondition(plan.defaultPerCondition), [plan.defaultPerCondition])
   // A protocol run: one call per page for every member of every group (the measured budget), not the package's few calls.
@@ -388,7 +391,7 @@ export function SimulationPanel(props: Props) {
                 </dd>
                 <dt>{t('sim.model')}</dt>
                 <dd>{modelName}</dd>
-                {WEB_EDITION && (<>
+                {hosted && (<>
                   <dt>{t('sim.budget')}</dt>
                   <dd>{t('sim.allowance_cloud')}{meter && <> · {t(meter.key, meter.vars)}</>}</dd>
                 </>)}

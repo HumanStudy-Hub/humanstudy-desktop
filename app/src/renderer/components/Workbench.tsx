@@ -7,7 +7,7 @@ import StudyModel, { viewStudies, type QuoteStatus, type StudyModelProps } from 
 import { inspectHumanProgram, readHumanProgram, type HumanProgram } from '../../shared/human-program'
 import { protocolProgram, PROTOCOL_STUDY_ID } from '../../shared/protocol-program'
 import { patchProgramField } from '../../shared/program-patch'
-import type { ProjectEntry, ProjectSnapshot, WorkspaceContext } from '../../preload/types'
+import type { AccountStatus, ProjectEntry, ProjectSnapshot, WorkspaceContext } from '../../preload/types'
 import { claimAction, lap, track } from '../telemetry'
 import { FileView } from './FileView'
 import { Explorer, flatten } from './Explorer'
@@ -102,6 +102,7 @@ interface Props extends Pick<StudyModelProps, 'selectedIds' | 'onPick' | 'onSour
   onRunSimulation?(approval: string): void
   /** Model access (signed in): the Simulation tab's Run is disabled without it. */
   canRun?: boolean
+  modelAccess?: AccountStatus['modelAccess']
   /** Send the agent a message right away (the Simulation tab's "Build the study first"). */
   onSendAgent?(text: string): void
   onStopAgent?(): void
@@ -137,7 +138,7 @@ function loadLayout(dir: string): Layout {
   return DEFAULT
 }
 
-export function Workbench({ ref, project, source, onRestoreSource, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, canRun = true, onSendAgent, onStopAgent, model = '', agentBusy = false, agentWaiting = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
+export function Workbench({ ref, project, source, onRestoreSource, onClearSelection, onAskSelection, onFixProgram, onFold, onRunSimulation, canRun = true, modelAccess, onSendAgent, onStopAgent, model = '', agentBusy = false, agentWaiting = false, agentThreadId, agentTurnKey, agentActivity, onWorkspaceChange, onRecheck, ...docProps }: Props) {
   // Tolerant: one slip by the agent sets that detail aside and the document still renders.
   const { program, error, problems } = useMemo(() => {
     if (!project.program) return { program: null, error: project.programError, problems: [] as string[] }
@@ -569,6 +570,7 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
               agentTurnKey={agentTurnKey}
               agentActivity={agentActivity}
               canRun={canRun}
+              modelAccess={modelAccess}
               onRun={async (perCondition, route, conditions, tokenBudget) => {
                 if (!canRun) return   // signed out: the tab says "Sign in to run"; nothing is sent
                 const study = simStudies.find(st => st.id === simStudyId)?.title ?? simStudyId

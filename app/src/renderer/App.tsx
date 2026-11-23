@@ -629,6 +629,7 @@ export default function App() {
         <section className={`pane program ${open.program ? '' : 'folded'}`} aria-label={paneLabel('program')}>
           {open.program ? (
             <Workbench
+              modelAccess={account?.modelAccess}
               ref={workbench}
               onRestoreSource={setSource}
               project={project}
