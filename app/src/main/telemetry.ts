@@ -870,7 +870,7 @@ export function registerTelemetry(): void {
     if (type === 'artifact.interact') {
       if (!dir || !artifactPath(target) || !semanticId(metadata?.artifact_revision)) return DROPPED
       const interaction = await interactionGuard(dir, target, metadata.artifact_revision, metadata.interaction, delivery?.id)
-      if (interaction === DROPPED) return DROPPED
+      if (interaction === null || interaction === DROPPED) return interaction
       metadata = { ...metadata, interaction }
     }
     const action = actionRef(o.action)

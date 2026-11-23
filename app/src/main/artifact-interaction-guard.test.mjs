@@ -1,7 +1,7 @@
 import { build } from 'esbuild'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
@@ -12,7 +12,7 @@ await build({
   entryPoints: [fileURLToPath(new URL('artifact-interaction-guard.ts', import.meta.url))],
   bundle: true, platform: 'node', format: 'esm', outfile: join(temp, 'bundle.mjs'),
 })
-const { artifactVocabulary, screenInteraction, createInteractionGuard, DROPPED_INTERACTION, MAX_EVENTS_PER_REVISION } =
+const { artifactVocabulary, screenInteraction, createInteractionGuard, readArtifactFile, DROPPED_INTERACTION, MAX_EVENTS_PER_REVISION } =
   await import(pathToFileURL(join(temp, 'bundle.mjs')).href)
 test.after(() => rm(temp, { recursive: true, force: true }))
 
@@ -121,16 +121,17 @@ test('the shipped sample results page: citations built at runtime by HS.cite are
 })
 
 test('draft and history views report nothing, and a failed read is retried', async () => {
-  let reads = 0, text = null
-  const guard = createInteractionGuard(async () => { reads++; return text })
-  assert.equal(await guard('/p', 'artifacts/a.html', 'draft', event()), DROPPED_INTERACTION)
-  assert.equal(await guard('/p', 'artifacts/a.html', 'history:abc', event()), DROPPED_INTERACTION)
+  let reads = 0
+  const guard = createInteractionGuard((...args) => { reads++; return readArtifactFile(...args) })
+  const deliver = revision => guard(temp, 'pending.html', revision, event(), 'same-delivery')
+  assert.equal(await deliver('draft'), DROPPED_INTERACTION)
+  assert.equal(await deliver('history:abc'), DROPPED_INTERACTION)
   assert.equal(reads, 0, 'the on-disk file is never read for in-memory text')
-  assert.equal(await guard('/p', 'artifacts/a.html', 'r1', event()), DROPPED_INTERACTION, 'unreadable')
-  await new Promise(resolve => setImmediate(resolve))
-  text = page
-  assert.deepEqual(await guard('/p', 'artifacts/a.html', 'r1', event()), event(), 'read again after a failure')
+  assert.equal(await deliver('r1'), null, 'ENOENT leaves the delivery pending')
+  await writeFile(join(temp, 'pending.html'), page)
+  assert.deepEqual(await deliver('r1'), event())
   assert.equal(reads, 2)
+  assert.equal(await guard(temp, 'pending.html', 'r1', event({ controlId: 'unlisted' }), 'other-delivery'), DROPPED_INTERACTION)
 })
 
 test('a compressed preview block cannot expand without bound', () => {
@@ -149,4 +150,11 @@ test('a replay preserves the guard decision after the dedupe window', async () =
   assert.equal(await deliver('duplicate'), DROPPED_INTERACTION)
   assert.deepEqual(await deliver('first'), event())
   assert.deepEqual(await deliver('new-event'), event())
+})
+
+test('a delivery whose artifact never becomes readable stops retrying after a bounded number of attempts', async () => {
+  const guard = createInteractionGuard(async () => { const e = new Error('gone'); e.code = 'ENOENT'; throw e })
+  let decision
+  for (let i = 0; i < 41; i++) decision = await guard('/p', 'artifacts/gone.html', 'r1', event(), 'stuck-delivery')
+  assert.equal(decision, DROPPED_INTERACTION)
 })

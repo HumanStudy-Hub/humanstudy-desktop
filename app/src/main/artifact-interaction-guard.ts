@@ -2,7 +2,7 @@
 // checks the message shape, so a hostile artifact could still spell out typed text through controlId,
 // label or arm, one event at a time. Here the main process accepts only identifiers that the artifact
 // file itself declares (read once per artifact revision), and bounds how many events one revision can
-// produce. Anything else is kept as controlId "unknown" with no usable label or arm.
+// produce.
 import { readFile, stat } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { gunzipSync } from 'node:zlib'
@@ -10,6 +10,8 @@ import { parseArtifactInteraction, semanticId, type ArtifactInteraction } from '
 
 export const DROPPED_INTERACTION = 'dropped'
 export const MAX_LABEL = 40
+// ~10 minutes of outbox backoff: long enough for a fresh workspace to download the project.
+const MAX_TRANSIENT_TRIES = 40
 export const MAX_EVENTS_PER_REVISION = 500
 export const DUPLICATE_WINDOW_MS = 1000
 const MAX_FILE_BYTES = 5 * 1024 * 1024
@@ -105,11 +107,11 @@ function citation(v: ArtifactVocabulary, controlId: string): string {
 }
 
 /** The interaction with every field the file does not declare replaced; null if the shape is invalid. */
-export function screenInteraction(v: ArtifactVocabulary, input: unknown): ArtifactInteraction | null {
+export function screenInteraction(v: ArtifactVocabulary, input: unknown, dropUnknown = false): ArtifactInteraction | null {
   const parsed = parseArtifactInteraction(input)
   if (!parsed) return null
   const i = { ...parsed, controlId: citation(v, parsed.controlId) }
-  if (!knownControl(v, i)) return { ...i, controlId: UNKNOWN, label: UNKNOWN, arm: null, step: null }
+  if (!knownControl(v, i)) return dropUnknown ? null : { ...i, controlId: UNKNOWN, label: UNKNOWN, arm: null, step: null }
   const label = i.label.length <= MAX_LABEL && (i.label === i.controlId || v.literals.has(i.label) || KIT_LABELS.includes(i.label))
     ? i.label : UNKNOWN
   const arm = i.arm !== null && (v.preview ? v.preview.arms.has(i.arm) : v.literals.has(i.arm)) ? i.arm : null
@@ -130,8 +132,9 @@ export function createInteractionGuard(read: ReadArtifact, now: () => number = D
   const volume = new Map<string, { count: number; last?: string; at: number }>()
   // A retry after a lost ACK keeps its original decision, even outside the dedupe window.
   type Decision = ArtifactInteraction | typeof DROPPED_INTERACTION
+  const transientTries = new Map<string, number>()
   const decisions = new Map<string, Decision>()
-  return async (projectDir: string, rel: string, revision: string, input: unknown, deliveryId?: string): Promise<Decision> => {
+  return async (projectDir: string, rel: string, revision: string, input: unknown, deliveryId?: string): Promise<Decision | null> => {
     // A draft or an older version is shown from text the renderer holds, not the file on disk, so
     // the file cannot vouch for its ids: such views report no interactions.
     if (!onDiskRevision(revision)) return DROPPED_INTERACTION
@@ -148,18 +151,32 @@ export function createInteractionGuard(read: ReadArtifact, now: () => number = D
     }
     let vocabulary = vocabularies.get(key)
     if (!vocabulary) {
-      const reading = read(projectDir, rel).then(text => text === null ? null : artifactVocabulary(text)).catch(() => null)
+      const reading = read(projectDir, rel).then(text => text === null ? null : artifactVocabulary(text))
       vocabulary = reading
       vocabularies.set(key, reading)
       if (vocabularies.size > MAX_CACHED) vocabularies.delete(vocabularies.keys().next().value as string)
-      // A failed read is not remembered; the next event tries again.
-      void reading.then(result => { if (!result && vocabularies.get(key) === reading) vocabularies.delete(key) })
     }
-    const v = await vocabulary
+    let v: ArtifactVocabulary | null
+    try {
+      v = await vocabulary
+    } catch (error) {
+      if (vocabularies.get(key) === vocabulary) vocabularies.delete(key)
+      // Read errors (incl. ENOENT while a fresh workspace is still downloading the project) are retried,
+      // but each delivery only a bounded number of times so a deleted artifact cannot replay forever.
+      const code = (error as NodeJS.ErrnoException | undefined)?.code
+      if (code === 'ENOTDIR' || code === 'EISDIR') return remember(DROPPED_INTERACTION)
+      if (deliveryKey) {
+        const tries = (transientTries.get(deliveryKey) ?? 0) + 1
+        transientTries.set(deliveryKey, tries)
+        if (transientTries.size > 5000) transientTries.delete(transientTries.keys().next().value!)
+        if (tries > MAX_TRANSIENT_TRIES) return remember(DROPPED_INTERACTION)
+      }
+      return null // Retry this delivery without consuming its id or volume allowance.
+    }
     const concurrent = deliveryKey && decisions.get(deliveryKey)
     if (concurrent) return concurrent
     if (!v) return remember(DROPPED_INTERACTION)
-    const interaction = screenInteraction(v, input)
+    const interaction = screenInteraction(v, input, true)
     if (!interaction) return remember(DROPPED_INTERACTION)
     const state = volume.get(key) ?? { count: 0, at: -Infinity }
     volume.set(key, state)
@@ -178,7 +195,7 @@ export async function readArtifactFile(projectDir: string, rel: string): Promise
   const root = resolve(projectDir)
   const path = resolve(join(root, rel))
   if (!path.startsWith(root + sep)) return null
-  const st = await stat(path).catch(() => null)
-  if (!st?.isFile() || st.size > MAX_FILE_BYTES) return null
+  const st = await stat(path)
+  if (!st.isFile() || st.size > MAX_FILE_BYTES) return null
   return readFile(path, 'utf8')
 }
