@@ -77,12 +77,17 @@ def new(run_dir: Path, per_arm: int, protocol_hash: str, arms: list[str] | None,
     return plan
 
 
+SIM_MAX_TOKENS = 1536
+
+
 def relay_complete(temperature: float):
     """complete(messages) -> text through the app's model client (relay on macOS; never a key in this process)."""
     from humanstudy_llm import chat
 
     def complete(messages):
-        return chat(messages, temperature=temperature)
+        # 512 (the library default) is too small for a participant page reply: models that think first end with
+        # finish_reason=length and no text, and the participant is lost. Unused tokens are not charged.
+        return chat(messages, temperature=temperature, max_tokens=SIM_MAX_TOKENS)
     return complete
 
 
@@ -454,10 +459,10 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
         from humanstudy_llm import model_name
         complete, model = relay_complete(plan.get("temperature", 1.0)), model_name()
     f = make_chat_f(complete, render=render_state)
-    # retries 0: humanstudy_llm already retries 429/5xx; a call that still fails (a refusal, the token cap) ends
-    # that participant as incomplete instead of being asked again.
+    # retries 1: humanstudy_llm already retries 429/5xx; a reply that cannot be read (no JSON object, an empty or
+    # cut-off reply) is asked once more, then the participant ends as incomplete. Bounded: at most 2 calls per page.
     spec = {"kind": "llm", "name": "desktop model", "model": model or "unknown", "renderer": "default",
-            "temperature": plan.get("temperature", 1.0), "retries": 0, "fill_platform_ids": True,
+            "temperature": plan.get("temperature", 1.0), "retries": 1, "fill_platform_ids": True,
             "host": "the desktop app's model relay (humanstudy_llm), passed in-process"}
     # The floor baseline's cache stays inside this run folder (run_study keeps it beside the run folders, which the
     # macOS sandbox does not let the run write, and which the Simulation tab would list as a run).

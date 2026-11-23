@@ -28,7 +28,7 @@ os.environ["HSENV_PRIVATE_CONFIG"] = ""   # never the engine's private sidecar i
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-OUTPUT_TOKENS = 512          # humanstudy_llm's default output limit per call (the relay reserves it)
+OUTPUT_TOKENS = 1536         # app_run.SIM_MAX_TOKENS: the output limit each simulation call sends (the relay reserves it)
 PER_MESSAGE = 256            # the relay's reserve per message
 MARGIN = 1.5                 # refused answers, longer replies in the history, retries
 
