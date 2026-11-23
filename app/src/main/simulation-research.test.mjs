@@ -114,7 +114,9 @@ test('large request lists are preserved in bounded parts', async () => {
   assert.deepEqual(parts.flatMap(part => part.model_request_ids), ids)
 })
 
-test('a detached runner can finish after the app quits and is reconciled once on the next start', { timeout: 8000 }, async () => {
+// Windows: the runner is not detached and libuv puts it in a kill-on-close job object, so it ends with the app;
+// the next start reconciles it as interrupted. Only macOS/Linux runners can outlive the app.
+test('a detached runner can finish after the app quits and is reconciled once on the next start', { timeout: 8000, skip: process.platform === 'win32' && 'runner does not outlive the app on Windows' }, async () => {
   const projectDir = await mkdtemp(join(temp, 'detached-'))
   const journalDir = join(projectDir, 'journal')
   const runDir = join(projectDir, 'artifacts', 'simulations', 'run')
