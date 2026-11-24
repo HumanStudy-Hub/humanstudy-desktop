@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { copyFile, mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import sampleProgram from '../shared/sample-program.json'
+import { pendingPaperBuild } from './paper-build'
 import { installPack } from './pack'
 import { installSampleAssets } from './sample-project'
 import { ensureProjectsRoot, getSettings } from './settings'
@@ -130,6 +131,7 @@ export async function createProject(input: { name: string; pdfPath?: string; sam
     await writeFile(join(dir, 'program.json'), JSON.stringify(sampleProgram, null, 2) + '\n')
   }
   await installPack(dir)
+  if (input?.pdfPath) pendingPaperBuild(dir)
   await writeFile(join(dir, MARKER), JSON.stringify({ format: 1, createdAt: new Date().toISOString() }, null, 2) + '\n')
   return dir
 }

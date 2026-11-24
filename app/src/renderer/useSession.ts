@@ -41,6 +41,7 @@ export interface Message {
 
 export interface Session {
   id: string | null
+  startPaperBuild(): Promise<void>
   messages: Message[]
   busy: boolean
   status: string
@@ -137,6 +138,15 @@ export function useSession(projectDir: string | null, enabled = true): Session {
       if (idRef.current === sid && questionEpoch.current === epoch) setError(`Could not restore agent questions: ${String(e)}`)
     })
   }, [])
+  const startPaperBuild = useCallback(async () => {
+    const dir = dirRef.current, sid = idRef.current
+    if (!dir || !sid) return
+    const claim = await window.humanstudy.project.claimBuild?.(dir, sid)
+    if (!claim) return
+    if (dirRef.current !== dir || idRef.current !== sid) await window.humanstudy.project.releaseBuild(dir, claim.claimId)
+    else sendRef.current(claim.prompt)
+  }, [])
+
   const refreshThreads = useCallback(async () => {
     const dir = dirRef.current
     if (!dir) return
@@ -171,11 +181,12 @@ export function useSession(projectDir: string | null, enabled = true): Session {
       if (!live) return
       setThreads(list)
       activate(t)
+      await startPaperBuild()
     })().catch((e: unknown) => live && (setStatus(''), setError(String(e))))
     return () => {
       live = false
     }
-  }, [projectDir, enabled, activate])
+  }, [projectDir, enabled, activate, startPaperBuild])
 
   useEffect(
     () =>
@@ -359,7 +370,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const waitingForQuestion = messages.some(m => m.parts.some(p => p.kind === 'question' && !p.resolved && !p.expired))
 
   return {
-    id, messages, busy, status, error, queue, send, enqueue, editQueued, removeQueued, interruptAndSend, abort,
+    id, startPaperBuild, messages, busy, status, error, queue, send, enqueue, editQueued, removeQueued, interruptAndSend, abort,
     reply, waitingForPermission, answerQuestion, rejectQuestion, waitingForQuestion, threadId, threads, usage, resumedWithContext: resumed, newThread, openThread, renameThread, deleteThread,
   }
 }

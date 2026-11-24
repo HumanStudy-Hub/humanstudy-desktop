@@ -91,6 +91,11 @@ export default function App() {
   const hasAccess = account?.modelAccess === 'hosted' || (devKeys && account?.modelAccess === 'own-key')
   const agentReady = Boolean(hasAccess && agreed)
   const session = useSession(project?.dir ?? null, agentReady)
+  useEffect(() => {
+    if (agentReady && session.id && project?.pdf && project.build?.status === 'pending') {
+      void session.startPaperBuild().catch(() => undefined)
+    }
+  }, [agentReady, session.id, session.startPaperBuild, project?.dir, project?.pdf?.path, project?.build?.status])
   const [simulationRequest, setSimulationRequest] = useState<string | null>(null)
   useEffect(() => { setSimulationRequest(null); setSource(null) }, [project?.dir])
   // What the agent is doing, in the chat's own words, for the Simulation tab's live line.

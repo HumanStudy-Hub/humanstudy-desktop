@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path'
 
 const PREFIX = '../../../pack/'
 const files = import.meta.glob(
-  ['../../../pack/AGENTS.md', '../../../pack/PROJECT_FORMAT.md', '../../../pack/schema/**/*', '../../../pack/skills/**/*', '../../../pack/artifact-kit/*'],
+  ['../../../pack/AGENTS.md', '../../../pack/PROJECT_FORMAT.md', '../../../pack/schema/**/*', '../../../pack/skills/**/*', '../../../pack/artifact-kit/*', '../../../pack/plugins/*'],
   { query: '?raw', import: 'default', eager: true }
 ) as Record<string, string>
 
@@ -21,6 +21,7 @@ function target(rel: string): string | null {
   if (rel === 'AGENTS.md') return 'AGENTS.md'
   if (rel === 'PROJECT_FORMAT.md') return join('.opencode', rel)
   if (rel.startsWith('schema/')) return rel
+  if (rel.startsWith('plugins/')) return join('.opencode', rel)
   if (rel.startsWith('skills/')) return join('.opencode', rel)
   if (rel.startsWith('artifact-kit/')) return join('.opencode', rel)
   return null
@@ -56,6 +57,14 @@ export async function refreshPack(projectDir: string): Promise<void> {
       await writeFile(abs, content, 'utf8')
     }
   }
+  for (const rel of ['plugins/humanstudy-pdf.ts', 'skills/build/program_io.py']) {
+    const content = files[PREFIX + rel]
+    if (content !== undefined) {
+      const abs = join(projectDir, target(rel)!)
+      await mkdir(dirname(abs), { recursive: true })
+      await writeFile(abs, content, 'utf8')
+    }
+  }
   // The artifact kit is vendored code, not researcher instructions: install or update it as shipped.
   for (const rel of kitFiles()) {
     const abs = join(projectDir, target(rel)!)
@@ -66,3 +75,5 @@ export async function refreshPack(projectDir: string): Promise<void> {
     await writeFile(abs, content, 'utf8')
   }
 }
+
+/** App-owned transport guard/helpers; refresh these even in older existing projects. */

@@ -18,9 +18,21 @@ can actually run as the original participants did, so the researcher can check i
   you may cite.
 - Read `sources/` only if present. Use the network only for URLs the researcher explicitly gave;
   record each URL consulted in `source/paper_metadata.json` → `external_sources`.
+- The PDF read guard may open a cached page-text file. Cite the original PDF path and physical `=== page N ===` marker, never the cache file as the primary source. Flag unreadable figures or pages as missing; do not invent their contents.
 - List every empirical study in the paper before modelling any of them.
 
 ## 2. Write program.json (the Study document)
+
+**Visible first, incrementally.** This build is already authorized. Do not request another
+confirmation. After reading the paper and identifying its study map, create the first coherent
+batch (root/source/studies and available overview/question evidence). Apply it with
+`python .opencode/skills/build/program_io.py .humanstudy/tmp/batch-01.json`. Add subsequent small
+JSON batches the same way; records merge by id, and existing content is never shortened. Include
+referenced evidence/nodes in the same batch where possible. The app displays these saved
+checkpoints while extraction continues. Never emit one huge write call containing the full program.
+Run the final checker before calling the program complete. Missing paper facts become review
+issues; they do not require asking the user to authorize extraction again.
+
 
 Validate against `schema/human-program.schema.json`. Work in this order:
 
@@ -89,6 +101,9 @@ fix. Typical slips: a step id placed in an issue's `nodeId` (use `stepId`), a `m
 field or rule with no review issue naming its `nodeId`/`fieldId` (or `stepId`), an id in a list
 that does not exist. The app tolerates a few slips by setting them aside, but it warns the
 researcher; a clean check is the standard.
+
+Finish and validate the visible program **before** packaging or views. Do not delay the
+program until these auxiliary artifacts exist.
 
 ## 3. Package: make the study runnable
 

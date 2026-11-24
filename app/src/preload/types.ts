@@ -150,11 +150,21 @@ export interface FileVersion {
   size: number
 }
 
+export interface PaperBuildState {
+  status: 'pending' | 'claimed' | 'running' | 'complete' | 'error'
+  phase: 'reading' | 'writing' | 'checking'
+  error?: string
+  sessionId?: string
+  claimId?: string
+  expiresAt?: number
+}
+
 export interface ProjectSnapshot {
   dir: string
   name: string
   program: unknown | null
   programError?: string
+  build?: PaperBuildState
   artifacts: ProjectFile[]
   exports: ProjectFile[]
   pdf: ProjectFile | null
@@ -327,6 +337,8 @@ export interface HumanStudyApi {
     pickProjectsRoot(): Promise<Settings | null>
   }
   project: {
+    claimBuild(dir: string, sid: string): Promise<{ claimId: string; prompt: string } | null>
+    releaseBuild(dir: string, claimId: string): Promise<void>
     open(): Promise<string | null>
     read(dir: string): Promise<ProjectSnapshot>
     reveal(path: string): Promise<void>

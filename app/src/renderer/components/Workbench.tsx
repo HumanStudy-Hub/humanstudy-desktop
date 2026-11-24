@@ -387,7 +387,8 @@ export function Workbench({ ref, project, source, onClearSelection, onAskSelecti
                 />
               </>
             ) : (
-              <Empty title={error ? t('study.unreadable') : t('study.empty_title')} body={error ?? t('study.empty_body')}>
+              <Empty title={project.build && project.build.status !== 'complete' ? 'Building the Human Program' : error ? t('study.unreadable') : t('study.empty_title')} body={project.build?.status === 'error' ? project.build.error ?? 'The build stopped; saved work is preserved.' : project.build?.status === 'pending' || project.build?.status === 'claimed' ? 'Starting the study agent…' : project.build && project.build.status !== 'complete' ? ({ reading: 'Reading the paper…', writing: 'Saving the study as it is extracted…', checking: 'Checking sources and structure…' }[project.build.phase]) : error ?? t('study.empty_body')}>
+                {project.build?.status === 'error' && <button className="link" onClick={() => onSendAgent?.('Continue the build from saved files. Read page text locally; use small program_io.py batches and validate program.json. Do not repeat the whole program in one tool call.')}>Continue from saved work</button>}
                 {error && onFixProgram && <button className="link" onClick={fixProgram}>{t('study.fix')}</button>}
               </Empty>
             ))}

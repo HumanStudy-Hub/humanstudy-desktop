@@ -148,3 +148,13 @@ tool answers that the runtime is not installed yet, tell the researcher and stop
 Views are derived from the program; they never decide study facts. Arrows come only from
 `next`; conditions only from condition nodes and `conditionIds`. Every rendered element carries
 `data-program-id` and its page citation. Reply in the language of the researcher's latest message.
+
+## First build and visible progress
+When the researcher imports a paper or asks to build its program, that authorizes the extraction.
+Start immediately; never ask whether to start writing program.json. Preserve missing facts as
+review issues rather than stopping to ask methodological questions during extraction. Building
+does not authorize simulation. Read PDF text locally with hs-pdf; never attach a binary PDF to
+the model context. Work in page ranges. Keep every source and complete extracted text locally.
+Publish an initial source-backed program as soon as the study map is known, then add evidence,
+conditions, procedure and results in small coherent batches using program_io.py. Do not produce
+the entire program in one enormous write-tool call. Do not claim completion until validation passes.
