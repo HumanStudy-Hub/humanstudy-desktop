@@ -126,7 +126,7 @@ for (const [failures, name] of [
     const { getSettings, OpencodeKernel } = await loadSettings(t)
     const root = getSettings().projectsRoot
     const { kernel, events, replies, ask } = permissionFixture(t, OpencodeKernel, root)
-    kernel.autoReplyRetryMs = [5, 5, 5]
+    kernel.autoReplyRetryMs = [30, 30, 30]
     const delivered = failures <= kernel.autoReplyRetryMs.length
     kernel.replyTo = async (_server, _session, id, reply) => {
       replies.push([id, reply])

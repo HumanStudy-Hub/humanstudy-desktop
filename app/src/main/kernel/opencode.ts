@@ -668,21 +668,30 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
   private async replyAutomatically(sessionId: string, s: SessionState, id: string, reply: PermissionReply, message?: string): Promise<void> {
     // The native turn is still running and only waits for this reply, so delivering it late is the "continue":
     // keep resending with backoff (about two minutes in all) instead of stopping the turn after one retry.
+    const server = s.server
+    // Only the turn that asked: not after Stop, dispose, server exit, or a reopened session under the same id.
+    const live = () => !this.disposed && this.sessions.get(sessionId) === s && s.server === server && !server.exited &&
+      s.inFlight && !s.stopping && this.permissionMode() !== 'ask'
     for (let attempt = 0; ; attempt++) {
       try {
-        await this.replyTo(s.server, sessionId, id, reply, message)
+        // A reject still being resent keeps opencode's cascade rejects attributed to it.
+        if (reply === 'reject') s.lastAutoReject = this.clock()
+        await this.replyTo(server, sessionId, id, reply, message)
+        if (reply === 'reject') s.lastAutoReject = this.clock()
         return
       } catch (error) {
         const wait = this.autoReplyRetryMs[attempt]
         if (alreadyResolved(error) || this.permissionMode() === 'ask' || wait === undefined) throw error
         await sleep(wait)
-        if (this.disposed || !s.inFlight || s.stopping || !s.pendingPermissions.has(id) || this.permissionMode() === 'ask') throw error
+        if (!live()) throw error
+        // Answered meanwhile (opencode's own cascade or an event): nothing left to deliver.
+        if (!s.pendingPermissions.has(id)) return
       }
     }
   }
 
   private async automaticReplyFailed(sessionId: string, s: SessionState, perm: KernelPermission): Promise<void> {
-    if (this.disposed || !s.inFlight || s.stopping || !s.pendingPermissions.has(perm.id) || this.resolvedReported.has(perm.id)) return
+    if (this.disposed || this.sessions.get(sessionId) !== s || !s.inFlight || s.stopping || !s.pendingPermissions.has(perm.id) || this.resolvedReported.has(perm.id)) return
     if (this.permissionMode() === 'ask') {
       this.emitter.emit({ sessionId, type: 'permission', permission: perm })
       return
@@ -696,6 +705,11 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
       // Even if the native stop request fails, a stale snapshot must not restore this permission.
       this.reportResolved(perm.id)
       s.pendingPermissions.delete(perm.id)
+      // The researcher already has the resend message; the turn must not stay marked as running.
+      if (this.sessions.get(sessionId) === s && s.inFlight) {
+        s.inFlight = false
+        this.emitter.emit({ sessionId, type: 'done' })
+      }
     }
   }
 
@@ -1031,6 +1045,8 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
             if (++failures >= 5) {
               for (const [sessionId, s] of this.sessions) {
                 if (s.server !== server || !s.inFlight) continue
+                // An automatic reply still being resent owns this turn's ending (it stops it if every resend fails).
+                if ([...s.pendingPermissions.keys()].some(id => this.autoReplies.has(id))) continue
                 s.recovery.cancelled = true
                 s.recovery.pending = false
                 s.inFlight = false
