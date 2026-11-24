@@ -138,6 +138,26 @@ test('every shipped human-program schema is upgraded in existing projects (evide
   }
 })
 
+test('every released build skill is upgraded in existing projects (first-batch example, #91)', async () => {
+  const tags = spawnSync('git', ['tag', '--list', 'v*'], { cwd: packDir, encoding: 'utf8' })
+  const releases = tags.status === 0 ? tags.stdout.split('\n').filter(Boolean) : []
+  if (!releases.length) return // checkout without tags
+  const current = readFileSync(join(packDir, 'skills/build/SKILL.md'), 'utf8')
+  const sha = (s) => createHash('sha256').update(s).digest('hex')
+  const listed = JSON.parse(readFileSync(join(here, 'previous-pack-hashes.json'), 'utf8'))['skills/build/SKILL.md']
+  for (const t of releases) {
+    const shown = spawnSync('git', ['show', `${t}:pack/skills/build/SKILL.md`], { cwd: packDir, encoding: 'utf8' })
+    if (shown.status !== 0 || shown.stdout === current) continue
+    assert.ok(listed.includes(sha(shown.stdout)), `previous-pack-hashes.json lacks the build skill shipped in ${t}`)
+  }
+  const proj = mkdtempSync(join(tmpdir(), 'proj-'))
+  const dest = join(proj, '.opencode/skills/build/SKILL.md')
+  mkdirSync(dirname(dest), { recursive: true })
+  writeFileSync(dest, spawnSync('git', ['show', 'v0.7.2:pack/skills/build/SKILL.md'], { cwd: packDir, encoding: 'utf8' }).stdout)
+  await P.refreshPack(proj)
+  assert.equal(readFileSync(dest, 'utf8'), current)
+})
+
 const python = ['python3', 'python'].find((p) => spawnSync(p, ['--version']).status === 0)
 test('inline.py inlines the kit, embeds the program and checks the page', { skip: !python }, () => {
   const proj = mkdtempSync(join(tmpdir(), 'proj-'))
