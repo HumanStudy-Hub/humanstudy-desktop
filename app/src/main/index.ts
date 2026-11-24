@@ -632,10 +632,16 @@ app.whenReady().then(() => {
     syncAccess()
     return v
   }
-  ipcMain.handle('account:status', () => acct.status())
-  ipcMain.handle('account:signIn', async (_e, email: string, password: string) =>
-    afterAccount(await acct.signIn(email, password))
-  )
+  // A status request also refreshes the plan (a Free key without a code, models, usage; at most once a minute).
+  ipcMain.handle('account:status', async () => {
+    await acct.refreshPlan()
+    return afterAccount(acct.status())
+  })
+  ipcMain.handle('account:signIn', async (_e, email: string, password: string) => {
+    await acct.signIn(email, password)
+    await acct.refreshPlan(true)
+    return afterAccount(acct.status())
+  })
   ipcMain.handle('account:signUp', async (_e, email: string, password: string) =>
     afterAccount(await acct.signUp(email, password))
   )

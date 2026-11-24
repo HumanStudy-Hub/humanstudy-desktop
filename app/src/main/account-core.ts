@@ -2,7 +2,7 @@
 // unlocks hosted models. Electron-free (storage, encryption and fetch are injected) so it can be
 // tested against a stubbed fetch; src/main/account.ts wires it to safeStorage and userData.
 // Tokens and keys are never logged and never returned to the renderer.
-import type { AccountStatus } from '../preload/types'
+import type { AccountStatus, UsageSummary } from '../preload/types'
 
 export const DEFAULT_SERVER = 'https://humanstudy-hub.com'
 
@@ -12,6 +12,8 @@ export interface DesktopConfig {
   defaultModel: string
   models: string[]
   authOrigin?: string
+  /** The server meters hosted use per plan and grants a Free key without a code. */
+  plans?: boolean
 }
 
 interface Session {
@@ -66,6 +68,9 @@ export function createAccount(deps: AccountDeps) {
   const authOrigin = deps.authOrigin ? validAuthOrigin(deps.authOrigin) : undefined
   const now = (): number => (deps.now ? deps.now() : Date.now())
   let config: DesktopConfig | null = null
+  // This month's hosted-model usage, from the server's config reply (usage plans). Memory only.
+  let usage: UsageSummary | null = null
+  let planCheckedAt = 0
 
   // ---- storage ------------------------------------------------------------------------
   function readSecret<T>(field: 'session' | 'desktopKey'): T | null {
@@ -97,7 +102,12 @@ export function createAccount(deps: AccountDeps) {
   async function getConfig(force = false): Promise<DesktopConfig> {
     if (config && !force) return config
     try {
-      const res = await deps.fetch(`${server}/api/desktop/config`, { signal: AbortSignal.timeout(10_000) })
+      // With a desktop key the server answers with the account's plan: its models and this month's usage.
+      const k = getSession() ? getKey() : null
+      const res = await deps.fetch(`${server}/api/desktop/config`, {
+        signal: AbortSignal.timeout(10_000),
+        ...(keyValid(k) ? { headers: { authorization: `Bearer ${k.key}` } } : {}),
+      })
       if (!res.ok) throw new Error(`config -> ${res.status}`)
       const c = (await res.json()) as Partial<DesktopConfig>
       if (typeof c.supabaseUrl !== 'string' || typeof c.supabaseKey !== 'string')
@@ -108,7 +118,9 @@ export function createAccount(deps: AccountDeps) {
         defaultModel: typeof c.defaultModel === 'string' ? c.defaultModel : '',
         models: Array.isArray(c.models) ? c.models.filter((m): m is string => typeof m === 'string') : [],
         ...(typeof c.authOrigin === 'string' ? { authOrigin: validAuthOrigin(c.authOrigin) } : {}),
+        ...((c as { plans?: unknown }).plans === true ? { plans: true } : {}),
       }
+      usage = usageFrom((c as { usage?: unknown }).usage)
       const store = deps.readStore()
       store.config = config
       deps.writeStore(store)
@@ -199,6 +211,7 @@ export function createAccount(deps: AccountDeps) {
       server,
       modelAccess: deps.hasOwnKey() ? 'own-key' : unlocked ? 'hosted' : 'none',
       ...(cachedConfig()?.models.length ? { models: cachedConfig()?.models } : {}),
+      ...(unlocked && usage ? { usage } : {}),
     }
   }
 
@@ -210,7 +223,11 @@ export function createAccount(deps: AccountDeps) {
     if (!s) throw new AccountError('Sign-in returned no session.')
     const prev = getSession()
     // A different account must not inherit the previous account's desktop key.
-    if (prev && prev.email.toLowerCase() !== s.email.toLowerCase()) writeSecret('desktopKey', null)
+    if (!prev || prev.email.toLowerCase() !== s.email.toLowerCase()) {
+      writeSecret('desktopKey', null)
+      usage = null
+      planCheckedAt = 0
+    }
     writeSecret('session', s)
     return status()
   }
@@ -282,6 +299,9 @@ export function createAccount(deps: AccountDeps) {
     }
     writeSecret('session', null)
     writeSecret('desktopKey', null)
+    usage = null
+    planCheckedAt = 0
+    config = null // the next fetch, without a key, returns the public model list
     return status()
   }
 
@@ -319,6 +339,42 @@ export function createAccount(deps: AccountDeps) {
     return status()
   }
 
+  /**
+   * Usage plans: a signed-in account without a key asks for one with no code (the server grants a
+   * Free-plan key when plans are on, and refuses as before when an invitation code is still needed);
+   * then the config is fetched with the key, so the model list and usage follow the account's plan.
+   * At most once a minute unless forced. Never throws.
+   */
+  async function refreshPlan(force = false): Promise<void> {
+    if (!getSession()) { usage = null; return }
+    if (!force && now() - planCheckedAt < 60_000) return
+    planCheckedAt = now()
+    try {
+      const c = await getConfig(true)
+      if (!keyValid(getKey()) && c.plans) {
+        const before = getSession()?.accessToken
+        const token = await accessToken()
+        if (!token) return
+        const res = await deps.fetch(`${server}/api/desktop/key`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: '{}',
+          signal: AbortSignal.timeout(10_000),
+        })
+        if (!res.ok) return
+        const json = (await res.json().catch(() => ({}))) as { key?: unknown; expiresAt?: unknown }
+        if (typeof json.key !== 'string' || !json.key) return
+        // A sign-out or account switch during the request must never receive this account's key.
+        const current = getSession()?.accessToken
+        if (!current || (current !== before && current !== token)) return
+        writeSecret('desktopKey', { key: json.key, expiresAt: typeof json.expiresAt === 'string' ? json.expiresAt : '' } satisfies DesktopKey)
+        await getConfig(true)
+      }
+    } catch {
+      /* offline or not offered: status stays as it was */
+    }
+  }
+
   /** What the kernel needs for hosted access, or null when hosted access is not in use. */
   function hostedAccess(preferredModel: string): { server: string; key: string; model: string; models: string[] } | null {
     const st = status()
@@ -350,7 +406,16 @@ export function createAccount(deps: AccountDeps) {
     if (!token) return null
     try { return jwtSub(token) || null } catch { return null }
   }
-  return { status, signIn, signUp, signOut, forgotPassword, resendConfirmation, changePassword, unlock, getConfig, hostedAccess, restAuth, researchOwner }
+  return { status, signIn, signUp, signOut, forgotPassword, resendConfirmation, changePassword, unlock, getConfig, refreshPlan, hostedAccess, restAuth, researchOwner }
+}
+
+function usageFrom(raw: unknown): UsageSummary | null {
+  if (!raw || typeof raw !== 'object') return null
+  const u = raw as Record<string, unknown>
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null)
+  const used = num(u.usedUsd), limit = num(u.limitUsd)
+  if (typeof u.plan !== 'string' || used === null || limit === null || typeof u.renewsAt !== 'string' || Number.isNaN(Date.parse(u.renewsAt))) return null
+  return { plan: u.plan, label: typeof u.label === 'string' ? u.label : u.plan, usedUsd: used, limitUsd: limit, renewsAt: u.renewsAt, exhausted: u.exhausted === true }
 }
 
 function validAuthOrigin(raw: string): string {

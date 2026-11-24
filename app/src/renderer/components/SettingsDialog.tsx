@@ -4,7 +4,7 @@ import { AboutUpdates } from './Updates'
 import { ResearchDataSection } from './ResearchData'
 import { HelpFeedback } from './HelpFeedback'
 import { track } from '../telemetry'
-import { t, getLangPref, setLangPref, type LangPref } from '../i18n'
+import { t, getLang, getLangPref, setLangPref, type LangPref } from '../i18n'
 
 export type SettingsSection = 'account' | 'general' | 'models' | 'research' | 'help' | 'about'
 
@@ -327,6 +327,13 @@ function DevKeys({ settings, onChange }: { settings: Settings; onChange(p: Parti
 
 function accessLine(a: AccountStatus): string {
   if (a.modelAccess === 'own-key') return t('settings.access_own')
+  if (a.modelAccess === 'hosted' && a.usage) {
+    // Usage plans: one line with this month's usage and the renewal date instead of the key's expiry.
+    const u = a.usage
+    const date = new Date(u.renewsAt).toLocaleDateString(getLang(), { timeZone: 'UTC', year: 'numeric', month: 'long', day: 'numeric' })
+    if (u.exhausted) return `${t('settings.access_hosted')} · ${t(u.plan === 'free' ? 'settings.usage_out_free' : 'settings.usage_out', { plan: u.label, date })}`
+    return `${t('settings.access_hosted')} · ${t('settings.usage_line', { plan: u.label, used: `$${u.usedUsd.toFixed(2)}`, limit: `$${u.limitUsd.toFixed(2)}`, date })}`
+  }
   if (a.modelAccess === 'hosted') {
     const ms = a.keyExpiresAt ? Date.parse(a.keyExpiresAt) : NaN
     const until = Number.isNaN(ms)

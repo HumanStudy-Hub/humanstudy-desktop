@@ -278,6 +278,19 @@ export interface AccountStatus {
   modelAccess: 'hosted' | 'own-key' | 'none'
   /** Hosted model ids from the server config (cached), when known. */
   models?: string[]
+  /** This month's hosted-model usage, when the server meters it (usage plans). */
+  usage?: UsageSummary
+}
+
+/** The account's plan and its spend this calendar month (UTC), as the Hub reports it. */
+export interface UsageSummary {
+  plan: string
+  label: string
+  usedUsd: number
+  limitUsd: number
+  /** ISO time the allowance renews (00:00 UTC on the 1st). */
+  renewsAt: string
+  exhausted: boolean
 }
 
 /** Auto-update state (electron-updater, GitHub Releases). Packaged builds only. */
