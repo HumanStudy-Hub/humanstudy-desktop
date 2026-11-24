@@ -614,8 +614,6 @@ export default function App() {
                 projectDir={project.dir}
                 tree={project.tree}
                 model={settings?.model ?? ''}
-                auto={settings?.permission !== 'ask'}
-                onAuto={enabled => updateSettings({ permission: enabled ? 'project' : 'ask' })}
                 busyEnter={settings?.busyEnter ?? 'queue'}
                 onModel={(model) => updateSettings({ model })}
                 kernel={kernel}

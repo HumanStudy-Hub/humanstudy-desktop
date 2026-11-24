@@ -169,7 +169,8 @@ export interface OpencodeOptions {
   provider?: string
   model?: string
   /** 'ask' (developer opt-in): every edit/bash call goes to the renderer. 'project': those inside the
-   *  project folder are approved automatically and all others rejected automatically, never prompted. Default: HUMANSTUDY_PERMISSION env (set from Settings), else 'project'. */
+   *  project folder are approved automatically and all others rejected automatically, never prompted.
+   *  Default: 'project' unless HUMANSTUDY_PERMISSION=ask was set at launch. */
   permission?: 'ask' | 'project'
   readyTimeoutMs?: number
   /** Simulations through the per-run model relay (default: relaySupported(), i.e. macOS with
@@ -195,7 +196,7 @@ export class OpencodeKernel implements Kernel {
   private model: string
   private hostedModels: string[]
   private readyTimeoutMs: number
-  private permission: 'ask' | 'project' | undefined
+  private permission: 'ask' | 'project'
   /** Fixed at construction: whether simulations use the per-run relay (see OpencodeOptions.relay). */
   readonly relay: boolean
   private clock = (): number => Date.now()
@@ -221,7 +222,7 @@ export class OpencodeKernel implements Kernel {
     // Own OpenRouter keys are a developer path only.
     if (this.provider === 'openrouter' && !(process.env.HUMANSTUDY_DEV_KEYS === '1' && process.env.OPENROUTER_API_KEY)) this.provider = ''
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 30_000
-    this.permission = opts.permission
+    this.permission = opts.permission ?? (process.env.HUMANSTUDY_PERMISSION === 'ask' ? 'ask' : 'project')
     this.relay = opts.relay ?? relaySupported()
     this.livenessTimer = setInterval(() => { void this.checkLiveness() }, 30_000)
     this.livenessTimer.unref()
@@ -333,7 +334,7 @@ export class OpencodeKernel implements Kernel {
 
   permissions(sessionId: string): KernelPermission[] {
     const s = this.session(sessionId)
-    if (!s.inFlight || s.stopping) return []
+    if (this.permissionMode() === 'project' || !s.inFlight || s.stopping) return []
     return [...s.pendingPermissions.values()].filter(perm => !this.autoReplies.has(perm.id) && !this.resolvedReported.has(perm.id))
   }
 
@@ -662,6 +663,35 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     if (!s.inFlight || s.stopping || s.recovery.cancelled || s.recovery.running) return
     s.recovery.reason = 'declined_tool_call'; s.recovery.pending = true
   }
+  private async replyAutomatically(sessionId: string, s: SessionState, id: string, reply: PermissionReply, message?: string): Promise<void> {
+    try {
+      await this.replyTo(s.server, sessionId, id, reply, message)
+    } catch (error) {
+      if (alreadyResolved(error) || this.permissionMode() === 'ask') throw error
+      await sleep(1000)
+      if (this.disposed || !s.inFlight || s.stopping || !s.pendingPermissions.has(id) || this.permissionMode() === 'ask') throw error
+      await this.replyTo(s.server, sessionId, id, reply, message)
+    }
+  }
+
+  private async automaticReplyFailed(sessionId: string, s: SessionState, perm: KernelPermission): Promise<void> {
+    if (this.disposed || !s.inFlight || s.stopping || !s.pendingPermissions.has(perm.id) || this.resolvedReported.has(perm.id)) return
+    if (this.permissionMode() === 'ask') {
+      this.emitter.emit({ sessionId, type: 'permission', permission: perm })
+      return
+    }
+    s.recovery.cancelled = true
+    s.recovery.pending = false
+    this.emitter.emit({ sessionId, type: 'error', text: 'The assistant stopped because an automatic permission reply could not be delivered. Send your message again to continue.' })
+    try {
+      await this.abort(sessionId)
+    } catch {
+      // Even if the native stop request fails, a stale snapshot must not restore this permission.
+      this.reportResolved(perm.id)
+      s.pendingPermissions.delete(perm.id)
+    }
+  }
+
   private autoReject(sessionId: string, s: SessionState, perm: KernelPermission): void {
     if (s.stopping || this.autoReplies.has(perm.id)) return
     this.autoReplies.add(perm.id)
@@ -675,17 +705,15 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     const decision = hitLimit ? { ...perm, type: 'auto_reject_limit' } : perm
     if (stop) { s.recovery.cancelled = true; s.recovery.pending = false }
     s.lastAutoReject = this.clock()
-    this.replyTo(s.server, sessionId, perm.id, 'reject', stop ? undefined : autoRejectMessage(perm)).then(() => {
+    this.replyAutomatically(sessionId, s, perm.id, 'reject', stop ? undefined : autoRejectMessage(perm)).then(() => {
       s.pendingPermissions.delete(perm.id)
       if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...decision, automatic: true, resolved: 'reject' } })
     }, (error) => {
       // Already answered: opencode's cascade from our other reject (two disallowed calls in parallel)
       // ended the loop with a plain reject. Nothing to show; resume like any cascade.
       if (alreadyResolved(error)) { s.pendingPermissions.delete(perm.id); if (this.inCascadeWindow(s)) this.resumeAfterCascade(s); return }
-      // The reply could not be delivered (server gone or unreachable). Showing the request is the
-      // only way left to unblock it; this is not a normal path, and the answer is then the researcher's.
       this.autoRejected.delete(perm.id)
-      if (s.inFlight && !s.stopping && !this.resolvedReported.has(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: perm })
+      return this.automaticReplyFailed(sessionId, s, perm)
     }).finally(() => this.autoReplies.delete(perm.id))
   }
   private autoApprove(sessionId: string, s: SessionState, perm: KernelPermission): void {
@@ -694,17 +722,17 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     s.recovery.autoRejects = 0
     // One call only: an Auto approval must not become a permanent native permission
     // grant that would silently survive switching Auto off.
-    this.replyTo(s.server, sessionId, perm.id, 'once').then(() => {
+    this.replyAutomatically(sessionId, s, perm.id, 'once').then(() => {
       s.pendingPermissions.delete(perm.id)
       if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'once' } })
     }, (error) => {
       if (alreadyResolved(error)) { s.pendingPermissions.delete(perm.id); return }
-      if (s.inFlight && !s.stopping && !this.resolvedReported.has(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: perm })
+      return this.automaticReplyFailed(sessionId, s, perm)
     }).finally(() => this.autoReplies.delete(perm.id))
   }
 
   private permissionMode(): 'ask' | 'project' {
-    return this.permission ?? (process.env.HUMANSTUDY_PERMISSION === 'ask' ? 'ask' : 'project')
+    return this.permission
   }
 
   /** Sessions whose assistant process ended; opencode keeps them on disk, so the next message reopens them. */

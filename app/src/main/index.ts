@@ -988,7 +988,6 @@ app.whenReady().then(() => {
     const before = getSettings()
     const next = setSettings(patch)
     if (next.model !== before.model) markKernelStale()
-    if (next.permission !== before.permission) for (const k of allKernels) k.setPermissionMode?.(next.permission)
     syncAccess()
     return next
   })
