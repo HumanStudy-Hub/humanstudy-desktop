@@ -4,15 +4,20 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, extname, join, resolve } from 'node:path'
+import { basename, dirname, extname, join, resolve, sep } from 'node:path'
+import { artifactPath, isProhibitedEventType, LIMITS, researchUuid, semanticId, SESSION_END_REASONS, type SessionEndReason, type SimulationStage } from '../shared/research-contract'
+import type { SimulationMetadata } from './simulation-research'
+import { fileVersion } from '../shared/file-version'
 import { storeResearchContent } from './research-content'
-import { createResearchCollector } from './research-collector'
-import { createResearchAgent, type ResearchLink } from './research-agent'
+import { createResearchCollector, InvalidResearchEvent } from './research-collector'
+import { createResearchAgent, dispatchAndRecord, researchReceiptId, type ResearchLink } from './research-agent'
 import { researchInteraction } from '../shared/research-interactions'
+import { createInteractionGuard, DROPPED_INTERACTION as DROPPED, readArtifactFile } from './artifact-interaction-guard'
 import { actionRef, type ActionRef } from '../shared/research-operations'
 import { createSerial, createWriteAttribution, isSaveTemp } from './write-capture'
 import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
+import { getSettings } from './settings'
 import { loadPrivateIndexDir } from './private-index'
 import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, namesPrivatePath, mayCollectFile, programDiff, PRIVATE_MATERIAL, REDACTED_PRIVATE, STUDY_PACKAGE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
 import { createReplay, REPLAY_FLUSH_MS, type Replay, type ReplayFile, type ReplayFs } from './replay-core'
@@ -79,7 +84,7 @@ function sourceCollector() {
     const web = webResearchClient()
     sources = createResearchCollector({
       root: web ? join(root, 'web') : root, surface: web ? 'web' : 'desktop', appVersion: app.getVersion(),
-      ...(web ? { previousRoot: root } : {}),
+      ...(web ? { previousRoot: root, visitId: () => webRuntimeState().visitId } : {}),
       auth: () => getAccount().restAuth(), ownerId: () => getAccount().researchOwner(),
       allowed: () => { const s = getTelemetry().status(); return s.consentVersion === 3 && s.usage && s.content },
     })
@@ -87,7 +92,7 @@ function sourceCollector() {
   return sources
 }
 /** The one way a research event reaches the collector: through the private-material boundary (redactCapture). */
-function captureResearch(event: Parameters<ReturnType<typeof createResearchCollector>['capture']>[0], context: { projectDir?: string; email?: string | null } = {}): Promise<string | null> {
+function captureResearch(event: Parameters<ReturnType<typeof createResearchCollector>['capture']>[0], context: { projectDir?: string; email?: string | null; visitId?: string; accept?(): boolean } = {}): Promise<string | null> {
   return sourceCollector().capture(redactCapture(event, privateIndex, context.projectDir ? scopedProject(context.projectDir) : false), context)
 }
 const researchAgent = createResearchAgent((event, context) => captureResearch(event, context))
@@ -96,6 +101,39 @@ export async function settleResearch(final = false): Promise<void> {
   await researchAgent.drain()
   if (final) await sourceCollector().end('closed')
 }
+/** Set by web/server.cjs outside process.env, so the agent and its subprocesses cannot read or set it. */
+type WebRuntimeState = { visitId?: string; endReason?: string }
+const webRuntimeState = (): WebRuntimeState => (globalThis as { __humanstudyWebRuntime?: WebRuntimeState }).__humanstudyWebRuntime ?? {}
+export const webEndReason = (): string | undefined => webRuntimeState().endReason
+export async function finishWebResearch(): Promise<void> {
+  await researchAgent.drain()
+  const reason = webEndReason() as SessionEndReason
+  await sourceCollector().end(SESSION_END_REASONS.includes(reason) ? reason : 'closed').catch(() => undefined)
+  // A periodic flush may have taken its snapshot before the end event was written.
+  await sourceCollector().flush()
+  await sourceCollector().flush()
+}
+
+const webDispatches = new Map<string, Promise<unknown>>()
+
+export function dispatchWebChat<T>(sid: string, text: string, ref: ActionRef, send: () => Promise<T>): Promise<T> {
+  const owner = getAccount().researchOwner()
+  const key = `${owner}:${ref.id}`
+  const scope = researchScope()
+  let receipt: Promise<unknown> | undefined
+  const result = dispatchAndRecord(send, outcome => {
+    receipt = scope && researchScope() === scope && typeof text === 'string' && text.trim()
+      ? researchAgent.submission(sid, text, outcome, ref) : Promise.resolve(null)
+    return receipt
+  })
+  // Register before a browser fallback can be handled. A lost response may arrive while dispatch
+  // is still in flight, so let the authoritative outcome join the collector first.
+  const pending = result.catch(() => undefined).then(() => receipt).catch(() => undefined)
+  webDispatches.set(key, pending)
+  void pending.then(() => { if (webDispatches.get(key) === pending) webDispatches.delete(key) })
+  return result
+}
+
 /** Sources a researcher operation put into a project (import, create from PDF), keyed by absolute path. */
 const importRefs = new Map<string, { ref: ActionRef; at: number }>()
 const IMPORT_LINK_MS = 10 * 60_000
@@ -184,17 +222,31 @@ export function projectIdFor(projectDir: string): string | null {
 /** The project open in the window; renderer events without a project id are attributed to it. */
 let rendererProjectDir: string | undefined
 
+/** Reports keep their originating protocol revision even after the opened study has changed. */
+function artifactContext(projectDir: string, target: unknown, metadata: TelemetryTrackOptions['metadata']) {
+  if (!artifactPath(target) || !/^artifacts\/simulations\/[\w.-]+\/results\.html$/.test(target)) return metadata
+  const run = readJson<{ study?: unknown; protocol_sha256?: unknown }>(join(projectDir, dirname(target), 'run.json'))
+  if (!semanticId(run?.study) || typeof run.protocol_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(run.protocol_sha256)) return metadata
+  return { ...metadata, study_id: run.study, study_revision: run.protocol_sha256 }
+}
+
 /** Track from the main process; `projectDir` makes paths project-relative and sets project_id. */
-export function track(type: string, opts: TelemetryTrackOptions = {}, projectDir?: string): void {
+export function track(type: string, opts: TelemetryTrackOptions = {}, projectDir?: string,
+  delivery?: { id: string; occurred_at: string; visitId: string; accept(): boolean }): Promise<unknown> | typeof DROPPED {
   try {
     const t = getTelemetry()
-    if (!t.status().usage) return
+    if (!t.status().usage) return DROPPED
     const projectId = opts.projectId ?? (projectDir ? (projectIdFor(projectDir) ?? undefined) : undefined)
     const dirFor = projectDir ?? (projectId ? projectIds.get(projectId) : undefined)
+    if (dirFor && (type === 'artifact.interact' || type === 'artifact.dwell'))
+      opts = { ...opts, metadata: artifactContext(dirFor, opts.target, opts.metadata) }
     const unified = researchInteraction(type, opts)
     const ref = actionRef(opts.action)
-    if (unified || ref) researchAgent.interaction(type, { ...opts, ...(typeof opts.target === 'string' && namesPrivatePath(opts.target, false) ? { target: REDACTED_PRIVATE } : {}), action: ref }, { project_id: projectId, dir: dirFor })
-    if (opts.v1Only) return
+    const version = dirFor && unified?.artifact_id
+      ? fileVersions.get(`${getAccount().researchOwner()}:${dirFor}\0${unified.artifact_id}`) : undefined
+    const artifactVersion = version?.revision === unified?.metadata?.artifact_revision ? version?.ordinal : undefined
+    const persisted = unified || ref ? researchAgent.interaction(type, { ...opts, ...(typeof opts.target === 'string' && namesPrivatePath(opts.target, false) ? { target: REDACTED_PRIVATE } : {}), action: ref }, { project_id: projectId, dir: dirFor, artifactVersion }, delivery) : undefined
+    if (delivery || opts.v1Only || type === 'artifact.interact' || type === 'artifact.dwell') return persisted ?? DROPPED
     // The private-material boundary, before the metadata is put in a blob or queued.
     let metadata = opts.metadata ? redactCapture({ metadata: opts.metadata }, privateIndex, dirFor ? scopedProject(dirFor) : false).metadata : opts.metadata
     if (metadata && Buffer.byteLength(JSON.stringify(metadata)) > 12_000) {
@@ -205,8 +257,10 @@ export function track(type: string, opts: TelemetryTrackOptions = {}, projectDir
     // a withheld file's name (sources/private/…) is not logged either
     if (typeof legacy.target === 'string' && namesPrivatePath(legacy.target, false)) legacy.target = REDACTED_PRIVATE
     t.track(type, { ...legacy, metadata, projectId }, { projectDir: dirFor })
-  } catch {
-    /* research data must never break the app */
+    return persisted ?? DROPPED
+  } catch (error) {
+    if (delivery) throw error
+    return DROPPED
   }
 }
 
@@ -257,6 +311,32 @@ export function trackTurnStart(sessionId: string, text: string, ref?: ActionRef)
 export function noteAction(ref: ActionRef | undefined, projectDir?: string): void {
   if (ref) researchAgent.action(ref, { project_id: projectDir ? (projectIdFor(projectDir) ?? undefined) : undefined, dir: projectDir })
 }
+function researchScope(): string | null {
+  const owner = getAccount().researchOwner(), status = getTelemetry().status()
+  if (!owner || status.consentVersion !== 3 || !status.usage || !status.content || !status.decidedAt) return null
+  return createHash('sha256').update(JSON.stringify([owner, status.consentVersion, status.decidedAt])).digest('hex')
+}
+
+export function simulationContext() {
+  return { researchScope: researchScope(), visitId: webRuntimeState().visitId }
+}
+
+export function simulationPublisher(projectDir: string, threadId: string, ref?: ActionRef,
+  scope = researchScope(), visitId = webRuntimeState().visitId) {
+  if (!scope || !ref || scope !== researchScope()) return
+  const projectId = projectIdFor(projectDir)
+  if (!projectId) return
+  const accept = () => scope === researchScope()
+  return (stage: SimulationStage, metadata: SimulationMetadata) => {
+    if (!accept()) return Promise.resolve(null)
+    if (stage === 'approved') noteAction(ref, projectDir)
+    const phase = stage === 'approved' || stage === 'started' ? stage : 'terminal'
+    const id = researchReceiptId(`simulation:${metadata.run_id}:${phase}:${metadata.part ?? 0}`)
+    return researchAgent.record({ id, event_type: `simulation.${stage}`, project_id: projectId, thread_id: threadId,
+      action_id: ref.id, caused_by: ref.id, metadata: { ...metadata } }, { projectDir, visitId, accept })
+  }
+}
+
 /** The researcher answered or dismissed a question / replied to a permission (before the kernel call). */
 export function noteAnswer(sessionId: string, questionId: string, ref?: ActionRef): void {
   if (ref) researchAgent.answer(sessionId, questionId, ref)
@@ -512,7 +592,7 @@ const TEXT_EXTS = new Set(['txt', 'md', 'json', 'csv', 'tsv', 'html', 'htm', 'py
 const WATCHED_DIRS = /^(artifacts|exports|package)\//
 const programState = new Map<string, { hash: string; json: unknown; version: number }>()
 const fileHashes = new Map<string, string>()
-const fileVersions = new Map<string, number>()
+const fileVersions = new Map<string, { revision: string; ordinal: number }>()
 const humanWrites = createWriteAttribution<ActionRef>()
 const captureInOrder = createSerial()
 const fsTimers = new Map<string, NodeJS.Timeout>()
@@ -619,12 +699,13 @@ async function snapshotFileNow(projectDir: string, rel: string, owner: string | 
     if (blob) metadata.blob = blob
     metadata.chars = text.length
     const versionKey = key
-    const nextVersion = (fileVersions.get(versionKey) ?? 0) + 1
+    const nextVersion = (fileVersions.get(versionKey)?.ordinal ?? 0) + 1
+    const revision = fileVersion(st)
     if (getAccount().researchOwner() !== owner) return
     const link = researchAgent.versionLink(projectDir, rel, String(metadata.by), humanWrites.action(resolve(path), text))
     const captured = await captureResearch({ event_type: 'artifact.version', project_id: projectIdFor(projectDir), artifact_id: rel,
-      artifact_version: nextVersion, ...linkColumns(link), metadata: { ...link.metadata, by: metadata.by, file: text, hash: createHash('sha256').update(text).digest('hex') } }, { projectDir })
-    if (captured) { fileVersions.set(versionKey, nextVersion); fileHashes.set(key, hash) }
+      artifact_version: nextVersion, ...linkColumns(link), metadata: { ...link.metadata, by: metadata.by, artifact_revision: revision, file: text, hash: createHash('sha256').update(text).digest('hex') } }, { projectDir })
+    if (captured) { fileVersions.set(versionKey, { revision, ordinal: nextVersion }); fileHashes.set(key, hash) }
   } else {
     if (getAccount().researchOwner() !== owner) return
     const project = projectIdFor(projectDir)
@@ -717,7 +798,7 @@ export async function exportMyData(parent?: BrowserWindow | null): Promise<strin
 
 // ---- IPC ------------------------------------------------------------------------------
 /** Renderer events may not impersonate consent records or carry conversation text. */
-const RENDERER_DENY = /^(consent|conversation|kernel|agent|replay)\.|^project\.(program_version|file_written)$/
+const RENDERER_DENY = /^(consent|conversation|kernel|agent|replay)\.|^project\.(program_version|file_written)$|^simulation\.(approved|started|completed|failed|stopped|interrupted)$/
 
 export function registerTelemetry(): void {
   const t = getTelemetry()
@@ -759,17 +840,77 @@ export function registerTelemetry(): void {
     await writeFile(pick.filePath, json, 'utf8')
     return pick.filePath
   })
-  ipcMain.handle('telemetry:track', (_e, type: string, opts?: TelemetryTrackOptions) => {
-    if (typeof type !== 'string' || RENDERER_DENY.test(type)) return
+  const outboxScope = () => webResearchClient() ? researchScope() : null
+  ipcMain.handle('telemetry:outboxScope', outboxScope)
+  // Browser preload handles submitted text through the consent-scoped outbox.
+  ipcMain.handle('telemetry:chatSubmission', () => undefined)
+  const inProjects = (path: string): boolean => {
+    try { return realpathSync(path).startsWith(realpathSync(getSettings().projectsRoot) + sep) }
+    catch { return false }
+  }
+  // A frame may only report identifiers its own file declares, at a bounded rate (review of #159).
+  const interactionGuard = createInteractionGuard(readArtifactFile)
+  const rendererTrack = async (type: string, opts?: TelemetryTrackOptions,
+    delivery?: { id: string; occurred_at: string; visitId: string; accept(): boolean }) => {
+    if (typeof type !== 'string' || RENDERER_DENY.test(type) || isProhibitedEventType(type)) return DROPPED
     const o = opts && typeof opts === 'object' ? opts : {}
-    // Only ids this process resolved are accepted; otherwise the open project's id is used.
     const known = typeof o.projectId === 'string' && projectIds.has(o.projectId) ? o.projectId : undefined
-    const dir = known ? projectIds.get(known) : rendererProjectDir
+    const isArtifact = type === 'artifact.interact' || type === 'artifact.dwell'
+    const artifactDir = isArtifact && typeof o.artifactProjectDir === 'string' ? resolve(o.artifactProjectDir) : undefined
+    // The browser can replay before the project has been downloaded into this sandbox.
+    if (delivery && artifactDir?.startsWith(resolve(getSettings().projectsRoot) + sep) &&
+      await stat(artifactDir).then(() => false, error => error.code === 'ENOENT')) return null
+    if (isArtifact && (!artifactDir || (artifactDir !== rendererProjectDir && ![...projectIds.values()].includes(artifactDir) &&
+      !(delivery && inProjects(artifactDir) && existsSync(join(artifactDir, '.humanstudy', 'project.json')))))) return DROPPED
+    const dir = isArtifact ? artifactDir : known ? projectIds.get(known) : delivery ? undefined : rendererProjectDir
+    const projectId = isArtifact ? undefined : delivery && typeof o.projectId === 'string' && /^[A-Za-z0-9_.:-]{8,80}$/.test(o.projectId) ? o.projectId : known
     const target = typeof o.target === 'string' ? o.target : undefined
     const durationMs = typeof o.durationMs === 'number' ? o.durationMs : undefined
-    const metadata = o.metadata && typeof o.metadata === 'object' && !Array.isArray(o.metadata) ? o.metadata : undefined
+    let metadata = o.metadata && typeof o.metadata === 'object' && !Array.isArray(o.metadata) ? o.metadata : undefined
+    if (type === 'artifact.interact') {
+      if (!dir || !artifactPath(target) || !semanticId(metadata?.artifact_revision)) return DROPPED
+      const interaction = await interactionGuard(dir, target, metadata.artifact_revision, metadata.interaction, delivery?.id)
+      if (interaction === null || interaction === DROPPED) return interaction
+      metadata = { ...metadata, interaction }
+    }
     const action = actionRef(o.action)
-    track(type, { target, durationMs, metadata, projectId: known, ...(action ? { action } : {}), ...(o.v1Only === true ? { v1Only: true } : {}) }, dir)
+    return track(type, { target, durationMs, metadata, projectId, ...(!isArtifact && action ? { action } : {}),
+      ...(o.v1Only === true ? { v1Only: true } : {}) }, dir, delivery)
+  }
+  ipcMain.handle('telemetry:track', (_e, type: string, opts?: TelemetryTrackOptions) => {
+    if (!webResearchClient()) rendererTrack(type, opts)
+  })
+  ipcMain.handle('telemetry:outboxWrite', async (_e, entry: unknown) => {
+    if (!webResearchClient() || !entry || typeof entry !== 'object') return { status: 'ignored' }
+    const { id, visit, scope, occurredAt, channel, args } = entry as Record<string, unknown>
+    const occurred = typeof occurredAt === 'string' ? Date.parse(occurredAt) : NaN
+    if (!researchUuid(id) || !researchUuid(visit) || !Number.isFinite(occurred) || !Array.isArray(args)) return { status: 'ignored' }
+    const accept = () => typeof scope === 'string' && scope === outboxScope()
+    if (!accept()) return { status: 'scope_changed' }
+    const delivery = { id, accept, visitId: visit.toLowerCase(), occurred_at: new Date(Math.min(occurred, Date.now() + LIMITS.futureSkewMs)).toISOString() }
+    let pending: Promise<unknown> | typeof DROPPED = DROPPED
+    if (channel === 'telemetry:track') pending = rendererTrack(args[0], args[1], delivery)
+    if (channel === 'telemetry:chatSubmission') {
+      const [sid, value, outcome, ref] = args
+      if (typeof value === 'string' && value.trim() && (outcome === 'queued' || outcome === 'failed')) {
+        const op = actionRef(ref) ?? { id, target: 'composer.send', via: 'system' as const }
+        const dispatch = outcome === 'failed' ? webDispatches.get(`${getAccount().researchOwner()}:${op.id}`) : undefined
+        if (dispatch) await dispatch
+        pending = researchAgent.submission(typeof sid === 'string' ? sid : undefined, value, outcome, op, delivery)
+      }
+    }
+    try {
+      const saved = await pending
+      if (saved === DROPPED) return { status: 'ignored' }
+      return saved ? { status: 'ack', id } : { status: accept() ? 'retry' : 'scope_changed' }
+    } catch (error) {
+      if (error instanceof InvalidResearchEvent) return { status: 'ignored' }
+      throw error
+    }
+  })
+  ipcMain.on('telemetry:webDisconnect', (_event, visit: unknown) => {
+    if (webResearchClient() && researchUuid(visit)) void researchAgent.drain().then(() => sourceCollector().end('disconnect', visit))
+      .then(() => sourceCollector().flush()).catch(() => undefined)
   })
   // Remembers the open project. Research data adds .humanstudy/project.json's `id` only once usage events are on, so a
   // project is never touched for research without consent; "Download this study" (study-transfer.ts) adds the same

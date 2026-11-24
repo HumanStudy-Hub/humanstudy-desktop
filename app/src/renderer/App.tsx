@@ -1,3 +1,4 @@
+import { simulationModel } from '../shared/simulation-run'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { guidePrompts } from './sample-guide-flow'
 import type { AccountStatus, ProjectSnapshot, Settings, TelemetryStatus, WorkspaceContext } from '../preload/types'
@@ -11,6 +12,7 @@ import { useSession } from './useSession'
 import { useKernelInstall } from './useKernelInstall'
 import { ThreadMenu } from './components/Threads'
 import { UpdateNotice, useUpdateStatus } from './components/Updates'
+import { SessionDeadline } from './components/SessionDeadline'
 import { AgreementDialog } from './components/ResearchData'
 import { beginMenuCommand, claimAction, lap, setTelemetryProject, track } from './telemetry'
 import { t, useLang } from './i18n'
@@ -331,12 +333,22 @@ export default function App() {
     refreshAccount() // a saved or removed own key changes model access too
   }, [refreshAccount])
 
+  const watchedProject = project?.dir
+  const preparingPreview = project?.previewPreparation === 'preparing'
+  const refreshProject = useCallback((dir: string, background = true) => {
+    void window.humanstudy.project.read(dir, background)
+      .then(snap => setProject(prev => prev?.dir === snap.dir && JSON.stringify(prev) !== JSON.stringify(snap) ? snap : prev))
+      .catch(() => undefined)
+  }, [])
   useEffect(() => {
-    if (!project) return
-    return window.humanstudy.project.onChanged((dir) => {
-      if (dir === project.dir) void load(dir)
+    if (!watchedProject) return
+    const off = window.humanstudy.project.onChanged((dir) => {
+      if (dir === watchedProject) refreshProject(dir)
     })
-  }, [project, load])
+    // The job may finish before the first snapshot has reached the renderer.
+    if (preparingPreview) refreshProject(watchedProject)
+    return off
+  }, [watchedProject, preparingPreview, refreshProject])
   // The folder watcher can miss a replaced file (on Windows a rename-replace or an editor's temporary
   // file may report only the other name). Re-read when the window regains focus or a tab is switched:
   // a changed version stamp reloads the source; an unchanged project keeps its state and selection.
@@ -345,11 +357,8 @@ export default function App() {
     const dir = project?.dir
     if (!dir || Date.now() - lastCheck.current < 800) return
     lastCheck.current = Date.now()
-    window.humanstudy.project
-      .read(dir)
-      .then((snap) => setProject((prev) => (!prev || prev.dir !== snap.dir || JSON.stringify(prev) === JSON.stringify(snap) ? prev : snap)))
-      .catch(() => undefined)
-  }, [project?.dir])
+    refreshProject(dir, false)
+  }, [project?.dir, refreshProject])
   useEffect(() => {
     const visible = () => {
       if (document.visibilityState === 'visible') recheck()
@@ -553,6 +562,7 @@ export default function App() {
         {transferDialogs}
         {consent}
         <UpdateNotice />
+        <SessionDeadline />
       </div>
     )
 
@@ -620,6 +630,7 @@ export default function App() {
         <section className={`pane program ${open.program ? '' : 'folded'}`} aria-label={paneLabel('program')}>
           {open.program ? (
             <Workbench
+              modelAccess={account?.modelAccess}
               ref={workbench}
               onRestoreSource={setSource}
               project={project}
@@ -630,7 +641,8 @@ export default function App() {
               canRun={Boolean(hasAccess)}
               onSendAgent={text => sendInWorkspace(text, session.busy ? session.enqueue : session.send)}
               onStopAgent={() => void session.abort()}
-              model={settings?.model ?? ''}
+              assistantModel={settings?.model ?? ''}
+              model={simulationModel(settings?.model ?? '', account?.modelAccess === 'hosted' ? account.models : undefined)}
               agentBusy={session.busy}
               // Only the conversation that runs the build can make it wait (another open thread may have its own question).
               agentWaiting={Boolean(session.id && session.id === project?.build?.sessionId && (session.waitingForQuestion || session.waitingForPermission))}
@@ -663,6 +675,7 @@ export default function App() {
       {transferDialogs}
       {consent}
       <UpdateNotice />
+      <SessionDeadline />
     </div>
   )
 }

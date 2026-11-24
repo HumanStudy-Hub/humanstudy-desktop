@@ -41,6 +41,7 @@ export function operationKind(type: string, opts: OperationTrack = {}): 'action'
 }
 
 export interface OperationTrack {
+  artifactProjectDir?: string
   target?: string
   durationMs?: number
   metadata?: Record<string, unknown>
@@ -122,7 +123,7 @@ export function createOperations(deps: OperationDeps) {
   }
 
   /** Passive, periodic summaries are never attributed to an operation. */
-  const PASSIVE = /^ui\.(scroll|foreground)$/
+  const PASSIVE = /^(ui\.(scroll|foreground)|artifact\.(dwell|interact))$/
   function attachable(op: Op | null): op is Op {
     return Boolean(op && (op.sync || !op.decided))
   }

@@ -32,6 +32,7 @@ import hashlib
 import hmac
 import json
 import math
+import re
 import secrets
 import shutil
 import tempfile
@@ -336,15 +337,15 @@ class Participant:
             return True
         return False
 
-    def apply(self, pid, answers, seen_state):
+    def apply(self, pid, answers, seen_state, system_filled):
         """seen_state: the State f answered (in a group another member's step may already have replaced
         self.states[pid] in this round)."""
         st = seen_state
         if self.group:
-            new = self.s.step(pid, answers)
+            new = self.s.step(pid, answers, system_filled)
             mine = new[pid]
         else:
-            mine = self.s.step(answers)
+            mine = self.s.step(answers, system_filled)
             new = {"p1": mine}
         if mine.get("error"):
             self.attempt[pid] += 1
@@ -354,6 +355,13 @@ class Participant:
             self.history[pid].append({"state": compact(st, "screen"), "answers": answers})
             self.states.update(new)
         return mine.get("error")
+
+
+# The response schema has no platform identifier kind. Match only direct ID requests.
+_PLATFORM_ID = re.compile(
+    r"(?:(?:please\s+)?(?:paste|enter|provide|type(?: in)?|what is|what's)\s+)?"
+    r"(?:(?:your|the)\s+)?(?:prolific(?: participant)?|(?:mturk |amazon mechanical turk )?worker|"
+    r"mturk|participant|subject)\s+id(?:entifier)?(?:\s+(?:below|here|in the (?:box|field)))?[\s:?.!*]*", re.I)
 
 
 def _screen_sha(state):
@@ -447,6 +455,20 @@ class Runner:
             return hit, False
         operator = (lambda: part.member(pid)) if self.fdesc.get("operator_access") else None
         self._prepare_assets(state)
+        screen = state["screen"]
+        system_filled = {}
+        if self.fdesc["spec"].get("fill_platform_ids"):
+            for r in screen.get("responses", []):
+                if r["kind"] == "text" and r.get("required") and _PLATFORM_ID.fullmatch(r["prompt"].strip()):
+                    value = part.member(pid).synthetic_text_id(r["id"], "AI-participant-%s-%s" % (part.opaque, pid))
+                    if value is None:
+                        return {"platform_refused": True}, False
+                    system_filled[r["id"]] = value
+        remaining = [r for r in screen.get("responses", []) if r["id"] not in system_filled]
+        model_state = dict(state, screen=dict(screen, responses=remaining)) if system_filled else state
+        if system_filled and model_state.get("error"):
+            model_state["error"] = {k: v for k, v in state["error"].items() if k not in system_filled}
+        call_model = not system_filled or bool(remaining)
         last = None
         for k in range(1 + self.fdesc["retries"]):
             # f's rng follows the seed, not the salt, so the same seed reproduces the same answers; its seed is a
@@ -456,15 +478,19 @@ class Runner:
                             attempt, part.opaque, pid, list(part.history[pid]), self.asset_path, operator)
             t0 = time.time()
             try:
-                ans = self.f(state, ctx)
+                ans = self.f(model_state, ctx) if call_model else {}
                 if not isinstance(ans, dict):
                     raise TypeError("f returned %s, not a dict of answers" % type(ans).__name__)
+                ans = {key: value for key, value in ans.items() if key not in system_filled}
                 row = {"seed": part.seed, "participant": part.opaque, "member": pid, "step": state.get("step"),
-                       "attempt": attempt, "screen_sha": sha, "answers": ans, "f_tries": k + 1, "at": _now(),
+                       "attempt": attempt, "screen_sha": sha, "answers": ans, "f_tries": k + 1 if call_model else 0, "at": _now(),
                        "f_ms": int((time.time() - t0) * 1000)}
                 if ctx.note is not None:
                     row["note"] = ctx.note
-                self.calls += 1
+                if system_filled:
+                    row["system_filled"] = system_filled
+                if call_model:
+                    self.calls += 1
                 return row, True
             except Exception as e:  # one participant's f failing must not end the run
                 last = "%s: %s" % (type(e).__name__, e)
@@ -581,6 +607,9 @@ class Runner:
                 steps_fh.write("".join(json.dumps(r, ensure_ascii=False, default=str) + "\n" for r in new_rows))
                 steps_fh.flush()
             for (part, pid, st), (row, _) in zip(calls, results):   # applied in participant order
+                if row.get("platform_refused"):
+                    part.error = "platform ID refused by protocol validation"
+                    continue
                 if "failed" in row:
                     part.error = "f failed after %d tries: %s" % (1 + self.fdesc["retries"], row["failed"])
                     part.f_errors.setdefault(pid, []).append(row)   # operator side only
@@ -589,18 +618,22 @@ class Runner:
                 if part.error:
                     continue
                 try:
-                    err = part.apply(pid, dict(row["answers"]), st)
+                    err = part.apply(pid, dict(row["answers"]), st, row.get("system_filled"))
                 except (ProtocolError, RuntimeError) as e:
                     part.error = "engine: %s" % e
                     err = None
                 entry = {"state": compact(st, self.states_mode), "answers": row["answers"],
                          "timing": {k: row.get(k) for k in ("at", "f_ms", "f_tries")}}
+                if row.get("system_filled"):
+                    entry["system_filled"] = row["system_filled"]
                 if err:
                     entry["error"] = err
                 if row.get("note") is not None:
                     entry["note"] = row["note"]
                 part.transcript[pid].append(entry)
-                if err and part.attempt[pid] >= self.fdesc["max_refusals"]:
+                if err and set(err).intersection(row.get("system_filled", {})):
+                    part.error = "platform ID refused by protocol validation"
+                elif err and part.attempt[pid] >= self.fdesc["max_refusals"]:
                     part.error = "stuck: the page refused %d answer sets in a row (%s)" % (
                         part.attempt[pid], json.dumps(err, ensure_ascii=False)[:200])
             still = []

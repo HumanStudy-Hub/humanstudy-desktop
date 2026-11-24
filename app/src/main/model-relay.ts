@@ -1,3 +1,4 @@
+import { semanticId } from '../shared/research-contract'
 // A run owns one capability, one model, and a conservative total token reservation.
 // Only this process holds upstream credentials. No package-controlled URL or headers are forwarded.
 import { createServer } from 'node:http'
@@ -109,6 +110,8 @@ export async function startModelRelay(options: RelayOptions) {
         headers: { 'content-type': 'application/json', authorization: `Bearer ${options.key}`, ...(options.bypass ? { 'x-vercel-protection-bypass': options.bypass } : {}) },
         body: JSON.stringify(outgoing),
       })
+      const requestId = upstream.headers.get('x-humanstudy-request-id') ?? upstream.headers.get('x-request-id') ?? upstream.headers.get('request-id')
+      if (semanticId(requestId)) res.setHeader('x-request-id', requestId)
       if (!upstream.ok) {
         // Refund only a call the provider did not process (review 4, S5; review 5, S1), and never more in total than
         // the cap itself: a rejected call costs nothing, but a 5xx may come after the model ran and billed.
@@ -119,6 +122,7 @@ export async function startModelRelay(options: RelayOptions) {
         return fail(502, 'Model provider rejected the request.')
       }
       const reply = await upstream.json() as any
+      if (!semanticId(requestId) && semanticId(reply.id)) res.setHeader('x-request-id', reply.id)
       // Return only completion text and usage; upstream diagnostic fields cannot expose credentials.
       const choices = Array.isArray(reply.choices) ? reply.choices.map((c: any, index: number) => ({ index, message: { role: 'assistant', content: typeof c.message?.content === 'string' ? c.message.content : '' }, finish_reason: c.finish_reason })) : []
       const usage = Object.fromEntries(['prompt_tokens', 'completion_tokens', 'total_tokens'].map(k => [k, Number.isSafeInteger(reply.usage?.[k]) && reply.usage[k] >= 0 ? reply.usage[k] : 0]))

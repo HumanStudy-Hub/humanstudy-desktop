@@ -40,6 +40,22 @@
        "label": "Option B"
       }
      ]
+    },
+    {
+     "id": "worker",
+     "kind": "text",
+     "required": true,
+     "prompt": "MTurk Worker ID:"
+    }
+   ]
+  },
+  "registration": {
+   "responses": [
+    {
+     "id": "registration",
+     "kind": "text",
+     "required": true,
+     "prompt": "Please enter your Prolific ID."
     }
    ]
   }
@@ -51,6 +67,9 @@
    },
    {
     "stage": "q"
+   },
+   {
+    "stage": "registration"
    }
   ]
  },

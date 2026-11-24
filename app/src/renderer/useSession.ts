@@ -2,7 +2,7 @@ import { NATIVE_TURNS, NATIVE_SESSION_MUTATIONS, type NativeRequest } from '../s
 import { createTextBatcher } from './text-batcher'
 import { updateQuestion, type QuestionPart } from '../shared/question'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { claimAction, lap, track } from './telemetry'
+import { trackChatSubmission, claimAction, lap, track } from './telemetry'
 import type { ActionRef, KernelEvent, KernelUsage, PermissionReply, Thread, ThreadMessage, ThreadSummary, WorkspaceContext } from '../preload/types'
 
 export interface PermissionPart {
@@ -319,8 +319,12 @@ export function useSession(projectDir: string | null, enabled = true): Session {
   const send = useCallback((text: string, workspace?: WorkspaceContext, action?: ActionRef) => {
     textBatch.current?.flush()
     const sid = idRef.current
-    if (!sid || !text.trim() || stoppingSessions.current.has(sid)) return
+    if (!text.trim()) return
     const ref = action ?? claimAction('composer.send')
+    if (!sid || stoppingSessions.current.has(sid)) {
+      trackChatSubmission(sid, text, 'failed', ref)
+      return
+    }
     setMessages((ms) => [...ms, { id: nextId++, role: 'user', parts: [{ kind: 'text', text }], at: Date.now() }])
     setBusyBoth(true)
     setStatus('Thinking…')
@@ -352,6 +356,7 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     if (!text.trim()) return
     // Queuing is the researcher's operation now; the send happens when the running turn ends.
     const action = claimAction('message.queue', true)
+    trackChatSubmission(idRef.current, text, 'queued', action)
     setQueueBoth((q) => [...q, { id: nextId++, text, action, ...(workspace ? { workspace: structuredClone(workspace) } : {}) }])
   }, [])
   const editQueued = useCallback((qid: number, text: string) => {
@@ -364,22 +369,27 @@ export function useSession(projectDir: string | null, enabled = true): Session {
     (text: string, workspace?: WorkspaceContext) => {
       const sid = idRef.current
       const project = dirRef.current
-      if (!sid || stoppingSessions.current.has(sid)) return
+      if (!text.trim()) return
+      const action = claimAction('composer.interrupt')
+      if (!sid || stoppingSessions.current.has(sid)) {
+        trackChatSubmission(sid, text, 'failed', action)
+        return
+      }
       markStopping(sid, true)
       permissionRestore.current = null
       questionEpoch.current++
       busyRef.current = false
-      // One operation: it stops the running turn and sends the new message.
-      const action = claimAction('composer.interrupt')
       // Wait for the abort to be acknowledged so its `done` cannot end the new turn.
       void window.humanstudy.kernel
         .abort(sid, action)
         .then(() => {
           markStopping(sid, false)
           if (idRef.current === sid && dirRef.current === project) sendRef.current(text, workspace, action)
+          else trackChatSubmission(sid, text, 'failed', action)
         })
         .catch((e: unknown) => {
           markStopping(sid, false)
+          trackChatSubmission(sid, text, 'failed', action)
           if (idRef.current === sid && dirRef.current === project) {
             busyRef.current = true
             setError(`Could not stop the agent: ${String(e)}`)

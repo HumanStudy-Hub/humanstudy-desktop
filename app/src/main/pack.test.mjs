@@ -286,6 +286,7 @@ test('a protocol run with a stub f ends to end: records, effects, a results page
   const stub = `import sys, json; from pathlib import Path
 sys.path.insert(0, '.opencode/skills/run'); import app_run
 def complete(messages):
+    assert all(label not in messages[-1]['content'] for label in ('Prolific ID', 'MTurk Worker ID', 'AI-participant-'))
     assert messages[0]['role'] == 'system' and 'JSON' in messages[0]['content']
     return '{"r1": "o1"}' if 'r1' in messages[-1]['content'] else '{}'
 run = Path(sys.argv[1]).resolve()
@@ -300,13 +301,25 @@ print(json.dumps({'status': meta['status'], 'completed': meta['participants']['c
   const meta = JSON.parse(readFileSync(join(proj, run, 'run.json'), 'utf8'))
   assert.equal(meta.protocol_sha256, hash)
   assert.equal(meta.f.model, 'stub')
+  const rows = file => readFileSync(join(proj, run, file), 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  for (const { transcript } of rows('records.jsonl')) {
+    const registration = transcript.at(-1)
+    assert.deepEqual(registration.answers, {})
+    assert.match(Object.values(registration.system_filled)[0], /^AI-participant-/)
+    assert.equal(registration.timing.f_tries, 0)
+    const mixedPage = transcript.at(-2)
+    assert.deepEqual(Object.values(mixedPage.answers), ['o1'])
+    assert.deepEqual(Object.values(mixedPage.system_filled), Object.values(registration.system_filled))
+  }
+  for (const { record } of rows('operator.jsonl'))
+    assert.ok(record.answers.every(answer => answer.stage !== 'registration' && answer.response !== 'worker'))
   assert.equal(JSON.parse(readFileSync(join(proj, run, 'progress.json'), 'utf8')).stage, 'done')
   const page = readFileSync(join(proj, run, 'results.html'), 'utf8')
   assert.match(page, /Simulation with AI participants — not data from people\. A comparison with the paper(?:'|&#x27;)s printed numbers, not a leaderboard\./)
   assert.match(page, /id="hs-protocol"/)
   assert.match(page, /treatment 14\/20 vs control 8\/20/, 'the paper side: printed cells')
   // Plain words up front; every code string lives under "Technical details" (UX check, blocker 3).
-  const [front, tech] = page.split('<details class="hs-card"><summary>Technical details</summary>')
+  const [front, tech] = page.split(/<details class="hs-card"><summary data-hs-control="technical-details"[^>]*>Technical details<\/summary>/)
   assert.ok(tech, 'the scores and "What ran" sit under Technical details')
   const visible = front.replace(/<script\b[\s\S]*?<\/script>/gi, '').replace(/<style\b[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ')
   for (const code of ['offline_report', 'hsenv', 'n_paper', 'significance_match', 'risk_difference', 'SHA-256', 'Kind B', 'official n', 'prefer_a'])
@@ -542,12 +555,12 @@ test('review 3 M2: the budget counts the exact JSON body humanstudy_llm sends (C
   const r = spawnSync(python311, ['-B', '-c', `import sys, json; sys.path.insert(0, '.opencode/skills/run'); sys.path.insert(0, '.opencode/../' + sys.argv[1])
 import budget
 page_en, page_zh = 'Which do you prefer?' * 10, '你更喜欢哪一个？' * 10
-body = lambda page: json.dumps({"model": budget.MODEL_PLACEHOLDER, "messages": [{"role": "system", "content": "S"}, {"role": "user", "content": page}], "temperature": 1.0, "max_tokens": 512}).encode("utf-8")
-print(json.dumps({"zh": budget.call_charge("S", page_zh), "zh_body": len(body(page_zh)), "zh_utf8": len(page_zh.encode("utf-8")), "en": budget.call_charge("S", page_en), "en_body": len(body(page_en))}))`, ''], { cwd: proj, encoding: 'utf8' })
+body = lambda page: json.dumps({"model": budget.MODEL_PLACEHOLDER, "messages": [{"role": "system", "content": "S"}, {"role": "user", "content": page}], "temperature": 1.0, "max_tokens": budget.OUTPUT_TOKENS}).encode("utf-8")
+print(json.dumps({"output_tokens": budget.OUTPUT_TOKENS, "zh": budget.call_charge("S", page_zh), "zh_body": len(body(page_zh)), "zh_utf8": len(page_zh.encode("utf-8")), "en": budget.call_charge("S", page_en), "en_body": len(body(page_en))}))`, ''], { cwd: proj, encoding: 'utf8' })
   assert.equal(r.status, 0, r.stderr)
   const b = JSON.parse(r.stdout)
-  assert.equal(b.zh, b.zh_body + 2 * 256 + 512, 'exactly the body the relay sees, + messages + output')
-  assert.equal(b.en, b.en_body + 2 * 256 + 512)
+  assert.equal(b.zh, b.zh_body + 2 * 256 + b.output_tokens, 'exactly the body the relay sees, + messages + output')
+  assert.equal(b.en, b.en_body + 2 * 256 + b.output_tokens)
   assert.ok(b.zh_body - b.en_body > b.zh_utf8, 'a CJK page costs its \\uXXXX escapes (6 bytes a character), not its 3 UTF-8 bytes')
   // The same serialisation as the runtime's client: humanstudy_llm.chat sends json.dumps(body) with ensure_ascii on.
   assert.match(readFileSync(join(packDir, 'runtime/lib/humanstudy_llm.py'), 'utf8'), /data = json\.dumps\(body\)\.encode\("utf-8"\)/)
@@ -613,7 +626,7 @@ protocol_report.build = boom
 calls = [0]
 def complete(messages):
     calls[0] += 1
-    if calls[0] == 3: raise RuntimeError('LLMError: model call failed after 1 attempt(s): HTTP 402: Run token cap reached.')
+    if calls[0] >= 3: raise RuntimeError('LLMError: model call failed after 1 attempt(s): HTTP 402: Run token cap reached.')
     return '{"r1": "o1"}' if 'r1' in messages[-1]['content'] else '{}'
 try:
     app_run.main_run(run, Path('.').resolve(), complete=complete, model='stub')
@@ -692,7 +705,7 @@ test('review 3 S3: app-owned files are put back before a run; the approval path 
   assert.equal(readFileSync(join(proj, '.opencode/hsenv/hsenv/score.py'), 'utf8'), readFileSync(join(packDir, 'runtime/hsenv/hsenv/score.py'), 'utf8'))
   assert.equal(readFileSync(own, 'utf8'), 'my own rules', 'researcher instructions are not touched')
   const index = readFileSync(join(here, 'index.ts'), 'utf8')
-  const send = index.slice(index.indexOf("ipcMain.handle('kernel:send'"))
+  const send = index.slice(index.indexOf('const sendToKernel = async'))
   assert.ok(send.indexOf('await refreshAppOwned(projectDir)') > 0 && send.indexOf('await refreshAppOwned(projectDir)') < send.indexOf('startModelRelay('))
 })
 
@@ -747,7 +760,7 @@ test('review 4 S1: the trusted run copy holds the engine, the run skill, the san
     assert.ok(rels.includes(rel), rel)
   assert.ok(rels.every((rel) => !rel.startsWith('skills/simulate/')), 'not the package runners')
   const index = readFileSync(join(here, 'index.ts'), 'utf8')
-  const send = index.slice(index.indexOf("ipcMain.handle('kernel:send'"))
+  const send = index.slice(index.indexOf('const sendToKernel = async'))
   assert.match(send, /if \(route === 'protocol'\) await startProtocolRun\(projectDir, approved, binding as ProtocolBinding, relay,/)
   assert.match(send, /await startProtocolRun\(projectDir, approved, binding, undefined,/, 'the pre-relay path too')
   assert.match(index, /files: \[\.\.\.trustedRunFiles\(\), \.\.\.restored\], codeDir: join\(app\.getPath\('userData'\), 'protocol-runs', binding\.runId\)/, 'code outside the project')
@@ -843,7 +856,7 @@ test('UX: the results page and progress messages come in the app\'s language', {
   const page = readFileSync(join(proj, run, 'results.html'), 'utf8')
   assert.match(page, /<html lang="zh-CN">/)
   assert.match(page, /AI 参与者的模拟实验——不是真人数据。这是与论文印出数字的比较，不是排行榜。/)
-  assert.match(page, /<summary>技术细节<\/summary>/)
+  assert.match(page, /<summary[^>]*>技术细节<\/summary>/)
   assert.match(page, /比例之差/)
   assert.match(JSON.parse(readFileSync(join(proj, run, 'progress.json'), 'utf8')).message, /计划 4 名参与者中完成了 4 名；\d+ 次模型调用。/)
   const summary = JSON.parse(readFileSync(join(proj, run, 'summary.json'), 'utf8'))
@@ -898,7 +911,7 @@ test('UX re-check: a partial run says why and what to do next, in zh and en', { 
   assert.match(summary.paragraph_zh, /原因：运行用完了批准的模型用量。下一步：点击“运行模拟”重新运行。/)
   assert.match(summary.paragraph, /Why: the run used up its approved model limit\. Next: press Run simulation to run it again\./)
   const page = readFileSync(join(proj, run, 'results.html'), 'utf8')
-  assert.match(page, /<summary>技术细节<\/summary>/)
+  assert.match(page, /<summary[^>]*>技术细节<\/summary>/)
   assert.match(page, /评分 — 离线报告，不是排行榜/)
   assert.match(page, /不判定（部分运行）/)
   assert.match(page, /\.hs-results th, \.hs-results td \{ text-align: left; vertical-align: top;/, 'table columns align')
@@ -982,7 +995,7 @@ seen = []
 def complete(messages):
     seen.append(messages[-1]['content'])
     c = messages[-1]['content']
-    if len(seen) == 3:   # one failed call: its f_errors trace must not carry the wording either
+    if len(seen) == 3:   # transient failure on the first attempt
         raise RuntimeError('model call failed: HTTP 500')
     return '{"r1": 20, "r2": "o1"}' if 'r2' in c else '{"r1": 20}' if 'r1' in c else '{}'
 try:
@@ -1023,11 +1036,11 @@ except SystemExit as e:
   // the restored copy: plays the wording, records the published version's hash, keeps no screens in the project
   r = go(fill())
   const out = result(r)
-  assert.equal(out.status, 'partial', r.stdout.slice(-800) + r.stderr.slice(-1500))   // the one failed call
+  assert.equal(out.status, 'partial', r.stdout.slice(-800) + r.stderr.slice(-1500))   // the one failed call (a 500 is not re-asked)
   assert.equal(out.sha, sha(join(proj, 'protocol.json')))
   assert.ok(out.seen.some((c) => c.includes('walking before breakfast')), 'the model saw the restored wording')
   assert.ok(!out.seen.some((c) => c.includes('░')), 'never a placeholder')
-  // every file the run left in the project (records, partial.jsonl, baseline/, the f_errors traces, logs, the page)
+  // Check every file the run left in the project for restored wording.
   const left = walk(join(proj, 'artifacts'))
   assert.ok(left.some((f) => f.endsWith('records.jsonl')) && left.some((f) => f.includes('baseline')), left.join('\n'))
   for (const f of left) {

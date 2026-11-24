@@ -72,3 +72,9 @@ export function lap(key: string): number | undefined {
   since.set(key, now)
   return prev === undefined ? undefined : now - prev
 }
+
+
+/** Queue/rejection decisions made before a submission reaches the kernel. */
+export function trackChatSubmission(sessionId: string | null | undefined, text: string, outcome: 'queued' | 'failed', action: ActionRef): void {
+  if (window.__HS_WEB__) void window.humanstudy.telemetry?.chatSubmission?.(sessionId ?? undefined, text, outcome, action).catch(() => undefined)
+}

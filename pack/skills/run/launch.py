@@ -27,6 +27,11 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
+def _exit_code(code):
+    # Preserve a child's signal across the Python wrapper so the app can classify interruptions.
+    return 128 - code if code < 0 else code
+
+
 def main():
     run_dir, project, code = (Path(a).resolve() for a in sys.argv[1:4])
     # The app checked the run folder's real path; check it again now that it is resolved, since it becomes the
@@ -66,7 +71,7 @@ def main():
                 urllib.request.urlopen(request, timeout=5).close()
             except OSError:
                 pass
-        raise SystemExit(result.returncode)
+        raise SystemExit(124 if result.timed_out else _exit_code(result.returncode))
     # Pre-relay path: the app's own environment for simulations (HUMANSTUDY_DESKTOP_KEY …), unconfined.
     import subprocess
     child_env = {**os.environ, **env}
@@ -77,7 +82,7 @@ def main():
     code_ = subprocess.call([sys.executable, "-I", "-B", "-X", "utf8", "-c", boot, str(entry), "run", str(run_dir), str(project)],
                             cwd=str(run_dir), env=child_env, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     log.close()
-    raise SystemExit(code_)
+    raise SystemExit(_exit_code(code_))
 
 
 if __name__ == "__main__":

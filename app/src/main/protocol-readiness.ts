@@ -30,14 +30,18 @@ export const ENGINE_FAILED: ProtocolProblem = { check: 'runtime', reason: 'The p
 // The limits are set before the engine is imported: CPU time always; address space (Linux) and data size (macOS,
 // where RLIMIT_AS cannot be lowered) where the platform accepts them. No resource module (Windows): the wall
 // clock timeout alone.
-export const runner = (cpuSeconds = PROTOCOL_CPU_SECONDS, memoryBytes = PROTOCOL_MEMORY_BYTES): string => [
-  'import sys',
+export const pythonResourceLimits = (cpuSeconds = PROTOCOL_CPU_SECONDS, memoryBytes = PROTOCOL_MEMORY_BYTES): string => [
   'try:',
   ' import resource',
   ` for name, n in (("RLIMIT_CPU", ${cpuSeconds}), ("RLIMIT_AS", ${memoryBytes}), ("RLIMIT_DATA", ${memoryBytes})):`,
   '  try: resource.setrlimit(getattr(resource, name), (n, n))',
   '  except (AttributeError, ValueError, OSError): pass',
   'except ImportError: pass',
+].join('\n')
+
+export const runner = (cpuSeconds = PROTOCOL_CPU_SECONDS, memoryBytes = PROTOCOL_MEMORY_BYTES): string => [
+  'import sys',
+  pythonResourceLimits(cpuSeconds, memoryBytes),
   'sys.path.insert(0, sys.argv.pop(1))',
   'from hsenv import checks',
   'sys.exit(checks.main())',
@@ -178,7 +182,8 @@ export async function sourceTextArgs(project: string): Promise<string[]> {
 }
 
 export interface Limits { cpuSeconds?: number; memoryBytes?: number }
-export type Ran = { stdout: string; stderr: string; limit?: boolean }
+export type Ran = { stdout: string; stderr: string; limit: true; exitCode?: never } |
+  { stdout: string; stderr: string; limit?: never; exitCode: number }
 
 /** Run Python confined: -I -B, an empty home as working folder and temp, no keys in the environment, the CPU and
  *  memory bounds set before any engine code runs, an RSS watch where the OS ignores them, a wall clock. Exit 0/1
@@ -209,14 +214,18 @@ export async function confinedPython(python: string, code: string, args: string[
       clearInterval(watch)
       if (overMemory || (error && (error.signal === 'SIGXCPU' || error.signal === 'SIGKILL' || error.killed))) return resolve({ stdout: '', stderr: '', limit: true })
       if (error && !(typeof error.code === 'number' && error.code === 1)) return reject(error)
-      resolve({ stdout: String(stdout), stderr: String(stderr) })
+      resolve({ stdout: String(stdout), stderr: String(stderr), exitCode: error ? 1 : 0 })
     })
     // macOS does not enforce RLIMIT_AS/RLIMIT_DATA: watch the resident size and stop the check above the bound.
     const watch = setInterval(() => {
       if (win || !child.pid) return
-      execFile('/bin/ps', ['-o', 'rss=', '-p', String(child.pid)], { timeout: 2000 }, (e, out) => {
-        if (!e && Number(String(out).trim()) * 1024 > memoryBytes) { overMemory = true; child.kill('SIGKILL') }
-      })
+      try {
+        execFile('/bin/ps', ['-o', 'rss=', '-p', String(child.pid)], { timeout: 2000 }, (e, out) => {
+          if (!e && Number(String(out).trim()) * 1024 > memoryBytes) { overMemory = true; child.kill('SIGKILL') }
+        })
+      } catch {
+        // A restricted environment can deny the process probe at spawn. The Python and wall-time limits still apply.
+      }
     }, 250)
   })
 }

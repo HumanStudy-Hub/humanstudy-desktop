@@ -1,6 +1,6 @@
 {
   "format": "humanstudy-research-coverage-v1",
-  "contract_version": "1.0.0",
+  "contract_version": "1.1.0",
   "issue": "HumanStudy-Hub/humanstudy-desktop#27 (tracker #30, item T10)",
   "checked_by": ["app/src/main/research-coverage.test.mjs"],
   "destination": {
@@ -54,6 +54,7 @@
     "interaction": {
       "linkage": "self",
       "event_types": {
+        "artifact.interact": { "desktop": "ArtifactFrame validates the source and payload in bridge.ts, then captures allowlisted controls in the preview and HTML artifacts; the main process keeps only ids the artifact file declares, at most 500 per artifact revision (artifact-interaction-guard.ts)", "headless": "not_applicable" },
         "action.invoke": {
           "desktop": "renderer capture.ts (document click, shortcut keydown) + Chat.tsx (composer Enter) + App.tsx menu.onCommand -> shared/research-operations.ts createOperations -> telemetry:track IPC -> research-agent.ts interaction/action; downstream IPCs (kernel:send/abort/reply/answerQuestion/rejectQuestion/native, project:writeText/importFiles/startBuild/retryBuild, projects:create) carry the operation id",
           "headless": "scripts/headless-research.mjs: command.start (worker launch) and command.<op> for every JSON-lines command; UI clicks/shortcuts/menus not_applicable"
@@ -63,6 +64,7 @@
     "navigation": {
       "linkage": "when_initiated",
       "event_types": {
+        "artifact.dwell": { "desktop": "ArtifactFrame and capture.ts measure passive visible time in the current artifact view", "headless": "not_applicable" },
         "view.dwell": { "desktop": "tab.switch / thread.switch / source.page with duration (Workbench, Studies, useSession, SourceDrawer); linked to the click that ended the dwell", "headless": "not_applicable" },
         "app.foreground": { "desktop": "capture.ts visibilitychange (passive, never linked)", "headless": "not_applicable" },
         "scroll.settle": { "desktop": "capture.ts settled scroll (passive, never linked)", "headless": "not_applicable" },
@@ -81,6 +83,7 @@
       "linkage": "required",
       "event_types": {
         "conversation.message": { "desktop": "research-agent.ts start (user, full text) / checkpoint (assistant, partial + final segments)", "headless": "same adapter via headless-research.mjs onRequest" },
+        "conversation.submission": { "desktop": "not_applicable", "headless": "not_applicable", "web": "kernel:send dispatch result and submitted queue/pre-dispatch decisions through the browser outbox" },
         "conversation.question": { "desktop": "research-agent.ts event(question); answers link to the answering operation (agent.answer before kernel.answerQuestion)", "headless": "same; answer / reject-question commands" },
         "conversation.error": { "desktop": "research-agent.ts event(error)", "headless": "same adapter" }
       }
@@ -88,6 +91,12 @@
     "agent_execution": {
       "linkage": "required",
       "event_types": {
+        "simulation.approved": { "desktop": "index.ts and simulation-research.ts record the app-owned protocol run, linked to its initiating action", "headless": "not_applicable" },
+        "simulation.started": { "desktop": "index.ts and simulation-research.ts record the app-owned protocol run, linked to its initiating action", "headless": "not_applicable" },
+        "simulation.completed": { "desktop": "index.ts and simulation-research.ts record the app-owned protocol run, linked to its initiating action", "headless": "not_applicable" },
+        "simulation.failed": { "desktop": "index.ts and simulation-research.ts record the app-owned protocol run, linked to its initiating action", "headless": "not_applicable" },
+        "simulation.stopped": { "desktop": "index.ts and simulation-research.ts record the app-owned protocol run, linked to its initiating action", "headless": "not_applicable" },
+        "simulation.interrupted": { "desktop": "index.ts and simulation-research.ts record the app-owned protocol run, linked to its initiating action", "headless": "not_applicable" },
         "agent.turn_start": { "desktop": "research-agent.ts start", "headless": "same adapter" },
         "agent.turn_end": { "desktop": "research-agent.ts finish (complete/error/aborted/interrupted; stopped_by_action_id)", "headless": "same adapter" },
         "agent.usage": { "desktop": "research-agent.ts event(usage)", "headless": "same adapter" },

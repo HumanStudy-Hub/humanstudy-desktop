@@ -4,24 +4,29 @@
 // pressing "Run simulation" is the confirmation of exactly what this screen shows.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { HumanProgram } from '../../shared/human-program'
-import type { ProjectEntry, ProjectSnapshot } from '../../preload/types'
+import type { AccountStatus, Allowance, ProjectEntry, ProjectSnapshot } from '../../preload/types'
 import { simulationScope, simulationLimits } from '../../shared/simulation-scope'
 import { estimateRun, hasParticipantData, headline, isResult, parseProgress, parseSummary, runDate, runFolders, runState, simulationPlan, costRange, type SimProgress, type SimRunFiles, type SimStage, type SimSummary } from '../../shared/simulation-run'
 import { packageStamp, readinessStamp, runConfirmation, type PackageProblem, type PackageReadiness } from '../../shared/package-readiness'
 import { shortModelName } from './ModelPicker'
 import { formatTokens, MAX_PER_CONDITION, protocolRunLimits, runLimits } from '../../shared/run-limits'
-import { listenToArtifact } from '../bridge'
+import { ArtifactFrame, type ArtifactStudy } from './ArtifactFrame'
+import { versionedUrl } from '../../shared/file-version'
 import { getLang, t } from '../i18n'
 import { holdAction, track } from '../telemetry'
+import { allowanceMessage } from '../allowance'
+import { WEB_EDITION } from '../edition'
 import { formatDuration } from '../format'
 
 interface Props {
   project: ProjectSnapshot
   program: HumanProgram
   studyId: string
+  artifactStudy?: ArtifactStudy
   studies: { id: string; title: string }[]
   onStudy(id: string): void
-  /** The model selected in the app; AI participants use it too. */
+  /** The assistant and participant models used to price their respective calls. */
+  assistantModel?: string
   model: string
   agentBusy: boolean
   agentThreadId?: string
@@ -30,6 +35,7 @@ interface Props {
   agentActivity?: string
   /** Model access (signed in, as App.tsx decides it): without it Run is disabled and says so. */
   canRun?: boolean
+  modelAccess?: AccountStatus['modelAccess']
   /** route: which runnable form the approval names (protocol.json through the engine, or package/). */
   onRun(perCondition: number, route: 'protocol' | 'package', conditions: string[], tokenBudget?: number): Promise<void>
   onBuild(): void
@@ -95,13 +101,12 @@ function usePackageReadiness(dir: string, tree: ProjectEntry[], studyId: string,
   return { slugs, readiness: checked?.stamp === stamp ? checked.readiness : null,
     checking: checked?.stamp !== stamp, executing: executing === stamp, check }
 }
-const fileUrl = (tree: ProjectEntry[], path?: string): string | undefined => {
-  if (!path) return undefined
-  for (const e of tree) {
-    if (e.path === path) return e.url
-    if (e.children && path.startsWith(e.path + '/')) { const u = fileUrl(e.children, path); if (u) return u }
+const findFile = (tree: ProjectEntry[], path?: string): ProjectEntry | undefined => {
+  if (!path) return
+  for (const entry of tree) {
+    if (entry.path === path) return entry
+    if (entry.children && path.startsWith(entry.path + '/')) return findFile(entry.children, path)
   }
-  return undefined
 }
 
 const STEPS: SimStage[] = ['preparing', 'trial', 'running', 'scoring', 'writing']
@@ -122,13 +127,28 @@ export function SimulationPanel(props: Props) {
   // The program's section-12 scope gates a package run; a protocol run is gated by the protocol's own checks and
   // its measured budget (a protocol-only project has no section 12).
   const scopeReady = route === 'protocol' || scope.ready
-  const confirmation = runConfirmation(readiness)
+  const [allowance, setAllowance] = useState<Allowance | null>(null)
+  useEffect(() => {
+    if (!WEB_EDITION || agentBusy) return
+    let live = true
+    void window.humanstudy.account?.allowance?.().then(
+      (meter) => { if (live) setAllowance(meter) },
+      () => { if (live) setAllowance(null) },
+    )
+    return () => { live = false }
+  }, [agentBusy, props.modelAccess])
+  const ownKey = props.modelAccess === 'own-key'
+  const hosted = WEB_EDITION && !ownKey && (props.modelAccess === 'hosted' || allowance?.available)
+  const confirmation = WEB_EDITION
+    ? { notice: ownKey ? 'sim.run_notice_cloud_key' : hosted ? 'sim.run_notice_cloud' : null, note: 'sim.note_cloud', detail: null }
+    : runConfirmation(readiness)
+  const meter = allowanceMessage(allowance, 'simulation')
   const [perCondition, setPerCondition] = useState(plan.defaultPerCondition)
   useEffect(() => setPerCondition(plan.defaultPerCondition), [plan.defaultPerCondition])
   // A protocol run: one call per page for every member of every group (the measured budget), not the package's few calls.
   const budgetArms = route === 'protocol' ? Object.values(readiness?.protocol?.budget?.arms ?? {}) : []
   const members = budgetArms.reduce((n, a) => n + a.group_size, 0)
-  const estimate = estimateRun({ conditions: members || runConditions.length || plan.conditions.length, perCondition, model, needsBuild: !built,
+  const estimate = estimateRun({ conditions: members || runConditions.length || plan.conditions.length, perCondition, model, assistantModel: props.assistantModel, needsBuild: !built,
     ...(members ? { callsPerParticipant: Math.max(1, Math.round(budgetArms.reduce((n, a) => n + a.group_size * a.calls, 0) / members)) } : {}) })
   // The relay's cap and lifetime for this plan, computed exactly as the main process will (macOS wording).
   // A protocol run is sized from its measured budget (pages per participant, growing prompts, group size), the
@@ -259,7 +279,7 @@ export function SimulationPanel(props: Props) {
   // distracts from a run in progress.
   const resultFirst = Boolean(current && !isExample && !running && !building)
   const result = current ? (
-    <Result run={current} tree={project.tree} summary={texts[current.id]?.summary ?? null} progress={texts[current.id]?.progress ?? null}
+    <Result run={current} tree={project.tree} study={props.artifactStudy} summary={texts[current.id]?.summary ?? null} progress={texts[current.id]?.progress ?? null}
       onOpen={() => { track('simulation.result_open', { metadata: { how: 'tab', example: isExample } }); props.onOpenFile(current.results!) }}
       onAsk={() => props.onAsk(t('sim.discuss_prompt', { run: current.rel }))} canAsk={canRun} />
   ) : null
@@ -372,8 +392,12 @@ export function SimulationPanel(props: Props) {
                 </dd>
                 <dt>{t('sim.model')}</dt>
                 <dd>{modelName}</dd>
-                {protocolLimits && (<>
+                {hosted && (<>
                   <dt>{t('sim.budget')}</dt>
+                  <dd>{t('sim.allowance_cloud')}{meter && <> · {t(meter.key, meter.vars)}</>}</dd>
+                </>)}
+                {protocolLimits && (!WEB_EDITION || !protocolLimits.fits || readiness?.modelAccess === 'relay') && (<>
+                  <dt>{t(WEB_EDITION ? 'sim.run_limit' : 'sim.budget')}</dt>
                   <dd>{protocolLimits.fits ? t(readiness?.modelAccess === 'relay' ? 'sim.budget_value' : 'sim.budget_estimate', { minutes: protocolLimits.minutes }) : t('sim.budget_too_large')}</dd>
                 </>)}
                 <dt>{t('sim.estimate')}</dt>
@@ -495,10 +519,8 @@ function Progress({ progress, startedAt, now, plan, built, activity, model, onSt
   )
 }
 
-function Result({ run, tree, summary, progress, onOpen, onAsk, canAsk = true }: { run: SimRunFiles; tree: ProjectEntry[]; summary: SimSummary | null; progress: SimProgress | null; onOpen(): void; onAsk(): void; canAsk?: boolean }) {
-  const frame = useRef<HTMLIFrameElement>(null)
-  useEffect(() => listenToArtifact(() => frame.current), [])
-  const url = fileUrl(tree, run.results)
+function Result({ run, tree, study, summary, progress, onOpen, onAsk, canAsk = true }: { run: SimRunFiles; tree: ProjectEntry[]; study?: ArtifactStudy; summary: SimSummary | null; progress: SimProgress | null; onOpen(): void; onAsk(): void; canAsk?: boolean }) {
+  const file = findFile(tree, run.results)
   const when = runDate(run.id) ?? run.mtime
   const model = shortModelName(summary?.model ?? progress?.model ?? '')
   const n = summary?.perCondition ? t('sim.n_each', { n: summary.perCondition }) : progress?.total ? t('sim.n_total', { n: progress.total }) : ''
@@ -517,7 +539,8 @@ function Result({ run, tree, summary, progress, onOpen, onAsk, canAsk = true }: 
       ) : (
         <p className="muted small">{t('sim.no_summary')}</p>
       )}
-      {url && <iframe ref={frame} key={url} className="sim-frame" src={url} sandbox="allow-scripts" title={t('sim.result_title')} />}
+      {file?.url && <ArtifactFrame key={file.path + ':' + file.version} file={file} study={study}
+        className="sim-frame" src={versionedUrl(file.url, file.version)} title={t('sim.result_title')} />}
       <div className="sim-actions">
         <button className="ghost small-btn" onClick={onOpen}>{t('sim.open_tab')}</button>
         <button className="ghost small-btn" disabled={!canAsk} title={canAsk ? undefined : t('sim.sign_in_to_run')} onClick={onAsk}>{t('sim.discuss')}</button>

@@ -384,7 +384,7 @@ export function mayCollectFile(o: { rel: string; text?: string; published: boole
 
 /** Keys of a research event that hold structure, never content: kept when the event is redacted. */
 const CAPTURE_KEEP = new Set(['event_type', 'id', 'thread_id', 'project_id', 'action_id', 'caused_by', 'tool_call_id', 'message_id',
-  'target', 'view', 'artifact_version', 'status', 'state', 'via', 'trigger', 'action_link', 'model', 'kind', 'duration_ms',
+  'target', 'view', 'artifact_version', 'dispatch_outcome', 'status', 'state', 'via', 'trigger', 'action_link', 'model', 'kind', 'duration_ms',
   'native_id_reported', 'native_message_id', 'native_part_id', 'parent_action_id', 'occurred_at', 'part', 'role'])
 
 /** THE capture boundary for private material: every research event and every telemetry metadata object passes here

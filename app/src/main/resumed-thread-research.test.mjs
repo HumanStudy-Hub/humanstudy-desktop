@@ -24,7 +24,7 @@ test('a resumed native thread captures only new assistant and tool events under 
       setup(builder) {
         builder.onResolve({ filter: /^(electron|\.\/account)$/ }, ({ path }) => ({ path, namespace: 'fixture' }))
         builder.onLoad({ filter: /.*/, namespace: 'fixture' }, ({ path }) => ({ contents: path === 'electron'
-          ? `export const app={getPath:()=>${JSON.stringify(temp)},getVersion:()=>'0.0.0-test'}; export const BrowserWindow={},dialog={},ipcMain={};`
+          ? `export const app={getPath:()=>${JSON.stringify(temp)},getVersion:()=>'0.0.0-test'}; export const BrowserWindow={},dialog={},ipcMain={},nativeTheme={};`
           : `export const getAccount=()=>({status:()=>({email:${JSON.stringify(fixture)}}),researchOwner:()=>${JSON.stringify(owner)},restAuth:async()=>null});` }))
       },
     }],

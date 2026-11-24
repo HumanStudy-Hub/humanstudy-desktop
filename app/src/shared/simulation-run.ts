@@ -251,11 +251,16 @@ export function sampleFor(value: unknown, title: string, index: number, studies:
 
 // ---- the estimate -------------------------------------------------------------------------------
 
+export function simulationModel(fallback: string, hostedModels?: string[]): string {
+  const preferred = 'deepseek/deepseek-v4.1-flash'
+  return hostedModels?.includes(preferred) ? preferred : fallback
+}
+
 /** USD per million tokens (input, output) of the hosted models; unknown models use the Haiku price as a floor. */
 const PRICES: Record<string, [number, number]> = {
   'anthropic/claude-haiku-5.5': [0.1, 0.5],
   'anthropic/claude-sonnet-5.5': [2, 10],
-  'deepseek/deepseek-v4.1-flash': [0.1, 0.4],
+  'deepseek/deepseek-v4.1-flash': [0.15, 0.6],
 }
 /** Measured on the Knobe sample with Haiku 5.5 (2026-10-15, two real runs; see the commit message). */
 export const MEASURED = {
@@ -274,13 +279,15 @@ export const MEASURED = {
   buildMinutes: 5,
 }
 export interface SimEstimate { participants: number; minutes: [number, number]; cost: [number, number] }
-export function estimateRun(opts: { conditions: number; perCondition: number; model: string; needsBuild: boolean; callsPerParticipant?: number }): SimEstimate {
+export function estimateRun(opts: { conditions: number; perCondition: number; model: string; assistantModel?: string; needsBuild: boolean; callsPerParticipant?: number }): SimEstimate {
   const participants = Math.max(1, opts.conditions) * Math.max(1, opts.perCondition)
-  const [pin, pout] = PRICES[opts.model] ?? PRICES['anthropic/claude-haiku-5.5']
   const calls = participants * (opts.callsPerParticipant ?? 1)
-  const usd = (inTok: number, outTok: number) => (inTok * pin + outTok * pout) / 1e6
-  const agent = usd(MEASURED.agentIn + (opts.needsBuild ? MEASURED.buildIn : 0), MEASURED.agentOut + (opts.needsBuild ? MEASURED.buildOut : 0))
-  const people = usd(calls * MEASURED.participantIn, calls * MEASURED.participantOut)
+  const usd = (model: string, inTok: number, outTok: number) => {
+    const [pin, pout] = PRICES[model] ?? PRICES['anthropic/claude-haiku-5.5']
+    return (inTok * pin + outTok * pout) / 1e6
+  }
+  const agent = usd(opts.assistantModel ?? opts.model, MEASURED.agentIn + (opts.needsBuild ? MEASURED.buildIn : 0), MEASURED.agentOut + (opts.needsBuild ? MEASURED.buildOut : 0))
+  const people = usd(opts.model, calls * MEASURED.participantIn, calls * MEASURED.participantOut)
   const mid = agent + people
   const minutes = MEASURED.agentMinutes + (opts.needsBuild ? MEASURED.buildMinutes : 0) + (calls * MEASURED.secondsPerParticipant) / 60
   return { participants, minutes: [Math.max(1, Math.round(minutes * 0.6)), Math.ceil(minutes * 1.8)], cost: [mid * 0.6, mid * 2] }

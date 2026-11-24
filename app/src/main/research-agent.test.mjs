@@ -75,3 +75,12 @@ test('one recovery attempt is one agent.recovery record although later statuses 
  assert.deepEqual(rows.filter(r=>r.event_type==='agent.recovery').map(r=>r.metadata.attempt),[1,2,1])
 })
 test.after(()=>rm(temp,{recursive:true,force:true}))
+test('a chat send returns without waiting for its research receipt, which records the outcome', async () => {
+ const {dispatchAndRecord}=await import(pathToFileURL(join(temp,'agent.mjs')))
+ const outcomes=[];let release
+ const slow=outcome=>{outcomes.push(outcome);return new Promise(r=>{release=r})}
+ assert.equal(await Promise.race([dispatchAndRecord(async()=>'reply',slow),new Promise(r=>setTimeout(()=>r('blocked'),50))]),'reply')
+ await assert.rejects(dispatchAndRecord(async()=>{throw Error('kernel down')},async()=>{outcomes.push('failed-recorded');throw Error('disk full')}),/kernel down/)
+ assert.equal(await dispatchAndRecord(async()=>1,()=>{throw Error('sync throw')}),1)
+ assert.deepEqual(outcomes,['sent','failed-recorded']);release()
+})

@@ -63,7 +63,7 @@ const api: HumanStudyApi = {
     releaseBuild: (dir, sid) => ipcRenderer.invoke('project:releaseBuild', dir, sid),
     retryBuild: (dir, action) => ipcRenderer.invoke('project:retryBuild', dir, action),
     open: () => ipcRenderer.invoke('project:open'),
-    read: (dir) => ipcRenderer.invoke('project:read', dir),
+    read: (dir, refreshPreview) => ipcRenderer.invoke('project:read', dir, refreshPreview),
     reveal: (path) => ipcRenderer.invoke('project:reveal', path),
     versions: (path) => ipcRenderer.invoke('project:versions', path),
     readVersion: (path, id) => ipcRenderer.invoke('project:readVersion', path, id),
@@ -115,6 +115,7 @@ const api: HumanStudyApi = {
   telemetry: {
     status: () => ipcRenderer.invoke('telemetry:status'),
     setConsent: (consent) => ipcRenderer.invoke('telemetry:setConsent', consent),
+    chatSubmission: (id, text, outcome, action) => ipcRenderer.invoke('telemetry:chatSubmission', id, text, outcome, action),
     track: (type, opts) => ipcRenderer.invoke('telemetry:track', type, opts),
     projectId: (dir) => ipcRenderer.invoke('telemetry:projectId', dir),
     recent: () => ipcRenderer.invoke('telemetry:recent'),
