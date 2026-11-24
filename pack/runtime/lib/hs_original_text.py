@@ -40,7 +40,7 @@ DOWNLOAD_DEADLINE = 90                # seconds one download may take in all (a 
 DOWNLOADS_BUDGET = 150                # seconds all downloads of one check may take (the app stops the helper at 300)
 RETRY_AFTER = 10 * 60                 # a failed download is not tried again for this long (seconds)
 MAX_CANDIDATES = 12                   # project files tried per source
-EXTENSIONS = {"pdf": (".pdf",), "html": (".html", ".htm", ".xhtml"), "text": (".txt", ".text", ".md", ".rmd", ".r", ".csv", ".tsv"),
+EXTENSIONS = {"pdf": (".pdf",), "html": (".html", ".htm", ".xhtml"), "text": (".txt", ".text", ".md", ".rmd", ".r"),
               "docx": (".docx",), "qsf": (".qsf", ".json")}
 OK = ("ok",)   # a held picture (or a region rendered as one) is not supported yet: it stays unresolved
 
@@ -241,7 +241,9 @@ def candidates_for(fmt: str | None, files: list[Path], key: str, want: str | Non
         data = read_file(f) if want is not None else None
         return data is not None and sha256(data) == want
     exact = [f for f in pool if f not in named and same(f)]
-    rest = [f for f in pool if f not in named and f not in exact]
+    # Plain text files first; R scripts and R Markdown after them (stable within each extension).
+    rest = sorted((f for f in pool if f not in named and f not in exact),
+                  key=lambda f: exts.index(f.suffix.lower()) if f.suffix.lower() in exts else len(exts))
     return (named + exact + rest)[:MAX_CANDIDATES]
 
 
