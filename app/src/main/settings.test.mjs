@@ -116,14 +116,18 @@ test('a startup ask override survives applying and saving project settings', asy
   assert.deepEqual(replies, [])
 })
 
+// Three resends after the first try: up to three failures still continue the turn without anyone noticing.
 for (const [failures, name] of [
   [1, 'project mode resolves an automatic approval after retrying'],
-  [2, 'project mode stops the turn without a prompt when automatic approval fails twice'],
+  [3, 'project mode keeps resending an automatic approval and the turn continues'],
+  [4, 'project mode stops the turn without a prompt only when every resend fails'],
 ]) {
   test(name, { timeout: 5000 }, async (t) => {
     const { getSettings, OpencodeKernel } = await loadSettings(t)
     const root = getSettings().projectsRoot
     const { kernel, events, replies, ask } = permissionFixture(t, OpencodeKernel, root)
+    kernel.autoReplyRetryMs = [30, 30, 30]
+    const delivered = failures <= kernel.autoReplyRetryMs.length
     kernel.replyTo = async (_server, _session, id, reply) => {
       replies.push([id, reply])
       if (replies.length <= failures) throw new Error('Permission reply unavailable')
@@ -135,7 +139,7 @@ for (const [failures, name] of [
     }
     const finished = new Promise(resolve => {
       const off = kernel.onEvent(event => {
-        if (failures === 1 ? event.permission?.resolved === 'once' : event.type === 'done') {
+        if (delivered ? event.permission?.resolved === 'once' : event.type === 'done') {
           off()
           resolve()
         }
@@ -152,13 +156,13 @@ for (const [failures, name] of [
     assert.equal(session.pendingPermissions.size, 0)
     assert.ok(!events.some(event => event.type === 'permission' && !event.permission.resolved))
 
-    if (failures === 1) {
-      assert.deepEqual(replies, [['inside', 'once'], ['inside', 'once']])
+    if (delivered) {
+      assert.deepEqual(replies, Array(failures + 1).fill(['inside', 'once']))
       assert.deepEqual(requests, [])
       assert.deepEqual(events.map(event => event.type), ['permission'])
       assert.equal(events[0].permission.automatic, true)
     } else {
-      assert.deepEqual(replies, [['inside', 'once'], ['inside', 'once'], ['inside', 'reject']])
+      assert.deepEqual(replies, [...Array(failures).fill(['inside', 'once']), ['inside', 'reject']])
       assert.deepEqual(requests, [['POST', '/session/session/abort'], ['GET', '/question']])
       assert.deepEqual(events.map(event => event.type), ['error', 'done'])
       assert.match(events[0].text, /automatic permission reply could not be delivered.*Send your message again/)
