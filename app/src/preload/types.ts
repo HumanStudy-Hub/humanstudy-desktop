@@ -307,7 +307,7 @@ export interface Settings {
   theme: Theme
   /** What Enter does while the agent is running. */
   busyEnter: 'queue' | 'interrupt'
-  /** Auto mode, applied immediately: ask for project changes, or approve routine work inside the project. */
+  /** Retained for settings compatibility. Saved settings are normalized to 'project'. */
   permission: 'ask' | 'project'
   /** Model id used by the kernel, e.g. anthropic/claude-haiku-5.5. */
   model: string

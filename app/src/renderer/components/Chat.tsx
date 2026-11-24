@@ -45,8 +45,6 @@ interface Props {
   projectDir: string
   tree: ProjectEntry[]
   model: string
-  auto: boolean
-  onAuto(value: boolean): void
   busyEnter: 'queue' | 'interrupt'
   onModel(model: string): void
   kernel: { status: KernelInstallStatus | null; retry(): void }
@@ -78,7 +76,7 @@ const flatFiles = (tree: ProjectEntry[]): ProjectEntry[] =>
 
 const MENTION = /(^|\s)@([^\s@]*)$/
 
-export function Chat({ ref, session, selected, onClearSelection, account, onSettings, agreement, onReview, projectDir, tree, model, busyEnter, auto, onAuto, onModel, kernel, onOpenStudy, onOpenFile }: Props) {
+export function Chat({ ref, session, selected, onClearSelection, account, onSettings, agreement, onReview, projectDir, tree, model, busyEnter, onModel, kernel, onOpenStudy, onOpenFile }: Props) {
   const [draft, setDraft] = useState('')
   const native = useNativeControls(session,()=>onSettings('general'))
   const [commandPick,setCommandPick] = useState(0)
@@ -407,7 +405,6 @@ export function Chat({ ref, session, selected, onClearSelection, account, onSett
         />
         <div className="composer-row">
           <div className="composer-tools">
-            <button className="auto-mode" aria-pressed={auto} title={t('settings.permission_hint')} onClick={() => onAuto(!auto)}>{t(auto ? 'chat.auto_on' : 'chat.auto_off')}</button>
             {!native.selection ? <ModelPicker model={model} account={account} onChange={onModel} onOther={() => onSettings('models')} /> : <button className="model-btn" disabled={session.busy} onClick={()=>void native.execute('/models')} title="Choose model and reasoning variant">{shortModelName(native.selection?.model?.modelID??model)}</button>}
             <button type="button" className="ghost icon attach-btn" aria-label={t('chat.attach')} title={t('chat.attach')} disabled={!session.id} onClick={() => { picking.current = claimAction('source.import', true); fileInput.current?.click() }}>
               <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden>

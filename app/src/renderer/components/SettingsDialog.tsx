@@ -170,17 +170,6 @@ function General({ settings, onChange }: { settings: Settings; onChange(p: Parti
           onChange={(busyEnter) => onChange({ busyEnter })}
         />
       </Row>
-      <Row label={t('settings.permission')} hint={t('settings.permission_hint')}>
-        <Segmented
-          label={t('settings.permission')}
-          value={settings.permission}
-          options={[
-            ['ask', t('settings.perm_ask')],
-            ['project', t('settings.perm_project')],
-          ]}
-          onChange={(permission) => onChange({ permission })}
-        />
-      </Row>
       <Row label={t('settings.notifications')} hint={t('settings.notifications_hint')}>
         <Segmented
           label={t('settings.notifications')}

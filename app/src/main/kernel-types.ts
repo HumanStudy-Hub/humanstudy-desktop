@@ -54,7 +54,6 @@ export interface Kernel {
   directory?(sessionId: string): string
   native?(sessionId: string, request: NativeRequest): Promise<unknown>
 
-  setPermissionMode?(mode: 'ask' | 'project'): void
   startSession(projectDir: string): Promise<string>
   send(sessionId: string, text: string, options?: { purpose?: 'build' }): Promise<void>
   abort(sessionId: string): Promise<void>
