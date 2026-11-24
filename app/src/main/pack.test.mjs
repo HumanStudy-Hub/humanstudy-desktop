@@ -1036,7 +1036,7 @@ except SystemExit as e:
   // the restored copy: plays the wording, records the published version's hash, keeps no screens in the project
   r = go(fill())
   const out = result(r)
-  assert.equal(out.status, 'done', r.stdout.slice(-800) + r.stderr.slice(-1500))   // the retry recovers the one failed call
+  assert.equal(out.status, 'partial', r.stdout.slice(-800) + r.stderr.slice(-1500))   // the one failed call (a 500 is not re-asked)
   assert.equal(out.sha, sha(join(proj, 'protocol.json')))
   assert.ok(out.seen.some((c) => c.includes('walking before breakfast')), 'the model saw the restored wording')
   assert.ok(!out.seen.some((c) => c.includes('░')), 'never a placeholder')
