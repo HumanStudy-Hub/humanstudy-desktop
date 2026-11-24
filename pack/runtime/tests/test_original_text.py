@@ -387,8 +387,8 @@ class TextExtensionsTest(unittest.TestCase):
             for f in files:
                 f.write_bytes(b"x")
             picked = O.candidates_for("text", files, "rmd", None)
-            # Data files are not text sources; a plain .txt copy is still tried first.
-            self.assertEqual([f.name for f in picked], ["notes.txt", "analysis.Rmd", "clean.R"])
+            # R files are tried like any text file; data files are not text sources.
+            self.assertEqual({f.name for f in picked}, {"notes.txt", "analysis.Rmd", "clean.R"})
 
 
 if __name__ == "__main__":

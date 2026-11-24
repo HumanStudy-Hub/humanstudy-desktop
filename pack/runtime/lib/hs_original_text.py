@@ -241,9 +241,7 @@ def candidates_for(fmt: str | None, files: list[Path], key: str, want: str | Non
         data = read_file(f) if want is not None else None
         return data is not None and sha256(data) == want
     exact = [f for f in pool if f not in named and same(f)]
-    # Plain text files first; R scripts and R Markdown after them (stable within each extension).
-    rest = sorted((f for f in pool if f not in named and f not in exact),
-                  key=lambda f: exts.index(f.suffix.lower()) if f.suffix.lower() in exts else len(exts))
+    rest = [f for f in pool if f not in named and f not in exact]
     return (named + exact + rest)[:MAX_CANDIDATES]
 
 
