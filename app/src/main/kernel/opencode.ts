@@ -682,7 +682,12 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         return
       } catch (error) {
         const wait = this.autoReplyRetryMs[attempt]
-        if (alreadyResolved(error) || this.permissionMode() === 'ask' || wait === undefined) throw error
+        if (alreadyResolved(error) || this.permissionMode() === 'ask') throw error
+        if (wait === undefined) {
+          // Out of resends: let a Stop in progress finish first, so the failure is handled after its outcome.
+          for (let i = 0; s.stopping && !this.disposed && i < 150; i++) await sleep(200)
+          throw error
+        }
         await sleep(wait)
         // A Stop in progress decides first: if its native abort fails, the turn still waits for this reply.
         for (let i = 0; s.stopping && !this.disposed && i < 150; i++) await sleep(200)
