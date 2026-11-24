@@ -77,12 +77,40 @@ def new(run_dir: Path, per_arm: int, protocol_hash: str, arms: list[str] | None,
     return plan
 
 
+def unreadable(error: Exception) -> bool:
+    """A reply the page could not use: no JSON object (render raises ValueError) or an empty/cut-off reply.
+    Not a transport failure, an allowance refusal or a content-filter refusal: those are never re-asked."""
+    if isinstance(error, ValueError) and "no JSON object" in str(error):
+        return True
+    text = str(error)
+    return type(error).__name__ == "LLMError" and "returned no content" in text and "content_filter" not in text
+
+
+def reask_unreadable(f):
+    """Ask the same page once more when the reply could not be read (same state, same context, no added hint).
+    At most two model calls per page; the macOS relay cap still bounds the run."""
+    def wrapped(state, ctx):
+        try:
+            return f(state, ctx)
+        except Exception as error:
+            if not unreadable(error):
+                raise
+            return f(state, ctx)
+    wrapped.__dict__.update(f.__dict__)   # description and any other attributes the runner reads
+    return wrapped
+
+
+SIM_MAX_TOKENS = 1536
+
+
 def relay_complete(temperature: float):
     """complete(messages) -> text through the app's model client (relay on macOS; never a key in this process)."""
     from humanstudy_llm import chat
 
     def complete(messages):
-        return chat(messages, temperature=temperature)
+        # 512 (the library default) is too small for a participant page reply: models that think first end with
+        # finish_reason=length and no text, and the participant is lost. Unused tokens are not charged.
+        return chat(messages, temperature=temperature, max_tokens=SIM_MAX_TOKENS)
     return complete
 
 
@@ -453,9 +481,9 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     if complete is None:
         from humanstudy_llm import model_name
         complete, model = relay_complete(plan.get("temperature", 1.0)), model_name()
-    f = make_chat_f(complete, render=render_state)
-    # retries 0: humanstudy_llm already retries 429/5xx; a call that still fails (a refusal, the token cap) ends
-    # that participant as incomplete instead of being asked again.
+    f = reask_unreadable(make_chat_f(complete, render=render_state))
+    # retries 0: humanstudy_llm already retries 429/5xx; a call that still fails (transport, allowance, a refusal)
+    # ends that participant as incomplete. Only an unreadable reply is asked once more (reask_unreadable).
     spec = {"kind": "llm", "name": "desktop model", "model": model or "unknown", "renderer": "default",
             "temperature": plan.get("temperature", 1.0), "retries": 0, "fill_platform_ids": True,
             "host": "the desktop app's model relay (humanstudy_llm), passed in-process"}
