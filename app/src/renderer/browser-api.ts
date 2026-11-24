@@ -139,19 +139,29 @@ if (!('humanstudy' in window)) {
   ;(window as unknown as { __menu: (c: MenuCommand) => void }).__menu = (c) => menuListeners.forEach((cb) => cb(c))
   if (installMode) setTimeout(() => runInstall(installMode === 'error'), 0)
   const mode = new URLSearchParams(location.search).get('project')
-  // ?program=real: a researcher's own project copied into public/preview/real/ (program.json + paper.pdf,
-  // git-ignored, never committed). Loaded synchronously because the snapshot is built synchronously.
+  // A local project in public/preview/real. The snapshot is built synchronously.
+  const readLocalPreview = (name: string) => {
+    try {
+      const request = new XMLHttpRequest()
+      request.open('GET', '/preview/real/' + name, false)
+      request.send()
+      if (request.status === 200 && request.getResponseHeader('Content-Type')?.includes('json')) return request.responseText
+    } catch { /* Optional preview file. */ }
+    return null
+  }
   const real = new URLSearchParams(location.search).get('program') === 'real' ? (() => {
-    try { const r = new XMLHttpRequest(); r.open('GET', '/preview/real/program.json', false); r.send(); return r.status === 200 ? JSON.parse(r.responseText) : null } catch { return null }
+    try { return JSON.parse(readLocalPreview('program.json') ?? 'null') } catch { return null }
   })() : null
+  const realProtocol = real ? readLocalPreview('protocol.json') : null
+  const paperUrl = real ? '/preview/real/paper.pdf' : '/preview/paper.pdf'
   const buildMode = new URLSearchParams(location.search).get('build')
   const snapshot: ProjectSnapshot = {
     dir: '/preview/knobe-2003',
-    name: mode === 'empty' ? 'Untitled study' : 'Knobe 2003 · browser preview',
+    name: mode === 'empty' ? 'Untitled study' : real?.title ?? 'Knobe 2003 · browser preview',
     program: mode === 'empty' ? null : real ?? (new URLSearchParams(location.search).get('program') === 'broken' ? brokenProgram : sample), // ?program=broken: a program with agent slips
     artifacts: [],
     exports: [],
-    pdf: { name: 'paper.pdf', path: '/preview/paper.pdf', url: real ? '/preview/real/paper.pdf' : '/preview/paper.pdf', ext: 'pdf' },
+    pdf: { name: 'paper.pdf', path: '/preview/paper.pdf', url: paperUrl, ext: 'pdf' },
     tree: [],
   }
   // Files of the preview project, editable in memory so the Program tab can be tried out.
@@ -167,8 +177,11 @@ if (!('humanstudy' in window)) {
   const html = (title: string, body: string) => `<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font:14px system-ui;padding:24px;color:#263d46">${body}`
   if (mode !== 'empty') {
     put('program.json', JSON.stringify(real ?? sample, null, 2) + '\n', 30)
-    put('artifacts/participant-flow.html', html('Participant flow', '<h1 style="font-size:22px">Participant flow</h1><div style="display:flex;gap:10px;align-items:center;margin-top:20px"><b style="border:2px solid #28574b;border-radius:8px;padding:12px 16px">Read scenario</b>&rarr;<b style="border:2px solid #28574b;border-radius:8px;padding:12px 16px">Harm / Help</b>&rarr;<b style="border:2px solid #28574b;border-radius:8px;padding:12px 16px">Judge intentionality</b></div><p>A view the agent wrote (preview).</p>'), 12)
-    put('artifacts/2026-10-11-change.md', '# Changes to the study\n\n- material-1-harm: wording corrected to match p. 2.\n- participants: N = 78 now cited.\n', 60 * 20)
+    if (realProtocol) put('protocol.json', realProtocol, 30)
+    if (!real) {
+      put('artifacts/participant-flow.html', html('Participant flow', '<h1 style="font-size:22px">Participant flow</h1><div style="display:flex;gap:10px;align-items:center;margin-top:20px"><b style="border:2px solid #28574b;border-radius:8px;padding:12px 16px">Read scenario</b>&rarr;<b style="border:2px solid #28574b;border-radius:8px;padding:12px 16px">Harm / Help</b>&rarr;<b style="border:2px solid #28574b;border-radius:8px;padding:12px 16px">Judge intentionality</b></div><p>A view the agent wrote (preview).</p>'), 12)
+      put('artifacts/2026-10-11-change.md', '# Changes to the study\n\n- material-1-harm: wording corrected to match p. 2.\n- participants: N = 78 now cited.\n', 60 * 20)
+    }
   }
   if (mode === 'results') {
     put('artifacts/condition-comparison.html', html('Harm vs. help condition', '<h1 style="font-size:20px">Harm vs. help</h1><div style="display:flex;gap:30px;align-items:flex-end;height:220px;margin-top:16px"><div style="width:90px;height:82%;background:#28574b"></div><div style="width:90px;height:23%;background:#a9c4b4"></div></div><p>Share judging the side effect intentional: 82% vs. 23%.</p>'), 45)
@@ -265,7 +278,7 @@ if (!('humanstudy' in window)) {
     for (const path of files) {
       const rel = path.slice(root.length + 1)
       const name = rel.split('/').pop()!
-      folder(rel.split('/').slice(0, -1).join('/')).push({ name, path, rel, kind: 'file', ext: name.split('.').pop()!.toLowerCase(), url: name === 'paper.pdf' ? '/preview/paper.pdf' : texts.get(path) === exampleResults ? exampleResultsUrl : `data:${MIME[name.split('.').pop()!.toLowerCase()] ?? 'text/plain'};charset=utf-8,` + encodeURIComponent(texts.get(path) ?? ''), size: (texts.get(path) ?? '').length, mtime: mtimes.get(path) ?? mins(3) })
+      folder(rel.split('/').slice(0, -1).join('/')).push({ name, path, rel, kind: 'file', ext: name.split('.').pop()!.toLowerCase(), url: name === 'paper.pdf' ? paperUrl : texts.get(path) === exampleResults ? exampleResultsUrl : `data:${MIME[name.split('.').pop()!.toLowerCase()] ?? 'text/plain'};charset=utf-8,` + encodeURIComponent(texts.get(path) ?? ''), size: (texts.get(path) ?? '').length, mtime: mtimes.get(path) ?? mins(3) })
     }
     const sortTree = (list: import('../preload/types').ProjectEntry[]) => {
       list.sort((a, b) => Number(b.kind === 'dir') - Number(a.kind === 'dir') || a.name.localeCompare(b.name))
@@ -278,7 +291,7 @@ if (!('humanstudy' in window)) {
   buildTree()
   const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString()
   const projects: ProjectSummary[] = [
-    { dir: snapshot.dir, name: mode === 'empty' ? 'Untitled study' : 'Knobe 2003 · side-effect effect', updatedAt: ago(14), hasPaper: true, hasProgram: mode !== 'empty', artifactCount: mode === 'results' ? 6 : 2 },
+    { dir: snapshot.dir, name: snapshot.name, updatedAt: ago(14), hasPaper: true, hasProgram: mode !== 'empty', artifactCount: snapshot.artifacts.length },
     { dir: '/preview/untitled', name: 'Untitled project', updatedAt: ago(60 * 26), hasPaper: false, hasProgram: false, artifactCount: 0 },
   ]
   const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'project'

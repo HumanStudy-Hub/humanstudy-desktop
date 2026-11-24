@@ -407,11 +407,19 @@ test('only the owning build or an explicit build action selects the build model'
 
 test('paired builds wait for complete research and preview, then bind both without changing run readiness',async()=>{
  const dir=project(), assets=join(here,'../../resources/protocol-sample')
+ P.pendingPaperBuild(dir,true)
+ const builds=P.createPaperBuilds(()=>{},async()=>({hash,problems:[]}))
+ builds.bind('paired',dir);builds.start(dir,'paired')
+ writeFileSync(join(dir,'program.json'),sample)
+ builds.event({sessionId:'paired',type:'tool',input:'check_program.py program.json --complete',output:'PASS program.json'})
+ await builds.event({sessionId:'paired',type:'done'})
+ assert.equal(builds.read(dir).status,'error','a fresh paper cannot complete on a legacy program certificate')
+ assert.equal(builds.retry(dir),true)
+ assert.equal(builds.read(dir).requiresPairedDelivery,true)
+ builds.start(dir,'paired')
  const protocol=JSON.parse(readFileSync(join(assets,'protocol.json'),'utf8'));protocol.meta.delivery='research-program-v1'
  const raw=JSON.stringify(protocol),hash=createHash('sha256').update(raw).digest('hex')
  writeFileSync(join(dir,'protocol.json'),raw)
- const builds=P.createPaperBuilds(()=>{},async()=>({hash,problems:[]}))
- builds.bind('paired',dir);builds.start(dir,'paired')
  await builds.event({sessionId:'paired',type:'done'})
  assert.equal(builds.read(dir).status,'error','a protocol-only success is not a complete paired build')
  const research=JSON.parse(readFileSync(join(assets,'program.json'),'utf8'));research.extensions.scholarly.protocol.sha256=hash

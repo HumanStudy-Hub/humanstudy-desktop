@@ -953,3 +953,6 @@ pre.diff { margin: 4px 0 0; padding: 8px 0; background: var(--bg-sunk); border-r
 .research-overview summary, .research-preview summary { cursor: pointer; color: var(--muted); }
 .research-preview { max-width: 880px; margin: 0 auto; padding: 0 28px 28px; }
 .research-preview iframe { display: block; min-height: 720px; margin-top: 16px; }
+
+/* Keep permission actions visible when the conversation is scrolled away from its latest turn. */
+.permission-requests { flex-shrink: 0; max-height: 35vh; overflow: auto; padding: 0 12px; }

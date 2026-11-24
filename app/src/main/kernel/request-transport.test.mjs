@@ -101,6 +101,7 @@ const upstream = createServer(async (req, res) => {
   if (mode === 'payload') { res.writeHead(413, { 'x-vercel-error': 'FUNCTION_PAYLOAD_TOO_LARGE' }); res.end('Request Entity Too Large'); return }
   if (mode === 'context') { res.writeHead(413, { 'content-type': 'application/json' }); res.end('{"error":{"code":"context_length_exceeded","message":"maximum context length exceeded"}}'); return }
   if (mode === 'rate') { res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '2' }); res.end('{"error":{"message":"rate limited"}}'); return }
+  if (mode === 'disconnect') { req.socket.destroy(); return }
   res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write('data: {"delta":"first"}\n\n')
   if (mode === 'hold') { res.on('close', () => cancelled?.()); return }
   res.end('data: [DONE]\n\n')
@@ -139,6 +140,12 @@ try {
   const limited = await send('{"messages":[]}')
   assert.equal(limited.status, 429)
   assert.equal(limited.headers.get('retry-after'), '2')
+  mode = 'disconnect'
+  const beforeDisconnect = requests.length
+  const disconnected = await send('{"messages":[]}')
+  assert.equal(disconnected.status, 502)
+  assert.match((await disconnected.json()).error.message, /connection closed before a response/i)
+  assert.equal(requests.length, beforeDisconnect + 1, 'ambiguous disconnects are not resubmitted')
   mode = 'hold'
   const controller = new AbortController()
   const closed = new Promise((resolve, reject) => { cancelled = resolve; setTimeout(() => reject(new Error('Upstream did not cancel')), 3000).unref() })

@@ -17,8 +17,24 @@ and relations. Required node kinds: background (question, motivation/theory), hy
 material, procedure, variable, analysis, result, finding (conclusions), limitation. These are coverage categories,
 not eleven mandatory UI panels. Nodes/fields use the schema's studyIds and evidenceIds; original-source
 evidence has file/source, physical page or source pointer, and the relevant full quote. Do not cite the program
-itself as evidence. `extensions.effectRefs` on result nodes names existing protocol analysis effect/target ids;
-reference them instead of copying calculation definitions. Use shared nodes only where their scope really is shared.
+itself as evidence. `extensions.effectRefs` on result nodes names corresponding protocol analysis effect/target ids,
+including blocked effects/targets. A reported test without a protocol counterpart still belongs in the research
+document. Use shared nodes only where their scope really is shared.
+
+## Check the paper's main results
+
+For each study, explain what the authors asked, how they tested it, and what they found.
+Use the existing fields. Connect the main conclusions and any results that materially change
+their interpretation to a passage or table cell that supports them. Include null, contrary or
+mixed findings when they qualify a main conclusion. Mark an unstated hypothesis as not
+reported. Every study needs a scoped human result or an explicit gap. Report what the paper
+found even when the protocol cannot run the test.
+
+Before delivery, compare the saved results to the paper's Results and Discussion once.
+Use `python .opencode/skills/build/check_quotes.py program.json` to catch misplaced PDF quotes.
+Fix mismatches and inspect an unreadable source directly when possible. A matching quote
+still needs to support the claim it cites. Split a passage that crosses a PDF page boundary
+into two evidence records, one for each page.
 
 Source statements can be reported or verbatim. Interpretations are derived with an explanation. User changes
 are researcher-origin; preserve them. Proposed mechanisms are distinct from mechanisms actually tested.

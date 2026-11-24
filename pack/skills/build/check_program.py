@@ -191,6 +191,9 @@ def coverage_problems(p):
     if policy_path is None:
         return [("build coverage policy is unavailable", "restore the build skill files")]
     policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    scholarly = (p.get("extensions") or {}).get("scholarly")
+    if isinstance(scholarly, dict) and scholarly.get("profile") == "scholarly-v1":
+        return scholarly_coverage_problems(p, policy["scholarly"])
     out = []
     nodes, steps, issues = p.get("nodes", []), p.get("steps", []), p.get("issues", [])
     def meaningful(v):
@@ -215,6 +218,43 @@ def coverage_problems(p):
                 continue
             if not any(n.get("kind") in kinds and content(n, sid) for n in scoped):
                 out.append((f"{sid}: {area} has not been extracted or explicitly marked missing.", "add source-supported content, or a missing field with a targeted issue; never invent it"))
+    return out
+
+def scholarly_coverage_problems(p, kinds):
+    """Check scholarly content before the desktop validates the paired delivery."""
+    nodes = p.get("nodes", [])
+    out = [(f"Research coverage is missing {kind}.", "add a source-supported field or an explicit source gap")
+           for kind in kinds if not any(n.get("kind") == kind and n.get("fields") for n in nodes)]
+    evidence = {e["id"] for e in p.get("evidence", [])
+                if (e.get("path") or e.get("sourceId") or e.get("url"))
+                and (e["locator"].get("page") or e["locator"].get("pointer"))
+                and (e.get("quote") or "").strip()}
+    result_studies = set()
+    for node in nodes:
+        scope = node.get("studyIds", [])
+        for field in node.get("fields", []):
+            label = f"{node['id']}.{field['id']}"
+            missing = field.get("state") == "missing"
+            gap = (field.get("extensions") or {}).get("gapReason")
+            has_evidence = any(ref in evidence for ref in field.get("evidenceIds", []))
+            value = field.get("value")
+            if gap == "not_extracted":
+                out.append((f"{label}: extraction is not finished.", "finish extraction from the sources"))
+            if missing:
+                if gap not in ("not_reported", "source_unavailable"):
+                    out.append((f"{label}: explain the missing source information.", "set extensions.gapReason"))
+                if gap == "not_reported" and not has_evidence:
+                    out.append((f"{label}: cite what was checked before declaring this unreported.", ""))
+            else:
+                if value is None or isinstance(value, str) and not value.strip():
+                    out.append((f"{label}: provide supported content or an explicit source gap.", ""))
+                if not has_evidence:
+                    out.append((f"{label}: include original-source evidence.", ""))
+            if node.get("kind") == "result" and (missing or field.get("origin") in ("reported", "verbatim")):
+                result_studies.update(study for study in field.get("studyIds", scope) if not scope or study in scope)
+    for study in p.get("studies", []):
+        if study["id"] not in result_studies:
+            out.append((f"{study['id']}: include an original human result or document why it is unavailable.", ""))
     return out
 
 def main() -> None:

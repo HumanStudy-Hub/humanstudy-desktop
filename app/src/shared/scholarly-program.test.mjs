@@ -39,6 +39,20 @@ test('an experiment request specifies scope, material questions, separate varian
  const prompt=S.prepareExperimentPrompt({id:'e1',title:'Experiment 1'})
  for(const phrase of ['e1','only this experiment','ask me a specific','separate modified version','approve the simulation scope and cost'])assert.ok(prompt.includes(phrase),phrase)
 })
+test('each study needs a human result or explicit gap, including blocked studies', () => {
+ const p = structuredClone(program)
+ const q = structuredClone(protocol)
+ const result = p.nodes.find(n => n.kind === 'result')
+ const [first, second] = p.studies.map(s => s.id)
+ q.analysis.blocked_arm_targets = [{ id: 'blocked-comparison' }]
+ result.extensions.effectRefs = ['blocked-comparison']
+ assert.deepEqual(S.scholarlyProblems(p, q, hash(raw)), [])
+ result.fields[0].studyIds = [first]
+ assert.match(S.scholarlyProblems(p, q, hash(raw)).join('\n'), new RegExp(`${second}: include an original human result`))
+ result.fields[0].studyIds.push(second)
+ result.fields[0].origin = 'implementation'
+ assert.match(S.scholarlyProblems(p, q, hash(raw)).join('\n'), /include an original human result/)
+})
 test('paired delivery requires both program and a current preview; legacy imports stay readable',()=>{
  const project=join(dir,'project');mkdirSync(join(project,'artifacts'),{recursive:true})
  assert.deepEqual(D.scholarlyDeliveryProblems(project,raw),[])
