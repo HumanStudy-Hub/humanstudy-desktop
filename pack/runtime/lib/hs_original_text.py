@@ -40,7 +40,7 @@ DOWNLOAD_DEADLINE = 90                # seconds one download may take in all (a 
 DOWNLOADS_BUDGET = 150                # seconds all downloads of one check may take (the app stops the helper at 300)
 RETRY_AFTER = 10 * 60                 # a failed download is not tried again for this long (seconds)
 MAX_CANDIDATES = 12                   # project files tried per source
-EXTENSIONS = {"pdf": (".pdf",), "html": (".html", ".htm", ".xhtml"), "text": (".txt", ".text", ".md"),
+EXTENSIONS = {"pdf": (".pdf",), "html": (".html", ".htm", ".xhtml"), "text": (".txt", ".text", ".md", ".rmd", ".r"),
               "docx": (".docx",), "qsf": (".qsf", ".json")}
 OK = ("ok",)   # a held picture (or a region rendered as one) is not supported yet: it stays unresolved
 

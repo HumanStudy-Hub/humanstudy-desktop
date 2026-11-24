@@ -379,5 +379,17 @@ class Runtime(unittest.TestCase):
         self.assertTrue(D.PDF_EXTRACTOR_FAMILY.startswith("pypdfium2/"))
 
 
+class TextExtensionsTest(unittest.TestCase):
+    def test_text_sources_include_r_scripts_and_markdown(self):
+        # A Library source of format "text" may be an R script or R Markdown file the researcher saved.
+        with tempfile.TemporaryDirectory() as tmp:
+            files = [Path(tmp) / n for n in ("analysis.Rmd", "clean.R", "data.csv", "paper.pdf", "notes.txt")]
+            for f in files:
+                f.write_bytes(b"x")
+            picked = O.candidates_for("text", files, "rmd", None)
+            # R files are tried like any text file; data files are not text sources.
+            self.assertEqual({f.name for f in picked}, {"notes.txt", "analysis.Rmd", "clean.R"})
+
+
 if __name__ == "__main__":
     unittest.main()
