@@ -669,9 +669,10 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     // The native turn is still running and only waits for this reply, so delivering it late is the "continue":
     // keep resending with backoff (about two minutes in all) instead of stopping the turn after one retry.
     const server = s.server
-    // Only the turn that asked: not after Stop, dispose, server exit, or a reopened session under the same id.
+    const epoch = s.recovery.epoch
+    // Only the turn that asked: not after Stop, dispose, server exit, a new turn, or a reopened session.
     const live = () => !this.disposed && this.sessions.get(sessionId) === s && s.server === server && !server.exited &&
-      s.inFlight && !s.stopping && this.permissionMode() !== 'ask'
+      s.recovery.epoch === epoch && s.inFlight && !s.stopping && this.permissionMode() !== 'ask'
     for (let attempt = 0; ; attempt++) {
       try {
         // A reject still being resent keeps opencode's cascade rejects attributed to it.
@@ -683,6 +684,8 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
         const wait = this.autoReplyRetryMs[attempt]
         if (alreadyResolved(error) || this.permissionMode() === 'ask' || wait === undefined) throw error
         await sleep(wait)
+        // A Stop in progress decides first: if its native abort fails, the turn still waits for this reply.
+        for (let i = 0; s.stopping && !this.disposed && i < 150; i++) await sleep(200)
         if (!live()) throw error
         // Answered meanwhile (opencode's own cascade or an event): nothing left to deliver.
         if (!s.pendingPermissions.has(id)) return
@@ -726,10 +729,14 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     const decision = hitLimit ? { ...perm, type: 'auto_reject_limit' } : perm
     if (stop) { s.recovery.cancelled = true; s.recovery.pending = false }
     s.lastAutoReject = this.clock()
+    const epoch = s.recovery.epoch
+    const mine = () => this.sessions.get(sessionId) === s && s.recovery.epoch === epoch
     this.replyAutomatically(sessionId, s, perm.id, 'reject', stop ? undefined : autoRejectMessage(perm)).then(() => {
+      if (!mine()) return
       s.pendingPermissions.delete(perm.id)
       if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...decision, automatic: true, resolved: 'reject' } })
     }, (error) => {
+      if (!mine()) return
       // Already answered: opencode's cascade from our other reject (two disallowed calls in parallel)
       // ended the loop with a plain reject. Nothing to show; resume like any cascade.
       if (alreadyResolved(error)) { s.pendingPermissions.delete(perm.id); if (this.inCascadeWindow(s)) this.resumeAfterCascade(s); return }
@@ -743,10 +750,14 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     s.recovery.autoRejects = 0
     // One call only: an Auto approval must not become a permanent native permission
     // grant that would silently survive switching Auto off.
+    const epoch = s.recovery.epoch
+    const mine = () => this.sessions.get(sessionId) === s && s.recovery.epoch === epoch
     this.replyAutomatically(sessionId, s, perm.id, 'once').then(() => {
+      if (!mine()) return
       s.pendingPermissions.delete(perm.id)
       if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'once' } })
     }, (error) => {
+      if (!mine()) return
       if (alreadyResolved(error)) { s.pendingPermissions.delete(perm.id); return }
       return this.automaticReplyFailed(sessionId, s, perm)
     }).finally(() => this.autoReplies.delete(perm.id))
@@ -1043,17 +1054,20 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
           try { await this.restoreSnapshot(server); failures = 0 }
           catch {
             if (++failures >= 5) {
+              let spared = false
               for (const [sessionId, s] of this.sessions) {
                 if (s.server !== server || !s.inFlight) continue
-                // An automatic reply still being resent owns this turn's ending (it stops it if every resend fails).
-                if ([...s.pendingPermissions.keys()].some(id => this.autoReplies.has(id))) continue
+                // An automatic reply still being resent owns this turn's ending (it stops it if every resend fails);
+                // keep catching up for it so its completion is seen even while events are down.
+                if ([...s.pendingPermissions.keys()].some(id => this.autoReplies.has(id))) { spared = true; continue }
                 s.recovery.cancelled = true
                 s.recovery.pending = false
                 s.inFlight = false
                 this.emitter.emit({ sessionId, type: 'error', text: 'The connection could not be restored. Received messages and saved files are kept. The study may still be running; reopen this conversation to check its state before sending the task again.' })
                 this.emitter.emit({ sessionId, type: 'done' })
               }
-              break
+              if (!spared) break
+              failures = 4
             }
           }
           if ([...this.sessions.values()].some(s => s.server === server && s.inFlight)) await sleep(this.reconnectIntervalMs)
