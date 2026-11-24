@@ -100,7 +100,7 @@ def reask_unreadable(f):
     return wrapped
 
 
-SIM_MAX_TOKENS = 1536
+SIM_MAX_TOKENS = 4096   # the most the macOS relay accepts per call (model-relay MAX_OUTPUT_TOKENS)
 
 
 def relay_complete(temperature: float):
@@ -108,7 +108,7 @@ def relay_complete(temperature: float):
     from humanstudy_llm import chat
 
     def complete(messages):
-        # 512 (the library default) is too small for a participant page reply: models that think first end with
+        # 512 (the library default) and 1536 were too small for a participant page reply: models that think first end with
         # finish_reason=length and no text, and the participant is lost. Unused tokens are not charged.
         return chat(messages, temperature=temperature, max_tokens=SIM_MAX_TOKENS)
     return complete
