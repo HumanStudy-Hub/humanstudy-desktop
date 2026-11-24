@@ -187,6 +187,8 @@ export class OpencodeKernel implements Kernel {
   private live = new Set<Server>()
   private sessions = new Map<string, SessionState>()
   private disposed = false
+  /** Pauses between resends of an automatic permission reply (project mode); tests shorten it. */
+  autoReplyRetryMs: number[] = [1000, 2000, 4000, 8000, 15000, 30000, 60000]
   private catchingUp = new Set<Server>()
   private syncLoops = new Set<Server>()
   private reconnectIntervalMs = 1000
@@ -664,13 +666,18 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     s.recovery.reason = 'declined_tool_call'; s.recovery.pending = true
   }
   private async replyAutomatically(sessionId: string, s: SessionState, id: string, reply: PermissionReply, message?: string): Promise<void> {
-    try {
-      await this.replyTo(s.server, sessionId, id, reply, message)
-    } catch (error) {
-      if (alreadyResolved(error) || this.permissionMode() === 'ask') throw error
-      await sleep(1000)
-      if (this.disposed || !s.inFlight || s.stopping || !s.pendingPermissions.has(id) || this.permissionMode() === 'ask') throw error
-      await this.replyTo(s.server, sessionId, id, reply, message)
+    // The native turn is still running and only waits for this reply, so delivering it late is the "continue":
+    // keep resending with backoff (about two minutes in all) instead of stopping the turn after one retry.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.replyTo(s.server, sessionId, id, reply, message)
+        return
+      } catch (error) {
+        const wait = this.autoReplyRetryMs[attempt]
+        if (alreadyResolved(error) || this.permissionMode() === 'ask' || wait === undefined) throw error
+        await sleep(wait)
+        if (this.disposed || !s.inFlight || s.stopping || !s.pendingPermissions.has(id) || this.permissionMode() === 'ask') throw error
+      }
     }
   }
 
