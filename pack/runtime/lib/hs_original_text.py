@@ -401,6 +401,8 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
         got = read_file(cache / "downloads" / sha256(d["url"].encode("utf-8")))
         if got is None or (isinstance(d.get("sha256"), str) and sha256(got) == d["sha256"]):
             continue
+        if key in (report.get("approx_cut") or []):
+            continue   # the approximate pass ran out of time before judging it: kept for the next check
         if key not in from_download and not any(
                 isinstance(e, dict) and e.get("source") == key and (report["items"].get(h) or {}).get("from") == "download"
                 for h, e in held.items()):
@@ -509,6 +511,9 @@ def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path,
     if want:
         A = _approx_module()
         deadline = min(time.monotonic() + APPROX_BUDGET, STARTED + APPROX_LATEST)
+        # sources the approximate pass did not finish (out of time): their download is not judged (see restore)
+        cut = report.setdefault("approx_cut", [])
+        cut.extend(sorted(want))
         for key, hs in sorted(want.items()):
             if time.monotonic() > deadline:
                 break   # what is left goes to the fills file (applied below) or stays unresolved
@@ -529,6 +534,8 @@ def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path,
                     best = (path, found)
                 if best and len(best[1]) == len(hs):
                     break
+            if time.monotonic() <= deadline:
+                cut.remove(key)
             if best is None:
                 continue
             for h, (text, score) in best[1].items():

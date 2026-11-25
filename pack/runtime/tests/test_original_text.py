@@ -434,6 +434,22 @@ class ApproxAndFills(Published):
         self.assertTrue((self.cache / "downloads" / (key + ".failed")).exists())
 
     @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
+    def test_a_download_the_approx_pass_had_no_time_for_is_kept(self):
+        server = Server({"/leaflet.pdf": (FIX / "leaflet.pdf").read_bytes()})
+        self.addCleanup(server.close)
+        self.addCleanup(setattr, O, "APPROX_BUDGET", O.APPROX_BUDGET)
+        O.APPROX_BUDGET = -1
+        p = json.loads(self.projection.read_text(encoding="utf-8"))
+        self.ocr_corrected(p["distribution"]["held"])
+        url = server.url + "/leaflet.pdf"
+        p["meta"]["sources"]["leaflet"]["distribution"].update(tier="link", url=url, sha256="0" * 64)
+        path = self.tmp / "slow.json"
+        path.write_text(json.dumps(p, ensure_ascii=False), encoding="utf-8")
+        st = self.run_fills(path, files=[self.drop("booklet.html")])
+        self.assertFalse(st["complete"])
+        self.assertTrue((self.cache / "downloads" / O.sha256(url.encode("utf-8"))).exists(), "kept for the next check")
+
+    @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
     def test_approx_is_not_placed_from_a_pdf_without_the_passage(self):
         other = (FIX / "leaflet.pdf").read_bytes()   # a fingerprint of a passage the PDF does not hold
         path = self.variant(lambda held: (self.ocr_corrected(held), held["h2"].update(
