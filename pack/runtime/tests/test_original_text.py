@@ -378,6 +378,20 @@ class ApproxAndFills(Published):
         self.assertTrue(st["complete"], st)
         self.assertEqual(st["labels"], {"h2": "approx"})
 
+    def test_a_stale_download_is_not_kept_because_a_local_copy_matched(self):
+        stale = Server({"/booklet.html": b"<html><body><p>An unrelated page.</p></body></html>"})
+        self.addCleanup(stale.close)
+        p = json.loads(self.projection.read_text(encoding="utf-8"))
+        url = stale.url + "/booklet.html"
+        p["meta"]["sources"]["booklet"]["distribution"].update(tier="link", url=url)
+        path = self.tmp / "stale.json"
+        path.write_text(json.dumps(p, ensure_ascii=False), encoding="utf-8")
+        partial = (FIX / "booklet.html").read_bytes().replace(b"this morning", b"this evening")
+        st = self.run_fills(path, files=[self.drop("booklet.html", partial)])
+        self.assertEqual(self.by_key(st)["booklet"]["restored"], 1, "the local copy restored one of two")
+        key = O.sha256(url.encode("utf-8"))
+        self.assertFalse((self.cache / "downloads" / key).exists(), "the stale download is asked for again later")
+
     @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
     def test_a_cold_download_that_gives_nothing_is_not_kept(self):
         other = Server({"/leaflet.pdf": (FIX / "leaflet.pdf").read_bytes()})
@@ -602,6 +616,9 @@ class ApproxMatcher(unittest.TestCase):
         fp = A.fingerprint(t, [1], salt="ab")
         got = A.locate(["Header line. not move. Do not move. Stay calm. Footer words here."], fp)
         self.assertTrue(got is None or got[0].startswith("Do not"), got)
+        t = "Do not move. Do not move. Do not move."
+        got = A.locate(["Header line here. Do not move. Do not move. Footer words follow here."], A.fingerprint(t, [1], salt="ab"))
+        self.assertIsNone(got, "two of three repetitions are not the passage")
 
 
 class HeldPictures(Published):
@@ -655,6 +672,19 @@ class HeldPictures(Published):
         self.assertTrue(st["complete"], st)
         self.assertEqual(st["labels"], {"h9": "user"})
         self.assertEqual(st["supplied"]["user"], 1)
+
+    def test_a_deleted_or_replaced_picture_restores_again(self):
+        (self.files / "fig.png").write_bytes(self.PNG)
+        path = self.picture_study()
+        st = self.run_pic(path, {"file": "project/sources/private/fig.png", "origin": "user"})
+        self.assertTrue(st["complete"] and st["labels"] == {})
+        (self.files / "fig.png").write_bytes(b"\x89PNG\r\n\x1a\nanother picture")
+        st = self.run_pic(path, {"file": "project/sources/private/fig.png", "origin": "user"})
+        self.assertFalse(st.get("cached"))
+        self.assertEqual(st["labels"], {"h9": "user"})
+        (self.files / "fig.png").unlink()
+        st = self.run_pic(path, {"file": "project/sources/private/fig.png", "origin": "user"})
+        self.assertFalse(st["complete"])
 
     def test_bad_picture_files_are_refused(self):
         outside = Path(tempfile.mkdtemp())

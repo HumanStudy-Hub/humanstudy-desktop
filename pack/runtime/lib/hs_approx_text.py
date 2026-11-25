@@ -193,11 +193,14 @@ def _ends(ws: list, fp: dict, place: tuple[int, int], score: float) -> bool:
     """The window begins with the passage's first trigram and ends with its last (`ends`), whatever its score: a
     match that holds every distinct trigram can still be clipped where the passage repeats itself ("Do not move. Do
     not move."), and a lesser one could miss words at an edge (a "Do not" at the foot of the page before). Otherwise
-    the item is left to the researcher. A fingerprint without `ends` is never placed."""
+    the item is left to the researcher. Nor is a window with fewer words than the passage. A fingerprint without
+    `ends` is never placed."""
     ends = fp.get("ends")
     if not (isinstance(ends, list) and len(ends) == 2 and all(isinstance(e, str) for e in ends)):
         return False
     x, k = place
+    if k < int(fp["words"]):
+        return False   # fewer words than the passage: something is missing (a repeated passage can keep every trigram)
     w = [t for t, _, _ in ws[x:x + k]]
     return len(w) >= 3 and _gram(fp["salt"], w, 0) == ends[0] and _gram(fp["salt"], w, len(w) - 3) == ends[1]
 

@@ -373,12 +373,29 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
                 break
         if best is not None:
             chosen[key], supplied[key] = best
+    # which sources the download alone restored something of (it is kept for those; see below)
+    from_download = {e.get("source") for h, e in held.items() if isinstance(e, dict) and e.get("kind") != "image"
+                     and (report["items"].get(h) or {}).get("status") == "ok"}
     if supplied:
+        first_out, first = out, report
         out, report = D.rehydrate(projection, fetch=fetch, files=supplied, extractors=extractors)
+        # an item the download verified and the chosen copy does not keeps the download's verified text
+        for h, e in held.items():
+            r1, r2 = first["items"].get(h) or {}, report["items"].get(h) or {}
+            if isinstance(e, dict) and e.get("kind") != "image" and r1.get("status") == "ok" and r2.get("status") != "ok":
+                try:
+                    cur, text = D._get(out, e["path"]), D._get(first_out, e["path"])
+                except (KeyError, IndexError, ValueError, TypeError):
+                    continue
+                if isinstance(cur, str) and set(cur) == {D.PLACEHOLDER} and isinstance(text, str) \
+                        and D.text_sha256(text) == e.get("text_sha256"):
+                    D._set(out, e["path"], text)
+                    report["items"][h] = r1
     fill_in(projection, out, report, fills or {}, cache, files, chosen, supplied, extractors, fetch)
-    # every link download this restore used that restored nothing from the source in either pass (also one only the
-    # approximate pass fetched) is not kept, unless it is the very file the study was built from; an item filled
-    # from the fills file says nothing about the download
+    # every link download this restore used that restored nothing in either pass (also one only the approximate pass
+    # fetched) is not kept, unless it is the very file the study was built from. Only what the download itself
+    # restored counts: an exact match in the download-only pass, or an approximate one placed from the download (a
+    # project copy or a fill says nothing about it)
     for key in sources_of(projection):
         d = distribution_of(projection, key)
         if d.get("tier") != "link" or not isinstance(d.get("url"), str) or d["url"] not in touched:
@@ -386,8 +403,9 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
         got = read_file(cache / "downloads" / sha256(d["url"].encode("utf-8")))
         if got is None or (isinstance(d.get("sha256"), str) and sha256(got) == d["sha256"]):
             continue
-        if not any(isinstance(e, dict) and e.get("source") == key and (report["items"].get(h) or {}).get("via") != "fill"
-                   and (report["items"].get(h) or {}).get("status") in ("ok", "approx") for h, e in held.items()):
+        if key not in from_download and not any(
+                isinstance(e, dict) and e.get("source") == key and (report["items"].get(h) or {}).get("from") == "download"
+                for h, e in held.items()):
             forget_download(cache, d["url"], RESTORED_NONE)
     complete = all(restored_ok(e, report["items"].get(h)) for h, e in held.items())
     report["complete"] = complete
@@ -511,7 +529,7 @@ def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path,
                 continue
             for h, (text, score) in best[1].items():
                 if _put(out, held[h], text):
-                    mark(h, held[h], "approx", score=score)
+                    mark(h, held[h], "approx", score=score, **({"from": "download"} if best[0] is None else {}))
             if best[0] is not None and key not in chosen:
                 chosen[key] = best[0]
     # 3. the fills file: what the researcher supplied, or what the assistant reconstructed with them
@@ -878,6 +896,12 @@ def restore_slot(version: str, project_key: str | None) -> str:
     return sha256(("%s\n%s" % (version, project_key)).encode("utf-8")) if project_key else version
 
 
+def pictures_stamp(fills: dict) -> str:
+    """The pictures the fills file puts in place, by path and content (a picture deleted or replaced, even the
+    exact one, makes the restore run again)."""
+    return sha256(json.dumps(sorted((h, f["file"], f["sha256"]) for h, f in fills.items() if "file" in f)).encode("utf-8"))
+
+
 def files_stamp(files: list[Path]) -> str:
     """Which source files the project had (path, size, modification time): a restore with labels is redone when
     they change."""
@@ -944,7 +968,8 @@ def main(argv: list[str]) -> int:
         # copy added since may now give the exact wording)
         if st.get("complete") and st.get("restoredSha256") == sha256(done.read_bytes()) \
                 and st.get("fillsSha256") == fills_sha and st.get("version") == STATUS_VERSION \
-                and (not st.get("labels") or st.get("filesStamp") == files_stamp(files)):
+                and (not st.get("labels") or st.get("filesStamp") == files_stamp(files)) \
+                and st.get("picturesStamp") == pictures_stamp(fills):
             cached = st
     # The index first, before any download: a copy the researcher just dropped is recognised by research capture
     # from now on, whatever the agent does with it while the downloads run.
@@ -969,6 +994,7 @@ def main(argv: list[str]) -> int:
     st["slot"] = slot
     st["fillsSha256"] = fills_sha
     st["filesStamp"] = files_stamp(files)
+    st["picturesStamp"] = pictures_stamp(fills)
     here.mkdir(parents=True, exist_ok=True)
     if restored is not None:
         # written as bytes: the sha256 recorded below is of exactly these bytes (a text-mode write would turn \n into
