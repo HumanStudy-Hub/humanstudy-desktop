@@ -134,6 +134,33 @@ function releasedStrings(o: unknown, out: string[] = [], top = true): string[] {
   return out
 }
 
+const canonical = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x)
+  ? Object.fromEntries(Object.entries(x as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1))) : x))
+
+/** Every object carrying a verbatim cite read from a page image (`cite` or `*_cite` with read: "image"), canonical. */
+function imageReadTexts(o: unknown, out: string[] = []): string[] {
+  if (Array.isArray(o)) for (const v of o) imageReadTexts(v, out)
+  else if (o && typeof o === 'object') {
+    const d = o as Record<string, unknown>
+    if (Object.entries(d).some(([k, c]) => (k === 'cite' || k.endsWith('_cite')) && c && typeof c === 'object'
+      && (c as Record<string, unknown>).label === 'verbatim' && (c as Record<string, unknown>).read === 'image')) out.push(canonical(d))
+    for (const [k, v] of Object.entries(d)) if (k !== 'distribution') imageReadTexts(v, out)
+  }
+  return out
+}
+
+/** In public mode the engine leaves a text read from a page image without shipped readings to Bench's private
+ *  check, so it cannot see a change made on this computer: such a text (with its cite) must be exactly as received. */
+async function editedImageReadings(project: string): Promise<ProtocolProblem[]> {
+  const received = await receivedProtocol(project).catch(() => null)
+  if (!received || typeof received !== 'object') return []
+  let now: unknown
+  try { now = JSON.parse(await readFile(join(project, 'protocol.json'), 'utf8')) } catch { return [] }
+  const shipped = new Set(imageReadTexts(received))
+  const changed = imageReadTexts(now).filter((x) => !shipped.has(x)).length
+  return changed ? [{ check: 'verbatim', reason: `${changed} text(s) read from a page image of the paper were changed on this computer, so they can no longer be checked against the paper. Put back the wording as published, or keep the change as a separate, labelled variant.` }] : []
+}
+
 /** For a published protocol.json: per held source, the text its served strings must be found in, by the engine's own
  *  verbatim rule (checks.py check_verbatim), as a `--source-text` file. Before the wording is filled in that text is
  *  one run of placeholders as long as the longest held text: every held placeholder is found in it, and any other
@@ -317,7 +344,8 @@ export async function protocolReadiness(python: string | null, engine: [string, 
         [work, await realpath(project), '--sessions', String(PROTOCOL_SESSIONS), ...await publicMode(project), ...await sourceTextArgs(project), ...held], home, bin, timeout, limits)
       if (run.limit) return [ENGINE_LIMIT]
       if (/\bMemoryError\b/.test(run.stderr) && !run.stdout.includes('{')) return [ENGINE_LIMIT]
-      return protocolOutcome(run.stdout, run.stderr)
+      const found = protocolOutcome(run.stdout, run.stderr)
+      return (await publicMode(project)).length ? [...found, ...await editedImageReadings(project)] : found
     })
   } catch { return [ENGINE_FAILED] }
 }

@@ -140,6 +140,24 @@ test('engine checks: wording a release cites verbatim from a held source outside
   } finally { R.configureReceivedProtocol(async () => null) }
 })
 
+test('engine checks: a published study\'s image-read text changed on this computer blocks', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.intro.content.push({ id: 'scan', value: 'Walk at your own pace.', cite: { label: 'verbatim', source: 'booklet', page: 1, read: 'image' } })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+    p.stages.intro.content.at(-1).value = 'Walk as fast as you can.'
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    const problems = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.deepEqual(problems.map((x) => x.check), ['verbatim'])
+    assert.match(problems[0].reason, /read from a page image of the paper were changed on this computer/)
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
 test('held source texts: placeholders before, the restored texts after; a project sourcetext file wins', async () => {
   const { proj, close } = await publishedProject()
   close()
