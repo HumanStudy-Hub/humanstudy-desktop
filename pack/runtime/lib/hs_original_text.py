@@ -517,10 +517,13 @@ def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path,
         for key, hs in sorted(want.items()):
             if time.monotonic() > deadline:
                 break   # what is left goes to the fills file (applied below) or stays unresolved
-            best = None
+            # every copy adds the passages it places that no earlier (better) copy placed
+            placed: dict = {}   # held id -> (text, score, path)
             for path, pages in approx_pages(key, projection, cache, files, chosen, supplied, extractors, fetch, deadline):
                 found = {}
                 for h in hs:
+                    if h in placed:
+                        continue
                     if time.monotonic() > deadline:
                         break
                     try:
@@ -530,19 +533,17 @@ def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path,
                     if got and got[0].strip() and D.PLACEHOLDER not in got[0] \
                             and not too_long(got[0], held[h].get("length")):
                         found[h] = got
-                if found and (best is None or len(found) > len(best[1])):
-                    best = (path, found)
-                if best and len(best[1]) == len(hs):
+                for h, got in found.items():
+                    placed[h] = (got[0], got[1], path)
+                if len(placed) == len(hs):
                     break
             if time.monotonic() <= deadline:
                 cut.remove(key)
-            if best is None:
-                continue
-            for h, (text, score) in best[1].items():
+            for h, (text, score, path) in placed.items():
                 if _put(out, held[h], text):
-                    mark(h, held[h], "approx", score=score, **({"from": "download"} if best[0] is None else {}))
-            if best[0] is not None and key not in chosen:
-                chosen[key] = best[0]
+                    mark(h, held[h], "approx", score=score, **({"from": "download"} if path is None else {}))
+                    if path is not None and key not in chosen:
+                        chosen[key] = path
     # 3. the fills file: what the researcher supplied, or what the assistant reconstructed with them
     for h in todo():
         f = fills.get(h)
@@ -980,7 +981,7 @@ def main(argv: list[str]) -> int:
         if st.get("complete") and st.get("restoredSha256") == sha256(done.read_bytes()) \
                 and st.get("fillsSha256") == fills_sha and st.get("version") == STATUS_VERSION \
                 and (not st.get("labels") or st.get("filesStamp") == files_stamp(files)) \
-                and st.get("picturesStamp") == pictures_stamp(fills):
+                and st.get("picturesStamp") == pictures_stamp(fills) and not st.get("approxCut"):
             cached = st
     # The index first, before any download: a copy the researcher just dropped is recognised by research capture
     # from now on, whatever the agent does with it while the downloads run.
@@ -1006,6 +1007,7 @@ def main(argv: list[str]) -> int:
     st["fillsSha256"] = fills_sha
     st["filesStamp"] = files_stamp(files)
     st["picturesStamp"] = pictures_stamp(fills)
+    st["approxCut"] = sorted(report.get("approx_cut") or [])   # out of time: the next check tries again
     here.mkdir(parents=True, exist_ok=True)
     if restored is not None:
         # written as bytes: the sha256 recorded below is of exactly these bytes (a text-mode write would turn \n into

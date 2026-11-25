@@ -392,6 +392,35 @@ class ApproxAndFills(Published):
         self.assertEqual(st["labels"], {"h2": "user"})
         self.assertEqual(calls, [], "out of time: no PDF is read or extracted for the approximate pass")
 
+    def test_complementary_pdfs_each_place_their_passage(self):
+        q0, q1 = TEXTS["/stages/q/responses/0/prompt"], TEXTS["/stages/q/responses/1/prompt"]
+
+        def edit(held):
+            for h, t in (("h3", q0), ("h4", q1)):
+                held[h]["text_sha256"] = "0" * 64
+                held[h]["approx"] = A.fingerprint(t, [1], salt="5a1t")
+        real = O.approx_pages
+        self.addCleanup(setattr, O, "approx_pages", real)
+        O.approx_pages = lambda *a, **k: iter([(self.files / "one.pdf", ["Survey page. " + q0 + " End of page."]),
+                                               (self.files / "two.pdf", ["Survey page. " + q1 + " End of page."])])
+        st = self.run_fills(self.variant(edit), files=[self.drop("leaflet.pdf")])
+        self.assertTrue(st["complete"], st)
+        self.assertEqual(st["labels"], {"h3": "approx", "h4": "approx"})
+
+    def test_a_restore_cut_short_is_not_reused(self):
+        self.addCleanup(setattr, O, "APPROX_BUDGET", O.APPROX_BUDGET)
+        O.APPROX_BUDGET = -1
+        p = json.loads(self.projection.read_text(encoding="utf-8"))
+        self.ocr_corrected(p["distribution"]["held"])
+        path = self.tmp / "cut.json"
+        path.write_text(json.dumps(p, ensure_ascii=False), encoding="utf-8")
+        f = self.fills({"h2": {"text": "Drink some water first.", "origin": "user"}})
+        st = self.run_fills(path, files=[self.drop("booklet.html")], fills=f)
+        self.assertTrue(st["complete"])
+        self.assertEqual(st["approxCut"], ["leaflet"])
+        again = self.run_fills(path, files=[self.drop("booklet.html")], fills=f)
+        self.assertFalse(again.get("cached"), "the approximate pass gets another chance")
+
     def test_two_partial_copies_together_restore_a_source(self):
         good = (FIX / "booklet.html").read_bytes()
         a = self.drop("booklet-a.html", good.replace(b"neighbour", b"friend"))     # verifies h3 only
