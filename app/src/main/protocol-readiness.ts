@@ -272,6 +272,15 @@ async function requiredEngine(project: string, engine: [string, string][]): Prom
   }
 }
 
+/** A published study (protocol.json holds back wording: `distribution.held`) is checked as Bench released it,
+ *  `checks --public`: the blind readings and source texts of sources that may not be redistributed were never
+ *  shipped, so a text read from a page image of such a source is "checked privately" (by Bench) instead of
+ *  unconfirmed, and so is a cite whose source text is not here. Held texts are still checked against their own
+ *  placeholders or restored wording, and the researcher's own projects keep the strict check. */
+export async function publicMode(project: string): Promise<string[]> {
+  return (await heldSources(project)).size > 0 ? ['--public'] : []
+}
+
 export async function protocolReadiness(python: string | null, engine: [string, string][], project: string, bin: string,
   timeout = PROTOCOL_TIMEOUT_MS, limits: Limits = {}): Promise<ProtocolProblem[]> {
   if (!python) return [ENGINE_MISSING]
@@ -287,7 +296,7 @@ export async function protocolReadiness(python: string | null, engine: [string, 
         held.push('--source-text', `${name}=${file}`)
       }
       const run = await confinedPython(python, runner(limits.cpuSeconds, limits.memoryBytes),
-        [work, await realpath(project), '--sessions', String(PROTOCOL_SESSIONS), ...await sourceTextArgs(project), ...held], home, bin, timeout, limits)
+        [work, await realpath(project), '--sessions', String(PROTOCOL_SESSIONS), ...await publicMode(project), ...await sourceTextArgs(project), ...held], home, bin, timeout, limits)
       if (run.limit) return [ENGINE_LIMIT]
       if (/\bMemoryError\b/.test(run.stderr) && !run.stdout.includes('{')) return [ENGINE_LIMIT]
       return protocolOutcome(run.stdout, run.stderr)
@@ -317,7 +326,7 @@ export async function restoredReadiness(python: string | null, engine: [string, 
     }
     return await withScratch(engine, async (work, home) => {
       const run = await confinedPython(python, runner(limits.cpuSeconds, limits.memoryBytes),
-        [work, dir, '--sessions', String(PROTOCOL_SESSIONS), ...await sourceTextArgs(project), ...held], home, bin, timeout, limits)
+        [work, dir, '--sessions', String(PROTOCOL_SESSIONS), ...await publicMode(project), ...await sourceTextArgs(project), ...held], home, bin, timeout, limits)
       if (run.limit) return [ENGINE_LIMIT]
       // Check names only (the details can quote the restored wording); the app words the problem itself.
       return [...new Set(protocolOutcome(run.stdout, run.stderr).map((p) => p.check))].map((check) => ({ check, reason: check }))

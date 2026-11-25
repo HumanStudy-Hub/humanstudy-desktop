@@ -354,6 +354,10 @@ computer:
   the runtime has (pinned in requirements.lock via pdfplumber); without it PDF sources say so and text, HTML,
   docx and QSF sources still work. Held pictures (and regions rendered as pictures) are not supported yet: such a
   study stays unresolved with need `picture`.
+- **Checked as released.** A published study (non-empty `distribution.held`) and its restored copy are checked with
+  `checks --public`, as Bench checks a release: a text read from a page image of a source whose blind readings were
+  not shipped (and a cite whose source text is not here) is checked privately by Bench, not unconfirmed. Held texts
+  are still checked against their placeholders or restored wording; the researcher's own projects stay strict.
 - **Approximate and supplied (three tiers).** After the exact pass, an item that failed it but carries an `approx`
   fingerprint (written by Bench `scripts/research/approx_text.py`, a copy of `pack/runtime/lib/hs_approx_text.py`)
   is located in the researcher's own PDF of that source (status `approx`, with its score). Then the project's fills
