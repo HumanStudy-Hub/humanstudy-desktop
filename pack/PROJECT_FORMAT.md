@@ -55,8 +55,9 @@ shows the whole folder as the **Program** explorer and a current protocol-bound 
   .opencode/hsenv/          the protocol engine (engine, expr, checks, effects_core; VERSION holds the SHA-256 of
                             each file), installed by the app and kept at the shipped version
   .humanstudy/              app state; the agent does not edit it. original-text.json: for a published study, how
-                            much of its held-back wording the app filled in on this computer and what each source
-                            still needs (counts and titles only, never the wording)
+                            much of its held-back wording the app filled in on this computer (exact, approximate,
+                            supplied), what each source still needs and which items are unresolved (counts, ids
+                            and titles only, never the wording)
 ```
 
 Published studies: a protocol.json published through HumanStudy Hub may carry a top-level `distribution` block
@@ -66,8 +67,14 @@ SHA-256 of the exact text. The app restores it on the researcher's computer (pac
 via `hsenv.rehydrate`): link sources are downloaded from their URL, the rest come from files in `sources/private/`,
 `paper.pdf` or `sources/`, and each item is accepted only when its text hashes to the recorded value. Downloads
 and the restored protocol stay in app storage (`<userData>/original-text/<sha256 of protocol.json>/`), never in
-the project. Such a study previews with "[text not available]" in place of missing wording and runs only when
-every item is restored; the run plays the restored copy and keeps no screens in its records.
+the project. When an item fails that check but carries an `approx` fingerprint, it is located in the researcher's
+own PDF copy instead (labelled approximate: may contain reading errors). An item no file fills in can be supplied in
+`sources/private/original-text-fills.json` (`{"<held id>": {"text", "origin": "user" | "reconstructed", "note"}}`;
+for a held picture `{"file": "<image in the project>", "origin": "user"}`,
+written by the assistant with the researcher; never exported or published), applied only when the exact and the
+approximate text both fail. Such a study previews with "[text not available]" in place of missing wording and runs
+only when every item is restored (exact, approximate or supplied); the run plays the restored copy, says how many
+items were not exact, and keeps no screens in its records.
 
 Runnable forms: the app checks both forms itself, from its own copy of the checkers, never the project's, and
 keeps the two results apart. `package/<slug>/` runs when it passes the package contract and the build checks.

@@ -46,7 +46,7 @@ import { confirmedLibrarySha, heldTextsOf, passedProtocolSha, selectedResults, s
 import { legacyFileIsolationAvailable, scientificReadiness } from './scientific-readiness'
 import { onRuntimeProgress, readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf, protocolProblems } from './package-readiness'
-import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, restoredRunFiles, writeAgentStatus } from './original-text'
+import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, restoredRunFiles, restoreSlot, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
 import { protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
@@ -547,13 +547,14 @@ app.whenReady().then(() => {
       const problems = originalTextProblems(status)
       if (problems.length || !status.complete || !status.projectionSha256) return problems
       // The engine's checks once on the restored copy (leaks, expressions, verbatim), in app storage, per copy.
-      const restored = await restoredProtocolText(originalTextCache(), status.projectionSha256)
+      const slot = status.slot ?? await restoreSlot(project, status.projectionSha256)
+      const restored = await restoredProtocolText(originalTextCache(), status.projectionSha256, slot)
       if (restored === null) return [{ check: 'runtime', reason: "The study's original wording could not be filled in. Retry." }]
       // Keyed by the restored copy and the project's source texts; only a completed report is kept (a runtime
       // failure or a time/memory stop is checked again next time).
       const key = createHash('sha256').update(restored).update(await sourceTextStamp(project)).digest('hex')
       if (!restoredChecks.has(key)) {
-        const found = await restoredReadiness(python, engine, project, restored, join(originalTextCache(), status.projectionSha256), process.env.HUMANSTUDY_RUNTIME_BIN || '')
+        const found = await restoredReadiness(python, engine, project, restored, join(originalTextCache(), slot), process.env.HUMANSTUDY_RUNTIME_BIN || '')
         if (found.some((p) => p.check === 'runtime' || p.check === 'limits')) return found.map((p) => ({ check: 'runtime', reason: "The study's checks with its original wording filled in could not complete. Retry." }))
         restoredChecks.set(key, found.length ? [restoredChecksProblem(studyTitle(restored))] : [])
       }
@@ -890,7 +891,8 @@ app.whenReady().then(() => {
     if (await isPublishedStudy(d).catch(() => false)) {
       // Validated is confirmed against the library catalog, never taken from the project's own files.
       runtime.libraryValidated = await confirmedLibrarySha(d, communityStudies, (entry) => isValidatedProtocol(entry))
-      const restored = await restoredProtocolText(originalTextCache(), createHash('sha256').update(raw).digest('hex'))
+      const version = createHash('sha256').update(raw).digest('hex')
+      const restored = await restoredProtocolText(originalTextCache(), version, await restoreSlot(d, version))
       if (restored) runtime.heldTexts = heldTextsOf(raw.toString('utf8'), restored)
     } else {
       runtime.checksPassed = await passedProtocolSha(d, (p) => protocolProblems(p))

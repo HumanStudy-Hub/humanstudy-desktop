@@ -83,7 +83,9 @@ export interface SimSummary {
   example?: boolean
   /** A protocol run's structured summary (skills/run protocol_report.py): the card builds its paragraph from these
    *  with i18n keys, in the app's language. */
-  facts?: { done: number; planned: number; same: number; compared: number; official: boolean; unverified: boolean; partial: boolean; failedCalls: number; tokenCap: boolean; engineDirection: boolean | null }
+  facts?: { done: number; planned: number; same: number; compared: number; official: boolean; unverified: boolean; partial: boolean; failedCalls: number; tokenCap: boolean; engineDirection: boolean | null
+    /** A published study whose wording was not all exact: how many passages were approximate, supplied, reconstructed. */
+    wording?: { approx: number; user: number; reconstructed: number } | null }
 }
 /** `lang` 'zh-CN' prefers `paragraph_zh` when the file carries one (the shipped example does). */
 export function parseSummary(text: string | null | undefined, lang = 'en'): SimSummary | null {
@@ -101,7 +103,9 @@ export function parseSummary(text: string | null | undefined, lang = 'en'): SimS
   const per = r.perCondition ?? r.n_per_condition
   const f = r.facts && typeof r.facts === 'object' ? r.facts as Record<string, unknown> : null
   const int = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0)
-  const facts = f ? { done: int(f.done), planned: int(f.planned), same: int(f.same), compared: int(f.compared), official: f.official === true, unverified: f.unverified === true, partial: f.partial === true, failedCalls: int(f.failedCalls), tokenCap: f.tokenCap === true, engineDirection: typeof f.engineDirection === 'boolean' ? f.engineDirection : null } : undefined
+  const wordingOf = (v: unknown) => { const w = v && typeof v === 'object' ? v as Record<string, unknown> : null; return w ? { approx: int(w.approx), user: int(w.user), reconstructed: int(w.reconstructed) } : null }
+  const facts = f ? { done: int(f.done), planned: int(f.planned), same: int(f.same), compared: int(f.compared), official: f.official === true, unverified: f.unverified === true, partial: f.partial === true, failedCalls: int(f.failedCalls), tokenCap: f.tokenCap === true, engineDirection: typeof f.engineDirection === 'boolean' ? f.engineDirection : null,
+    ...(wordingOf(f.wording) ? { wording: wordingOf(f.wording) } : {}) } : undefined
   return { outcome, paragraph: String(raw).trim().slice(0, 2000), model: str(r.model), perCondition: typeof per === 'number' ? per : undefined, calls: typeof r.calls === 'number' ? r.calls : undefined, example: r.example === true, ...(facts ? { facts } : {}) }
 }
 

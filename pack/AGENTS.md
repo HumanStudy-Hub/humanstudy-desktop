@@ -99,6 +99,10 @@ Answer about selected passages/items and the active tab, in the researcher's lan
 
 A study opened from HumanStudy Hub may hold back wording its sources do not allow to redistribute (protocol.json
 then has a top-level `distribution` block and runs of `░` where that wording goes). The app fills it in on the
-researcher's computer from the publisher's link or from a copy they drop into the chat; follow the run skill's
-section "Original wording" and never write or reconstruct that wording yourself. Never open, read or extract a
-file in `sources/private/` or in the app's `original-text/` storage: that text must stay on this computer.
+researcher's computer from the publisher's link or from a copy they drop into the chat (exactly, or approximately
+from their PDF); follow the run skill's section "Original wording". Never write that wording into protocol.json or
+`sourcetext/`. A screen no file fills in may be filled only through the fills file
+`sources/private/original-text-fills.json`, as that section says: first ask the researcher to paste the
+passage; reconstruct it only when the paper does not print it, with their agreement, and always label it
+reconstructed. Apart from that one file, never open, read or extract a file in `sources/private/` or in the app's
+`original-text/` storage: that text must stay on this computer.
