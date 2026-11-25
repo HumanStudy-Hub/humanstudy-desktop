@@ -29,7 +29,7 @@ import { createReadStream, existsSync } from 'node:fs'
 import { watchFolder, type FolderWatch } from './project-watch'
 import { fileVersion } from '../shared/file-version'
 import { manifestSourceDigests, protocolSourceDigests } from '../shared/source-target'
-import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -46,9 +46,9 @@ import { confirmedLibrarySha, heldTextsOf, passedProtocolSha, selectedResults, s
 import { legacyFileIsolationAvailable, scientificReadiness } from './scientific-readiness'
 import { onRuntimeProgress, readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf, protocolProblems } from './package-readiness'
-import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, restoredRunFiles, restoreSlot, writeAgentStatus } from './original-text'
+import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, receivedPath, restoredRunFiles, restoreSlot, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
-import { protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
+import { configureReceivedProtocol, protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
 import { closeProjectRelays, isRunStop } from './run-stop'
@@ -532,6 +532,7 @@ app.whenReady().then(() => {
   // A published study's original wording, filled in on this computer (original-text.ts): downloads and the restored
   // protocol stay in app storage; the project gets only a status for the agent.
   const textFiles = trustedOriginalTextFiles()
+  configureReceivedProtocol(async (project) => JSON.parse(await readFile(receivedPath(originalTextCache(), await realpath(project)), 'utf8')))
   void telemetry.refreshPrivateIndex().catch(() => undefined)
   const restoredChecks = new Map<string, ScientificProblemLike[]>()
   configureOriginalText(async (project) => {

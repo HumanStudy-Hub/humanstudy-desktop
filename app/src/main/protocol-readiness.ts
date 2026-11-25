@@ -121,6 +121,46 @@ export function protocolOutcome(stdout: string, stderr: string): ProtocolProblem
   throw Error('No protocol checks report')
 }
 
+/** The protocol.json of a published study as this computer first received it (original-text.ts keeps it in app
+ *  storage; index.ts installs the reader). Its strings are what the release verifiably ships. */
+let receivedProtocol: (project: string) => Promise<unknown> = async () => null
+export function configureReceivedProtocol(read: (project: string) => Promise<unknown>): void { receivedProtocol = read }
+
+/** Every string of a protocol outside its `distribution` block. */
+function releasedStrings(o: unknown, out: string[] = [], top = true): string[] {
+  if (typeof o === 'string') out.push(o)
+  else if (Array.isArray(o)) for (const v of o) releasedStrings(v, out, false)
+  else if (o && typeof o === 'object') for (const [k, v] of Object.entries(o)) if (!(top && k === 'distribution')) releasedStrings(v, out, false)
+  return out
+}
+
+const canonical = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x)
+  ? Object.fromEntries(Object.entries(x as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1))) : x))
+
+/** Every object carrying a verbatim cite read from a page image (`cite` or `*_cite` with read: "image"), canonical. */
+function imageReadTexts(o: unknown, out: string[] = []): string[] {
+  if (Array.isArray(o)) for (const v of o) imageReadTexts(v, out)
+  else if (o && typeof o === 'object') {
+    const d = o as Record<string, unknown>
+    if (Object.entries(d).some(([k, c]) => (k === 'cite' || k.endsWith('_cite')) && c && typeof c === 'object'
+      && (c as Record<string, unknown>).label === 'verbatim' && (c as Record<string, unknown>).read === 'image')) out.push(canonical(d))
+    for (const [k, v] of Object.entries(d)) if (k !== 'distribution') imageReadTexts(v, out)
+  }
+  return out
+}
+
+/** In public mode the engine leaves a text read from a page image without shipped readings to Bench's private
+ *  check, so it cannot see a change made on this computer: such a text (with its cite) must be exactly as received. */
+async function editedImageReadings(project: string): Promise<ProtocolProblem[]> {
+  const received = await receivedProtocol(project).catch(() => null)
+  if (!received || typeof received !== 'object') return []
+  let now: unknown
+  try { now = JSON.parse(await readFile(join(project, 'protocol.json'), 'utf8')) } catch { return [] }
+  const shipped = new Set(imageReadTexts(received))
+  const changed = imageReadTexts(now).filter((x) => !shipped.has(x)).length
+  return changed ? [{ check: 'verbatim', reason: `${changed} text(s) read from a page image of the paper were changed on this computer, so they can no longer be checked against the paper. Put back the wording as published, or keep the change as a separate, labelled variant.` }] : []
+}
+
 /** For a published protocol.json: per held source, the text its served strings must be found in, by the engine's own
  *  verbatim rule (checks.py check_verbatim), as a `--source-text` file. Before the wording is filled in that text is
  *  one run of placeholders as long as the longest held text: every held placeholder is found in it, and any other
@@ -151,8 +191,13 @@ export async function heldSourceTexts(project: string, restored?: Record<string,
       }
       pieces.set(h.source, [...(pieces.get(h.source) ?? []), piece])
     }
+    // plus every string of the study as received: wording the release cites verbatim from a held source outside the
+    // held fields (checked by Bench against the source) is found as released, while a text changed or added on
+    // this computer is not, so it still blocks
+    const received = await receivedProtocol(project).catch(() => null)
+    const shipped = received && typeof received === 'object' ? releasedStrings(received).join('\n') : ''
     for (const [k, list_] of pieces)
-      out.set(k, restored ? list_.join('\n') : list_.reduce((a, b) => (b.length > a.length ? b : a), ''))
+      out.set(k, (restored ? list_.join('\n') : list_.reduce((a, b) => (b.length > a.length ? b : a), '')) + (shipped ? '\n' + shipped : ''))
   } catch { /* unreadable: the checks report it */ }
   return out
 }
@@ -272,6 +317,15 @@ async function requiredEngine(project: string, engine: [string, string][]): Prom
   }
 }
 
+/** A published study (protocol.json holds back wording: `distribution.held`) is checked as Bench released it,
+ *  `checks --public`: the blind readings and source texts of sources that may not be redistributed were never
+ *  shipped, so a text read from a page image of such a source is "checked privately" (by Bench) instead of
+ *  unconfirmed, and so is a cite whose source text is not here. Held texts are still checked against their own
+ *  placeholders or restored wording, and the researcher's own projects keep the strict check. */
+export async function publicMode(project: string): Promise<string[]> {
+  return (await heldSources(project)).size > 0 ? ['--public'] : []
+}
+
 export async function protocolReadiness(python: string | null, engine: [string, string][], project: string, bin: string,
   timeout = PROTOCOL_TIMEOUT_MS, limits: Limits = {}): Promise<ProtocolProblem[]> {
   if (!python) return [ENGINE_MISSING]
@@ -287,10 +341,11 @@ export async function protocolReadiness(python: string | null, engine: [string, 
         held.push('--source-text', `${name}=${file}`)
       }
       const run = await confinedPython(python, runner(limits.cpuSeconds, limits.memoryBytes),
-        [work, await realpath(project), '--sessions', String(PROTOCOL_SESSIONS), ...await sourceTextArgs(project), ...held], home, bin, timeout, limits)
+        [work, await realpath(project), '--sessions', String(PROTOCOL_SESSIONS), ...await publicMode(project), ...await sourceTextArgs(project), ...held], home, bin, timeout, limits)
       if (run.limit) return [ENGINE_LIMIT]
       if (/\bMemoryError\b/.test(run.stderr) && !run.stdout.includes('{')) return [ENGINE_LIMIT]
-      return protocolOutcome(run.stdout, run.stderr)
+      const found = protocolOutcome(run.stdout, run.stderr)
+      return (await publicMode(project)).length ? [...found, ...await editedImageReadings(project)] : found
     })
   } catch { return [ENGINE_FAILED] }
 }
@@ -317,7 +372,7 @@ export async function restoredReadiness(python: string | null, engine: [string, 
     }
     return await withScratch(engine, async (work, home) => {
       const run = await confinedPython(python, runner(limits.cpuSeconds, limits.memoryBytes),
-        [work, dir, '--sessions', String(PROTOCOL_SESSIONS), ...await sourceTextArgs(project), ...held], home, bin, timeout, limits)
+        [work, dir, '--sessions', String(PROTOCOL_SESSIONS), ...await publicMode(project), ...await sourceTextArgs(project), ...held], home, bin, timeout, limits)
       if (run.limit) return [ENGINE_LIMIT]
       // Check names only (the details can quote the restored wording); the app words the problem itself.
       return [...new Set(protocolOutcome(run.stdout, run.stderr).map((p) => p.check))].map((check) => ({ check, reason: check }))

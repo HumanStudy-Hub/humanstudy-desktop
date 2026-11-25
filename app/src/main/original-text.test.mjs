@@ -94,6 +94,70 @@ test('engine checks: a published study passes with its placeholders; an unverifi
   assert.equal((await R.heldSourceTexts(mkdtempSync(join(tmpdir(), 'none-')))).size, 0)
 })
 
+test('engine checks: a published study is checked as released (--public); the researcher\'s own project stays strict', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  // a text the release transcribed from a page image of a held source: its blind readings were never shipped
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.intro.content.push({ id: 'scan', value: 'Walk at your own pace.', cite: { label: 'verbatim', source: 'booklet', page: 1, read: 'image' } })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  assert.deepEqual(await R.publicMode(proj), ['--public'])
+  assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+  // the restored copy is checked the same way
+  const restored = structuredClone(p)
+  delete restored.distribution
+  const texts = { '/stages/intro/content/0/value': HANDOUT_TEXT, '/stages/intro/content/1/value': 'Remember to drink a glass of water first.',
+    '/stages/q/responses/0/prompt': 'How many minutes did you walk this morning?', '/stages/q/responses/1/prompt': 'Did you see a neighbour on the way?' }
+  for (const [path, text] of Object.entries(texts)) {
+    const parts = path.split('/').slice(1); const last = parts.pop()
+    parts.reduce((o, k) => o[k], restored)[last] = text
+  }
+  const work = mkdtempSync(join(tmpdir(), 'restored-check-'))
+  assert.deepEqual(await R.restoredReadiness(python, ENGINE, proj, JSON.stringify(restored), work, ''), [])
+  // the same protocol as the researcher's own project (no held wording): the strict check still asks for a reading
+  const own = mkdtempSync(join(tmpdir(), 'own-'))
+  writeFileSync(join(own, 'protocol.json'), JSON.stringify(restored, null, 1))
+  assert.deepEqual(await R.publicMode(own), [])
+  const strict = await R.protocolReadiness(python, ENGINE, own, '')
+  assert.ok(strict.some((x) => x.check === 'verbatim' && /image-read texts without an agreeing blind reading/.test(x.reason)), JSON.stringify(strict))
+})
+
+test('engine checks: wording a release cites verbatim from a held source outside the held fields passes as received; a local edit blocks', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  // a short label the release cites verbatim from the held booklet without holding it (Bench checked it privately)
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.q.responses[1].options[0].cite = { label: 'verbatim', source: 'booklet', page: 1 }
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).map((x) => x.check), ['verbatim'], 'without the received copy it blocked (the bug)')
+  R.configureReceivedProtocol(async () => received)
+  try {
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+    p.stages.q.responses[1].options[0].label = 'Absolutely, I walked every single day'   // changed on this computer
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).map((x) => x.check), ['verbatim'])
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('engine checks: a published study\'s image-read text changed on this computer blocks', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.intro.content.push({ id: 'scan', value: 'Walk at your own pace.', cite: { label: 'verbatim', source: 'booklet', page: 1, read: 'image' } })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+    p.stages.intro.content.at(-1).value = 'Walk as fast as you can.'
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    const problems = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.deepEqual(problems.map((x) => x.check), ['verbatim'])
+    assert.match(problems[0].reason, /read from a page image of the paper were changed on this computer/)
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
 test('held source texts: placeholders before, the restored texts after; a project sourcetext file wins', async () => {
   const { proj, close } = await publishedProject()
   close()
