@@ -335,7 +335,12 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
     projection = text_regions_as_readings(projection)
     formats = {d["url"]: d.get("format") for d in (distribution_of(projection, k) for k in sources_of(projection))
                if d.get("tier") == "link" and isinstance(d.get("url"), str)}
-    fetch = make_fetch(cache, allow_local=allow_local, offline=offline, log=log, formats=formats)
+    fetch_ = make_fetch(cache, allow_local=allow_local, offline=offline, log=log, formats=formats)
+    touched: set = set()   # the URLs this restore asked for (only their downloads are judged below)
+
+    def fetch(url):
+        touched.add(url)
+        return fetch_(url)
     out, report = D.rehydrate(projection, fetch=fetch, extractors=extractors)
     chosen: dict[str, Path] = {}
     supplied: dict[str, bytes] = {}
@@ -371,17 +376,18 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
     if supplied:
         out, report = D.rehydrate(projection, fetch=fetch, files=supplied, extractors=extractors)
     fill_in(projection, out, report, fills or {}, cache, files, chosen, supplied, extractors, fetch)
-    # every link download that restored nothing in either pass (also one only the approximate pass fetched) is
-    # not kept, unless it is the very file the study was built from
+    # every link download this restore used that restored nothing from the source in either pass (also one only the
+    # approximate pass fetched) is not kept, unless it is the very file the study was built from; an item filled
+    # from the fills file says nothing about the download
     for key in sources_of(projection):
         d = distribution_of(projection, key)
-        if d.get("tier") != "link" or not isinstance(d.get("url"), str):
+        if d.get("tier") != "link" or not isinstance(d.get("url"), str) or d["url"] not in touched:
             continue
         got = read_file(cache / "downloads" / sha256(d["url"].encode("utf-8")))
         if got is None or (isinstance(d.get("sha256"), str) and sha256(got) == d["sha256"]):
             continue
-        if not any(isinstance(e, dict) and e.get("source") == key and (report["items"].get(h) or {}).get("status") in ("ok", "approx")
-                   for h, e in held.items()):
+        if not any(isinstance(e, dict) and e.get("source") == key and (report["items"].get(h) or {}).get("via") != "fill"
+                   and (report["items"].get(h) or {}).get("status") in ("ok", "approx") for h, e in held.items()):
             forget_download(cache, d["url"], RESTORED_NONE)
     complete = all(restored_ok(e, report["items"].get(h)) for h, e in held.items())
     report["complete"] = complete

@@ -594,9 +594,14 @@ class ApproxMatcher(unittest.TestCase):
         self.assertTrue(got is None or got[0].startswith("Do not"), "nor a split word inside")
         old = dict(fp)
         old.pop("ends")
-        self.assertIsNone(A.locate(["Rules. Do not open the box until the experimentor tells you to do so now."], old),
-                          "a fingerprint without ends is placed only on a complete match")
-        self.assertEqual(A.locate(["Rules. " + t + " Next."], old), (t, 1.0))
+        self.assertIsNone(A.locate(["Rules. Do not open the box until the experimentor tells you to do so now."], old))
+        self.assertIsNone(A.locate(["Rules. " + t + " Next."], old), "a fingerprint without ends is never placed")
+
+    def test_a_repeated_passage_is_not_clipped_at_a_perfect_score(self):
+        t = "Do not move. Do not move. Stay calm."
+        fp = A.fingerprint(t, [1], salt="ab")
+        got = A.locate(["Header line. not move. Do not move. Stay calm. Footer words here."], fp)
+        self.assertTrue(got is None or got[0].startswith("Do not"), got)
 
 
 class HeldPictures(Published):

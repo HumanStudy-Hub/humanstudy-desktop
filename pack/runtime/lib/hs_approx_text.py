@@ -190,12 +190,10 @@ def _boundary(page: str, ws: list, fp: dict, a: int, length: int, score: float) 
 
 
 def _ends(ws: list, fp: dict, place: tuple[int, int], score: float) -> bool:
-    """A complete match holds every trigram of the passage, so both of its ends. Anything less is placed only when
-    the window begins with the passage's first trigram and ends with its last (`ends`): otherwise words could be
-    missing at an edge (a "Do not" at the foot of the page before, behind a running header), and the item is left to
-    the researcher. A fingerprint without `ends` is placed only on a complete match."""
-    if score >= 1.0:
-        return True
+    """The window begins with the passage's first trigram and ends with its last (`ends`), whatever its score: a
+    match that holds every distinct trigram can still be clipped where the passage repeats itself ("Do not move. Do
+    not move."), and a lesser one could miss words at an edge (a "Do not" at the foot of the page before). Otherwise
+    the item is left to the researcher. A fingerprint without `ends` is never placed."""
     ends = fp.get("ends")
     if not (isinstance(ends, list) and len(ends) == 2 and all(isinstance(e, str) for e in ends)):
         return False
