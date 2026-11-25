@@ -109,8 +109,9 @@ def _best(page: str, fp: dict, exclude: tuple[int, int] | None = None) -> tuple[
                 continue
             # recall against the passage's distinct grams, penalised when the window is longer than the passage
             score = min(1.0, len(count) / len(grams)) * min(1.0, (n - 2) / max(1, span))
-            if score > best[0]:
-                best = (score, a, a + length)
+            if score > best[0] or (score == best[0] and score > 0
+                                   and abs(length - n) < abs((best[2] - best[1]) - n)):
+                best = (score, a, a + length)   # on a tie, the window closest to the passage's length
     return best
 
 
@@ -147,7 +148,39 @@ def locate(page_texts: list[str], fp: dict) -> tuple[str, float] | None:
     # ambiguous: another page, or a separate window of the same page, matches nearly as well
     if any(s2 >= score - MARGIN for s2, *_ in found[1:]) or _best(page, fp, exclude=(a, b))[0] >= score - MARGIN:
         return None
-    return _span(page, words(page), a, b, fp), round(score, 3)
+    ws, length = words(page), b - a
+    a = _boundary(page, ws, fp, a, length, score)
+    if a is None:
+        return None
+    return _span(page, ws, a, a + length, fp), round(score, 3)
+
+
+def _window(ws: list, fp: dict, a: int, length: int) -> float:
+    """The score of one window (as _best scores it)."""
+    n, grams = int(fp["words"]), set(fp["grams"])
+    w = [x for x, _, _ in ws[a:a + length]]
+    got = {g for g in (_gram(fp["salt"], w, i) for i in range(len(w) - 2)) if g in grams}
+    return min(1.0, len(got) / len(grams)) * min(1.0, (n - 2) / max(1, length - 2))
+
+
+def _boundary(page: str, ws: list, fp: dict, a: int, length: int, score: float) -> int | None:
+    """The start of the window among those shifted by up to two words that score the same: a misread word at an
+    edge of the passage gives no trigram hit, so the window could as well stand one word earlier or later (and drop a
+    word such as "not"). The passage's own leading / trailing punctuation decides; when it cannot, the place is
+    ambiguous (None) and the item is left to the researcher."""
+    lead, tail = fp.get("lead") or "", fp.get("tail") or ""
+    ties = [x for x in range(max(0, a - 2), min(len(ws) - length, a + 2) + 1)
+            if x == a or abs(_window(ws, fp, x, length) - score) < 1e-9]
+    if len(ties) == 1:
+        return a
+
+    def edges(x):
+        start, end = ws[x][1], ws[x + length - 1][2]
+        return (bool(lead) and page[max(0, start - len(lead)):start] == lead) + \
+            (bool(tail) and page[end:end + len(tail)] == tail)
+    best = max(edges(x) for x in ties)
+    picked = [x for x in ties if edges(x) == best]
+    return picked[0] if best and len(picked) == 1 else None
 
 
 def _span(page: str, ws: list, a: int, b: int, fp: dict) -> str:

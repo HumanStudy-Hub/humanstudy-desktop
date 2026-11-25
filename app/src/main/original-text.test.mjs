@@ -153,9 +153,10 @@ test('the fills file is passed to the helper, never tried as a source copy, and 
   const cache = mkdtempSync(join(tmpdir(), 'text-cache-'))
   const version = sha(readFileSync(join(proj, 'protocol.json')))
   const restored = '{"id": "fixture-walk"}\n'
-  mkdirSync(join(cache, version))
-  writeFileSync(join(cache, version, 'protocol.json'), restored)
-  writeFileSync(join(cache, version, 'status.json'), JSON.stringify({ complete: true, projectionSha256: version, restoredSha256: sha(restored),
+  const slot = await O.restoreSlot(proj, version)
+  mkdirSync(join(cache, slot))
+  writeFileSync(join(cache, slot, 'protocol.json'), restored)
+  writeFileSync(join(cache, slot, 'status.json'), JSON.stringify({ complete: true, projectionSha256: version, restoredSha256: sha(restored),
     labels: { h2: 'approx', h4: 'user', h3: 'reconstructed', bad: 'approx', h1: 'exact' } }))
   const files = await O.restoredRunFiles(proj, cache, version)
   assert.deepEqual(files.map(([n]) => n), ['restored/protocol.json', 'restored/labels.json'])
@@ -225,11 +226,17 @@ test('the run gets the restored copy only for exactly the approved version, and 
   const version = sha(readFileSync(join(proj, 'protocol.json')))
   await assert.rejects(O.restoredRunFiles(proj, cache, version), /original wording has not been filled in.*\[text not available\]/)
   const restored = '{"id": "fixture-walk"}\n'
-  mkdirSync(join(cache, version))
-  writeFileSync(join(cache, version, 'protocol.json'), restored)
-  writeFileSync(join(cache, version, 'status.json'), JSON.stringify({ complete: true, projectionSha256: version, restoredSha256: sha(restored) }))
+  const slot = await O.restoreSlot(proj, version)
+  mkdirSync(join(cache, slot))
+  writeFileSync(join(cache, slot, 'protocol.json'), restored)
+  writeFileSync(join(cache, slot, 'status.json'), JSON.stringify({ complete: true, projectionSha256: version, restoredSha256: sha(restored) }))
   assert.deepEqual(await O.restoredRunFiles(proj, cache, version), [['restored/protocol.json', restored]])
-  writeFileSync(join(cache, version, 'protocol.json'), restored.replace('walk', 'run'))   // changed after it was written
+  // another project with the same published protocol.json never runs from this project's copy (fills are per project)
+  const { proj: other, close: close2 } = await publishedProject()
+  close2()
+  assert.notEqual(await O.restoreSlot(other, version), slot)
+  await assert.rejects(O.restoredRunFiles(other, cache, version), /original wording has not been filled in/)
+  writeFileSync(join(cache, slot, 'protocol.json'), restored.replace('walk', 'run'))   // changed after it was written
   await assert.rejects(O.restoredRunFiles(proj, cache, version))
   assert.equal(await O.restoredProtocolText(cache, '../' + version), null)
   // an ordinary protocol.json needs nothing

@@ -59,6 +59,11 @@ MAX_FILLS_BYTES = 2 * 1024 * 1024
 MAX_FILL_CHARS = 200_000
 
 
+def too_long(text: str, length) -> bool:
+    """Much longer than the held text (its placeholder length): the run's model budget was measured on that length."""
+    return isinstance(length, int) and len(text) > 2 * length + 200
+
+
 def restored_ok(entry, item_report) -> bool:
     """A held text restored on this computer; pictures are never counted (the run could not show them)."""
     return isinstance(entry, dict) and entry.get("kind") != "image" and (item_report or {}).get("status") in OK
@@ -279,6 +284,21 @@ def pdf_extractors():
         return {}
 
 
+def text_regions_as_readings(projection: dict) -> dict:
+    """The projection with every held TEXT's region locator turned into an image reading (hsenv then reports it
+    requires_reading instead of rendering the region as a picture into the slot). Pictures are left as they are."""
+    held = held_of(projection)
+    if not any(isinstance(e, dict) and e.get("kind") != "image" and isinstance(e.get("locator"), dict)
+               and e["locator"].get("format") == "region" for e in held.values()):
+        return projection
+    p = copy.deepcopy(projection)
+    for e in held_of(p).values():
+        if isinstance(e, dict) and e.get("kind") != "image" and isinstance(e.get("locator"), dict) \
+                and e["locator"].get("format") == "region":
+            e["locator"] = dict(e["locator"], format="image_reading")
+    return p
+
+
 def only_source(projection: dict, key: str) -> dict:
     """The projection with only one source's held items (to try a file for that source cheaply)."""
     p = copy.deepcopy(projection)
@@ -295,6 +315,9 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
     from hsenv import distribution as D
     extractors = pdf_extractors()
     log: list = []
+    # A text the engine could render as a picture of its region stays a text slot here: the app cannot show such a
+    # picture yet, and the slot must keep its placeholder so a transcription (fills) can still fill it.
+    projection = text_regions_as_readings(projection)
     formats = {d["url"]: d.get("format") for d in (distribution_of(projection, k) for k in sources_of(projection))
                if d.get("tier") == "link" and isinstance(d.get("url"), str)}
     fetch = make_fetch(cache, allow_local=allow_local, offline=offline, log=log, formats=formats)
@@ -443,7 +466,8 @@ def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path,
                         got = A.locate(pages, held[h]["approx"])
                     except Exception:   # noqa: BLE001 - a malformed fingerprint: not placed
                         got = None
-                    if got and got[0].strip() and D.PLACEHOLDER not in got[0]:
+                    if got and got[0].strip() and D.PLACEHOLDER not in got[0] \
+                            and not too_long(got[0], held[h].get("length")):
                         found[h] = got
                 if found and (best is None or len(found) > len(best[1])):
                     best = (path, found)
@@ -503,6 +527,8 @@ def load_fills(path: Path | None, projection: dict) -> tuple[dict, list[dict], s
             why = "text is longer than %d characters" % MAX_FILL_CHARS
         elif "\u2591" in v["text"]:
             why = "text contains placeholder characters"
+        elif too_long(v["text"], held[h].get("length")):
+            why = "text is much longer than the original passage (%s characters)" % held[h].get("length")
         if why:
             problems.append({"held": h[:20], "why": why})
         else:
@@ -756,6 +782,25 @@ def index_project(cache: Path, project: Path, projection: dict, files: list[Path
     return dest
 
 
+def restore_slot(version: str, project_key: str | None) -> str:
+    """The cache folder of one restored copy: sha256("<protocol sha256>\\n<project key>"), or the protocol sha256
+    alone without a project key (tests). original-text.ts restoreSlot computes the same."""
+    return sha256(("%s\n%s" % (version, project_key)).encode("utf-8")) if project_key else version
+
+
+def files_stamp(files: list[Path]) -> str:
+    """Which source files the project had (path, size, modification time): a restore with labels is redone when
+    they change."""
+    rows = []
+    for f in files:
+        try:
+            st = f.stat()
+            rows.append([str(f), st.st_size, st.st_mtime_ns])
+        except OSError:
+            rows.append([str(f), None, None])
+    return sha256(json.dumps(sorted(rows)).encode("utf-8"))
+
+
 def main(argv: list[str]) -> int:
     args = list(argv)
     allow_local = "--allow-local" in args
@@ -770,6 +815,11 @@ def main(argv: list[str]) -> int:
             received = None
         del args[i:i + 2]
     args = [a for a in args if a not in ("--allow-local", "--offline", "--index-only")]
+    project_key = None
+    if "--project-key" in args:
+        i = args.index("--project-key")
+        project_key = args[i + 1] if re.fullmatch(r"[0-9a-f]{64}", args[i + 1]) else None
+        del args[i:i + 2]
     fills_path = None
     if "--fills" in args:
         i = args.index("--fills")
@@ -788,7 +838,10 @@ def main(argv: list[str]) -> int:
         print(json.dumps({"version": STATUS_VERSION, "projection": False}))
         return 0
     version = sha256(raw)
-    here = cache / version
+    # One restored copy per study version AND project (the app passes --project-key): fills and approximate wording
+    # are per project, so two copies of the same published study never share (or overwrite) each other's wording.
+    slot = restore_slot(version, project_key)
+    here = cache / slot
     done = here / "protocol.json"
     project = protocol_path.parent
     fills, fill_problems, fills_sha = load_fills(fills_path, projection)
@@ -797,8 +850,11 @@ def main(argv: list[str]) -> int:
         st = json.loads((here / "status.json").read_text(encoding="utf-8"))
         # a restore that used the fills file is reused only while that file is unchanged (and any restore only
         # while the fills file is as it was: a fill added or removed is applied on the next check)
+        # a copy with approximate or supplied wording also only while the project's source files are as they were (a
+        # copy added since may now give the exact wording)
         if st.get("complete") and st.get("restoredSha256") == sha256(done.read_bytes()) \
-                and st.get("fillsSha256") == fills_sha and st.get("version") == STATUS_VERSION:
+                and st.get("fillsSha256") == fills_sha and st.get("version") == STATUS_VERSION \
+                and (not st.get("labels") or st.get("filesStamp") == files_stamp(files)):
             cached = st
     # The index first, before any download: a copy the researcher just dropped is recognised by research capture
     # from now on, whatever the agent does with it while the downloads run.
@@ -820,7 +876,9 @@ def main(argv: list[str]) -> int:
         pass
     st = status(projection, report, chosen, extractors, log, fill_problems, fills_sha is not None)
     st["projectionSha256"] = version
+    st["slot"] = slot
     st["fillsSha256"] = fills_sha
+    st["filesStamp"] = files_stamp(files)
     here.mkdir(parents=True, exist_ok=True)
     if restored is not None:
         # written as bytes: the sha256 recorded below is of exactly these bytes (a text-mode write would turn \n into

@@ -429,6 +429,46 @@ class ApproxAndFills(Published):
         st = self.run_fills(self.projection, fills=bad)
         self.assertEqual(st["fills"]["problems"], [{"held": None, "why": "the fills file is not valid JSON"}])
 
+    def test_a_fill_much_longer_than_the_original_is_refused(self):
+        st = self.run_fills(self.projection, fills=self.fills({"h4": {"text": "word " * 200, "origin": "reconstructed"}}))
+        self.assertEqual(st["fills"]["problems"], [{"held": "h4", "why": "text is much longer than the original passage (35 characters)"}])
+
+    def test_a_text_region_keeps_its_slot_for_a_transcription(self):
+        # hsenv could render a held text's region as a picture into its slot; the app cannot show that, so the slot
+        # keeps its placeholder, the item says "reading", and a pasted transcription that hashes exactly fills it
+        p = json.loads(self.projection.read_text(encoding="utf-8"))
+        p["distribution"]["held"]["h3"]["locator"] = {"format": "region", "page": 1, "x": 0, "y": 0, "w": 1, "h": 1}
+        path = self.tmp / "region.json"
+        path.write_text(json.dumps(p), encoding="utf-8")
+        st = self.run_fills(path, files=[self.drop("booklet.html")])
+        self.assertEqual([(u["held"], u["need"]) for u in st["unresolved"] if u["held"] == "h3"], [("h3", "reading")])
+        st = self.run_fills(path, files=[self.drop("booklet.html")],
+                            fills=self.fills({"h3": {"text": TEXTS["/stages/q/responses/0/prompt"], "origin": "user"}}))
+        self.assertNotIn("h3", [u["held"] for u in st["unresolved"]])
+
+    def test_two_projects_never_share_a_restored_copy(self):
+        def project_run(key, text):
+            f = self.fills({"h2": {"text": text, "origin": "user"}, "h3": {"text": "Minutes walked?", "origin": "user"},
+                            "h4": {"text": "Neighbour seen?", "origin": "user"}})
+            return self.run_helper(files=[], extra=["--allow-local", "--fills", str(f), "--project-key", key])
+        a = project_run("a" * 64, "Drink water first.")
+        b = project_run("b" * 64, "Have some tea first.")
+        self.assertTrue(a["complete"] and b["complete"])
+        self.assertNotEqual(a["slot"], b["slot"])
+        self.assertEqual(a["slot"], O.restore_slot(a["projectionSha256"], "a" * 64))
+        self.assertEqual(get(json.loads(Path(a["restoredPath"]).read_text(encoding="utf-8")), "/stages/intro/content/1/value"),
+                         "Drink water first.")
+
+    @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
+    def test_a_copy_added_later_replaces_supplied_wording(self):
+        f = self.fills({"h2": {"text": "Drink some water.", "origin": "user"}, "h3": {"text": "Minutes walked?", "origin": "user"},
+                        "h4": {"text": "Neighbour seen?", "origin": "user"}})
+        st = self.run_fills(self.projection, fills=f)
+        self.assertEqual(st["supplied"]["user"], 3)
+        st = self.run_fills(self.projection, files=[self.drop("booklet.html"), self.drop("leaflet.pdf")], fills=f)
+        self.assertFalse(st.get("cached"), "the source files changed: restored again")
+        self.assertEqual((st["exact"], st["labels"]), (4, {}))
+
     def test_a_fill_never_overwrites_anything_but_its_placeholder(self):
         p = json.loads(self.projection.read_text(encoding="utf-8"))
         p["distribution"]["held"]["h3"]["length"] = 7   # a tampered entry: the placeholder at its path is 43 long
@@ -462,6 +502,23 @@ class ApproxMatcher(unittest.TestCase):
         fp = A.fingerprint(text, [2], salt="5a1t")
         got = A.locate(["A cover page about something else entirely.", "Leaflet. " + text + " Thank you."], fp)
         self.assertEqual(got, (text, 1.0))
+
+    def test_a_misread_edge_word_is_never_trimmed_off(self):
+        # an OCR error on the first or last word gives no trigram hit there; the window must not silently move by a
+        # word and drop "Never" / "not": it keeps the passage's length and punctuation, or gives up (None)
+        t = "Never share your personal details with strangers who contact you online."
+        got = A.locate(["Safety tips. Neyer share your personal details with strangers who contact you online. Thanks."],
+                       A.fingerprint(t, [1], salt="ab"))
+        self.assertTrue(got is None or got[0].startswith("Neyer share"), got)
+        t = "Please do not open the box until the experimenter tells you to do so now."
+        got = A.locate(["Rules. Please do not open the box until the experimenter tells you to do so nqw. Next."],
+                       A.fingerprint(t, [1], salt="ab"))
+        self.assertEqual(got[0], "Please do not open the box until the experimenter tells you to do so nqw.")
+        t = "you must not press the red button before the signal sounds"
+        fp = A.fingerprint(t, [1], salt="ab")
+        self.assertIsNone(A.locate(["Rule one you must not press the red button before the signal squnds and then wait"], fp),
+                          "no punctuation to tell where it ends: ambiguous")
+        self.assertEqual(A.locate(["Rule one " + t + " and then wait"], fp), (t, 1.0))
 
 
 class RedactionIndex(unittest.TestCase):

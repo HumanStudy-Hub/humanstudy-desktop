@@ -35,6 +35,8 @@ export type OriginalTextLabel = 'approx' | 'user' | 'reconstructed'
 export interface OriginalTextStatus {
   projection: boolean; complete?: boolean; items?: number; restored?: number; screens?: number; pdfReader?: boolean
   sources?: OriginalTextSource[]; projectionSha256?: string; restoredPath?: string | null; restoredSha256?: string
+  /** The cache folder of this restored copy (restoreSlot: per study version and project). */
+  slot?: string
   exact?: number; approx?: number; supplied?: { user: number; reconstructed: number }
   labels?: Record<string, OriginalTextLabel>; unresolved?: OriginalTextUnresolved[]
   fills?: { file: string; present: boolean; problems: { held: string | null; why: string }[] }
@@ -101,7 +103,7 @@ export async function fillOriginalText(python: string, files: [string, string][]
   const fills = await realpath(join(project, ...FILLS_FILE.split('/'))).catch(() => null)
   const root = await realpath(project)
   const fillsArgs = fills && fills.startsWith(root + sep) && (await lstat(fills).then((x) => x.isFile(), () => false)) ? ['--fills', fills] : []
-  const args = [...receivedArgs, ...fillsArgs, ...(o.allowLocal ? ['--allow-local'] : []), ...(o.offline ? ['--offline'] : []), ...(o.indexOnly ? ['--index-only'] : []),
+  const args = [...receivedArgs, ...fillsArgs, '--project-key', sha256(root), ...(o.allowLocal ? ['--allow-local'] : []), ...(o.offline ? ['--offline'] : []), ...(o.indexOnly ? ['--index-only'] : []),
     ...(await candidateFiles(project)).flatMap((f) => ['--file', f])]
   return withScratch(files, async (work, home) => {
     const code = runner(LIMITS.cpuSeconds, LIMITS.memoryBytes).replace(/sys\.path\.insert[\s\S]*$/,
@@ -173,12 +175,19 @@ export async function writeAgentStatus(project: string, status: OriginalTextStat
   await rename(tmp, join(dir, 'original-text.json'))
 }
 
-/** The restored protocol of one published study version, from the app's cache: only when every item was restored
- *  and the cached file is the one the helper wrote (its sha256 recorded beside it). */
-export async function restoredProtocolText(cacheDir: string, projectionSha256: string): Promise<string | null> {
-  if (!/^[0-9a-f]{64}$/.test(projectionSha256)) return null
+/** The cache folder of one project's restored copy of a published study version: fills and approximate wording are
+ *  per project, so two projects with the same protocol.json never share one (hs_original_text.restore_slot). */
+export async function restoreSlot(project: string, projectionSha256: string): Promise<string> {
+  return sha256(`${projectionSha256}\n${sha256(await realpath(project))}`)
+}
+
+/** The restored protocol of one published study version, from the app's cache (`slot`: restoreSlot, or the version
+ *  itself): only when every item was restored and the cached file is the one the helper wrote (its sha256 recorded
+ *  beside it). */
+export async function restoredProtocolText(cacheDir: string, projectionSha256: string, slot: string = projectionSha256): Promise<string | null> {
+  if (!/^[0-9a-f]{64}$/.test(projectionSha256) || !/^[0-9a-f]{64}$/.test(slot)) return null
   try {
-    const here = join(cacheDir, projectionSha256)
+    const here = join(cacheDir, slot)
     const status = JSON.parse(await readFile(join(here, 'status.json'), 'utf8')) as OriginalTextStatus
     const bytes = await readFile(join(here, 'protocol.json'))
     if (!status.complete || status.projectionSha256 !== projectionSha256 || status.restoredSha256 !== sha256(bytes)) return null
@@ -191,18 +200,19 @@ export async function restoredProtocolText(cacheDir: string, projectionSha256: s
  *  study whose wording is not filled in for exactly the approved version. Nothing for an ordinary protocol.json. */
 export async function restoredRunFiles(project: string, cacheDir: string, protocolSha256: string): Promise<[string, string][]> {
   if (!(await isPublishedStudy(project))) return []
-  const text = await restoredProtocolText(cacheDir, protocolSha256)
+  const slot = /^[0-9a-f]{64}$/.test(protocolSha256) ? await restoreSlot(project, protocolSha256) : protocolSha256
+  const text = await restoredProtocolText(cacheDir, protocolSha256, slot)
   if (text === null) throw Error("This study's original wording has not been filled in on this computer yet, so the simulation was not started (its screens would show \"[text not available]\"). Ask the agent what is missing.")
-  const labels = await restoredLabels(cacheDir, protocolSha256)
+  const labels = await restoredLabels(cacheDir, slot)
   // which items were restored without verification (ids and labels only): the run accepts exactly those and says so
   return [['restored/protocol.json', text], ...(Object.keys(labels).length ? [['restored/labels.json', JSON.stringify({ labels }) + '\n'] as [string, string]] : [])]
 }
 
 /** The labels of a cached restored copy ({held id: approx | user | reconstructed}); {} when all is exact. */
-export async function restoredLabels(cacheDir: string, projectionSha256: string): Promise<Record<string, OriginalTextLabel>> {
-  if (!/^[0-9a-f]{64}$/.test(projectionSha256)) return {}
+export async function restoredLabels(cacheDir: string, slot: string): Promise<Record<string, OriginalTextLabel>> {
+  if (!/^[0-9a-f]{64}$/.test(slot)) return {}
   try {
-    const raw = (JSON.parse(await readFile(join(cacheDir, projectionSha256, 'status.json'), 'utf8')) as OriginalTextStatus).labels
+    const raw = (JSON.parse(await readFile(join(cacheDir, slot, 'status.json'), 'utf8')) as OriginalTextStatus).labels
     const out: Record<string, OriginalTextLabel> = {}
     for (const [h, v] of Object.entries(raw && typeof raw === 'object' ? raw : {}))
       if (/^h[0-9]{1,9}$/.test(h) && (v === 'approx' || v === 'user' || v === 'reconstructed')) out[h] = v
