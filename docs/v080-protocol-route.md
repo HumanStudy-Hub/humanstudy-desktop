@@ -359,7 +359,11 @@ computer:
   is located in the researcher's own PDF of that source (status `approx`, with its score). Then the project's fills
   file `sources/private/original-text-fills.json` (`{"<held id>": {"text", "origin": "user" | "reconstructed",
   "note"}}`, written by the assistant with the researcher) fills what is left (status `user` / `reconstructed`; a
-  `user` text that hashes to `text_sha256` counts as exact). Precedence: exact > approx > fill. A fill only ever
+  `user` text that hashes to `text_sha256` counts as exact). A held picture (whose released `src` is
+  `asset:<sha16>`, never fetched) is filled with `{"file": "<image inside the project>", "origin": "user"}`: a
+  regular PNG/JPEG/GIF/WebP file, no link or path out of the project; the restored copy's `src` names that file
+  (the engine serves it from the study folder), exact when its sha256 is the entry's, else labelled `user`.
+  Precedence: exact > approx > fill. A fill only ever
   replaces its own placeholder. All three count for the run gate; the status reports `exact`, `approx`,
   `supplied.{user,reconstructed}`, `labels` (held id -> label), `unresolved` (ids, paths, titles, lengths, need: no
   text) and `fills.problems`. The cached restored copy records the fills file's sha256 and is reused only while it

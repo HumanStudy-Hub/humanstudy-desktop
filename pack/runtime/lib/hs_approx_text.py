@@ -9,7 +9,9 @@ thousands of trigrams.
 
 On the researcher's computer the passage is the window of that page whose trigrams best match the fingerprint. It is
 used only above a fixed score and when no other place on the page matches nearly as well, and it is reported as
-approximate (the run says the wording came from the researcher's copy and may contain reading errors).
+approximate (the run says the wording came from the researcher's copy and may contain reading errors). A window that
+is not a complete match must begin with the passage's first trigram and end with its last (`ends`), so reading
+errors are accepted only inside a passage, never at an edge where words could be missing.
 
 COPY: HumanStudy-Bench scripts/research/approx_text.py is a copy of this file (it writes the fingerprints this file
 reads). Change both together.
@@ -68,6 +70,9 @@ def fingerprint(text: str, pages: list[int], salt: str | None = None) -> dict | 
         fp["seq"] = _seq(salt, w)
     else:
         fp["grams"] = sorted({_gram(salt, w, i) for i in range(len(w) - 2)})
+        # the passage's first and last trigram: a window that is not a complete match must begin and end with them,
+        # so a misread passage is never placed with words cut off at either end (a "Do not" on the page before)
+        fp["ends"] = [_gram(salt, w, 0), _gram(salt, w, len(w) - 3)]
     # Leading / trailing punctuation the window should keep (a closing period or quote mark; never a word).
     lead = c[:len(c) - len(c.lstrip("\"'“‘(["))]
     tail = c[len(c.rstrip(".,;:!?\"'”’)]")):]
@@ -173,7 +178,7 @@ def _boundary(page: str, ws: list, fp: dict, a: int, length: int, score: float) 
     ties = [(x, k) for k in range(length, max(length, n) + 1) for x in range(max(0, a - 2), a + 3)
             if x + k <= len(ws) and ((x, k) == (a, length) or abs(_window(ws, fp, x, k) - score) < 1e-9)]
     if len(ties) == 1:
-        return _whole(ties[0], len(ws), score)
+        return ties[0] if _ends(ws, fp, ties[0], score) else None
 
     def edges(t):
         start, end = ws[t[0]][1], ws[t[0] + t[1] - 1][2]
@@ -181,15 +186,22 @@ def _boundary(page: str, ws: list, fp: dict, a: int, length: int, score: float) 
             (bool(tail) and page[end:end + len(tail)] == tail)
     best = max(edges(t) for t in ties)
     picked = [t for t in ties if edges(t) == best]
-    return _whole(picked[0], len(ws), score) if best and len(picked) == 1 else None
+    return picked[0] if best and len(picked) == 1 and _ends(ws, fp, picked[0], score) else None
 
 
-def _whole(place: tuple[int, int], page_words: int, score: float) -> tuple[int, int] | None:
-    """None for a window that touches the start or end of its page without holding every trigram of the passage:
-    the words it lacks may stand on the neighbouring page ("Do not" at the foot of one page), and a word count can
-    be made up by a misread word split in pieces, so only a complete match is placed at a page edge."""
+def _ends(ws: list, fp: dict, place: tuple[int, int], score: float) -> bool:
+    """A complete match holds every trigram of the passage, so both of its ends. Anything less is placed only when
+    the window begins with the passage's first trigram and ends with its last (`ends`): otherwise words could be
+    missing at an edge (a "Do not" at the foot of the page before, behind a running header), and the item is left to
+    the researcher. A fingerprint without `ends` is placed only on a complete match."""
+    if score >= 1.0:
+        return True
+    ends = fp.get("ends")
+    if not (isinstance(ends, list) and len(ends) == 2 and all(isinstance(e, str) for e in ends)):
+        return False
     x, k = place
-    return None if score < 1.0 and (x == 0 or x + k == page_words) else place
+    w = [t for t, _, _ in ws[x:x + k]]
+    return len(w) >= 3 and _gram(fp["salt"], w, 0) == ends[0] and _gram(fp["salt"], w, len(w) - 3) == ends[1]
 
 
 def _span(page: str, ws: list, a: int, b: int, fp: dict) -> str:

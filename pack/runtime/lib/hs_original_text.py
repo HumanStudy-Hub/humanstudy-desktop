@@ -63,18 +63,25 @@ def too_long(text: str, length) -> bool:
     """Would cost the run more than its placeholder did. The approved model budget is measured on the published
     protocol, where the relay charges each placeholder character as its JSON escape (\\u2591: 6 bytes,
     skills/run/budget.py call_charge); a filled-in text must not be charged more than that, so the run can never
-    outgrow the budget the researcher approved. Measured after NFC (as stored), escaped once and twice."""
+    outgrow the budget the researcher approved. Measured after NFC (as stored), escaped once and as the renderer nests it."""
     if not isinstance(length, int) or length < 1:
         return True
     t, ph = unicodedata.normalize("NFC", text), "\u2591" * length   # as _put stores it
-    # escaped once (a page's text in the request body) and twice (a field the renderer shows as JSON, e.g. a prefill)
-    once_t, once_p = json.dumps(t), json.dumps(ph)
-    return len(once_t) > len(once_p) or len(json.dumps(once_t)) > len(json.dumps(once_p))
+    # escaped once (a page's text in the request body), and twice as the renderer does for a field it shows as JSON
+    # (skills/run/render.py: json.dumps(..., ensure_ascii=False) inside the page, e.g. a prefill)
+    nested = lambda x: json.dumps(json.dumps(x, ensure_ascii=False))   # noqa: E731
+    return len(json.dumps(t)) > len(json.dumps(ph)) or len(nested(t)) > len(nested(ph))
 
 
 def restored_ok(entry, item_report) -> bool:
-    """A held text restored on this computer; pictures are never counted (the run could not show them)."""
-    return isinstance(entry, dict) and entry.get("kind") != "image" and (item_report or {}).get("status") in OK
+    """A held item restored on this computer. A picture counts only when the fills file put a file of the project in
+    its place (via "fill"): the engine's own restored pictures stay in memory, where the run could not show them."""
+    if not isinstance(entry, dict):
+        return False
+    r = item_report or {}
+    if entry.get("kind") == "image":
+        return r.get("via") == "fill" and r.get("status") in ("ok", "user")
+    return r.get("status") in OK
 STATUS_VERSION = 2
 
 
@@ -337,14 +344,8 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
     def ok_count(rep_, key):
         return sum(1 for h, e in held.items() if isinstance(e, dict) and e.get("source") == key
                    and restored_ok(e, rep_["items"].get(h)))
-    # a link source whose download restored nothing is not kept (see forget_download), but only once the
-    # approximate pass has also had its chance with it (below)
-    unkept = []
-    for key, src in (report.get("sources") or {}).items():
-        d = distribution_of(projection, key)
-        if d.get("tier") == "link" and src.get("status") == "ok" and isinstance(d.get("url"), str) \
-                and src.get("matches_recorded_sha256") is not True and ok_count(report, key) == 0:
-            unkept.append((key, d["url"]))
+    # a link download that restores nothing is not kept (forget_download), but only once the approximate pass has
+    # also had its chance with it (after fill_in, below)
     todo = sorted({e.get("source") for h, e in held.items()
                    if isinstance(e, dict) and isinstance(e.get("source"), str)
                    and not restored_ok(e, report["items"].get(h))})
@@ -370,10 +371,18 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
     if supplied:
         out, report = D.rehydrate(projection, fetch=fetch, files=supplied, extractors=extractors)
     fill_in(projection, out, report, fills or {}, cache, files, chosen, supplied, extractors, fetch)
-    for key, url in unkept:
+    # every link download that restored nothing in either pass (also one only the approximate pass fetched) is
+    # not kept, unless it is the very file the study was built from
+    for key in sources_of(projection):
+        d = distribution_of(projection, key)
+        if d.get("tier") != "link" or not isinstance(d.get("url"), str):
+            continue
+        got = read_file(cache / "downloads" / sha256(d["url"].encode("utf-8")))
+        if got is None or (isinstance(d.get("sha256"), str) and sha256(got) == d["sha256"]):
+            continue
         if not any(isinstance(e, dict) and e.get("source") == key and (report["items"].get(h) or {}).get("status") in ("ok", "approx")
                    for h, e in held.items()):
-            forget_download(cache, url, RESTORED_NONE)
+            forget_download(cache, d["url"], RESTORED_NONE)
     complete = all(restored_ok(e, report["items"].get(h)) for h, e in held.items())
     report["complete"] = complete
     return (out if complete else None), report, chosen, extractors, log
@@ -502,8 +511,23 @@ def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path,
     # 3. the fills file: what the researcher supplied, or what the assistant reconstructed with them
     for h in todo():
         f = fills.get(h)
-        if f and _put(out, held[h], f["text"]):
+        if f and "text" in f and _put(out, held[h], f["text"]):
             mark(h, held[h], f["origin"])
+    # held pictures: a screenshot or scan the researcher dropped into the project (exact when it is the very file)
+    for h, e in sorted(held.items()):
+        f = fills.get(h)
+        if not (isinstance(e, dict) and e.get("kind") == "image" and f and "file" in f) or restored_ok(e, items.get(h)):
+            continue
+        try:
+            cur = D._get(out, e["path"])
+        except (KeyError, IndexError, ValueError, TypeError):
+            continue
+        if not (isinstance(cur, dict) and isinstance(cur.get("src"), str)):
+            continue
+        exact = isinstance(e.get("sha256"), str) and f["sha256"] == e["sha256"]
+        # the engine serves a relative src from the study folder (the project) by an opaque asset id
+        D._set(out, e["path"], dict(cur, src=f["file"], **({} if exact else {"sha256": f["sha256"]})))
+        mark(h, e, "ok" if exact else "user", via="fill")
     remaining = {h: e for h, e in held.items() if not restored_ok(e, items.get(h))}
     if remaining:
         out.setdefault("distribution", copy.deepcopy(projection.get("distribution") or {}))["held"] = remaining
@@ -511,10 +535,41 @@ def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path,
         out.pop("distribution", None)
 
 
-def load_fills(path: Path | None, projection: dict) -> tuple[dict, list[dict], str | None]:
-    """(valid fills {held id: {"text", "origin"}}, problems [{held, why}], sha256 of the file or None). The fills
-    file (FILLS) is written by the assistant: {"<held id>": {"text": "...", "origin": "user" | "reconstructed",
-    "note": "..."}}. A problem names the held id and why, never the text."""
+IMAGE_MAGIC = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a")
+
+
+def picture_file(project: Path | None, rel) -> tuple[str | None, str | None, str | None]:
+    """(project-relative path, sha256, None) of a picture the fills file names, or (None, None, why). Only a regular
+    image file inside the project: no absolute path, no '..', no symbolic link anywhere on the way."""
+    if project is None:
+        return None, None, "pictures can be filled only in a project"
+    if not isinstance(rel, str) or not rel or "\x00" in rel or "\\" in rel or rel.startswith(("/", "~")) \
+            or re.match(r"^[A-Za-z]:", rel) or ".." in rel.split("/") or re.match(r"^[a-z][a-z0-9+.-]*:", rel, re.I):
+        return None, None, "file must be a path inside the project, like sources/private/figure.png"
+    root = project.resolve()
+    path = root
+    for part in [x for x in rel.split("/") if x not in ("", ".")]:
+        path = path / part
+        if path.is_symlink():
+            return None, None, "file must not be a link"
+    try:
+        real = path.resolve(strict=True)
+        real.relative_to(root)
+    except (OSError, ValueError, RuntimeError):
+        return None, None, "file not found in the project"
+    data = read_file(real) if real.is_file() else None
+    if data is None:
+        return None, None, "file not found in the project"
+    if not (data.startswith(IMAGE_MAGIC) or (data[:4] == b"RIFF" and data[8:12] == b"WEBP")):
+        return None, None, "file is not a PNG, JPEG, GIF or WebP picture"
+    return real.relative_to(root).as_posix(), sha256(data), None
+
+
+def load_fills(path: Path | None, projection: dict, project: Path | None = None) -> tuple[dict, list[dict], str | None]:
+    """(valid fills {held id: {"text", "origin"} | {"file", "sha256", "origin"}}, problems [{held, why}], sha256 of the
+    file or None). The fills file (FILLS) is written by the assistant: {"<held id>": {"text": "...", "origin": "user"
+    | "reconstructed", "note": "..."}}, and for a held picture {"file": "<path inside the project>", "origin":
+    "user"}. A problem names the held id and why, never the text."""
     if path is None:
         return {}, [], None
     data = read_file(path)
@@ -537,7 +592,17 @@ def load_fills(path: Path | None, projection: dict) -> tuple[dict, list[dict], s
         if h not in held or not isinstance(held[h], dict):
             why = "no held item has this id"
         elif held[h].get("kind") == "image":
-            why = "this item is a picture; a text cannot fill it"
+            if not isinstance(v, dict) or "file" not in v:
+                why = 'this item is a picture: give "file" (a screenshot or scan in the project), not text'
+            elif v.get("origin") != "user":
+                why = 'a picture\'s origin must be "user"'
+            else:
+                rel, digest, why = picture_file(project, v.get("file"))
+                if why is None:
+                    fills[h] = {"file": rel, "sha256": digest, "origin": "user"}
+                    continue
+        elif isinstance(v, dict) and "file" in v:
+            why = "this item is a text: give \"text\", not a file"
         elif not isinstance(v, dict) or not isinstance(v.get("text"), str) or not v["text"].strip():
             why = "text must be a non-empty string"
         elif v.get("origin") not in ("user", "reconstructed"):
@@ -626,7 +691,7 @@ def status(projection: dict, report: dict, chosen: dict, extractors: dict, log: 
                             key in chosen, extractors)})
     return {"version": STATUS_VERSION, "projection": True, "complete": bool(report.get("complete")),
             "items": total, "restored": restored,
-            "exact": sum(1 for h, e in held.items() if isinstance(e, dict) and e.get("kind") != "image" and st_of(h) == "ok"),
+            "exact": sum(1 for h, e in held.items() if restored_ok(e, report["items"].get(h)) and st_of(h) == "ok"),
             "approx": sum(1 for v in labels.values() if v == "approx"),
             "supplied": {"user": sum(1 for v in labels.values() if v == "user"),
                          "reconstructed": sum(1 for v in labels.values() if v == "reconstructed")},
@@ -781,7 +846,7 @@ def index_project(cache: Path, project: Path, projection: dict, files: list[Path
                 continue
         private |= window_pairs("\n".join(texts))
     # what the researcher pasted into the fills file comes from their copy of a source: private like the copy
-    user_fills = [f["text"] for f in (fills or {}).values() if f.get("origin") == "user"]
+    user_fills = [f["text"] for f in (fills or {}).values() if f.get("origin") == "user" and "text" in f]
     if user_fills:
         private |= window_pairs("\n".join(user_fills))
     public: set = set()
@@ -863,7 +928,7 @@ def main(argv: list[str]) -> int:
     here = cache / slot
     done = here / "protocol.json"
     project = protocol_path.parent
-    fills, fill_problems, fills_sha = load_fills(fills_path, projection)
+    fills, fill_problems, fills_sha = load_fills(fills_path, projection, project)
     cached = None
     if done.is_file() and (here / "status.json").is_file():
         st = json.loads((here / "status.json").read_text(encoding="utf-8"))

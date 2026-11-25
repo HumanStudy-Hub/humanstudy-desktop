@@ -379,6 +379,23 @@ class ApproxAndFills(Published):
         self.assertEqual(st["labels"], {"h2": "approx"})
 
     @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
+    def test_a_cold_download_that_gives_nothing_is_not_kept(self):
+        other = Server({"/leaflet.pdf": (FIX / "leaflet.pdf").read_bytes()})
+        self.addCleanup(other.close)
+        p = json.loads(self.projection.read_text(encoding="utf-8"))
+        self.ocr_corrected(p["distribution"]["held"])
+        p["distribution"]["held"]["h2"]["approx"] = A.fingerprint("A sentence about cycling to work at dawn today.", [2], salt="x")
+        p["distribution"]["held"]["h2"]["locator"]["extractor"] = "pypdfium2/99.0+pdfium/1.0"
+        p["meta"]["sources"]["leaflet"]["distribution"].update(tier="link", url=other.url + "/leaflet.pdf", sha256="0" * 64)
+        path = self.tmp / "cold-wrong.json"
+        path.write_text(json.dumps(p, ensure_ascii=False), encoding="utf-8")
+        st = self.run_fills(path, files=[self.drop("booklet.html")])
+        self.assertFalse(st["complete"])
+        key = O.sha256((other.url + "/leaflet.pdf").encode("utf-8"))
+        self.assertFalse((self.cache / "downloads" / key).exists(), "a download no pass used is asked for again later")
+        self.assertTrue((self.cache / "downloads" / (key + ".failed")).exists())
+
+    @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
     def test_approx_is_not_placed_from_a_pdf_without_the_passage(self):
         other = (FIX / "leaflet.pdf").read_bytes()   # a fingerprint of a passage the PDF does not hold
         path = self.variant(lambda held: (self.ocr_corrected(held), held["h2"].update(
@@ -463,7 +480,7 @@ class ApproxAndFills(Published):
         # the relay charges a placeholder character 6 bytes (its JSON escape): a fill may cost no more than that
         why = "text is longer than the original passage allows (35 characters of placeholder)"
         for text, ok in (("w" * 210, True), ("w" * 211, False), ("\u8bcd" * 35, True), ("\u8bcd" * 36, False),
-                         ('"' * 35, True), ('"' * 62, False),        # a quote costs more when escaped twice
+                         ('"' * 35, True), ('"' * 52, True), ('"' * 53, False),   # quotes: as render.py nests a prefill
                          ("e\u0301" * 35, True)):                       # NFC: 70 code points stored as 35
             st = self.run_fills(self.projection, fills=self.fills({"h4": {"text": text, "origin": "reconstructed"}}))
             self.assertEqual(st["fills"]["problems"], [] if ok else [{"held": "h4", "why": why}], text)
@@ -548,7 +565,11 @@ class ApproxMatcher(unittest.TestCase):
         t = "Please do not open the box until the experimenter tells you to do so now."
         got = A.locate(["Rules. Please do not open the box until the experimenter tells you to do so nqw. Next."],
                        A.fingerprint(t, [1], salt="ab"))
-        self.assertEqual(got[0], "Please do not open the box until the experimenter tells you to do so nqw.")
+        self.assertIsNone(got, "a misread last word: the end of the passage is not established")
+        got = A.locate(["Rules. Please do not open the box until the experimentor tells you to do so now. Next."],
+                       A.fingerprint(t, [1], salt="ab"))
+        self.assertEqual(got[0], "Please do not open the box until the experimentor tells you to do so now.",
+                         "a misread word inside the passage is placed, with its reading error")
         t = "you must not press the red button before the signal sounds"
         fp = A.fingerprint(t, [1], salt="ab")
         self.assertIsNone(A.locate(["Rule one you must not press the red button before the signal squnds and then wait"], fp),
@@ -565,6 +586,106 @@ class ApproxMatcher(unittest.TestCase):
         got = A.locate(["Instructions for the session. Do not",
                         "open the box until the experimenter tells you to do so n o w. Then wait."], fp)
         self.assertTrue(got is None or got[0].startswith("Do not"), "a word split by the reader is no stand-in")
+        got = A.locate(["Instructions for the session. Do not",
+                        "Page 12 open the box until the experimenter tells you to do so n o w. Then wait."], fp)
+        self.assertTrue(got is None or got[0].startswith("Do not"), "nor a running header")
+        got = A.locate(["Instructions for the session. Do not",
+                        "Page 12 open the box until the experi menter tells you to do so now. Then wait."], fp)
+        self.assertTrue(got is None or got[0].startswith("Do not"), "nor a split word inside")
+        old = dict(fp)
+        old.pop("ends")
+        self.assertIsNone(A.locate(["Rules. Do not open the box until the experimentor tells you to do so now."], old),
+                          "a fingerprint without ends is placed only on a complete match")
+        self.assertEqual(A.locate(["Rules. " + t + " Next."], old), (t, 1.0))
+
+
+class HeldPictures(Published):
+    """A held picture: its released src is asset:<sha16> (never fetched, never rejected before filling); the fills file
+    puts a screenshot or scan from the project in its place, exact when it is the published picture, else "user"."""
+    PNG = b"\x89PNG\r\n\x1a\n" + b"published picture bytes"
+
+    def picture_study(self):
+        p = json.loads(self.projection.read_text(encoding="utf-8"))
+        digest = O.sha256(self.PNG)
+        p["stages"]["intro"]["content"].append({"id": "pic", "value": {"src": "asset:" + digest[:16]}})
+        p["distribution"]["held"]["h9"] = {"path": "/stages/intro/content/2/value", "source": "booklet", "kind": "image",
+                                          "sha256": digest}
+        path = self.tmp / "picture.json"
+        path.write_text(json.dumps(p), encoding="utf-8")
+        return path
+
+    def fill(self, entry):
+        f = self.files / "original-text-fills.json"
+        texts = {"h3": {"text": TEXTS["/stages/q/responses/0/prompt"], "origin": "user"},
+                 "h4": {"text": TEXTS["/stages/q/responses/1/prompt"], "origin": "user"},
+                 "h2": {"text": TEXTS["/stages/intro/content/1/value"], "origin": "user"}}
+        f.write_text(json.dumps(dict(texts, h9=entry)), encoding="utf-8")
+        return f
+
+    def run_pic(self, path, entry):
+        return self.run_helper(protocol=path, files=[], extra=["--allow-local", "--fills", str(self.fill(entry))])
+
+    def test_unfilled_asset_src_stays_unresolved_and_loads(self):
+        path = self.picture_study()
+        st = self.run_helper(protocol=path, files=[])
+        self.assertEqual([(u["held"], u["kind"], u["need"]) for u in st["unresolved"] if u["held"] == "h9"],
+                         [("h9", "picture", "picture")])
+        from hsenv import engine as E
+        proto = E.Protocol(json.loads(path.read_text(encoding="utf-8")), self.tmp)
+        src = proto.raw["stages"]["intro"]["content"][2]["value"]["src"]
+        self.assertIsNone(proto.local_path(src), "an asset: src is just a missing file, never an error")
+        self.assertTrue(proto.asset_ref(src).startswith("asset:"))
+
+    def test_the_published_picture_is_exact(self):
+        (self.files / "fig.png").write_bytes(self.PNG)
+        st = self.run_pic(self.picture_study(), {"file": "project/sources/private/fig.png", "origin": "user"})
+        self.assertTrue(st["complete"], st)
+        self.assertEqual(st["labels"], {})
+        restored = json.loads(Path(st["restoredPath"]).read_text(encoding="utf-8"))
+        self.assertEqual(restored["stages"]["intro"]["content"][2]["value"]["src"], "project/sources/private/fig.png")
+
+    def test_a_screenshot_is_supplied_by_the_user(self):
+        (self.files / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"a screenshot of the figure")
+        st = self.run_pic(self.picture_study(), {"file": "project/sources/private/shot.png", "origin": "user"})
+        self.assertTrue(st["complete"], st)
+        self.assertEqual(st["labels"], {"h9": "user"})
+        self.assertEqual(st["supplied"]["user"], 1)
+
+    def test_bad_picture_files_are_refused(self):
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / "x.png").write_bytes(self.PNG)
+        (self.files / "link.png").symlink_to(outside / "x.png")
+        (self.files / "notes.txt").write_text("not a picture", encoding="utf-8")
+        (self.files / "fig.png").write_bytes(self.PNG)
+        path = self.picture_study()
+        for entry, why in (({"file": "project/sources/private/link.png", "origin": "user"}, "file must not be a link"),
+                           ({"file": "../" + outside.name + "/x.png", "origin": "user"}, "file must be a path inside the project, like sources/private/figure.png"),
+                           ({"file": str(outside / "x.png"), "origin": "user"}, "file must be a path inside the project, like sources/private/figure.png"),
+                           ({"file": "project/sources/private/notes.txt", "origin": "user"}, "file is not a PNG, JPEG, GIF or WebP picture"),
+                           ({"file": "project/sources/private/none.png", "origin": "user"}, "file not found in the project"),
+                           ({"file": "project/sources/private/fig.png", "origin": "reconstructed"}, 'a picture\'s origin must be "user"'),
+                           ({"text": "a description", "origin": "user"}, 'this item is a picture: give "file" (a screenshot or scan in the project), not text')):
+            st = self.run_pic(path, entry)
+            self.assertFalse(st["complete"], entry)
+            self.assertEqual(st["fills"]["problems"], [{"held": "h9", "why": why}], entry)
+
+    def test_the_run_accepts_only_the_project_picture_it_was_given(self):
+        sys.path.insert(0, str(RUNTIME.parent / "skills" / "run"))
+        import app_run
+        (self.files / "fig.png").write_bytes(self.PNG)
+        (self.files / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\nshot")
+        path = self.picture_study()
+        st = self.run_pic(path, {"file": "project/sources/private/fig.png", "origin": "user"})
+        projection = json.loads(path.read_text(encoding="utf-8"))
+        restored = json.loads(Path(st["restoredPath"]).read_text(encoding="utf-8"))
+        self.assertTrue(app_run.matches_projection(projection, restored, {}, self.tmp))
+        swapped = json.loads(json.dumps(restored))
+        swapped["stages"]["intro"]["content"][2]["value"]["src"] = "project/sources/private/shot.png"
+        self.assertFalse(app_run.matches_projection(projection, swapped, {}, self.tmp), "another picture, unlabelled")
+        self.assertTrue(app_run.matches_projection(projection, swapped, {"h9": "user"}, self.tmp))
+        swapped["stages"]["intro"]["content"][2]["value"]["src"] = "../outside.png"
+        self.assertFalse(app_run.matches_projection(projection, swapped, {"h9": "user"}, self.tmp))
 
 
 class RedactionIndex(unittest.TestCase):

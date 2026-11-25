@@ -69,7 +69,8 @@ via `hsenv.rehydrate`): link sources are downloaded from their URL, the rest com
 and the restored protocol stay in app storage (`<userData>/original-text/<sha256 of protocol.json>/`), never in
 the project. When an item fails that check but carries an `approx` fingerprint, it is located in the researcher's
 own PDF copy instead (labelled approximate: may contain reading errors). An item no file fills in can be supplied in
-`sources/private/original-text-fills.json` (`{"<held id>": {"text", "origin": "user" | "reconstructed", "note"}}`,
+`sources/private/original-text-fills.json` (`{"<held id>": {"text", "origin": "user" | "reconstructed", "note"}}`;
+for a held picture `{"file": "<image in the project>", "origin": "user"}`,
 written by the assistant with the researcher; never exported or published), applied only when the exact and the
 approximate text both fail. Such a study previews with "[text not available]" in place of missing wording and runs
 only when every item is restored (exact, approximate or supplied); the run plays the restored copy, says how many

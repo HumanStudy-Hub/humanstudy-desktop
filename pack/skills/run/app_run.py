@@ -409,13 +409,14 @@ def _get(doc, path: str):
 LABELS = ("approx", "user", "reconstructed")
 
 
-def matches_projection(projection: dict, restored: dict, labels: dict | None = None) -> bool:
+def matches_projection(projection: dict, restored: dict, labels: dict | None = None, root: Path | None = None) -> bool:
     """True when `restored` is exactly `projection` with every held text filled in: each held slot holds the text
     whose sha256 the published study recorded (hsenv's own per-item check), no placeholder is left anywhere, and
-    putting the placeholders back gives the published study unchanged. A held picture is not supported (the app
-    does not restore pictures yet), so a study holding one never matches. `labels` ({held id: approx | user |
+    putting the placeholders back gives the published study unchanged. `labels` ({held id: approx | user |
     reconstructed}, from the app beside the copy) names the items the app restored without that check: their slot
-    must hold a non-empty text, and everything else must still match."""
+    must hold a non-empty text, and everything else must still match. A held picture matches when its slot names an
+    image file inside the project (`root`) that is the published picture (its sha256) or is labelled "user" (a
+    screenshot or scan the researcher supplied)."""
     from hsenv import distribution as D
     if not isinstance(restored, dict) or "distribution" in restored or PLACEHOLDER in json.dumps(restored, ensure_ascii=False):
         return False
@@ -425,7 +426,15 @@ def matches_projection(projection: dict, restored: dict, labels: dict | None = N
     try:
         for hid, h in held.items():
             if h.get("kind") == "image":
-                return False
+                pic = _get(b, h["path"])
+                if not (isinstance(pic, dict) and isinstance(pic.get("src"), str) and root is not None):
+                    return False
+                data = picture_bytes(root, pic["src"])
+                if data is None or not ((labels or {}).get(hid) == "user"
+                                        or hashlib.sha256(data).hexdigest() == h.get("sha256")):
+                    return False
+                _put(b, h["path"], json.loads(json.dumps(_get(a, h["path"]))))
+                continue
             text = _get(b, h["path"])
             if (labels or {}).get(hid) in LABELS:
                 if not isinstance(text, str) or not text.strip():
@@ -436,6 +445,19 @@ def matches_projection(projection: dict, restored: dict, labels: dict | None = N
     except (KeyError, IndexError, ValueError, TypeError, AttributeError):
         return False
     return a == b
+
+
+def picture_bytes(root: Path, src: str) -> bytes | None:
+    """The bytes of a picture file the restored copy names: a relative path to a regular file inside the project
+    (no '..', no link out of it), else None."""
+    if not src or src.startswith(("/", "~")) or "\\" in src or "\x00" in src or ":" in src or ".." in src.split("/"):
+        return None
+    try:
+        real = (root / src).resolve(strict=True)
+        real.relative_to(root.resolve())
+        return real.read_bytes() if real.is_file() else None
+    except (OSError, ValueError, RuntimeError):
+        return None
 
 
 def restored_protocol(project: Path) -> dict | None:
@@ -458,7 +480,7 @@ def restored_protocol(project: Path) -> dict | None:
     if not given.is_file():
         raise Refused(msg("text_missing"))
     restored = json.loads(given.read_text(encoding="utf-8"))
-    if not matches_projection(projection, restored, restored_labels()):
+    if not matches_projection(projection, restored, restored_labels(), project):
         raise Refused(msg("text_other"))
     return restored
 

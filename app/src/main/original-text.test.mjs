@@ -137,9 +137,13 @@ test('problems: approximate and supplied wording unblock; what is still unresolv
   assert.equal(open[0].text.need, 'reading')
   assert.match(open[0].reason, /paste it or send a screenshot/)
   assert.match(open[0].reason, /reconstruct it with your agreement, labelled as reconstructed/)
-  // a picture or a changed held list: no fill can help, so no such hint
+  // a held picture: a screenshot or scan of it, put in place by the assistant
   const pic = O.originalTextProblems({ projection: true, complete: false, sources: [{ ...sources[2], restored: 1, screens: 1, need: 'picture' }] })
-  assert.doesNotMatch(pic[0].reason, /screenshot/)
+  assert.match(pic[0].reason, /drop in a screenshot or scan of each picture/)
+  assert.match(pic[0].reason, /labelled as supplied by you/)
+  // a changed held list: no fill can help, so no such hint
+  const changed = O.originalTextProblems({ projection: true, complete: false, sources: [{ ...sources[2], restored: 1, screens: 1, need: 'held-changed' }] })
+  assert.doesNotMatch(changed[0].reason, /screenshot|assistant/)
 })
 
 test('the fills file is passed to the helper, never tried as a source copy, and its labels reach the run', async () => {

@@ -135,7 +135,7 @@ const ROWS: Row[] = [
   ['sim.text_need.changed-online', 'The copy of {title} online no longer matches the version the study was built from, so {screens} cannot be filled in. Drop in your copy of that version ({format}).', '网上的《{title}》已与构建研究时使用的版本不一致，因此有 {screens}无法补全。请拖入你手上的那个版本（{format}）。'],
   ['sim.text_need.pdf-reader', 'The wording of {screens} comes from {title}, a PDF, and this computer cannot read PDF files yet. Update or reinstall HumanStudy Hub, then open the study again.', '有 {screens}的措辞来自 PDF 文件《{title}》，但这台电脑还无法读取 PDF。请更新或重新安装 HumanStudy Hub，然后重新打开这项研究。'],
   ['sim.text_need.app-version', 'The wording of {screens} comes from {title}, and this study was published with a different version of HumanStudy Hub’s PDF reader. Update HumanStudy Hub; if that does not help, ask the study’s publisher for an updated version.', '有 {screens}的措辞来自《{title}》，而这项研究发布时使用的 PDF 阅读组件版本与本机不同。请更新 HumanStudy Hub；如果仍不行，请联系研究的发布者获取更新版本。'],
-  ['sim.text_need.picture', 'The study shows pictures from {title} on {screens}, and this version of HumanStudy Hub cannot show them yet, so the study cannot run.', '有 {screens}显示来自《{title}》的图片，当前版本的 HumanStudy Hub 还无法显示，因此这项研究还不能运行。'],
+  ['sim.text_need.picture', 'The study shows pictures from {title} on {screens}. Drop in a screenshot or scan of each picture (it stays on your computer), then ask the assistant to put it in place.', '有 {screens}显示来自《{title}》的图片。请拖入每张图片的截图或扫描件（只保存在你的电脑上），然后让助手把它放到相应位置。'],
   ['sim.text_need.reading', 'The wording of {screens} is printed inside a picture in {title}. It cannot be filled in automatically yet, so the study cannot run.', '有 {screens}的措辞印在《{title}》的图片里，目前无法自动补全，因此这项研究还不能运行。'],
   ['sim.text_format.pdf', 'PDF', 'PDF'],
   ['sim.text_format.html', 'web page', '网页'],

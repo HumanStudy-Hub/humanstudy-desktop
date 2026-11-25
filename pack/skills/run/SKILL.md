@@ -71,7 +71,7 @@ researcher in plain words, in their language, never with the words "rehydrate", 
 | `app-version` | "This study was published with a different version of HumanStudy Hub's PDF reader: update the app; if that does not help, ask the study's publisher." |
 | `held-changed` | "This study's record of which wording to fill in was changed or removed after it was first opened on this computer, so it cannot run. Put back the study's protocol.json exactly as you received it." (never edit it back yourself from memory) |
 | `checks-failed` | "With its original wording filled in, the study did not pass its own checks, so it cannot run. If protocol.json or the files in sourcetext/ were changed on this computer, put back the versions you received; otherwise the published version itself needs fixing." |
-| `picture` | "Some screens show pictures from <title>, which this version of HumanStudy Hub cannot show yet, so the study cannot run." |
+| `picture` | "Some screens show pictures from <title>. Drop in a screenshot or scan of each picture (the figure or the page it is on); it stays on your computer." Then fill it as in "When no file fills a screen". |
 | `reading` | "Some wording is printed inside a picture and cannot be filled in automatically yet." |
 
 ### When no file fills a screen
@@ -105,7 +105,13 @@ file filled in (the exact wording, then the approximate one, win over a fill), a
 
 Once the study runs, say how its wording was filled in whenever `approx` or `supplied` is not zero, before the run
 and with its results: "N passages came from your copy of the paper and may contain reading errors; N you supplied;
-N were reconstructed." A held picture (`kind: picture`) cannot be filled with text: say so.
+N were reconstructed."
+
+A held picture (`kind: picture` in `unresolved`) is filled with a file, never with text: ask the researcher to drop
+in a screenshot or scan of that figure or page (PNG, JPEG, GIF or WebP). The app note names where it landed (in
+`sources/private/`); do not open it. Then add `"<held id>": {"file": "sources/private/<name>", "origin": "user"}`
+to the fills file. It counts as exact when it is the very published picture, otherwise as supplied by the
+researcher (`supplied.user`), and say so like any supplied wording.
 
 ### Arms marked not runnable
 

@@ -127,7 +127,7 @@ const PLAIN: Record<OriginalTextReason, string> = {
   'pdf-reader': 'this computer cannot read PDF files yet (update HumanStudy Hub)',
   'app-version': 'the study was published with a different version of the app\'s PDF reader (update HumanStudy Hub)',
   reading: 'the wording is printed inside a picture and cannot be filled in automatically',
-  picture: 'the study shows pictures from it, which this version of HumanStudy Hub cannot show yet',
+  picture: 'the study shows pictures from it; drop in a screenshot or scan of each picture (it stays on your computer)',
   'held-changed': 'the study was changed after it was opened (put back its protocol.json as received)',
   'checks-failed': 'with the wording filled in, the study did not pass its own checks',
 }
@@ -135,6 +135,7 @@ const PLAIN: Record<OriginalTextReason, string> = {
 /** What the researcher can do about wording no file filled in (the assistant reads it in the problem). */
 const ASK = ' Or ask the assistant: it can take that passage from you (paste it or send a screenshot), or, if the paper does not print it, reconstruct it with your agreement, labelled as reconstructed.'
 const SUPPLIABLE = new Set<OriginalTextReason>(['download', 'file', 'wrong-file', 'changed-online', 'pdf-reader', 'app-version', 'reading'])
+const ASK_PICTURE = ' Ask the assistant: once the screenshot or scan is in, it puts it in place of the picture, labelled as supplied by you.'
 
 /** One problem per source that still has screens without their wording: a run is blocked until there are none.
  *  Wording restored approximately or supplied in the fills file counts as filled in. `reason` is the plain English
@@ -146,7 +147,7 @@ export function originalTextProblems(status: OriginalTextStatus): OriginalTextPr
     if (!s.need || s.restored >= s.items) continue
     const screens = Math.max(1, s.screens)
     out.push({ check: 'original-text', text: { need: s.need, title: s.title, format: s.format, screens },
-      reason: `${screens === 1 ? '1 screen is' : `${screens} screens are`} missing the wording from ${s.title} (${FORMAT[s.format] ?? 'file'}): ${PLAIN[s.need] ?? 'it could not be filled in'}.${SUPPLIABLE.has(s.need) ? ASK : ''}` })
+      reason: `${screens === 1 ? '1 screen is' : `${screens} screens are`} missing the wording from ${s.title} (${FORMAT[s.format] ?? 'file'}): ${PLAIN[s.need] ?? 'it could not be filled in'}.${SUPPLIABLE.has(s.need) ? ASK : s.need === 'picture' ? ASK_PICTURE : ''}` })
   }
   if (!out.length) out.push({ check: 'original-text', reason: 'Some screens are missing their original wording.' })
   return out
