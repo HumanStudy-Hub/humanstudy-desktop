@@ -218,6 +218,7 @@ const ROWS: Row[] = [
   ['sim.p.official', 'Official comparison: the sample size matches the paper\'s analysed sample in every condition.', '正式比较：每个条件的样本量都与论文分析的样本量一致。'],
   ['sim.p.unofficial', 'Unofficial comparison: values only, no pass or fail.', '非正式比较：只给出数值，不判定通过与否。'],
   ['sim.p.unverified', 'The paper\'s sample size is taken as printed and has not been checked yet.', '样本量按论文印出的数字，尚未核对。'],
+  ['sim.p.wording', 'Not all wording was the exact published text: {approx} passage(s) came from your copy of the paper and may contain reading errors, {user} you supplied, {reconstructed} reconstructed. So this comparison is unofficial.', '并非所有措辞都是原文：{approx} 段取自你手中的论文副本，可能有识别错误；{user} 段由你提供；{reconstructed} 段为重构。因此这是非正式比较。'],
   ['sim.p.caveat', 'AI participants are not people: this is a simulation and a comparison with the paper\'s printed numbers, not a ranking.', 'AI 参与者不是真人：这是模拟实验，以及与论文印出数字的比较，不是排名。'],
   ['updates.check', 'Check for updates', '检查更新'],
   ['updates.checking', 'Checking…', '正在检查…'],

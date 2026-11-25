@@ -346,9 +346,6 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
     supplied: dict[str, bytes] = {}
     held = held_of(projection)
 
-    def ok_count(rep_, key):
-        return sum(1 for h, e in held.items() if isinstance(e, dict) and e.get("source") == key
-                   and restored_ok(e, rep_["items"].get(h)))
     # a link download that restores nothing is not kept (forget_download), but only once the approximate pass has
     # also had its chance with it (after fill_in, below)
     todo = sorted({e.get("source") for h, e in held.items()
@@ -359,17 +356,19 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
         want = d.get("sha256") if isinstance(d.get("sha256"), str) else None
         sub = only_source(projection, key)
         n_items = len(held_of(sub))
-        # a file replaces the download only when it restores more of this source than the download did
-        best, best_ok = None, ok_count(report, key)
+        # a project copy is used when it verifies items the download did not (what the download verified is kept
+        # item by item below): the copy that adds the most
+        have = {h for h in held if restored_ok(held[h], report["items"].get(h))}
+        best, best_new = None, 0
         for path in candidates_for(d.get("format"), files, key, want):
             data = read_file(path)
             if data is None:
                 continue
             _, rep = D.rehydrate(sub, files={key: data}, extractors=extractors)
-            k = sum(1 for h, r in rep["items"].items() if restored_ok(held.get(h), r))
-            if k > best_ok:
-                best, best_ok = (path, data), k
-            if k == n_items:
+            got = {h for h, r in rep["items"].items() if restored_ok(held.get(h), r)}
+            if len(got - have) > best_new:
+                best, best_new = (path, data), len(got - have)
+            if len(got | (have & set(held_of(sub)))) == n_items:
                 break
         if best is not None:
             chosen[key], supplied[key] = best

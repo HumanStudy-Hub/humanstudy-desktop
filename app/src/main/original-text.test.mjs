@@ -135,7 +135,7 @@ test('problems: approximate and supplied wording unblock; what is still unresolv
     { ...sources[2], restored: 1, reconstructed: 0, screens: 1, need: 'reading' }] })
   assert.equal(open.length, 1)
   assert.equal(open[0].text.need, 'reading')
-  assert.match(open[0].reason, /paste it or send a screenshot/)
+  assert.match(open[0].reason, /paste it into the chat/)
   assert.match(open[0].reason, /reconstruct it with your agreement, labelled as reconstructed/)
   // a held picture: a screenshot or scan of it, put in place by the assistant
   const pic = O.originalTextProblems({ projection: true, complete: false, sources: [{ ...sources[2], restored: 1, screens: 1, need: 'picture' }] })

@@ -133,7 +133,7 @@ const PLAIN: Record<OriginalTextReason, string> = {
 }
 
 /** What the researcher can do about wording no file filled in (the assistant reads it in the problem). */
-const ASK = ' Or ask the assistant: it can take that passage from you (paste it or send a screenshot), or, if the paper does not print it, reconstruct it with your agreement, labelled as reconstructed.'
+const ASK = ' Or ask the assistant: it can take that passage from you (paste it into the chat), or, if the paper does not print it, reconstruct it with your agreement, labelled as reconstructed.'
 const SUPPLIABLE = new Set<OriginalTextReason>(['download', 'file', 'wrong-file', 'changed-online', 'pdf-reader', 'app-version', 'reading'])
 const ASK_PICTURE = ' Ask the assistant: once the screenshot or scan is in, it puts it in place of the picture, labelled as supplied by you.'
 

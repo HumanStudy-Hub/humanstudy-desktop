@@ -80,8 +80,10 @@ A screen whose wording no file can fill in (`unresolved` is not empty: printed i
 text layer, a questionnaire the researcher does not have, a passage that cannot be located) need not stop the run.
 Offer these steps, in this order, one passage at a time, naming the screen (its stage) and the source `title`:
 
-1. **Ask the researcher for the passage first**: "Paste the wording of <screen> from <title>, or send a screenshot
-   of it." Use their words exactly as given (a screenshot: transcribe it exactly, no corrections). Origin `user`.
+1. **Ask the researcher for the passage first**: "Please paste (or type) the wording of <screen> from <title>
+   here, exactly as printed." Use their words exactly as given. Origin `user`. (A screenshot of a text passage does
+   not help: a file dropped into a published study stays private and you never open it. Screenshots are for
+   pictures, below.)
 2. **Reconstruct only when the paper does not print it** (or the researcher cannot get it), and only after the
    researcher agrees: write the closest wording the paper's description supports, of about the given `length`.
    Origin `reconstructed`. Say plainly that it is a reconstruction, not the original wording.

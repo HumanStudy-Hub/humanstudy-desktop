@@ -33,6 +33,9 @@ _INVISIBLE = re.compile("[­​‌‍⁠﻿￾�]")
 _HYPHEN_BREAK = re.compile(r"(?<=[^\W\d_])[-‐]\s*\n\s*(?=[^\W\d_])")
 _SPACE = re.compile(r"\s+")
 _WORD = re.compile(r"[^\W_]+")
+# a number with the signs and comparison operators in front of it (they are not words, so trigrams cannot see them)
+_NUM = re.compile(r"[-+±<>≤≥=~−‐‑–—]*\s*\d+(?:[.,]\d+)*\s*%?")
+_DASHES = str.maketrans({c: "-" for c in "−‐‑–—"})
 
 
 def clean(text: str) -> str:
@@ -73,14 +76,23 @@ def fingerprint(text: str, pages: list[int], salt: str | None = None) -> dict | 
         # the passage's first and last trigram: a window that is not a complete match must begin and end with them,
         # so a misread passage is never placed with words cut off at either end (a "Do not" on the page before)
         fp["ends"] = [_gram(salt, w, 0), _gram(salt, w, len(w) - 3)]
-    # Leading / trailing punctuation the window should keep (a closing period or quote mark; never a word).
-    lead = c[:len(c) - len(c.lstrip("\"'“‘(["))]
-    tail = c[len(c.rstrip(".,;:!?\"'”’)]")):]
+    # Leading / trailing characters around the words the window should keep: a quote mark or a closing period, and
+    # a sign or operator ("-5 points", "≤ 5 minutes"), which `nums` then requires.
+    m = list(_WORD.finditer(c))
+    lead, tail = c[:m[0].start()], c[m[-1].end():]
+    fp["nums"] = _numbers(salt, c)
     if lead:
         fp["lead"] = lead
     if tail:
         fp["tail"] = tail
     return fp
+
+
+def _numbers(salt: str, text: str) -> str:
+    """Hash of the passage's numbers in order, each with its sign or comparison operator ("-5", "<=5", "50%"): a
+    reading that loses or changes one (a payoff of -5 read as 5) never passes."""
+    toks = [re.sub(r"\s+", "", m.group(0)).translate(_DASHES) for m in _NUM.finditer(clean(text))]
+    return hashlib.sha256((salt + "\x1d" + "|".join(toks)).encode("utf-8")).hexdigest()[:8]
 
 
 def _best(page: str, fp: dict, exclude: tuple[int, int] | None = None) -> tuple[float, int, int]:
@@ -135,7 +147,8 @@ def locate(page_texts: list[str], fp: dict) -> tuple[str, float] | None:
             w = [x for x, _, _ in ws]
             for a in range(0, len(w) - n + 1):
                 if _seq(fp["salt"], w[a:a + n]) == fp["seq"]:
-                    return _span(page, ws, a, a + n, fp), 1.0
+                    span = _span(page, ws, a, a + n, fp)
+                    return (span, 1.0) if _nums_ok(span, fp) else None
         return None
     found = []
     for p in order:
@@ -156,7 +169,14 @@ def locate(page_texts: list[str], fp: dict) -> tuple[str, float] | None:
     place = _boundary(page, ws, fp, a, b - a, score)
     if place is None:
         return None
-    return _span(page, ws, place[0], place[0] + place[1], fp), round(score, 3)
+    span = _span(page, ws, place[0], place[0] + place[1], fp)
+    return (span, round(score, 3)) if _nums_ok(span, fp) else None
+
+
+def _nums_ok(span: str, fp: dict) -> bool:
+    """The placed text has the passage's numbers, signs and operators (`nums`); a fingerprint without it is not
+    placed."""
+    return isinstance(fp.get("nums"), str) and _numbers(fp["salt"], span) == fp["nums"]
 
 
 def _window(ws: list, fp: dict, a: int, length: int) -> float:
@@ -206,10 +226,14 @@ def _ends(ws: list, fp: dict, place: tuple[int, int], score: float) -> bool:
 
 
 def _span(page: str, ws: list, a: int, b: int, fp: dict) -> str:
+    """The text of words a..b, with as much of the passage's leading / trailing characters as the page has right
+    next to them (a straight quote where the passage had a curly one stops the extension, never the words)."""
     start, end = ws[a][1], ws[b - 1][2]
     lead, tail = fp.get("lead") or "", fp.get("tail") or ""
-    if lead and page[max(0, start - len(lead)):start] == lead:
-        start -= len(lead)
-    if tail and page[end:end + len(tail)] == tail:
-        end += len(tail)
-    return page[start:end]
+    i = 0
+    while i < len(lead) and start - i - 1 >= 0 and page[start - i - 1] == lead[len(lead) - 1 - i]:
+        i += 1
+    j = 0
+    while j < len(tail) and end + j < len(page) and page[end + j] == tail[j]:
+        j += 1
+    return page[start - i:end + j]

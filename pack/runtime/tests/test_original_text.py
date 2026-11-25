@@ -611,6 +611,18 @@ class ApproxMatcher(unittest.TestCase):
         self.assertIsNone(A.locate(["Rules. Do not open the box until the experimentor tells you to do so now."], old))
         self.assertIsNone(A.locate(["Rules. " + t + " Next."], old), "a fingerprint without ends is never placed")
 
+    def test_signs_and_operators_must_survive(self):
+        for t, wrong, right in (("\u22125 points", "You lose 5 points here.", "You lose \u22125 points here."),
+                                ("\u2264 5 minutes", "Wait 5 minutes.", "Wait \u2264 5 minutes."),
+                                ("You lose -5 points if you press the red button now.",
+                                 "Rules: You lose 5 points if you press the red button now. End",
+                                 "Rules: You lose \u22125 points if you press the red button now. End")):
+            fp = A.fingerprint(t, [1], salt="ab")
+            self.assertIsNone(A.locate([wrong], fp), wrong)
+            self.assertIsNotNone(A.locate([right], fp), right)
+        self.assertIsNone(A.locate(["Wait 5 minutes."], {k: v for k, v in A.fingerprint("\u2264 5 minutes", [1], salt="ab").items()
+                                                         if k != "nums"}), "no nums: never placed")
+
     def test_a_repeated_passage_is_not_clipped_at_a_perfect_score(self):
         t = "Do not move. Do not move. Stay calm."
         fp = A.fingerprint(t, [1], salt="ab")
@@ -721,6 +733,21 @@ class HeldPictures(Published):
         self.assertTrue(app_run.matches_projection(projection, swapped, {"h9": "user"}, self.tmp))
         swapped["stages"]["intro"]["content"][2]["value"]["src"] = "../outside.png"
         self.assertFalse(app_run.matches_projection(projection, swapped, {"h9": "user"}, self.tmp))
+
+
+class RunReportWording(unittest.TestCase):
+    """A run whose wording was not all exact never gets an official verdict, and says why."""
+
+    def test_no_official_verdict_with_approximate_or_supplied_wording(self):
+        sys.path.insert(0, str(RUNTIME.parent / "skills" / "run"))
+        import protocol_report as P
+        run = {"evaluation": {"plan": {"official": True}}, "app": {"valid": 4, "planned": 4}}
+        self.assertTrue(P.official(run))
+        run["app"]["originalWording"] = {"approx": 1, "user": 0, "reconstructed": 2}
+        self.assertFalse(P.official(run))
+        f = P.facts([], run, False)
+        self.assertEqual((f["official"], f["wording"]), (False, {"approx": 1, "user": 0, "reconstructed": 2}))
+        self.assertIn("2 reconstructed", P.paragraph([], run))
 
 
 class RedactionIndex(unittest.TestCase):
