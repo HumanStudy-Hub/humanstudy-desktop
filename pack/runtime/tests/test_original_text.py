@@ -364,6 +364,21 @@ class ApproxAndFills(Published):
                         "a download that gave approximate wording is kept")
 
     @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
+    def test_approx_fetches_the_pdf_when_the_exact_pass_did_not(self):
+        # a locator from another PDF reader version: the exact pass never downloads; the approximate one does
+        server = Server({"/leaflet.pdf": (FIX / "leaflet.pdf").read_bytes()})
+        self.addCleanup(server.close)
+        p = json.loads(self.projection.read_text(encoding="utf-8"))
+        self.ocr_corrected(p["distribution"]["held"])
+        p["distribution"]["held"]["h2"]["locator"]["extractor"] = "pypdfium2/99.0+pdfium/1.0"
+        p["meta"]["sources"]["leaflet"]["distribution"].update(tier="link", url=server.url + "/leaflet.pdf")
+        path = self.tmp / "cold.json"
+        path.write_text(json.dumps(p, ensure_ascii=False), encoding="utf-8")
+        st = self.run_fills(path, files=[self.drop("booklet.html")])
+        self.assertTrue(st["complete"], st)
+        self.assertEqual(st["labels"], {"h2": "approx"})
+
+    @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
     def test_approx_is_not_placed_from_a_pdf_without_the_passage(self):
         other = (FIX / "leaflet.pdf").read_bytes()   # a fingerprint of a passage the PDF does not hold
         path = self.variant(lambda held: (self.ocr_corrected(held), held["h2"].update(
@@ -447,7 +462,9 @@ class ApproxAndFills(Published):
     def test_a_fill_much_longer_than_the_original_is_refused(self):
         # the relay charges a placeholder character 6 bytes (its JSON escape): a fill may cost no more than that
         why = "text is longer than the original passage allows (35 characters of placeholder)"
-        for text, ok in (("w" * 210, True), ("w" * 211, False), ("\u8bcd" * 35, True), ("\u8bcd" * 36, False)):
+        for text, ok in (("w" * 210, True), ("w" * 211, False), ("\u8bcd" * 35, True), ("\u8bcd" * 36, False),
+                         ('"' * 35, True), ('"' * 62, False),        # a quote costs more when escaped twice
+                         ("e\u0301" * 35, True)):                       # NFC: 70 code points stored as 35
             st = self.run_fills(self.projection, fills=self.fills({"h4": {"text": text, "origin": "reconstructed"}}))
             self.assertEqual(st["fills"]["problems"], [] if ok else [{"held": "h4", "why": why}], text)
 
@@ -545,6 +562,9 @@ class ApproxMatcher(unittest.TestCase):
         got = A.locate(["Instructions for the session. Do not",
                         "open the box until the experimenter tells you to do so nqw. Then wait."], fp)
         self.assertTrue(got is None or got[0].startswith("Do not"), got)
+        got = A.locate(["Instructions for the session. Do not",
+                        "open the box until the experimenter tells you to do so n o w. Then wait."], fp)
+        self.assertTrue(got is None or got[0].startswith("Do not"), "a word split by the reader is no stand-in")
 
 
 class RedactionIndex(unittest.TestCase):

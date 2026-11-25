@@ -173,7 +173,7 @@ def _boundary(page: str, ws: list, fp: dict, a: int, length: int, score: float) 
     ties = [(x, k) for k in range(length, max(length, n) + 1) for x in range(max(0, a - 2), a + 3)
             if x + k <= len(ws) and ((x, k) == (a, length) or abs(_window(ws, fp, x, k) - score) < 1e-9)]
     if len(ties) == 1:
-        return _whole(ties[0], len(ws), n)
+        return _whole(ties[0], len(ws), score)
 
     def edges(t):
         start, end = ws[t[0]][1], ws[t[0] + t[1] - 1][2]
@@ -181,14 +181,15 @@ def _boundary(page: str, ws: list, fp: dict, a: int, length: int, score: float) 
             (bool(tail) and page[end:end + len(tail)] == tail)
     best = max(edges(t) for t in ties)
     picked = [t for t in ties if edges(t) == best]
-    return _whole(picked[0], len(ws), n) if best and len(picked) == 1 else None
+    return _whole(picked[0], len(ws), score) if best and len(picked) == 1 else None
 
 
-def _whole(place: tuple[int, int], page_words: int, n: int) -> tuple[int, int] | None:
-    """None for a window shorter than the passage that touches the start or end of its page: the missing words may
-    stand on the neighbouring page ("Do not" at the foot of one page), so the passage cannot be placed whole."""
+def _whole(place: tuple[int, int], page_words: int, score: float) -> tuple[int, int] | None:
+    """None for a window that touches the start or end of its page without holding every trigram of the passage:
+    the words it lacks may stand on the neighbouring page ("Do not" at the foot of one page), and a word count can
+    be made up by a misread word split in pieces, so only a complete match is placed at a page edge."""
     x, k = place
-    return None if k < n and (x == 0 or x + k == page_words) else place
+    return None if score < 1.0 and (x == 0 or x + k == page_words) else place
 
 
 def _span(page: str, ws: list, a: int, b: int, fp: dict) -> str:

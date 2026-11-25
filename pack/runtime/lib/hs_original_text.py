@@ -63,8 +63,13 @@ def too_long(text: str, length) -> bool:
     """Would cost the run more than its placeholder did. The approved model budget is measured on the published
     protocol, where the relay charges each placeholder character as its JSON escape (\\u2591: 6 bytes,
     skills/run/budget.py call_charge); a filled-in text must not be charged more than that, so the run can never
-    outgrow the budget the researcher approved."""
-    return not isinstance(length, int) or len(json.dumps(text).encode("utf-8")) - 2 > 6 * length
+    outgrow the budget the researcher approved. Measured after NFC (as stored), escaped once and twice."""
+    if not isinstance(length, int) or length < 1:
+        return True
+    t, ph = unicodedata.normalize("NFC", text), "\u2591" * length   # as _put stores it
+    # escaped once (a page's text in the request body) and twice (a field the renderer shows as JSON, e.g. a prefill)
+    once_t, once_p = json.dumps(t), json.dumps(ph)
+    return len(once_t) > len(once_p) or len(json.dumps(once_t)) > len(json.dumps(once_p))
 
 
 def restored_ok(entry, item_report) -> bool:
@@ -364,7 +369,7 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
             chosen[key], supplied[key] = best
     if supplied:
         out, report = D.rehydrate(projection, fetch=fetch, files=supplied, extractors=extractors)
-    fill_in(projection, out, report, fills or {}, cache, files, chosen, supplied, extractors)
+    fill_in(projection, out, report, fills or {}, cache, files, chosen, supplied, extractors, fetch)
     for key, url in unkept:
         if not any(isinstance(e, dict) and e.get("source") == key and (report["items"].get(h) or {}).get("status") in ("ok", "approx")
                    for h, e in held.items()):
@@ -402,7 +407,7 @@ def _put(out: dict, entry: dict, text: str) -> bool:
 
 
 def approx_pages(key: str, projection: dict, cache: Path, files: list[Path], chosen: dict, supplied: dict,
-                 extractors: dict):
+                 extractors: dict, fetch=None):
     """[(path or None, page texts)] of the PDF copies of one source on this computer, best first: the file chosen
     for the exact restore, the download, then the project's other PDF files."""
     if "pdf" not in extractors:
@@ -417,8 +422,13 @@ def approx_pages(key: str, projection: dict, cache: Path, files: list[Path], cho
     if d.get("tier") == "link" and isinstance(d.get("url"), str):
         got = cache / "downloads" / sha256(d["url"].encode("utf-8"))
         data = read_file(got) if got.is_file() else None
-        if data is not None:
-            cands.append((None, data))
+        if data is None and fetch is not None:
+            try:   # the exact pass may not have fetched it (a locator from another PDF reader version)
+                data = fetch(d["url"])
+            except Exception:   # noqa: BLE001 - unavailable: the project's files are tried next
+                data = None
+        if isinstance(data, (bytes, bytearray)):
+            cands.append((None, bytes(data)))
     want = d.get("sha256") if isinstance(d.get("sha256"), str) else None
     for f in candidates_for("pdf", files, key, want):
         cands.append((f, None))
@@ -437,7 +447,7 @@ def approx_pages(key: str, projection: dict, cache: Path, files: list[Path], cho
 
 
 def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path, files: list[Path], chosen: dict,
-            supplied: dict, extractors: dict) -> None:
+            supplied: dict, extractors: dict, fetch=None) -> None:
     """Restore what the exact pass left, in place (`out`, `report`): a user fill that hashes to the recorded text
     (exact), then the approximate text from the researcher's copy, then the fills file. Items stay unresolved when
     nothing applies."""
@@ -468,7 +478,7 @@ def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path,
         A = _approx_module()
         for key, hs in sorted(want.items()):
             best = None
-            for path, pages in approx_pages(key, projection, cache, files, chosen, supplied, extractors):
+            for path, pages in approx_pages(key, projection, cache, files, chosen, supplied, extractors, fetch):
                 found = {}
                 for h in hs:
                     try:
