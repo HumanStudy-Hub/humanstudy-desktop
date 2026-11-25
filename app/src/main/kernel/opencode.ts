@@ -169,7 +169,8 @@ export interface OpencodeOptions {
   provider?: string
   model?: string
   /** 'ask' (developer opt-in): every edit/bash call goes to the renderer. 'project': those inside the
-   *  project folder are approved automatically and all others rejected automatically, never prompted. Default: HUMANSTUDY_PERMISSION env (set from Settings), else 'project'. */
+   *  project folder are approved automatically and all others rejected automatically, never prompted.
+   *  Default: 'project' unless HUMANSTUDY_PERMISSION=ask was set at launch. */
   permission?: 'ask' | 'project'
   readyTimeoutMs?: number
   /** Simulations through the per-run model relay (default: relaySupported(), i.e. macOS with
@@ -186,6 +187,8 @@ export class OpencodeKernel implements Kernel {
   private live = new Set<Server>()
   private sessions = new Map<string, SessionState>()
   private disposed = false
+  /** Pauses between resends of an automatic permission reply (project mode); tests shorten it. */
+  autoReplyRetryMs: number[] = [1000, 2000, 4000, 8000, 15000, 30000, 60000]
   private catchingUp = new Set<Server>()
   private syncLoops = new Set<Server>()
   private reconnectIntervalMs = 1000
@@ -195,7 +198,7 @@ export class OpencodeKernel implements Kernel {
   private model: string
   private hostedModels: string[]
   private readyTimeoutMs: number
-  private permission: 'ask' | 'project' | undefined
+  private permission: 'ask' | 'project'
   /** Fixed at construction: whether simulations use the per-run relay (see OpencodeOptions.relay). */
   readonly relay: boolean
   private clock = (): number => Date.now()
@@ -221,7 +224,7 @@ export class OpencodeKernel implements Kernel {
     // Own OpenRouter keys are a developer path only.
     if (this.provider === 'openrouter' && !(process.env.HUMANSTUDY_DEV_KEYS === '1' && process.env.OPENROUTER_API_KEY)) this.provider = ''
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 30_000
-    this.permission = opts.permission
+    this.permission = opts.permission ?? (process.env.HUMANSTUDY_PERMISSION === 'ask' ? 'ask' : 'project')
     this.relay = opts.relay ?? relaySupported()
     this.livenessTimer = setInterval(() => { void this.checkLiveness() }, 30_000)
     this.livenessTimer.unref()
@@ -333,7 +336,7 @@ export class OpencodeKernel implements Kernel {
 
   permissions(sessionId: string): KernelPermission[] {
     const s = this.session(sessionId)
-    if (!s.inFlight || s.stopping) return []
+    if (this.permissionMode() === 'project' || !s.inFlight || s.stopping) return []
     return [...s.pendingPermissions.values()].filter(perm => !this.autoReplies.has(perm.id) && !this.resolvedReported.has(perm.id))
   }
 
@@ -662,6 +665,62 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     if (!s.inFlight || s.stopping || s.recovery.cancelled || s.recovery.running) return
     s.recovery.reason = 'declined_tool_call'; s.recovery.pending = true
   }
+  private async replyAutomatically(sessionId: string, s: SessionState, id: string, reply: PermissionReply, message?: string): Promise<void> {
+    // The native turn is still running and only waits for this reply, so delivering it late is the "continue":
+    // keep resending with backoff (about two minutes in all) instead of stopping the turn after one retry.
+    const server = s.server
+    const epoch = s.recovery.epoch
+    // Only the turn that asked: not after Stop, dispose, server exit, a new turn, or a reopened session.
+    const live = () => !this.disposed && this.sessions.get(sessionId) === s && s.server === server && !server.exited &&
+      s.recovery.epoch === epoch && s.inFlight && !s.stopping && this.permissionMode() !== 'ask'
+    for (let attempt = 0; ; attempt++) {
+      try {
+        // A reject still being resent keeps opencode's cascade rejects attributed to it.
+        if (reply === 'reject') s.lastAutoReject = this.clock()
+        await this.replyTo(server, sessionId, id, reply, message)
+        if (reply === 'reject') s.lastAutoReject = this.clock()
+        return
+      } catch (error) {
+        const wait = this.autoReplyRetryMs[attempt]
+        if (alreadyResolved(error) || this.permissionMode() === 'ask') throw error
+        if (wait === undefined) {
+          // Out of resends: let a Stop in progress finish first, so the failure is handled after its outcome.
+          for (let i = 0; s.stopping && !this.disposed && i < 150; i++) await sleep(200)
+          throw error
+        }
+        await sleep(wait)
+        // A Stop in progress decides first: if its native abort fails, the turn still waits for this reply.
+        for (let i = 0; s.stopping && !this.disposed && i < 150; i++) await sleep(200)
+        if (!live()) throw error
+        // Answered meanwhile (opencode's own cascade or an event): nothing left to deliver.
+        if (!s.pendingPermissions.has(id)) return
+      }
+    }
+  }
+
+  private async automaticReplyFailed(sessionId: string, s: SessionState, perm: KernelPermission): Promise<void> {
+    if (this.disposed || this.sessions.get(sessionId) !== s || !s.inFlight || s.stopping || !s.pendingPermissions.has(perm.id) || this.resolvedReported.has(perm.id)) return
+    if (this.permissionMode() === 'ask') {
+      this.emitter.emit({ sessionId, type: 'permission', permission: perm })
+      return
+    }
+    s.recovery.cancelled = true
+    s.recovery.pending = false
+    this.emitter.emit({ sessionId, type: 'error', text: 'The assistant stopped because an automatic permission reply could not be delivered. Send your message again to continue.' })
+    try {
+      await this.abort(sessionId)
+    } catch {
+      // Even if the native stop request fails, a stale snapshot must not restore this permission.
+      this.reportResolved(perm.id)
+      s.pendingPermissions.delete(perm.id)
+      // The researcher already has the resend message; the turn must not stay marked as running.
+      if (this.sessions.get(sessionId) === s && s.inFlight) {
+        s.inFlight = false
+        this.emitter.emit({ sessionId, type: 'done' })
+      }
+    }
+  }
+
   private autoReject(sessionId: string, s: SessionState, perm: KernelPermission): void {
     if (s.stopping || this.autoReplies.has(perm.id)) return
     this.autoReplies.add(perm.id)
@@ -675,17 +734,19 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     const decision = hitLimit ? { ...perm, type: 'auto_reject_limit' } : perm
     if (stop) { s.recovery.cancelled = true; s.recovery.pending = false }
     s.lastAutoReject = this.clock()
-    this.replyTo(s.server, sessionId, perm.id, 'reject', stop ? undefined : autoRejectMessage(perm)).then(() => {
+    const epoch = s.recovery.epoch
+    const mine = () => this.sessions.get(sessionId) === s && s.recovery.epoch === epoch
+    this.replyAutomatically(sessionId, s, perm.id, 'reject', stop ? undefined : autoRejectMessage(perm)).then(() => {
+      if (!mine()) return
       s.pendingPermissions.delete(perm.id)
       if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...decision, automatic: true, resolved: 'reject' } })
     }, (error) => {
+      if (!mine()) return
       // Already answered: opencode's cascade from our other reject (two disallowed calls in parallel)
       // ended the loop with a plain reject. Nothing to show; resume like any cascade.
       if (alreadyResolved(error)) { s.pendingPermissions.delete(perm.id); if (this.inCascadeWindow(s)) this.resumeAfterCascade(s); return }
-      // The reply could not be delivered (server gone or unreachable). Showing the request is the
-      // only way left to unblock it; this is not a normal path, and the answer is then the researcher's.
       this.autoRejected.delete(perm.id)
-      if (s.inFlight && !s.stopping && !this.resolvedReported.has(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: perm })
+      return this.automaticReplyFailed(sessionId, s, perm)
     }).finally(() => this.autoReplies.delete(perm.id))
   }
   private autoApprove(sessionId: string, s: SessionState, perm: KernelPermission): void {
@@ -694,17 +755,21 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
     s.recovery.autoRejects = 0
     // One call only: an Auto approval must not become a permanent native permission
     // grant that would silently survive switching Auto off.
-    this.replyTo(s.server, sessionId, perm.id, 'once').then(() => {
+    const epoch = s.recovery.epoch
+    const mine = () => this.sessions.get(sessionId) === s && s.recovery.epoch === epoch
+    this.replyAutomatically(sessionId, s, perm.id, 'once').then(() => {
+      if (!mine()) return
       s.pendingPermissions.delete(perm.id)
       if (this.reportResolved(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: { ...perm, automatic: true, resolved: 'once' } })
     }, (error) => {
+      if (!mine()) return
       if (alreadyResolved(error)) { s.pendingPermissions.delete(perm.id); return }
-      if (s.inFlight && !s.stopping && !this.resolvedReported.has(perm.id)) this.emitter.emit({ sessionId, type: 'permission', permission: perm })
+      return this.automaticReplyFailed(sessionId, s, perm)
     }).finally(() => this.autoReplies.delete(perm.id))
   }
 
   private permissionMode(): 'ask' | 'project' {
-    return this.permission ?? (process.env.HUMANSTUDY_PERMISSION === 'ask' ? 'ask' : 'project')
+    return this.permission
   }
 
   /** Sessions whose assistant process ended; opencode keeps them on disk, so the next message reopens them. */
@@ -994,15 +1059,20 @@ ${attempt === 2 ? 'The first adjusted attempt was interrupted again but made pro
           try { await this.restoreSnapshot(server); failures = 0 }
           catch {
             if (++failures >= 5) {
+              let spared = false
               for (const [sessionId, s] of this.sessions) {
                 if (s.server !== server || !s.inFlight) continue
+                // An automatic reply still being resent owns this turn's ending (it stops it if every resend fails);
+                // keep catching up for it so its completion is seen even while events are down.
+                if ([...s.pendingPermissions.keys()].some(id => this.autoReplies.has(id))) { spared = true; continue }
                 s.recovery.cancelled = true
                 s.recovery.pending = false
                 s.inFlight = false
                 this.emitter.emit({ sessionId, type: 'error', text: 'The connection could not be restored. Received messages and saved files are kept. The study may still be running; reopen this conversation to check its state before sending the task again.' })
                 this.emitter.emit({ sessionId, type: 'done' })
               }
-              break
+              if (!spared) break
+              failures = 4
             }
           }
           if ([...this.sessions.values()].some(s => s.server === server && s.inFlight)) await sleep(this.reconnectIntervalMs)

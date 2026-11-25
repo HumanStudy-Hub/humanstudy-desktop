@@ -34,7 +34,11 @@ app fills it in on the researcher's own computer, without you:
 - it tries every file the researcher dropped into the chat (for such a study they land in `sources/private/`,
   which stays in this project and is never exported) and `paper.pdf`;
 - it checks every screen's wording against the exact text the study was built with, so a wrong file can only leave
-  a screen empty, never put other words on it.
+  a screen empty, never put other words on it;
+- when the exact check fails but the study carries a fingerprint of a passage, it finds that passage in the
+  researcher's own copy of the PDF (**approximate**: the wording comes from their copy and may contain reading
+  errors, for example from a scan);
+- what still cannot be filled in, you can fill with the researcher (see "When no file fills a screen" below).
 
 **Never open, read, extract, summarise or quote any file in `sources/private/`**, nor anything in the app's storage
 folder `original-text/` (the restored wording): no read tool, no `cat`, `hs-pdf`, `pdftotext`, Python or `grep` on
@@ -45,13 +49,17 @@ from `.humanstudy/original-text.json` only.
 Never move, copy or rename the researcher's copy of a source out of `sources/private/` (into `paper.pdf`,
 `sources/` or anywhere else): only `sources/private/` stays out of exports and research capture. If they mention a
 copy that sits elsewhere in the project, ask before moving it into `sources/private/`. The restored copy stays in
-the app's own storage, never in the project. You never see it, and you never write or
-edit the wording yourself: never type, paste or reconstruct held text into protocol.json, `sourcetext/` or any
-file, and never edit or remove the `distribution` block (the app notices a changed one and blocks the run).
+the app's own storage, never in the project. You never see it. Never type, paste or reconstruct held text into
+protocol.json, `sourcetext/` or any file other than the fills file below, and never edit or remove the
+`distribution` block (the app notices a changed one and blocks the run).
 
 What the app found is in `.humanstudy/original-text.json` (read it; never edit it): `complete`, `screensMissing`,
-and per source its `title`, `format`, `screens` still empty and `need`. Tell the researcher in plain words, in
-their language, never with the words "rehydrate", "projection", "placeholder", "hash" or "sha256":
+how the restored items were filled in (`exact`, `approx`, `supplied.user`, `supplied.reconstructed`, and `labels`:
+held id -> `approx` | `user` | `reconstructed`), `unresolved` (each item nothing filled in: `held` id, `screen`,
+`path` in protocol.json, `source`, `title`, `kind`, `length` in characters, `need`), `fillsFile`, `fillsProblems`,
+and per source its `title`, `format`, `screens` still empty and `need`. It never holds any wording. Tell the
+researcher in plain words, in their language, never with the words "rehydrate", "projection", "placeholder",
+"hash" or "sha256":
 
 | need | say |
 |---|---|
@@ -63,8 +71,57 @@ their language, never with the words "rehydrate", "projection", "placeholder", "
 | `app-version` | "This study was published with a different version of HumanStudy Hub's PDF reader: update the app; if that does not help, ask the study's publisher." |
 | `held-changed` | "This study's record of which wording to fill in was changed or removed after it was first opened on this computer, so it cannot run. Put back the study's protocol.json exactly as you received it." (never edit it back yourself from memory) |
 | `checks-failed` | "With its original wording filled in, the study did not pass its own checks, so it cannot run. If protocol.json or the files in sourcetext/ were changed on this computer, put back the versions you received; otherwise the published version itself needs fixing." |
-| `picture` | "Some screens show pictures from <title>, which this version of HumanStudy Hub cannot show yet, so the study cannot run." |
+| `picture` | "Some screens show pictures from <title>. Drop in a screenshot or scan of each picture (the figure or the page it is on); it stays on your computer." Then fill it as in "When no file fills a screen". |
 | `reading` | "Some wording is printed inside a picture and cannot be filled in automatically yet." |
+
+### When no file fills a screen
+
+A screen whose wording no file can fill in (`unresolved` is not empty: printed inside a picture, a scan without a
+text layer, a questionnaire the researcher does not have, a passage that cannot be located) need not stop the run.
+Offer these steps, in this order, one passage at a time, naming the screen (its stage) and the source `title`:
+
+1. **Ask the researcher for the passage first**: "Please paste (or type) the wording of <screen> from <title>
+   here, exactly as printed." Use their words exactly as given. Origin `user`. (A screenshot of a text passage does
+   not help: a file dropped into a published study stays private and you never open it. Screenshots are for
+   pictures, below.)
+2. **Reconstruct only when the paper does not print it** (or the researcher cannot get it), and only after the
+   researcher agrees: write the closest wording the paper's description supports, of about the given `length`.
+   Origin `reconstructed`. Say plainly that it is a reconstruction, not the original wording.
+
+Write each passage into the fills file `sources/private/original-text-fills.json` (the `fillsFile`; it stays on
+this computer, in this project, and is never exported, published or collected). It is the one file in
+`sources/private/` you may read and write. One JSON object keyed by held id:
+
+```json
+{
+  "h7": {"text": "<the wording>", "origin": "user", "note": "pasted by the researcher"},
+  "h9": {"text": "<the wording>", "origin": "reconstructed", "note": "the paper describes this item but does not print it"}
+}
+```
+
+Keep the entries already there; never put wording anywhere else. `origin` is `user` (the researcher gave it) or
+`reconstructed` (you wrote it with their agreement), never anything else, and never label a reconstruction `user`.
+Wait a few seconds and read `.humanstudy/original-text.json` again: the app applies a fill only to a screen that no
+file filled in (the exact wording, then the approximate one, win over a fill), and reports problems with an entry in
+`fillsProblems`. A pasted passage that is exactly the published text counts as exact.
+
+Once the study runs, say how its wording was filled in whenever `approx` or `supplied` is not zero, before the run
+and with its results: "N passages came from your copy of the paper and may contain reading errors; N you supplied;
+N were reconstructed."
+
+A held picture (`kind: picture` in `unresolved`) is filled with a file, never with text: ask the researcher to drop
+in a screenshot or scan of that figure or page (PNG, JPEG, GIF or WebP). The app note names where it landed (in
+`sources/private/`); do not open it. Then add `"<held id>": {"file": "sources/private/<name>", "origin": "user"}`
+to the fills file. It counts as exact when it is the very published picture, otherwise as supplied by the
+researcher (`supplied.user`), and say so like any supplied wording.
+
+### Arms marked not runnable
+
+A released protocol may mark an arm `runnable: false` with a `why` (its materials are not printed in the paper).
+The rest of the study runs without it. If the researcher wants that arm, you may, with their agreement, reconstruct
+the missing materials in the project's protocol.json, label every reconstructed text as reconstructed (say so in
+the arm's `why`/notes and to the researcher), and only then mark the arm runnable. Never present a reconstructed
+arm as the original.
 
 The first line to say is: "The study's original wording comes from its original materials (the paper,
 questionnaire or booklet), and HumanStudy Hub fills it in on your computer." Say "HumanStudy Hub fetches it from the
@@ -72,7 +129,7 @@ publisher on your computer" only for a source with a `url` (tier `link`); for th
 the file. After the researcher drops a file into the chat, wait a few seconds and read
 `.humanstudy/original-text.json` again; say how many screens are now filled in and what is still needed.
 
-Until `complete` is true the study opens as a preview (`skills/preview` shows "[text not available]" where wording
+Until `complete` is true (approximate and supplied wording count) the study opens as a preview (`skills/preview` shows "[text not available]" where wording
 is missing) but cannot run: the Simulation tab says why, and the app refuses to start a run whose screens would
 show "[text not available]". Never try to run it some other way. Once it is complete, a run's records keep the
 answers but not the screens, so the restored wording does not end up in the project.

@@ -354,6 +354,26 @@ computer:
   the runtime has (pinned in requirements.lock via pdfplumber); without it PDF sources say so and text, HTML,
   docx and QSF sources still work. Held pictures (and regions rendered as pictures) are not supported yet: such a
   study stays unresolved with need `picture`.
+- **Checked as released.** A published study (non-empty `distribution.held`) and its restored copy are checked with
+  `checks --public`, as Bench checks a release: a text read from a page image of a source whose blind readings were
+  not shipped (and a cite whose source text is not here) is checked privately by Bench, not unconfirmed. Held texts
+  are still checked against their placeholders or restored wording; the researcher's own projects stay strict.
+- **Approximate and supplied (three tiers).** After the exact pass, an item that failed it but carries an `approx`
+  fingerprint (written by Bench `scripts/research/approx_text.py`, a copy of `pack/runtime/lib/hs_approx_text.py`)
+  is located in the researcher's own PDF of that source (status `approx`, with its score). Then the project's fills
+  file `sources/private/original-text-fills.json` (`{"<held id>": {"text", "origin": "user" | "reconstructed",
+  "note"}}`, written by the assistant with the researcher) fills what is left (status `user` / `reconstructed`; a
+  `user` text that hashes to `text_sha256` counts as exact). A held picture (whose released `src` is
+  `asset:<sha16>`, never fetched) is filled with `{"file": "<image inside the project>", "origin": "user"}`: a
+  regular PNG/JPEG/GIF/WebP file, no link or path out of the project; the restored copy's `src` names that file
+  (the engine serves it from the study folder), exact when its sha256 is the entry's, else labelled `user`.
+  Precedence: exact > approx > fill. A fill only ever
+  replaces its own placeholder. All three count for the run gate; the status reports `exact`, `approx`,
+  `supplied.{user,reconstructed}`, `labels` (held id -> label), `unresolved` (ids, paths, titles, lengths, need: no
+  text) and `fills.problems`. The cached restored copy records the fills file's sha256 and is reused only while it
+  is unchanged. The run gets `restored/labels.json` beside the copy; app_run accepts a non-hashing text only in a
+  labelled slot, records the counts in run.json (`app.originalWording`) and says so in its done message. User fills
+  are added to the research-capture redaction index.
 - **What stays local.** Downloads and the restored protocol live in `<userData>/original-text/` (per
   sha256 of protocol.json), never in the project, so neither exports nor research capture see them. A file dropped
   into a published study goes to `sources/private/` (never exported or collected) and never becomes paper.pdf. The

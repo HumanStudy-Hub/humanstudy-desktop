@@ -13,7 +13,7 @@ export function packHash(root) {
       const path = relative ? `${relative}/${entry.name}` : entry.name
       if (entry.name === '__pycache__' || entry.name.endsWith('.pyc') || entry.name.startsWith('.')) continue
       if (entry.isDirectory()) visit(path)
-      else if (entry.isFile() && (['AGENTS.md', 'PROJECT_FORMAT.md', 'runtime/lib/hs_original_text.py'].includes(path)
+      else if (entry.isFile() && (['AGENTS.md', 'PROJECT_FORMAT.md', 'runtime/lib/hs_original_text.py', 'runtime/lib/hs_approx_text.py'].includes(path)
         || /^(schema|skills|runtime\/hsenv)\//.test(path) || /^artifact-kit\/[^/]+$/.test(path))) {
         entries.push([path, sha(readFileSync(join(root, path)))])
       }

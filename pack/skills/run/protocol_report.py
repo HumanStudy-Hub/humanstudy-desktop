@@ -103,8 +103,15 @@ def rows(protocol: dict, effects: dict) -> list[dict]:
 
 
 def official(run: dict) -> bool:
-    """hsenv.score's rule: pass/fail only when the AI n equals the human analysed n in every arm."""
-    return ((run.get("evaluation") or {}).get("plan") or {}).get("official") is True
+    """hsenv.score's rule: pass/fail only when the AI n equals the human analysed n in every arm; and never when
+    participants saw wording that is not the exact published text (approximate, supplied or reconstructed)."""
+    return ((run.get("evaluation") or {}).get("plan") or {}).get("official") is True and not wording(run)
+
+
+def wording(run: dict) -> dict:
+    """{approx, user, reconstructed} counts of a published study's run whose wording was not all exact ({} else)."""
+    w = (run.get("app") or {}).get("originalWording")
+    return w if isinstance(w, dict) and any(int(v or 0) for v in w.values()) else {}
 
 
 def unverified_n(run: dict) -> list:
@@ -163,6 +170,7 @@ TEXT = {
         "unofficial": "Unofficial comparison: values only, no pass or fail.",
         "unverified": "The paper's sample size is taken as printed and has not been checked yet.",
         "caveat": "AI participants are not people: this is a simulation and a comparison with the paper's printed numbers, not a ranking.",
+        "wording": "Not all wording was the exact published text: {approx} passage(s) came from your copy of the paper and may contain reading errors, {user} you supplied, {reconstructed} reconstructed. So this comparison is unofficial.",
         "col_what": "What was compared", "col_people": "People in the paper", "col_ai": "AI participants in this run",
         "col_dir": "Direction", "none": "The study defines no results to compare.",
         "same": "same direction", "opposite": "opposite direction", "nodiff": "no difference",
@@ -187,6 +195,7 @@ TEXT = {
         "unofficial": "非正式比较：只给出数值，不判定通过与否。",
         "unverified": "样本量按论文印出的数字，尚未核对。",
         "caveat": "AI 参与者不是真人：这是模拟实验，以及与论文印出数字的比较，不是排名。",
+        "wording": "并非所有措辞都是原文：{approx} 段取自你手中的论文副本，可能有识别错误；{user} 段由你提供；{reconstructed} 段为重构。因此这是非正式比较。",
         "col_what": "比较的内容", "col_people": "论文中的人类参与者", "col_ai": "本次运行的 AI 参与者",
         "col_dir": "方向", "none": "这项研究没有定义可比较的结果。",
         "same": "方向相同", "opposite": "方向相反", "nodiff": "没有差异",
@@ -216,7 +225,9 @@ def facts(table: list[dict], run: dict, partial: bool) -> dict:
             # "official" only when the engine's plan is official, the paper's n is verified and the run is complete
             "official": bool(official(run) and not unverified and not partial), "unverified": unverified, "partial": bool(partial),
             "failedCalls": int(app.get("failed_calls") or 0), "tokenCap": bool(app.get("token_cap")),
-            "engineDirection": (direction_reward(run) or {}).get("passed")}
+            "engineDirection": (direction_reward(run) or {}).get("passed"),
+            # only for a published study whose wording was not all exact
+            **({"wording": {k: int(wording(run).get(k) or 0) for k in ("approx", "user", "reconstructed")}} if wording(run) else {})}
 
 
 def paragraph(table: list[dict], run: dict, partial: bool = False, lang: str = "en") -> str:
@@ -225,7 +236,7 @@ def paragraph(table: list[dict], run: dict, partial: bool = False, lang: str = "
     parts = [T["finished"].format(**f), T["partial"] if partial else "", why if partial else "", T["run_again"] if partial else "",
              T["directions"].format(**f) if f["compared"] else T["no_directions"],
              "" if partial else T["official"] if f["official"] else T["unofficial"],
-             T["unverified"] if f["unverified"] else "", T["caveat"]]
+             T["unverified"] if f["unverified"] else "", T["wording"].format(**f["wording"]) if f.get("wording") else "", T["caveat"]]
     return ("" if lang_of(lang) == "zh" else " ").join(x for x in parts if x)
 
 
@@ -283,7 +294,7 @@ def scores_card(run: dict, rewards: dict | None, partial: bool = False, lang: st
     plan = ev.get("plan") or {}
     basis = plan.get("human_n_basis") or {}
     # "official" only on the strict definition: official plan, verified human n, complete run (UX re-check).
-    strict = bool(plan.get("official")) and not plan.get("n_unverified_arms") and not partial
+    strict = bool(plan.get("official")) and not plan.get("n_unverified_arms") and not partial and not wording(run)
     head = [X["official"] if strict else X["unofficial"]]
     if plan.get("n_unverified_arms"):
         head.append(X["unverified"] % ", ".join(map(str, plan["n_unverified_arms"])))

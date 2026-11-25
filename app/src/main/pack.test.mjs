@@ -23,7 +23,7 @@ const globPlugin = {
     b.onLoad({ filter: /pack\.ts$/ }, (args) => {
       let src = readFileSync(args.path, 'utf8')
       const included = walk(packDir).map((f) => relative(packDir, f).split('\\').join('/')).filter((r) =>
-        (r === 'AGENTS.md' || r === 'PROJECT_FORMAT.md' || r.startsWith('schema/') || r.startsWith('skills/') || /^artifact-kit\/[^/]+$/.test(r) || r.startsWith('runtime/hsenv/') || r === 'runtime/lib/hs_original_text.py')
+        (r === 'AGENTS.md' || r === 'PROJECT_FORMAT.md' || r.startsWith('schema/') || r.startsWith('skills/') || /^artifact-kit\/[^/]+$/.test(r) || r.startsWith('runtime/hsenv/') || r === 'runtime/lib/hs_original_text.py' || r === 'runtime/lib/hs_approx_text.py')
         && !r.split('/').includes('__pycache__') && !r.endsWith('.pyc'))
       const obj = Object.fromEntries(included.map((r) => ['../../../pack/' + r, readFileSync(join(packDir, r), 'utf8')]))
       src = src.replace(/import\.meta\.glob\([\s\S]*?\)\s*as Record<string, string>/, () => JSON.stringify(obj)) // no $ patterns
@@ -136,6 +136,26 @@ test('every shipped human-program schema is upgraded in existing projects (evide
     await P.refreshPack(proj)
     assert.equal(readFileSync(dest, 'utf8'), current, `schema from ${c.slice(0, 7)} is upgraded`)
   }
+})
+
+test('every released build skill is upgraded in existing projects (first-batch example, #91)', async () => {
+  const tags = spawnSync('git', ['tag', '--list', 'v*'], { cwd: packDir, encoding: 'utf8' })
+  const releases = tags.status === 0 ? tags.stdout.split('\n').filter(Boolean) : []
+  if (!releases.length) return // checkout without tags
+  const current = readFileSync(join(packDir, 'skills/build/SKILL.md'), 'utf8')
+  const sha = (s) => createHash('sha256').update(s).digest('hex')
+  const listed = JSON.parse(readFileSync(join(here, 'previous-pack-hashes.json'), 'utf8'))['skills/build/SKILL.md']
+  for (const t of releases) {
+    const shown = spawnSync('git', ['show', `${t}:pack/skills/build/SKILL.md`], { cwd: packDir, encoding: 'utf8' })
+    if (shown.status !== 0 || shown.stdout === current) continue
+    assert.ok(listed.includes(sha(shown.stdout)), `previous-pack-hashes.json lacks the build skill shipped in ${t}`)
+  }
+  const proj = mkdtempSync(join(tmpdir(), 'proj-'))
+  const dest = join(proj, '.opencode/skills/build/SKILL.md')
+  mkdirSync(dirname(dest), { recursive: true })
+  writeFileSync(dest, spawnSync('git', ['show', 'v0.7.2:pack/skills/build/SKILL.md'], { cwd: packDir, encoding: 'utf8' }).stdout)
+  await P.refreshPack(proj)
+  assert.equal(readFileSync(dest, 'utf8'), current)
 })
 
 const python = ['python3', 'python'].find((p) => spawnSync(p, ['--version']).status === 0)
@@ -1017,6 +1037,27 @@ except SystemExit as e:
   assert.match(result(r).refused ?? r.stderr, /another version of this study/)
   r = go(fill((p) => { p.distribution = projection.distribution }))
   assert.match(result(r).refused ?? r.stderr, /another version of this study/)
+  // an item the app labelled (approximate, supplied or reconstructed: restored/labels.json beside the copy) may hold
+  // other wording; every other item and field must still match, and a label never covers an empty slot
+  const accepts = () => { const x = spawnSync(python311, ['-B', '-c', `import sys, json; from pathlib import Path
+sys.path.insert(0, '.opencode/skills/run'); sys.path.insert(0, '.opencode/hsenv'); import app_run
+try:
+    app_run.restored_protocol(Path('.').resolve()); print(json.dumps({'ok': True}))
+except SystemExit as e:
+    print(json.dumps({'refused': str(e)}))`], { cwd: proj, encoding: 'utf8' }); return x.stdout.trim() ? result(x) : { error: x.stderr.slice(-600) } }
+  const labelsFile = join(proj, '.opencode/restored/labels.json')
+  fill((p) => { p.stages.intro.content[0].value = 'Wording read from the researcher copy' })
+  assert.match(JSON.stringify(accepts()), /another version of this study/)
+  writeFileSync(labelsFile, JSON.stringify({ labels: { h1: 'approx' } }))
+  assert.deepEqual(accepts(), { ok: true })
+  writeFileSync(labelsFile, JSON.stringify({ labels: { h1: 'exact-ish' } }))
+  assert.match(JSON.stringify(accepts()), /another version of this study/)
+  writeFileSync(labelsFile, JSON.stringify({ labels: { h1: 'reconstructed' } }))
+  fill((p) => { p.stages.intro.content[0].value = 'x'; p.stages.q.responses[1].options[0].label = 'Sure' })
+  assert.match(JSON.stringify(accepts()), /another version of this study/)
+  fill((p) => { p.stages.intro.content[0].value = '  ' })
+  assert.match(JSON.stringify(accepts()), /another version of this study/)
+  rmSync(labelsFile)
   // the held list removed from protocol.json itself: its placeholders are never played either
   const saved = readFileSync(join(proj, 'protocol.json'))
   const stripped = structuredClone(projection); delete stripped.distribution

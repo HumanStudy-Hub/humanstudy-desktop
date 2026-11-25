@@ -10,6 +10,11 @@
 // (userData/original-text/<sha256 of protocol.json>/), so neither the project's exports nor research capture can
 // carry them. The project gets only a status without any source text (.humanstudy/original-text.json), which the
 // agent reads to tell the researcher what is missing.
+//
+// Three tiers, each labelled: exact (the text's sha256 verified); approximate (the release's fingerprint located in
+// the researcher's own PDF: may contain reading errors); supplied (the project's fills file, FILLS_FILE, written by
+// the assistant: text the researcher pasted or a reconstruction they agreed to). All three count for a run; the
+// status says how many of each, and lists what is still unresolved (ids and titles, never text).
 import { createHash } from 'node:crypto'
 import { lstat, mkdir, readdir, readFile, realpath, rename, writeFile } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
@@ -19,11 +24,27 @@ import { confinedPython, heldSources, runner, withScratch, type Limits } from '.
 export interface OriginalTextSource {
   key: string; title: string; tier: 'link' | 'user' | 'hosted'; format: string
   items: number; restored: number; screens: number; file: string | null; url?: string; need?: OriginalTextReason
+  approx?: number; user?: number; reconstructed?: number
 }
+/** A held item nothing could restore: where it goes and why, never any text. */
+export interface OriginalTextUnresolved {
+  held: string; screen: string; path: string | null; source: string | null; title: string | null
+  kind: 'text' | 'picture'; length: number | null; need: OriginalTextReason
+}
+export type OriginalTextLabel = 'approx' | 'user' | 'reconstructed'
 export interface OriginalTextStatus {
   projection: boolean; complete?: boolean; items?: number; restored?: number; screens?: number; pdfReader?: boolean
   sources?: OriginalTextSource[]; projectionSha256?: string; restoredPath?: string | null; restoredSha256?: string
+  /** The cache folder of this restored copy (restoreSlot: per study version and project). */
+  slot?: string
+  exact?: number; approx?: number; supplied?: { user: number; reconstructed: number }
+  labels?: Record<string, OriginalTextLabel>; unresolved?: OriginalTextUnresolved[]
+  fills?: { file: string; present: boolean; problems: { held: string | null; why: string }[] }
 }
+/** The project's fills file (project-relative): wording the researcher pasted, or a reconstruction they agreed to,
+ *  per held id. Under sources/private/, so it is never exported, published or collected (it may sync: project sync
+ *  is private per account). */
+export const FILLS_FILE = 'sources/private/original-text-fills.json'
 export interface OriginalTextProblem { check: 'original-text'; reason: string; text?: OriginalTextNeed }
 
 /** Downloads can be slow; the restore itself is bounded by hsenv's own hashing budgets. */
@@ -51,7 +72,7 @@ export async function candidateFiles(project: string): Promise<string[]> {
       if (!real || !real.startsWith(root + sep)) continue
       const st = await lstat(real).catch(() => null)
       if (st?.isDirectory() && depth < MAX_DEPTH) await visit(real, depth + 1, into)
-      else if (st?.isFile() && e.name !== 'SOURCE.json') into.push(real)
+      else if (st?.isFile() && e.name !== 'SOURCE.json' && relative(root, real).split(sep).join('/') !== FILLS_FILE) into.push(real)
     }
     return into
   }
@@ -79,7 +100,10 @@ export async function fillOriginalText(python: string, files: [string, string][]
   await mkdir(cacheDir, { recursive: true })
   const received = receivedPath(cacheDir, await realpath(project))
   const receivedArgs = (await lstat(received).then((x) => x.isFile(), () => false)) ? ['--received', received] : []
-  const args = [...receivedArgs, ...(o.allowLocal ? ['--allow-local'] : []), ...(o.offline ? ['--offline'] : []), ...(o.indexOnly ? ['--index-only'] : []),
+  const fills = await realpath(join(project, ...FILLS_FILE.split('/'))).catch(() => null)
+  const root = await realpath(project)
+  const fillsArgs = fills && fills.startsWith(root + sep) && (await lstat(fills).then((x) => x.isFile(), () => false)) ? ['--fills', fills] : []
+  const args = [...receivedArgs, ...fillsArgs, '--project-key', sha256(root), ...(o.allowLocal ? ['--allow-local'] : []), ...(o.offline ? ['--offline'] : []), ...(o.indexOnly ? ['--index-only'] : []),
     ...(await candidateFiles(project)).flatMap((f) => ['--file', f])]
   return withScratch(files, async (work, home) => {
     const code = runner(LIMITS.cpuSeconds, LIMITS.memoryBytes).replace(/sys\.path\.insert[\s\S]*$/,
@@ -103,13 +127,19 @@ const PLAIN: Record<OriginalTextReason, string> = {
   'pdf-reader': 'this computer cannot read PDF files yet (update HumanStudy Hub)',
   'app-version': 'the study was published with a different version of the app\'s PDF reader (update HumanStudy Hub)',
   reading: 'the wording is printed inside a picture and cannot be filled in automatically',
-  picture: 'the study shows pictures from it, which this version of HumanStudy Hub cannot show yet',
+  picture: 'the study shows pictures from it; drop in a screenshot or scan of each picture (it stays on your computer)',
   'held-changed': 'the study was changed after it was opened (put back its protocol.json as received)',
   'checks-failed': 'with the wording filled in, the study did not pass its own checks',
 }
 
+/** What the researcher can do about wording no file filled in (the assistant reads it in the problem). */
+const ASK = ' Or ask the assistant: it can take that passage from you (paste it into the chat), or, if the paper does not print it, reconstruct it with your agreement, labelled as reconstructed.'
+const SUPPLIABLE = new Set<OriginalTextReason>(['download', 'file', 'wrong-file', 'changed-online', 'pdf-reader', 'app-version', 'reading'])
+const ASK_PICTURE = ' Ask the assistant: once the screenshot or scan is in, it puts it in place of the picture, labelled as supplied by you.'
+
 /** One problem per source that still has screens without their wording: a run is blocked until there are none.
- *  `reason` is the plain English line (approval errors, the agent); `text` lets the app word it in either language. */
+ *  Wording restored approximately or supplied in the fills file counts as filled in. `reason` is the plain English
+ *  line (approval errors, the agent); `text` lets the app word it in either language. */
 export function originalTextProblems(status: OriginalTextStatus): OriginalTextProblem[] {
   if (!status.projection || status.complete) return []
   const out: OriginalTextProblem[] = []
@@ -117,7 +147,7 @@ export function originalTextProblems(status: OriginalTextStatus): OriginalTextPr
     if (!s.need || s.restored >= s.items) continue
     const screens = Math.max(1, s.screens)
     out.push({ check: 'original-text', text: { need: s.need, title: s.title, format: s.format, screens },
-      reason: `${screens === 1 ? '1 screen is' : `${screens} screens are`} missing the wording from ${s.title} (${FORMAT[s.format] ?? 'file'}): ${PLAIN[s.need] ?? 'it could not be filled in'}.` })
+      reason: `${screens === 1 ? '1 screen is' : `${screens} screens are`} missing the wording from ${s.title} (${FORMAT[s.format] ?? 'file'}): ${PLAIN[s.need] ?? 'it could not be filled in'}.${SUPPLIABLE.has(s.need) ? ASK : s.need === 'picture' ? ASK_PICTURE : ''}` })
   }
   if (!out.length) out.push({ check: 'original-text', reason: 'Some screens are missing their original wording.' })
   return out
@@ -130,6 +160,12 @@ export async function writeAgentStatus(project: string, status: OriginalTextStat
   const shown = {
     publishedStudy: status.projection, complete: Boolean(status.complete), screensMissing: status.complete ? 0 : status.screens ?? 0,
     items: status.items ?? 0, restored: status.restored ?? 0, pdfReader: status.pdfReader ?? null,
+    // how the restored items were filled in: exact, approximate (from the researcher's copy: may hold reading errors),
+    // supplied by the researcher, reconstructed with their agreement
+    exact: status.exact ?? status.restored ?? 0, approx: status.approx ?? 0, supplied: status.supplied ?? { user: 0, reconstructed: 0 },
+    labels: status.labels ?? {},
+    unresolved: (status.unresolved ?? []).map((u) => ({ held: u.held, screen: u.screen, path: u.path, source: u.source, title: u.title, kind: u.kind, length: u.length, need: u.need })),
+    fillsFile: FILLS_FILE, fillsProblems: (status.fills?.problems ?? []).map((p) => ({ held: p.held, why: p.why })),
     sources: (status.sources ?? []).map((s) => ({ ...s, file: s.file && s.file.startsWith(root + sep) ? relative(root, s.file).split(sep).join('/') : null })),
     updatedAt: new Date().toISOString(),
   }
@@ -140,12 +176,19 @@ export async function writeAgentStatus(project: string, status: OriginalTextStat
   await rename(tmp, join(dir, 'original-text.json'))
 }
 
-/** The restored protocol of one published study version, from the app's cache: only when every item was restored
- *  and the cached file is the one the helper wrote (its sha256 recorded beside it). */
-export async function restoredProtocolText(cacheDir: string, projectionSha256: string): Promise<string | null> {
-  if (!/^[0-9a-f]{64}$/.test(projectionSha256)) return null
+/** The cache folder of one project's restored copy of a published study version: fills and approximate wording are
+ *  per project, so two projects with the same protocol.json never share one (hs_original_text.restore_slot). */
+export async function restoreSlot(project: string, projectionSha256: string): Promise<string> {
+  return sha256(`${projectionSha256}\n${sha256(await realpath(project))}`)
+}
+
+/** The restored protocol of one published study version, from the app's cache (`slot`: restoreSlot, or the version
+ *  itself): only when every item was restored and the cached file is the one the helper wrote (its sha256 recorded
+ *  beside it). */
+export async function restoredProtocolText(cacheDir: string, projectionSha256: string, slot: string = projectionSha256): Promise<string | null> {
+  if (!/^[0-9a-f]{64}$/.test(projectionSha256) || !/^[0-9a-f]{64}$/.test(slot)) return null
   try {
-    const here = join(cacheDir, projectionSha256)
+    const here = join(cacheDir, slot)
     const status = JSON.parse(await readFile(join(here, 'status.json'), 'utf8')) as OriginalTextStatus
     const bytes = await readFile(join(here, 'protocol.json'))
     if (!status.complete || status.projectionSha256 !== projectionSha256 || status.restoredSha256 !== sha256(bytes)) return null
@@ -158,9 +201,24 @@ export async function restoredProtocolText(cacheDir: string, projectionSha256: s
  *  study whose wording is not filled in for exactly the approved version. Nothing for an ordinary protocol.json. */
 export async function restoredRunFiles(project: string, cacheDir: string, protocolSha256: string): Promise<[string, string][]> {
   if (!(await isPublishedStudy(project))) return []
-  const text = await restoredProtocolText(cacheDir, protocolSha256)
+  const slot = /^[0-9a-f]{64}$/.test(protocolSha256) ? await restoreSlot(project, protocolSha256) : protocolSha256
+  const text = await restoredProtocolText(cacheDir, protocolSha256, slot)
   if (text === null) throw Error("This study's original wording has not been filled in on this computer yet, so the simulation was not started (its screens would show \"[text not available]\"). Ask the agent what is missing.")
-  return [['restored/protocol.json', text]]
+  const labels = await restoredLabels(cacheDir, slot)
+  // which items were restored without verification (ids and labels only): the run accepts exactly those and says so
+  return [['restored/protocol.json', text], ...(Object.keys(labels).length ? [['restored/labels.json', JSON.stringify({ labels }) + '\n'] as [string, string]] : [])]
+}
+
+/** The labels of a cached restored copy ({held id: approx | user | reconstructed}); {} when all is exact. */
+export async function restoredLabels(cacheDir: string, slot: string): Promise<Record<string, OriginalTextLabel>> {
+  if (!/^[0-9a-f]{64}$/.test(slot)) return {}
+  try {
+    const raw = (JSON.parse(await readFile(join(cacheDir, slot, 'status.json'), 'utf8')) as OriginalTextStatus).labels
+    const out: Record<string, OriginalTextLabel> = {}
+    for (const [h, v] of Object.entries(raw && typeof raw === 'object' ? raw : {}))
+      if (/^h[0-9]{1,9}$/.test(h) && (v === 'approx' || v === 'user' || v === 'reconstructed')) out[h] = v
+    return out
+  } catch { return {} }
 }
 
 /** The held-back list of a published study is pinned the first time this computer sees it (app storage, keyed by

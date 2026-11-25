@@ -71,7 +71,7 @@ test('sample guide opens the real source and participant preview without sending
             const noop=()=>{}
             const forbidden=()=>{blockedCalls.push('forbidden')}
             return <><SampleOnboarding agentReady={false} onClose={noop} onAction={action=>{blockedCalls.push(action);if(action==='setup')setOpen(true)}}/>
-              {open&&<Chat session={{id:null,messages:[],queue:[],pendingPermissions:[],usage:{input:0,output:0},native:forbidden,send:forbidden}} selected={[]} onClearSelection={noop} account={{signedIn:true,modelAccess:'hosted'}} onSettings={noop} agreement="needed" onReview={forbidden} projectDir="/sample" tree={[]} model="" auto={true} onAuto={forbidden} onModel={noop} busyEnter="queue" kernel={{status:null,retry:noop}} onOpenStudy={noop} onOpenFile={noop}/>}
+              {open&&<Chat session={{id:null,messages:[],queue:[],pendingPermissions:[],usage:{input:0,output:0},native:forbidden,send:forbidden}} selected={[]} onClearSelection={noop} account={{signedIn:true,modelAccess:'hosted'}} onSettings={noop} agreement="needed" onReview={forbidden} projectDir="/sample" tree={[]} model="" onModel={noop} busyEnter="queue" kernel={{status:null,retry:noop}} onOpenStudy={noop} onOpenFile={noop}/>}
             </>
           }
           function check(value,message){if(!value)throw Error(message)}

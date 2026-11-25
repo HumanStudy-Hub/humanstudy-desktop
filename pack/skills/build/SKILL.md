@@ -35,6 +35,47 @@ Use the paper's main results to guide the research overview, including findings 
 Save a valid scholarly checkpoint as soon as the studies are identified. Use targeted schema reads
 instead of reading the full protocol schema before the first save. Follow SCHOLARLY.md's evidence
 check before reporting completion.
+
+**First batch: copy this shape.** It passes `check_program.py` as written (a test keeps it valid);
+replace the `<...>` text with what the paper prints, and add one `studies` entry per study.
+
+<!-- first-batch-example:start -->
+```json
+{
+  "schemaVersion": 2,
+  "id": "author-1981-short-title",
+  "title": "<Paper title as printed>",
+  "intent": "reconstruct",
+  "source": {
+    "title": "<Paper title as printed>",
+    "authors": "<First Author, Second Author, Third Author>",
+    "filename": "paper.pdf",
+    "venue": "<Journal, volume(issue), pages (year)>",
+    "doi": "<10.xxxx/xxxxx, only if printed>"
+  },
+  "studies": [
+    {"id": "s1", "title": "Study 1: <what it tests>", "type": "empirical", "description": "<one sentence>"},
+    {"id": "s2", "title": "Study 2: <what it tests>", "type": "empirical", "dependsOn": ["s1"]},
+    {"id": "s3", "title": "<Re-analysis of Studies 1-2>", "type": "analysis", "dependsOn": ["s1", "s2"]}
+  ]
+}
+```
+<!-- first-batch-example:end -->
+
+- `source` allows only `title`, `authors`, `filename`, `venue`, `doi`, `version`; the first three are
+  required. `authors` is one string, not a list. There is no `year`, `path` or `type`: put the year in
+  `venue`. `filename` is `paper.pdf`. Omit `doi`/`venue` when the paper does not print them.
+- Every study needs `id`, `title` and `type` (`empirical`, `analysis` for a study that only re-analyses
+  data, or `unspecified`); `description` and `dependsOn` are the only other keys.
+
+**Plan one batch per area, per study.** `check_program.py --complete` requires each `empirical` study
+to have: participants (`participants` node), design (`design` node, with its `condition` nodes),
+variables (`variable` or `record` nodes), procedure and materials (`procedure` node or the study's
+steps, with the materials they show), analysis (`analysis` node) and results (`result` nodes). An
+`analysis` study needs only analysis and results. Each area holds source-supported content or a
+`missing` field with an issue, never invented text. Batches in this order (study by study, each area
+with its evidence) pass the coverage check the first time instead of being reminded area by area.
+
 Build and check the initial delivery from the paper and materials already in the project. Record
 missing materials and the exact source needed. Search for external materials when preparing a
 requested experiment, under AGENTS.md's rules. Do not fetch participant-level data.

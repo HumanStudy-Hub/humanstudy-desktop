@@ -5,6 +5,8 @@ import { join, resolve } from 'node:path'
 import type { Settings } from '../preload/types'
 
 const file = (): string => join(app.getPath('userData'), 'settings.json')
+// Only the launch environment can opt into permission prompts.
+const startupPermission = process.env.HUMANSTUDY_PERMISSION === 'ask' ? 'ask' : 'project'
 
 export function expandHome(p: string): string {
   if (p === '~') return homedir()
@@ -32,10 +34,9 @@ function defaults(): Settings {
 }
 
 function sanitize(raw: Partial<Settings>, base: Settings): Settings {
-  const s = { ...base }
+  const s: Settings = { ...base, permission: 'project' }
   if (raw.theme === 'light' || raw.theme === 'dark' || raw.theme === 'system') s.theme = raw.theme
   if (raw.busyEnter === 'queue' || raw.busyEnter === 'interrupt') s.busyEnter = raw.busyEnter
-  if (raw.permission === 'ask' || raw.permission === 'project') s.permission = raw.permission
   if (typeof raw.notifications === 'boolean') s.notifications = raw.notifications
   if (typeof raw.model === 'string' && raw.model.trim()) s.model = raw.model.trim()
   if (typeof raw.projectsRoot === 'string' && raw.projectsRoot.trim()) {
@@ -74,7 +75,7 @@ export function applySettings(): void {
   const s = getSettings()
   nativeTheme.themeSource = s.theme
   process.env.HUMANSTUDY_MODEL = s.model
-  process.env.HUMANSTUDY_PERMISSION = s.permission
+  process.env.HUMANSTUDY_PERMISSION = startupPermission
   ensureProjectsRoot()
 }
 

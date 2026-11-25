@@ -311,7 +311,9 @@ MSG = {
                            "run (AI participants would have seen \"[text not available]\"). Ask the agent what is "
                            "missing, then press Run simulation again.",
            "text_other": "The original wording filled in on this computer belongs to another version of this study, "
-                         "so it was not run. Press Run simulation again."},
+                         "so it was not run. Press Run simulation again.",
+           "wording": "Not all wording is the exact published text: {approx} passage(s) came from your copy of the "
+                      "paper and may contain reading errors, {user} you supplied, {reconstructed} reconstructed."},
     "zh": {"stopped": "已由研究者停止：计划 {planned} 名参与者中完成了 {done} 名；{partial} 名进行中的记为部分完成"
                       "（partial.jsonl）。已停止的运行不做比较。",
            "changed": "运行开始时 protocol.json 被改动，或出现了变体；本次运行不报告任何结果。请重新点击“运行模拟”。",
@@ -324,7 +326,9 @@ MSG = {
            "ran": "运行已完成（{finished}）。", "done": "{finished}；{calls} 次模型调用。",
            "text_missing": "这项研究的原始措辞还没有在这台电脑上补全，因此没有运行（否则 AI 参与者会看到“[文字不可用]”）。"
                            "请问助手还缺什么，补全后再点击“运行模拟”。",
-           "text_other": "这台电脑上补全的原始措辞属于这项研究的另一个版本，因此没有运行。请重新点击“运行模拟”。"},
+           "text_other": "这台电脑上补全的原始措辞属于这项研究的另一个版本，因此没有运行。请重新点击“运行模拟”。",
+           "wording": "并非所有措辞都是原文：{approx} 段取自你手中的论文副本，可能有识别错误；{user} 段由你提供；"
+                      "{reconstructed} 段为重构。"},
 }
 
 
@@ -402,11 +406,17 @@ def _get(doc, path: str):
     return doc
 
 
-def matches_projection(projection: dict, restored: dict) -> bool:
+LABELS = ("approx", "user", "reconstructed")
+
+
+def matches_projection(projection: dict, restored: dict, labels: dict | None = None, root: Path | None = None) -> bool:
     """True when `restored` is exactly `projection` with every held text filled in: each held slot holds the text
     whose sha256 the published study recorded (hsenv's own per-item check), no placeholder is left anywhere, and
-    putting the placeholders back gives the published study unchanged. A held picture is not supported (the app
-    does not restore pictures yet), so a study holding one never matches."""
+    putting the placeholders back gives the published study unchanged. `labels` ({held id: approx | user |
+    reconstructed}, from the app beside the copy) names the items the app restored without that check: their slot
+    must hold a non-empty text, and everything else must still match. A held picture matches when its slot names an
+    image file inside the project (`root`) that is the published picture (its sha256) or is labelled "user" (a
+    screenshot or scan the researcher supplied)."""
     from hsenv import distribution as D
     if not isinstance(restored, dict) or "distribution" in restored or PLACEHOLDER in json.dumps(restored, ensure_ascii=False):
         return False
@@ -414,16 +424,49 @@ def matches_projection(projection: dict, restored: dict) -> bool:
     a = json.loads(json.dumps({k: v for k, v in projection.items() if k != "distribution"}))
     b = json.loads(json.dumps(restored))
     try:
-        for h in held.values():
+        for hid, h in held.items():
             if h.get("kind") == "image":
-                return False
+                pic = _get(b, h["path"])
+                if not (isinstance(pic, dict) and isinstance(pic.get("src"), str) and root is not None):
+                    return False
+                data = picture_bytes(root, pic["src"])
+                if data is None or not ((labels or {}).get(hid) == "user"
+                                        or hashlib.sha256(data).hexdigest() == h.get("sha256")):
+                    return False
+                # only what restoring a picture changes is put back (its src and sha256): held text lines inside it
+                # are checked as their own items, in any order
+                orig = _get(a, h["path"])
+                if not isinstance(orig, dict):
+                    return False
+                for k in ("src", "sha256"):
+                    if k in orig:
+                        pic[k] = orig[k]
+                    else:
+                        pic.pop(k, None)
+                continue
             text = _get(b, h["path"])
-            if not isinstance(text, str) or D.text_sha256(text) != h["text_sha256"]:
+            if (labels or {}).get(hid) in LABELS:
+                if not isinstance(text, str) or not text.strip():
+                    return False
+            elif not isinstance(text, str) or D.text_sha256(text) != h["text_sha256"]:
                 return False
             _put(b, h["path"], PLACEHOLDER * int(h["length"]))
     except (KeyError, IndexError, ValueError, TypeError, AttributeError):
         return False
     return a == b
+
+
+def picture_bytes(root: Path, src: str) -> bytes | None:
+    """The bytes of a picture file the restored copy names: a relative path to a regular file inside the project
+    (no '..', no link out of it), else None."""
+    if not src or src.startswith(("/", "~")) or "\\" in src or "\x00" in src or ":" in src or ".." in src.split("/"):
+        return None
+    try:
+        real = (root / src).resolve(strict=True)
+        real.relative_to(root.resolve())
+        return real.read_bytes() if real.is_file() else None
+    except (OSError, ValueError, RuntimeError):
+        return None
 
 
 def restored_protocol(project: Path) -> dict | None:
@@ -446,9 +489,51 @@ def restored_protocol(project: Path) -> dict | None:
     if not given.is_file():
         raise Refused(msg("text_missing"))
     restored = json.loads(given.read_text(encoding="utf-8"))
-    if not matches_projection(projection, restored):
+    if not matches_projection(projection, restored, restored_labels(), project):
         raise Refused(msg("text_other"))
     return restored
+
+
+def restored_labels() -> dict:
+    """{held id: approx | user | reconstructed} of the restored copy (<code>/restored/labels.json, written by the app
+    beside it): the items filled in from the researcher's copy by approximation, pasted by the researcher, or
+    reconstructed with their agreement. {} when every item is the exact published text."""
+    f = HERE.parents[1] / "restored" / "labels.json"
+    try:
+        raw = json.loads(f.read_text(encoding="utf-8")).get("labels") if f.is_file() else None
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return {h: v for h, v in raw.items() if isinstance(h, str) and v in LABELS} if isinstance(raw, dict) else {}
+
+
+class never_official:
+    """While active, every evaluation is non_official (hsenv.evaldata EvalData.build's plan): its scores keep their
+    values without a pass/fail verdict (hsenv.rewards reads plan.official). For a run whose participants saw wording
+    that is not all the exact published text."""
+
+    def __enter__(self):
+        from hsenv import evaldata as E
+        self.E, self.original = E, E.EvalData.__dict__["build"]
+        original = self.original
+
+        def build(cls, *a, **k):
+            ev = original.__func__(cls, *a, **k)
+            ev.d.setdefault("plan", {}).update(official=False, official_n_basis=None,
+                                                why_not_official="participants saw wording that is not all the exact "
+                                                                 "published text")
+            return ev
+        E.EvalData.build = classmethod(build)
+        return self
+
+    def __exit__(self, *exc):
+        self.E.EvalData.build = self.original
+        return False
+
+
+def wording_note(labels: dict) -> dict | None:
+    """Counts of the restored items that are not the exact published text (for run.json and the done message)."""
+    counts = {k: sum(1 for v in labels.values() if v == k) for k in LABELS}
+    return counts if any(counts.values()) else None
 
 
 def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, model: str | None = None) -> dict:
@@ -502,6 +587,12 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     # The app, not run_study, says when a run is done: only after it is judged complete and its page is written
     # (review 3, S6), so a partial run is never shown as done, not even for a moment.
     run_study.Progress.stage = lambda self, name, message=None: original_stage(self, "writing" if name == "done" else name, message)
+    # Wording that is not all the exact published text (approximate, supplied, reconstructed): the comparison is
+    # never official, so the saved plan and scores carry values without a verdict (hsenv.rewards reads plan.official).
+    note = wording_note(restored_labels()) if restored is not None else None
+    unofficial = never_official() if note else None
+    if unofficial is not None:
+        unofficial.__enter__()
     try:
         meta = run_study.run(project, spec, n=1 if trial else int(plan["perArm"]), seeds=[1] if trial else plan["seeds"],
                              out=out, host_f=f, arms=plan.get("arms"), quiet=True, baseline=not trial,
@@ -511,6 +602,10 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     finally:
         run_study.baseline_cached, run_study.Progress.stage = original_cache, original_stage
         run_study.load_protocol = original_load
+        if unofficial is not None:
+            unofficial.__exit__(None, None, None)
+    if note and isinstance(meta.get("plan"), dict):
+        meta["plan"]["official"] = False
     # The protocol the engine actually loaded must be the approved one: run_study reads protocol.json again after
     # check_approval hashed it (review 5, S3).
     if meta.get("protocol_sha256") != plan.get("protocolSha256") or (bound and meta.get("variant") is not None):
@@ -524,7 +619,8 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
         print(json.dumps({"status": meta.get("status"), "participants": meta.get("participants")}, default=str))
         return meta
     result = outcome(out, meta)
-    meta["app"] = {"route": "protocol", "runId": bound.get("runId"), **result}
+    meta["app"] = {"route": "protocol", "runId": bound.get("runId"), **result,
+                   **({"originalWording": note} if note else {})}
     if not result["complete"]:
         meta["status"] = "partial"
     (out / "run.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
@@ -546,7 +642,10 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
                                               error=str(e)[:200]))
         raise
     if result["complete"]:
-        write_progress(run_dir, "done", msg("done", finished=finished, calls=meta.get("calls", 0)))
+        done = msg("done", finished=finished, calls=meta.get("calls", 0))
+        if note:
+            done += " " + msg("wording", approx=note["approx"], user=note["user"], reconstructed=note["reconstructed"])
+        write_progress(run_dir, "done", done)
     return meta
 
 

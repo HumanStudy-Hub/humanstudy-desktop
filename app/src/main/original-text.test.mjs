@@ -32,6 +32,7 @@ const FILES = [
   ...['VERSION', ...[...readFileSync(join(engineDir, 'VERSION'), 'utf8').matchAll(/^[0-9a-f]{64} {2}(\S+)$/gm)].map((m) => m[1])]
     .map((rel) => ['hsenv/' + rel, readFileSync(join(engineDir, rel), 'utf8')]),
   ['hs_original_text.py', readFileSync(join(pack, 'runtime/lib/hs_original_text.py'), 'utf8')],
+  ['hs_approx_text.py', readFileSync(join(pack, 'runtime/lib/hs_approx_text.py'), 'utf8')],
 ]
 const python = [process.env.HUMANSTUDY_TEST_PYTHON, 'python3.12', 'python3.13', 'python3.11', 'python3'].filter(Boolean).map((p) =>
   spawnSync(p, ['-c', 'import sys; print(sys.executable) if sys.version_info >= (3, 11) else sys.exit(1)'], { encoding: 'utf8' }))
@@ -93,6 +94,70 @@ test('engine checks: a published study passes with its placeholders; an unverifi
   assert.equal((await R.heldSourceTexts(mkdtempSync(join(tmpdir(), 'none-')))).size, 0)
 })
 
+test('engine checks: a published study is checked as released (--public); the researcher\'s own project stays strict', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  // a text the release transcribed from a page image of a held source: its blind readings were never shipped
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.intro.content.push({ id: 'scan', value: 'Walk at your own pace.', cite: { label: 'verbatim', source: 'booklet', page: 1, read: 'image' } })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  assert.deepEqual(await R.publicMode(proj), ['--public'])
+  assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+  // the restored copy is checked the same way
+  const restored = structuredClone(p)
+  delete restored.distribution
+  const texts = { '/stages/intro/content/0/value': HANDOUT_TEXT, '/stages/intro/content/1/value': 'Remember to drink a glass of water first.',
+    '/stages/q/responses/0/prompt': 'How many minutes did you walk this morning?', '/stages/q/responses/1/prompt': 'Did you see a neighbour on the way?' }
+  for (const [path, text] of Object.entries(texts)) {
+    const parts = path.split('/').slice(1); const last = parts.pop()
+    parts.reduce((o, k) => o[k], restored)[last] = text
+  }
+  const work = mkdtempSync(join(tmpdir(), 'restored-check-'))
+  assert.deepEqual(await R.restoredReadiness(python, ENGINE, proj, JSON.stringify(restored), work, ''), [])
+  // the same protocol as the researcher's own project (no held wording): the strict check still asks for a reading
+  const own = mkdtempSync(join(tmpdir(), 'own-'))
+  writeFileSync(join(own, 'protocol.json'), JSON.stringify(restored, null, 1))
+  assert.deepEqual(await R.publicMode(own), [])
+  const strict = await R.protocolReadiness(python, ENGINE, own, '')
+  assert.ok(strict.some((x) => x.check === 'verbatim' && /image-read texts without an agreeing blind reading/.test(x.reason)), JSON.stringify(strict))
+})
+
+test('engine checks: wording a release cites verbatim from a held source outside the held fields passes as received; a local edit blocks', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  // a short label the release cites verbatim from the held booklet without holding it (Bench checked it privately)
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.q.responses[1].options[0].cite = { label: 'verbatim', source: 'booklet', page: 1 }
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).map((x) => x.check), ['verbatim'], 'without the received copy it blocked (the bug)')
+  R.configureReceivedProtocol(async () => received)
+  try {
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+    p.stages.q.responses[1].options[0].label = 'Absolutely, I walked every single day'   // changed on this computer
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).map((x) => x.check), ['verbatim'])
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('engine checks: a published study\'s image-read text changed on this computer blocks', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.intro.content.push({ id: 'scan', value: 'Walk at your own pace.', cite: { label: 'verbatim', source: 'booklet', page: 1, read: 'image' } })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+    p.stages.intro.content.at(-1).value = 'Walk as fast as you can.'
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    const problems = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.deepEqual(problems.map((x) => x.check), ['verbatim'])
+    assert.match(problems[0].reason, /read from a page image of the paper were changed on this computer/)
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
 test('held source texts: placeholders before, the restored texts after; a project sourcetext file wins', async () => {
   const { proj, close } = await publishedProject()
   close()
@@ -121,6 +186,94 @@ test('problems: one per source, in plain words, with the parts the app translate
   assert.deepEqual(O.originalTextProblems({ projection: false }), [])
 })
 
+test('problems: approximate and supplied wording unblock; what is still unresolved blocks and says how to proceed', () => {
+  const sources = [
+    { key: 'handout', title: 'Morning Walk Survey handout', tier: 'link', format: 'text', items: 1, restored: 1, screens: 0, file: null },
+    { key: 'leaflet', title: 'Water leaflet', tier: 'user', format: 'pdf', items: 1, restored: 1, screens: 0, file: null, approx: 1 },
+    { key: 'booklet', title: 'Walking booklet', tier: 'user', format: 'html', items: 2, restored: 2, screens: 0, file: null, user: 1, reconstructed: 1 },
+  ]
+  // every item restored (one approximately, two from the fills file): the helper says complete, nothing blocks
+  assert.deepEqual(O.originalTextProblems({ projection: true, complete: true, approx: 1, supplied: { user: 1, reconstructed: 1 }, sources }), [])
+  // one still unresolved: it blocks, and the reason tells the assistant how to proceed
+  const open = O.originalTextProblems({ projection: true, complete: false, sources: [...sources.slice(0, 2),
+    { ...sources[2], restored: 1, reconstructed: 0, screens: 1, need: 'reading' }] })
+  assert.equal(open.length, 1)
+  assert.equal(open[0].text.need, 'reading')
+  assert.match(open[0].reason, /paste it into the chat/)
+  assert.match(open[0].reason, /reconstruct it with your agreement, labelled as reconstructed/)
+  // a held picture: a screenshot or scan of it, put in place by the assistant
+  const pic = O.originalTextProblems({ projection: true, complete: false, sources: [{ ...sources[2], restored: 1, screens: 1, need: 'picture' }] })
+  assert.match(pic[0].reason, /drop in a screenshot or scan of each picture/)
+  assert.match(pic[0].reason, /labelled as supplied by you/)
+  // a changed held list: no fill can help, so no such hint
+  const changed = O.originalTextProblems({ projection: true, complete: false, sources: [{ ...sources[2], restored: 1, screens: 1, need: 'held-changed' }] })
+  assert.doesNotMatch(changed[0].reason, /screenshot|assistant/)
+})
+
+test('the fills file is passed to the helper, never tried as a source copy, and its labels reach the run', async () => {
+  const { proj, close } = await publishedProject({ 'sources/private/booklet.html': 'booklet.html' })
+  close()
+  writeFileSync(join(proj, 'sources/private/original-text-fills.json'), JSON.stringify({ h4: { text: 'x', origin: 'user' } }))
+  const root = realpathSync.native(proj)
+  assert.deepEqual((await O.candidateFiles(proj)).map((f) => relative(root, f).split(sep).join('/')), ['sources/private/booklet.html'])
+  assert.equal(O.FILLS_FILE, 'sources/private/original-text-fills.json')
+  // the run gets restored/labels.json (ids and labels only) beside the copy when some items are not exact
+  const cache = mkdtempSync(join(tmpdir(), 'text-cache-'))
+  const version = sha(readFileSync(join(proj, 'protocol.json')))
+  const restored = '{"id": "fixture-walk"}\n'
+  const slot = await O.restoreSlot(proj, version)
+  mkdirSync(join(cache, slot))
+  writeFileSync(join(cache, slot, 'protocol.json'), restored)
+  writeFileSync(join(cache, slot, 'status.json'), JSON.stringify({ complete: true, projectionSha256: version, restoredSha256: sha(restored),
+    labels: { h2: 'approx', h4: 'user', h3: 'reconstructed', bad: 'approx', h1: 'exact' } }))
+  const files = await O.restoredRunFiles(proj, cache, version)
+  assert.deepEqual(files.map(([n]) => n), ['restored/protocol.json', 'restored/labels.json'])
+  assert.deepEqual(JSON.parse(files[1][1]), { labels: { h2: 'approx', h4: 'user', h3: 'reconstructed' } })
+})
+
+test('end to end: approximate and supplied wording make a published study runnable, labelled, without text in the status', { skip: !python || !hasPdfium }, async () => {
+  const { proj, close } = await publishedProject({ 'sources/private/leaflet.pdf': 'leaflet.pdf' })
+  try {
+    // h2 as a release whose wording the build team corrected (no exact match), with a fingerprint of the passage
+    const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+    const fp = spawnSync(python, ['-c', `import sys, json; sys.path.insert(0, sys.argv[1]); import hs_approx_text as A
+print(json.dumps(A.fingerprint("Remember to drink a glass of water first.", [2], salt="ab12")))`, join(pack, 'runtime/lib')], { encoding: 'utf8' })
+    p.distribution.held.h2.text_sha256 = '0'.repeat(64)
+    p.distribution.held.h2.approx = JSON.parse(fp.stdout)
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    const cache = mkdtempSync(join(tmpdir(), 'text-cache-'))
+    // the booklet (h3, h4) is not on this computer: blocked, and both items are listed for the assistant
+    let status = await O.fillOriginalText(python, FILES, proj, cache, '', { allowLocal: true })
+    assert.equal(status.complete, false)
+    assert.equal(status.approx, 1)
+    assert.deepEqual(status.unresolved.map((u) => [u.held, u.source, u.need]), [['h3', 'booklet', 'file'], ['h4', 'booklet', 'file']])
+    assert.equal(O.originalTextProblems(status).length, 1)
+    await O.writeAgentStatus(proj, status)
+    let shown = JSON.parse(readFileSync(join(proj, '.humanstudy/original-text.json'), 'utf8'))
+    assert.equal(shown.fillsFile, 'sources/private/original-text-fills.json')
+    assert.deepEqual(shown.unresolved.map((u) => u.held), ['h3', 'h4'])
+    // the assistant writes what the researcher pasted and a reconstruction they agreed to
+    const pasted = 'How many minutes did you walk this morning?'
+    const rebuilt = 'Did you meet anyone you know along the way?'
+    writeFileSync(join(proj, 'sources/private/original-text-fills.json'), JSON.stringify({
+      h3: { text: pasted, origin: 'user' }, h4: { text: rebuilt, origin: 'reconstructed', note: 'not printed in the paper' } }))
+    status = await O.fillOriginalText(python, FILES, proj, cache, '', { allowLocal: true })
+    assert.equal(status.complete, true, JSON.stringify(status))
+    assert.deepEqual([status.exact, status.approx, status.supplied], [2, 1, { user: 0, reconstructed: 1 }])   // h3 pasted exactly
+    assert.deepEqual(O.originalTextProblems(status), [])
+    await O.writeAgentStatus(proj, status)
+    const raw = readFileSync(join(proj, '.humanstudy/original-text.json'), 'utf8')
+    for (const t of ['Remember to drink', 'walk this morning', 'meet anyone', 'Thank you']) assert.ok(!raw.includes(t), t)
+    shown = JSON.parse(raw)
+    assert.deepEqual([shown.complete, shown.approx, shown.supplied, shown.labels], [true, 1, { user: 0, reconstructed: 1 }, { h2: 'approx', h4: 'reconstructed' }])
+    const files = await O.restoredRunFiles(proj, cache, sha(readFileSync(join(proj, 'protocol.json'))))
+    const copy = JSON.parse(files[0][1])
+    assert.equal(copy.stages.intro.content[1].value, 'Remember to drink a glass of water first.')
+    assert.equal(copy.stages.q.responses[1].prompt, rebuilt)
+    assert.deepEqual(JSON.parse(files[1][1]).labels, { h2: 'approx', h4: 'reconstructed' })
+  } finally { close() }
+})
+
 test('candidate files: sources/private first, then paper.pdf and the rest of sources/; nothing outside the project', async () => {
   const { proj, close } = await publishedProject({ 'sources/private/booklet.html': 'booklet.html', 'paper.pdf': 'leaflet.pdf', 'sources/open/handout.txt': 'handout.txt' })
   close()
@@ -141,11 +294,17 @@ test('the run gets the restored copy only for exactly the approved version, and 
   const version = sha(readFileSync(join(proj, 'protocol.json')))
   await assert.rejects(O.restoredRunFiles(proj, cache, version), /original wording has not been filled in.*\[text not available\]/)
   const restored = '{"id": "fixture-walk"}\n'
-  mkdirSync(join(cache, version))
-  writeFileSync(join(cache, version, 'protocol.json'), restored)
-  writeFileSync(join(cache, version, 'status.json'), JSON.stringify({ complete: true, projectionSha256: version, restoredSha256: sha(restored) }))
+  const slot = await O.restoreSlot(proj, version)
+  mkdirSync(join(cache, slot))
+  writeFileSync(join(cache, slot, 'protocol.json'), restored)
+  writeFileSync(join(cache, slot, 'status.json'), JSON.stringify({ complete: true, projectionSha256: version, restoredSha256: sha(restored) }))
   assert.deepEqual(await O.restoredRunFiles(proj, cache, version), [['restored/protocol.json', restored]])
-  writeFileSync(join(cache, version, 'protocol.json'), restored.replace('walk', 'run'))   // changed after it was written
+  // another project with the same published protocol.json never runs from this project's copy (fills are per project)
+  const { proj: other, close: close2 } = await publishedProject()
+  close2()
+  assert.notEqual(await O.restoreSlot(other, version), slot)
+  await assert.rejects(O.restoredRunFiles(other, cache, version), /original wording has not been filled in/)
+  writeFileSync(join(cache, slot, 'protocol.json'), restored.replace('walk', 'run'))   // changed after it was written
   await assert.rejects(O.restoredRunFiles(proj, cache, version))
   assert.equal(await O.restoredProtocolText(cache, '../' + version), null)
   // an ordinary protocol.json needs nothing

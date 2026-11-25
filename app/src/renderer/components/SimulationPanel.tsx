@@ -559,6 +559,7 @@ export function factsParagraph(f: NonNullable<SimSummary['facts']>): string {
     f.compared ? t('sim.p.directions', { same: f.same, compared: f.compared }) : t('sim.p.no_directions'),
     f.partial ? '' : f.official ? t('sim.p.official') : t('sim.p.unofficial'),
     f.unverified ? t('sim.p.unverified') : '',
+    f.wording ? t('sim.p.wording', f.wording) : '',
     t('sim.p.caveat'),
   ].filter(Boolean).join(getLang() === 'zh-CN' ? '' : ' ')   // Chinese sentences run on without spaces
 }

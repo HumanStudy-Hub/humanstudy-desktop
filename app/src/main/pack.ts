@@ -10,7 +10,8 @@
 //                                     vendored by scripts/sync_hsenv.sh, app-owned). skills/run and skills/preview
 //                                     find it there (their sandbox layout: <root>/skills/<name>, <root>/hsenv)
 //   runtime/lib/hs_original_text.py -> not installed: the main process runs it from its own copy to fill in a
-//                                     published study's original wording (original-text.ts)
+//   runtime/lib/hs_approx_text.py      published study's original wording (original-text.ts); hs_approx_text
+//                                     places a passage approximately in the researcher's own PDF
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { assertProjectWritePath, saveProjectText } from './program-save'
@@ -20,7 +21,7 @@ import { join } from 'node:path'
 const PREFIX = '../../../pack/'
 const files = import.meta.glob(
   ['../../../pack/AGENTS.md', '../../../pack/PROJECT_FORMAT.md', '../../../pack/schema/**/*', '../../../pack/skills/**/*', '../../../pack/artifact-kit/*',
-    '../../../pack/runtime/hsenv/**/*', '../../../pack/runtime/lib/hs_original_text.py', '../../../pack/runtime/lib/humanstudy_llm.py', '!**/__pycache__/**', '!**/*.pyc'],
+    '../../../pack/runtime/hsenv/**/*', '../../../pack/runtime/lib/hs_original_text.py', '../../../pack/runtime/lib/hs_approx_text.py', '../../../pack/runtime/lib/humanstudy_llm.py', '!**/__pycache__/**', '!**/*.pyc'],
   { query: '?raw', import: 'default', eager: true }
 ) as Record<string, string>
 
@@ -185,8 +186,10 @@ export async function refreshAppOwned(projectDir: string): Promise<void> {
  *  and the helper, from the shipped copy, never the project's. */
 export function trustedOriginalTextFiles(): [string, string][] {
   const helper = files[PREFIX + 'runtime/lib/hs_original_text.py']
+  const approx = files[PREFIX + 'runtime/lib/hs_approx_text.py']
   return [...engineFiles().map((rel): [string, string] => ['hsenv/' + rel.slice('runtime/hsenv/'.length), files[PREFIX + rel]]),
-    ...(helper !== undefined ? [['hs_original_text.py', helper] as [string, string]] : [])]
+    ...(helper !== undefined ? [['hs_original_text.py', helper] as [string, string]] : []),
+    ...(approx !== undefined ? [['hs_approx_text.py', approx] as [string, string]] : [])]
 }
 
 /** What the app runs for an approved protocol run (protocol-run.ts), in the layout launch.py expects: the engine
