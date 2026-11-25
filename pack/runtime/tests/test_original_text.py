@@ -449,6 +449,21 @@ class ApproxAndFills(Published):
         self.assertEqual(O._read_pairs(dest), set(), "reconstructed text is the assistant's, not a source's")
 
 
+class ApproxMatcher(unittest.TestCase):
+    """hs_approx_text: a window scores the passage's DISTINCT trigrams it holds, so a repeated phrase cannot stand in
+    for the words it lacks."""
+
+    def test_a_repeated_phrase_is_not_the_passage(self):
+        fp = A.fingerprint("red blue red blue green yellow", [1], salt="5a1t")
+        self.assertIsNone(A.locate(["red blue red blue red blue"], fp))
+
+    def test_the_exact_passage_scores_one(self):
+        text = "Remember to drink a glass of water before you leave the house."
+        fp = A.fingerprint(text, [2], salt="5a1t")
+        got = A.locate(["A cover page about something else entirely.", "Leaflet. " + text + " Thank you."], fp)
+        self.assertEqual(got, (text, 1.0))
+
+
 class RedactionIndex(unittest.TestCase):
     """Only text that verifiably ships is left out of the index: copying private text elsewhere in the project, into
     sources/researcher/, effects.json or the live protocol.json never makes it public (review probe launder.py)."""
