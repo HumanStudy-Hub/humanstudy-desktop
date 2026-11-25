@@ -109,9 +109,8 @@ def _best(page: str, fp: dict, exclude: tuple[int, int] | None = None) -> tuple[
                 continue
             # recall against the passage's distinct grams, penalised when the window is longer than the passage
             score = min(1.0, len(count) / len(grams)) * min(1.0, (n - 2) / max(1, span))
-            if score > best[0] or (score == best[0] and score > 0
-                                   and abs(length - n) < abs((best[2] - best[1]) - n)):
-                best = (score, a, a + length)   # on a tie, the window closest to the passage's length
+            if score > best[0]:
+                best = (score, a, a + length)
     return best
 
 
@@ -148,11 +147,11 @@ def locate(page_texts: list[str], fp: dict) -> tuple[str, float] | None:
     # ambiguous: another page, or a separate window of the same page, matches nearly as well
     if any(s2 >= score - MARGIN for s2, *_ in found[1:]) or _best(page, fp, exclude=(a, b))[0] >= score - MARGIN:
         return None
-    ws, length = words(page), b - a
-    a = _boundary(page, ws, fp, a, length, score)
-    if a is None:
+    ws = words(page)
+    place = _boundary(page, ws, fp, a, b - a, score)
+    if place is None:
         return None
-    return _span(page, ws, a, a + length, fp), round(score, 3)
+    return _span(page, ws, place[0], place[0] + place[1], fp), round(score, 3)
 
 
 def _window(ws: list, fp: dict, a: int, length: int) -> float:
@@ -163,24 +162,33 @@ def _window(ws: list, fp: dict, a: int, length: int) -> float:
     return min(1.0, len(got) / len(grams)) * min(1.0, (n - 2) / max(1, length - 2))
 
 
-def _boundary(page: str, ws: list, fp: dict, a: int, length: int, score: float) -> int | None:
-    """The start of the window among those shifted by up to two words that score the same: a misread word at an
-    edge of the passage gives no trigram hit, so the window could as well stand one word earlier or later (and drop a
-    word such as "not"). The passage's own leading / trailing punctuation decides; when it cannot, the place is
-    ambiguous (None) and the item is left to the researcher."""
+def _boundary(page: str, ws: list, fp: dict, a: int, length: int, score: float) -> tuple[int, int] | None:
+    """(start, length) of the passage among the windows that score the same as the best one, shifted by up to two
+    words or longer by up to the passage's word count: a misread word at an edge gives no trigram hit, so a window
+    one word shorter or shifted scores the same (and could drop a word such as "Never" or "not"). The passage's own
+    leading / trailing punctuation decides; when it cannot, the place is ambiguous (None) and the item is left to
+    the researcher."""
     lead, tail = fp.get("lead") or "", fp.get("tail") or ""
-    ties = [x for x in range(max(0, a - 2), min(len(ws) - length, a + 2) + 1)
-            if x == a or abs(_window(ws, fp, x, length) - score) < 1e-9]
+    n = int(fp["words"])
+    ties = [(x, k) for k in range(length, max(length, n) + 1) for x in range(max(0, a - 2), a + 3)
+            if x + k <= len(ws) and ((x, k) == (a, length) or abs(_window(ws, fp, x, k) - score) < 1e-9)]
     if len(ties) == 1:
-        return a
+        return _whole(ties[0], len(ws), n)
 
-    def edges(x):
-        start, end = ws[x][1], ws[x + length - 1][2]
+    def edges(t):
+        start, end = ws[t[0]][1], ws[t[0] + t[1] - 1][2]
         return (bool(lead) and page[max(0, start - len(lead)):start] == lead) + \
             (bool(tail) and page[end:end + len(tail)] == tail)
-    best = max(edges(x) for x in ties)
-    picked = [x for x in ties if edges(x) == best]
-    return picked[0] if best and len(picked) == 1 else None
+    best = max(edges(t) for t in ties)
+    picked = [t for t in ties if edges(t) == best]
+    return _whole(picked[0], len(ws), n) if best and len(picked) == 1 else None
+
+
+def _whole(place: tuple[int, int], page_words: int, n: int) -> tuple[int, int] | None:
+    """None for a window shorter than the passage that touches the start or end of its page: the missing words may
+    stand on the neighbouring page ("Do not" at the foot of one page), so the passage cannot be placed whole."""
+    x, k = place
+    return None if k < n and (x == 0 or x + k == page_words) else place
 
 
 def _span(page: str, ws: list, a: int, b: int, fp: dict) -> str:

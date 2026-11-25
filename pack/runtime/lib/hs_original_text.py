@@ -60,8 +60,11 @@ MAX_FILL_CHARS = 200_000
 
 
 def too_long(text: str, length) -> bool:
-    """Much longer than the held text (its placeholder length): the run's model budget was measured on that length."""
-    return isinstance(length, int) and len(text) > 2 * length + 200
+    """Would cost the run more than its placeholder did. The approved model budget is measured on the published
+    protocol, where the relay charges each placeholder character as its JSON escape (\\u2591: 6 bytes,
+    skills/run/budget.py call_charge); a filled-in text must not be charged more than that, so the run can never
+    outgrow the budget the researcher approved."""
+    return not isinstance(length, int) or len(json.dumps(text).encode("utf-8")) - 2 > 6 * length
 
 
 def restored_ok(entry, item_report) -> bool:
@@ -329,12 +332,14 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
     def ok_count(rep_, key):
         return sum(1 for h, e in held.items() if isinstance(e, dict) and e.get("source") == key
                    and restored_ok(e, rep_["items"].get(h)))
-    # a link source whose download restored nothing is not kept (see forget_download)
+    # a link source whose download restored nothing is not kept (see forget_download), but only once the
+    # approximate pass has also had its chance with it (below)
+    unkept = []
     for key, src in (report.get("sources") or {}).items():
         d = distribution_of(projection, key)
         if d.get("tier") == "link" and src.get("status") == "ok" and isinstance(d.get("url"), str) \
                 and src.get("matches_recorded_sha256") is not True and ok_count(report, key) == 0:
-            forget_download(cache, d["url"], RESTORED_NONE)
+            unkept.append((key, d["url"]))
     todo = sorted({e.get("source") for h, e in held.items()
                    if isinstance(e, dict) and isinstance(e.get("source"), str)
                    and not restored_ok(e, report["items"].get(h))})
@@ -360,6 +365,10 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
     if supplied:
         out, report = D.rehydrate(projection, fetch=fetch, files=supplied, extractors=extractors)
     fill_in(projection, out, report, fills or {}, cache, files, chosen, supplied, extractors)
+    for key, url in unkept:
+        if not any(isinstance(e, dict) and e.get("source") == key and (report["items"].get(h) or {}).get("status") in ("ok", "approx")
+                   for h, e in held.items()):
+            forget_download(cache, url, RESTORED_NONE)
     complete = all(restored_ok(e, report["items"].get(h)) for h, e in held.items())
     report["complete"] = complete
     return (out if complete else None), report, chosen, extractors, log
@@ -528,7 +537,7 @@ def load_fills(path: Path | None, projection: dict) -> tuple[dict, list[dict], s
         elif "\u2591" in v["text"]:
             why = "text contains placeholder characters"
         elif too_long(v["text"], held[h].get("length")):
-            why = "text is much longer than the original passage (%s characters)" % held[h].get("length")
+            why = "text is longer than the original passage allows (%s characters of placeholder)" % held[h].get("length")
         if why:
             problems.append({"held": h[:20], "why": why})
         else:

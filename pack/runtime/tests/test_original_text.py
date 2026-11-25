@@ -349,6 +349,21 @@ class ApproxAndFills(Published):
         self.assert_no_text(st, self.LEAFLET, *TEXTS.values())
 
     @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
+    def test_a_downloaded_pdf_with_no_exact_match_still_gives_the_approximate_text(self):
+        server = Server({"/leaflet.pdf": (FIX / "leaflet.pdf").read_bytes()})
+        self.addCleanup(server.close)
+        p = json.loads(self.projection.read_text(encoding="utf-8"))
+        self.ocr_corrected(p["distribution"]["held"])
+        p["meta"]["sources"]["leaflet"]["distribution"].update(tier="link", url=server.url + "/leaflet.pdf", sha256="0" * 64)
+        path = self.tmp / "link-pdf.json"
+        path.write_text(json.dumps(p, ensure_ascii=False), encoding="utf-8")
+        st = self.run_fills(path, files=[self.drop("booklet.html")])
+        self.assertTrue(st["complete"], st)
+        self.assertEqual(st["labels"], {"h2": "approx"})
+        self.assertTrue(any(f.name.endswith(".failed") is False for f in (self.cache / "downloads").iterdir()),
+                        "a download that gave approximate wording is kept")
+
+    @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
     def test_approx_is_not_placed_from_a_pdf_without_the_passage(self):
         other = (FIX / "leaflet.pdf").read_bytes()   # a fingerprint of a passage the PDF does not hold
         path = self.variant(lambda held: (self.ocr_corrected(held), held["h2"].update(
@@ -430,8 +445,11 @@ class ApproxAndFills(Published):
         self.assertEqual(st["fills"]["problems"], [{"held": None, "why": "the fills file is not valid JSON"}])
 
     def test_a_fill_much_longer_than_the_original_is_refused(self):
-        st = self.run_fills(self.projection, fills=self.fills({"h4": {"text": "word " * 200, "origin": "reconstructed"}}))
-        self.assertEqual(st["fills"]["problems"], [{"held": "h4", "why": "text is much longer than the original passage (35 characters)"}])
+        # the relay charges a placeholder character 6 bytes (its JSON escape): a fill may cost no more than that
+        why = "text is longer than the original passage allows (35 characters of placeholder)"
+        for text, ok in (("w" * 210, True), ("w" * 211, False), ("\u8bcd" * 35, True), ("\u8bcd" * 36, False)):
+            st = self.run_fills(self.projection, fills=self.fills({"h4": {"text": text, "origin": "reconstructed"}}))
+            self.assertEqual(st["fills"]["problems"], [] if ok else [{"held": "h4", "why": why}], text)
 
     def test_a_text_region_keeps_its_slot_for_a_transcription(self):
         # hsenv could render a held text's region as a picture into its slot; the app cannot show that, so the slot
@@ -519,6 +537,14 @@ class ApproxMatcher(unittest.TestCase):
         self.assertIsNone(A.locate(["Rule one you must not press the red button before the signal squnds and then wait"], fp),
                           "no punctuation to tell where it ends: ambiguous")
         self.assertEqual(A.locate(["Rule one " + t + " and then wait"], fp), (t, 1.0))
+
+    def test_a_passage_split_across_pages_is_not_cut(self):
+        # "Do not" at the foot of one page, the rest on the next with a misread last word: never "open the box ..."
+        t = "Do not open the box until the experimenter tells you to do so now."
+        fp = A.fingerprint(t, [1, 2], salt="ab")
+        got = A.locate(["Instructions for the session. Do not",
+                        "open the box until the experimenter tells you to do so nqw. Then wait."], fp)
+        self.assertTrue(got is None or got[0].startswith("Do not"), got)
 
 
 class RedactionIndex(unittest.TestCase):
