@@ -10,7 +10,12 @@ by its own text hash, so a wrong file can only leave an item unresolved, never p
 The app's main process runs it from its own copy (never the project's), with the bundled engine on sys.path:
 
     python -I -B -X utf8 hs_original_text.py <engine dir> <project>/protocol.json <cache dir> [--file <path>]...
-           [--allow-local] [--offline]
+           [--fills <project>/sources/private/original-text-fills.json] [--allow-local] [--offline]
+
+Three tiers, each labelled in the status: the exact text (its sha256 verified); approximate (the release carries an
+`approx` fingerprint and the passage is located in the researcher's own PDF copy, hs_approx_text: may contain
+reading errors); supplied (the project's fills file: text the researcher pasted, origin "user", or reconstructed by
+the assistant with their agreement, origin "reconstructed"). Exact wins over approximate, approximate over a fill.
 
 Nothing it reads, downloads or restores leaves this computer, and nothing is written into the project: downloads
 and restored protocols go under <cache dir> (app storage). The restored protocol of a study version is cached as
@@ -42,13 +47,22 @@ RETRY_AFTER = 10 * 60                 # a failed download is not tried again for
 MAX_CANDIDATES = 12                   # project files tried per source
 EXTENSIONS = {"pdf": (".pdf",), "html": (".html", ".htm", ".xhtml"), "text": (".txt", ".text", ".md", ".rmd", ".r"),
               "docx": (".docx",), "qsf": (".qsf", ".json")}
-OK = ("ok",)   # a held picture (or a region rendered as one) is not supported yet: it stays unresolved
+# Item statuses that count as restored for a run. "ok": the exact text (its sha256 verified). "approx": located in
+# the researcher's own copy by the release's fingerprint (hs_approx_text), may contain reading errors. "user" /
+# "reconstructed": supplied in the project's fills file (FILLS) by the researcher, or reconstructed by the assistant
+# with the researcher's agreement. A held picture (or a region rendered as one) is not supported yet: it stays
+# unresolved.
+OK = ("ok", "approx", "user", "reconstructed")
+LABELS = ("approx", "user", "reconstructed")   # restored, but not verified against the published text
+FILLS = "sources/private/original-text-fills.json"   # per project, never published (sources/private/ stays local)
+MAX_FILLS_BYTES = 2 * 1024 * 1024
+MAX_FILL_CHARS = 200_000
 
 
 def restored_ok(entry, item_report) -> bool:
-    """A held text the copy on this computer verified; pictures are never counted (the run could not show them)."""
+    """A held text restored on this computer; pictures are never counted (the run could not show them)."""
     return isinstance(entry, dict) and entry.get("kind") != "image" and (item_report or {}).get("status") in OK
-STATUS_VERSION = 1
+STATUS_VERSION = 2
 
 
 def sha256(data: bytes) -> str:
@@ -272,8 +286,12 @@ def only_source(projection: dict, key: str) -> dict:
     return p
 
 
-def restore(projection: dict, cache: Path, files: list[Path], allow_local=False, offline=False):
-    """-> (restored protocol or None, report, chosen files {source: path}, extractors, download log)."""
+def restore(projection: dict, cache: Path, files: list[Path], allow_local=False, offline=False, fills=None):
+    """-> (restored protocol or None, report, chosen files {source: path}, extractors, download log).
+
+    Precedence per held text: the exact text (hsenv.rehydrate, or a fill of origin "user" whose sha256 is the
+    recorded one), then the approximate text located in the researcher's copy (`approx` fingerprint), then a fill
+    (`fills`: {held id: {"text", "origin"}}, already validated by load_fills)."""
     from hsenv import distribution as D
     extractors = pdf_extractors()
     log: list = []
@@ -318,9 +336,178 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
             chosen[key], supplied[key] = best
     if supplied:
         out, report = D.rehydrate(projection, fetch=fetch, files=supplied, extractors=extractors)
-    complete = bool(report.get("complete")) and all(restored_ok(e, report["items"].get(h)) for h, e in held.items())
+    fill_in(projection, out, report, fills or {}, cache, files, chosen, supplied, extractors)
+    complete = all(restored_ok(e, report["items"].get(h)) for h, e in held.items())
     report["complete"] = complete
     return (out if complete else None), report, chosen, extractors, log
+
+
+def _approx_module():
+    """hs_approx_text, from beside this file (the app runs the helper from its own scratch copy)."""
+    import importlib.util
+    here = Path(__file__).with_name("hs_approx_text.py")
+    if here.is_file():
+        spec = importlib.util.spec_from_file_location("hs_approx_text", here)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    import hs_approx_text   # noqa: F401 - tests put lib/ on sys.path
+    return hs_approx_text
+
+
+def _put(out: dict, entry: dict, text: str) -> bool:
+    """Put `text` where the held item's placeholder stands; only a placeholder of the item's own length is ever
+    replaced (a fill can never overwrite another field)."""
+    from hsenv import distribution as D
+    try:
+        cur = D._get(out, entry["path"])
+    except (KeyError, IndexError, ValueError, TypeError):
+        return False
+    if not (isinstance(cur, str) and cur and set(cur) == {D.PLACEHOLDER} and len(cur) == entry.get("length")):
+        return False
+    D._set(out, entry["path"], unicodedata.normalize("NFC", text))
+    return True
+
+
+def approx_pages(key: str, projection: dict, cache: Path, files: list[Path], chosen: dict, supplied: dict,
+                 extractors: dict):
+    """[(path or None, page texts)] of the PDF copies of one source on this computer, best first: the file chosen
+    for the exact restore, the download, then the project's other PDF files."""
+    if "pdf" not in extractors:
+        return []
+    d = distribution_of(projection, key)
+    if d.get("format") not in (None, "pdf"):
+        return []
+    seen, out = set(), []
+    cands: list = []
+    if key in supplied:
+        cands.append((chosen.get(key), supplied[key]))
+    if d.get("tier") == "link" and isinstance(d.get("url"), str):
+        got = cache / "downloads" / sha256(d["url"].encode("utf-8"))
+        data = read_file(got) if got.is_file() else None
+        if data is not None:
+            cands.append((None, data))
+    want = d.get("sha256") if isinstance(d.get("sha256"), str) else None
+    for f in candidates_for("pdf", files, key, want):
+        cands.append((f, None))
+    for path, data in cands[:MAX_CANDIDATES + 2]:
+        data = data if data is not None else read_file(path)
+        if data is None or not data.startswith(b"%PDF") or sha256(data) in seen:
+            continue
+        seen.add(sha256(data))
+        try:
+            pages = extractors["pdf"](data)
+        except Exception:   # noqa: BLE001 - an unreadable PDF: try the next copy
+            continue
+        if isinstance(pages, list) and pages:
+            out.append((path, [p if isinstance(p, str) else "" for p in pages]))
+    return out
+
+
+def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path, files: list[Path], chosen: dict,
+            supplied: dict, extractors: dict) -> None:
+    """Restore what the exact pass left, in place (`out`, `report`): a user fill that hashes to the recorded text
+    (exact), then the approximate text from the researcher's copy, then the fills file. Items stay unresolved when
+    nothing applies."""
+    from hsenv import distribution as D
+    held = held_of(projection)
+    items = report.setdefault("items", {})
+
+    def todo():
+        return [h for h, e in sorted(held.items()) if isinstance(e, dict) and e.get("kind") != "image"
+                and isinstance(e.get("path"), str) and not restored_ok(e, items.get(h))]
+
+    def mark(h, e, status, **extra):
+        prev = items.get(h) or {}
+        items[h] = dict({"source": e.get("source"), "path": e.get("path"), "kind": e.get("kind", "text"),
+                         "status": status, "before": prev.get("status")}, **extra)
+    # 1. a fill the researcher pasted that is exactly the published text: exact
+    for h in todo():
+        f, e = fills.get(h), held[h]
+        if f and f["origin"] == "user" and isinstance(e.get("text_sha256"), str) \
+                and D.text_sha256(f["text"]) == e["text_sha256"] and _put(out, e, f["text"]):
+            mark(h, e, "ok", via="fill")
+    # 2. approximate: located in the researcher's PDF copy of the same source by the release's fingerprint
+    want = {}
+    for h in todo():
+        if isinstance(held[h].get("approx"), dict) and isinstance(held[h].get("source"), str):
+            want.setdefault(held[h]["source"], []).append(h)
+    if want:
+        A = _approx_module()
+        for key, hs in sorted(want.items()):
+            best = None
+            for path, pages in approx_pages(key, projection, cache, files, chosen, supplied, extractors):
+                found = {}
+                for h in hs:
+                    try:
+                        got = A.locate(pages, held[h]["approx"])
+                    except Exception:   # noqa: BLE001 - a malformed fingerprint: not placed
+                        got = None
+                    if got and got[0].strip() and D.PLACEHOLDER not in got[0]:
+                        found[h] = got
+                if found and (best is None or len(found) > len(best[1])):
+                    best = (path, found)
+                if best and len(best[1]) == len(hs):
+                    break
+            if best is None:
+                continue
+            for h, (text, score) in best[1].items():
+                if _put(out, held[h], text):
+                    mark(h, held[h], "approx", score=score)
+            if best[0] is not None and key not in chosen:
+                chosen[key] = best[0]
+    # 3. the fills file: what the researcher supplied, or what the assistant reconstructed with them
+    for h in todo():
+        f = fills.get(h)
+        if f and _put(out, held[h], f["text"]):
+            mark(h, held[h], f["origin"])
+    remaining = {h: e for h, e in held.items() if not restored_ok(e, items.get(h))}
+    if remaining:
+        out.setdefault("distribution", copy.deepcopy(projection.get("distribution") or {}))["held"] = remaining
+    else:
+        out.pop("distribution", None)
+
+
+def load_fills(path: Path | None, projection: dict) -> tuple[dict, list[dict], str | None]:
+    """(valid fills {held id: {"text", "origin"}}, problems [{held, why}], sha256 of the file or None). The fills
+    file (FILLS) is written by the assistant: {"<held id>": {"text": "...", "origin": "user" | "reconstructed",
+    "note": "..."}}. A problem names the held id and why, never the text."""
+    if path is None:
+        return {}, [], None
+    data = read_file(path)
+    if data is None:
+        return {}, [], None
+    if len(data) > MAX_FILLS_BYTES:
+        return {}, [{"held": None, "why": "the fills file is larger than 2 MB"}], sha256(data)
+    try:
+        raw = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return {}, [{"held": None, "why": "the fills file is not valid JSON"}], sha256(data)
+    if not isinstance(raw, dict):
+        return {}, [{"held": None, "why": "the fills file must be a JSON object keyed by held id"}], sha256(data)
+    held = held_of(projection)
+    fills, problems = {}, []
+    for h, v in raw.items():
+        if not isinstance(h, str) or h.startswith("_"):
+            continue   # "_comment" and the like
+        why = None
+        if h not in held or not isinstance(held[h], dict):
+            why = "no held item has this id"
+        elif held[h].get("kind") == "image":
+            why = "this item is a picture; a text cannot fill it"
+        elif not isinstance(v, dict) or not isinstance(v.get("text"), str) or not v["text"].strip():
+            why = "text must be a non-empty string"
+        elif v.get("origin") not in ("user", "reconstructed"):
+            why = 'origin must be "user" or "reconstructed"'
+        elif len(v["text"]) > MAX_FILL_CHARS:
+            why = "text is longer than %d characters" % MAX_FILL_CHARS
+        elif "\u2591" in v["text"]:
+            why = "text contains placeholder characters"
+        if why:
+            problems.append({"held": h[:20], "why": why})
+        else:
+            fills[h] = {"text": v["text"], "origin": v["origin"]}
+    return fills, problems, sha256(data)
 
 
 def need_of(fmt: str | None, tier: str | None, statuses: list[dict], source_report: dict, had_file: bool,
@@ -345,8 +532,12 @@ def need_of(fmt: str | None, tier: str | None, statuses: list[dict], source_repo
     return "file"
 
 
-def status(projection: dict, report: dict, chosen: dict, extractors: dict, log: list) -> dict:
+def status(projection: dict, report: dict, chosen: dict, extractors: dict, log: list,
+           fill_problems: list | None = None, fills_file: bool = False) -> dict:
+    """The status the app and the assistant read: counts, per-source needs, the labels of items restored without
+    verification and the unresolved items (ids, paths, titles, lengths, why): never any text of a source or fill."""
     held = held_of(projection)
+    st_of = lambda h: (report["items"].get(h) or {}).get("status")   # noqa: E731
     by_source: dict[str, list] = {}
     for h, e in held.items():
         if isinstance(e, dict) and isinstance(e.get("source"), str):
@@ -360,6 +551,7 @@ def status(projection: dict, report: dict, chosen: dict, extractors: dict, log: 
         unresolved = [(h, e) for h, e in items if not restored_ok(e, report["items"].get(h))]
         rec = {"key": key, "title": title_of(projection, key), "tier": tier, "format": fmt or "unknown",
                "items": len(items), "restored": len(items) - len(unresolved),
+               **{lab: sum(1 for h, _ in items if st_of(h) == lab) for lab in LABELS},
                "screens": len({screen_of(e.get("path")) for _, e in unresolved}),
                "file": str(chosen[key]) if key in chosen else None}
         if tier == "link" and isinstance(d.get("url"), str):
@@ -370,8 +562,31 @@ def status(projection: dict, report: dict, chosen: dict, extractors: dict, log: 
         sources.append(rec)
     total = sum(s["items"] for s in sources)
     restored = sum(s["restored"] for s in sources)
+    labels = {h: st_of(h) for h in sorted(held) if st_of(h) in LABELS}
+    titles = {s["key"]: s["title"] for s in sources}
+    unresolved = []
+    for h, e in sorted(held.items()):
+        if not isinstance(e, dict) or restored_ok(e, report["items"].get(h)):
+            continue
+        key = e.get("source") if isinstance(e.get("source"), str) else None
+        d = distribution_of(projection, key) if key else {}
+        fmt = d.get("format") if isinstance(d.get("format"), str) else None
+        tier = d.get("tier") if d.get("tier") in ("link", "user", "hosted") else "user"
+        unresolved.append({
+            "held": h, "screen": screen_of(e.get("path")), "path": e.get("path") if isinstance(e.get("path"), str) else None,
+            "source": key, "title": titles.get(key) or (title_of(projection, key) if key else None),
+            "kind": "picture" if e.get("kind") == "image" else "text",
+            "length": e.get("length") if isinstance(e.get("length"), int) else None,
+            "need": need_of(fmt, tier, [report["items"].get(h, {})], report.get("sources", {}).get(key) or {},
+                            key in chosen, extractors)})
     return {"version": STATUS_VERSION, "projection": True, "complete": bool(report.get("complete")),
             "items": total, "restored": restored,
+            "exact": sum(1 for h, e in held.items() if isinstance(e, dict) and e.get("kind") != "image" and st_of(h) == "ok"),
+            "approx": sum(1 for v in labels.values() if v == "approx"),
+            "supplied": {"user": sum(1 for v in labels.values() if v == "user"),
+                         "reconstructed": sum(1 for v in labels.values() if v == "reconstructed")},
+            "labels": labels, "unresolved": unresolved,
+            "fills": {"file": FILLS, "present": bool(fills_file), "problems": list(fill_problems or [])},
             "screens": len({screen_of(e.get("path")) for h, e in held.items()
                             if isinstance(e, dict) and not restored_ok(e, report["items"].get(h))}),
             "pdfReader": "pdf" in extractors, "sources": sources,
@@ -480,7 +695,7 @@ def _strings(o, skip=()):
 
 
 def index_project(cache: Path, project: Path, projection: dict, files: list[Path], extractors: dict,
-                  restored=None, received=None) -> Path:
+                  restored=None, received=None, fills=None) -> Path:
     """The redaction index of one project (<cache>/redact/<sha256 of its folder>.bin), which the app's research
     capture loads: every run of the researcher's private copies (files under sources/private/), of this study's
     downloads and of its restored wording, minus only what verifiably ships with the study, so quoting what the
@@ -520,6 +735,10 @@ def index_project(cache: Path, project: Path, projection: dict, files: list[Path
             except (KeyError, IndexError, ValueError, TypeError):
                 continue
         private |= window_pairs("\n".join(texts))
+    # what the researcher pasted into the fills file comes from their copy of a source: private like the copy
+    user_fills = [f["text"] for f in (fills or {}).values() if f.get("origin") == "user"]
+    if user_fills:
+        private |= window_pairs("\n".join(user_fills))
     public: set = set()
     if isinstance(received, dict):
         public |= window_pairs("\n".join(_strings(received, skip=("distribution",))))
@@ -551,6 +770,11 @@ def main(argv: list[str]) -> int:
             received = None
         del args[i:i + 2]
     args = [a for a in args if a not in ("--allow-local", "--offline", "--index-only")]
+    fills_path = None
+    if "--fills" in args:
+        i = args.index("--fills")
+        fills_path = Path(args[i + 1])
+        del args[i:i + 2]
     files: list[Path] = []
     while "--file" in args:
         i = args.index("--file")
@@ -567,16 +791,20 @@ def main(argv: list[str]) -> int:
     here = cache / version
     done = here / "protocol.json"
     project = protocol_path.parent
+    fills, fill_problems, fills_sha = load_fills(fills_path, projection)
     cached = None
     if done.is_file() and (here / "status.json").is_file():
         st = json.loads((here / "status.json").read_text(encoding="utf-8"))
-        if st.get("complete") and st.get("restoredSha256") == sha256(done.read_bytes()):
+        # a restore that used the fills file is reused only while that file is unchanged (and any restore only
+        # while the fills file is as it was: a fill added or removed is applied on the next check)
+        if st.get("complete") and st.get("restoredSha256") == sha256(done.read_bytes()) \
+                and st.get("fillsSha256") == fills_sha and st.get("version") == STATUS_VERSION:
             cached = st
     # The index first, before any download: a copy the researcher just dropped is recognised by research capture
     # from now on, whatever the agent does with it while the downloads run.
     try:
         index_project(cache, project, projection, files, pdf_extractors(),
-                      json.loads(done.read_text(encoding="utf-8")) if cached else None, received)
+                      json.loads(done.read_text(encoding="utf-8")) if cached else None, received, fills)
     except Exception:   # noqa: BLE001 - the index is a safeguard; never stop the restore over it
         pass
     if index_only:
@@ -585,13 +813,14 @@ def main(argv: list[str]) -> int:
     if cached:
         print(json.dumps(dict(cached, restoredPath=str(done), cached=True)))
         return 0
-    restored, report, chosen, extractors, log = restore(projection, cache, files, allow_local, offline)
+    restored, report, chosen, extractors, log = restore(projection, cache, files, allow_local, offline, fills)
     try:   # again with what the downloads and the restore added
-        index_project(cache, project, projection, files, extractors, restored, received)
+        index_project(cache, project, projection, files, extractors, restored, received, fills)
     except Exception:   # noqa: BLE001
         pass
-    st = status(projection, report, chosen, extractors, log)
+    st = status(projection, report, chosen, extractors, log, fill_problems, fills_sha is not None)
     st["projectionSha256"] = version
+    st["fillsSha256"] = fills_sha
     here.mkdir(parents=True, exist_ok=True)
     if restored is not None:
         # written as bytes: the sha256 recorded below is of exactly these bytes (a text-mode write would turn \n into

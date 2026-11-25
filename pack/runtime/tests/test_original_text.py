@@ -18,6 +18,7 @@ RUNTIME = HERE.parent
 FIX = HERE / "fixtures" / "original_text"
 sys.path.insert(0, str(RUNTIME / "lib"))
 sys.path.insert(0, str(RUNTIME / "hsenv"))
+import hs_approx_text as A  # noqa: E402
 import hs_original_text as O  # noqa: E402
 from hsenv import distribution as D  # noqa: E402
 
@@ -73,7 +74,9 @@ def get(doc, path):
     return doc
 
 
-class OriginalText(unittest.TestCase):
+class Published(unittest.TestCase):
+    """A project with the published fixture and a local publisher (helpers only)."""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -108,6 +111,8 @@ class OriginalText(unittest.TestCase):
     def by_key(self, st):
         return {s["key"]: s for s in st["sources"]}
 
+
+class OriginalText(Published):
     def test_fixture_is_a_published_study(self):
         p = json.loads((FIX / "protocol.json").read_text(encoding="utf-8"))
         self.assertEqual(p["distribution"]["format"], "hsenv-projection/1")
@@ -292,6 +297,156 @@ class OriginalText(unittest.TestCase):
         path = self.tmp / "plain.json"
         path.write_text(json.dumps({"id": "x", "stages": {}}), encoding="utf-8")
         self.assertEqual(self.run_helper(protocol=path), {"version": O.STATUS_VERSION, "projection": False})
+
+
+class ApproxAndFills(Published):
+    """The two tiers after the exact one: approximate (the release's fingerprint located in the researcher's own PDF)
+    and supplied (the project's fills file, origin "user" or "reconstructed"). Exact > approx > fill."""
+    LEAFLET = TEXTS["/stages/intro/content/1/value"]
+
+    def variant(self, edit):
+        p = json.loads(self.projection.read_text(encoding="utf-8"))
+        edit(p["distribution"]["held"])
+        path = self.tmp / ("variant-%d.json" % len(list(self.tmp.glob("variant-*.json"))))
+        path.write_text(json.dumps(p, ensure_ascii=False), encoding="utf-8")
+        return path
+
+    def fills(self, data):
+        f = self.tmp / "project" / "sources" / "private" / "original-text-fills.json"
+        f.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return f
+
+    def run_fills(self, protocol, files=(), fills=None):
+        extra = ["--allow-local"] + (["--fills", str(fills)] if fills is not None else [])
+        return self.run_helper(protocol=protocol, files=files, extra=extra)
+
+    def ocr_corrected(self, held):
+        """h2 as a release whose wording was corrected by the build team: the exact hash no longer matches the PDF."""
+        held["h2"]["text_sha256"] = "0" * 64
+        held["h2"]["approx"] = A.fingerprint(self.LEAFLET, [2], salt="5a1t")
+
+    def restored(self, st):
+        return json.loads(Path(st["restoredPath"]).read_text(encoding="utf-8"))
+
+    def assert_no_text(self, st, *texts):
+        dumped = json.dumps(st, ensure_ascii=False)
+        for t in texts:
+            for piece in (t, t[:20], t[-20:]):
+                self.assertNotIn(piece, dumped)
+
+    @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
+    def test_approx_restores_from_the_researchers_pdf_and_is_labelled(self):
+        path = self.variant(self.ocr_corrected)
+        st = self.run_fills(path, files=[self.drop("booklet.html"), self.drop("leaflet.pdf")])
+        self.assertTrue(st["complete"], st)
+        self.assertEqual((st["restored"], st["exact"], st["approx"]), (4, 3, 1))
+        self.assertEqual(st["supplied"], {"user": 0, "reconstructed": 0})
+        self.assertEqual(st["labels"], {"h2": "approx"})
+        self.assertEqual(st["unresolved"], [])
+        self.assertEqual(self.by_key(st)["leaflet"]["approx"], 1)
+        self.assertEqual(get(self.restored(st), "/stages/intro/content/1/value"), self.LEAFLET)
+        self.assertNotIn("distribution", self.restored(st))
+        self.assert_no_text(st, self.LEAFLET, *TEXTS.values())
+
+    @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
+    def test_approx_is_not_placed_from_a_pdf_without_the_passage(self):
+        other = (FIX / "leaflet.pdf").read_bytes()   # a fingerprint of a passage the PDF does not hold
+        path = self.variant(lambda held: (self.ocr_corrected(held), held["h2"].update(
+            approx=A.fingerprint("An entirely different sentence about cycling to work at dawn.", [2], salt="5a1t"))))
+        st = self.run_fills(path, files=[self.drop("booklet.html"), self.drop("leaflet.pdf", other)])
+        self.assertFalse(st["complete"])
+        self.assertEqual([u["held"] for u in st["unresolved"]], ["h2"])
+
+    def test_fills_restore_what_no_file_can(self):
+        f = self.fills({"h3": {"text": TEXTS["/stages/q/responses/0/prompt"], "origin": "user", "note": "pasted"},
+                        "h4": {"text": "Did you meet anyone you know on your walk?", "origin": "reconstructed",
+                               "note": "the paper describes the item, does not print it"},
+                        "_comment": "ignored"})
+        original = O.pdf_extractors
+        O.pdf_extractors = lambda: {}    # the leaflet stays unresolved (no PDF reader): it is listed, not filled
+        self.addCleanup(setattr, O, "pdf_extractors", original)
+        st = self.run_fills(self.projection, fills=f)
+        self.assertFalse(st["complete"])
+        # h3 is exactly the published text: exact, although it came from the fills file
+        self.assertEqual(st["exact"], 2)
+        self.assertEqual(st["supplied"], {"user": 0, "reconstructed": 1})
+        self.assertEqual(st["labels"], {"h4": "reconstructed"})
+        self.assertEqual(self.by_key(st)["booklet"]["restored"], 2)
+        self.assertEqual(self.by_key(st)["booklet"]["reconstructed"], 1)
+        self.assertNotIn("need", self.by_key(st)["booklet"])
+        self.assertEqual(st["unresolved"], [{"held": "h2", "screen": "stage:intro", "path": "/stages/intro/content/1/value",
+                                             "source": "leaflet", "title": "Water leaflet", "kind": "text", "length": 41,
+                                             "need": "pdf-reader"}])
+        self.assertEqual(st["fills"], {"file": O.FILLS, "present": True, "problems": []})
+        self.assert_no_text(st, "Did you meet anyone", *TEXTS.values())
+        # now the leaflet is supplied too: complete, and the restored copy holds the supplied wording
+        f = self.fills({"h3": {"text": "How many minutes did you walk today?", "origin": "user"},
+                        "h4": {"text": "Did you meet anyone you know on your walk?", "origin": "reconstructed"},
+                        "h2": {"text": "Drink some water before you go.", "origin": "user"}})
+        st = self.run_fills(self.projection, fills=f)
+        self.assertTrue(st["complete"], st)
+        self.assertEqual((st["exact"], st["supplied"]), (1, {"user": 2, "reconstructed": 1}))
+        restored = self.restored(st)
+        self.assertEqual(get(restored, "/stages/q/responses/1/prompt"), "Did you meet anyone you know on your walk?")
+        self.assertEqual(get(restored, "/stages/q/responses/0/prompt"), "How many minutes did you walk today?")
+        # the cached copy is reused only while the fills file is unchanged
+        again = self.run_fills(self.projection, fills=f)
+        self.assertTrue(again.get("cached"))
+        f.write_text("{}", encoding="utf-8")
+        st = self.run_fills(self.projection, fills=f)
+        self.assertFalse(st["complete"])
+        self.assertFalse(st.get("cached"))
+        self.assertIsNone(st["restoredPath"])
+
+    @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
+    def test_precedence_exact_then_approx_then_fill(self):
+        def edit(held):
+            self.ocr_corrected(held)
+            held["h1"]["approx"] = A.fingerprint(TEXTS["/stages/intro/content/0/value"], [1], salt="5a1t")
+        f = self.fills({"h1": {"text": "Some other greeting for the handout screen.", "origin": "reconstructed"},
+                        "h2": {"text": "A fill that loses to the approximate text.", "origin": "user"},
+                        "h3": {"text": "A fill that loses to the exact text.", "origin": "reconstructed"}})
+        st = self.run_fills(self.variant(edit), files=[self.drop("booklet.html"), self.drop("leaflet.pdf")], fills=f)
+        self.assertTrue(st["complete"], st)
+        self.assertEqual(st["labels"], {"h2": "approx"})
+        restored = self.restored(st)
+        self.assertEqual(get(restored, "/stages/intro/content/0/value"), TEXTS["/stages/intro/content/0/value"])
+        self.assertEqual(get(restored, "/stages/intro/content/1/value"), self.LEAFLET)
+        self.assertEqual(get(restored, "/stages/q/responses/0/prompt"), TEXTS["/stages/q/responses/0/prompt"])
+
+    def test_invalid_fills_are_reported_without_their_text(self):
+        f = self.fills({"h3": {"text": "   ", "origin": "user"}, "h4": {"text": "Secret pasted words here", "origin": "ai"},
+                        "h99": {"text": "Secret pasted words here", "origin": "user"},
+                        "h2": {"text": "Has ░░ placeholders", "origin": "user"}})
+        st = self.run_fills(self.projection, fills=f)
+        self.assertEqual(sorted((p["held"], p["why"]) for p in st["fills"]["problems"]), [
+            ("h2", "text contains placeholder characters"), ("h3", "text must be a non-empty string"),
+            ("h4", 'origin must be "user" or "reconstructed"'), ("h99", "no held item has this id")])
+        self.assertEqual(st["supplied"], {"user": 0, "reconstructed": 0})
+        self.assert_no_text(st, "Secret pasted words here")
+        bad = self.tmp / "project" / "sources" / "private" / "original-text-fills.json"
+        bad.write_text("not json", encoding="utf-8")
+        st = self.run_fills(self.projection, fills=bad)
+        self.assertEqual(st["fills"]["problems"], [{"held": None, "why": "the fills file is not valid JSON"}])
+
+    def test_a_fill_never_overwrites_anything_but_its_placeholder(self):
+        p = json.loads(self.projection.read_text(encoding="utf-8"))
+        p["distribution"]["held"]["h3"]["length"] = 7   # a tampered entry: the placeholder at its path is 43 long
+        path = self.tmp / "tampered.json"
+        path.write_text(json.dumps(p), encoding="utf-8")
+        st = self.run_fills(path, fills=self.fills({"h3": {"text": "Overwritten", "origin": "user"}}))
+        self.assertIn("h3", [u["held"] for u in st["unresolved"]])
+
+    def test_user_fills_are_indexed_as_private(self):
+        pasted = "How long did you walk this morning, and was the weather pleasant on your way to the park?"
+        p, c = self.tmp / "proj2", self.tmp / "cache2"
+        (p / "sources/private").mkdir(parents=True)
+        dest = O.index_project(c, p, {"distribution": {"held": {}}}, [], {},
+                               fills={"h1": {"text": pasted, "origin": "user"}, "h2": {"text": pasted + " x", "origin": "reconstructed"}})
+        self.assertTrue(O._read_pairs(dest) & O.window_pairs(pasted))
+        dest = O.index_project(c, p, {"distribution": {"held": {}}}, [], {},
+                               fills={"h2": {"text": pasted, "origin": "reconstructed"}})
+        self.assertEqual(O._read_pairs(dest), set(), "reconstructed text is the assistant's, not a source's")
 
 
 class RedactionIndex(unittest.TestCase):
