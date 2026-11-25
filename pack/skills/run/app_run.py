@@ -433,7 +433,16 @@ def matches_projection(projection: dict, restored: dict, labels: dict | None = N
                 if data is None or not ((labels or {}).get(hid) == "user"
                                         or hashlib.sha256(data).hexdigest() == h.get("sha256")):
                     return False
-                _put(b, h["path"], json.loads(json.dumps(_get(a, h["path"]))))
+                # only what restoring a picture changes is put back (its src and sha256): held text lines inside it
+                # are checked as their own items, in any order
+                orig = _get(a, h["path"])
+                if not isinstance(orig, dict):
+                    return False
+                for k in ("src", "sha256"):
+                    if k in orig:
+                        pic[k] = orig[k]
+                    else:
+                        pic.pop(k, None)
                 continue
             text = _get(b, h["path"])
             if (labels or {}).get(hid) in LABELS:

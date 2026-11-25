@@ -806,6 +806,30 @@ class HeldPictures(Published):
         swapped["stages"]["intro"]["content"][2]["value"]["src"] = "../outside.png"
         self.assertFalse(app_run.matches_projection(projection, swapped, {"h9": "user"}, self.tmp))
 
+    def test_a_picture_with_a_held_line_inside_it_runs(self):
+        sys.path.insert(0, str(RUNTIME.parent / "skills" / "run"))
+        import app_run
+        (self.files / "fig.png").write_bytes(self.PNG)
+        digest = O.sha256(self.PNG)
+        line = "Remember to drink a glass of water first."
+        p = json.loads(self.projection.read_text(encoding="utf-8"))
+        p["stages"]["intro"]["content"].append({"id": "pic", "value": {"src": "asset:" + digest[:16], "lines": [D.PLACEHOLDER * len(line)]}})
+        p["distribution"]["held"]["h8"] = {"path": "/stages/intro/content/2/value", "source": "booklet", "kind": "image", "sha256": digest}
+        p["distribution"]["held"]["h9"] = {"path": "/stages/intro/content/2/value/lines/0", "source": "booklet", "kind": "text",
+                                          "length": len(line), "text_sha256": D.text_sha256(line), "locator": {}}
+        restored = json.loads(json.dumps(p))
+        del restored["distribution"]
+        for path, text in TEXTS.items():
+            parts = path.split("/")[1:]
+            o = restored
+            for k in parts[:-1]:
+                o = o[int(k)] if isinstance(o, list) else o[k]
+            o[int(parts[-1]) if isinstance(o, list) else parts[-1]] = text
+        restored["stages"]["intro"]["content"][2]["value"] = {"src": "project/sources/private/fig.png", "lines": [line]}
+        self.assertTrue(app_run.matches_projection(p, restored, {}, self.tmp))
+        restored["stages"]["intro"]["content"][2]["value"]["lines"] = ["Something else entirely, same length.."]
+        self.assertFalse(app_run.matches_projection(p, restored, {}, self.tmp))
+
 
 class RunReportWording(unittest.TestCase):
     """A run whose wording was not all exact never gets an official verdict, and says why."""
