@@ -152,8 +152,13 @@ def locate(page_texts: list[str], fp: dict) -> tuple[str, float] | None:
                     return (span, 1.0) if _nums_ok(span, fp) else None
         return None
     found = []
+    grams = set(fp["grams"])
     for p in order:
         page = clean(page_texts[p - 1])
+        # a page holding too few of the passage's trigrams at all cannot reach the threshold: skip the window scan
+        w = [x for x, _, _ in words(page)]
+        if len({g for g in (_gram(fp["salt"], w, i) for i in range(len(w) - 2)) if g in grams}) < (THRESHOLD - MARGIN) * len(grams):
+            continue
         score, a, b = _best(page, fp)
         if score >= THRESHOLD - MARGIN:
             found.append((score, p, a, b, page))

@@ -378,6 +378,15 @@ class ApproxAndFills(Published):
         self.assertTrue(st["complete"], st)
         self.assertEqual(st["labels"], {"h2": "approx"})
 
+    @unittest.skipUnless(HAVE_PDFIUM, "needs the locked pypdfium2 (the runtime python)")
+    def test_an_exhausted_approx_budget_still_applies_the_fills(self):
+        self.addCleanup(setattr, O, "APPROX_BUDGET", O.APPROX_BUDGET)
+        O.APPROX_BUDGET = -1
+        f = self.fills({"h2": {"text": "Drink some water first.", "origin": "user"}})
+        st = self.run_fills(self.variant(self.ocr_corrected), files=[self.drop("booklet.html"), self.drop("leaflet.pdf")], fills=f)
+        self.assertTrue(st["complete"], st)
+        self.assertEqual(st["labels"], {"h2": "user"})
+
     def test_two_partial_copies_together_restore_a_source(self):
         good = (FIX / "booklet.html").read_bytes()
         a = self.drop("booklet-a.html", good.replace(b"neighbour", b"friend"))     # verifies h3 only

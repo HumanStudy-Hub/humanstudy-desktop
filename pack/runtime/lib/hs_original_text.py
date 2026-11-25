@@ -57,6 +57,7 @@ LABELS = ("approx", "user", "reconstructed")   # restored, but not verified agai
 FILLS = "sources/private/original-text-fills.json"   # per project, never published (sources/private/ stays local)
 MAX_FILLS_BYTES = 2 * 1024 * 1024
 MAX_FILL_CHARS = 200_000
+APPROX_BUDGET = 90                    # seconds the approximate pass may take (fills and the status come after it)
 
 
 def too_long(text: str, length) -> bool:
@@ -503,11 +504,16 @@ def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path,
             want.setdefault(held[h]["source"], []).append(h)
     if want:
         A = _approx_module()
+        started = time.monotonic()
         for key, hs in sorted(want.items()):
+            if time.monotonic() - started > APPROX_BUDGET:
+                break   # what is left goes to the fills file (applied below) or stays unresolved
             best = None
             for path, pages in approx_pages(key, projection, cache, files, chosen, supplied, extractors, fetch):
                 found = {}
                 for h in hs:
+                    if time.monotonic() - started > APPROX_BUDGET:
+                        break
                     try:
                         got = A.locate(pages, held[h]["approx"])
                     except Exception:   # noqa: BLE001 - a malformed fingerprint: not placed
