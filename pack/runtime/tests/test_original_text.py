@@ -382,10 +382,15 @@ class ApproxAndFills(Published):
     def test_an_exhausted_approx_budget_still_applies_the_fills(self):
         self.addCleanup(setattr, O, "APPROX_BUDGET", O.APPROX_BUDGET)
         O.APPROX_BUDGET = -1
+        calls = []
+        real = O.approx_pages
+        self.addCleanup(setattr, O, "approx_pages", real)
+        O.approx_pages = lambda *a, **k: (calls.append(1), real(*a, **k))[1]
         f = self.fills({"h2": {"text": "Drink some water first.", "origin": "user"}})
         st = self.run_fills(self.variant(self.ocr_corrected), files=[self.drop("booklet.html"), self.drop("leaflet.pdf")], fills=f)
         self.assertTrue(st["complete"], st)
         self.assertEqual(st["labels"], {"h2": "user"})
+        self.assertEqual(calls, [], "out of time: no PDF is read or extracted for the approximate pass")
 
     def test_two_partial_copies_together_restore_a_source(self):
         good = (FIX / "booklet.html").read_bytes()

@@ -57,7 +57,10 @@ LABELS = ("approx", "user", "reconstructed")   # restored, but not verified agai
 FILLS = "sources/private/original-text-fills.json"   # per project, never published (sources/private/ stays local)
 MAX_FILLS_BYTES = 2 * 1024 * 1024
 MAX_FILL_CHARS = 200_000
-APPROX_BUDGET = 90                    # seconds the approximate pass may take (fills and the status come after it)
+APPROX_BUDGET = 60                    # seconds the approximate pass may take (fills and the status come after it)
+APPROX_LATEST = 210                   # ... and it ends this many seconds after the helper started at the latest (the
+                                      # app stops the helper at 300; downloads may take 150 of them)
+STARTED = time.monotonic()
 
 
 def too_long(text: str, length) -> bool:
@@ -435,9 +438,9 @@ def _put(out: dict, entry: dict, text: str) -> bool:
 
 
 def approx_pages(key: str, projection: dict, cache: Path, files: list[Path], chosen: dict, supplied: dict,
-                 extractors: dict, fetch=None):
-    """[(path or None, page texts)] of the PDF copies of one source on this computer, best first: the file chosen
-    for the exact restore, the download, then the project's other PDF files."""
+                 extractors: dict, fetch=None, deadline: float | None = None):
+    """Yields (path or None, page texts) of the PDF copies of one source on this computer, best first, lazily and
+    only until `deadline`: the file chosen for the exact restore, the download, then the project's other PDFs."""
     if "pdf" not in extractors:
         return []
     d = distribution_of(projection, key)
@@ -461,6 +464,8 @@ def approx_pages(key: str, projection: dict, cache: Path, files: list[Path], cho
     for f in candidates_for("pdf", files, key, want):
         cands.append((f, None))
     for path, data in cands[:MAX_CANDIDATES + 2]:
+        if deadline is not None and time.monotonic() > deadline:
+            return   # out of time: nothing more is read or extracted
         data = data if data is not None else read_file(path)
         if data is None or not data.startswith(b"%PDF") or sha256(data) in seen:
             continue
@@ -470,8 +475,7 @@ def approx_pages(key: str, projection: dict, cache: Path, files: list[Path], cho
         except Exception:   # noqa: BLE001 - an unreadable PDF: try the next copy
             continue
         if isinstance(pages, list) and pages:
-            out.append((path, [p if isinstance(p, str) else "" for p in pages]))
-    return out
+            yield path, [p if isinstance(p, str) else "" for p in pages]
 
 
 def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path, files: list[Path], chosen: dict,
@@ -504,15 +508,15 @@ def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path,
             want.setdefault(held[h]["source"], []).append(h)
     if want:
         A = _approx_module()
-        started = time.monotonic()
+        deadline = min(time.monotonic() + APPROX_BUDGET, STARTED + APPROX_LATEST)
         for key, hs in sorted(want.items()):
-            if time.monotonic() - started > APPROX_BUDGET:
+            if time.monotonic() > deadline:
                 break   # what is left goes to the fills file (applied below) or stays unresolved
             best = None
-            for path, pages in approx_pages(key, projection, cache, files, chosen, supplied, extractors, fetch):
+            for path, pages in approx_pages(key, projection, cache, files, chosen, supplied, extractors, fetch, deadline):
                 found = {}
                 for h in hs:
-                    if time.monotonic() - started > APPROX_BUDGET:
+                    if time.monotonic() > deadline:
                         break
                     try:
                         got = A.locate(pages, held[h]["approx"])
