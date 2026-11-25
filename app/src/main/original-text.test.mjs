@@ -122,6 +122,24 @@ test('engine checks: a published study is checked as released (--public); the re
   assert.ok(strict.some((x) => x.check === 'verbatim' && /image-read texts without an agreeing blind reading/.test(x.reason)), JSON.stringify(strict))
 })
 
+test('engine checks: wording a release cites verbatim from a held source outside the held fields passes as received; a local edit blocks', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  // a short label the release cites verbatim from the held booklet without holding it (Bench checked it privately)
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.q.responses[1].options[0].cite = { label: 'verbatim', source: 'booklet', page: 1 }
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).map((x) => x.check), ['verbatim'], 'without the received copy it blocked (the bug)')
+  R.configureReceivedProtocol(async () => received)
+  try {
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+    p.stages.q.responses[1].options[0].label = 'Absolutely, I walked every single day'   // changed on this computer
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).map((x) => x.check), ['verbatim'])
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
 test('held source texts: placeholders before, the restored texts after; a project sourcetext file wins', async () => {
   const { proj, close } = await publishedProject()
   close()

@@ -121,6 +121,19 @@ export function protocolOutcome(stdout: string, stderr: string): ProtocolProblem
   throw Error('No protocol checks report')
 }
 
+/** The protocol.json of a published study as this computer first received it (original-text.ts keeps it in app
+ *  storage; index.ts installs the reader). Its strings are what the release verifiably ships. */
+let receivedProtocol: (project: string) => Promise<unknown> = async () => null
+export function configureReceivedProtocol(read: (project: string) => Promise<unknown>): void { receivedProtocol = read }
+
+/** Every string of a protocol outside its `distribution` block. */
+function releasedStrings(o: unknown, out: string[] = [], top = true): string[] {
+  if (typeof o === 'string') out.push(o)
+  else if (Array.isArray(o)) for (const v of o) releasedStrings(v, out, false)
+  else if (o && typeof o === 'object') for (const [k, v] of Object.entries(o)) if (!(top && k === 'distribution')) releasedStrings(v, out, false)
+  return out
+}
+
 /** For a published protocol.json: per held source, the text its served strings must be found in, by the engine's own
  *  verbatim rule (checks.py check_verbatim), as a `--source-text` file. Before the wording is filled in that text is
  *  one run of placeholders as long as the longest held text: every held placeholder is found in it, and any other
@@ -151,8 +164,13 @@ export async function heldSourceTexts(project: string, restored?: Record<string,
       }
       pieces.set(h.source, [...(pieces.get(h.source) ?? []), piece])
     }
+    // plus every string of the study as received: wording the release cites verbatim from a held source outside the
+    // held fields (checked by Bench against the source) is found as released, while a text changed or added on
+    // this computer is not, so it still blocks
+    const received = await receivedProtocol(project).catch(() => null)
+    const shipped = received && typeof received === 'object' ? releasedStrings(received).join('\n') : ''
     for (const [k, list_] of pieces)
-      out.set(k, restored ? list_.join('\n') : list_.reduce((a, b) => (b.length > a.length ? b : a), ''))
+      out.set(k, (restored ? list_.join('\n') : list_.reduce((a, b) => (b.length > a.length ? b : a), '')) + (shipped ? '\n' + shipped : ''))
   } catch { /* unreadable: the checks report it */ }
   return out
 }
