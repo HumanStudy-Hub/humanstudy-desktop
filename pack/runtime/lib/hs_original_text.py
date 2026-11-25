@@ -351,45 +351,40 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
     todo = sorted({e.get("source") for h, e in held.items()
                    if isinstance(e, dict) and isinstance(e.get("source"), str)
                    and not restored_ok(e, report["items"].get(h))})
+    # which sources the download alone restored something of (it is kept for those; see below)
+    from_download = {e.get("source") for h, e in held.items() if isinstance(e, dict) and e.get("kind") != "image"
+                     and (report["items"].get(h) or {}).get("status") == "ok"}
     for key in todo:
         d = distribution_of(projection, key)
         want = d.get("sha256") if isinstance(d.get("sha256"), str) else None
         sub = only_source(projection, key)
-        n_items = len(held_of(sub))
-        # a project copy is used when it verifies items the download did not (what the download verified is kept
-        # item by item below): the copy that adds the most
-        have = {h for h in held if restored_ok(held[h], report["items"].get(h))}
-        best, best_new = None, 0
+        mine = set(held_of(sub))
+        # every project copy adds the items it verifies that nothing verified yet (the download's stay); the copy
+        # that added the most is the one named in the status and tried first by the approximate pass
+        added: dict = {}
         for path in candidates_for(d.get("format"), files, key, want):
+            if all(restored_ok(held[h], report["items"].get(h)) for h in mine):
+                break
             data = read_file(path)
             if data is None:
                 continue
-            _, rep = D.rehydrate(sub, files={key: data}, extractors=extractors)
-            got = {h for h, r in rep["items"].items() if restored_ok(held.get(h), r)}
-            if len(got - have) > best_new:
-                best, best_new = (path, data), len(got - have)
-            if len(got | (have & set(held_of(sub)))) == n_items:
-                break
-        if best is not None:
-            chosen[key], supplied[key] = best
-    # which sources the download alone restored something of (it is kept for those; see below)
-    from_download = {e.get("source") for h, e in held.items() if isinstance(e, dict) and e.get("kind") != "image"
-                     and (report["items"].get(h) or {}).get("status") == "ok"}
-    if supplied:
-        first_out, first = out, report
-        out, report = D.rehydrate(projection, fetch=fetch, files=supplied, extractors=extractors)
-        # an item the download verified and the chosen copy does not keeps the download's verified text
-        for h, e in held.items():
-            r1, r2 = first["items"].get(h) or {}, report["items"].get(h) or {}
-            if isinstance(e, dict) and e.get("kind") != "image" and r1.get("status") == "ok" and r2.get("status") != "ok":
+            out_c, rep = D.rehydrate(sub, files={key: data}, extractors=extractors)
+            for h, r in rep["items"].items():
+                e = held.get(h)
+                if not restored_ok(e, r) or restored_ok(e, report["items"].get(h)):
+                    continue
                 try:
-                    cur, text = D._get(out, e["path"]), D._get(first_out, e["path"])
+                    cur, text = D._get(out, e["path"]), D._get(out_c, e["path"])
                 except (KeyError, IndexError, ValueError, TypeError):
                     continue
                 if isinstance(cur, str) and set(cur) == {D.PLACEHOLDER} and isinstance(text, str) \
                         and D.text_sha256(text) == e.get("text_sha256"):
                     D._set(out, e["path"], text)
-                    report["items"][h] = r1
+                    report["items"][h] = r
+                    added.setdefault(path, [0, data])[0] += 1
+        if added:
+            path = max(added, key=lambda x: added[x][0])
+            chosen[key], supplied[key] = path, added[path][1]
     fill_in(projection, out, report, fills or {}, cache, files, chosen, supplied, extractors, fetch)
     # every link download this restore used that restored nothing in either pass (also one only the approximate pass
     # fetched) is not kept, unless it is the very file the study was built from. Only what the download itself

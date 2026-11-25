@@ -33,8 +33,9 @@ _INVISIBLE = re.compile("[­​‌‍⁠﻿￾�]")
 _HYPHEN_BREAK = re.compile(r"(?<=[^\W\d_])[-‐]\s*\n\s*(?=[^\W\d_])")
 _SPACE = re.compile(r"\s+")
 _WORD = re.compile(r"[^\W_]+")
-# a number with the signs and comparison operators in front of it (they are not words, so trigrams cannot see them)
-_NUM = re.compile(r"[-+±<>≤≥=~−‐‑–—]*\s*\d+(?:[.,]\d+)*\s*%?")
+# numbers, comparison operators and signs (a dash only before a digit), in order: they are not words, so trigrams
+# cannot see them
+_NUM = re.compile(r"\d+(?:[.,]\d+)*|[<>≤≥=±~+%]|[-−‐‑–—](?=\s*\d)")
 _DASHES = str.maketrans({c: "-" for c in "−‐‑–—"})
 
 
@@ -89,9 +90,9 @@ def fingerprint(text: str, pages: list[int], salt: str | None = None) -> dict | 
 
 
 def _numbers(salt: str, text: str) -> str:
-    """Hash of the passage's numbers in order, each with its sign or comparison operator ("-5", "<=5", "50%"): a
-    reading that loses or changes one (a payoff of -5 read as 5) never passes."""
-    toks = [re.sub(r"\s+", "", m.group(0)).translate(_DASHES) for m in _NUM.finditer(clean(text))]
+    """Hash of the passage's numbers, comparison operators and signs in order ("5 ≤ x", "-5", "50%"): a reading that
+    loses or changes one (a payoff of -5 read as 5, ≤ read as ≥) never passes."""
+    toks = [m.group(0).translate(_DASHES) for m in _NUM.finditer(clean(text))]
     return hashlib.sha256((salt + "\x1d" + "|".join(toks)).encode("utf-8")).hexdigest()[:8]
 
 

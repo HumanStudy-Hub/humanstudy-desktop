@@ -497,6 +497,30 @@ def restored_labels() -> dict:
     return {h: v for h, v in raw.items() if isinstance(h, str) and v in LABELS} if isinstance(raw, dict) else {}
 
 
+class never_official:
+    """While active, every evaluation is non_official (hsenv.evaldata EvalData.build's plan): its scores keep their
+    values without a pass/fail verdict (hsenv.rewards reads plan.official). For a run whose participants saw wording
+    that is not all the exact published text."""
+
+    def __enter__(self):
+        from hsenv import evaldata as E
+        self.E, self.original = E, E.EvalData.__dict__["build"]
+        original = self.original
+
+        def build(cls, *a, **k):
+            ev = original.__func__(cls, *a, **k)
+            ev.d.setdefault("plan", {}).update(official=False, official_n_basis=None,
+                                                why_not_official="participants saw wording that is not all the exact "
+                                                                 "published text")
+            return ev
+        E.EvalData.build = classmethod(build)
+        return self
+
+    def __exit__(self, *exc):
+        self.E.EvalData.build = self.original
+        return False
+
+
 def wording_note(labels: dict) -> dict | None:
     """Counts of the restored items that are not the exact published text (for run.json and the done message)."""
     counts = {k: sum(1 for v in labels.values() if v == k) for k in LABELS}
@@ -554,6 +578,12 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     # The app, not run_study, says when a run is done: only after it is judged complete and its page is written
     # (review 3, S6), so a partial run is never shown as done, not even for a moment.
     run_study.Progress.stage = lambda self, name, message=None: original_stage(self, "writing" if name == "done" else name, message)
+    # Wording that is not all the exact published text (approximate, supplied, reconstructed): the comparison is
+    # never official, so the saved plan and scores carry values without a verdict (hsenv.rewards reads plan.official).
+    note = wording_note(restored_labels()) if restored is not None else None
+    unofficial = never_official() if note else None
+    if unofficial is not None:
+        unofficial.__enter__()
     try:
         meta = run_study.run(project, spec, n=1 if trial else int(plan["perArm"]), seeds=[1] if trial else plan["seeds"],
                              out=out, host_f=f, arms=plan.get("arms"), quiet=True, baseline=not trial,
@@ -563,6 +593,10 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     finally:
         run_study.baseline_cached, run_study.Progress.stage = original_cache, original_stage
         run_study.load_protocol = original_load
+        if unofficial is not None:
+            unofficial.__exit__(None, None, None)
+    if note and isinstance(meta.get("plan"), dict):
+        meta["plan"]["official"] = False
     # The protocol the engine actually loaded must be the approved one: run_study reads protocol.json again after
     # check_approval hashed it (review 5, S3).
     if meta.get("protocol_sha256") != plan.get("protocolSha256") or (bound and meta.get("variant") is not None):
@@ -576,7 +610,6 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
         print(json.dumps({"status": meta.get("status"), "participants": meta.get("participants")}, default=str))
         return meta
     result = outcome(out, meta)
-    note = wording_note(restored_labels()) if restored is not None else None
     meta["app"] = {"route": "protocol", "runId": bound.get("runId"), **result,
                    **({"originalWording": note} if note else {})}
     if not result["complete"]:

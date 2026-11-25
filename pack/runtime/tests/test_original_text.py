@@ -378,6 +378,16 @@ class ApproxAndFills(Published):
         self.assertTrue(st["complete"], st)
         self.assertEqual(st["labels"], {"h2": "approx"})
 
+    def test_two_partial_copies_together_restore_a_source(self):
+        good = (FIX / "booklet.html").read_bytes()
+        a = self.drop("booklet-a.html", good.replace(b"neighbour", b"friend"))     # verifies h3 only
+        b = self.drop("booklet-b.html", good.replace(b"this morning", b"this evening"))   # verifies h4 only
+        st = self.run_fills(self.projection, files=[a, b])
+        self.assertEqual(self.by_key(st)["booklet"]["restored"], 2, st)
+        restored = json.loads((self.cache / st["slot"] / "protocol.json").read_text(encoding="utf-8")) if st["complete"] else None
+        if restored is not None:
+            self.assertEqual(get(restored, "/stages/q/responses/0/prompt"), TEXTS["/stages/q/responses/0/prompt"])
+
     def test_a_stale_download_is_not_kept_because_a_local_copy_matched(self):
         stale = Server({"/booklet.html": b"<html><body><p>An unrelated page.</p></body></html>"})
         self.addCleanup(stale.close)
@@ -616,7 +626,10 @@ class ApproxMatcher(unittest.TestCase):
                                 ("\u2264 5 minutes", "Wait 5 minutes.", "Wait \u2264 5 minutes."),
                                 ("You lose -5 points if you press the red button now.",
                                  "Rules: You lose 5 points if you press the red button now. End",
-                                 "Rules: You lose \u22125 points if you press the red button now. End")):
+                                 "Rules: You lose \u22125 points if you press the red button now. End"),
+                                ("Join only if 5 \u2264 x holds for your age group today.",
+                                 "Rules. Join only if 5 \u2265 x holds for your age group today. End",
+                                 "Rules. Join only if 5 \u2264 x holds for your age group today. End")):
             fp = A.fingerprint(t, [1], salt="ab")
             self.assertIsNone(A.locate([wrong], fp), wrong)
             self.assertIsNotNone(A.locate([right], fp), right)
@@ -748,6 +761,21 @@ class RunReportWording(unittest.TestCase):
         f = P.facts([], run, False)
         self.assertEqual((f["official"], f["wording"]), (False, {"approx": 1, "user": 0, "reconstructed": 2}))
         self.assertIn("2 reconstructed", P.paragraph([], run))
+
+    def test_the_saved_scores_are_never_official_with_non_exact_wording(self):
+        sys.path.insert(0, str(RUNTIME.parent / "skills" / "run"))
+        import types
+        import app_run
+        from hsenv import evaldata as E
+        saved = E.EvalData.__dict__["build"]
+        self.addCleanup(setattr, E.EvalData, "build", saved)
+        E.EvalData.build = classmethod(lambda cls, *a, **k: types.SimpleNamespace(d={"plan": {"official": True}}))
+        stub = E.EvalData.__dict__["build"]
+        with app_run.never_official():
+            ev = E.EvalData.build(None, [])
+        self.assertIs(ev.d["plan"]["official"], False)
+        self.assertIs(E.EvalData.__dict__["build"], stub, "restored afterwards")
+        self.assertIs(E.EvalData.build(None, []).d["plan"]["official"], True)
 
 
 class RedactionIndex(unittest.TestCase):
