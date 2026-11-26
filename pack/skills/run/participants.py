@@ -34,10 +34,10 @@ SPEC_PATH = "simulation/participants.json"
 MODES = ("paper", "custom", "blank")
 PLACEHOLDERS = ("persona", "age", "gender", "country", "occupation", "education", "group")
 CHOICE_ATTRS = ("gender", "country", "occupation", "education")
-MAX_GROUPS, MAX_PERSONA, MAX_SYSTEM, MAX_TEXT = 12, 1500, 3000, 300
+MAX_GROUPS, MAX_PERSONA, MAX_SYSTEM, MAX_TEXT = 12, 1200, 1500, 300
 # What budget.py reserves for the persona/override part of every system prompt (JSON-escaped bytes); a spec whose
 # prompts are longer is refused at run time rather than overrunning the approved token budget.
-PERSONA_BUDGET_BYTES = 4000
+PERSONA_BUDGET_BYTES = 1500
 
 
 class SpecError(ValueError):
@@ -307,9 +307,9 @@ def stats(text: str) -> dict:
     g = {}
     if pct and all(0 <= v <= 1 for v in pct.values()) and sum(pct.values()) <= 1.0001:
         g = dict(pct)
-    elif cnt and total and sum(cnt.values()) <= total:
+    elif cnt and total and 0 < sum(cnt.values()) <= total:
         g = {k: v / total for k, v in cnt.items()}
-    elif len(cnt) >= 2 and not total:
+    elif len(cnt) >= 2 and not total and sum(cnt.values()) > 0:
         g = {k: v / sum(cnt.values()) for k, v in cnt.items()}
     if g:
         rest = 1 - sum(g.values())
@@ -353,13 +353,23 @@ def without_conditions(text: str, names: list) -> str:
     return " ".join(p for p in parts if not names_condition(p, names)).strip()
 
 
+def _words_beyond_stats(text: str) -> bool:
+    """True when a passage says more than the age and gender figures drawn from it ("60 nurses" does; "228 men, 171
+    women, mean age 32.3" does not, and would only repeat them)."""
+    rest = text
+    for rx in (PCT, COUNT, AGE_RANGE, TOTAL):
+        rest = rx.sub(" ", rest)
+    rest = re.sub(r"\b(?:M\s*age|mean\s+age|average\s+age|SD|age[sd]?)\b\s*(?:was|of|=|:)?\s*\d+(?:\.\d+)?", " ", rest, flags=re.I)
+    return bool(re.search(r"[^\W\d_]{2,}", re.sub(r"\b(?:and|were|was|of|the|participants?)\b", " ", rest, flags=re.I)))
+
+
 def _clean(text: str) -> str:
     """The population as printed, without counts: parentheticals holding numbers and a trailing study breakdown go."""
     t = re.sub(r"\s*\([^()]*\d[^()]*\)", "", text)
     t = re.sub(r"\s*\([^()]*$", "", t)   # a parenthesis left open where the text was cut at a study mark
     t = re.split(r":\s*(?=(?:study|experiment|exp\.?)\s*\d)", t, flags=re.I)[0]
+    t = t.strip().lstrip(":;,. ")
     t = re.split(r"(?<=[a-z0-9)])\.\s", t)[0].strip().rstrip(".;,:")
-    t = re.sub(r"^(?:the\s+)?(?:n\s*=\s*)?\d[\d,]*\s+", "", t, flags=re.I)   # "120 undergraduates" -> "undergraduates"
     return t[:MAX_TEXT]
 
 
@@ -424,7 +434,7 @@ def paper_profile(protocol: dict, program: dict | None, arm: dict) -> dict:
             marks = list(MARK.finditer(text))
             pieces = [text[:marks[0].start()] if marks else text]
             own = segment(text, k) if marks else None
-            if own and not re.search(r"\d", own):   # a study's own part, when it is words rather than figures
+            if own and _words_beyond_stats(own):   # the study's own part, as printed ("Study 1: 60 nurses")
                 pieces.append(own)
             d = "; ".join(x for x in (_clean(without_conditions(p, names)) for p in pieces)
                           if x and not re.fullmatch(r"[\d\s,.;:()%-]*", x))
@@ -480,9 +490,12 @@ def condition_problem(spec: dict, protocol: dict, program: dict | None):
     """A custom persona, note or system prompt that names a condition (it would reach every participant): the
     problem in plain words, else None."""
     names = condition_names(protocol, program)
-    texts = [("system", spec.get("system") or "")] + [
-        ("group %s" % g["id"], " ".join([g.get("persona") or "", (g.get("attributes") or {}).get("notes") or ""]))
-        for g in spec.get("groups") or []]
+    texts = [("system", spec.get("system") or "")]
+    for g in spec.get("groups") or []:
+        a = g.get("attributes") or {}
+        texts += [("group id", g["id"]), ("group %s label" % g["id"], g.get("label") or ""),
+                  ("group %s persona" % g["id"], g.get("persona") or ""), ("group %s notes" % g["id"], a.get("notes") or "")]
+        texts += [("group %s %s" % (g["id"], k), v) for k in CHOICE_ATTRS for v in (a.get(k) or {})]
     for where, text in texts:
         hit = names_condition(text, names)
         if hit:
@@ -567,6 +580,9 @@ THINK_FORMAT = ("On every page, first write one to three short sentences in the 
 # What the relay and budget.py reserve per image sent to the model (model-relay.ts IMAGE_RESERVE_TOKENS): an image
 # costs the model tokens by its pixels, not by its base64 bytes, and Claude models stay under this per image.
 IMAGE_RESERVE_TOKENS = 5000
+# The output limit of one participant call (max_tokens, which the relay reserves): a short reaction plus the answer
+# JSON fit in OUTPUT_TOKENS; a page asking for a long free-text answer gets LONG_OUTPUT_TOKENS.
+OUTPUT_TOKENS, LONG_OUTPUT_TOKENS = 768, 2048
 IMAGE_PART_BYTES = 64     # the JSON around one image part ({"type": "image_url", "image_url": {"url": ...}})
 # Models known to accept image parts. Anything else runs text only and run.json says so.
 IMAGE_MODELS = re.compile(r"^(?:anthropic/)?claude-(?:haiku|sonnet|opus)-(?:[5-9]|\d\d)\b", re.I)
@@ -590,36 +606,54 @@ def fits_budget(system: str) -> bool:
     return len(json.dumps(system)) <= len(json.dumps(budget_system()))
 
 
-FENCE = re.compile(r"```[ \t]*(?:json|JSON)[ \t]*\n?(.*?)```", re.S)
+OPENER = re.compile(r"```[ \t]*(?:json|JSON)[ \t]*\n?")
+
+
+def _no_constants(name):
+    raise ValueError("no JSON object in the reply: %s is not a JSON number" % name)
+
+
+DECODER = json.JSONDecoder(parse_constant=_no_constants)
 
 
 def split_reply(text: str):
-    """-> (reasoning, answers). The answer is the LAST ```json fenced block, and it must end the reply (only
-    whitespace after it); without any fence, the whole reply must be one JSON object. The fenced body is read with
-    json's own decoder, so braces inside strings or in the reasoning never confuse it. Anything else raises
-    ValueError ("no JSON object in the reply"), which app_run treats as unreadable (asked once more)."""
-    fences = list(FENCE.finditer(text))
-    if fences:
-        m = fences[-1]
-        if text[m.end():].strip():
-            raise ValueError("no JSON object in the reply: text follows the last fenced answer")
-        body = m.group(1).strip()
+    """-> (reasoning, answers). The answer is the object after the LAST ```json opener, read with json's own decoder
+    (so braces or backticks inside strings never confuse it), followed by the closing ``` and nothing but
+    whitespace. Without a ```json opener (and no other fence), the whole reply must be one JSON object. NaN and
+    Infinity are refused. Anything else raises ValueError ("no JSON object in the reply"), which app_run treats as
+    unreadable (asked once more)."""
+    openers = list(OPENER.finditer(text))
+    if openers:
+        m = openers[-1]
+        body = text[m.end():]
+        start = len(body) - len(body.lstrip())
         try:
-            value, end = json.JSONDecoder().raw_decode(body)
-        except ValueError:
-            raise ValueError("no JSON object in the reply: the fenced answer is not JSON")
-        if not isinstance(value, dict) or body[end:].strip():
-            raise ValueError("no JSON object in the reply: the fenced answer is not one JSON object")
+            value, end = DECODER.raw_decode(body, start)
+        except ValueError as e:
+            raise ValueError("no JSON object in the reply: the fenced answer is not JSON (%s)" % str(e)[:80])
+        rest = body[end:].strip()
+        if not isinstance(value, dict) or not rest.startswith("```") or rest[3:].strip():
+            raise ValueError("no JSON object in the reply: the fenced answer is not one JSON object ending the reply")
         return text[:m.start()].strip(), value
     if "```" in text:
         raise ValueError("no JSON object in the reply: the answer block is not a ```json block")
     try:
-        value = json.loads(text.strip())
+        value, end = DECODER.raw_decode(text.strip())
     except ValueError:
         raise ValueError("no JSON object in the reply")
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or text.strip()[end:].strip():
         raise ValueError("no JSON object in the reply")
     return "", value
+
+
+def output_limit(state) -> int:
+    """The participant's output limit for one page: OUTPUT_TOKENS (a short reaction plus JSON), or LONG_OUTPUT_TOKENS
+    when the page has a free-text question asking for a long answer (a declared length, a text area)."""
+    for r in (state.get("screen") or {}).get("responses", []):
+        if r.get("kind") == "text" and (r.get("min_chars") or r.get("max_chars") or r.get("rows")
+                                        or str(r.get("widget") or "").lower() in ("textarea", "essay", "long", "paragraph")):
+            return LONG_OUTPUT_TOKENS
+    return OUTPUT_TOKENS
 
 
 def parse_answer(text: str) -> dict:
@@ -627,22 +661,35 @@ def parse_answer(text: str) -> dict:
 
 
 def check(project: Path) -> dict:
-    """What the agent runs after writing the file: {"ok", "summary", "sha256"} or {"ok": false, "problem"}."""
+    """What the agent (and the app, for the Simulation tab) runs: {"ok", "mode", "summary", "example"} or {"ok": false,
+    "problem"}, always with the SHA-256 of the very bytes it read ("participantsSha256", "programSha256",
+    "protocolSha256"; null for a file that is absent), so an approval names exactly what was summarised."""
     project = Path(project)
+
+    def read(rel):
+        f = project / rel
+        return f.read_bytes() if f.is_file() else None
+    raw = {k: read(rel) for k, rel in (("participants", SPEC_PATH), ("program", "program.json"), ("protocol", "protocol.json"))}
+    shas = {k + "Sha256": hashlib.sha256(v).hexdigest() if v is not None else None for k, v in raw.items()}
+    out = dict(shas, sha256=shas["participantsSha256"])
     try:
-        spec, sha = load(project)
-        protocol = json.loads((project / "protocol.json").read_text(encoding="utf-8"))
+        spec = validate(json.loads(raw["participants"].decode("utf-8"))) if raw["participants"] is not None else {"version": 1, "mode": "paper"}
     except SpecError as e:
-        return {"ok": False, "problem": str(e)}
-    except (OSError, ValueError) as e:
-        return {"ok": False, "problem": "protocol.json cannot be read: %s" % e}
+        return dict(out, ok=False, problem=str(e))
+    except (UnicodeDecodeError, ValueError) as e:
+        return dict(out, ok=False, problem="participants.json is not valid JSON: %s" % e)
     try:
-        program = json.loads((project / "program.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        protocol = json.loads(raw["protocol"].decode("utf-8"))
+    except (AttributeError, UnicodeDecodeError, ValueError) as e:
+        return dict(out, ok=False, problem="protocol.json cannot be read: %s" % e)
+    try:
+        program = json.loads(raw["program"].decode("utf-8")) if raw["program"] is not None else None
+    except (UnicodeDecodeError, ValueError):
         program = None
+    sha = shas["participantsSha256"]
     problem = condition_problem(spec, protocol, program) if spec["mode"] == "custom" or spec.get("system") else None
     if problem:
-        return {"ok": False, "problem": problem}
+        return dict(out, ok=False, problem=problem)
     arms = [a for a in protocol.get("arms") or [] if isinstance(a, dict) and a.get("runnable") is not False]
     plan = {a["id"]: 3 for a in arms if "id" in a}
     ppl = people(spec, sha, protocol, program, plan, {a["id"]: a.get("group_size") or 1 for a in arms if "id" in a}, [1],
@@ -650,16 +697,17 @@ def check(project: Path) -> dict:
     long = [k for k, p in ppl.items() if spec["mode"] != "blank" and not fits_budget(system_text(
         p["persona"], spec.get("system"), dict(p["attributes"], group=p["group"] or "")))]
     if long:
-        return {"ok": False, "problem": "some participant prompts are too long for the run's measured budget: shorten the personas"}
+        return dict(out, ok=False, problem="some participant prompts are too long for the run's measured budget: shorten the personas")
     example = next(iter(ppl.values()), None)
-    return {"ok": True, "mode": spec["mode"], "summary": summary(spec, protocol, program), "sha256": sha,
-            "example": example and {"attributes": example["attributes"], "persona": example["persona"]}}
+    return dict(out, ok=True, mode=spec["mode"], summary=summary(spec, protocol, program),
+                example=example and {"attributes": example["attributes"], "persona": example["persona"]})
 
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) != 3 or sys.argv[1] != "check":
-        raise SystemExit("python .opencode/skills/run/participants.py check <project folder>")
-    result = check(Path(sys.argv[2]))
-    print(json.dumps(result, ensure_ascii=False, indent=1))
+    args = [a for a in sys.argv[1:] if a != "--json"]
+    if len(args) != 2 or args[0] != "check":
+        raise SystemExit("python .opencode/skills/run/participants.py check <project folder> [--json]")
+    result = check(Path(args[1]))
+    print(json.dumps(result, ensure_ascii=False) if "--json" in sys.argv else json.dumps(result, ensure_ascii=False, indent=1))
     raise SystemExit(0 if result["ok"] else 1)

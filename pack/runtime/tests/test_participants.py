@@ -118,14 +118,14 @@ class PaperDefault(unittest.TestCase):
         prog = self.program([self.field("population", "120 undergraduates at a US university (M age = 20.4, SD = 1.8; 62% female)."),
                              self.field("n-analysed", 120)])
         prof = P.paper_profile({"arms": [{"id": "s1"}]}, prog, {"id": "s1"})
-        self.assertEqual(prof["description"], "undergraduates at a US university")
+        self.assertEqual(prof["description"], "120 undergraduates at a US university")
         self.assertEqual(prof["age"], {"mean": 20.4, "sd": 1.8})
         self.assertAlmostEqual(prof["gender"]["woman"], 0.62)
         ppl = P.people({"mode": "paper"}, None, {"arms": [{"id": "s1"}]}, prog, {"s1": 40}, {}, [1], opaque)
         ages = [p["attributes"]["age"] for p in ppl.values()]
         self.assertTrue(all(16 <= a <= 25 for a in ages) and len(set(ages)) > 1, ages)
-        self.assertIn("whom the paper describes as: undergraduates at a US university", next(iter(ppl.values()))["persona"])
-        self.assertIn("Sample-matched: undergraduates at a US university, age ~20.4, 62% women",
+        self.assertIn("whom the paper describes as: 120 undergraduates at a US university", next(iter(ppl.values()))["persona"])
+        self.assertIn("Sample-matched: 120 undergraduates at a US university, age ~20.4, 62% women",
                       P.summary({"mode": "paper"}, {"arms": [{"id": "s1"}]}, prog))
 
     def test_unstated_attributes_are_omitted(self):
@@ -222,7 +222,7 @@ class Budget(unittest.TestCase):
 
     def test_headroom(self):
         import budget
-        self.assertEqual(budget.with_headroom(10, 1000), (30, 3000))
+        self.assertEqual(budget.with_headroom(10, 1000), (15, 1500), "the 1.5x margin includes the re-asks")
         page = {"screen": {"responses": [{"id": "why", "kind": "text"}, {"id": "pick", "kind": "choice"}]}}
         self.assertEqual(budget.text_ids(page), {"why"})
         state = {"answered": [{"response": "pick", "value": "Agree"}, {"response": "why", "value": "a long essay"},
@@ -242,7 +242,7 @@ class CheckCommand(unittest.TestCase):
             (d / P.SPEC_PATH).write_text(json.dumps(CUSTOM), encoding="utf-8")
             r = P.check(d)
             self.assertEqual(r["summary"], "Custom: 2 groups by weight: students (3), retirees (1)")
-            (d / P.SPEC_PATH).write_text(json.dumps({"mode": "custom", "groups": [{"persona": "é" * 1400}]}), encoding="utf-8")
+            (d / P.SPEC_PATH).write_text(json.dumps({"mode": "custom", "groups": [{"persona": "é" * 1000}]}), encoding="utf-8")
             self.assertIn("too long", P.check(d)["problem"])
             (d / P.SPEC_PATH).write_text(json.dumps({"mode": "custom", "groups": [{"persona": "You saw the armalpha screen."}]}), encoding="utf-8")
             self.assertIn("names the condition", P.check(d)["problem"])
@@ -384,17 +384,23 @@ class AppRunUses(unittest.TestCase):
         restored = {"stages": {"s": {"text": held}, "p": {"value": {"src": "x", "lines": ["Short line"]}}}}
         self.assertEqual(A.held_texts(projection, restored), [held, "Short line"])
         red = A.Redactor(A.held_texts(projection, restored))
-        answer = "I remember: " + held.upper() + " That is all."
+        quoted = held.replace(" while ", "\n  while  ")   # the same wording, other whitespace
+        answer = "Back in 2026: " + quoted + " (2026), that is all."
         out = red.text(answer)
-        self.assertTrue(out.startswith("I remember: ") and out.endswith(" That is all."))
-        self.assertNotIn("FOX", out)
+        self.assertTrue(out.startswith("Back in 2026: ") and out.endswith(" (2026), that is all."), out)
+        self.assertNotIn("fox", out)
         self.assertIn("░" * 20, out)
+        self.assertEqual(red.text(held.upper()), held.upper(), "case is kept: only the exact wording matches")
         self.assertEqual(red.text("A short reply about a fox and a dog."), "A short reply about a fox and a dog.")
+        self.assertEqual(red.text("Order 2026-11-26 12:00, ref 4417-2026-AB, code x9"), "Order 2026-11-26 12:00, ref 4417-2026-AB, code x9")
+        self.assertEqual(red.obj({"response": held, "opaque_id": held, "answers": {"q1": held}})["response"], held,
+                         "structural values are never touched")
+        answer = "I remember: " + held + " That is all."
         path = A._RedactingPath(self.tmp / "steps.jsonl", red)
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps({"answers": {"q1": answer, "q2": "o1"}}) + "\n")
         row = json.loads((self.tmp / "steps.jsonl").read_text(encoding="utf-8"))
-        self.assertNotIn("FOX", row["answers"]["q1"])
+        self.assertNotIn("fox", row["answers"]["q1"])
         self.assertEqual(row["answers"]["q2"], "o1")
         self.assertTrue(path.exists() and str(path) == str(self.tmp / "steps.jsonl"))
 
@@ -450,7 +456,9 @@ class AppRunUses(unittest.TestCase):
         self.assertEqual(pics.record()["pages_text_only_over_caps"] + pics2.record()["pages_text_only_over_caps"], 2)
         blank = A.participant_f(complete, people, {"mode": "blank"}, True, "sent", "s", pictures=pics)
         blank(self.state(refs[:1]), self.ctx(files))
-        self.assertIsInstance(sent[-1], str, "blank mode: exactly the earlier text-only f")
+        self.assertEqual([p["type"] for p in sent[-1]], ["text", "image_url"], "blank mode keeps the route's pictures")
+        blank(self.state(refs), self.ctx(files))
+        self.assertIsInstance(sent[-1], str, "and the same caps")
 
     def test_item4_program_is_pinned_and_participants_are_read_back_on_resume(self):
         A = self.A
@@ -620,11 +628,180 @@ class RestoredEndToEnd(unittest.TestCase):
             whys = [v for l in stored["steps.jsonl"].splitlines() for v in json.loads(l).get("answers", {}).values()
                     if isinstance(v, str) and v.startswith("As the page said")]
             self.assertTrue(whys and all(w.startswith("As the page said: ") and D.PLACEHOLDER * 40 in w and w.endswith(" I would return it.") for w in whys), whys)
+            private = (run / ".private" / "answers.jsonl").read_text(encoding="utf-8")
+            self.assertIn("wallet on the street", private, "the answers as given are kept privately, for a resume")
             for name in ("evaldata.json", "effects.json"):
                 if (run / name).is_file():
                     self.assertNotIn("wallet on the street", (run / name).read_text(encoding="utf-8"), name)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class Round3(unittest.TestCase):
+    """The second review of PR #187 (items 1-10)."""
+
+    def setUp(self):
+        import app_run
+        self.A = app_run
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_1_output_limit_per_page_and_passed_to_the_model(self):
+        short = {"screen": {"responses": [{"id": "q", "kind": "choice"}, {"id": "t", "kind": "text"}]}}
+        long = {"screen": {"responses": [{"id": "t", "kind": "text", "min_chars": 200}]}}
+        self.assertEqual((P.output_limit(short), P.output_limit(long)), (768, 2048))
+        self.assertEqual(P.output_limit({"screen": {"responses": [{"id": "t", "kind": "text", "widget": "textarea"}]}}), 2048)
+        limits = []
+
+        def complete(messages, max_tokens=4096):
+            limits.append(max_tokens)
+            return '```json\n{}\n```'
+        people = {("abc", "p1"): {"group": None, "attributes": {}, "persona": "", "system": P.system_text("")}}
+        f = self.A.participant_f(complete, people, {"mode": "paper"}, False, "no", "s")
+
+        class Ctx:
+            participant, member, note = "abc", "p1", None
+        f(dict(short, step=1, page=1, screen=dict(short["screen"], items=[])), Ctx())
+        f(dict(long, step=2, page=2, screen=dict(long["screen"], items=[])), Ctx())
+        self.assertEqual(limits, [768, 2048])
+
+    def measure_survey(self):
+        project = self.tmp / "survey"
+        project.mkdir()
+        stages, seq = {}, []
+        for k in range(20):
+            stages["p%d" % k] = {"content": [{"id": "t%d" % k, "value": ("Please read this short statement about everyday life "
+                                                                          "and say how much you agree with it. " * 2).strip()}],
+                                 "responses": [{"id": "q%d" % k, "kind": "choice", "prompt": "How much do you agree?",
+                                                "options": [{"code": c, "label": l} for c, l in
+                                                            (("a", "Disagree"), ("b", "Neutral"), ("c", "Agree"))]}]}
+            seq.append({"stage": "p%d" % k})
+        (project / "protocol.json").write_text(json.dumps({"id": "survey", "data": {}, "meta": {"title": "Survey"},
+                                                           "arms": [{"id": "a1", "n_paper": 60}, {"id": "a2", "n_paper": 60}],
+                                                           "stages": stages, "flow": {"seq": seq}}), encoding="utf-8")
+        code = self.tmp / "code"
+        shutil.copytree(RUNTIME / "hsenv", code / "hsenv", ignore=shutil.ignore_patterns("__pycache__"))
+        (code / "skills" / "run").mkdir(parents=True)
+        for f in RUN.glob("*.py"):
+            shutil.copy(f, code / "skills" / "run")
+        r = subprocess.run([sys.executable, "-I", str(code / "skills" / "run" / "budget.py"), str(project), str(self.tmp / "scratch")],
+                           capture_output=True, text=True, timeout=600)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        b = json.loads(r.stdout.strip().splitlines()[-1])
+        per = 60
+        needed = sum(per * a["group_size"] * a["tokens_per_member"] for a in b["arms"].values()) + \
+            sum(a["group_size"] * a["tokens_per_member"] for a in b["arms"].values())
+        print("\n2x60x20 survey: %s tokens per member, %d calls, %s needed of 16,000,000"
+              % ({k: a["tokens_per_member"] for k, a in b["arms"].items()}, b["arms"]["a1"]["calls"], format(needed, ",")))
+        return b, needed
+
+    def test_1_the_survey_budget_dropped(self):
+        """The reservation for 2 conditions x 60 participants x 20 pages of modest text: about 25M (it was about 70-87M
+        at f33c68a and about 35M before this PR). Guards against it growing again."""
+        b, needed = self.measure_survey()
+        self.assertEqual(b["output_tokens"], 768)
+        self.assertLess(needed, 26_000_000)
+
+    @unittest.expectedFailure
+    def test_1_the_survey_fits_the_ceiling(self):
+        """Not yet: the relay reserves request BYTES as tokens, so 20 pages that each repeat the earlier pages need
+        about 7,000 per call x 20 x 1.5 x 121 members. Fitting 16,000,000 needs a decision on the relay's counting or
+        the ceiling (reported to the owner, not changed here)."""
+        self.assertLess(self.measure_survey()[1], 16_000_000)
+
+    def test_2_raw_answers_for_replay_stay_private(self):
+        sys.path.insert(0, str(RUNTIME / "hsenv"))
+        import run_study
+        held = "A long passage of held original wording that must never be written into the run records at all."
+        red = self.A.Redactor([held])
+        run_dir = self.tmp / "run"
+        (run_dir / ".private").mkdir(parents=True)
+        raw = {"seed": 1, "participant": "x", "member": "p1", "step": 3, "attempt": 0, "answers": {"q": held}}
+        (run_dir / ".private" / "answers.jsonl").write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+        class Dummy:
+            def __init__(self, d):
+                self.dir, self.cache = Path(d), {}
+                self.steps_path, self.records_path, self.operator_path = (Path(d) / n for n in ("steps.jsonl", "records.jsonl", "operator.jsonl"))
+        real = run_study.Runner
+        run_study.Runner = Dummy
+        try:
+            with self.A.redacted_records(red):
+                r = Dummy(run_dir)
+                self.assertEqual(r.cache[(1, "x", "p1", 3, 0)]["answers"]["q"], held, "a resume replays the answers as given")
+                fh = r.steps_path.open("a", encoding="utf-8")
+                fh.write(json.dumps(dict(raw, step=4)) + "\n")
+                fh.close()
+                run_study.write_json(run_dir / "effects.json", {"examples": [held], "id": held})
+        finally:
+            run_study.Runner = real
+        self.assertNotIn("held original wording", (run_dir / "steps.jsonl").read_text(encoding="utf-8"))
+        self.assertIn("held original wording", (run_dir / ".private" / "answers.jsonl").read_text(encoding="utf-8").splitlines()[1])
+        effects = json.loads((run_dir / "effects.json").read_text(encoding="utf-8"))
+        self.assertNotIn("held original wording", effects["examples"][0], "written redacted, not fixed up afterwards")
+        self.assertEqual(effects["id"], held, "a structural value is left alone")
+
+    def test_3_answers_cut_to_each_questions_schema(self):
+        A = self.A
+        state = {"screen": {"responses": [
+            {"id": "c", "kind": "choice", "options": [{"code": "o1"}, {"code": "o2"}]},
+            {"id": "m", "kind": "multi", "options": [{"code": "o1"}, {"code": "o2"}]},
+            {"id": "n", "kind": "scale"}, {"id": "t", "kind": "text"}, {"id": "b", "kind": "choice", "options": [{"code": "o3"}]}]}}
+
+        class Ctx:
+            note = {"reply": "x"}
+        out = A.page_answers(state, {"c": {"code": "o2", "text": "fine", "quote": "held words", "extra": {"x": 1}},
+                                     "m": ["o1", {"code": "o2", "text": "t", "held": "w"}, "o9", {"x": "held"}],
+                                     "n": 4, "t": "free text", "b": {"text": "no code"}, "nope": "held"}, Ctx(), False)
+        self.assertEqual(out, {"c": {"code": "o2", "text": "fine"}, "m": ["o1", {"code": "o2", "text": "t"}], "n": 4, "t": "free text"})
+
+    def test_6_condition_names_in_any_rendered_field(self):
+        proto = {"arms": [{"id": "gratitude", "label": "Gratitude condition"}, {"id": "control", "label": "Control"}]}
+        for group in ({"id": "gratitude-group", "persona": "x"}, {"id": "g", "label": "Control people", "persona": "x"},
+                      {"id": "g", "attributes": {"education": "Gratitude condition graduates"}},
+                      {"id": "g", "attributes": {"occupation": ["nurse", "control room operator"]}},
+                      {"id": "g", "attributes": {"country": {"Gratitude": 1}}}, {"id": "g", "attributes": {"notes": "In the control."}}):
+            spec = P.validate({"mode": "custom", "groups": [group]})
+            self.assertIsNotNone(P.condition_problem(spec, proto, None), group)
+        self.assertIsNone(P.condition_problem(P.validate({"mode": "custom", "groups": [{"id": "nurses", "persona": "A nurse."}]}), proto, None))
+
+    def test_8_parser_backticks_in_strings_and_no_nan(self):
+        self.assertEqual(P.parse_answer('Okay.\n```json\n{"t": "use ``` fences ```"}\n```'), {"t": "use ``` fences ```"})
+        self.assertEqual(P.parse_answer('First ```json {"a": 1}``` then\n```json\n{"a": 2}\n```  \n'), {"a": 2})
+        for bad in ['```json\n{"n": NaN}\n```', '```json\n{"n": Infinity}\n```', '{"n": -Infinity}', '```json\n{"a": 1}\n``` and more']:
+            with self.assertRaisesRegex(ValueError, "no JSON object", msg=bad):
+                P.parse_answer(bad)
+
+    def test_9_a_cut_off_participants_file_gets_its_newline(self):
+        A = self.A
+        proj = self.tmp / "p"
+        proj.mkdir()
+        (proj / "protocol.json").write_text(json.dumps(PROTOCOL), encoding="utf-8")
+        plan = {"participantsSha256": None, "programSha256": None, "perArm": 2, "seeds": [1], "arms": None}
+        out = proj / "artifacts" / "simulations" / "r"
+        sys.path.insert(0, str(RUNTIME / "hsenv"))
+        A.participants_for(out, proj, plan, None, False)
+        lines = (out / "participants.jsonl").read_text(encoding="utf-8").splitlines()
+        (out / "participants.jsonl").write_text("\n".join(lines[:2]) + "\n" + lines[2][:15], encoding="utf-8")   # cut mid-line
+        A.participants_for(out, proj, plan, None, False)
+        after = (out / "participants.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(after[2], lines[2][:15])
+        self.assertEqual([json.loads(x)["opaque_id"] for x in after[3:]], [json.loads(lines[2])["opaque_id"], json.loads(lines[3])["opaque_id"]])
+
+    def test_10_zero_counts_digits_in_study_parts_and_pinned_pictures_on_resume(self):
+        self.assertNotIn("gender", P.stats("0 women and 0 men"))
+        proto = {"meta": {"sample": "Study 1: 60 nurses. Study 2: 60 doctors."}, "arms": [{"id": "s1"}, {"id": "s2"}]}
+        self.assertEqual(P.paper_profile(proto, None, {"id": "s1"})["description"], "60 nurses")
+        self.assertEqual(P.paper_profile(proto, None, {"id": "s2"})["description"], "60 doctors")
+        A = self.A
+        (self.tmp / "a.png").write_bytes(b"\x89PNGone")
+        protocol = {"stages": {"s": {"content": [{"value": {"src": "a.png"}}]}}}
+        out = self.tmp / "run"
+        first = A.pinned_pictures(out, protocol, self.tmp)
+        (self.tmp / "a.png").write_bytes(b"\x89PNGtwo")
+        self.assertEqual(A.pinned_pictures(out, protocol, self.tmp), first, "an in-place resume keeps the digests from the start")
 
 
 if __name__ == "__main__":

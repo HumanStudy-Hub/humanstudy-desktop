@@ -125,14 +125,13 @@ def local_images_only(messages):
 
 
 def relay_complete(temperature: float):
-    """complete(messages) -> text through the app's model client (relay on macOS; never a key in this process)."""
+    """complete(messages, max_tokens) -> text through the app's model client (relay on macOS; never a key in this
+    process). The output limit is the page's (participants.output_limit: 768, or 2,048 for a long free-text answer),
+    which is what the relay reserves and what budget.py counts."""
     from humanstudy_llm import chat
 
-    def complete(messages):
-        # 512 (the library default) and 1536 were too small for a participant page reply: models that think first end with
-        # finish_reason=length and no text, and the participant is lost. Unused tokens are not charged. The in-character
-        # reaction before the answer is bounded by the prompt (one to three sentences) and fits easily.
-        return chat(local_images_only(messages), temperature=temperature, max_tokens=SIM_MAX_TOKENS)
+    def complete(messages, max_tokens=SIM_MAX_TOKENS):
+        return chat(local_images_only(messages), temperature=temperature, max_tokens=min(int(max_tokens), SIM_MAX_TOKENS))
     return complete
 
 
@@ -212,6 +211,23 @@ def picture_digests(protocol: dict, root: Path) -> dict:
     return out
 
 
+def pinned_pictures(out: Path, protocol: dict, root: Path) -> dict:
+    """The picture digests of this run: recorded in <out>/pictures.json when it first starts, and read back from there
+    on an in-place resume (never a fresh set, so a picture changed in between is not sent)."""
+    path = out / "pictures.json"
+    if path.is_file():
+        try:
+            pinned = json.loads(path.read_text(encoding="utf-8")).get("pinned")
+            if isinstance(pinned, dict):
+                return pinned
+        except ValueError:
+            pass
+    pinned = picture_digests(protocol, root)
+    out.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"pinned": pinned}, indent=1) + "\n", encoding="utf-8")
+    return pinned
+
+
 class Pictures:
     """What a run does with the current screen's pictures: each copy the runner hands f must be a picture pinned at
     run start (a picture changed during the run ends that participant), a page over the relay's caps goes text only,
@@ -259,56 +275,60 @@ class Pictures:
 
 
 # ------------------------------------------------------------------------------------------------ restored wording
-WINDOW = 40   # hs_original_text PRIVATE_RUN: a run of 40 letters quoted from held wording is redacted
+WINDOW = 40   # characters of held wording, as normalised, that count as a quote of it
 
 
-def _letters(text: str) -> list:
+def _normalised(text: str) -> list:
+    """[(character, index in text)]: NFC per character, every run of whitespace as one space (at its first index);
+    case is kept."""
     import unicodedata
-    out = []
+    out, space = [], False
     for i, ch in enumerate(text):
-        for c in unicodedata.normalize("NFKC", ch).lower():
-            if unicodedata.category(c)[0] == "L":
-                out.append((ord(c), i))
+        if ch.isspace():
+            if not space:
+                out.append((" ", i))
+            space = True
+            continue
+        space = False
+        for c in unicodedata.normalize("NFC", ch):
+            out.append((c, i))
     return out
 
 
-def _window(cps) -> tuple:
-    a, b = 0x811C9DC5, 0x9747B28C
-    for cp in cps:
-        a = ((a ^ cp) * 0x01000193) & 0xFFFFFFFF
-        b = ((b ^ cp) * 0x5BD1E995) & 0xFFFFFFFF
-        b = (b ^ (b >> 15)) & 0xFFFFFFFF
-    return a, b
-
-
 class Redactor:
-    """Redacts restored held wording (the same letters-only, 40-letter windows as the research-capture redaction
-    index, hs_original_text) inside text a run stores: each character of a quoted run becomes PLACEHOLDER."""
+    """Masks restored held wording quoted in what a run stores. A quote is any WINDOW characters that equal held
+    wording exactly once both are normalised (NFC, whitespace collapsed, case kept); only the matched span of the
+    original string becomes PLACEHOLDER, one per character. Only free-text values are touched (answers, notes,
+    errors, transcript text): never keys, and never values under the structural keys in SKIP."""
+    SKIP = {"opaque_id", "participant", "member", "seed", "step", "attempt", "screen_sha", "at", "status", "arm", "index",
+            "stage", "response", "code", "id", "unit", "kind", "f_ms", "f_tries", "system_filled", "spec_sha256", "group"}
 
     def __init__(self, texts):
         self.windows = set()
         for t in texts:
-            cps = [c for c, _ in _letters(t)]
-            self.windows.update(_window(cps[i:i + WINDOW]) for i in range(len(cps) - WINDOW + 1))
+            s = "".join(c for c, _ in _normalised(t))
+            self.windows.update(s[i:i + WINDOW] for i in range(len(s) - WINDOW + 1))
 
     def text(self, s: str) -> str:
         if not self.windows or len(s) < WINDOW:
             return s
-        letters = _letters(s)
-        cps = [c for c, _ in letters]
+        norm = _normalised(s)
+        chars = "".join(c for c, _ in norm)
         marked = set()
-        for i in range(len(cps) - WINDOW + 1):
-            if _window(cps[i:i + WINDOW]) in self.windows:
-                marked.update(range(letters[i][1], letters[i + WINDOW - 1][1] + 1))
+        for i in range(len(chars) - WINDOW + 1):
+            if chars[i:i + WINDOW] in self.windows:
+                marked.update(range(norm[i][1], norm[i + WINDOW - 1][1] + 1))
         return "".join(PLACEHOLDER if i in marked else ch for i, ch in enumerate(s)) if marked else s
 
-    def obj(self, o):
+    def obj(self, o, key=None):
+        if key in self.SKIP:
+            return o
         if isinstance(o, str):
             return self.text(o)
         if isinstance(o, list):
             return [self.obj(v) for v in o]
         if isinstance(o, dict):
-            return {k: self.obj(v) for k, v in o.items()}
+            return {k: self.obj(v, k) for k, v in o.items()}
         return o
 
     def line(self, line: str) -> str:
@@ -331,12 +351,25 @@ def held_texts(projection: dict, restored: dict) -> list:
     return out
 
 
+PRIVATE_DIR = ".private"   # <run>/.private/: never in a study file, never collected (study-transfer, telemetry-core)
+
+
 class _RedactingFile:
-    def __init__(self, fh, red):
-        self.fh, self.red = fh, red
+    """Writes each line redacted; `raw`, when given, receives the line as written by the runner (for replay)."""
+
+    def __init__(self, fh, red, raw=None):
+        self.fh, self.red, self.raw = fh, red, raw
 
     def write(self, s):
+        if self.raw is not None:
+            self.raw.write(s)
+            self.raw.flush()
         return self.fh.write("\n".join(self.red.line(x) if x.strip() else x for x in s.split("\n")))
+
+    def close(self):
+        if self.raw is not None:
+            self.raw.close()
+        return self.fh.close()
 
     def __getattr__(self, name):
         return getattr(self.fh, name)
@@ -345,19 +378,26 @@ class _RedactingFile:
         return self
 
     def __exit__(self, *exc):
-        self.fh.close()
+        self.close()
         return False
 
 
 class _RedactingPath:
-    """A run_study output path whose files are written redacted (reads are unchanged)."""
+    """A run_study output path whose files are written redacted (reads are unchanged). `raw`: a private file that
+    receives the unredacted lines too (steps.jsonl: what a resume replays)."""
 
-    def __init__(self, path, red):
-        self._path, self._red = Path(path), red
+    def __init__(self, path, red, raw: Path | None = None):
+        self._path, self._red, self._raw = Path(path), red, raw
 
     def open(self, mode="r", *a, **k):
         fh = self._path.open(mode, *a, **k)
-        return _RedactingFile(fh, self._red) if any(m in mode for m in "aw") else fh
+        if not any(m in mode for m in "aw"):
+            return fh
+        raw = None
+        if self._raw is not None:
+            self._raw.parent.mkdir(parents=True, exist_ok=True)
+            raw = self._raw.open(mode, *a, **k)
+        return _RedactingFile(fh, self._red, raw)
 
     def __getattr__(self, name):
         return getattr(self._path, name)
@@ -373,56 +413,67 @@ class _RedactingPath:
 
 
 class redacted_records:
-    """While active, steps.jsonl, records.jsonl and operator.jsonl are written with restored wording redacted. The
-    engine and the scores keep the answers as given; only the stored copy changes."""
+    """While active, steps.jsonl, records.jsonl and operator.jsonl, and every JSON file the evaluation writes
+    (effects.json, evaldata.json, rewards.json), are written with restored wording redacted, in memory before the
+    write. The unredacted steps go to <run>/.private/answers.jsonl, which a resume replays (the engine and the
+    scores keep the answers as given)."""
 
     def __init__(self, red):
         self.red = red
 
     def __enter__(self):
         import run_study
-        self.R, self.original = run_study.Runner, run_study.Runner.__init__
-        original, red = self.original, self.red
+        self.R, self.original, self.write_json = run_study, run_study.Runner.__init__, run_study.write_json
+        original, red, write_json = self.original, self.red, self.write_json
 
         def init(runner, *a, **k):
             original(runner, *a, **k)
-            for name in ("steps_path", "records_path", "operator_path"):
+            private = Path(runner.dir) / PRIVATE_DIR / "answers.jsonl"
+            for line in private.read_text(encoding="utf-8").splitlines() if private.is_file() else []:
+                try:
+                    r = json.loads(line)   # the answers as given, for replay (steps.jsonl holds the redacted copy)
+                    runner.cache[(r["seed"], r["participant"], r["member"], r["step"], r["attempt"])] = r
+                except (ValueError, KeyError):
+                    continue
+            runner.steps_path = _RedactingPath(runner.steps_path, red, private)
+            for name in ("records_path", "operator_path"):
                 setattr(runner, name, _RedactingPath(getattr(runner, name), red))
-        self.R.__init__ = init
+
+        def redacted_json(path, data):
+            return write_json(path, data if Path(path).name in ("run.json", "progress.json") else red.obj(data))
+        self.R.Runner.__init__ = init
+        self.R.write_json = redacted_json
         return self
 
     def __exit__(self, *exc):
-        self.R.__init__ = self.original
+        self.R.Runner.__init__ = self.original
+        self.R.write_json = self.write_json
         return False
 
 
-def redact_file(path: Path, red) -> None:
-    """Rewrite a JSON file the run wrote at the end (evaldata.json, effects.json) with restored wording redacted."""
-    if path.is_file():
-        data = json.loads(path.read_text(encoding="utf-8"))
-        path.write_text(json.dumps(red.obj(data), ensure_ascii=False, indent=1, default=str), encoding="utf-8")
-
-
 # ------------------------------------------------------------------------------------------------ f
+def _limited(complete):
+    """complete(messages, max_tokens) when the host's complete takes an output limit (the relay's), else as given."""
+    import inspect
+    try:
+        takes = "max_tokens" in inspect.signature(complete).parameters
+    except (TypeError, ValueError):
+        takes = False
+    return (lambda messages, limit: complete(messages, max_tokens=limit)) if takes else (lambda messages, limit: complete(messages))
+
+
 def participant_f(complete, people: dict, spec: dict, images: bool, images_note: str, summary: str, keep_text: bool = True,
                   pictures: Pictures | None = None):
-    """f for every participant: each one's own system prompt (persona), the default renderer, think-then-answer. The
-    full reply is parsed once; its reasoning goes to the step's note (the note's reply is an excerpt for the log
-    only). Pictures are sent within the relay's caps, else the page goes text only (said in the note). Blank mode
-    is exactly the earlier f: make_chat_f's bare prompt, bare JSON answers, text only. keep_text False (a restored
-    published study): replies are not stored and answers keep only this page's question ids."""
+    """f for every participant: each one's own system prompt (persona), the default renderer, think-then-answer, an
+    output limit per page (participants.output_limit). The full reply is parsed once; its reasoning goes to the step's
+    note (the note's reply is an excerpt for the log only). Pictures are sent within the relay's caps, else the page
+    goes text only (said in the note). Blank mode keeps make_chat_f's bare prompt and bare JSON answers, with the same
+    pictures as any run. keep_text False (a restored published study): replies are not stored and answers are cut to
+    each question's own schema."""
     import threading
     import participants as P
-    from render import make_chat_f, render_state
-    if spec["mode"] == "blank":
-        base = make_chat_f(complete, render=render_state)
-        f = base
-        if not keep_text:
-            def f(state, ctx):
-                return page_answers(state, base(state, ctx), ctx, keep_text)
-        f.description = dict(base.description, participants=summary,
-                             images="NOT shown: text only (blank mode keeps the earlier prompt)")
-        return f
+    from render import make_chat_f, parse_json_answers, render_state
+    call, blank = _limited(complete), spec["mode"] == "blank"
     made, tls = {}, threading.local()
 
     def parse(text):
@@ -435,36 +486,72 @@ def participant_f(complete, people: dict, spec: dict, images: bool, images_note:
         if person is None:
             raise RuntimeError("this participant has no description (participants.py assigned none)")
         why = None
+        system = None if blank else person["system"]
         if images and pictures is not None:
-            why = pictures.page(state, ctx, len(json.dumps(person["system"])) + len(json.dumps(render_state(state))))
-        send = images and why is None
-        g = made.get((key, send))
+            why = pictures.page(state, ctx, len(json.dumps(system or "")) + len(json.dumps(render_state(state))))
+        send, limit = images and why is None, P.output_limit(state)
+        g = made.get((key, send, limit))
         if g is None:
-            g = made[(key, send)] = make_chat_f(complete, system=person["system"], render=render_state, parse=parse,
-                                                images=send)
+            g = made[(key, send, limit)] = make_chat_f(lambda m: call(m, limit), system=system, render=render_state,
+                                                       parse=parse_json_answers if blank else parse, images=send)
         tls.reasoning = ""
         answers = g(state, ctx)
         if isinstance(ctx.note, dict):
-            ctx.note["reasoning"] = tls.reasoning[:1000]
+            if not blank:
+                ctx.note["reasoning"] = tls.reasoning[:1000]
             if why:
                 ctx.note["images_skipped"] = why
         return page_answers(state, answers, ctx, keep_text)
     f.description = {"renderer": "render_state", "participants": summary,
-                     "system": spec.get("system") or P.system_text("{{persona}}"),
-                     "answer": "a short in-character reaction (one to three sentences), then one fenced JSON object",
+                     "system": "make_chat_f's bare prompt" if blank else spec.get("system") or P.system_text("{{persona}}"),
+                     "answer": "bare JSON" if blank else "a short in-character reaction (one to three sentences), then one fenced JSON object",
+                     "output_tokens": "%d per page, %d on a page asking for a long free-text answer" % (P.OUTPUT_TOKENS, P.LONG_OUTPUT_TOKENS),
                      "memory": "state only (seen + answered); one fresh call per page", "images": images_note}
     return f
 
 
+def schema_answer(r: dict, v):
+    """An answer cut to its question's schema (None: dropped): choice -> a code, or {code, text}; multi -> codes (or
+    {code, text} for an option with a box); number/scale/slider -> a number or "NA"; text -> a string."""
+    codes = {o.get("code") for o in r.get("options") or [] if isinstance(o, dict)}
+    kind = r.get("kind")
+
+    def option(x):
+        if isinstance(x, str) and (not codes or x in codes):
+            return x
+        if isinstance(x, dict) and isinstance(x.get("code"), str) and (not codes or x["code"] in codes):
+            return {"code": x["code"], **({"text": x["text"]} if isinstance(x.get("text"), str) else {})}
+        return None
+    if kind in ("choice", "single"):
+        return option(v)
+    if kind == "multi":
+        return [y for y in (option(x) for x in v) if y is not None] if isinstance(v, list) else None
+    if kind == "text":
+        return v if isinstance(v, str) else None
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)) or v == "NA":
+        return v
+    if isinstance(v, list):   # a grid or several values: numbers, codes or short strings only
+        return [x for x in v if isinstance(x, (int, float, str)) and not isinstance(x, bool)]
+    return v if isinstance(v, str) else None
+
+
 def page_answers(state, answers: dict, ctx, keep_text: bool) -> dict:
-    """keep_text False: only this page's question ids are kept, and the note keeps no reply text."""
+    """keep_text False: only this page's question ids, each cut to its question's schema; the note keeps no reply."""
     if keep_text:
         return answers
-    ids = {r.get("id") for r in (state.get("screen") or {}).get("responses", [])}
+    responses = {r.get("id"): r for r in (state.get("screen") or {}).get("responses", [])}
     note = ctx.note if isinstance(ctx.note, dict) else {}
     ctx.note = {"reply_chars": len(note.get("reply") or ""),
                 **{k: note[k] for k in ("images_sent", "images_skipped") if k in note}}
-    return {k: v for k, v in answers.items() if k in ids}
+    out = {}
+    for k, v in answers.items():
+        if k in responses:
+            clean = schema_answer(responses[k], v)
+            if clean is not None:
+                out[k] = clean
+    return out
 
 
 class Refused(SystemExit):
@@ -969,6 +1056,8 @@ def participants_for(out: Path, project: Path, plan: dict, restored: dict | None
     new_rows = [(k, p) for k, p in sorted(people.items()) if k not in kept]
     if new_rows:
         with path.open("a", encoding="utf-8") as fh:
+            if path.stat().st_size and not path.read_bytes().endswith(b"\n"):
+                fh.write("\n")   # a line cut off by an interruption: the next row starts on its own line
             for (oid, member), person in new_rows:
                 fh.write(json.dumps({"opaque_id": oid, "member": member, "group": person["group"],
                                      "attributes": person["attributes"], "persona": person["persona"],
@@ -1014,10 +1103,9 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     check_resumable(out)
     who = participants_for(out, project, plan, restored, trial)
     images, images_note = image_choice(plan, model)
-    if who["spec"]["mode"] == "blank":
-        images, images_note = False, "NOT shown: text only (blank mode keeps the earlier prompt)"
-    # Pictures are pinned now: a declared digest must match, and a picture changed during the run is never sent.
-    pictures = Pictures(picture_digests(restored if restored is not None else
+    # Pictures are pinned when the run first starts: a declared digest must match, and a picture changed during the
+    # run (or before an in-place resume) is never sent.
+    pictures = Pictures(pinned_pictures(out, restored if restored is not None else
                                         json.loads((project / "protocol.json").read_text(encoding="utf-8")), project))
     f = reask_unreadable(participant_f(complete, who["people"], who["spec"], images, images_note, who["info"]["summary"],
                                        keep_text=restored is None, pictures=pictures))
@@ -1074,9 +1162,6 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     if note and isinstance(meta.get("plan"), dict):
         meta["plan"]["official"] = False
     meta["participants_spec"] = dict(who["info"], images=images_note, pictures=pictures.record())
-    if red is not None:
-        for name in ("evaldata.json", "effects.json"):
-            redact_file(out / name, red)
     # The protocol the engine actually loaded must be the approved one: run_study reads protocol.json again after
     # check_approval hashed it (review 5, S3).
     if meta.get("protocol_sha256") != plan.get("protocolSha256") or (bound and meta.get("variant") is not None):
