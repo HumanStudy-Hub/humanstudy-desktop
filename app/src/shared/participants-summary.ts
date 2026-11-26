@@ -4,6 +4,24 @@
 
 export type ParticipantsMode = 'paper' | 'custom' | 'blank'
 export interface ParticipantsView { mode: ParticipantsMode; text: string; problem?: string }
+/** What the Simulation tab shows and the approval sends: the summary with the hashes of the very files it was read
+ *  from (null: no such file), so Run approves exactly what was displayed. */
+export interface ShownParticipants extends ParticipantsView { participantsSha256: string | null; programSha256: string | null; stamp: string }
+
+/** SHA-256 (hex) of a text's UTF-8 bytes. */
+export async function sha256Hex(text: string): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+/** The summary of the files as read, with their hashes. */
+export async function shownParticipants(files: { participants: string | null; protocol: string | null; program: string | null }, stamp: string): Promise<ShownParticipants> {
+  const parse = (raw: string | null): unknown => { try { return raw === null ? null : JSON.parse(raw) } catch { return null } }
+  const view = participantsSummary(files.participants, parse(files.protocol), parse(files.program) as Parameters<typeof paperSample>[1])
+  return { ...view, stamp,
+    participantsSha256: files.participants === null ? null : await sha256Hex(files.participants),
+    programSha256: files.program === null ? null : await sha256Hex(files.program) }
+}
 
 const MARK = /\b(?:study|experiment|exp\.?)\s*\d+\b/i
 const AGE_MEAN = /\b(?:M\s*age|mean\s+age|average\s+age)\s*(?:was|of|=|:|,)?\s*(\d{1,2}(?:\.\d+)?)/i

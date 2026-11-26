@@ -23,6 +23,19 @@ test('no file: sample-matched to the paper, from its own description', () => {
   assert.equal(P.participantsSummary('{"mode":"paper","system":"Be {{persona}}"}', protocol).text, 'Sample-matched: US undergraduates, age ~20.4; own system prompt')
 })
 
+test('the shown summary carries the hashes of the files it was read from', async () => {
+  const { createHash } = await import('node:crypto')
+  const h = (t) => createHash('sha256').update(Buffer.from(t, 'utf8')).digest('hex')
+  const spec = JSON.stringify({ mode: 'blank' }) + '\n'
+  const program = '{"nodes": [{"kind": "participants", "fields": [{"id": "population", "value": "Nurses in Lyon é."}]}]}'
+  const shown = await P.shownParticipants({ participants: spec, protocol: '{"meta": {}}', program }, 'stamp-1')
+  assert.deepEqual(shown, { mode: 'blank', text: 'Blank: the model with no persona (for comparison)', stamp: 'stamp-1', participantsSha256: h(spec), programSha256: h(program) })
+  const paper = await P.shownParticipants({ participants: null, protocol: null, program }, 's')
+  assert.equal(paper.text, 'Sample-matched: Nurses in Lyon é')
+  assert.equal(paper.participantsSha256, null)
+  assert.equal(await P.sha256Hex('é'), h('é'))
+})
+
 test('custom groups, blank, and a file with a problem', () => {
   const spec = { mode: 'custom', groups: [{ id: 'students', label: 'Students', weight: 3, persona: 'x' }, { id: 'retirees', weight: 1, persona: 'y' }] }
   assert.deepEqual(P.participantsSummary(JSON.stringify(spec), null), { mode: 'custom', text: 'Custom: 2 groups (Students 75%, retirees 25%)' })

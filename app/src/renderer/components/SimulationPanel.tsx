@@ -17,7 +17,7 @@ import { holdAction, track } from '../telemetry'
 import { allowanceMessage } from '../allowance'
 import { WEB_EDITION } from '../edition'
 import { formatDuration } from '../format'
-import { participantsSummary, type ParticipantsView } from '../../shared/participants-summary'
+import { shownParticipants, type ShownParticipants } from '../../shared/participants-summary'
 
 interface Props {
   project: ProjectSnapshot
@@ -38,7 +38,8 @@ interface Props {
   canRun?: boolean
   modelAccess?: AccountStatus['modelAccess']
   /** route: which runnable form the approval names (protocol.json through the engine, or package/). */
-  onRun(perCondition: number, route: 'protocol' | 'package', conditions: string[], tokenBudget?: number): Promise<void>
+  /** who: for a protocol run, the participant summary as shown, with the hashes of the files it was read from. */
+  onRun(perCondition: number, route: 'protocol' | 'package', conditions: string[], tokenBudget?: number, who?: { participantsSha256: string | null; programSha256: string | null }): Promise<void>
   onBuild(): void
   /** Stop the agent and ask these run folders (absolute paths) to stop. */
   /** Stop: write STOP into these run folders; `ownTurn` when the agent's current turn is this tab's request. */
@@ -158,20 +159,20 @@ export function SimulationPanel(props: Props) {
   const access = protocolLimits ?? runLimits({ conditions: runConditions, perCondition })
   // Who takes part (a protocol run): simulation/participants.json, which the agent writes when the researcher
   // describes the participants, else sample-matched to the paper. The approval carries the file's hash.
-  const whoFiles = allEntries(project.tree).filter((e) => e.rel === 'simulation/participants.json' || e.rel === 'protocol.json')
-  const whoStamp = whoFiles.map((e) => `${e.rel}:${e.mtime ?? ''}:${e.size ?? ''}`).join('|')
-  const [who, setWho] = useState<ParticipantsView | null>(null)
+  // The approval sends the hashes of the files this summary was read from; Run waits while it is being re-read.
+  const whoFiles = allEntries(project.tree).filter((e) => ['simulation/participants.json', 'protocol.json', 'program.json'].includes(e.rel))
+  const whoStamp = `${dir}|` + whoFiles.map((e) => `${e.rel}:${e.mtime ?? ''}:${e.size ?? ''}:${e.version ?? ''}`).join('|')
+  const [who, setWho] = useState<ShownParticipants | null>(null)
   useEffect(() => {
     if (route !== 'protocol') { setWho(null); return }
     let live = true
     const read = (rel: string) => window.humanstudy.project.readText(`${dir}/${rel}`).catch(() => null)
-    void Promise.all([read('simulation/participants.json'), read('protocol.json')]).then(([spec, protocol]) => {
-      let parsed: unknown = null
-      try { parsed = protocol ? JSON.parse(protocol) : null } catch { /* the protocol checks report it */ }
-      if (live) setWho(participantsSummary(spec, parsed, program))
-    })
+    void Promise.all([read('simulation/participants.json'), read('protocol.json'), read('program.json')])
+      .then(([participants, protocol, programText]) => shownParticipants({ participants, protocol, program: programText }, whoStamp))
+      .then((shown) => { if (live) setWho(shown) })
     return () => { live = false }
-  }, [dir, route, whoStamp, program])
+  }, [dir, route, whoStamp]) // eslint-disable-line react-hooks/exhaustive-deps
+  const whoPending = route === 'protocol' && who?.stamp !== whoStamp
   const accessVars = { tokens: formatTokens(access.tokens), minutes: access.minutes }
 
   // Run folders and the two small files each one writes while and after it runs.
@@ -265,7 +266,8 @@ export function SimulationPanel(props: Props) {
     track('simulation.run', { metadata: { perCondition, conditions: plan.conditions.length, model, built } })
     // The approval is checked before it is sent; the resulting agent turn belongs to this run operation.
     holdAction()
-    try { await props.onRun(perCondition, route ?? 'package', route === 'protocol' ? readiness?.protocol?.arms ?? [] : plan.conditions.map((c) => c.id), protocolLimits?.tokens) } catch { setPending(null) }
+    try { await props.onRun(perCondition, route ?? 'package', route === 'protocol' ? readiness?.protocol?.arms ?? [] : plan.conditions.map((c) => c.id), protocolLimits?.tokens,
+      route === 'protocol' && who ? { participantsSha256: who.participantsSha256, programSha256: who.programSha256 } : undefined) } catch { setPending(null) }
   }
   const build = () => {
     setBuildProblem(false); setNow(Date.now()); setPending({ at: Date.now(), kind: 'build', owner, before: agentTurnKey })
@@ -436,7 +438,7 @@ export function SimulationPanel(props: Props) {
               {!scopeReady && <p className="sim-blocked">{t('sim.blocked', { what: [...scope.missing.map((m) => t(`sim.need.${m}`)), ...scope.blocking.map((b) => b.title)].join(t('sim.list_sep')) })}</p>}
               {confirmation.notice && <p className="sim-note">{t(confirmation.notice, accessVars)}</p>}
               <div className="sim-actions">
-                <button className="primary" disabled={!canRun || !scopeReady || agentBusy || protocolLimits?.fits === false} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
+                <button className="primary" disabled={!canRun || !scopeReady || agentBusy || protocolLimits?.fits === false || whoPending} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
                 <button className="ghost" disabled={!canRun} title={canRun ? undefined : t('sim.sign_in_to_run')} onClick={() => props.onAsk(scopeReady ? t('sim.ask_prompt', { study: studyTitle }) : t('sim.resolve_prompt', { study: studyTitle }))}>{t('sim.ask')}</button>
               </div>
               {!canRun && <p className="sim-note">{t('sim.sign_in_to_run')}</p>}

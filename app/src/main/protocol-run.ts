@@ -13,6 +13,8 @@ export interface ProtocolRunPlan {
   perArm: number; arms: string[] | null; seeds: number[]; temperature: number
   /** SHA-256 of simulation/participants.json at approval (who takes part); null: no file, sample-matched default. */
   participantsSha256?: string | null
+  /** SHA-256 of program.json at approval (the participants are described from it); null: no program.json. */
+  programSha256?: string | null
   /** The run's model route passes pictures (the relay was started with `images`). */
   images?: boolean
 }
@@ -33,7 +35,7 @@ export function newRunFolder(project: string, now = new Date()): string {
  *  (HUMANSTUDY_RUN_PLAN), and app_run refuses a plan.json that differs (review 5, M1). */
 export function approvedPlan(binding: Binding, plan: ProtocolRunPlan) {
   return { route: 'protocol' as const, protocolSha256: binding.protocolSha256, perArm: plan.perArm, arms: plan.arms,
-    seeds: plan.seeds, temperature: plan.temperature, participantsSha256: plan.participantsSha256 ?? null, images: plan.images === true }
+    seeds: plan.seeds, temperature: plan.temperature, participantsSha256: plan.participantsSha256 ?? null, programSha256: plan.programSha256 ?? null, images: plan.images === true }
 }
 
 /** plan.json as app_run.py reads it: the approved plan, as a record in the run folder. */
@@ -43,8 +45,10 @@ export function planJson(binding: Binding, plan: ProtocolRunPlan): string {
 
 export const PARTICIPANTS_FILE = 'simulation/participants.json'
 /** SHA-256 of the project's simulation/participants.json bytes, or null when there is none. */
-export async function participantsSha256(project: string): Promise<string | null> {
-  const bytes = await readFile(join(project, ...PARTICIPANTS_FILE.split('/'))).catch((e: NodeJS.ErrnoException) => {
+export const participantsSha256 = (project: string): Promise<string | null> => fileSha256(project, PARTICIPANTS_FILE)
+/** SHA-256 of a project file's bytes, or null when there is none. */
+export async function fileSha256(project: string, rel: string): Promise<string | null> {
+  const bytes = await readFile(join(project, ...rel.split('/'))).catch((e: NodeJS.ErrnoException) => {
     if (e.code === 'ENOENT') return null
     throw e
   })
@@ -114,6 +118,8 @@ export async function launchProtocolRun(o: {
     throw Error('The study changed after approval. Review the simulation scope again.')
   if (await participantsSha256(o.project) !== (o.plan.participantsSha256 ?? null))
     throw Error('Who takes part (simulation/participants.json) changed after approval. Review the simulation scope again.')
+  if (await fileSha256(o.project, 'program.json') !== (o.plan.programSha256 ?? null))
+    throw Error('The study document (program.json) changed after approval. Review the simulation scope again.')
   // A variant (variant.json) is not the original experiment and is not part of the approval: not on this path.
   if (await stat(join(o.project, 'variant.json')).then(() => true, () => false))
     throw Error('This project holds a variant (variant.json); variants are not run from the Simulation tab.')

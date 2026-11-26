@@ -32,8 +32,10 @@ How participants are simulated is the researcher's choice, recorded with the run
 never change. The choice lives in `simulation/participants.json` in the project. Without that file (or with
 `"mode": "paper"`) the AI participants are **sample-matched**: each one's description comes from the paper's
 own account of its sample (`protocol.json` `meta.sample`, then the program's `participants` node): the population
-as printed, an age drawn from a printed mean and SD or range, a gender drawn from printed counts or percentages.
-Whatever the paper does not state is left out, never made up.
+as printed for the participant's own study (sentences naming a condition are dropped), an age drawn from a printed
+mean and SD or range, a gender drawn only among the categories the paper prints, at its shares (a share it does
+not describe leaves those participants without a gender). Whatever the paper does not state is left out, never
+made up.
 
 When the researcher describes who should take part ("make them nurses in Germany", "half students, half retirees",
 "no persona, as a baseline"), write or update `simulation/participants.json` yourself; this is not a paid-model
@@ -59,12 +61,14 @@ script and needs no approval:
 - `system` replaces the persona framing (paper or custom mode); the reply format is always appended. Keep personas
   under 1,500 characters and `system` under 3,000.
 - Use the paper's wording for its own population; never present a custom group as the paper's sample.
+- Never name a condition (or describe what one group sees) in a persona, note or `system`: it reaches every
+  condition, and `check` refuses it.
 
 Then run `python .opencode/skills/run/participants.py check .` (it validates the file and prints a summary and
 one example participant), and tell the researcher in one or two plain sentences who will take part, e.g.
 "Sample-matched: US undergraduates, age ~20" or "Custom: 2 groups (Students 50%, retirees 50%)". The Simulation
 tab shows the same line under "Who takes part", and pressing Run simulation approves the file by its SHA-256
-(`participantsSha256` in the approval). Changing the file after that approval stops the run from starting: ask
+(`participantsSha256` in the approval, with `programSha256` for program.json, which the default is read from). Changing the file after that approval stops the run from starting: ask
 the researcher to press Run simulation again. To go back to the default, delete the file or set `"mode": "paper"`.
 
 Each run records the description in `run.json` (`participants_spec`: mode, the file's SHA-256, the summary,

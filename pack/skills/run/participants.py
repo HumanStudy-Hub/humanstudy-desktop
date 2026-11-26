@@ -640,6 +640,9 @@ def check(project: Path) -> dict:
         program = json.loads((project / "program.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         program = None
+    problem = condition_problem(spec, protocol, program) if spec["mode"] == "custom" or spec.get("system") else None
+    if problem:
+        return {"ok": False, "problem": problem}
     arms = [a for a in protocol.get("arms") or [] if isinstance(a, dict) and a.get("runnable") is not False]
     plan = {a["id"]: 3 for a in arms if "id" in a}
     ppl = people(spec, sha, protocol, program, plan, {a["id"]: a.get("group_size") or 1 for a in arms if "id" in a}, [1],

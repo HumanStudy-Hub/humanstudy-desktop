@@ -1165,13 +1165,14 @@ app.whenReady().then(() => {
 
   /** An approved protocol run, started here from the app's trusted copy (review 4, S1), never by the agent: the
    *  run folder and plan.json come from the checked approval, and the run ends its relay when it exits. */
-  async function startProtocolRun(projectDir: string, approved: { lang?: unknown; participantsSha256?: unknown; plan?: { perCondition?: unknown; model?: unknown; conditions?: unknown } }, binding: ProtocolBinding, relay: { baseURL: string; token: string; model: string; expiresAt: number } | undefined, ended: () => void, images = false) {
+  async function startProtocolRun(projectDir: string, approved: { lang?: unknown; participantsSha256?: unknown; programSha256?: unknown; plan?: { perCondition?: unknown; model?: unknown; conditions?: unknown } }, binding: ProtocolBinding, relay: { baseURL: string; token: string; model: string; expiresAt: number } | undefined, ended: () => void, images = false) {
     const per = approved.plan?.perCondition
     if (!Number.isSafeInteger(per) || (per as number) < 1 || (per as number) > 60) throw Error('Participants per condition must be a whole number from 1 to 60. Review the simulation scope again.')
     // Who takes part is part of the approval: the SHA-256 of simulation/participants.json the Simulation tab showed
     // (null: no file, sample-matched). launchProtocolRun and app_run both refuse a file that is not that one.
     const participants = approved.participantsSha256 ?? null
-    if (participants !== null && (typeof participants !== 'string' || !/^[0-9a-f]{64}$/.test(participants)))
+    const programSha = approved.programSha256 ?? null
+    for (const v of [participants, programSha]) if (v !== null && (typeof v !== 'string' || !/^[0-9a-f]{64}$/.test(v)))
       throw Error('The approval names an unreadable participant description. Review the simulation scope again.')
     const python = await readyPython()
     if (!python) throw Error('The research runtime is not installed yet, so the run cannot start. Try again in a minute.')
@@ -1183,7 +1184,7 @@ app.whenReady().then(() => {
     if (detached) await runJournal.prepare()
     await launchProtocolRun({
       python, files: [...trustedRunFiles(), ...restored], codeDir: join(app.getPath('userData'), 'protocol-runs', binding.runId), project: projectDir, runDir, binding,
-      plan: { perArm: per as number, arms: null, seeds: [1], temperature: 1.0, participantsSha256: participants, images: Boolean(relay) && images },
+      plan: { perArm: per as number, arms: null, seeds: [1], temperature: 1.0, participantsSha256: participants as string | null, programSha256: programSha as string | null, images: Boolean(relay) && images },
       relay: relay ? { baseURL: relay.baseURL, token: relay.token, model: relay.model, expiresAt: relay.expiresAt } : undefined,
       // Pre-relay path: the same environment the agent's runs get there (the run confirmation said the key is readable).
       env: relay ? { PATH: (process.env.HUMANSTUDY_RUNTIME_BIN ? process.env.HUMANSTUDY_RUNTIME_BIN + (process.platform === 'win32' ? ';' : ':') : '') + (process.env.PATH ?? '') } : { ...process.env,

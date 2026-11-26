@@ -244,6 +244,8 @@ class CheckCommand(unittest.TestCase):
             self.assertEqual(r["summary"], "Custom: 2 groups by weight: students (3), retirees (1)")
             (d / P.SPEC_PATH).write_text(json.dumps({"mode": "custom", "groups": [{"persona": "é" * 1400}]}), encoding="utf-8")
             self.assertIn("too long", P.check(d)["problem"])
+            (d / P.SPEC_PATH).write_text(json.dumps({"mode": "custom", "groups": [{"persona": "You saw the armalpha screen."}]}), encoding="utf-8")
+            self.assertIn("names the condition", P.check(d)["problem"])
             (d / P.SPEC_PATH).write_text('{"mode": "x"}', encoding="utf-8")
             self.assertIn("mode must be", P.check(d)["problem"])
 
