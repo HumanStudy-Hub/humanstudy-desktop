@@ -4,7 +4,7 @@ app's model behind the approved-run relay. App-owned (run_study.py, fspec.py and
 from the sandbox; this file is not).
 
     python .opencode/skills/run/app_run.py new artifacts/simulations/<stamp> --per-arm N --protocol-hash <sha256>
-           [--arms a,b] [--seeds 1] [--temperature 1.0]
+           [--participants-hash <sha256>] [--arms a,b] [--seeds 1] [--temperature 1.0]
     python .opencode/skills/simulate/run_confined.py artifacts/simulations/<stamp>/run.py --trial
     python .opencode/skills/simulate/simkit.py start artifacts/simulations/<stamp>
 
@@ -14,8 +14,12 @@ run_study.run(), writes run.json, progress.json (the Simulation tab reads it), r
 effects.json, then results.html (human vs AI per effect, an offline report) and summary.json. STOP in the run
 folder stops it; starting it again resumes. `--trial` plays one participant per arm into <run>/trial/.
 
-f: the default renderer of skills/run (render.render_state) and make_chat_f, one fresh model call per page,
-JSON answers, the model and temperature recorded in run.json. Keys never reach this process: humanstudy_llm reads
+f: the default renderer of skills/run (render.render_state) and make_chat_f, one fresh model call per page, the
+model and temperature recorded in run.json. Who each participant is comes from simulation/participants.json
+(participants.py: sample-matched to the paper by default, the researcher's groups, or blank), approved by its
+SHA-256 like protocol.json; each participant writes a short in-character reaction, then a fenced JSON answer.
+The current screen's pictures are sent as image parts when the approved route passes images and the model is
+known to accept them (participants.IMAGE_MODELS); otherwise text only, and run.json says which. Keys never reach this process: humanstudy_llm reads
 the relay's per-run capability from the environment run_confined.py sets.
 """
 from __future__ import annotations
@@ -60,18 +64,20 @@ def project_of(run_dir: Path) -> Path:
 
 
 def new(run_dir: Path, per_arm: int, protocol_hash: str, arms: list[str] | None, seeds: list[int],
-        temperature: float) -> dict:
+        temperature: float, participants_hash: str | None = None) -> dict:
     project = project_of(run_dir)
     protocol = project / "protocol.json"
     if not protocol.is_file():
         raise SystemExit("this project has no protocol.json")
     if sha256(protocol) != protocol_hash:
         raise SystemExit("protocol.json changed after approval: ask the researcher to press Run simulation again")
+    if participants_sha(project) != participants_hash:
+        raise SystemExit(PARTICIPANTS_CHANGED)
     if not 1 <= per_arm <= 60:
         raise SystemExit("--per-arm must be 1 to 60 (the approved plan)")
     run_dir.mkdir(parents=True, exist_ok=True)
     plan = {"route": "protocol", "protocolSha256": protocol_hash, "perArm": per_arm, "arms": arms, "seeds": seeds,
-            "temperature": temperature}
+            "temperature": temperature, "participantsSha256": participants_hash}
     (run_dir / "plan.json").write_text(json.dumps(plan, indent=1) + "\n", encoding="utf-8")
     (run_dir / "run.py").write_text(RUN_PY, encoding="utf-8")
     return plan
@@ -103,15 +109,93 @@ def reask_unreadable(f):
 SIM_MAX_TOKENS = 4096   # the most the macOS relay accepts per call (model-relay MAX_OUTPUT_TOKENS)
 
 
+def local_images_only(messages):
+    """Image parts as data URLs only (pictures copied from the study): the relay accepts no remote URL."""
+    out = []
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, list):
+            c = [p for p in c if p.get("type") != "image_url" or str((p.get("image_url") or {}).get("url", "")).startswith("data:image/")]
+            if len(c) == 1 and c[0].get("type") == "text":
+                c = c[0]["text"]
+        out.append(dict(m, content=c))
+    return out
+
+
 def relay_complete(temperature: float):
     """complete(messages) -> text through the app's model client (relay on macOS; never a key in this process)."""
     from humanstudy_llm import chat
 
     def complete(messages):
         # 512 (the library default) and 1536 were too small for a participant page reply: models that think first end with
-        # finish_reason=length and no text, and the participant is lost. Unused tokens are not charged.
-        return chat(messages, temperature=temperature, max_tokens=SIM_MAX_TOKENS)
+        # finish_reason=length and no text, and the participant is lost. Unused tokens are not charged. The in-character
+        # reaction before the answer is bounded by the prompt (one to three sentences) and fits easily.
+        return chat(local_images_only(messages), temperature=temperature, max_tokens=SIM_MAX_TOKENS)
     return complete
+
+
+PARTICIPANTS_CHANGED = ("simulation/participants.json changed after approval (who takes part is part of the approval): "
+                        "ask the researcher to press Run simulation again")
+
+
+def participants_sha(project: Path) -> str | None:
+    import participants as P
+    path = project / P.SPEC_PATH
+    return sha256(path) if path.is_file() else None
+
+
+def image_choice(plan: dict, model: str | None) -> tuple[bool, str]:
+    """(send images?, what run.json says). Images go only where the app's approved route passes them (plan.images)
+    and to a model known to accept them."""
+    import participants as P
+    if not plan.get("images"):
+        return False, ("NOT shown: text only (this run's model route does not pass pictures); images appear as opaque "
+                       "ids and their verified text lines")
+    if not P.IMAGE_MODELS.match(str(model or "")):
+        return False, ("NOT shown: text only (%s is not known to accept pictures); images appear as opaque ids and "
+                       "their verified text lines" % (model or "the model"))
+    return True, "sent as image parts with the current screen"
+
+
+def plan_members(protocol: dict, per_arm: int, arms: list | None) -> tuple[dict, dict]:
+    """({arm: participants per arm}, {arm: group size}) for the runnable arms the plan plays (run_study.n_per_arm)."""
+    plan, sizes = {}, {}
+    for a in protocol.get("arms") or []:
+        if a.get("runnable") is False or (arms and a.get("id") not in arms):
+            continue
+        plan[a["id"]], sizes[a["id"]] = int(per_arm), int(a.get("group_size") or 1)
+    return plan, sizes
+
+
+def participant_f(complete, people: dict, spec: dict, images: bool, images_note: str, summary: str):
+    """f for every participant: each one's own system prompt (persona), the default renderer, think-then-answer.
+    Blank mode is make_chat_f's bare prompt with bare JSON answers, kept for comparison."""
+    import participants as P
+    from render import make_chat_f, render_state
+    if spec["mode"] == "blank":
+        f = make_chat_f(complete, render=render_state, images=images)
+        f.description = dict(f.description, participants=summary, images=images_note)
+        return f
+    made = {}
+
+    def f(state, ctx):
+        key = (ctx.participant, ctx.member)
+        person = people.get(key)
+        if person is None:
+            raise RuntimeError("this participant has no description (participants.py assigned none)")
+        g = made.get(key)
+        if g is None:
+            g = made[key] = make_chat_f(complete, system=person["system"], render=render_state, parse=P.parse_answer,
+                                        images=images)
+        answers = g(state, ctx)
+        if isinstance(ctx.note, dict) and isinstance(ctx.note.get("reply"), str):
+            ctx.note["reasoning"] = P.split_reply(ctx.note["reply"])[0][:1000]
+        return answers
+    f.description = {"renderer": "render_state", "participants": summary,
+                     "system": spec.get("system") or P.system_text("{{persona}}"),
+                     "answer": "a short in-character reaction (one to three sentences), then one fenced JSON object",
+                     "memory": "state only (seen + answered); one fresh call per page", "images": images_note}
+    return f
 
 
 class Refused(SystemExit):
@@ -130,7 +214,7 @@ def binding() -> dict:
     return out
 
 
-PLAN_KEYS = ("route", "protocolSha256", "perArm", "arms", "seeds", "temperature")
+PLAN_KEYS = ("route", "protocolSha256", "perArm", "arms", "seeds", "temperature", "participantsSha256", "images")
 
 
 def approved_plan(run_dir: Path) -> dict:
@@ -157,6 +241,8 @@ def check_approval(run_dir: Path, project: Path, plan: dict, bound: dict) -> str
     actual = sha256(project / "protocol.json")
     if actual != plan.get("protocolSha256"):
         raise Refused("protocol.json changed after approval: ask the researcher to press Run simulation again")
+    if participants_sha(project) != plan.get("participantsSha256"):
+        raise Refused(PARTICIPANTS_CHANGED)
     if bound and (project / "variant.json").exists():
         raise Refused("this project holds a variant (variant.json), which is not part of the approval: not run")
     if bound:
@@ -536,6 +622,52 @@ def wording_note(labels: dict) -> dict | None:
     return counts if any(counts.values()) else None
 
 
+def participants_for(out: Path, project: Path, plan: dict, restored: dict | None, trial: bool) -> dict:
+    """Who plays each planned participant: the approved simulation/participants.json (or the paper's sample when
+    there is none), drawn per participant and written to <out>/participants.jsonl (opaque id, member, group,
+    attributes; never the condition). Refused when the file is not the approved one or a prompt outgrows the budget."""
+    import hmac
+    import participants as P
+    import run_study
+    try:
+        spec, sha = P.load(project)
+    except P.SpecError as e:
+        raise Refused("simulation/participants.json cannot be used: %s. Ask the agent to fix it, then press Run "
+                      "simulation again" % e)
+    if sha != plan.get("participantsSha256"):
+        raise Refused(PARTICIPANTS_CHANGED)
+    protocol = restored if restored is not None else json.loads((project / "protocol.json").read_text(encoding="utf-8"))
+    try:
+        program = json.loads((project / "program.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        program = None
+    per, seeds = (1, [1]) if trial else (int(plan["perArm"]), [int(s) for s in plan["seeds"]])
+    counts, sizes = plan_members(protocol, per, plan.get("arms"))
+    out.mkdir(parents=True, exist_ok=True)
+    salt = run_study.load_salt(out)   # the same per-run secret run_study names participants with
+
+    def opaque(seed, arm, index):
+        return hmac.new(salt, ("%s|%s|%s" % (seed, arm, index)).encode(), hashlib.sha256).hexdigest()[:16]
+    people = P.people(spec, sha, protocol, program, counts, sizes, seeds, opaque)
+    for person in people.values():
+        a = person["attributes"]
+        person["system"] = P.system_text(person["persona"], spec.get("system"),
+                                         dict(a, group=person["group"] or "", age=a.get("age", ""), gender=a.get("gender", "")))
+        if spec["mode"] != "blank" and not P.fits_budget(person["system"]):
+            raise Refused("the participant descriptions in simulation/participants.json are too long for the measured "
+                          "model budget: ask the agent to shorten them, then press Run simulation again")
+    with (out / "participants.jsonl").open("w", encoding="utf-8") as fh:
+        for (oid, member), person in sorted(people.items()):
+            fh.write(json.dumps({"opaque_id": oid, "member": member, "group": person["group"],
+                                 "attributes": person["attributes"]}, ensure_ascii=False) + "\n")
+    info = {"mode": spec["mode"], "sha256": sha, "file": P.SPEC_PATH if sha else None,
+            "summary": P.summary(spec, protocol, program, plan.get("arms")), "records": "participants.jsonl",
+            "answer": "blank: bare JSON" if spec["mode"] == "blank" else "a short in-character reaction, then JSON"}
+    if spec.get("system"):
+        info["system"] = spec["system"]
+    return {"spec": spec, "people": people, "info": info}
+
+
 def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, model: str | None = None) -> dict:
     """Play the approved plan. `complete` (messages -> text) and `model` replace the app's model client in tests.
     A run is `done`, with a results page, only when every planned participant finished without a failed model
@@ -553,7 +685,6 @@ def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, m
 
 def _main_run(run_dir, project, plan, bound, trial, complete, model):
     import run_study
-    from render import make_chat_f, render_state
     restored = restored_protocol(project)
     out = run_dir / "trial" if trial else run_dir
     if not trial:
@@ -566,12 +697,16 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     if complete is None:
         from humanstudy_llm import model_name
         complete, model = relay_complete(plan.get("temperature", 1.0)), model_name()
-    f = reask_unreadable(make_chat_f(complete, render=render_state))
+    who = participants_for(out, project, plan, restored, trial)
+    images, images_note = image_choice(plan, model)
+    f = reask_unreadable(participant_f(complete, who["people"], who["spec"], images, images_note, who["info"]["summary"]))
     # retries 0: humanstudy_llm already retries 429/5xx; a call that still fails (transport, allowance, a refusal)
     # ends that participant as incomplete. Only an unreadable reply is asked once more (reask_unreadable).
     spec = {"kind": "llm", "name": "desktop model", "model": model or "unknown", "renderer": "default",
             "temperature": plan.get("temperature", 1.0), "retries": 0, "fill_platform_ids": True,
-            "host": "the desktop app's model relay (humanstudy_llm), passed in-process"}
+            "host": "the desktop app's model relay (humanstudy_llm), passed in-process",
+            "persona": who["info"]["summary"], "images": images_note,
+            "participants": {k: who["info"][k] for k in ("mode", "sha256")}}
     # The floor baseline's cache stays inside this run folder (run_study keeps it beside the run folders, which the
     # macOS sandbox does not let the run write, and which the Simulation tab would list as a run).
     original_cache, original_stage = run_study.baseline_cached, run_study.Progress.stage
@@ -606,6 +741,7 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
             unofficial.__exit__(None, None, None)
     if note and isinstance(meta.get("plan"), dict):
         meta["plan"]["official"] = False
+    meta["participants_spec"] = dict(who["info"], images=images_note)
     # The protocol the engine actually loaded must be the approved one: run_study reads protocol.json again after
     # check_approval hashed it (review 5, S3).
     if meta.get("protocol_sha256") != plan.get("protocolSha256") or (bound and meta.get("variant") is not None):
@@ -656,6 +792,7 @@ def main(argv=None) -> None:
     n.add_argument("run_dir")
     n.add_argument("--per-arm", type=int, required=True)
     n.add_argument("--protocol-hash", required=True, help="protocolHash from the researcher's approval")
+    n.add_argument("--participants-hash", help="participantsSha256 from the approval (absent: no participants.json)")
     n.add_argument("--arms", help="comma-separated arm ids (default: every runnable arm)")
     n.add_argument("--seeds", default="1")
     n.add_argument("--temperature", type=float, default=1.0)
@@ -668,7 +805,7 @@ def main(argv=None) -> None:
         print(json.dumps({"status": meta.get("status"), "app": meta.get("app")}, default=str))
         return
     plan = new(Path(a.run_dir), a.per_arm, a.protocol_hash, a.arms.split(",") if a.arms else None,
-               [int(x) for x in a.seeds.split(",")], a.temperature)
+               [int(x) for x in a.seeds.split(",")], a.temperature, a.participants_hash)
     print("ready: %s (%s per arm). Trial: run_confined.py %s/run.py --trial; then simkit.py start %s"
           % (a.run_dir, plan["perArm"], a.run_dir, a.run_dir))
 

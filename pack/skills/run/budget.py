@@ -6,7 +6,11 @@ no network) from its own copy when protocol.json passes its checks, and sizes th
 
 Plays a few participants per runnable arm through run_study.run() with the random+gates oracle (it passes every
 gate, so every page is reached), and measures what the default renderer sends the model on each call: the system
-text and the rendered page, which grows with every earlier page and answer. The relay reserves, per call, the
+text and the rendered page, which grows with every earlier page and answer. The system text is the longest a run
+may send (participants.budget_system: the participant prompt with a persona of PERSONA_BUDGET_BYTES; app_run
+refuses longer personas), and every picture on the page is reserved as an image the model may be shown
+(participants.IMAGE_RESERVE_TOKENS, as the relay charges it), so the budget does not depend on
+simulation/participants.json or the model chosen. The reply's in-character reaction is within the output limit. The relay reserves, per call, the
 request body's bytes (JSON as humanstudy_llm sends it, non-ASCII escaped) + 256 per message + the output limit;
 this counts the same. Prints one JSON line:
 
@@ -39,19 +43,27 @@ MARGIN = 1.5                 # refused answers, longer replies in the history, r
 MODEL_PLACEHOLDER = "m" * 120
 
 
-def call_charge(system: str, page: str) -> int:
+def call_charge(system: str, page: str, images: int = 0) -> int:
     """What the relay reserves for one call of the default f: the request body exactly as humanstudy_llm.chat
-    serialises it, + 256 per message + the output limit."""
+    serialises it, + 256 per message + the output limit, + per picture the relay's image reserve and its part."""
+    import participants
     body = {"model": MODEL_PLACEHOLDER, "messages": [{"role": "system", "content": system}, {"role": "user", "content": page}],
             "temperature": 1.0, "max_tokens": OUTPUT_TOKENS}
-    return len(json.dumps(body).encode("utf-8")) + 2 * PER_MESSAGE + OUTPUT_TOKENS
+    pictures = images * (participants.IMAGE_RESERVE_TOKENS + participants.IMAGE_PART_BYTES) + (32 if images else 0)
+    return len(json.dumps(body).encode("utf-8")) + 2 * PER_MESSAGE + OUTPUT_TOKENS + pictures
+
+
+def pictures(state) -> int:
+    """Pictures on the current screen (what make_chat_f(images=True) would send)."""
+    return sum(1 for it in (state.get("screen") or {}).get("items", []) if isinstance(it.get("src"), str))
 
 
 def measure(project: Path, scratch: Path, per_arm: int = 3) -> dict:
     import fspec
     import render
     import run_study
-    system = render.make_chat_f(lambda messages: "{}").description["system"]
+    import participants
+    system = participants.budget_system()
     seen: dict[tuple, list[int]] = {}
     original = fspec.random_f
 
@@ -59,7 +71,7 @@ def measure(project: Path, scratch: Path, per_arm: int = 3) -> dict:
         f, d = original(protocol, spec, assist)
 
         def g(state, ctx):
-            charge = call_charge(system, render.render_state(state))
+            charge = call_charge(system, render.render_state(state), pictures(state))
             seen.setdefault((ctx.participant, ctx.member), []).append(charge)
             return f(state, ctx)
         g.needs_operator = getattr(f, "needs_operator", False)
