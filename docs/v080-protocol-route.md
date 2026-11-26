@@ -400,19 +400,28 @@ computer:
   wording (paper.pdf, anything under sources/, any PDF or image by name or by content, the generated
   artifacts/preview.html and its backup) unless its sha256 is a file the verified release shipped, decided on the
   very bytes written; while the release is unconfirmed none counts as shipped. The restore never follows a link. Research capture never collects such a file of a released study either (telemetry-core.ts canCarryRestored,
-  the same predicate). A ticked chat history of a released study has every restored or supplied held passage the
-  redaction index recognises replaced by ░; without this project's index it is left out and the result says so.
-  The released record is keyed by the project's id; the app moves the path-keyed pin and received copy when it
-  renames a project and clears them when it deletes one. A linked sources/ or sources/private/ is refused by the
-  restore. Out of scope (deliberate tampering by the local user, not accidental redistribution): swapping in a
+  the same predicate, on the file's raw first bytes). A released study's download never includes its chat history
+  (the tick is ignored; the saved message says chat is not included for Library studies). Released is any one of:
+  the record in `<userData>/original-text/released.json` by the project's id (read from .humanstudy/project.json,
+  never written by the classifier: only project sync assigns ids) or, without an id, by its path; an existing
+  held-list pin; community.json; held wording. A path record moves to the id key once there is an id; the app moves
+  the path-keyed pin, released record and received copy when it renames a project and clears them when it deletes
+  one. A linked sources/ or sources/private/ is refused by the restore, and the fills file is never read through
+  one.
+- **Boundary.** The app guarantees that restoration sources, the fills file and restored protocol bytes never leave
+  the computer through a study download or research capture. Wording the researcher or the assistant copies by hand
+  into their own notes, Markdown files or a standalone chat export (/export) is the researcher's responsibility,
+  like copying from a PDF they own; a send-time detector for such copies is an open decision for the owner. Known
+  limits: copies in notes, /export, and short items (held wording shorter than the 40-character matching window is
+  not recognised by the redaction index). Out of scope (deliberate tampering by the local user, not accidental redistribution): swapping in a
   complete, genuine community.json from another paper's fork, and replacing a scanned file with a link between
   the scan and the read. Its chat history is left out unless ticked. An ordinary project's download is as before. Undo's
   archive of earlier conversations (.humanstudy/thread-history) never goes into a download (project sync keeps it).
   Community sharing and publishing never include any of these. Project sync, private per account, carries them.
 - **Wording pasted into the chat.** When the researcher pastes a passage for the fills file, the message is an
   ordinary sent message: it stays in the project's conversation (`.humanstudy/threads`), which syncs privately per
-  account and goes into a released study's "Download this study" only when the researcher ticks the chat history
-  (the dialog says conversations may quote the original wording they supplied); community sharing and publishing never include conversations. Research data
+  account and never goes into a released study's "Download this study" (the dialog says chat is not included for
+  Library studies); community sharing and publishing never include conversations. Research data
   records it as the contract allows for a sent message (`conversation.submission` / `conversation.message`, full
   text, never draft text). The assistant's write to the fills file names `sources/private/` and is redacted, and
   once the fills file is applied its `user` text joins the redaction index, so later quotes of it (messages, tool

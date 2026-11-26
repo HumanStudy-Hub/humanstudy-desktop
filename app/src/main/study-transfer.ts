@@ -199,10 +199,10 @@ export async function exportFiles(root: string, limits: Limits, o: { published?:
   return files
 }
 
-/** Whether the chat history goes in: a released study's only when the researcher ticked it (conversations may quote
- *  original wording they supplied for its held screens); an ordinary project's unless unticked, as before. */
+/** Whether the chat history goes in: never for a released (Library) study (conversations may quote original wording
+ *  the researcher supplied for its held screens); an ordinary project's unless unticked, as before. */
 export const includesChat = (released: boolean, requested: boolean | undefined): boolean =>
-  released ? requested === true : requested !== false
+  !released && requested !== false
 
 export const isThread = (rel: string): boolean => /^\.humanstudy\/threads\/[^/]+\.json$/.test(rel)
 const threadCount = (files: { path: string }[]): number => files.filter((f) => isThread(f.path)).length
@@ -572,9 +572,6 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
   published?: boolean
   /** A released (Library) study: its private files stay on this computer (exportFiles). */
   released?: Released
-  /** Applied to every conversation file that goes in (a released study: its held wording redacted,
-   *  telemetry-core.ts redactThreadFile); null leaves the file out. */
-  chatFilter?: (data: Buffer) => Buffer | null
   limits?: Limits
   now?: Date
 }): Promise<ExportResult> {
@@ -587,7 +584,7 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
   // what a released study keeps back is left out before the limits are checked (only what goes in counts), and
   // decided again on the very bytes written (keptBack)
   const chosen = (await exportFiles(root, limits, o)).filter((f) =>
-    f.kind === 'study' || (f.kind === 'private' && !o.released) || (f.kind === 'conversation' && o.conversations === true))
+    f.kind === 'study' || (f.kind === 'private' && !o.released) || (f.kind === 'conversation' && o.conversations === true && !o.released))
   if (chosen.length > limits.maxFiles) fail('too-large', `more than ${limits.maxFiles} files`)
   let planned = 0
   for (const f of chosen) {
@@ -608,7 +605,6 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
       let data: Buffer = await readFile(join(root, ...f.path.split('/')))
       if (o.released && f.kind === 'study' && keptBack(f.path, data, o.released)) continue
       if (isThread(f.path)) data = withoutNativeSession(data)
-      if (f.kind === 'conversation' && o.chatFilter) { const kept = o.chatFilter(data); if (!kept) continue; data = kept }
       if (data.length > limits.maxFileBytes) fail('too-large', `a file larger than ${limits.maxFileBytes} bytes`, f.path)
       total += data.length
       if (total > limits.maxTotalBytes) fail('too-large', `more than ${limits.maxTotalBytes} bytes in all`)
@@ -622,7 +618,7 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
       name: basename(root),
       source: o.source,
       exportedAt: now.toISOString(),
-      includes: { conversations: o.conversations === true, privateFiles: chosen.filter((f) => f.kind === 'private').map((f) => f.path) },
+      includes: { conversations: o.conversations === true && !o.released, privateFiles: chosen.filter((f) => f.kind === 'private').map((f) => f.path) },
       files,
     }
     await zip.add(MANIFEST_NAME, Buffer.from(JSON.stringify(manifest, null, 2) + '\n', 'utf8'))

@@ -163,7 +163,7 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
     box.current?.focus()
     let live = true
     window.humanstudy.projects.exportPreview(dir).then(
-      // a released study's chat history is left out unless ticked: it may quote original wording the researcher supplied
+      // a released study's chat history never goes in: it may quote original wording the researcher supplied
       (p) => { if (live) { setPreview(p); if (p.released) setConversations(false) } },
       (e: unknown) => { if (live) setError(errorText(e, t('transfer.err_not-project'))) },
     )
@@ -257,7 +257,7 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
                   {preview.conversations.count > 0 && (
                     <li>
                       <label>
-                        <input type="checkbox" checked={conversations} disabled={busy} onChange={(e) => setConversations(e.target.checked)} />
+                        <input type="checkbox" checked={conversations} disabled={busy || preview.released} onChange={(e) => setConversations(e.target.checked)} />
                         <span>
                           {preview.conversations.count === 1 ? t('transfer.conversations_one') : t('transfer.conversations', { n: preview.conversations.count })}
                           <span className="muted small transfer-hint">{t(preview.released ? 'transfer.conversations_hint_released' : 'transfer.conversations_hint')}</span>

@@ -315,34 +315,6 @@ export function containsPrivateRun(text: string, index: PrivateIndex, strict = t
   return false
 }
 
-/** `text` with every run of indexed private text (restored or supplied held wording) replaced by ░, one per
- *  character, the placeholder a release uses. A string that still quotes indexed text in another checked form
- *  (enumerators, escapes, a composed character) becomes placeholders as a whole. */
-export function redactHeldRuns(text: string, index: PrivateIndex): string {
-  if (!index.size || !text) return text
-  const chars = Array.from(text)
-  const cps: number[] = [], at: number[] = []
-  chars.forEach((ch, i) => { for (const x of ch.normalize('NFKC').toLowerCase()) if (/\p{L}/u.test(x)) { cps.push(x.codePointAt(0)!); at.push(i) } })
-  const marked = new Uint8Array(chars.length)
-  for (let i = 0; i + PRIVATE_RUN <= cps.length; i++) {
-    const [a, b] = windowPair(cps, i)
-    if (index.has(a, b)) marked.fill(1, at[i], at[i + PRIVATE_RUN - 1] + 1)
-  }
-  const out = marked.some((m) => m) ? chars.map((ch, i) => (marked[i] ? '\u2591' : ch)).join('') : text
-  return checkedForms(out).some((f) => containsPrivateRun(f, index, false)) ? '\u2591'.repeat(chars.length) : out
-}
-
-/** A conversation file (.humanstudy/threads/<id>.json) with every string's held wording redacted (redactHeldRuns):
- *  message bodies, tool input and output alike. Null when it cannot be read as JSON (it is then left out). */
-export function redactThreadFile(raw: Uint8Array, index: PrivateIndex): Buffer | null {
-  let v: unknown
-  try { v = JSON.parse(Buffer.from(raw).toString('utf8')) } catch { return null }
-  const walk = (x: unknown): unknown => typeof x === 'string' ? redactHeldRuns(x, index)
-    : Array.isArray(x) ? x.map(walk)
-    : x && typeof x === 'object' ? Object.fromEntries(Object.entries(x as Record<string, unknown>).map(([k, y]) => [k, walk(y)])) : x
-  return Buffer.from(JSON.stringify(walk(v), null, 2), 'utf8')
-}
-
 /** The forms of one string that are checked: as it is; with escape sequences (`\\n`, `\\t`, `\\u00e9`, …, as in a
  *  string holding JSON or a heredoc) turned into spaces; and with a read tool's line-number prefixes (`12| `) removed
  *  from every line. JSON escaping of the whole event is never involved: each string value is checked raw. */
@@ -415,13 +387,13 @@ export const canCarryRestored = (rel: string, data?: Uint8Array): boolean => RES
 /** Whether research capture may collect a project file. Never: run outputs (artifacts/simulations/, runs/) of a
  *  published study (its AI participants' replies can quote the restored wording); a text file that quotes private
  *  material; and, while any private material is indexed, a file that cannot be read as text (it cannot be checked). */
-export function mayCollectFile(o: { rel: string; text?: string; bytes?: Uint8Array; published: boolean; index: PrivateIndex; hasPrivate?: boolean }): boolean {
+export function mayCollectFile(o: { rel: string; text?: string; /** the raw first bytes, as read from disk */ bytes?: Uint8Array; published: boolean; index: PrivateIndex; hasPrivate?: boolean }): boolean {
   const rel = o.rel.split('\\').join('/')
   const strict = o.published || Boolean(o.hasPrivate)
   if (PRIVATE_MATERIAL.test(decoded(rel))) return false
   // a released study: nothing the restore reads or a download keeps back (anything under sources/, paper.pdf, a PDF or
   // a picture by name or content, the generated preview), however short the wording it holds
-  if (o.published && canCarryRestored(rel, o.bytes ?? (o.text !== undefined ? Buffer.from(o.text, 'utf8') : undefined))) return false
+  if (o.published && canCarryRestored(rel, o.bytes)) return false   // `bytes`: the file's raw first bytes, never decoded text
   // A downloaded study (study-transfer.ts) saved into a project: its contents may include private files and chats.
   if (STUDY_PACKAGE.test(decoded(rel))) return false
   if (o.published && /^(?:artifacts\/simulations|runs)(?:\/|$)/.test(rel)) return false

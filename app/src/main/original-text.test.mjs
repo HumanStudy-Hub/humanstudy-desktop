@@ -428,34 +428,32 @@ test('research capture never collects what a released study\'s download keeps ba
   assert.equal(T.canCarryRestored('notes/x.txt', Buffer.from('plain')), false)
 })
 
-test('a released study\'s chat history: held wording the index recognises becomes the release\'s placeholder', () => {
-  const held = 'Please describe how you walked to the bakery this morning in detail.'
-  const index = T.privateIndexOf([held])
-  const said = `Here it is: "${held}" Thanks!`
-  const out = T.redactHeldRuns(said, index)
-  assert.ok(out.startsWith('Here it is: "') && out.endsWith('" Thanks!'), out)
-  assert.equal(Array.from(out).length, Array.from(said).length)
-  assert.ok(!/bakery/.test(out) && /░{40,}/.test(out))
-  assert.equal(T.redactHeldRuns('Nothing private here at all, just a long sentence about the weather.', index), 'Nothing private here at all, just a long sentence about the weather.')
-  // re-numbered so the plain pass misses it: the whole string becomes placeholders
-  const numbered = 'Please describe how you walked\nQ1: to the bakery this morning in detail.'
-  assert.equal(/bakery/.test(T.redactHeldRuns(numbered, index)), false)
-  const thread = { id: 'thr_a', messages: [{ role: 'user', parts: [{ kind: 'text', text: said }] }, { role: 'assistant', parts: [{ kind: 'tool', input: { content: held }, output: `wrote ${held}` }] }] }
-  const red = JSON.parse(T.redactThreadFile(Buffer.from(JSON.stringify(thread)), index).toString('utf8'))
-  assert.equal(red.id, 'thr_a')
-  assert.ok(!JSON.stringify(red).includes('bakery'))
-  assert.equal(T.redactThreadFile(Buffer.from('{not json'), index), null)
+test('capture checks a file\'s raw bytes for a picture or PDF, never text decoded from them', () => {
+  const jpeg = Buffer.concat([Buffer.from('ffd8ffe0', 'hex'), Buffer.from('a scan saved as text')])
+  // decoded as UTF-8 the signature is gone; the raw first bytes still show a picture
+  assert.equal(T.canCarryRestored('notes/scan.txt', Buffer.from(jpeg.toString('utf8'), 'utf8')), false)
+  assert.equal(T.mayCollectFile({ rel: 'notes/scan.txt', text: jpeg.toString('utf8'), bytes: jpeg.subarray(0, 16), published: true, index: T.EMPTY_INDEX }), false)
+  assert.equal(T.mayCollectFile({ rel: 'notes/plan.txt', text: 'my plan', bytes: Buffer.from('my plan'), published: true, index: T.EMPTY_INDEX }), true)
 })
 
-test('the released record follows the project\'s id: a rename keeps it, a new project at the old path never inherits it', async () => {
+test('the released record: by id when the project has one (never written here), else by path; pins and old path records count', async () => {
   const { proj, close } = await publishedProject()
   close()
   const cache = mkdtempSync(join(tmpdir(), 'released-id-'))
+  // no id: recorded by path, and the classifier never writes .humanstudy/project.json (only project sync assigns ids)
   assert.equal(await O.releasedStudy(cache, proj), true)
+  assert.equal(existsSync(join(proj, '.humanstudy', 'project.json')), false)
+  const root = await realpath(proj)
+  assert.equal(JSON.parse(readFileSync(join(cache, 'released.json'), 'utf8'))[root], true)
+  // sync gives it an id: the path record moves to the id key on the next check
+  mkdirSync(join(proj, '.humanstudy'), { recursive: true })
+  writeFileSync(join(proj, '.humanstudy', 'project.json'), JSON.stringify({ id: 'proj-released-1' }))
+  assert.equal(await O.releasedStudy(cache, proj), true)
+  assert.deepEqual(JSON.parse(readFileSync(join(cache, 'released.json'), 'utf8')), { 'id:proj-released-1': true })
+  // its held block removed and the folder renamed outside the app: still released, by its id
   const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
   delete p.distribution
   writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p))
-  // renamed: still released (its id travels with it)
   const moved = proj + '-renamed'
   renameSync(proj, moved)
   assert.equal(await O.releasedStudy(cache, moved), true)
@@ -463,19 +461,48 @@ test('the released record follows the project\'s id: a rename keeps it, a new pr
   mkdirSync(proj)
   writeFileSync(join(proj, 'protocol.json'), JSON.stringify({ id: 'ordinary' }))
   assert.equal(await O.releasedStudy(cache, proj), false)
-  // the path-keyed pin and received copy move with an app rename and are cleared on delete
+  // upgrade: an existing held-list pin, or a path record written by an earlier build, counts
+  const pinned = mkdtempSync(join(tmpdir(), 'released-pin-'))
+  writeFileSync(join(pinned, 'protocol.json'), JSON.stringify({ id: 'x' }))
+  writeFileSync(join(cache, 'pins.json'), JSON.stringify({ [await realpath(pinned)]: 'a'.repeat(64) }))
+  assert.equal(await O.releasedStudy(cache, pinned), true)
+  const legacy = mkdtempSync(join(tmpdir(), 'released-legacy-'))
+  writeFileSync(join(legacy, 'protocol.json'), JSON.stringify({ id: 'y' }))
+  const sticky = JSON.parse(readFileSync(join(cache, 'released.json'), 'utf8'))
+  writeFileSync(join(cache, 'released.json'), JSON.stringify({ ...sticky, [await realpath(legacy)]: true }))
+  assert.equal(await O.releasedStudy(cache, legacy), true)
+  // the path-keyed pin, released record and received copy move with an app rename and are cleared on delete
   const a = mkdtempSync(join(tmpdir(), 'records-a-')), b = mkdtempSync(join(tmpdir(), 'records-b-'))
   const [ra, rb] = [await realpath(a), await realpath(b)]
   mkdirSync(join(cache, 'received'), { recursive: true })
   writeFileSync(join(cache, 'pins.json'), JSON.stringify({ [ra]: 'f'.repeat(64) }))
+  writeFileSync(join(cache, 'released.json'), JSON.stringify({ [ra]: true }))
   writeFileSync(O.receivedPath(cache, ra), '{"received":true}')
   await O.moveProjectRecords(cache, ra, rb)
   assert.deepEqual(JSON.parse(readFileSync(join(cache, 'pins.json'), 'utf8')), { [rb]: 'f'.repeat(64) })
+  assert.deepEqual(JSON.parse(readFileSync(join(cache, 'released.json'), 'utf8')), { [rb]: true })
   assert.equal(existsSync(O.receivedPath(cache, ra)), false)
   assert.equal(readFileSync(O.receivedPath(cache, rb), 'utf8'), '{"received":true}')
   await O.moveProjectRecords(cache, rb, null)
   assert.deepEqual(JSON.parse(readFileSync(join(cache, 'pins.json'), 'utf8')), {})
+  assert.deepEqual(JSON.parse(readFileSync(join(cache, 'released.json'), 'utf8')), {})
   assert.equal(existsSync(O.receivedPath(cache, rb)), false)
+})
+
+test('the fills file is never read through a linked sources/ or sources/private/', async () => {
+  const proj = mkdtempSync(join(tmpdir(), 'linked-fills-'))
+  mkdirSync(join(proj, 'elsewhere', 'private'), { recursive: true })
+  writeFileSync(join(proj, 'elsewhere', 'private', 'original-text-fills.json'), '{}')
+  symlinkSync(join(proj, 'elsewhere'), join(proj, 'sources'))
+  assert.equal(await O.linkFree(await realpath(proj), O.FILLS_FILE), false)
+  const ok = mkdtempSync(join(tmpdir(), 'real-fills-'))
+  mkdirSync(join(ok, 'sources', 'private'), { recursive: true })
+  writeFileSync(join(ok, O.FILLS_FILE), '{}')
+  assert.equal(await O.linkFree(await realpath(ok), O.FILLS_FILE), true)
+  const inner = mkdtempSync(join(tmpdir(), 'linked-private-fills-'))
+  mkdirSync(join(inner, 'sources')); mkdirSync(join(inner, 'kept'))
+  symlinkSync(join(inner, 'kept'), join(inner, 'sources', 'private'))
+  assert.equal(await O.linkFree(await realpath(inner), O.FILLS_FILE), false)
 })
 
 test('the restore refuses a linked sources/ or sources/private/', async () => {

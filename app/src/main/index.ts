@@ -5,7 +5,6 @@ import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'elect
 import { applyCredentials, providers, setKey } from './credentials'
 import { applyAccount, getAccount } from './account'
 import * as telemetry from './telemetry'
-import { INDEX_FORMAT, redactThreadFile } from './telemetry-core'
 import { setupMenu } from './menu'
 import { createSupport } from './support-core'
 import * as notify from './notify'
@@ -895,23 +894,16 @@ app.whenReady().then(() => {
     if (ONLINE) await sweepOnlineDownloads(dirname(target))
     try {
       const released = await releasedFor(d)
-      // a released study's chat history only when ticked (it may quote original wording the researcher supplied), and
-      // then with every restored or supplied held passage redacted by the redaction index; without this project's
-      // index the chat is left out and the result says so
-      let conversations = includesChat(Boolean(released), options?.conversations)
-      const index = telemetry.currentPrivateIndex()
-      const indexed = released ? index.size > 0 && existsSync(join(originalTextCache(), 'redact', `${createHash('sha256').update(await realpath(d)).digest('hex')}.v${INDEX_FORMAT}.bin`)) : true
-      const chatLeftOut = conversations && !indexed
-      if (chatLeftOut) conversations = false
+      // a released (Library) study's chat history never goes in (it may quote original wording the researcher
+      // supplied); the result says so
       const out = await exportStudy(d, target, {
-        conversations,
-        chatFilter: released ? (data) => redactThreadFile(data, index) : undefined,
+        conversations: includesChat(Boolean(released), options?.conversations),
         released,
         source: { platform: ONLINE ? 'online' : 'desktop', appVersion: app.getVersion() },
         published: await isPublishedStudy(d).catch(() => false),
       })
       telemetry.track('project.exported', { metadata: { files: out.files, bytes: out.bytes, conversations: out.manifest.includes.conversations, privateFiles: out.manifest.includes.privateFiles.length } }, d)
-      return { ok: true, savedPath: out.path, bytes: out.bytes, files: out.files, ...(chatLeftOut ? { chatLeftOut: true } : {}) }
+      return { ok: true, savedPath: out.path, bytes: out.bytes, files: out.files, ...(released ? { chatLeftOut: true } : {}) }
     } catch (err) {
       return transferFailure(err)
     }

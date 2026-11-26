@@ -172,7 +172,7 @@ async function queueSource(projectDir: string, rel: string, trigger: 'baseline' 
   const ext = extname(path).toLowerCase()
   // Never a file that quotes private material, nor one that cannot be checked while any is indexed.
   const text = TEXT_EXTS.has(ext.slice(1)) ? await readFile(path, 'utf8').catch(() => undefined) : undefined
-  if (!mayCollectFile({ rel, text, bytes: text === undefined ? await fileHead(path) : undefined, published: await publishedProject(projectDir), index: privateIndex, hasPrivate: existsSync(join(projectDir, 'sources', 'private')) })) return
+  if (!mayCollectFile({ rel, text, bytes: await fileHead(path), published: await publishedProject(projectDir), index: privateIndex, hasPrivate: existsSync(join(projectDir, 'sources', 'private')) })) return
   const mime = ext === '.pdf' ? 'application/pdf' : ext === '.zip' ? 'application/zip' : ext === '.json' ? 'application/json' : 'application/octet-stream'
   const link = imported && Date.now() - imported.at <= IMPORT_LINK_MS ? researchAgent.sourceLink(imported.ref) : researchAgent.sourceLink(undefined, trigger)
   await sourceCollector().queueSource(path, projectId, mime, link)
@@ -519,9 +519,6 @@ function fit(out: Record<string, unknown>, key: string, value: string | undefine
 // per session and again after each check and each drop (refreshPrivateIndex).
 let privateIndex: PrivateIndex = EMPTY_INDEX
 const originalTextDir = (): string => join(app.getPath('userData'), 'original-text')
-/** The research-capture redaction index (restored and supplied held wording, as hashes): a study download redacts a
- *  released study's chat history with it. */
-export function currentPrivateIndex(): PrivateIndex { return privateIndex }
 export async function refreshPrivateIndex(dir = join(originalTextDir(), 'redact')): Promise<void> {
   privateIndex = await loadPrivateIndexDir(dir)
 }
@@ -538,8 +535,10 @@ function publishedProjectSync(projectDir: string): boolean {
   // a released (Library) study, as a study download decides it (original-text.ts releasedStudy): recorded by the
   // project's id, or a community.json naming a protocol release (an unreadable one counts)
   if (!yes) try {
-    const id = JSON.parse(readFileSync(join(key, '.humanstudy', 'project.json'), 'utf8'))?.id
-    yes = typeof id === 'string' && Object.prototype.hasOwnProperty.call(JSON.parse(readFileSync(join(originalTextDir(), 'released.json'), 'utf8')), 'id:' + id)
+    let id: unknown
+    try { id = JSON.parse(readFileSync(join(key, '.humanstudy', 'project.json'), 'utf8'))?.id } catch { /* no id */ }
+    const sticky = JSON.parse(readFileSync(join(originalTextDir(), 'released.json'), 'utf8'))
+    yes = (typeof id === 'string' && Object.prototype.hasOwnProperty.call(sticky, 'id:' + id)) || Object.prototype.hasOwnProperty.call(sticky, realpathSync.native(key))
   } catch { /* none */ }
   if (!yes) {
     let raw: string | null = null
@@ -705,7 +704,7 @@ async function snapshotFileNow(projectDir: string, rel: string, owner: string | 
   // Run outputs of a published study, a file that quotes private material, and (while any is indexed) a file that
   // cannot be read as text are never collected: only the fact that a file was written is recorded.
   const textForCheck = TEXT_EXTS.has(ext) ? await readFile(path, 'utf8').catch(() => undefined) : undefined
-  if (!mayCollectFile({ rel, text: textForCheck, bytes: textForCheck === undefined ? await fileHead(path) : undefined, published: await publishedProject(projectDir), index: privateIndex, hasPrivate: existsSync(join(projectDir, 'sources', 'private')) })) {
+  if (!mayCollectFile({ rel, text: textForCheck, bytes: await fileHead(path), published: await publishedProject(projectDir), index: privateIndex, hasPrivate: existsSync(join(projectDir, 'sources', 'private')) })) {
     track('project.file_written', { target: rel, metadata: { ...metadata, withheld: 'private-material' } }, projectDir)
     return
   }
