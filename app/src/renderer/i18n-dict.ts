@@ -71,6 +71,7 @@ const ROWS: Row[] = [
   ['sim.request', 'Run a simulation of {study}: {n} AI participants per condition, with the model {model}. Compare with the paper’s reported results.', '运行“{study}”的模拟：每个条件 {n} 名 AI 参与者，模型为 {model}。与论文报告的结果进行比较。'],
   ['sim.confirmed', 'Simulation confirmed.', '已确认运行模拟。'],
   ['sim.model', 'Model', '模型'],
+  ['sim.who', 'Who takes part', '参与者是谁'],
   ['sim.estimate', 'Rough estimate', '粗略估计'],
   ['sim.estimate_value', '{lo}–{hi} min, {cost}', '{lo}–{hi} 分钟，{cost}'],
   ['sim.budget', 'Model budget', '模型额度'],

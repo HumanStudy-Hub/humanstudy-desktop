@@ -17,6 +17,7 @@ import { holdAction, track } from '../telemetry'
 import { allowanceMessage } from '../allowance'
 import { WEB_EDITION } from '../edition'
 import { formatDuration } from '../format'
+import { approvedHashes, whoLine, type ParticipantsCheck } from '../../shared/participants-summary'
 
 interface Props {
   project: ProjectSnapshot
@@ -37,7 +38,8 @@ interface Props {
   canRun?: boolean
   modelAccess?: AccountStatus['modelAccess']
   /** route: which runnable form the approval names (protocol.json through the engine, or package/). */
-  onRun(perCondition: number, route: 'protocol' | 'package', conditions: string[], tokenBudget?: number): Promise<void>
+  /** who: for a protocol run, the participant summary as shown, with the hashes of the files it was read from. */
+  onRun(perCondition: number, route: 'protocol' | 'package', conditions: string[], tokenBudget?: number, who?: ReturnType<typeof approvedHashes>): Promise<void>
   onBuild(): void
   /** Stop the agent and ask these run folders (absolute paths) to stop. */
   /** Stop: write STOP into these run folders; `ownTurn` when the agent's current turn is this tab's request. */
@@ -155,6 +157,22 @@ export function SimulationPanel(props: Props) {
   // same figure the main process recomputes; the approval carries it and is refused for any other number.
   const protocolLimits = route === 'protocol' ? protocolRunLimits(readiness?.protocol?.budget, perCondition) : null
   const access = protocolLimits ?? runLimits({ conditions: runConditions, perCondition })
+  // Who takes part (a protocol run): simulation/participants.json, which the agent writes when the researcher
+  // describes the participants, else sample-matched to the paper. The main process runs the app's participants.py
+  // (one implementation) and returns the summary with the hashes of the files it read; the approval sends exactly
+  // those, and Run waits while the summary is being re-read or cannot be used.
+  const whoFiles = allEntries(project.tree).filter((e) => ['simulation/participants.json', 'protocol.json', 'program.json'].includes(e.rel))
+  const whoStamp = `${dir}|` + whoFiles.map((e) => `${e.rel}:${e.mtime ?? ''}:${e.size ?? ''}:${e.version ?? ''}`).join('|')
+  const [whoChecked, setWhoChecked] = useState<{ stamp: string; check: ParticipantsCheck | null } | null>(null)
+  useEffect(() => {
+    if (route !== 'protocol') { setWhoChecked(null); return }
+    let live = true
+    void window.humanstudy.project.participants(dir).catch(() => null).then((check) => { if (live) setWhoChecked({ stamp: whoStamp, check }) })
+    return () => { live = false }
+  }, [dir, route, whoStamp]) // eslint-disable-line react-hooks/exhaustive-deps
+  const whoCheck = whoChecked?.stamp === whoStamp ? whoChecked.check : null
+  const who = route === 'protocol' && whoChecked ? whoLine(whoChecked.check) : null
+  const whoPending = route === 'protocol' && (whoChecked?.stamp !== whoStamp || !whoCheck?.ok)
   const accessVars = { tokens: formatTokens(access.tokens), minutes: access.minutes }
 
   // Run folders and the two small files each one writes while and after it runs.
@@ -248,7 +266,8 @@ export function SimulationPanel(props: Props) {
     track('simulation.run', { metadata: { perCondition, conditions: plan.conditions.length, model, built } })
     // The approval is checked before it is sent; the resulting agent turn belongs to this run operation.
     holdAction()
-    try { await props.onRun(perCondition, route ?? 'package', route === 'protocol' ? readiness?.protocol?.arms ?? [] : plan.conditions.map((c) => c.id), protocolLimits?.tokens) } catch { setPending(null) }
+    try { await props.onRun(perCondition, route ?? 'package', route === 'protocol' ? readiness?.protocol?.arms ?? [] : plan.conditions.map((c) => c.id), protocolLimits?.tokens,
+      route === 'protocol' && whoCheck ? approvedHashes(whoCheck) : undefined) } catch { setPending(null) }
   }
   const build = () => {
     setBuildProblem(false); setNow(Date.now()); setPending({ at: Date.now(), kind: 'build', owner, before: agentTurnKey })
@@ -390,6 +409,10 @@ export function SimulationPanel(props: Props) {
                   {t(runConditions.length > 1 ? 'sim.per_condition' : 'sim.in_total_one', { total: estimate.participants })}
                   {plan.paperPerCondition && <span className="muted small"> · {plan.paperPerCondition === perCondition ? t('sim.same_as_paper') : t('sim.paper_had', { n: plan.paperPerCondition })}</span>}
                 </dd>
+                {who && (<>
+                  <dt>{t('sim.who')}</dt>
+                  <dd>{who.text}{who.problem && <span className="sim-blocked small"> · {who.problem}</span>}</dd>
+                </>)}
                 <dt>{t('sim.model')}</dt>
                 <dd>{modelName}</dd>
                 {hosted && (<>
@@ -415,7 +438,7 @@ export function SimulationPanel(props: Props) {
               {!scopeReady && <p className="sim-blocked">{t('sim.blocked', { what: [...scope.missing.map((m) => t(`sim.need.${m}`)), ...scope.blocking.map((b) => b.title)].join(t('sim.list_sep')) })}</p>}
               {confirmation.notice && <p className="sim-note">{t(confirmation.notice, accessVars)}</p>}
               <div className="sim-actions">
-                <button className="primary" disabled={!canRun || !scopeReady || agentBusy || protocolLimits?.fits === false} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
+                <button className="primary" disabled={!canRun || !scopeReady || agentBusy || protocolLimits?.fits === false || whoPending} title={agentBusy ? t('sim.agent_busy') : undefined} onClick={() => void run()}>{t('sim.run')}</button>
                 <button className="ghost" disabled={!canRun} title={canRun ? undefined : t('sim.sign_in_to_run')} onClick={() => props.onAsk(scopeReady ? t('sim.ask_prompt', { study: studyTitle }) : t('sim.resolve_prompt', { study: studyTitle }))}>{t('sim.ask')}</button>
               </div>
               {!canRun && <p className="sim-note">{t('sim.sign_in_to_run')}</p>}

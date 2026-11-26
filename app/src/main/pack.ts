@@ -72,6 +72,7 @@ const HELPERS = ['skills/build/AUTHORING.md', 'skills/build/AUTHORING.VENDORED',
   // and skills/preview (vendored build_preview + the app's wrapper), kept at the shipped version.
   'skills/run/run_study.py', 'skills/run/fspec.py', 'skills/run/render.py', 'skills/run/VENDORED',
   'skills/run/app_run.py', 'skills/run/protocol_report.py', 'skills/run/budget.py', 'skills/run/launch.py',
+  'skills/run/participants.py',
   'skills/preview/build_preview.py', 'skills/preview/preview.css', 'skills/preview/preview.js', 'skills/preview/VENDORED',
   'skills/preview/make_preview.py']
 
@@ -152,7 +153,7 @@ export function trustedPreviewFiles(): [string, string][] {
 /** What the app runs to measure a protocol run's model budget (protocol-readiness.ts protocolBudget), in the
  *  sandbox layout run_study.py expects: the engine under hsenv/, the runner and budget.py under skills/run/. */
 export function trustedBudgetFiles(): [string, string][] {
-  const run = ['run_study.py', 'fspec.py', 'render.py', 'budget.py'].map((f) => 'skills/run/' + f)
+  const run = ['run_study.py', 'fspec.py', 'render.py', 'budget.py', 'participants.py'].map((f) => 'skills/run/' + f)
   return [...engineFiles().map((rel): [string, string] => ['hsenv/' + rel.slice('runtime/hsenv/'.length), files[PREFIX + rel]]),
     ...run.filter((rel) => files[PREFIX + rel] !== undefined).map((rel): [string, string] => [rel, files[PREFIX + rel]])]
 }
@@ -196,7 +197,7 @@ export function trustedOriginalTextFiles(): [string, string][] {
  *  under hsenv/, the run skill under skills/run/, the sandbox launcher under skills/build/ and the artifact kit
  *  under artifact-kit/. Written by the main process outside the project, so the agent cannot change what runs. */
 export function trustedRunFiles(): [string, string][] {
-  const run = ['run_study.py', 'fspec.py', 'render.py', 'app_run.py', 'protocol_report.py', 'launch.py'].map((f) => 'skills/run/' + f)
+  const run = ['run_study.py', 'fspec.py', 'render.py', 'app_run.py', 'protocol_report.py', 'launch.py', 'participants.py'].map((f) => 'skills/run/' + f)
   const client = files[PREFIX + 'runtime/lib/humanstudy_llm.py']
   const pick = (rel: string): [string, string][] => (files[PREFIX + rel] !== undefined ? [[rel, files[PREFIX + rel]]] : [])
   return [

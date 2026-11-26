@@ -69,9 +69,9 @@ class EstimateRun(unittest.TestCase):
         capture = {"runs": [{"arms": ["a"], "calls": 10, "sessions": 1, "n": 1, "lengths": [100] * 10,
                              "bodyChars": 1000}]}
         e = estimate_run.estimate(capture, 10, agents=2)
-        per_call = estimate_run.BODY_FRAME + estimate_run.RELAY_PER_MESSAGE + estimate_run.RELAY_DEFAULT_MAX_TOKENS
-        self.assertEqual(e["relay"]["reservedTokens"], 10 * (1000 + 10 * per_call))
-        self.assertEqual(e["relay"]["sessionsPerRun"], estimate_run.RELAY_TOKEN_CAP // (1000 + 10 * per_call))
+        per_session = (1000 + 10 * estimate_run.BODY_FRAME) / 3 + 10 * (estimate_run.RELAY_PER_MESSAGE + estimate_run.RELAY_DEFAULT_MAX_TOKENS)
+        self.assertEqual(e["relay"]["reservedTokens"], round(10 * per_session), "text bytes / 3, as the relay reserves")
+        self.assertEqual(e["relay"]["sessionsPerRun"], int(estimate_run.RELAY_TOKEN_CAP // per_session))
         self.assertIn("20 participants in 10 sessions", estimate_run.run_size_line(e))
         self.assertIsNone(estimate_run.estimate({"runs": [{"arms": ["a"], "calls": 0}]}, 10))
 

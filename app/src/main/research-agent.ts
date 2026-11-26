@@ -12,7 +12,7 @@ import type { ResearchCapture } from './research-collector'
 import type { ActionRef } from '../shared/research-operations'
 import { ACTION_VIA, type ActionVia, type DispatchOutcome } from '../shared/research-contract'
 import { researchInteraction } from '../shared/research-interactions'
-import { namesPrivatePath, REDACTED_PRIVATE } from './telemetry-core'
+import { REDACTED_PRIVATE, toolNamesPrivate } from './telemetry-core'
 
 type Sink = (event: ResearchCapture, context?: { projectDir?: string; visitId?: string; accept?(): boolean }) => Promise<unknown>
 type Delivery = { id: string; occurred_at: string; visitId: string; accept(): boolean }
@@ -279,7 +279,7 @@ export function createResearchAgent(capture: Sink) {
         const placeholder = e.text === 'pending' && emptyInput(e.input)
         // A call that names private material (a dropped copy in sources/private/, the restored-wording cache) keeps
         // its input and output out of capture, at start and at end (the end carries the file's content, no path).
-        if (e.input !== undefined && namesPrivatePath(typeof e.input === 'string' ? e.input : JSON.stringify(e.input) ?? '')) call.private = true
+        if (e.input !== undefined && toolNamesPrivate(e.input, call.dir)) call.private = true
         if (!placeholder && (!call.start || (e.input !== undefined && JSON.stringify(e.input) !== JSON.stringify(call.input)))) {
           call.input = e.input
           call.inputText = call.private ? '' : inputPaths(e.input)

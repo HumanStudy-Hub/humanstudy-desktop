@@ -7,13 +7,16 @@ description: Prepare a requested experiment scope, or run the study's protocol.j
 
 The study owns the *state* (exactly what a participant had on screen, what they saw before, their own answers)
 and the *step* (what happens after an answer); the engine (`.opencode/hsenv`) plays both. The participant, f, is
-the app's model: one fresh call per page, the page shown by the default renderer (`render.py`, text only:
-pictures appear as an id and their verified text lines), JSON answers. `run.json` records f, the model and the
-protocol's SHA-256, so every result names what produced it.
+the app's model: one fresh call per page, the page shown by the default renderer (`render.py`), with its own
+system prompt saying who this participant is (see "Who takes part"). On every page the participant first writes
+one to three sentences in character, then its answers as a fenced JSON object. Pictures on the page are sent to
+the model when the run's model route and the model accept them (Claude models with the user's own key); otherwise
+they appear as an id and their verified text lines, and `run.json` says which. `run.json` records f, the model,
+the participant description and the protocol's SHA-256, so every result names what produced it.
 
 `run_study.py`, `fspec.py` and `render.py` are vendored from the sandbox and never edited here.
-`app_run.py` (the run), `launch.py` (how the app starts it), `protocol_report.py` (results page) and `budget.py`
-(the model budget) are the app's. The app runs its own shipped copy of all of them.
+`app_run.py` (the run), `participants.py` (who takes part), `launch.py` (how the app starts it),
+`protocol_report.py` (results page) and `budget.py` (the model budget) are the app's. The app runs its own shipped copy of all of them.
 
 ## A request before approval
 
@@ -22,6 +25,60 @@ procedure first. Read the complete scholarly program and current protocol, prepa
 and use a specific question/material request if needed. Do not start the run or create a new paid-model script.
 If the original cannot run, show the exact gap; a modified-wording proposal needs researcher confirmation
 and separate storage. Never silently replace the original protocol to make it runnable.
+
+## Who takes part
+
+How participants are simulated is the researcher's choice, recorded with the run; the study's state and step
+never change. The choice lives in `simulation/participants.json` in the project. Without that file (or with
+`"mode": "paper"`) the AI participants are **sample-matched**: each one's description comes from the paper's
+own account of its sample (`protocol.json` `meta.sample`, then the program's `participants` node): the population
+as printed for the participant's own study (sentences naming a condition are dropped), an age drawn from a printed
+mean and SD or range, a gender drawn only among the categories the paper prints, at its shares (a share it does
+not describe leaves those participants without a gender). Whatever the paper does not state is left out, never
+made up.
+
+When the researcher describes who should take part ("make them nurses in Germany", "half students, half retirees",
+"no persona, as a baseline"), write or update `simulation/participants.json` yourself; this is not a paid-model
+script and needs no approval:
+
+```json
+{"version": 1, "mode": "custom",
+ "groups": [
+   {"id": "students", "label": "Students", "weight": 1, "persona": "A first-year university student.",
+    "attributes": {"age": {"min": 18, "max": 22}, "gender": {"woman": 0.5, "man": 0.5}, "country": "Germany",
+                   "occupation": "student", "education": ["some university"], "notes": "free text"}},
+   {"id": "retirees", "weight": 1, "persona": "A retired person.", "attributes": {"age": {"mean": 70, "sd": 5}}}
+ ],
+ "system": "optional: a whole system prompt with {{persona}} {{age}} {{gender}} {{country}} {{occupation}} {{education}} {{group}}"}
+```
+
+- `mode`: `paper` (default, sample-matched), `custom` (the groups above), `blank` (the bare model with no persona,
+  kept for comparison).
+- `weight`: groups split every condition's participants by weight (largest remainder); every group gets at least
+  one when there are enough participants. Each participant's attributes are drawn from its group's ranges
+  (`age`: a number, `{min, max}` or `{mean, sd}`; the others: a text, a list, or `{text: weight}`). A resumed run
+  plays the same people.
+- `system` replaces the persona framing (paper or custom mode); the reply format is always appended. Keep personas
+  under 1,200 characters and `system` under 1,500 (`check` says when a prompt is too long for the run's budget).
+- Use the paper's wording for its own population; never present a custom group as the paper's sample.
+- Never name a condition (or describe what one group sees) in any text of the file (a group's id, label, persona,
+  notes or attribute values, or `system`): it reaches every condition, and `check` refuses it.
+- `mode: "blank"` drops only the persona and system prompt; pictures are sent as in any run.
+
+Then run `python .opencode/skills/run/participants.py check .` (it validates the file and prints a summary and
+one example participant), and tell the researcher in one or two plain sentences who will take part, e.g.
+"Sample-matched: US undergraduates, age ~20" or "Custom: 2 groups (Students 50%, retirees 50%)". The Simulation
+tab shows the same line under "Who takes part", and pressing Run simulation approves the file by its SHA-256
+(`participantsSha256` in the approval, with `programSha256` for program.json, which the default is read from). Changing the file after that approval stops the run from starting: ask
+the researcher to press Run simulation again. To go back to the default, delete the file or set `"mode": "paper"`.
+
+Each run records the description in `run.json` (`participants_spec`: mode, the file's SHA-256, the summary,
+whether pictures were shown), each participant's drawn attributes in `participants.jsonl` (opaque id, group,
+attributes; never the condition), and each page's in-character reaction in `records.jsonl` (`note.reasoning`).
+The results page states how participants were defined.
+For a published study played from restored wording, the run keeps the answers as given in
+`artifacts/simulations/<run>/.private/` (for a resume only): never open, read, copy or quote anything in a
+`.private` folder, as for `sources/private/`.
 
 ## Original wording (published studies)
 
@@ -168,6 +225,6 @@ write a run.py for it.
    `failed` otherwise: read `run.log` and tell the researcher in plain words; a new Run simulation starts a new run.
    `stopped`: the researcher pressed Stop; report what finished (run.json `app`, partial.jsonl). Do not restart.
 3. Reply with the completion rate (`run.json` `participants`), the headline from `summary.json` (the engine's
-   verdict on an official n, else "Finished" with values only), the number of model calls, and that the result is
-   in the Simulation tab. Say plainly that AI participants are not people and that agreement with the paper does
+   verdict on an official n, else "Finished" with values only), the number of model calls, who took part
+   (`run.json` `participants_spec.summary`), and that the result is in the Simulation tab. Say plainly that AI participants are not people and that agreement with the paper does
    not show human validity.

@@ -35,6 +35,9 @@ shows the whole folder as the **Program** explorer and a current protocol-bound 
                             the review trail of protocol.json. Never participant data
   runs/<stamp>/             one engine run of protocol.json: run settings, sessions.jsonl, effects/evaluation,
                             report.md; each record carries the protocol's version hash
+  simulation/participants.json  who the AI participants of a protocol run are (skills/run "Who takes part"):
+                            mode paper (sample-matched, also when absent), custom groups, or blank; approved by its
+                            SHA-256 with each Run simulation
   variants/<name>/          researcher variants of the study (protocol.json + a note of what differs); a variant
                             runs only when chosen and never replaces protocol.json silently
   package/<paper-slug>/     runnable replay package (older route, kept read-only for the community library):
@@ -46,8 +49,8 @@ shows the whole folder as the **Program** explorer and a current protocol-bound 
                             .opencode/artifact-kit/inline.py)
     *.md, *.py, *.png       analysis reports with their code and figures (analyze)
     simulations/<stamp>/    run.py, sessions.jsonl, evaluation.json, report.md (simulate, package route);
-                            plan.json, run.py, run.json, records.jsonl, operator.jsonl, effects.json,
-                            results.html, summary.json (simulate, protocol route: skills/run)
+                            plan.json, run.py, run.json, records.jsonl, operator.jsonl, participants.jsonl,
+                            effects.json, results.html, summary.json (simulate, protocol route: skills/run)
     preview.html            the participant view of protocol.json, screen by screen per arm (skills/preview)
   exports/                  files for leaving the app: *.docx, *.pdf, *.zip (export)
   AGENTS.md, schema/        the pack, installed by the app (do not edit)

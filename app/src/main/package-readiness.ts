@@ -384,7 +384,7 @@ export function approvedProtocolLimits(budget: ProtocolBudget | undefined, plan:
   if (!limits.fits)
     throw new Error(`This run would need ${formatTokens(limits.needed)} tokens, more than the limit of ${formatTokens(MAX_RUN_TOKENS)}. Choose fewer participants per condition.`)
   if (plan?.tokenBudget !== limits.tokens)
-    throw new Error(`The approved token budget is not this run's (${formatTokens(limits.tokens)} tokens). Review the simulation scope again.`)
+    throw new Error(`The approved token budget is not this run's (${formatTokens(limits.tokens)} tokens): the run's budget changed since it was shown, for example after an app update. Press Run simulation again to approve the new budget.`)
   return { participants: limits.participants, tokens: limits.tokens, minutes: limits.minutes }
 }
 

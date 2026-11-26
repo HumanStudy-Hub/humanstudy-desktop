@@ -377,9 +377,14 @@ def page(protocol: dict, run: dict, table: list[dict], rewards: dict | None, par
     f = run.get("f") or {}
     M = {"Protocol": "研究方案", "Model": "模型", "Renderer": "页面呈现", "AI participants per arm": "每个条件的 AI 参与者",
          "Seeds": "随机种子", "Completed": "完成", "Model calls": "模型调用", "Images shown to the model": "是否给模型看图片",
-         "Finished": "结束时间", "How many ran": "运行人数", "Baseline": "基线"} if L == "zh" else {}
+         "Finished": "结束时间", "How many ran": "运行人数", "Baseline": "基线", "Participants": "参与者",
+         "Participant file": "参与者设定文件"} if L == "zh" else {}
+    who = run.get("participants_spec") or {}
     manifest = [("Protocol", f'{protocol.get("id")} (SHA-256 {str(run.get("protocol_sha256", ""))[:16]}…)'),
-                ("Model", str(f.get("model") or "")), ("Renderer", ("默认" if L == "zh" else "default") + " (render.render_state)"),
+                ("Model", str(f.get("model") or "")),
+                ("Participants", str(who.get("summary") or ("未记录" if L == "zh" else "not recorded"))),
+                *([("Participant file", f'{who["file"]} (SHA-256 {str(who.get("sha256"))[:16]}…)')] if who.get("file") else []),
+                ("Renderer", ("默认" if L == "zh" else "default") + " (render.render_state)"),
                 ("AI participants per arm", json.dumps(run.get("n_per_arm"))), ("Seeds", json.dumps(run.get("seeds"))),
                 ("Completed", (f'{p.get("records", 0)} 名中 {p.get("completed", 0)} 名' if L == "zh" else f'{p.get("completed", 0)} of {p.get("records", 0)}')),
                 ("Model calls", str(run.get("calls", 0))),
@@ -410,6 +415,7 @@ details pre {{ white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; 
 <div class="hs-banner">{html.escape(T["banner"])}{(' ' + html.escape(T["partial_banner"])) if partial else ''}</div>
 <h1>{html.escape(title)}</h1>
 <p class="hs-sub">{html.escape(paragraph(table, run, partial, L))}</p>
+{('<p class="hs-sub">' + html.escape(("参与者：" if L == "zh" else "Participants: ") + who["summary"]) + '</p>') if who.get("summary") else ''}
 <div class="hs-card">
 <table class="hs-results">
 <thead><tr><th>{T["col_what"]}</th><th>{T["col_people"]}</th><th>{T["col_ai"]}</th><th>{T["col_dir"]}</th></tr></thead>
