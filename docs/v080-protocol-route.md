@@ -405,11 +405,12 @@ computer:
   and legacy Library forks hold nothing back and are not released studies, so their chat history may travel. Released is any one of:
   the record in `<userData>/original-text/released.json` by the project's id (read from .humanstudy/project.json,
   never written by the classifier: only project sync assigns ids) or, without an id, by its path; an existing
-  held-list pin; community.json; held wording. A path record moves to the id key once there is an id; the app moves
+  held-list pin; community.json; a fills file (sources/private/original-text-fills.json, a regular file through
+  real folders: it syncs, so a second device with an unreadable protocol.json still counts it); held wording. A path record moves to the id key once there is an id; the app moves
   the path-keyed pin, released record and received copy when it renames a project and clears them when it deletes
   one, including a rename that arrives through project sync (sync never deletes a local folder). A linked sources/
   or sources/private/ is refused by the restore, and the fills file is never read through one; a hard-linked source
-  or fills file (more than one name) is never a restoration input. Research capture never collects a file reached
+  or fills file, or a held picture (more than one name), is never a restoration input. Research capture never collects a file reached
   through a link.
 - **Boundary.** The app guarantees that restoration sources, the fills file and restored protocol bytes never leave
   the computer through a study download or research capture. Wording the researcher or the assistant copies by hand

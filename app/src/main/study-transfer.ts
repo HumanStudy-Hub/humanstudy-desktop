@@ -193,8 +193,12 @@ export async function exportFiles(root: string, limits: Limits, o: { published?:
   if (!o.released) return files
   for (const f of files) {
     if (f.kind !== 'study') continue
-    const bytes = await readFile(join(root, ...f.path.split('/'))).catch(() => null)
-    if (!bytes || keptBack(f.path, bytes, o.released)) f.kind = 'private'
+    // a file over the per-file limit is never read: kept back when its name says it can carry restored wording (it
+    // could not go in anyway), else it stays in the list and the download fails with the size error, as before
+    if (f.size > limits.maxFileBytes) { if (canCarryRestored(f.path)) f.kind = 'private'; continue }
+    let bytes: Buffer
+    try { bytes = await readFile(join(root, ...f.path.split('/'))) } catch { return fail('failed', 'a file of the study cannot be read', f.path) }
+    if (keptBack(f.path, bytes, o.released)) f.kind = 'private'
   }
   return files
 }

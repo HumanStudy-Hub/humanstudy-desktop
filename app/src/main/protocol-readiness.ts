@@ -141,7 +141,7 @@ const canonical = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typ
 
 /** The fields that can hold a cited text's wording next to its `cite`, in the order checks.py check_verbatim reads
  *  them. A `<field>_cite` cites its own field. */
-const WORDING = ['text', 'value', 'label', 'prompt'] as const
+const WORDING = ['value', 'text', 'label', 'prompt'] as const
 const PLACEHOLDER_ONLY = /^░+$/
 /** NFC and the engine's whitespace rule (checks.py _norm: runs of whitespace are one space, trimmed). */
 const normWording = (v: unknown): unknown => typeof v === 'string' ? v.normalize('NFC').replace(/\s+/g, ' ').trim()
@@ -163,21 +163,24 @@ function verbatimTexts(o: unknown, out: VerbatimText[] = [], top = true): Verbat
     for (const [k, c] of Object.entries(d)) {
       if (!(k === 'cite' || k.endsWith('_cite')) || !c || typeof c !== 'object' || (c as Record<string, unknown>).label !== 'verbatim') continue
       const cite = c as Record<string, unknown>
-      const field = k === 'cite' ? WORDING.find((f) => d[f] !== undefined) : k.slice(0, -'_cite'.length)
-      if (!field || d[field] === undefined) continue
-      const inline = d[field] && typeof d[field] === 'object' && !Array.isArray(d[field]) && typeof (d[field] as Record<string, unknown>).text === 'string'
-        ? d[field] as Record<string, unknown> : null
-      // an inline text dict with a cite of its own is checked once, with that cite (check_verbatim: the inner cite
-      // wins), when the walk reaches it
-      if (inline && inline.cite !== undefined) continue
-      // anchors ({left, right, ...}) are each a text of their own with the shared cite (check_verbatim walks them so)
-      if (k === 'anchors_cite' && d.anchors && typeof d.anchors === 'object' && !Array.isArray(d.anchors)) {
-        for (const lab of Object.values(d.anchors as Record<string, unknown>)) add(lab, cite)
-        continue
+      // every wording field an object with a `cite` holds (a content item renders `value` before `text`, engine.py
+      // _make_page, and the checks read both): a `value` added beside a released `text` is a text of its own
+      const fields = k === 'cite' ? WORDING.filter((f) => d[f] !== undefined) : [k.slice(0, -'_cite'.length)].filter((f) => d[f] !== undefined)
+      for (const field of fields) {
+        const inline = d[field] && typeof d[field] === 'object' && !Array.isArray(d[field]) && typeof (d[field] as Record<string, unknown>).text === 'string'
+          ? d[field] as Record<string, unknown> : null
+        // an inline text dict with a cite of its own is checked once, with that cite (check_verbatim: the inner cite
+        // wins), when the walk reaches it
+        if (inline && inline.cite !== undefined) continue
+        // anchors ({left, right, ...}) are each a text of their own with the shared cite (check_verbatim walks them so)
+        if (k === 'anchors_cite' && d.anchors && typeof d.anchors === 'object' && !Array.isArray(d.anchors)) {
+          for (const lab of Object.values(d.anchors as Record<string, unknown>)) add(lab, cite)
+          continue
+        }
+        add(inline ? inline.text : d[field], cite)
+        for (const sp of [inline?.spans, k === 'cite' && field === fields[0] ? d.spans : undefined].flatMap((x) => (Array.isArray(x) ? x : [])))
+          if (sp && typeof sp === 'object' && typeof (sp as Record<string, unknown>).tooltip === 'string') add((sp as Record<string, unknown>).tooltip, cite)
       }
-      add(inline ? inline.text : d[field], cite)
-      for (const sp of [inline?.spans, k === 'cite' ? d.spans : undefined].flatMap((x) => (Array.isArray(x) ? x : [])))
-        if (sp && typeof sp === 'object' && typeof (sp as Record<string, unknown>).tooltip === 'string') add((sp as Record<string, unknown>).tooltip, cite)
     }
     for (const [k, v] of Object.entries(d)) if (!(top && k === 'distribution')) verbatimTexts(v, out, false)
   }

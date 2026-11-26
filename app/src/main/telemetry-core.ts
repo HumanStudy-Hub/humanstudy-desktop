@@ -371,7 +371,8 @@ export function redactPrivatePart<T extends { kind: string }>(part: T, index: Pr
 /** Files that can carry a released study's restored wording, by name: what the original-wording restore reads
  *  (original-text.ts candidateFiles: paper.pdf, anything under sources/), any PDF or image, and the generated preview
  *  and its backup (preview-preparation.ts), which can embed a local picture. */
-export const RESTORABLE = /^(?:paper\.pdf|sources\/.+|artifacts\/preview(?:\.prev)?\.html|.+\.(?:pdf|png|jpe?g|gif|webp|bmp|tiff?|svg))$/i
+// `s`: a name may hold a line break or a line/paragraph separator (U+2028/U+2029); `.` must match it too
+export const RESTORABLE = /^(?:paper\.pdf|sources\/.+|artifacts\/preview(?:\.prev)?\.html|.+\.(?:pdf|png|jpe?g|gif|webp|bmp|tiff?|svg))$/is
 /** ... and by content, whatever the name: a PDF, or a picture the fills file accepts (hs_original_text.py
  *  picture_file: PNG, JPEG, GIF, WebP). */
 export const restorableBytes = (b: Uint8Array): boolean => {
@@ -388,6 +389,11 @@ export const canCarryRestored = (rel: string, data?: Uint8Array): boolean => RES
 /** True when a project file was reached through a link (its real path is not the path it was named by): research
  *  capture never collects one, since the alias says nothing about what it is. `actual` and `root` are real paths. */
 export const throughLink = (actual: string, root: string, rel: string): boolean => actual !== join(root, ...rel.split('/'))
+
+/** Whether research capture may take a version of program.json: as for every other file, never through a link
+ *  and, in a released study, never one whose bytes can carry restored wording. `actual`/`root` are real paths. */
+export const mayCaptureProgram = (o: { actual: string; root: string; published: boolean; head?: Uint8Array }): boolean =>
+  !throughLink(o.actual, o.root, 'program.json') && !(o.published && canCarryRestored('program.json', o.head))
 
 /** Whether research capture may collect a project file. Never: run outputs (artifacts/simulations/, runs/) of a
  *  published study (its AI participants' replies can quote the restored wording); a text file that quotes private

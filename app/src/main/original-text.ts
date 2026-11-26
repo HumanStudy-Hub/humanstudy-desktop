@@ -362,7 +362,7 @@ async function releaseContext(project: string): Promise<ReleaseContext | 'none' 
  *  <cache>/released.json, by the project's id ("id:<id>", read from .humanstudy/project.json, never written here:
  *  only project sync assigns ids) or, without an id, by its path (the app moves it on rename and clears it on delete,
  *  moveProjectRecords); an existing held-list pin; a community.json that names a protocol release or cannot be read
- *  or verified; or held wording. A path record is moved to the id key once the project has an id. A removed or
+ *  or verified; a fills file (sources/private/original-text-fills.json); or held wording. A path record is moved to the id key once the project has an id. A removed or
  *  emptied record or held list never turns a released study back into an ordinary one. */
 export async function releasedStudy(cacheDir: string, project: string): Promise<boolean> {
   let root: string
@@ -391,7 +391,10 @@ export async function releasedStudy(cacheDir: string, project: string): Promise<
     return true
   }
   const ctx = await releaseContext(root)
-  if (ctx === 'none' && !(await isPublishedStudy(root))) return false
+  // a fills file (a regular file, through real folders) means held wording was supplied here; it syncs, so it also
+  // holds on another device where protocol.json cannot be read
+  const fills = (await linkFree(root, FILLS_FILE)) && (await lstat(join(root, ...FILLS_FILE.split('/'))).then((x) => x.isFile(), () => false))
+  if (ctx === 'none' && !fills && !(await isPublishedStudy(root))) return false
   await record(key)
   return true
 }

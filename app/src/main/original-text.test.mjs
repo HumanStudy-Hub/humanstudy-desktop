@@ -577,6 +577,56 @@ test('a hard-linked source, paper or fills file is never a restoration input; ca
   assert.equal(T.throughLink(join(root, 'notes', 'plan.md'), root, 'notes/plan.md'), false)
 })
 
+test('a fills file marks held-back wording, so a synced copy with an unreadable protocol.json stays released', async () => {
+  const proj = mkdtempSync(join(tmpdir(), 'fills-signal-'))
+  writeFileSync(join(proj, 'protocol.json'), '{not json')
+  const cache = mkdtempSync(join(tmpdir(), 'fills-signal-cache-'))
+  assert.equal(await O.releasedStudy(cache, proj), false, 'no fills file: an ordinary project')
+  mkdirSync(join(proj, 'sources', 'private'), { recursive: true })
+  writeFileSync(join(proj, O.FILLS_FILE), '{}')
+  assert.equal(await O.releasedStudy(mkdtempSync(join(tmpdir(), 'fills-signal-c2-')), proj), true)
+  // only a regular file through real folders counts
+  const linked = mkdtempSync(join(tmpdir(), 'fills-signal-linked-'))
+  writeFileSync(join(linked, 'protocol.json'), '{not json')
+  mkdirSync(join(linked, 'elsewhere', 'private'), { recursive: true })
+  writeFileSync(join(linked, 'elsewhere', 'private', 'original-text-fills.json'), '{}')
+  symlinkSync(join(linked, 'elsewhere'), join(linked, 'sources'))
+  assert.equal(await O.releasedStudy(mkdtempSync(join(tmpdir(), 'fills-signal-c3-')), linked), false)
+})
+
+test('a name with a line break or a line separator is still matched by the keep-back rule', () => {
+  for (const rel of ['sources/a b.txt', 'sources/a\nb.txt', 'sources/a b.txt', 'notes/scan .pdf', 'notes/x\r.png'])
+    assert.equal(T.canCarryRestored(rel), true, JSON.stringify(rel))
+  assert.equal(T.mayCollectFile({ rel: 'sources/a b.txt', text: 'short', bytes: Buffer.from('short'), published: true, index: T.EMPTY_INDEX }), false)
+  assert.equal(T.canCarryRestored('notes/plan .md'), false)
+})
+
+test('capture of program.json follows the same rules as every other file', async () => {
+  const root = '/p'
+  assert.equal(T.mayCaptureProgram({ actual: '/p/program.json', root, published: true, head: Buffer.from('{"source":') }), true)
+  assert.equal(T.mayCaptureProgram({ actual: '/p/notes/real.json', root, published: false, head: Buffer.from('{}') }), false, 'reached through a link')
+  assert.equal(T.mayCaptureProgram({ actual: '/p/program.json', root, published: true, head: Buffer.from('%PDF-1.7') }), false, 'a released study: bytes that can carry restored wording')
+  assert.equal(T.mayCaptureProgram({ actual: '/p/program.json', root, published: false, head: Buffer.from('%PDF-1.7') }), true, 'an ordinary project as before')
+})
+
+test('engine checks: a value added beside a released text is a local text (the engine renders value first)', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  const cite = { label: 'verbatim', source: 'booklet', page: 1, read: 'image' }
+  p.stages.intro.content.push({ id: 'scan', text: 'Walk at your own pace.', cite })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).filter((x) => /changed on this computer/.test(x.reason)), [])
+    p.stages.intro.content.at(-1).value = 'Run as fast as you can.'
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    const problems = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.ok(problems.some((x) => /read from a page image of the paper were changed on this computer/.test(x.reason)), JSON.stringify(problems))
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
 test('held source texts: placeholders before, the restored texts after; a project sourcetext file wins', async () => {
   const { proj, close } = await publishedProject()
   close()

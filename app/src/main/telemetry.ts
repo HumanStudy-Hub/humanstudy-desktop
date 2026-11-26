@@ -2,7 +2,7 @@
 // PostgREST credentials, project ids, IPC, and main-process capture of kernel/session events.
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { open, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { artifactPath, isProhibitedEventType, LIMITS, researchUuid, semanticId, SESSION_END_REASONS, type SessionEndReason, type SimulationStage } from '../shared/research-contract'
@@ -19,7 +19,7 @@ import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
 import { getSettings } from './settings'
 import { loadPrivateIndexDir } from './private-index'
-import { accountHash, throughLink, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, namesPrivatePath, mayCollectFile, programDiff, PRIVATE_MATERIAL, REDACTED_PRIVATE, STUDY_PACKAGE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
+import { accountHash, mayCaptureProgram, throughLink, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, namesPrivatePath, mayCollectFile, programDiff, PRIVATE_MATERIAL, REDACTED_PRIVATE, STUDY_PACKAGE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
 import { createReplay, REPLAY_FLUSH_MS, type Replay, type ReplayFile, type ReplayFs } from './replay-core'
 import type { Capture } from './threads-core'
 import type { KernelEvent } from './kernel-types'
@@ -542,6 +542,8 @@ function publishedProjectSync(projectDir: string): boolean {
     const sticky = JSON.parse(readFileSync(join(originalTextDir(), 'released.json'), 'utf8'))
     yes = (typeof id === 'string' && Object.prototype.hasOwnProperty.call(sticky, 'id:' + id)) || Object.prototype.hasOwnProperty.call(sticky, realpathSync.native(key))
   } catch { /* none */ }
+  // a fills file (regular, not a link): held wording was supplied for this project
+  if (!yes) try { yes = lstatSync(join(key, 'sources', 'private', 'original-text-fills.json')).isFile() && !lstatSync(join(key, 'sources')).isSymbolicLink() && !lstatSync(join(key, 'sources', 'private')).isSymbolicLink() } catch { /* none */ }
   if (!yes) {
     let raw: string | null = null
     try { raw = readFileSync(join(key, '.humanstudy', 'community.json'), 'utf8') } catch { /* none */ }
@@ -661,6 +663,8 @@ async function snapshotProgramNow(projectDir: string, owner: string | null, stat
   const path = join(projectDir, 'program.json')
   const actual = await realpath(path), root = await realpath(projectDir)
   if (!actual.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) return
+  // as every other capture path: never through a link, never a file a released study's download keeps back
+  if (!mayCaptureProgram({ actual, root, published: await publishedProject(projectDir), head: await fileHead(path) })) return
   const raw = written ?? await readFile(path, 'utf8')
   const hash = createHash('sha1').update(raw).digest('hex')
   const prev = programState.get(stateKey)

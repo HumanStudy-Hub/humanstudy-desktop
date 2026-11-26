@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -289,6 +289,30 @@ test('a released study: files kept back never count toward the limits', async ()
   assert.equal(asked.manifest.includes.conversations, false)
   // the same project as an ordinary one still meets the limit
   await assert.rejects(exportTo(root, { conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } }), (e) => e.code === 'too-large')
+})
+
+test('a released study: a file over the size limit is not read and fails with the size error; an unreadable one is an error', async () => {
+  const root = project(fresh('desk'))
+  put(root, 'notes/big.txt', 'x'.repeat(60_000))
+  const released = { shipped: new Set() }
+  await assert.rejects(exportTo(root, { released, conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } }),
+    (e) => e.code === 'too-large' && e.file === 'notes/big.txt')
+  // a file whose name keeps it back is not read and does not block (it could not go in anyway)
+  const kept = project(fresh('desk'))
+  put(kept, 'sources/huge-copy.txt', 'y'.repeat(60_000))
+  const ok = await exportTo(kept, { released, conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } })
+  assert.equal(ok.manifest.files.some((f) => f.path === 'sources/huge-copy.txt'), false)
+  // an ordinary project gives the very same error
+  await assert.rejects(exportTo(root, { conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } }), (e) => e.code === 'too-large' && e.file === 'notes/big.txt')
+  if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+    const locked = project(fresh('desk'))
+    put(locked, 'notes/locked.txt', 'secret')
+    chmodSync(join(locked, 'notes', 'locked.txt'), 0o000)
+    try {
+      // never silently treated as private and left out: the download fails
+      await assert.rejects(exportTo(locked, { released, conversations: false }))
+    } finally { chmodSync(join(locked, 'notes', 'locked.txt'), 0o644) }
+  }
 })
 
 test('chat history: included by default, left out entirely when unticked', async () => {

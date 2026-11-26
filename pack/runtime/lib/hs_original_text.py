@@ -588,6 +588,11 @@ def picture_file(project: Path | None, rel) -> tuple[str | None, str | None, str
         path = path / part
         if path.is_symlink():
             return None, None, "file must not be a link"
+    try:   # a hard link (more than one name) could sit anywhere in the project: never a restoration input
+        if path.lstat().st_nlink > 1:
+            return None, None, "file must not be a link"
+    except OSError:
+        pass
     try:
         real = path.resolve(strict=True)
         real.relative_to(root)
