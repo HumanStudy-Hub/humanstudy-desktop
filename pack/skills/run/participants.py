@@ -562,8 +562,9 @@ def summary(spec: dict, protocol: dict, program: dict | None, arms: list | None 
             bits.append("mean age %g" % p["age_mean_only"])
         if p.get("gender", {}).get("woman") is not None:
             bits.append("%d%% women" % round(100 * p["gender"]["woman"]))
-        if not any(x.startswith(bits[0]) for x in descs):
-            descs.append(", ".join(bits))
+        line = ", ".join(bits)
+        if line not in descs:   # two studies with the same population but other figures both show
+            descs.append(line)
     return "Sample-matched: " + ("; ".join(descs) or "the paper does not describe its participants")
 
 
@@ -613,37 +614,60 @@ def _no_constants(name):
     raise ValueError("no JSON object in the reply: %s is not a JSON number" % name)
 
 
-DECODER = json.JSONDecoder(parse_constant=_no_constants)
+def _finite(text):
+    value = float(text)
+    if value != value or value in (float("inf"), float("-inf")):
+        raise ValueError("no JSON object in the reply: %s is not a finite number" % text[:20])
+    return value
+
+
+DECODER = json.JSONDecoder(parse_constant=_no_constants, parse_float=_finite)
+
+
+def _decode_whole(text: str):
+    value, end = DECODER.raw_decode(text)
+    if text[end:].strip():
+        raise ValueError("no JSON object in the reply: text follows the object")
+    return value
 
 
 def split_reply(text: str):
-    """-> (reasoning, answers). The answer is the object after the LAST ```json opener, read with json's own decoder
-    (so braces or backticks inside strings never confuse it), followed by the closing ``` and nothing but
-    whitespace. Without a ```json opener (and no other fence), the whole reply must be one JSON object. NaN and
-    Infinity are refused. Anything else raises ValueError ("no JSON object in the reply"), which app_run treats as
-    unreadable (asked once more)."""
+    """-> (reasoning, answers). The answer is the object after a ```json opener, read with json's own decoder (braces
+    or backticks inside strings never confuse it) and followed only by an optional closing ``` and whitespace. The
+    openers are tried from the last to the first; the first that reads this way is the answer. Without a ```json
+    opener (and no other fence), the whole reply must be one JSON object. Non-finite numbers (NaN, Infinity, 1e400)
+    are refused. Anything else raises ValueError ("no JSON object in the reply"), which app_run treats as unreadable
+    (asked once more)."""
     openers = list(OPENER.finditer(text))
-    if openers:
-        m = openers[-1]
+    for m in reversed(openers):
         body = text[m.end():]
         start = len(body) - len(body.lstrip())
         try:
             value, end = DECODER.raw_decode(body, start)
-        except ValueError as e:
-            raise ValueError("no JSON object in the reply: the fenced answer is not JSON (%s)" % str(e)[:80])
+        except (ValueError, OverflowError):
+            continue
         rest = body[end:].strip()
-        if not isinstance(value, dict) or not rest.startswith("```") or rest[3:].strip():
-            raise ValueError("no JSON object in the reply: the fenced answer is not one JSON object ending the reply")
-        return text[:m.start()].strip(), value
+        if rest.startswith("```"):
+            rest = rest[3:].strip()
+        if isinstance(value, dict) and not rest:
+            return text[:m.start()].strip(), value
+    if openers:
+        raise ValueError("no JSON object in the reply: no fenced answer is one JSON object ending the reply")
     if "```" in text:
         raise ValueError("no JSON object in the reply: the answer block is not a ```json block")
     try:
-        value, end = DECODER.raw_decode(text.strip())
-    except ValueError:
+        value = _decode_whole(text.strip())
+    except (ValueError, OverflowError):
         raise ValueError("no JSON object in the reply")
-    if not isinstance(value, dict) or text.strip()[end:].strip():
+    if not isinstance(value, dict):
         raise ValueError("no JSON object in the reply")
     return "", value
+
+
+def researcher_text(system: str) -> str:
+    """The part of a rendered system prompt that came from the persona or the researcher's own prompt (the app's fixed
+    wording on how to take part and reply removed): what the condition check reads after interpolation."""
+    return system.replace(THINK_FORMAT, " ").replace(TAKE_PART, " ")
 
 
 def output_limit(state) -> int:
@@ -694,6 +718,13 @@ def check(project: Path) -> dict:
     plan = {a["id"]: 3 for a in arms if "id" in a}
     ppl = people(spec, sha, protocol, program, plan, {a["id"]: a.get("group_size") or 1 for a in arms if "id" in a}, [1],
                  lambda s, a, i: "%s-%s" % (a, i))
+    names = condition_names(protocol, program)
+    for p in ppl.values():   # every rendered prompt (a sample per group and condition), after interpolation
+        hit = names_condition(researcher_text(system_text(p["persona"], spec.get("system"), dict(p["attributes"], group=p["group"] or ""))), names) \
+            if spec["mode"] != "blank" else None
+        if hit:
+            return dict(out, ok=False, problem="a participant's prompt names the condition \"%s\" once it is filled in; "
+                                               "participant descriptions go to every condition, so they must not name one" % hit)
     long = [k for k, p in ppl.items() if spec["mode"] != "blank" and not fits_budget(system_text(
         p["persona"], spec.get("system"), dict(p["attributes"], group=p["group"] or "")))]
     if long:

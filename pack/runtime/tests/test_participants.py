@@ -393,8 +393,13 @@ class AppRunUses(unittest.TestCase):
         self.assertEqual(red.text(held.upper()), held.upper(), "case is kept: only the exact wording matches")
         self.assertEqual(red.text("A short reply about a fox and a dog."), "A short reply about a fox and a dog.")
         self.assertEqual(red.text("Order 2026-11-26 12:00, ref 4417-2026-AB, code x9"), "Order 2026-11-26 12:00, ref 4417-2026-AB, code x9")
-        self.assertEqual(red.obj({"response": held, "opaque_id": held, "answers": {"q1": held}})["response"], held,
-                         "structural values are never touched")
+        row = red.row({"opaque_id": held, "step": 3, "answers": {held[:20]: held, "q2": {"code": "o1", "text": held}, "q3": ["o1"]},
+                       "note": {"id": held, "status": held}})
+        self.assertEqual((row["opaque_id"], row["step"], row["answers"]["q2"]["code"], row["answers"]["q3"]), (held, 3, "o1", ["o1"]),
+                         "structural fields at known places are left alone")
+        self.assertIn(held[:20], row["answers"], "question ids as keys are left alone")
+        for v in (row["answers"][held[:20]], row["answers"]["q2"]["text"], row["note"]["id"], row["note"]["status"]):
+            self.assertNotIn("fox", v, "a value under a key named id or status elsewhere is still free text")
         answer = "I remember: " + held + " That is all."
         path = A._RedactingPath(self.tmp / "steps.jsonl", red)
         with path.open("a", encoding="utf-8") as fh:
@@ -633,6 +638,12 @@ class RestoredEndToEnd(unittest.TestCase):
             for name in ("evaldata.json", "effects.json"):
                 if (run / name).is_file():
                     self.assertNotIn("wallet on the street", (run / name).read_text(encoding="utf-8"), name)
+            # an in-place resume without the private journal is refused, never replayed from the masked answers
+            (run / ".private" / "answers.jsonl").unlink()
+            again = subprocess.run([sys.executable, "-I", str(driver), str(code / "skills" / "run"), str(run), str(project)],
+                                   capture_output=True, text=True, timeout=600)
+            self.assertNotEqual(again.returncode, 0)
+            self.assertIn("start a new run", again.stderr + again.stdout)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -743,13 +754,13 @@ class Round3(unittest.TestCase):
         self.assertIn("held original wording", (run_dir / ".private" / "answers.jsonl").read_text(encoding="utf-8").splitlines()[1])
         effects = json.loads((run_dir / "effects.json").read_text(encoding="utf-8"))
         self.assertNotIn("held original wording", effects["examples"][0], "written redacted, not fixed up afterwards")
-        self.assertEqual(effects["id"], held, "a structural value is left alone")
+        self.assertNotIn("held original wording", effects["id"], "evaluation files are free text throughout")
 
     def test_3_answers_cut_to_each_questions_schema(self):
         A = self.A
         state = {"screen": {"responses": [
-            {"id": "c", "kind": "choice", "options": [{"code": "o1"}, {"code": "o2"}]},
-            {"id": "m", "kind": "multi", "options": [{"code": "o1"}, {"code": "o2"}]},
+            {"id": "c", "kind": "choice", "options": [{"code": "o1"}, {"code": "o2", "text_entry": True}]},
+            {"id": "m", "kind": "multi", "options": [{"code": "o1"}, {"code": "o2", "text_entry": True}]},
             {"id": "n", "kind": "scale"}, {"id": "t", "kind": "text"}, {"id": "b", "kind": "choice", "options": [{"code": "o3"}]}]}}
 
         class Ctx:
@@ -758,6 +769,12 @@ class Round3(unittest.TestCase):
                                      "m": ["o1", {"code": "o2", "text": "t", "held": "w"}, "o9", {"x": "held"}],
                                      "n": 4, "t": "free text", "b": {"text": "no code"}, "nope": "held"}, Ctx(), False)
         self.assertEqual(out, {"c": {"code": "o2", "text": "fine"}, "m": ["o1", {"code": "o2", "text": "t"}], "n": 4, "t": "free text"})
+        nobox = A.schema_answer({"id": "c", "kind": "choice", "options": [{"code": "o1"}]}, {"code": "o1", "text": "held words"})
+        self.assertEqual(nobox, "o1", "no text box: the text is dropped")
+        for kind in ("choice", "multi", "scale", "number", "text", "slider"):
+            self.assertEqual(A.schema_answer({"id": "x", "kind": kind, "na_option": True, "options": [{"code": "o1"}]}, "NA"), "NA", kind)
+            if kind != "text":
+                self.assertIsNone(A.schema_answer({"id": "x", "kind": kind, "options": [{"code": "o1"}]}, "NA"), kind)
 
     def test_6_condition_names_in_any_rendered_field(self):
         proto = {"arms": [{"id": "gratitude", "label": "Gratitude condition"}, {"id": "control", "label": "Control"}]}
@@ -802,8 +819,94 @@ class Round3(unittest.TestCase):
         protocol = {"stages": {"s": {"content": [{"value": {"src": "a.png"}}]}}}
         out = self.tmp / "run"
         first = A.pinned_pictures(out, protocol, self.tmp)
+        (out / "run.json").write_text("{}", encoding="utf-8")   # the runner started: later starts are resumes
         (self.tmp / "a.png").write_bytes(b"\x89PNGtwo")
         self.assertEqual(A.pinned_pictures(out, protocol, self.tmp), first, "an in-place resume keeps the digests from the start")
+        for broken in ("{not json", '{"pinned": ["a.png"]}'):
+            (out / "pictures.json").write_text(broken, encoding="utf-8")
+            with self.assertRaisesRegex(A.Refused, "start a new run"):
+                A.pinned_pictures(out, protocol, self.tmp)
+        (out / "pictures.json").unlink()
+        with self.assertRaisesRegex(A.Refused, "start a new run", msg="the pins are never rebuilt"):
+            A.pinned_pictures(out, protocol, self.tmp)
+
+
+class Round4(unittest.TestCase):
+    """The third review of PR #187."""
+
+    def setUp(self):
+        import app_run
+        self.A = app_run
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_5_redactor_normalises_the_whole_string_first(self):
+        import unicodedata
+        held = "Café owners in Zürich were asked whether they would résumé the négociations next week."
+        red = self.A.Redactor([held])
+        decomposed = unicodedata.normalize("NFD", "She said: " + held + " Done.")
+        out = red.text(decomposed)
+        self.assertEqual(out, unicodedata.normalize("NFC", out), "the stored string is the normalised one")
+        self.assertTrue(out.startswith("She said: ") and out.endswith(" Done.") and "Zürich" not in out, out)
+        self.assertEqual(red.text(unicodedata.normalize("NFD", "Zürich")), "Zürich")
+
+    def test_6_parser_tries_openers_from_last_and_refuses_overflow(self):
+        self.assertEqual(P.parse_answer('A.\n```json\n{"t": "write ```json {\\"x\\": 1} here"}\n```'), {"t": 'write ```json {"x": 1} here'},
+                         "the last opener sits inside a string and does not end the reply: the one before it does")
+        with self.assertRaisesRegex(ValueError, "no JSON object"):
+            P.parse_answer('A.\n```json\n{"a": 1}\n```\nI thought about ```json {"x": broken')
+        self.assertEqual(P.parse_answer('Earlier ```json {"a": 1}``` was wrong.\n```json\n{"a": 2}'), {"a": 2}, "closing fence optional")
+        for bad in ['```json\n{"n": 1e400}\n```', '{"n": -1e999}', '```json\n{"a": 1}\n``` and then more']:
+            with self.assertRaisesRegex(ValueError, "no JSON object", msg=bad):
+                P.parse_answer(bad)
+        people = {("abc", "p1"): {"group": None, "attributes": {}, "persona": "", "system": ""}}
+        f = self.A.participant_f(lambda m: 'Sure {"q": "o9"} I think {"q": "o1"}', people, {"mode": "blank"}, False, "no", "s")
+
+        class Ctx:
+            participant, member, note = "abc", "p1", None
+        with self.assertRaisesRegex(ValueError, "no JSON object", msg="blank mode reads replies with the same parser"):
+            f({"step": 1, "screen": {"items": [], "responses": [{"id": "q", "kind": "choice"}]}}, Ctx())
+
+    def test_7_a_restored_resume_needs_its_private_journal_and_mends_a_torn_row(self):
+        A = self.A
+        red = A.Redactor(["x" * 50])
+        journal = self.tmp / ".private" / "answers.jsonl"
+        journal.parent.mkdir()
+        journal.write_text('{"seed": 1}\n{"seed": 2, "partic', encoding="utf-8")
+        path = A._RedactingPath(self.tmp / "steps.jsonl", red, journal)
+        fh = path.open("a", encoding="utf-8")
+        fh.write('{"seed": 3}\n')
+        fh.close()
+        self.assertEqual(journal.read_text(encoding="utf-8").splitlines(), ['{"seed": 1}', '{"seed": 2, "partic', '{"seed": 3}'])
+        src = (RUN / "app_run.py").read_text(encoding="utf-8")
+        self.assertIn('if red is not None and steps.is_file() and steps.stat().st_size and not (out / PRIVATE_DIR / "answers.jsonl").is_file():', src)
+
+    def test_8_the_condition_check_reads_the_rendered_prompt(self):
+        proto = {"arms": [{"id": "gratitude", "label": "Gratitude"}, {"id": "neutral", "label": "Neutral"}]}
+        spec = P.validate({"mode": "custom", "system": "You are {{persona}} and you work as {{occupation}}.",
+                           "groups": [{"id": "g", "persona": "a nurse", "attributes": {"occupation": "neutral observer"}}]})
+        self.assertIsNone(P.condition_problem({**spec, "groups": [{"id": "g", "persona": "a nurse"}]}, proto, None))
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "protocol.json").write_text(json.dumps(proto), encoding="utf-8")
+            (d / "simulation").mkdir()
+            # the template and the persona are clean; a value filled in at render time names a condition
+            (d / P.SPEC_PATH).write_text(json.dumps({"mode": "custom", "system": "You are {{persona}}, aged {{age}}. {{group}}",
+                                                     "groups": [{"id": "g1", "persona": "a nurse"}]}), encoding="utf-8")
+            self.assertTrue(P.check(d)["ok"], P.check(d))
+            self.assertIn("Gratitude", P.researcher_text(P.system_text("You are in Gratitude.")))
+            self.assertNotIn(P.THINK_FORMAT, P.researcher_text(P.system_text("x")), "the app's fixed wording is not read")
+        src = (RUN / "app_run.py").read_text(encoding="utf-8")
+        self.assertIn("P.names_condition(P.researcher_text(person[\"system\"]), names)", src, "refused at run time too")
+
+    def test_9_the_summary_shows_studies_with_other_figures(self):
+        proto = {"meta": {"sample": "Students (Study 1: 70% female; Study 2: 30% female)"},
+                 "arms": [{"id": "s1", "label": "Study 1"}, {"id": "s2", "label": "Study 2"}]}
+        line = P.summary({"mode": "paper"}, proto, None)
+        self.assertIn("Students, 70% women", line)
+        self.assertIn("Students, 30% women", line)
 
 
 if __name__ == "__main__":

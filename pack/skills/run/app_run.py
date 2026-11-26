@@ -213,15 +213,17 @@ def picture_digests(protocol: dict, root: Path) -> dict:
 
 def pinned_pictures(out: Path, protocol: dict, root: Path) -> dict:
     """The picture digests of this run: recorded in <out>/pictures.json when it first starts, and read back from there
-    on an in-place resume (never a fresh set, so a picture changed in between is not sent)."""
+    on an in-place resume (never a fresh set, so a picture changed in between is not sent). A resume whose
+    pictures.json is missing or unreadable is refused: the pins are never rebuilt."""
     path = out / "pictures.json"
-    if path.is_file():
+    if resuming(out):
         try:
             pinned = json.loads(path.read_text(encoding="utf-8")).get("pinned")
-            if isinstance(pinned, dict):
-                return pinned
-        except ValueError:
-            pass
+        except (OSError, ValueError, AttributeError):
+            pinned = None
+        if not (isinstance(pinned, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in pinned.items())):
+            raise Refused(OLD_RUN)
+        return pinned
     pinned = picture_digests(protocol, root)
     out.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"pinned": pinned}, indent=1) + "\n", encoding="utf-8")
@@ -296,20 +298,24 @@ def _normalised(text: str) -> list:
 
 
 class Redactor:
-    """Masks restored held wording quoted in what a run stores. A quote is any WINDOW characters that equal held
-    wording exactly once both are normalised (NFC, whitespace collapsed, case kept); only the matched span of the
-    original string becomes PLACEHOLDER, one per character. Only free-text values are touched (answers, notes,
-    errors, transcript text): never keys, and never values under the structural keys in SKIP."""
-    SKIP = {"opaque_id", "participant", "member", "seed", "step", "attempt", "screen_sha", "at", "status", "arm", "index",
-            "stage", "response", "code", "id", "unit", "kind", "f_ms", "f_tries", "system_filled", "spec_sha256", "group"}
+    """Masks restored held wording quoted in what a run stores. A free-text string is NFC-normalised first; any WINDOW
+    characters of it equal to held wording (also NFC, both with whitespace runs read as one space, case kept) become
+    PLACEHOLDER, one per character, and only that span; the normalised string is what is stored. Run records are
+    read by their schema (`row`): structural fields at known places (ids, steps, statuses, timing, question ids as
+    keys, option codes) are left alone; every other string is free text. Other JSON (`obj`) is free text throughout."""
+    ROW_KEYS = {"seed", "participant", "opaque_id", "member", "step", "attempt", "screen_sha", "at", "status", "arm",
+                "index", "f_ms", "f_tries", "participant_key"}
 
     def __init__(self, texts):
+        import unicodedata
         self.windows = set()
         for t in texts:
-            s = "".join(c for c, _ in _normalised(t))
+            s = "".join(c for c, _ in _normalised(unicodedata.normalize("NFC", t)))
             self.windows.update(s[i:i + WINDOW] for i in range(len(s) - WINDOW + 1))
 
     def text(self, s: str) -> str:
+        import unicodedata
+        s = unicodedata.normalize("NFC", s)
         if not self.windows or len(s) < WINDOW:
             return s
         norm = _normalised(s)
@@ -320,20 +326,47 @@ class Redactor:
                 marked.update(range(norm[i][1], norm[i + WINDOW - 1][1] + 1))
         return "".join(PLACEHOLDER if i in marked else ch for i, ch in enumerate(s)) if marked else s
 
-    def obj(self, o, key=None):
-        if key in self.SKIP:
-            return o
+    def obj(self, o):
         if isinstance(o, str):
             return self.text(o)
         if isinstance(o, list):
             return [self.obj(v) for v in o]
         if isinstance(o, dict):
-            return {k: self.obj(v, k) for k, v in o.items()}
+            return {k: self.obj(v) for k, v in o.items()}
         return o
+
+    def answer(self, v):
+        """One answer: a string is free text; {code, text} keeps its code; a list keeps its codes."""
+        if isinstance(v, str):
+            return self.text(v)
+        if isinstance(v, dict):
+            return {k: (x if k == "code" else self.obj(x)) for k, x in v.items()}
+        if isinstance(v, list):
+            return [x if isinstance(x, str) else self.answer(x) for x in v]
+        return v
+
+    def answers(self, a):
+        return {k: self.answer(v) for k, v in a.items()} if isinstance(a, dict) else self.obj(a)
+
+    def row(self, r):
+        """A steps/records/operator row by its schema."""
+        if not isinstance(r, dict):
+            return self.obj(r)
+        out = {}
+        for k, v in r.items():
+            if k in self.ROW_KEYS:
+                out[k] = v
+            elif k in ("answers", "system_filled"):
+                out[k] = self.answers(v)
+            elif k == "transcript" and isinstance(v, list):
+                out[k] = [self.row(x) for x in v]
+            else:
+                out[k] = self.obj(v)
+        return out
 
     def line(self, line: str) -> str:
         try:
-            return json.dumps(self.obj(json.loads(line)), ensure_ascii=False, default=str)
+            return json.dumps(self.row(json.loads(line)), ensure_ascii=False, default=str)
         except ValueError:
             return self.text(line)
 
@@ -396,7 +429,10 @@ class _RedactingPath:
         raw = None
         if self._raw is not None:
             self._raw.parent.mkdir(parents=True, exist_ok=True)
+            torn = self._raw.is_file() and self._raw.stat().st_size and not self._raw.read_bytes().endswith(b"\n")
             raw = self._raw.open(mode, *a, **k)
+            if torn and "a" in mode:
+                raw.write("\n")   # a row cut off by an interruption: the next row starts on its own line
         return _RedactingFile(fh, self._red, raw)
 
     def __getattr__(self, name):
@@ -472,7 +508,7 @@ def participant_f(complete, people: dict, spec: dict, images: bool, images_note:
     each question's own schema."""
     import threading
     import participants as P
-    from render import make_chat_f, parse_json_answers, render_state
+    from render import make_chat_f, render_state
     call, blank = _limited(complete), spec["mode"] == "blank"
     made, tls = {}, threading.local()
 
@@ -493,7 +529,7 @@ def participant_f(complete, people: dict, spec: dict, images: bool, images_note:
         g = made.get((key, send, limit))
         if g is None:
             g = made[(key, send, limit)] = make_chat_f(lambda m: call(m, limit), system=system, render=render_state,
-                                                       parse=parse_json_answers if blank else parse, images=send)
+                                                       parse=parse, images=send)
         tls.reasoning = ""
         answers = g(state, ctx)
         if isinstance(ctx.note, dict):
@@ -514,13 +550,17 @@ def schema_answer(r: dict, v):
     """An answer cut to its question's schema (None: dropped): choice -> a code, or {code, text}; multi -> codes (or
     {code, text} for an option with a box); number/scale/slider -> a number or "NA"; text -> a string."""
     codes = {o.get("code") for o in r.get("options") or [] if isinstance(o, dict)}
+    boxes = {o.get("code") for o in r.get("options") or [] if isinstance(o, dict) and o.get("text_entry")}
     kind = r.get("kind")
+    if v == "NA" and r.get("na_option"):   # the "not applicable" box, for any question that has one (engine._validate)
+        return "NA"
 
     def option(x):
         if isinstance(x, str) and (not codes or x in codes):
             return x
         if isinstance(x, dict) and isinstance(x.get("code"), str) and (not codes or x["code"] in codes):
-            return {"code": x["code"], **({"text": x["text"]} if isinstance(x.get("text"), str) else {})}
+            # text only for an option that has a text box
+            return {"code": x["code"], "text": x["text"]} if x["code"] in boxes and isinstance(x.get("text"), str) else x["code"]
         return None
     if kind in ("choice", "single"):
         return option(v)
@@ -530,8 +570,10 @@ def schema_answer(r: dict, v):
         return v if isinstance(v, str) else None
     if isinstance(v, bool):
         return None
-    if isinstance(v, (int, float)) or v == "NA":
+    if isinstance(v, (int, float)):
         return v
+    if kind in ("number", "scale", "slider", "range"):
+        return None   # a string here is not a number ("NA" only with a not-applicable box, above)
     if isinstance(v, list):   # a grid or several values: numbers, codes or short strings only
         return [x for x in v if isinstance(x, (int, float, str)) and not isinstance(x, bool)]
     return v if isinstance(v, str) else None
@@ -983,6 +1025,11 @@ def wording_note(labels: dict) -> dict | None:
     return counts if any(counts.values()) else None
 
 
+def resuming(out: Path) -> bool:
+    """True for an in-place resume: the runner already started in this folder (its run.json exists)."""
+    return (out / "run.json").is_file()
+
+
 def check_resumable(out: Path) -> None:
     """An in-place resume of a run started before participants were recorded cannot continue: say so plainly."""
     prior = out / "run.json"
@@ -1046,10 +1093,15 @@ def participants_for(out: Path, project: Path, plan: dict, restored: dict | None
         if key in kept:   # a resumed run plays exactly the people it started with
             person.update(group=kept[key].get("group"), attributes=kept[key].get("attributes") or {},
                           persona=kept[key].get("persona", person["persona"]))
+    names = P.condition_names(protocol, program)
     for person in people.values():
         a = person["attributes"]
         person["system"] = P.system_text(person["persona"], spec.get("system"),
                                          dict(a, group=person["group"] or "", age=a.get("age", ""), gender=a.get("gender", "")))
+        hit = P.names_condition(P.researcher_text(person["system"]), names) if spec["mode"] != "blank" else None
+        if hit:
+            raise Refused("simulation/participants.json cannot be used: a participant's prompt names the condition \"%s\" "
+                          "once it is filled in. Ask the agent to fix it, then press Run simulation again" % hit)
         if spec["mode"] != "blank" and not P.fits_budget(person["system"]):
             raise Refused("the participant descriptions in simulation/participants.json are too long for the measured "
                           "model budget: ask the agent to shorten them, then press Run simulation again")
@@ -1111,6 +1163,10 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
                                        keep_text=restored is None, pictures=pictures))
     red = Redactor(held_texts(json.loads((project / "protocol.json").read_text(encoding="utf-8")), restored)) \
         if restored is not None else None
+    steps = out / "steps.jsonl"
+    if red is not None and steps.is_file() and steps.stat().st_size and not (out / PRIVATE_DIR / "answers.jsonl").is_file():
+        # an in-place resume of a restored run needs the answers as given; the stored ones are masked
+        raise Refused(OLD_RUN)
     # retries 0: humanstudy_llm already retries 429/5xx; a call that still fails (transport, allowance, a refusal)
     # ends that participant as incomplete. Only an unreadable reply is asked once more (reask_unreadable).
     spec = {"kind": "llm", "name": "desktop model", "model": model or "unknown", "renderer": "default",
