@@ -86,7 +86,7 @@ def restored_ok(entry, item_report) -> bool:
     if entry.get("kind") == "image":
         return r.get("via") == "fill" and r.get("status") in ("ok", "user")
     return r.get("status") in OK
-STATUS_VERSION = 3   # 3: usedFiles (the project files this restore took wording or a picture from)
+STATUS_VERSION = 2
 
 
 def sha256(data: bytes) -> str:
@@ -386,7 +386,6 @@ def restore(projection: dict, cache: Path, files: list[Path], allow_local=False,
                     D._set(out, e["path"], text)
                     report["items"][h] = r
                     added.setdefault(path, [0, data])[0] += 1
-                    report.setdefault("used", set()).add(str(path))
         if added:
             path = max(added, key=lambda x: added[x][0])
             chosen[key], supplied[key] = path, added[path][1]
@@ -543,8 +542,6 @@ def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path,
             for h, (text, score, path) in placed.items():
                 if _put(out, held[h], text):
                     mark(h, held[h], "approx", score=score, **({"from": "download"} if path is None else {}))
-                    if path is not None:
-                        report.setdefault("used", set()).add(str(path))
                     if path is not None and key not in chosen:
                         chosen[key] = path
     # 3. the fills file: what the researcher supplied, or what the assistant reconstructed with them
@@ -567,7 +564,6 @@ def fill_in(projection: dict, out: dict, report: dict, fills: dict, cache: Path,
         # the engine serves a relative src from the study folder (the project) by an opaque asset id
         D._set(out, e["path"], dict(cur, src=f["file"], **({} if exact else {"sha256": f["sha256"]})))
         mark(h, e, "ok" if exact else "user", via="fill")
-        report.setdefault("used", set()).add(f["file"])   # project-relative (picture_file)
     remaining = {h: e for h, e in held.items() if not restored_ok(e, items.get(h))}
     if remaining:
         out.setdefault("distribution", copy.deepcopy(projection.get("distribution") or {}))["held"] = remaining
@@ -740,9 +736,6 @@ def status(projection: dict, report: dict, chosen: dict, extractors: dict, log: 
             "screens": len({screen_of(e.get("path")) for h, e in held.items()
                             if isinstance(e, dict) and not restored_ok(e, report["items"].get(h))}),
             "pdfReader": "pdf" in extractors, "sources": sources,
-            # every project file a restored item came from (exact, approximate or a picture fill), as given: the app
-            # keeps these out of a study download (study-transfer.ts), wherever they sit in the project
-            "usedFiles": sorted(report.get("used") or ()),
             "downloadsFailed": len(log)}
 
 

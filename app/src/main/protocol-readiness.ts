@@ -146,27 +146,28 @@ const normWording = (v: unknown): unknown => typeof v === 'string' ? v.normalize
   : Array.isArray(v) ? v.map(normWording)
   : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, normWording(x)])) : v
 interface VerbatimText { key: string; source: unknown; image: boolean; held: boolean }
-/** Every text a protocol cites verbatim: its wording, normalised, with its cite (canonical), and never the name of
- *  the field it sits in, so the same wording with the same cite in any valid form is the same key. An object with a
- *  `cite` contributes its first wording field (and its tooltip spans), an inline text dict counting as its text; a
- *  `<field>_cite` contributes that field. Only
- *  the top-level `distribution` block is skipped. `held`: the wording is a held placeholder (checked by its hash). */
+/** Every text a protocol cites verbatim, the way checks.py check_verbatim reads them: its plain wording, normalised,
+ *  with its cite (canonical), never the name of the field it sits in nor its styling spans, so the same wording with
+ *  the same cite in any valid form is the same key. An object with a `cite` contributes its first wording field (an
+ *  inline text dict counting as its text); a `<field>_cite` contributes that field; each span tooltip is a text of
+ *  its own with the same cite. Only the top-level `distribution` block is skipped. `held`: the wording is a held
+ *  placeholder (checked by its hash). */
 function verbatimTexts(o: unknown, out: VerbatimText[] = [], top = true): VerbatimText[] {
   if (Array.isArray(o)) for (const v of o) verbatimTexts(v, out, false)
   else if (o && typeof o === 'object') {
     const d = o as Record<string, unknown>
+    const add = (wording: unknown, cite: Record<string, unknown>) => out.push({ key: canonical({ wording: normWording(wording), cite }),
+      source: cite.source, image: cite.read === 'image', held: typeof wording === 'string' && PLACEHOLDER_ONLY.test(wording) })
     for (const [k, c] of Object.entries(d)) {
       if (!(k === 'cite' || k.endsWith('_cite')) || !c || typeof c !== 'object' || (c as Record<string, unknown>).label !== 'verbatim') continue
       const cite = c as Record<string, unknown>
       const field = k === 'cite' ? WORDING.find((f) => d[f] !== undefined) : k.slice(0, -'_cite'.length)
       if (!field || d[field] === undefined) continue
-      // an inline text dict ({text, spans}) is the same wording as a plain string field (check_verbatim reads both)
       const inline = d[field] && typeof d[field] === 'object' && !Array.isArray(d[field]) && typeof (d[field] as Record<string, unknown>).text === 'string'
         ? d[field] as Record<string, unknown> : null
-      const wording = normWording(inline ? inline.text : d[field])
-      const spans = inline ? inline.spans : k === 'cite' ? d.spans : undefined
-      out.push({ key: canonical({ wording, ...(spans !== undefined ? { spans: normWording(spans) } : {}), cite }),
-        source: cite.source, image: cite.read === 'image', held: typeof wording === 'string' && PLACEHOLDER_ONLY.test(wording) })
+      add(inline ? inline.text : d[field], cite)
+      for (const sp of [inline?.spans, k === 'cite' ? d.spans : undefined].flatMap((x) => (Array.isArray(x) ? x : [])))
+        if (sp && typeof sp === 'object' && typeof (sp as Record<string, unknown>).tooltip === 'string') add((sp as Record<string, unknown>).tooltip, cite)
     }
     for (const [k, v] of Object.entries(d)) if (!(top && k === 'distribution')) verbatimTexts(v, out, false)
   }
@@ -179,8 +180,8 @@ function verbatimTexts(o: unknown, out: VerbatimText[] = [], top = true): Verbat
  *  Every verbatim text (its wording with its cite) must therefore be one the study was received with; a text may
  *  move, but each received text counts once. Left to the engine: a held placeholder (checked by its hash once
  *  restored; the held list is pinned) and a text it checks against the project's own sourcetext/ file of a source
- *  that is not held and not read from an image. A study opened from a file whose release could not be confirmed
- *  (UNVERIFIED_RELEASE) has nothing received. */
+ *  that is not held and not read from an image. A Library study whose release could not be fetched yet
+ *  (UNVERIFIED_RELEASE, original-text.ts releaseBaseline) has nothing received; the next check tries again. */
 async function editedVerbatimTexts(project: string): Promise<ProtocolProblem[]> {
   const received = await receivedProtocol(project).catch(() => null)
   if (!received || typeof received !== 'object') return []
@@ -201,7 +202,7 @@ async function editedVerbatimTexts(project: string): Promise<ProtocolProblem[]> 
     else others++
   }
   const out: ProtocolProblem[] = []
-  if (unverified && images + others) return [{ check: 'verbatim', reason: `This study was opened from a downloaded file whose published version could not be confirmed, so ${images + others} text(s) cited word for word cannot be checked against their source. Open the downloaded file again while online, or open the study from the Library.` }]
+  if (unverified && images + others) return [{ check: 'verbatim', reason: `This study's published version could not be fetched from the Library yet, so ${images + others} text(s) cited word for word cannot be checked against their source. Connect to the internet and check again.` }]
   if (images) out.push({ check: 'verbatim', reason: `${images} text(s) read from a page image of the paper were changed on this computer, so they can no longer be checked against the paper. Put back the wording as published, or keep the change as a separate, labelled variant.` })
   if (others) out.push({ check: 'verbatim', reason: `${others} text(s) cited word for word from a source this study does not include were changed on this computer (their wording or their citation), so they can no longer be checked against that source. Put back the wording as published, or keep the change as a separate, labelled variant.` })
   return out

@@ -703,6 +703,7 @@ def intentional(harm: float, help_: float) -> float:
         name: projects.find((p) => p.dir === dir)?.name ?? 'Study',
         study: { files: 42, bytes: 3_400_000 },
         hasPaper: true,
+        released: false,
         conversations: { count: 3, files: 3, bytes: 180_000 },
         privateFiles: [{ path: 'sources/private/my-copy.pdf', bytes: 1_200_000 }],
         limits: { maxFiles: 20_000, maxTotalBytes: 2048 * 1024 * 1024, maxFileBytes: 512 * 1024 * 1024 },

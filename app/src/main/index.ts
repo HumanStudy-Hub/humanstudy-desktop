@@ -19,7 +19,7 @@ import {
   setCommunityCacheDir,
 } from './community'
 import { createProject, isInside, isProject, isWithin, listProjects, renameProject, trashProject } from './projects'
-import { exportStudy, importStudy, PACKAGE_SUFFIX, packageName, previewExport, sweepImports, TransferError } from './study-transfer'
+import { exportStudy, importStudy, includesChat, PACKAGE_SUFFIX, packageName, previewExport, sweepImports, TransferError } from './study-transfer'
 import { createProjectSync, sweepSyncTemps, type PendingDelete, type SyncEngine } from './project-sync'
 import { createCloud } from './project-sync-cloud'
 import { deviceLabel } from './project-sync-core'
@@ -30,7 +30,7 @@ import { createReadStream, existsSync } from 'node:fs'
 import { watchFolder, type FolderWatch } from './project-watch'
 import { fileVersion } from '../shared/file-version'
 import { manifestSourceDigests, protocolSourceDigests } from '../shared/source-target'
-import { copyFile, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -47,7 +47,7 @@ import { confirmedLibrarySha, heldTextsOf, passedProtocolSha, selectedResults, s
 import { legacyFileIsolationAvailable, scientificReadiness } from './scientific-readiness'
 import { onRuntimeProgress, readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf, protocolProblems } from './package-readiness'
-import { adoptRelease, fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, releasedStudy, releaseSnapshot, restorationFiles, restoredChecksProblem, restoredProtocolText, receivedPath, restoredRunFiles, restoreSlot, writeAgentStatus } from './original-text'
+import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, releaseBaseline, releasedStudy, restoredChecksProblem, restoredProtocolText, restoredRunFiles, restoreSlot, UNVERIFIED_RELEASE, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
 import { configureReceivedProtocol, protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
@@ -533,7 +533,13 @@ app.whenReady().then(() => {
   // A published study's original wording, filled in on this computer (original-text.ts): downloads and the restored
   // protocol stay in app storage; the project gets only a status for the agent.
   const textFiles = trustedOriginalTextFiles()
-  configureReceivedProtocol(async (project) => JSON.parse(await readFile(receivedPath(originalTextCache(), await realpath(project)), 'utf8')))
+  // The published checks compare with the Library release the project names, fetched and verified (never the
+  // project's own copy or anything a study file carried); unconfirmed, nothing counts as received and the next check
+  // tries again (original-text.ts releaseBaseline).
+  configureReceivedProtocol(async (project) => {
+    const b = await releaseBaseline(originalTextCache(), project, fetchReleasedProtocol)
+    return b === null ? null : b === 'unverified' ? UNVERIFIED_RELEASE : JSON.parse(b.protocol.toString('utf8'))
+  })
   void telemetry.refreshPrivateIndex().catch(() => undefined)
   const restoredChecks = new Map<string, ScientificProblemLike[]>()
   configureOriginalText(async (project) => {
@@ -852,8 +858,14 @@ app.whenReady().then(() => {
   ipcMain.handle('projects:exportPreview', async (_e, dir: string) => {
     const d = transferProject(dir)
     if (!d) throw new Error('This folder is not a HumanStudy project.')
-    return previewExport(d, { published: await releasedStudy(originalTextCache(), d), keepBack: await restorationFiles(originalTextCache(), d).catch(() => []) })
+    return previewExport(d, { published: await isPublishedStudy(d).catch(() => false), released: await releasedFor(d) })
   })
+  /** A released (Library) study: the sha256 of every file its verified release shipped (none while unconfirmed). */
+  async function releasedFor(d: string): Promise<{ shipped: Set<string> } | undefined> {
+    if (!(await releasedStudy(d))) return undefined
+    const b = await releaseBaseline(originalTextCache(), d, fetchReleasedProtocol).catch(() => 'unverified' as const)
+    return { shipped: new Set(b && b !== 'unverified' ? b.assetFiles.map((f) => f.sha256) : []) }
+  }
   ipcMain.handle('projects:exportStudy', async (e, dir: string, options: StudyExportOptions): Promise<StudyExportResult | null> => {
     const d = transferProject(dir)
     if (!d) return { ok: false, code: 'not-project' }
@@ -871,13 +883,13 @@ app.whenReady().then(() => {
     // Online, earlier study files left in the sandbox's download folder (the browser has its copy) are removed.
     if (ONLINE) await sweepOnlineDownloads(dirname(target))
     try {
+      const released = await releasedFor(d)
       const out = await exportStudy(d, target, {
-        conversations: options?.conversations !== false,
+        // a released study's chat history only when ticked (it may quote original wording the researcher supplied)
+        conversations: includesChat(Boolean(released), options?.conversations),
+        released,
         source: { platform: ONLINE ? 'online' : 'desktop', appVersion: app.getVersion() },
-        // decided by what the study was received as (never the editable protocol.json alone; unreadable = published)
-        published: await releasedStudy(originalTextCache(), d),
-        keepBack: await restorationFiles(originalTextCache(), d).catch(() => []),
-        release: await releaseSnapshot(originalTextCache(), d),
+        published: await isPublishedStudy(d).catch(() => false),
       })
       telemetry.track('project.exported', { metadata: { files: out.files, bytes: out.bytes, conversations: out.manifest.includes.conversations, privateFiles: out.manifest.includes.privateFiles.length } }, d)
       return { ok: true, savedPath: out.path, bytes: out.bytes, files: out.files }
@@ -949,9 +961,6 @@ app.whenReady().then(() => {
     const file = resolve(path)
     try {
       const out = await importStudy(file, ensureProjectsRoot())
-      // Before anything checks it: the release the study was received as (carried, or fetched from the Library and
-      // checked by its sha256), never the opened file's own protocol.json (original-text.ts adoptRelease).
-      await adoptRelease(originalTextCache(), out.dir, fetchReleasedProtocol).catch(() => undefined)
       // The app's own agent files are not in a study file (they may hold a provider key): install this version's.
       await refreshPack(out.dir).catch(() => undefined)
       if (out.privateFiles > 0 && (await isPublishedStudy(out.dir).catch(() => false))) {

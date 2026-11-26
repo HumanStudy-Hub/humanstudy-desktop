@@ -231,15 +231,21 @@ export interface StudyExportPreview {
   /** Study files that are always included (program, protocol, package, results, notes, the paper). */
   study: { files: number; bytes: number }
   hasPaper: boolean
-  /** The chat history (.humanstudy/threads), included unless the researcher unticks it. */
+  /** A released (Library) study: its private files are listed but stay on this computer, and the chat history is
+   *  left out unless the researcher ticks it (it may quote original wording they supplied). */
+  released: boolean
+  /** The chat history (.humanstudy/threads), included unless the researcher unticks it (a released study: only
+   *  when ticked). */
   conversations: { count: number; files: number; bytes: number }
-  /** The researcher's private files (sources/private/ with restored wording, and the like): listed, never included. */
+  /** Files the researcher supplied privately (sources/private/ and the like): included, like every project file,
+   *  except in a released study (with every file the original-wording restore could read that the release did not
+   *  ship). */
   privateFiles: { path: string; bytes: number }[]
   /** The limits a study file has to stay within (the same ones checked when it is opened). */
   limits: { maxFiles: number; maxTotalBytes: number; maxFileBytes: number }
 }
 export interface StudyExportOptions {
-  /** False leaves the chat history out; private files are never included, the rest of the study always is. */
+  /** False leaves the chat history out; everything else in the project is always included. */
   conversations: boolean
 }
 /** Plain reasons a study file could not be written or opened; the renderer words them (i18n `transfer.err_*`). */

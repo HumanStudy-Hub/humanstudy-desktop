@@ -11,17 +11,17 @@
 //   study/<path>            the project files, exactly as listed
 //
 // What goes in (`classify`): the study (program.json, protocol.json, package/, artifacts/ with simulation results,
-// notes, sources, the paper, .humanstudy/project.json and community.json) and the chat history (.humanstudy/threads
-// and thread-history; the researcher can untick it). The researcher's private files (sources/private/ with a
-// published study's restored-wording fills file, sources/researcher/, sources/quarantine/, any original-text/
-// folder: the same rule research capture uses, telemetry-core.ts PRIVATE_MATERIAL; and a published study's run
-// outputs, which can quote the restored wording, see kindOf) are listed but stay on this computer: a study file can
-// be handed to someone else, and it must never redistribute wording a study holds back or a copy of a source
-// (project sync, project-sync.ts, is the private per-account copy). Never: hidden files and folders (.git, .env,
-// .opencode with its possible provider config, .DS_Store, ...), node_modules, caches, save temporaries, other study
-// files, and from .humanstudy everything else (original-text.json, tmp/, versions/). Account, keys, settings, consent
-// and the restored-wording cache live in app storage, outside the project, and the scan never leaves the project
-// folder or follows a link.
+// notes, sources, the paper, .humanstudy/project.json and community.json), the chat history (.humanstudy/threads and
+// thread-history; the researcher can untick it) and the researcher's private files (sources/private/,
+// sources/researcher/, sources/quarantine/, any original-text/ folder: the same rule research capture uses,
+// telemetry-core.ts PRIVATE_MATERIAL). The study file is the researcher's own copy, like their cloud copy
+// (project-sync.ts), so private files go in; privacy and copyright checks apply when publishing to the community
+// (community.ts), not here. Except for a released (Library) study (exportFiles): its private files, every file the
+// original-wording restore could read that the release did not ship, and (unless ticked) its chat history stay on
+// this computer, since a study file may be handed on. Undo's archive (.humanstudy/thread-history) never goes in. Never: hidden files and folders (.git, .env, .opencode with its possible
+// provider config, .DS_Store, ...), node_modules, caches, save temporaries, other study files, and from .humanstudy
+// everything else (original-text.json, tmp/, versions/). Account, keys, settings, consent and the restored-wording
+// cache live in app storage, outside the project, and the scan never leaves the project folder or follows a link.
 //
 // Opening is strict and always makes a NEW project. Before anything is written, the whole file is checked: a plain
 // zip (no encryption, no zip64, no links, no folders, no overlapping or duplicate entries), every name safe on every
@@ -107,13 +107,7 @@ const SAVE_TEMP = /\.\d+\.(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 /** Agent configuration at the project root may hold a provider key; the app reinstalls its own agent files. */
 const ROOT_NEVER = new Set(['opencode.json', 'opencode.jsonc'])
 /** Of the app's own folder, only what belongs to the study travels. */
-const STATE_FILES = new Set(['project.json', 'community.json', 'release-protocol.json'])
-/** The published protocol.json a study file carries (original-text.ts RELEASE_FILE): written by the export from app
- *  storage, never taken from the project, and read once by the opening (adoptRelease). */
-export const RELEASE_FILE = '.humanstudy/release-protocol.json'
-/** Undo keeps the whole earlier conversation here (threads-core.ts fromNative): wording taken back out of the visible
- *  chat, so it never goes into a study file. */
-const UNDO_ARCHIVE = '.humanstudy/thread-history'
+const STATE_FILES = new Set(['project.json', 'community.json'])
 const STATE_CONVERSATIONS = new Set(['threads', 'thread-history'])
 const STATE_DIRS = new Set(['program-conflicts'])
 
@@ -147,7 +141,7 @@ export function classify(rel: string): FileKind {
 
 export interface ScannedFile { path: string; size: number; kind: Exclude<FileKind, 'never'> }
 
-/** In a published study, AI participants' replies can quote the restored wording, so its run outputs are kept back as
+/** In a published study, AI participants' replies can quote the restored wording, so its run outputs are offered as
  *  private files like the sources (research capture withholds the same folders: telemetry-core.ts mayCollectFile). */
 const RUN_OUTPUTS = /^(?:artifacts\/simulations|runs)(?:\/|$)/
 export function kindOf(rel: string, published: boolean): FileKind {
@@ -156,17 +150,15 @@ export function kindOf(rel: string, published: boolean): FileKind {
 }
 
 /** Every file of the project that may go into a study file. Links are never followed and never included; folders
- *  that are never part of a study are not entered, nor is Undo's archive. `keepBack`: project-relative files that
- *  are private wherever they are (a published study's files its wording was restored from: restorationFiles). */
-export async function scanProject(root: string, limits: Limits = LIMITS, published = false, keepBack: readonly string[] = []): Promise<ScannedFile[]> {
-  const back = new Set(keepBack.map((p) => p.toLowerCase()))
+ *  that are never part of a study are not entered. */
+export async function scanProject(root: string, limits: Limits = LIMITS, published = false): Promise<ScannedFile[]> {
   const out: ScannedFile[] = []
   const walk = async (rel: string, depth: number): Promise<void> => {
     const entries = await readdir(rel ? join(root, ...rel.split('/')) : root, { withFileTypes: true })
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     for (const d of entries) {
       const child = rel ? `${rel}/${d.name}` : d.name
-      if (d.isSymbolicLink() || classify(child) === 'never' || child === UNDO_ARCHIVE || child === RELEASE_FILE) continue
+      if (d.isSymbolicLink() || classify(child) === 'never') continue
       if (d.isDirectory()) {
         if (depth + 1 >= limits.maxDepth) fail('too-large', `folders nested deeper than ${limits.maxDepth}`, child)
         await walk(child, depth + 1)
@@ -174,8 +166,7 @@ export async function scanProject(root: string, limits: Limits = LIMITS, publish
         if (out.length >= limits.maxFiles * 2) fail('too-large', `more than ${limits.maxFiles} files`)
         const handle = await open(join(root, ...child.split('/')), 'r')
         const size = await handle.stat().then((s) => s.size).finally(() => handle.close())
-        const kind = kindOf(child, published) as ScannedFile['kind']
-        out.push({ path: child, size, kind: kind === 'study' && back.has(child.toLowerCase()) ? 'private' : kind })
+        out.push({ path: child, size, kind: kindOf(child, published) as ScannedFile['kind'] })
       }
     }
   }
@@ -183,18 +174,48 @@ export async function scanProject(root: string, limits: Limits = LIMITS, publish
   return out
 }
 
+/** A released (Library) study (original-text.ts releasedStudy): `shipped` holds the sha256 of every file its
+ *  release manifest lists (empty while the release is not confirmed). */
+export interface Released { shipped: ReadonlySet<string> }
+/** Files the original-wording restore can read (original-text.ts candidateFiles, picture fills): paper.pdf, anything
+ *  under sources/, and any PDF or image in the project. */
+const RESTORABLE = /^(?:paper\.pdf|sources\/.+|.+\.(?:pdf|png|jpe?g|gif|webp|bmp|tiff?|svg))$/i
+/** Undo keeps the whole earlier conversation here (threads-core.ts fromNative): never in a study file. */
+const UNDO_ARCHIVE = '.humanstudy/thread-history/'
+
+/** What a study file may hold, from scanProject (shared with project sync, which keeps everything): never Undo's
+ *  archive; and for a released study, a file restoration could read counts as private unless its bytes are a file
+ *  the release shipped (a researcher's copy of a source, a screenshot, a paper under any name stay on this computer). */
+export async function exportFiles(root: string, limits: Limits, o: { published?: boolean; released?: Released }): Promise<ScannedFile[]> {
+  const files = (await scanProject(root, limits, o.published === true || Boolean(o.released))).filter((f) => !f.path.startsWith(UNDO_ARCHIVE))
+  if (!o.released) return files
+  const shipped = o.released.shipped
+  for (const f of files) {
+    if (f.kind !== 'study' || !RESTORABLE.test(f.path)) continue
+    const bytes = await readFile(join(root, ...f.path.split('/'))).catch(() => null)
+    if (!bytes || !shipped.has(sha256(bytes))) f.kind = 'private'
+  }
+  return files
+}
+
+/** Whether the chat history goes in: a released study's only when the researcher ticked it (conversations may quote
+ *  original wording they supplied for its held screens); an ordinary project's unless unticked, as before. */
+export const includesChat = (released: boolean, requested: boolean | undefined): boolean =>
+  released ? requested === true : requested !== false
+
 export const isThread = (rel: string): boolean => /^\.humanstudy\/threads\/[^/]+\.json$/.test(rel)
 const threadCount = (files: { path: string }[]): number => files.filter((f) => isThread(f.path)).length
 
-export async function previewExport(root: string, o: { published?: boolean; keepBack?: readonly string[]; limits?: Limits } = {}): Promise<StudyExportPreview> {
+export async function previewExport(root: string, o: { published?: boolean; released?: Released; limits?: Limits } = {}): Promise<StudyExportPreview> {
   const limits = o.limits ?? LIMITS
-  const files = await scanProject(root, limits, o.published === true, o.keepBack)
+  const files = await exportFiles(root, limits, o)
   const sum = (kind: ScannedFile['kind']) => files.filter((f) => f.kind === kind).reduce((n, f) => n + f.size, 0)
   const conversations = files.filter((f) => f.kind === 'conversation')
   return {
     name: basename(root),
     study: { files: files.filter((f) => f.kind === 'study').length, bytes: sum('study') },
     hasPaper: files.some((f) => f.path === 'paper.pdf' && f.kind === 'study'),
+    released: Boolean(o.released),
     conversations: { count: threadCount(conversations), files: conversations.length, bytes: sum('conversation') },
     privateFiles: files.filter((f) => f.kind === 'private').map((f) => ({ path: f.path, bytes: f.size })),
     limits: { maxFiles: limits.maxFiles, maxTotalBytes: limits.maxTotalBytes, maxFileBytes: limits.maxFileBytes },
@@ -546,23 +567,21 @@ export interface ExportResult { path: string; bytes: number; files: number; mani
 /** Writes the study file to `outPath` (through a temporary next to it, so a failure never leaves a partial file). */
 export async function exportStudy(root: string, outPath: string, o: StudyExportOptions & {
   source: { platform: Platform; appVersion: string }
-  /** A published study: its run outputs are private files (see kindOf), left out like the rest. */
+  /** A published study: its run outputs are private files (see kindOf). */
   published?: boolean
-  /** Files kept back wherever they are (scanProject). */
-  keepBack?: readonly string[]
-  /** The published protocol.json the study was received as (original-text.ts releaseSnapshot), carried as
-   *  RELEASE_FILE so the opened project is checked against its release. */
-  release?: Buffer | null
+  /** A released (Library) study: its private files stay on this computer (exportFiles). */
+  released?: Released
   limits?: Limits
   now?: Date
 }): Promise<ExportResult> {
   const limits = o.limits ?? LIMITS
   const now = o.now ?? new Date()
   const id = await ensureProjectId(root)
-  // Private files stay on this computer (a study file may be handed on); the chat history can be left out.
-  const chosen = (await scanProject(root, limits, o.published === true, o.keepBack)).filter((f) =>
-    f.kind === 'study' || (f.kind === 'conversation' && o.conversations === true))
-  if (o.release) chosen.push({ path: RELEASE_FILE, size: o.release.length, kind: 'study' })
+  // An ordinary project's private files are included (the researcher's own copy); a released study's stay on this
+  // computer, since the file may be handed on and they can hold wording the release holds back. The chat history
+  // can be left out.
+  const chosen = (await exportFiles(root, limits, o)).filter((f) =>
+    f.kind === 'study' || (f.kind === 'private' && !o.released) || (f.kind === 'conversation' && o.conversations === true))
   if (chosen.length > limits.maxFiles) fail('too-large', `more than ${limits.maxFiles} files`)
   let planned = 0
   for (const f of chosen) {
@@ -580,7 +599,7 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
   try {
     const zip = new ZipWriter(fh, now)
     for (const f of chosen) {
-      let data: Buffer = f.path === RELEASE_FILE && o.release ? o.release : await readFile(join(root, ...f.path.split('/')))
+      let data: Buffer = await readFile(join(root, ...f.path.split('/')))
       if (isThread(f.path)) data = withoutNativeSession(data)
       if (data.length > limits.maxFileBytes) fail('too-large', `a file larger than ${limits.maxFileBytes} bytes`, f.path)
       total += data.length
@@ -595,7 +614,7 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
       name: basename(root),
       source: o.source,
       exportedAt: now.toISOString(),
-      includes: { conversations: o.conversations === true, privateFiles: [] },   // kept for the format: private files stay on this computer
+      includes: { conversations: o.conversations === true, privateFiles: chosen.filter((f) => f.kind === 'private').map((f) => f.path) },
       files,
     }
     await zip.add(MANIFEST_NAME, Buffer.from(JSON.stringify(manifest, null, 2) + '\n', 'utf8'))

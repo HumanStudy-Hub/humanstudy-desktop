@@ -263,8 +263,6 @@ class OriginalText(Published):
         self.assertEqual(self.by_key(st)["handout"]["restored"], 1)
         self.assertTrue(self.by_key(st)["handout"]["file"].endswith("handout.txt"))
         self.assertEqual(st["downloadsFailed"], 0, "a recent failure is remembered, not retried")
-        # the files a restored item came from are listed for the app (study downloads keep them back)
-        self.assertEqual(st["usedFiles"], [str(self.files / "handout.txt")])
 
     def test_without_a_pdf_reader_text_and_html_still_work(self):
         original = O.pdf_extractors
@@ -757,7 +755,6 @@ class HeldPictures(Published):
         st = self.run_pic(self.picture_study(), {"file": "project/sources/private/shot.png", "origin": "user"})
         self.assertTrue(st["complete"], st)
         self.assertEqual(st["labels"], {"h9": "user"})
-        self.assertIn("project/sources/private/shot.png", st["usedFiles"])
         self.assertEqual(st["supplied"]["user"], 1)
 
     def test_a_deleted_or_replaced_picture_restores_again(self):
