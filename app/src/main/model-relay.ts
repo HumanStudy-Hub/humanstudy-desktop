@@ -28,8 +28,10 @@ export const MAX_TEXT_BYTES = 1_000_000
 /** Pictures (a run's `images`): data URLs of PNG, JPEG, GIF or WebP in user messages, at most this many per request,
  *  each at most MAX_IMAGE_BYTES of data URL, all together at most MAX_REQUEST_BYTES with the text. */
 export const MAX_IMAGES = 8
-export const MAX_IMAGE_BYTES = 1_500_000
-export const MAX_REQUEST_BYTES = 6_000_000
+/** Same caps as the hosted endpoint (humanstudy-hub-web lib/try-dev-model-budget.ts: 1,000,000 base64 bytes per
+ *  picture, 4,000,000 bytes of request, the route's body limit under Vercel's 4.5 MB). */
+export const MAX_IMAGE_BYTES = 1_000_000
+export const MAX_REQUEST_BYTES = 4_000_000
 /** Reserved per picture instead of its base64 bytes (a model bills a picture by its pixels; Claude models stay under
  *  this); skills/run/participants.py IMAGE_RESERVE_TOKENS, which budget.py counts, must say the same. */
 export const IMAGE_RESERVE_TOKENS = 5000

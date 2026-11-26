@@ -175,11 +175,11 @@ which the budget already reserves.
 **Pictures.** When the run's model route passes pictures and the model is known to accept them
 (`participants.IMAGE_MODELS`: Claude Haiku, Sonnet and Opus 5 and later), the current screen's pictures go to the
 model as OpenAI-style `image_url` parts with inline data URLs; otherwise text only, and `run.json` says why.
-- The relay accepts picture parts only when it is started with `images` (a protocol run whose upstream is
-  OpenRouter with the user's own key). The hosted HumanStudy Hub endpoint accepts text parts only for now
-  (`humanstudy-hub-web` `textMessage`), so hosted and pre-relay runs stay text-only until the Hub passes pictures.
-- Caps: PNG, JPEG, GIF or WebP data URLs in user messages only, at most 8 per request and 1.5 MB each, 6 MB per
-  request, text at most 1 MB. Remote URLs are refused (the provider would fetch them). A picture is reserved at
+- The relay accepts picture parts only when it is started with `images` (every protocol run: OpenRouter with the
+  user's own key, or the hosted HumanStudy Hub endpoint, which takes image parts for image-capable models since
+  humanstudy-hub-web#134). Pre-relay runs stay text-only.
+- Caps (the same as the hosted endpoint's): PNG, JPEG, GIF or WebP data URLs in user messages only, at most 8 per
+  request and 1,000,000 bytes each, 4,000,000 bytes per request, text at most 1 MB. Remote URLs are refused (the provider would fetch them). A picture is reserved at
   5,000 tokens instead of its base64 bytes; `budget.py` reserves the same for every picture on a page.
 - A picture restored from a published study's held material is sent only in the model call of that approved run,
   like the restored text; the run keeps no screens for such a study, `ctx.note` records only how many pictures

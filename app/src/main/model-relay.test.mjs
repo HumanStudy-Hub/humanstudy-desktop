@@ -260,7 +260,7 @@ test('pictures: a run whose upstream takes them passes inline images within the 
     assert.equal((await call(message(img('data:text/html;base64,AAAA')))).status, 400)
     assert.equal((await call(message({ type: 'input_audio', input_audio: { data: 'AAAA' } }))).status, 400)
     assert.equal((await call({ ...message(), messages: [{ role: 'system', content: [{ type: 'text', text: 'x' }, img(png(8))] }, { role: 'user', content: 'p' }] })).status, 400)
-    assert.equal((await call(message(...Array.from({ length: 5 }, () => img(png(1_400_000)))))).status, 413, 'the whole request stays under its cap')
+    assert.equal((await call(message(...Array.from({ length: 5 }, () => img(png(900_000)))))).status, 413, 'the whole request stays under its cap')
     assert.equal(seen.length, 1)
   } finally { await relay.close() }
   relay = await start(undefined)

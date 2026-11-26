@@ -1249,9 +1249,10 @@ app.whenReady().then(() => {
         // A protocol run gets its capability from the app directly: no descriptor for the agent (review 5, M3).
         // Removals are by owner, so this relay closing late never frees the next run's (review 5, M2).
         let ownClose: (() => Promise<void>) | undefined
-        // Pictures go to the model only where the upstream takes image parts: OpenRouter with the user's own key. The
-        // hosted HumanStudy Hub endpoint accepts text only for now, so hosted runs stay text-only (run.json says so).
-        const images = route === 'protocol' && !process.env.HUMANSTUDY_DESKTOP_KEY
+        // Pictures go to the model on protocol runs: OpenRouter with the user's own key, or the hosted HumanStudy Hub
+        // endpoint, which accepts image parts for image-capable models (humanstudy-hub-web#134). Whether a
+        // model is sent pictures at all is skills/run's image_choice (participants.IMAGE_MODELS); run.json says so.
+        const images = route === 'protocol'
         const relay = await startModelRelay({ images, project: projectDir, model, key, storage: process.env.HUMANSTUDY_RELAY_DIR!, tokenCap: limits.tokens, expiryMinutes: limits.minutes, binding, publish: route !== 'protocol',
         onClose: () => { if (ownClose) runs.forget(id, ownClose); runs.release(projectDir!, owner) },
         upstream: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_HOSTED_BASEURL || 'https://humanstudy-hub.com/api/desktop/v1' : 'https://openrouter.ai/api/v1',
