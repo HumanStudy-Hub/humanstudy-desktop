@@ -147,8 +147,9 @@ validates it, draws the participants and builds their prompts.
   own account of its sample, protocol.json `meta.sample` first, then the program's `participants` node for the
   arm's study. Each text is first cut to what it says of the arm's own study ("Study 1: …; Study 2: …"), and any
   sentence naming a condition (protocol arm ids and labels, program condition names) is dropped, so no persona
-  carries another study's sample or a condition's name. The population is quoted as printed (counts in
-  parentheses removed). An age is drawn from a printed mean and SD (clipped to ±2.5 SD and to a printed range) or a
+  carries another study's sample or a condition's name. The population is quoted as printed ("Study 1: 60 nurses"
+  keeps "60 nurses"; counts in parentheses and a study part that only repeats the age and gender figures are left
+  out). An age is drawn from a printed mean and SD (clipped to ±2.5 SD and to a printed range) or a
   printed range; a mean alone is stated about the sample, not drawn. A gender is drawn only among the categories
   the paper prints (women, men, nonbinary and other stated categories), at the printed shares: percentages, or
   counts over a printed N (or, without an N, over the counts printed together). Whatever share the printed
@@ -159,21 +160,26 @@ validates it, draws the participants and builds their prompts.
 - `mode: "custom"`: up to 12 groups with weights, each a persona text and optional attributes (`age` as a number,
   `{min, max}` or `{mean, sd}`; `gender`, `country`, `occupation`, `education` as text, list or `{text: weight}`;
   `notes`). Every condition is split across groups by largest remainder, the same rule as the web's persona groups
-  (`humanstudy-hub-web/lib/persona-groups.ts`, `HumanStudy-Bench/playground/personas.py`). A persona, note or
-  `system` text that names a condition is refused (it would reach every condition).
+  (`humanstudy-hub-web/lib/persona-groups.ts`, `HumanStudy-Bench/playground/personas.py`). Any rendered text that
+  names a condition is refused (it would reach every condition): `system`, a group's id, label, persona and notes,
+  and every value of its gender, country, occupation and education. Personas are at most 1,200 characters and
+  `system` 1,500; a prompt longer than the budget's allowance is refused at check time.
 - `system` (paper or custom): a whole system prompt with `{{persona}} {{age}} {{gender}} {{country}}
   {{occupation}} {{education}} {{group}}`; the reply format is always appended.
-- `mode: "blank"`: the earlier behaviour (no persona, bare JSON answers), kept for comparison.
+- `mode: "blank"`: no persona and the earlier bare prompt with bare JSON answers, kept for comparison; it gets the
+  same pictures as any run on the same route.
 - Draws use a generator keyed by the file's SHA-256, the seed, the arm and the participant's index. Each
   participant's group, attributes, persona and the spec's SHA-256 are written to `participants.jsonl` (opaque id,
   member; never the condition). A resumed run reads its participants back from that file and only appends the ones
   it lacks; rows of started participants are never rewritten, and rows from another spec end the resume with a plain
   "start a new run". `run.json` `participants_spec` holds the mode, the file's and program.json's SHA-256, a
   one-line summary and what was done with pictures; the results page states it.
-- Approval: the Simulation tab shows the summary under "Who takes part" (`shared/participants-summary.ts`), read
-  together with the hashes of the files it came from (`shownParticipants`); Run is disabled while it is re-read, and
-  the approval sends exactly those hashes: `participantsSha256` (null without a file) and `programSha256` (null
-  without program.json). The main process puts them in the approved plan (`HUMANSTUDY_RUN_PLAN`, plan.json);
+- Approval: the Simulation tab shows the summary under "Who takes part". It comes from the app's own
+  participants.py (`check <project> --json`, run confined by the main process: `participantsCheck`), the one
+  implementation, together with the SHA-256 of the very files it read. Run is disabled while it is re-read or when
+  the check reports a problem, and the approval sends exactly those hashes: `protocolHash` (the protocol.json the
+  summary was read from), `participantsSha256` (null without a file) and `programSha256` (null without
+  program.json). The main process puts them in the approved plan (`HUMANSTUDY_RUN_PLAN`, plan.json);
   `launchProtocolRun` and `app_run` both refuse a file whose hash is not the approved one, as for protocol.json.
 - Upgrades: a plan with no participant file and no `participantsSha256` is fine; a plan from before this version in
   a project with program.json, an in-place resume of a run started before participants were recorded, and an
@@ -181,12 +187,14 @@ validates it, draws the participants and builds their prompts.
   simulation again (a new approval) or start a new run.
 
 **Think, then answer.** Outside blank mode the participant first writes one to three sentences in character (under
-60 words), then its answers as one fenced ```json object at the end. `participants.split_reply` takes the last
-fenced ```json block, and only when nothing but whitespace follows it; without any fence the whole reply must be one
-JSON object. The block is read with json's own decoder, so braces in strings or in the reaction never confuse it.
-Anything else is unreadable and asked once more. The full reply is parsed once; the reaction is kept in
-`records.jsonl` as `note.reasoning`, and the note's `reply` is only a 4,000-character excerpt for the log. The output
-limit stays 4,096 per call (SIM_MAX_TOKENS), which the budget already reserves.
+60 words), then its answers as one fenced ```json object at the end. `participants.split_reply` finds the last
+```json opener and reads the object after it with json's own decoder (braces or backticks inside strings never
+confuse it); the closing ``` must follow, with nothing but whitespace after it. Without a ```json opener the whole
+reply must be one JSON object. NaN and Infinity are refused. Anything else is unreadable and asked once more. The full
+reply is parsed once; the reaction is kept in `records.jsonl` as `note.reasoning`, and the note's `reply` is only a
+4,000-character excerpt for the log. Each call's output limit (max_tokens, what the relay reserves) is 768 tokens, or
+2,048 on a page with a free-text question asking for a long answer (a declared length, a text area):
+`participants.output_limit`.
 
 **Pictures.** When the run's model route passes pictures and the model is known to accept them
 (`participants.IMAGE_MODELS`: Claude Haiku, Sonnet and Opus 5 and later), the current screen's pictures go to the
@@ -200,30 +208,39 @@ model as OpenAI-style `image_url` parts with inline data URLs; otherwise text on
   reserves the same for every picture on a page. app_run checks the same caps first: a page over them (or with a
   picture that is not PNG, JPEG, GIF or WebP) goes text only, says so in the step's note (`images_skipped`) and
   counts in `run.json` (`participants_spec.pictures.pages_text_only_over_caps`); the relay never sees a request it
-  would refuse. Blank mode is text only, exactly the earlier f.
-- Pictures are pinned at run start: a picture whose protocol item declares a `sha256` must match it or the run is
-  refused before anyone starts, and every local picture's digest is recorded then. A picture the runner hands f
+  would refuse. Blank mode follows the same rules.
+- Pictures are pinned when the run first starts: a picture whose protocol item declares a `sha256` must match it or
+  the run is refused before anyone starts, and every local picture's digest is recorded in `pictures.json` in the
+  run folder; an in-place resume uses those digests, never a fresh set. A picture the runner hands f
   that is not one of those (changed during the run) is never sent and ends that participant. `run.json` lists the
   SHA-256 of every picture sent (`pictures_sent_sha256`).
 - A picture restored from a published study's held material is sent only in the model call of that approved run,
   like the restored text; the run keeps no screens for such a study, `ctx.note` records only how many pictures
   were sent, and nothing is written to exports or capture.
 - Restored wording in what a run stores: for a published study played from restored wording, answers keep only the
-  page's question ids, notes keep no reply text, and steps.jsonl, records.jsonl and operator.jsonl are written
-  through a redactor (and evaldata.json and effects.json rewritten at the end) that replaces every 40-letter run of
-  held wording with ░ per character, the same windows as the research-capture redaction index. The engine and the
-  scores keep the answers as given; a resumed run replays the stored, redacted copy.
+  page's question ids, each cut to its question's schema (a code or {code, text} for a choice, codes for a multiple
+  choice, a number or "NA", a string for text; any other nested key is dropped), and notes keep no reply text.
+  steps.jsonl, records.jsonl, operator.jsonl and every JSON file the evaluation writes (effects.json,
+  evaldata.json, rewards.json) are redacted in memory before they are written: any 40 characters equal to held
+  wording once both are normalised (NFC, whitespace collapsed, case kept) become ░, one per character, and only that
+  span; only free-text values are touched, never keys or structural values (ids, codes, steps, statuses). The
+  answers as given go to `<run>/.private/answers.jsonl`, which a resume replays; that folder is never in a study
+  file (study-transfer classify) and never collected (telemetry-core PRIVATE_MATERIAL, which also redacts any agent
+  call that names it). The engine and the scores keep the answers as given.
 
 **Budget (review 2, M3).** The package allowance (40,000 tokens per participant) does not fit a protocol: there is
 one call per page, and each prompt carries every earlier page and answer.
 - When protocol.json passes its checks, the app measures the run's budget with `skills/run/budget.py`. It runs
   confined, from the app's own copy, like the checks. It plays three random+gates participants per arm through
   run_study and counts what the default renderer would send: bytes + 256 per message + the output limit per call,
-  with the longest participant system prompt a run may send (`participants.budget_system`, a 4,000-byte persona;
-  app_run refuses longer ones), 5,000 tokens per picture on the page and 800 bytes per earlier free-text answer
-  (a model writes longer text than the oracle). Calls and tokens are then doubled for one re-ask per page, before
-  the 1.5x margin; the result stays within the existing caps (`protocolRunLimits`). It
-  keeps the largest member per arm, adds a 1.5x margin and records group sizes.
+  with the longest participant system prompt a run may send (`participants.budget_system`, a 1,500-byte persona;
+  app_run refuses longer ones), the page's output limit (768, or 2,048 for a long free-text answer), 5,000 tokens
+  per picture on the page and 800 bytes per earlier free-text answer (a model writes longer text than the oracle).
+  It keeps the largest member per arm, adds a 1.5x margin (which includes about 10% of pages asked once more) and
+  records group sizes. The relay counts request bytes as tokens, so a 20-page survey whose pages repeat the earlier
+  ones still reserves about 7,000 per call: 2 conditions × 60 participants × 20 pages need about 25,000,000, over
+  the 16,000,000 ceiling (it was about 35,000,000 before the participant changes); fitting it needs a decision on
+  the relay's counting or the ceiling.
   - The fixture needs about 4,700 tokens per participant, a 33-page survey about 180,000, and a 4-person game
     about 2,000,000 per member.
 - The measurement counts each call's exact request body as `humanstudy_llm.chat` serialises it: JSON with

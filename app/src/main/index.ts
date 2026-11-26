@@ -49,7 +49,7 @@ import { onRuntimeProgress, readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf, protocolProblems } from './package-readiness'
 import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, moveProjectRecords, originalTextProblems, releaseBaseline, releasedStudy, restoredChecksProblem, restoredProtocolText, restoredRunFiles, restoreSlot, UNVERIFIED_RELEASE, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
-import { configureReceivedProtocol, releaseUnconfirmed, protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
+import { configureReceivedProtocol, releaseUnconfirmed, participantsCheck, protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
 import { closeProjectRelays, isRunStop } from './run-stop'
@@ -656,6 +656,9 @@ app.whenReady().then(() => {
     return r.filePath
   })
   ipcMain.handle('project:packageReadiness', async (_e, dir: string, studyId: string, execute?: boolean) => ({ ...await projectPackageReadiness(ownedPath(dir), studyId, execute === true, true), modelAccess: RELAY ? 'relay' as const : 'key' as const }))
+  // Who takes part (the Simulation tab's summary): the app's own participants.py, with the hashes it read.
+  ipcMain.handle('project:participants', async (_e, dir: string) =>
+    participantsCheck(await readyPython(), trustedBudgetFiles(), ownedPath(dir), process.env.HUMANSTUDY_RUNTIME_BIN || ''))
   ipcMain.handle('project:readText', async (_e, p: string) => {
     const q = ownedPath(p)
     if ((await stat(q)).size > TEXT_LIMIT) throw new Error('file is larger than 4 MB')

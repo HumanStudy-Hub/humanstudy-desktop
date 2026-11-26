@@ -170,11 +170,12 @@ export interface RowBase {
 
 /** Builds the exact row that is sent, or null when the event is not allowed. */
 /** Paths to material that must never leave this computer: the researcher's private copies (sources/private/, e.g. a
- *  copy of a paper dropped in to fill in a published study's wording) and the app-storage folder of restored wording
- *  (…/original-text/…, a folder: `.humanstudy/original-text.json`, a status without wording, is not one). Matched
+ *  copy of a paper dropped in to fill in a published study's wording), the app-storage folder of restored wording
+ *  (…/original-text/…, a folder: `.humanstudy/original-text.json`, a status without wording, is not one) and a run's
+ *  private answers (artifacts/simulations/<run>/.private/: what a resume of a published study replays, unredacted). Matched
  *  on the text URL-decoded and with `./` segments removed; a command that names both `sources` and `private`, or
  *  globs or searches under sources/, counts too (the agent may build the path in pieces). */
-export const PRIVATE_MATERIAL = /(?:^|[^A-Za-z0-9_-])sources[\\/]+(?:private|researcher|quarantine)(?=$|[^A-Za-z0-9_.-])|(?:^|[\\/])original-text[\\/]/i
+export const PRIVATE_MATERIAL = /(?:^|[^A-Za-z0-9_-])sources[\\/]+(?:private|researcher|quarantine)(?=$|[^A-Za-z0-9_.-])|(?:^|[\\/])original-text[\\/]|(?:^|[^A-Za-z0-9_-])artifacts[\\/]+simulations[\\/]+[^\\/\s'"]+[\\/]+\.private(?=$|[\\/\s'"])/i
 export const REDACTED_PRIVATE = '[redacted: private material]'
 /** A study file made by "Download this study": never collected, wherever it is saved. */
 export const STUDY_PACKAGE = /\.humanstudy\.zip$/i

@@ -565,3 +565,21 @@ test('the download is written through a save temporary that file watching and re
   assert.match(r.manifest.projectId, /^[0-9a-f-]{36}$/)
   assert.equal(readFileSync(join(root, '.humanstudy', 'project.json'), 'utf8'), '{not json')
 })
+
+test('a run\'s private answers (artifacts/simulations/<run>/.private/) never go into a download and are never collected', async () => {
+  const root = fresh('private-answers')
+  mkdirSync(join(root, 'artifacts/simulations/2026-11-26-1000/.private'), { recursive: true })
+  writeFileSync(join(root, 'artifacts/simulations/2026-11-26-1000/.private/answers.jsonl'), '{"answers": {"q": "held wording"}}\n')
+  writeFileSync(join(root, 'artifacts/simulations/2026-11-26-1000/steps.jsonl'), '{"answers": {"q": "░░░"}}\n')
+  writeFileSync(join(root, 'protocol.json'), '{}')
+  const rel = 'artifacts/simulations/2026-11-26-1000/.private/answers.jsonl'
+  assert.equal(S.classify(rel), 'never')
+  assert.equal(S.classify('artifacts/simulations/2026-11-26-1000/.private'), 'never')
+  const files = (await S.scanProject(root)).map((f) => f.path)
+  assert.ok(files.includes('artifacts/simulations/2026-11-26-1000/steps.jsonl') && !files.some((p) => p.includes('.private')))
+  for (const published of [false, true])
+    assert.equal(TC.mayCollectFile({ rel, text: '{}', published, index: TC.EMPTY_INDEX }), false, `collected (published ${published})`)
+  assert.ok(TC.PRIVATE_MATERIAL.test(rel))
+  assert.ok(TC.namesPrivatePath('cat "artifacts/simulations/2026-11-26-1000/.private/answers.jsonl"'))
+  assert.ok(!TC.namesPrivatePath('cat artifacts/simulations/2026-11-26-1000/steps.jsonl'))
+})

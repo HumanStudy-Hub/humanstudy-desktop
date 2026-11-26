@@ -543,6 +543,9 @@ export interface HumanStudyApi {
     /** Text of a file inside an opened project (UTF-8, at most 4 MB). */
     readText(path: string): Promise<string>
     packageReadiness(dir: string, studyId: string, execute?: boolean): Promise<import('../shared/package-readiness').PackageReadiness>
+    /** Who takes part in a protocol run (skills/run/participants.py check), with the hashes of the files it read; null
+     *  when it cannot be checked (no runtime yet). */
+    participants(dir: string): Promise<import('../shared/participants-summary').ParticipantsCheck | null>
     /** Writes a file inside an opened project, creating folders as needed. program.json must stay valid JSON.
      *  With `ifUnchanged`, the write happens only if the file still holds exactly that text (a patch read
      *  from disk is not written over a newer save, e.g. the agent's checkpoint); otherwise it rejects

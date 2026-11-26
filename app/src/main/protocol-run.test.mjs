@@ -99,9 +99,11 @@ test('who takes part is approved by its hash: a participants file added or chang
 test('Run approves the participant summary as shown: the displayed hashes are sent, and Run waits while it is re-read', () => {
   const panel = readFileSync(join(here, '../renderer/components/SimulationPanel.tsx'), 'utf8')
   const bench = readFileSync(join(here, '../renderer/components/Workbench.tsx'), 'utf8')
-  assert.match(panel, /const whoPending = route === 'protocol' && who\?\.stamp !== whoStamp/)
+  assert.match(panel, /const whoPending = route === 'protocol' && \(whoChecked\?\.stamp !== whoStamp \|\| !whoCheck\?\.ok\)/)
   assert.match(panel, /protocolLimits\?\.fits === false \|\| whoPending\}/)
-  assert.match(panel, /participantsSha256: who\.participantsSha256, programSha256: who\.programSha256/)
+  assert.match(panel, /window\.humanstudy\.project\.participants\(dir\)/, 'the summary comes from the app\'s participants.py')
+  assert.match(panel, /route === 'protocol' && whoCheck \? approvedHashes\(whoCheck\)/)
+  assert.match(bench, /protocolHash: who\.protocolSha256 \?\? current/)
   assert.match(bench, /participantsSha256: who\.participantsSha256, programSha256: who\.programSha256/)
   assert.doesNotMatch(bench, /readText\(`\$\{dir\}\/simulation\/participants\.json`\)/, 'never a fresh hash at approval time')
 })

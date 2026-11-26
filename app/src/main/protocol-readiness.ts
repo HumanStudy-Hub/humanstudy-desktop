@@ -495,6 +495,36 @@ export async function protocolBudget(python: string | null, files: [string, stri
   } catch { return [ENGINE_FAILED] }
 }
 
+/** What `participants.py check --json` says of the project (who takes part), with the SHA-256 of the very files it
+ *  read: what the Simulation tab shows and the approval sends. */
+import type { ParticipantsCheck } from '../shared/participants-summary'
+export type { ParticipantsCheck }
+
+const hex64 = (v: unknown): v is string | null => v === null || (typeof v === 'string' && /^[0-9a-f]{64}$/.test(v))
+/** Parse participants.py check's line; anything malformed is an error. */
+export function parseParticipantsCheck(stdout: string): ParticipantsCheck {
+  const raw = JSON.parse(stdout.trim().split('\n').at(-1) ?? '')
+  if (typeof raw?.ok !== 'boolean' || !hex64(raw.participantsSha256) || !hex64(raw.programSha256) || !hex64(raw.protocolSha256)) throw Error('Invalid participants check')
+  const text = (v: unknown) => (typeof v === 'string' ? v.slice(0, 600) : undefined)
+  return { ok: raw.ok, mode: text(raw.mode), summary: text(raw.summary), problem: text(raw.problem),
+    participantsSha256: raw.participantsSha256, programSha256: raw.programSha256, protocolSha256: raw.protocolSha256 }
+}
+
+/** Run the app's own skills/run/participants.py (`check <project> --json`), confined like the budget: the one
+ *  implementation of who takes part, for the Simulation tab's summary. `files`: skills/run/participants.py. */
+export async function participantsCheck(python: string | null, files: [string, string][], project: string, bin: string,
+  timeout = PROTOCOL_TIMEOUT_MS, limits: Limits = {}): Promise<ParticipantsCheck | null> {
+  if (!python || !files.some(([rel]) => rel === 'skills/run/participants.py')) return null
+  try {
+    return await withScratch(files.filter(([rel]) => rel === 'skills/run/participants.py'), async (work, home) => {
+      const code = runner(limits.cpuSeconds, limits.memoryBytes).replace(/sys\.path\.insert[\s\S]*$/,
+        'import runpy\nscript = sys.argv.pop(1)\nsys.argv = [script] + sys.argv[1:]\nrunpy.run_path(script, run_name="__main__")')
+      const run = await confinedPython(python, code, [join(work, 'skills', 'run', 'participants.py'), 'check', await realpath(project), '--json'], home, bin, timeout, limits)
+      try { return parseParticipantsCheck(run.stdout) } catch { return null }
+    })
+  } catch { return null }
+}
+
 /** Certify a saved draft, not permission to run it. The bundled schema/reference validator accepts
  * explicitly blocked arms; full mechanical/source checks remain required by protocolReadiness. */
 export async function protocolDraftCertificate(python: string | null, engine: [string, string][], project: string, bin: string): Promise<{ hash: string; problems: string[] } | null> {

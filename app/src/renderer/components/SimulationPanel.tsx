@@ -17,7 +17,7 @@ import { holdAction, track } from '../telemetry'
 import { allowanceMessage } from '../allowance'
 import { WEB_EDITION } from '../edition'
 import { formatDuration } from '../format'
-import { shownParticipants, type ShownParticipants } from '../../shared/participants-summary'
+import { approvedHashes, whoLine, type ParticipantsCheck } from '../../shared/participants-summary'
 
 interface Props {
   project: ProjectSnapshot
@@ -39,7 +39,7 @@ interface Props {
   modelAccess?: AccountStatus['modelAccess']
   /** route: which runnable form the approval names (protocol.json through the engine, or package/). */
   /** who: for a protocol run, the participant summary as shown, with the hashes of the files it was read from. */
-  onRun(perCondition: number, route: 'protocol' | 'package', conditions: string[], tokenBudget?: number, who?: { participantsSha256: string | null; programSha256: string | null }): Promise<void>
+  onRun(perCondition: number, route: 'protocol' | 'package', conditions: string[], tokenBudget?: number, who?: ReturnType<typeof approvedHashes>): Promise<void>
   onBuild(): void
   /** Stop the agent and ask these run folders (absolute paths) to stop. */
   /** Stop: write STOP into these run folders; `ownTurn` when the agent's current turn is this tab's request. */
@@ -158,21 +158,21 @@ export function SimulationPanel(props: Props) {
   const protocolLimits = route === 'protocol' ? protocolRunLimits(readiness?.protocol?.budget, perCondition) : null
   const access = protocolLimits ?? runLimits({ conditions: runConditions, perCondition })
   // Who takes part (a protocol run): simulation/participants.json, which the agent writes when the researcher
-  // describes the participants, else sample-matched to the paper. The approval carries the file's hash.
-  // The approval sends the hashes of the files this summary was read from; Run waits while it is being re-read.
+  // describes the participants, else sample-matched to the paper. The main process runs the app's participants.py
+  // (one implementation) and returns the summary with the hashes of the files it read; the approval sends exactly
+  // those, and Run waits while the summary is being re-read or cannot be used.
   const whoFiles = allEntries(project.tree).filter((e) => ['simulation/participants.json', 'protocol.json', 'program.json'].includes(e.rel))
   const whoStamp = `${dir}|` + whoFiles.map((e) => `${e.rel}:${e.mtime ?? ''}:${e.size ?? ''}:${e.version ?? ''}`).join('|')
-  const [who, setWho] = useState<ShownParticipants | null>(null)
+  const [whoChecked, setWhoChecked] = useState<{ stamp: string; check: ParticipantsCheck | null } | null>(null)
   useEffect(() => {
-    if (route !== 'protocol') { setWho(null); return }
+    if (route !== 'protocol') { setWhoChecked(null); return }
     let live = true
-    const read = (rel: string) => window.humanstudy.project.readText(`${dir}/${rel}`).catch(() => null)
-    void Promise.all([read('simulation/participants.json'), read('protocol.json'), read('program.json')])
-      .then(([participants, protocol, programText]) => shownParticipants({ participants, protocol, program: programText }, whoStamp))
-      .then((shown) => { if (live) setWho(shown) })
+    void window.humanstudy.project.participants(dir).catch(() => null).then((check) => { if (live) setWhoChecked({ stamp: whoStamp, check }) })
     return () => { live = false }
   }, [dir, route, whoStamp]) // eslint-disable-line react-hooks/exhaustive-deps
-  const whoPending = route === 'protocol' && who?.stamp !== whoStamp
+  const whoCheck = whoChecked?.stamp === whoStamp ? whoChecked.check : null
+  const who = route === 'protocol' && whoChecked ? whoLine(whoChecked.check) : null
+  const whoPending = route === 'protocol' && (whoChecked?.stamp !== whoStamp || !whoCheck?.ok)
   const accessVars = { tokens: formatTokens(access.tokens), minutes: access.minutes }
 
   // Run folders and the two small files each one writes while and after it runs.
@@ -267,7 +267,7 @@ export function SimulationPanel(props: Props) {
     // The approval is checked before it is sent; the resulting agent turn belongs to this run operation.
     holdAction()
     try { await props.onRun(perCondition, route ?? 'package', route === 'protocol' ? readiness?.protocol?.arms ?? [] : plan.conditions.map((c) => c.id), protocolLimits?.tokens,
-      route === 'protocol' && who ? { participantsSha256: who.participantsSha256, programSha256: who.programSha256 } : undefined) } catch { setPending(null) }
+      route === 'protocol' && whoCheck ? approvedHashes(whoCheck) : undefined) } catch { setPending(null) }
   }
   const build = () => {
     setBuildProblem(false); setNow(Date.now()); setPending({ at: Date.now(), kind: 'build', owner, before: agentTurnKey })

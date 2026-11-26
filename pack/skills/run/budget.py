@@ -33,6 +33,9 @@ os.environ["HSENV_PRIVATE_CONFIG"] = ""   # never the engine's private sidecar i
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import participants as _participants   # noqa: E402
+
+OUTPUT_TOKENS = _participants.OUTPUT_TOKENS   # a page's output limit (participants.output_limit; LONG_OUTPUT_TOKENS for long text)
 PER_MESSAGE = 256            # the relay's reserve per message
 # refused answers, longer replies in the history, retries, and about 10% of pages asked once more because the reply
 # could not be read (app_run's single re-ask): all inside this one margin

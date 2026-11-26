@@ -59,10 +59,11 @@ script and needs no approval:
   (`age`: a number, `{min, max}` or `{mean, sd}`; the others: a text, a list, or `{text: weight}`). A resumed run
   plays the same people.
 - `system` replaces the persona framing (paper or custom mode); the reply format is always appended. Keep personas
-  under 1,500 characters and `system` under 3,000.
+  under 1,200 characters and `system` under 1,500 (`check` says when a prompt is too long for the run's budget).
 - Use the paper's wording for its own population; never present a custom group as the paper's sample.
-- Never name a condition (or describe what one group sees) in a persona, note or `system`: it reaches every
-  condition, and `check` refuses it.
+- Never name a condition (or describe what one group sees) in any text of the file (a group's id, label, persona,
+  notes or attribute values, or `system`): it reaches every condition, and `check` refuses it.
+- `mode: "blank"` drops only the persona and system prompt; pictures are sent as in any run.
 
 Then run `python .opencode/skills/run/participants.py check .` (it validates the file and prints a summary and
 one example participant), and tell the researcher in one or two plain sentences who will take part, e.g.
@@ -75,6 +76,9 @@ Each run records the description in `run.json` (`participants_spec`: mode, the f
 whether pictures were shown), each participant's drawn attributes in `participants.jsonl` (opaque id, group,
 attributes; never the condition), and each page's in-character reaction in `records.jsonl` (`note.reasoning`).
 The results page states how participants were defined.
+For a published study played from restored wording, the run keeps the answers as given in
+`artifacts/simulations/<run>/.private/` (for a resume only): never open, read, copy or quote anything in a
+`.private` folder, as for `sources/private/`.
 
 ## Original wording (published studies)
 

@@ -832,6 +832,7 @@ def intentional(harm: float, help_: float) -> float:
           const path = `${dir}/${isPaper ? 'paper.pdf' : 'sources/' + name}`
           return { name: path.split('/').pop()!, path, url: path, ext: name.split('.').pop()?.toLowerCase() ?? '' }
         }),
+      participants: async () => ({ ok: true, mode: 'paper', summary: 'Sample-matched: the paper\'s participants (browser preview)', participantsSha256: null, programSha256: null, protocolSha256: null }),
       packageReadiness: async (dir, studyId) => {
         const slugs = [...new Set([...texts.keys()].filter(p => p.startsWith(`${dir}/package/`)).map(p => p.slice(`${dir}/package/`.length).split('/')[0]!))]
         return packageReadiness(slugs, async (slug, file) => texts.get(`${dir}/package/${slug}/${file}`) ?? null, { studyId, program: snapshot.program })
