@@ -302,6 +302,16 @@ test('a released study: a file over the size limit is not read and fails with th
   put(kept, 'sources/huge-copy.txt', 'y'.repeat(60_000))
   const ok = await exportTo(kept, { released, conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } })
   assert.equal(ok.manifest.files.some((f) => f.path === 'sources/huge-copy.txt'), false)
+  // oversized: only its first bytes are read. A PDF saved under another name is left out; a file that could go in
+  // (sources/open/, which the release may ship) gives the size error
+  const pdf = project(fresh('desk'))
+  put(pdf, 'notes/scan.bin', Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(60_000)]))
+  const left = await exportTo(pdf, { released, conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } })
+  assert.equal(left.manifest.files.some((f) => f.path === 'notes/scan.bin'), false)
+  const open_ = project(fresh('desk'))
+  put(open_, 'sources/open/handout.txt', 'z'.repeat(60_000))
+  await assert.rejects(exportTo(open_, { released, conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } }),
+    (e) => e.code === 'too-large' && e.file === 'sources/open/handout.txt')
   // an ordinary project gives the very same error
   await assert.rejects(exportTo(root, { conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } }), (e) => e.code === 'too-large' && e.file === 'notes/big.txt')
   if (process.platform !== 'win32' && process.getuid?.() !== 0) {

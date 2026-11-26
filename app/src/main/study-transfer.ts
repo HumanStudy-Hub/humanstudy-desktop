@@ -193,14 +193,29 @@ export async function exportFiles(root: string, limits: Limits, o: { published?:
   if (!o.released) return files
   for (const f of files) {
     if (f.kind !== 'study') continue
-    // a file over the per-file limit is never read: kept back when its name says it can carry restored wording (it
-    // could not go in anyway), else it stays in the list and the download fails with the size error, as before
-    if (f.size > limits.maxFileBytes) { if (canCarryRestored(f.path)) f.kind = 'private'; continue }
+    // a file over the per-file limit is never read in full: only its first bytes. Left out when its name or content
+    // puts it in the keep-back set; a file that could go in (also one under sources/open/, which a release may ship,
+    // so its bytes might match) stays in the list and the download fails with the size error, as before
+    if (f.size > limits.maxFileBytes) {
+      if (!f.path.startsWith('sources/open/') && canCarryRestored(f.path, await fileHead(root, f.path))) f.kind = 'private'
+      continue
+    }
     let bytes: Buffer
     try { bytes = await readFile(join(root, ...f.path.split('/'))) } catch { return fail('failed', 'a file of the study cannot be read', f.path) }
     if (keptBack(f.path, bytes, o.released)) f.kind = 'private'
   }
   return files
+}
+
+/** The first 16 bytes of a file (its content signature); a file that cannot be read is an error. */
+async function fileHead(root: string, rel: string): Promise<Buffer> {
+  let fh: FileHandle | null = null
+  try {
+    fh = await open(join(root, ...rel.split('/')), 'r')
+    const b = Buffer.alloc(16)
+    const { bytesRead } = await fh.read(b, 0, 16, 0)
+    return b.subarray(0, bytesRead)
+  } catch { return fail('failed', 'a file of the study cannot be read', rel) } finally { await fh?.close().catch(() => undefined) }
 }
 
 /** Whether the chat history goes in: never for a released (Library) study (conversations may quote original wording

@@ -624,6 +624,16 @@ test('engine checks: a value added beside a released text is a local text (the e
     writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
     const problems = await R.protocolReadiness(python, ENGINE, proj, '')
     assert.ok(problems.some((x) => /read from a page image of the paper were changed on this computer/.test(x.reason)), JSON.stringify(problems))
+    // value and text swapped: the same two strings, but the wording shown changes
+    const both = structuredClone(received)
+    both.stages.intro.content.at(-1).value = 'Walk slowly.'
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(both, null, 1))
+    R.configureReceivedProtocol(async () => structuredClone(both))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).filter((x) => /changed on this computer/.test(x.reason)), [])
+    const swapped = structuredClone(both)
+    Object.assign(swapped.stages.intro.content.at(-1), { value: 'Walk at your own pace.', text: 'Walk slowly.' })
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(swapped, null, 1))
+    assert.ok((await R.protocolReadiness(python, ENGINE, proj, '')).some((x) => /changed on this computer/.test(x.reason)))
   } finally { R.configureReceivedProtocol(async () => null) }
 })
 

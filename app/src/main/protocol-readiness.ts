@@ -163,9 +163,10 @@ function verbatimTexts(o: unknown, out: VerbatimText[] = [], top = true): Verbat
     for (const [k, c] of Object.entries(d)) {
       if (!(k === 'cite' || k.endsWith('_cite')) || !c || typeof c !== 'object' || (c as Record<string, unknown>).label !== 'verbatim') continue
       const cite = c as Record<string, unknown>
-      // every wording field an object with a `cite` holds (a content item renders `value` before `text`, engine.py
-      // _make_page, and the checks read both): a `value` added beside a released `text` is a text of its own
-      const fields = k === 'cite' ? WORDING.filter((f) => d[f] !== undefined) : [k.slice(0, -'_cite'.length)].filter((f) => d[f] !== undefined)
+      // only the field the engine renders: `value` if present, else `text` (engine.py _make_page), then label and
+      // prompt; so a value added beside a released text, or value and text swapped, is a local text
+      const rendered = k === 'cite' ? WORDING.find((f) => d[f] !== undefined) : k.slice(0, -'_cite'.length)
+      const fields = rendered !== undefined && d[rendered] !== undefined ? [rendered] : []
       for (const field of fields) {
         const inline = d[field] && typeof d[field] === 'object' && !Array.isArray(d[field]) && typeof (d[field] as Record<string, unknown>).text === 'string'
           ? d[field] as Record<string, unknown> : null
