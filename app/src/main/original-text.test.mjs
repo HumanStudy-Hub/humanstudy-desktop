@@ -634,6 +634,17 @@ test('engine checks: a value added beside a released text is a local text (the e
     Object.assign(swapped.stages.intro.content.at(-1), { value: 'Walk at your own pace.', text: 'Walk slowly.' })
     writeFileSync(join(proj, 'protocol.json'), JSON.stringify(swapped, null, 1))
     assert.ok((await R.protocolReadiness(python, ENGINE, proj, '')).some((x) => /changed on this computer/.test(x.reason)))
+    // the same swap with separately cited inline objects nested in value and text
+    const c2 = { label: 'verbatim', source: 'paper', page: 3 }
+    const nested = structuredClone(received)
+    nested.stages.intro.content.push({ id: 'pair', value: { text: 'Shown wording.', cite: c2 }, text: { text: 'Hidden wording.', cite: c2 } })
+    R.configureReceivedProtocol(async () => structuredClone(nested))
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(nested, null, 1))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).filter((x) => /changed on this computer/.test(x.reason)), [])
+    const nestedSwap = structuredClone(nested)
+    Object.assign(nestedSwap.stages.intro.content.at(-1), { value: { text: 'Hidden wording.', cite: c2 }, text: { text: 'Shown wording.', cite: c2 } })
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(nestedSwap, null, 1))
+    assert.ok((await R.protocolReadiness(python, ENGINE, proj, '')).some((x) => /changed on this computer/.test(x.reason)))
   } finally { R.configureReceivedProtocol(async () => null) }
 })
 

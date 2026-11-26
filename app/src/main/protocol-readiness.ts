@@ -183,7 +183,10 @@ function verbatimTexts(o: unknown, out: VerbatimText[] = [], top = true): Verbat
           if (sp && typeof sp === 'object' && typeof (sp as Record<string, unknown>).tooltip === 'string') add((sp as Record<string, unknown>).tooltip, cite)
       }
     }
-    for (const [k, v] of Object.entries(d)) if (!(top && k === 'distribution')) verbatimTexts(v, out, false)
+    // nested texts (inline {text, cite} objects) only inside the rendered wording field: the others are never shown
+    const shown = WORDING.find((f) => d[f] !== undefined)
+    for (const [k, v] of Object.entries(d))
+      if (!(top && k === 'distribution') && !((WORDING as readonly string[]).includes(k) && k !== shown)) verbatimTexts(v, out, false)
   }
   return out
 }
