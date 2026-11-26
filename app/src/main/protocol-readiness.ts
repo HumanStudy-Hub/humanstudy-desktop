@@ -137,26 +137,38 @@ function releasedStrings(o: unknown, out: string[] = [], top = true): string[] {
 const canonical = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x)
   ? Object.fromEntries(Object.entries(x as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1))) : x))
 
-/** The fields that hold a cited text's wording, next to its `cite` (checks.py check_verbatim reads these). */
-const WORDING = new Set(['text', 'value', 'label', 'prompt', 'instruction', 'anchors', 'spans'])
-interface VerbatimText { key: string; source: unknown; image: boolean }
-/** Every text a protocol cites verbatim, each with the wording and the cite that belong to it (canonical, so the
- *  same text with the same cite anywhere is the same key): an object with a `cite` (its wording fields with the
- *  cite; its other fields, such as an id or a timing, are not wording) and, per `<field>_cite`, that field with its
- *  cite. The `distribution` block is skipped. */
-function verbatimTexts(o: unknown, out: VerbatimText[] = []): VerbatimText[] {
-  if (Array.isArray(o)) for (const v of o) verbatimTexts(v, out)
+/** The fields that can hold a cited text's wording next to its `cite`, in the order checks.py check_verbatim reads
+ *  them. A `<field>_cite` cites its own field. */
+const WORDING = ['text', 'value', 'label', 'prompt'] as const
+const PLACEHOLDER_ONLY = /^░+$/
+/** NFC and the engine's whitespace rule (checks.py _norm: runs of whitespace are one space, trimmed). */
+const normWording = (v: unknown): unknown => typeof v === 'string' ? v.normalize('NFC').replace(/\s+/g, ' ').trim()
+  : Array.isArray(v) ? v.map(normWording)
+  : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, normWording(x)])) : v
+interface VerbatimText { key: string; source: unknown; image: boolean; held: boolean }
+/** Every text a protocol cites verbatim: its wording, normalised, with its cite (canonical), and never the name of
+ *  the field it sits in, so the same wording with the same cite in any valid form is the same key. An object with a
+ *  `cite` contributes its first wording field (and its tooltip spans), an inline text dict counting as its text; a
+ *  `<field>_cite` contributes that field. Only
+ *  the top-level `distribution` block is skipped. `held`: the wording is a held placeholder (checked by its hash). */
+function verbatimTexts(o: unknown, out: VerbatimText[] = [], top = true): VerbatimText[] {
+  if (Array.isArray(o)) for (const v of o) verbatimTexts(v, out, false)
   else if (o && typeof o === 'object') {
     const d = o as Record<string, unknown>
     for (const [k, c] of Object.entries(d)) {
       if (!(k === 'cite' || k.endsWith('_cite')) || !c || typeof c !== 'object' || (c as Record<string, unknown>).label !== 'verbatim') continue
       const cite = c as Record<string, unknown>
-      const own = k === 'cite'
-        ? Object.fromEntries(Object.entries(d).filter(([f]) => f === 'cite' || WORDING.has(f)))
-        : { [k.slice(0, -'_cite'.length)]: d[k.slice(0, -'_cite'.length)], [k]: c }
-      out.push({ key: canonical(own), source: cite.source, image: cite.read === 'image' })
+      const field = k === 'cite' ? WORDING.find((f) => d[f] !== undefined) : k.slice(0, -'_cite'.length)
+      if (!field || d[field] === undefined) continue
+      // an inline text dict ({text, spans}) is the same wording as a plain string field (check_verbatim reads both)
+      const inline = d[field] && typeof d[field] === 'object' && !Array.isArray(d[field]) && typeof (d[field] as Record<string, unknown>).text === 'string'
+        ? d[field] as Record<string, unknown> : null
+      const wording = normWording(inline ? inline.text : d[field])
+      const spans = inline ? inline.spans : k === 'cite' ? d.spans : undefined
+      out.push({ key: canonical({ wording, ...(spans !== undefined ? { spans: normWording(spans) } : {}), cite }),
+        source: cite.source, image: cite.read === 'image', held: typeof wording === 'string' && PLACEHOLDER_ONLY.test(wording) })
     }
-    for (const [k, v] of Object.entries(d)) if (k !== 'distribution') verbatimTexts(v, out)
+    for (const [k, v] of Object.entries(d)) if (!(top && k === 'distribution')) verbatimTexts(v, out, false)
   }
   return out
 }
@@ -164,27 +176,32 @@ function verbatimTexts(o: unknown, out: VerbatimText[] = []): VerbatimText[] {
 /** In public mode the engine cannot verify a verbatim text made or changed on this computer: a text read from a page
  *  image, or cited from a source whose text was not shipped, is left to Bench's private check, and a held source's
  *  check text holds every released string (heldSourceTexts), so released wording copied into another field is found.
- *  Every verbatim text (with its cite) must therefore be one the study was received with; a text may move, but each
- *  received text counts once. Only a text the engine checks against the project's own sourcetext/ file of a source
- *  that is not held, and not read from an image, is left to the engine. */
+ *  Every verbatim text (its wording with its cite) must therefore be one the study was received with; a text may
+ *  move, but each received text counts once. Left to the engine: a held placeholder (checked by its hash once
+ *  restored; the held list is pinned) and a text it checks against the project's own sourcetext/ file of a source
+ *  that is not held and not read from an image. A study opened from a file whose release could not be confirmed
+ *  (UNVERIFIED_RELEASE) has nothing received. */
 async function editedVerbatimTexts(project: string): Promise<ProtocolProblem[]> {
   const received = await receivedProtocol(project).catch(() => null)
   if (!received || typeof received !== 'object') return []
+  const unverified = (received as Record<string, unknown>).humanstudyRelease === 'unverified'
   let now: unknown
   try { now = JSON.parse(await readFile(join(project, 'protocol.json'), 'utf8')) } catch { return [] }
   const held = await heldSources(project)
   const own = new Set((await sourceTextArgs(project)).filter((_, i, a) => i > 0 && a[i - 1] === '--source-text').map((x) => x.split('=')[0]))
   const shipped = new Map<string, number>()
-  for (const t of verbatimTexts(received)) shipped.set(t.key, (shipped.get(t.key) ?? 0) + 1)
+  if (!unverified) for (const t of verbatimTexts(received)) shipped.set(t.key, (shipped.get(t.key) ?? 0) + 1)
   let images = 0, others = 0
   for (const t of verbatimTexts(now)) {
     const left = shipped.get(t.key) ?? 0
     if (left > 0) { shipped.set(t.key, left - 1); continue }
+    if (t.held) continue
     if (t.image) images++
     else if (typeof t.source === 'string' && own.has(t.source) && !held.has(t.source)) continue
     else others++
   }
   const out: ProtocolProblem[] = []
+  if (unverified && images + others) return [{ check: 'verbatim', reason: `This study was opened from a downloaded file whose published version could not be confirmed, so ${images + others} text(s) cited word for word cannot be checked against their source. Open the downloaded file again while online, or open the study from the Library.` }]
   if (images) out.push({ check: 'verbatim', reason: `${images} text(s) read from a page image of the paper were changed on this computer, so they can no longer be checked against the paper. Put back the wording as published, or keep the change as a separate, labelled variant.` })
   if (others) out.push({ check: 'verbatim', reason: `${others} text(s) cited word for word from a source this study does not include were changed on this computer (their wording or their citation), so they can no longer be checked against that source. Put back the wording as published, or keep the change as a separate, labelled variant.` })
   return out
@@ -224,7 +241,8 @@ export async function heldSourceTexts(project: string, restored?: Record<string,
     // held fields (checked by Bench against the source) is found as released, while a text changed or added on
     // this computer is not, so it still blocks
     const received = await receivedProtocol(project).catch(() => null)
-    const shipped = received && typeof received === 'object' ? releasedStrings(received).join('\n') : ''
+    const shipped = received && typeof received === 'object' && (received as Record<string, unknown>).humanstudyRelease !== 'unverified'
+      ? releasedStrings(received).join('\n') : ''
     for (const [k, list_] of pieces)
       out.set(k, (restored ? list_.join('\n') : list_.reduce((a, b) => (b.length > a.length ? b : a), '')) + (shipped ? '\n' + shipped : ''))
   } catch { /* unreadable: the checks report it */ }

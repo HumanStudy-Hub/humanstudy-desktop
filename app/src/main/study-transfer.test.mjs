@@ -149,6 +149,7 @@ test('round trip: every study file arrives byte for byte; the native session is 
   for (const [rel, bytes] of before) {
     if (rel === '.humanstudy/project.json' || rel === '.humanstudy/threads/thr_a.json') continue
     if (/^sources\/(?:private|researcher)\//.test(rel)) { assert.ok(!after.has(rel), `private file travelled: ${rel}`); continue }
+    if (rel.startsWith('.humanstudy/thread-history/')) { assert.ok(!after.has(rel), `Undo archive travelled: ${rel}`); continue }
     assert.ok(after.has(rel), `missing ${rel}`)
     assert.ok(after.get(rel).equals(bytes), `bytes differ: ${rel}`)
   }
@@ -207,6 +208,44 @@ test('private files are listed by name and never included: a study file may be h
   assert.equal(old.manifest.files.length, all.manifest.files.length)
 })
 
+test('Undo\'s archive of earlier conversations never goes in, even with the chat history', async () => {
+  const root = project(fresh('desk'))
+  const preview = await S.previewExport(root)
+  const r = await exportTo(root, { conversations: true })
+  assert.equal(r.manifest.files.some((f) => f.path.startsWith('.humanstudy/thread-history')), false)
+  assert.ok(r.manifest.files.some((f) => f.path === '.humanstudy/threads/thr_a.json'))
+  assert.equal(preview.conversations.files, 2, 'the preview counts the visible conversations only')
+  // a study file made before this change that carries the archive still opens
+  const imp = await S.importStudy(hostile([{ path: '.humanstudy/thread-history/thr_a/h.json', data: '{"old":true}' }, { path: 'program.json', data: '{}' }]), fresh('projects'), { now: NOW })
+  assert.ok(existsSync(join(imp.dir, 'program.json')))
+})
+
+test('a published study: files its wording was restored from are kept back wherever they are', async () => {
+  const root = project(fresh('desk'))
+  put(root, 'sources/materials/booklet.pdf', '%PDF-1.4 restoring copy')
+  put(root, 'assets/figure.png', 'png bytes')
+  const keepBack = ['sources/materials/booklet.pdf', 'assets/figure.png', 'paper.pdf']
+  const preview = await S.previewExport(root, { published: true, keepBack })
+  for (const p of keepBack) assert.ok(preview.privateFiles.some((f) => f.path === p), p)
+  assert.equal(preview.hasPaper, false)
+  const r = await exportTo(root, { published: true, keepBack, conversations: false })
+  for (const p of keepBack) assert.equal(r.manifest.files.some((f) => f.path === p), false, p)
+  assert.ok(r.manifest.files.some((f) => f.path === 'program.json'))
+})
+
+test('the published release travels as .humanstudy/release-protocol.json, from app storage only', async () => {
+  const root = project(fresh('desk'))
+  put(root, S.RELEASE_FILE, '{"forged": true}')   // a copy in the project is never exported
+  const plain = await exportTo(root)
+  assert.equal(plain.manifest.files.some((f) => f.path === S.RELEASE_FILE), false)
+  const release = Buffer.from('{"distribution":{"held":{"h1":{}}}}\n')
+  const r = await exportTo(root, { release })
+  const listed = r.manifest.files.find((f) => f.path === S.RELEASE_FILE)
+  assert.equal(listed.sha256, sha(release))
+  const imp = await S.importStudy(r.zip, fresh('projects'), { now: NOW })
+  assert.ok(readFileSync(join(imp.dir, ...S.RELEASE_FILE.split('/'))).equals(release), 'the opening hands it to adoptRelease')
+})
+
 test('chat history: included by default, left out entirely when unticked', async () => {
   const root = project(fresh('desk'))
   const without = await exportTo(root, { conversations: false })
@@ -217,7 +256,7 @@ test('chat history: included by default, left out entirely when unticked', async
   assert.equal(imp.conversations, 0)
   const withChats = await exportTo(root)
   assert.deepEqual(withChats.manifest.files.filter((f) => f.path.startsWith('.humanstudy/thread')).map((f) => f.path).sort(),
-    ['.humanstudy/thread-history/thr_a/history_1.json', '.humanstudy/threads/thr_a.json', '.humanstudy/threads/thr_b.json'])
+    ['.humanstudy/threads/thr_a.json', '.humanstudy/threads/thr_b.json'], 'Undo\'s archive never goes in')
 })
 
 test('never included: hidden files, tools, caches, app state, agent config, other study files, links', async () => {

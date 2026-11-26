@@ -107,7 +107,13 @@ const SAVE_TEMP = /\.\d+\.(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0
 /** Agent configuration at the project root may hold a provider key; the app reinstalls its own agent files. */
 const ROOT_NEVER = new Set(['opencode.json', 'opencode.jsonc'])
 /** Of the app's own folder, only what belongs to the study travels. */
-const STATE_FILES = new Set(['project.json', 'community.json'])
+const STATE_FILES = new Set(['project.json', 'community.json', 'release-protocol.json'])
+/** The published protocol.json a study file carries (original-text.ts RELEASE_FILE): written by the export from app
+ *  storage, never taken from the project, and read once by the opening (adoptRelease). */
+export const RELEASE_FILE = '.humanstudy/release-protocol.json'
+/** Undo keeps the whole earlier conversation here (threads-core.ts fromNative): wording taken back out of the visible
+ *  chat, so it never goes into a study file. */
+const UNDO_ARCHIVE = '.humanstudy/thread-history'
 const STATE_CONVERSATIONS = new Set(['threads', 'thread-history'])
 const STATE_DIRS = new Set(['program-conflicts'])
 
@@ -150,15 +156,17 @@ export function kindOf(rel: string, published: boolean): FileKind {
 }
 
 /** Every file of the project that may go into a study file. Links are never followed and never included; folders
- *  that are never part of a study are not entered. */
-export async function scanProject(root: string, limits: Limits = LIMITS, published = false): Promise<ScannedFile[]> {
+ *  that are never part of a study are not entered, nor is Undo's archive. `keepBack`: project-relative files that
+ *  are private wherever they are (a published study's files its wording was restored from: restorationFiles). */
+export async function scanProject(root: string, limits: Limits = LIMITS, published = false, keepBack: readonly string[] = []): Promise<ScannedFile[]> {
+  const back = new Set(keepBack.map((p) => p.toLowerCase()))
   const out: ScannedFile[] = []
   const walk = async (rel: string, depth: number): Promise<void> => {
     const entries = await readdir(rel ? join(root, ...rel.split('/')) : root, { withFileTypes: true })
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     for (const d of entries) {
       const child = rel ? `${rel}/${d.name}` : d.name
-      if (d.isSymbolicLink() || classify(child) === 'never') continue
+      if (d.isSymbolicLink() || classify(child) === 'never' || child === UNDO_ARCHIVE || child === RELEASE_FILE) continue
       if (d.isDirectory()) {
         if (depth + 1 >= limits.maxDepth) fail('too-large', `folders nested deeper than ${limits.maxDepth}`, child)
         await walk(child, depth + 1)
@@ -166,7 +174,8 @@ export async function scanProject(root: string, limits: Limits = LIMITS, publish
         if (out.length >= limits.maxFiles * 2) fail('too-large', `more than ${limits.maxFiles} files`)
         const handle = await open(join(root, ...child.split('/')), 'r')
         const size = await handle.stat().then((s) => s.size).finally(() => handle.close())
-        out.push({ path: child, size, kind: kindOf(child, published) as ScannedFile['kind'] })
+        const kind = kindOf(child, published) as ScannedFile['kind']
+        out.push({ path: child, size, kind: kind === 'study' && back.has(child.toLowerCase()) ? 'private' : kind })
       }
     }
   }
@@ -177,15 +186,15 @@ export async function scanProject(root: string, limits: Limits = LIMITS, publish
 export const isThread = (rel: string): boolean => /^\.humanstudy\/threads\/[^/]+\.json$/.test(rel)
 const threadCount = (files: { path: string }[]): number => files.filter((f) => isThread(f.path)).length
 
-export async function previewExport(root: string, o: { published?: boolean; limits?: Limits } = {}): Promise<StudyExportPreview> {
+export async function previewExport(root: string, o: { published?: boolean; keepBack?: readonly string[]; limits?: Limits } = {}): Promise<StudyExportPreview> {
   const limits = o.limits ?? LIMITS
-  const files = await scanProject(root, limits, o.published === true)
+  const files = await scanProject(root, limits, o.published === true, o.keepBack)
   const sum = (kind: ScannedFile['kind']) => files.filter((f) => f.kind === kind).reduce((n, f) => n + f.size, 0)
   const conversations = files.filter((f) => f.kind === 'conversation')
   return {
     name: basename(root),
     study: { files: files.filter((f) => f.kind === 'study').length, bytes: sum('study') },
-    hasPaper: files.some((f) => f.path === 'paper.pdf'),
+    hasPaper: files.some((f) => f.path === 'paper.pdf' && f.kind === 'study'),
     conversations: { count: threadCount(conversations), files: conversations.length, bytes: sum('conversation') },
     privateFiles: files.filter((f) => f.kind === 'private').map((f) => ({ path: f.path, bytes: f.size })),
     limits: { maxFiles: limits.maxFiles, maxTotalBytes: limits.maxTotalBytes, maxFileBytes: limits.maxFileBytes },
@@ -539,6 +548,11 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
   source: { platform: Platform; appVersion: string }
   /** A published study: its run outputs are private files (see kindOf), left out like the rest. */
   published?: boolean
+  /** Files kept back wherever they are (scanProject). */
+  keepBack?: readonly string[]
+  /** The published protocol.json the study was received as (original-text.ts releaseSnapshot), carried as
+   *  RELEASE_FILE so the opened project is checked against its release. */
+  release?: Buffer | null
   limits?: Limits
   now?: Date
 }): Promise<ExportResult> {
@@ -546,8 +560,9 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
   const now = o.now ?? new Date()
   const id = await ensureProjectId(root)
   // Private files stay on this computer (a study file may be handed on); the chat history can be left out.
-  const chosen = (await scanProject(root, limits, o.published === true)).filter((f) =>
+  const chosen = (await scanProject(root, limits, o.published === true, o.keepBack)).filter((f) =>
     f.kind === 'study' || (f.kind === 'conversation' && o.conversations === true))
+  if (o.release) chosen.push({ path: RELEASE_FILE, size: o.release.length, kind: 'study' })
   if (chosen.length > limits.maxFiles) fail('too-large', `more than ${limits.maxFiles} files`)
   let planned = 0
   for (const f of chosen) {
@@ -565,7 +580,7 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
   try {
     const zip = new ZipWriter(fh, now)
     for (const f of chosen) {
-      let data: Buffer = await readFile(join(root, ...f.path.split('/')))
+      let data: Buffer = f.path === RELEASE_FILE && o.release ? o.release : await readFile(join(root, ...f.path.split('/')))
       if (isThread(f.path)) data = withoutNativeSession(data)
       if (data.length > limits.maxFileBytes) fail('too-large', `a file larger than ${limits.maxFileBytes} bytes`, f.path)
       total += data.length

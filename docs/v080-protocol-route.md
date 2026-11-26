@@ -358,8 +358,10 @@ computer:
   `checks --public`, as Bench checks a release: a text read from a page image of a source whose blind readings were
   not shipped (and a cite whose source text is not here) is checked privately by Bench, not unconfirmed. Held texts
   are still checked against their placeholders or restored wording; the researcher's own projects stay strict.
-  Only wording as received passes this way: every verbatim text (its wording fields with its cite) must be one the
-  study was received with (the copy in app storage; a text may move, each received text counts once). A text added
+  Only wording as received passes this way: every verbatim text (its wording, NFC with whitespace runs as one
+  space, plus its canonical cite, never the field it sits in) must be one the study was received with (the copy in
+  app storage; a text may move between places and valid field forms, each received text counts once; only the
+  top-level `distribution` block is skipped). A text added
   or changed on this computer, or one whose cite changed, including released wording copied into another field,
   blocks unless the engine checks it against the project's own sourcetext/ file of a source that is not held and it
   was not read from a page image (`protocol-readiness.ts` editedVerbatimTexts).
@@ -383,10 +385,25 @@ computer:
   sha256 of protocol.json), never in the project, so neither exports nor research capture see them. A file dropped
   into a published study goes to `sources/private/` (never exported or collected) and never becomes paper.pdf. The
   project gets `.humanstudy/original-text.json`: counts, titles, formats and what each source needs, no wording.
-  "Download this study" (`study-transfer.ts`) lists private files (sources/private/ with the fills file, any
-  original-text/ folder, a published study's run outputs) but never puts them in the study file, which may be
-  handed to someone else; community sharing and publishing never include them either. Project sync, private per
-  account, does carry them.
+  "Download this study" (`study-transfer.ts`) lists private files but never puts them in the study file, which may
+  be handed to someone else: sources/private/ with the fills file, any original-text/ folder, every project file a
+  restore took wording or a picture from (the helper's `usedFiles`, recorded per project in
+  `<userData>/original-text/used/`, never forgotten) and every picture the fills file names, wherever they sit, and
+  a published study's run outputs. Whether a project counts as published for this is decided by what it was
+  received as (`releasedStudy`: the received copy, the pinned held list, the Library provenance in
+  .humanstudy/community.json), never by the editable protocol.json alone, and anything unreadable counts as
+  published. Undo's archive of earlier conversations (.humanstudy/thread-history) never goes in. Community sharing
+  and publishing never include any of these either. Project sync, private per account, does carry them.
+- **Study files keep the release.** A download carries the received copy (public: the published version, with
+  placeholders) as `.humanstudy/release-protocol.json`, from app storage, never from the project. Opening a study
+  file adopts it as the new project's received copy before anything checks it (`adoptRelease`), but only when its
+  sha256 is the protocol.json of the Library release community.json names; otherwise that release is fetched from
+  the official repository at the recorded commit (the revision folder must be the manifest's identity) and checked
+  by the same sha256; otherwise the received copy is marked unconfirmed, nothing counts as received, and every
+  verbatim text other than a held placeholder blocks until the file is opened again online or the study is forked
+  from the Library. The held list is pinned from the confirmed release (or, unconfirmed, from the opened copy:
+  each held text is still checked by its hash). So a download and re-open never turns local edits into the
+  baseline.
 - **Wording pasted into the chat.** When the researcher pastes a passage for the fills file, the message is an
   ordinary sent message: it stays in the project's conversation (`.humanstudy/threads`), which syncs privately per
   account and goes into "Download this study" with the chat history unless the researcher unticks it (the dialog

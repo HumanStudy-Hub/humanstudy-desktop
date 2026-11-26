@@ -16,10 +16,11 @@
 // the assistant: text the researcher pasted or a reconstruction they agreed to). All three count for a run; the
 // status says how many of each, and lists what is still unresolved (ids and titles, never text).
 import { createHash } from 'node:crypto'
-import { lstat, mkdir, readdir, readFile, realpath, rename, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import type { OriginalTextNeed, OriginalTextReason } from '../shared/package-readiness'
 import { confinedPython, heldSources, runner, withScratch, type Limits } from './protocol-readiness'
+import { RELEASE_FILE } from './study-transfer'
 
 export interface OriginalTextSource {
   key: string; title: string; tier: 'link' | 'user' | 'hosted'; format: string
@@ -40,10 +41,12 @@ export interface OriginalTextStatus {
   exact?: number; approx?: number; supplied?: { user: number; reconstructed: number }
   labels?: Record<string, OriginalTextLabel>; unresolved?: OriginalTextUnresolved[]
   fills?: { file: string; present: boolean; problems: { held: string | null; why: string }[] }
+  /** Every project file a restored item came from (absolute, or project-relative for a picture fill). */
+  usedFiles?: string[]
 }
 /** The project's fills file (project-relative): wording the researcher pasted, or a reconstruction they agreed to,
  *  per held id. Under sources/private/, so it is never exported, published or collected (it may sync: project sync
- *  is private per account). */
+ *  is private per account). A picture it points to elsewhere is kept out of a study download (restorationFiles). */
 export const FILLS_FILE = 'sources/private/original-text-fills.json'
 export interface OriginalTextProblem { check: 'original-text'; reason: string; text?: OriginalTextNeed }
 
@@ -114,6 +117,7 @@ export async function fillOriginalText(python: string, files: [string, string][]
     const last = run.stdout.trim().split('\n').at(-1) ?? ''
     const status = JSON.parse(last) as OriginalTextStatus
     if (typeof status?.projection !== 'boolean') throw Error('Invalid original-wording status')
+    if (Array.isArray(status.usedFiles) && status.usedFiles.length) await recordUsedFiles(cacheDir, root, status.usedFiles)
     return status
   })
 }
@@ -283,6 +287,10 @@ export function repinHeld(cacheDir: string, project: string): Promise<void> {
   await rename(tmp, file)
   const problem = await updateHeldPin(cacheDir, project)
   if (problem) throw new Error(problem.reason)
+  // the verified release, also one without held wording: what a study download decides by (releasedStudy)
+  const root = await realpath(project)
+  await mkdir(join(cacheDir, 'received'), { recursive: true })
+  await writeFile(receivedPath(cacheDir, root), await readFile(join(root, 'protocol.json')))
   })
 }
 
@@ -297,4 +305,137 @@ export function restoredChecksProblem(title: string): OriginalTextProblem {
  *  drop path calls it before it returns, so a copy is recognised before the agent hears of it). */
 export async function indexPrivateCopies(python: string, files: [string, string][], project: string, cacheDir: string, bin: string): Promise<void> {
   await fillOriginalText(python, files, project, cacheDir, bin, { indexOnly: true, offline: true, timeout: 120_000 })
+}
+
+// ---- what a study download keeps back (study-transfer.ts) -------------------------------------------------------
+
+const usedPath = (cacheDir: string, root: string): string => join(cacheDir, 'used', sha256(root) + '.json')
+const safeRel = (rel: string): boolean => rel.length > 0 && rel.length <= 400 && !rel.startsWith('/') && !/^[A-Za-z]:/.test(rel)
+  && rel.split('/').every((p) => p !== '' && p !== '.' && p !== '..')
+
+/** Adds the project files a restore took wording or a picture from to the project's record in app storage (never
+ *  removed: a file once used holds held wording for as long as it exists). */
+export async function recordUsedFiles(cacheDir: string, root: string, used: string[]): Promise<void> {
+  const file = usedPath(cacheDir, root)
+  let known: string[] = []
+  try { known = JSON.parse(await readFile(file, 'utf8')) } catch { /* none yet */ }
+  const rels = used.filter((u): u is string => typeof u === 'string').map((u) =>
+    u.startsWith(root + sep) ? relative(root, u).split(sep).join('/') : u.replace(/\\/g, '/')).filter(safeRel)
+  const all = [...new Set([...(Array.isArray(known) ? known.filter((x) => typeof x === 'string') : []), ...rels])].sort()
+  if (all.length === known.length) return
+  await mkdir(join(cacheDir, 'used'), { recursive: true })
+  const tmp = `${file}.${process.pid}.tmp`
+  await writeFile(tmp, JSON.stringify(all, null, 1) + '\n', 'utf8')
+  await rename(tmp, file)
+}
+
+/** The project files that hold a published study's restored wording outside the private folders, project-relative:
+ *  every file a restore recorded using, and every picture the fills file points to (a fill not applied yet too). */
+export async function restorationFiles(cacheDir: string, project: string): Promise<string[]> {
+  const root = await realpath(project)
+  const out = new Set<string>()
+  try { for (const x of JSON.parse(await readFile(usedPath(cacheDir, root), 'utf8'))) if (typeof x === 'string' && safeRel(x)) out.add(x) } catch { /* none */ }
+  try {
+    const fills = JSON.parse(await readFile(join(root, ...FILLS_FILE.split('/')), 'utf8'))
+    for (const v of Object.values(fills && typeof fills === 'object' ? fills : {}))
+      if (v && typeof v === 'object' && typeof (v as { file?: unknown }).file === 'string') {
+        const rel = (v as { file: string }).file.replace(/\\/g, '/').replace(/^\.\//, '')
+        if (safeRel(rel)) out.add(rel)
+      }
+  } catch { /* none */ }
+  return [...out].sort()
+}
+
+/** What the received copy holds when no published version could be confirmed for an opened study file: nothing
+ *  counts as released (protocol-readiness.ts, a study download), so nothing local passes as received. */
+export const UNVERIFIED_RELEASE = { humanstudyRelease: 'unverified' } as const
+export const isUnverifiedRelease = (v: unknown): boolean =>
+  Boolean(v && typeof v === 'object' && (v as Record<string, unknown>).humanstudyRelease === 'unverified')
+const heldOf = (v: unknown): boolean => {
+  const held = (v as { distribution?: { held?: unknown } } | null)?.distribution?.held
+  return Boolean(held && typeof held === 'object' && !Array.isArray(held) && Object.keys(held).length)
+}
+
+/** Whether a study download treats the project as a published study (its run outputs can quote restored wording),
+ *  decided by what the project was received as, never by the editable protocol.json alone: the received copy in app
+ *  storage when there is one (an unconfirmed one counts as published), a pinned held list, the Library provenance
+ *  (.humanstudy/community.json naming a protocol release), and only then the protocol.json itself. Anything that
+ *  cannot be read counts as published. */
+export async function releasedStudy(cacheDir: string, project: string): Promise<boolean> {
+  let root: string
+  try { root = await realpath(project) } catch { return true }
+  const json = async (path: string): Promise<unknown> => {
+    let raw: string
+    try { raw = await readFile(path, 'utf8') } catch (e) { return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? null : undefined }
+    try { return JSON.parse(raw) } catch { return undefined }
+  }
+  const now = await json(join(root, 'protocol.json'))
+  if (now === undefined || heldOf(now)) return true
+  const received = await json(receivedPath(cacheDir, root))
+  if (received === undefined || isUnverifiedRelease(received) || heldOf(received)) return true
+  if (received !== null) return false
+  const pins = await json(join(cacheDir, 'pins.json'))
+  if (pins === undefined || (pins && typeof pins === 'object' && (pins as Record<string, unknown>)[root] !== undefined)) return true
+  const context = await json(join(root, '.humanstudy', 'community.json'))
+  if (context === undefined) return true
+  const files = (context as { assetFiles?: unknown } | null)?.assetFiles
+  return Array.isArray(files) && files.some((f) => (f as { path?: unknown })?.path === 'protocol.json')
+}
+
+/** In a study file: the protocol.json as the study was received (public: the published version), so the project
+ *  opened from it is checked against its release, not against its own edited copy (study-transfer.ts). */
+export { RELEASE_FILE }
+
+/** The received copy for a study download: null for an ordinary project or an unconfirmed release. */
+export async function releaseSnapshot(cacheDir: string, project: string): Promise<Buffer | null> {
+  try {
+    const raw = await readFile(receivedPath(cacheDir, await realpath(project)))
+    return isUnverifiedRelease(JSON.parse(raw.toString('utf8'))) ? null : raw
+  } catch { return null }
+}
+
+/** Sets the received copy of a project just opened from a study file, before anything checks it: the snapshot it
+ *  carries (RELEASE_FILE, then removed from the project) when its sha256 is the protocol.json of the Library release
+ *  .humanstudy/community.json names, else that release fetched by `fetchRelease` and checked by the same sha256,
+ *  else (a Library study, or held wording, with no confirmed release) UNVERIFIED_RELEASE. The held list is pinned
+ *  from the confirmed release, or from the opened copy when unconfirmed (each held text is still checked by its
+ *  hash). Nothing for an ordinary project. */
+export async function adoptRelease(cacheDir: string, project: string,
+  fetchRelease: (context: Record<string, unknown>) => Promise<Buffer | null>): Promise<'carried' | 'library' | 'unverified' | 'none'> {
+  const root = await realpath(project)
+  const carriedPath = join(root, ...RELEASE_FILE.split('/'))
+  const carried = await readFile(carriedPath).catch(() => null)
+  await rm(carriedPath, { force: true })
+  let context: Record<string, unknown> | null = null
+  try { const c = JSON.parse(await readFile(join(root, '.humanstudy', 'community.json'), 'utf8')); if (c && typeof c === 'object' && !Array.isArray(c)) context = c } catch { /* none */ }
+  const files = Array.isArray(context?.assetFiles) ? context!.assetFiles as { path?: unknown; sha256?: unknown }[] : []
+  const expected = files.find((f) => f?.path === 'protocol.json')?.sha256
+  let now: unknown = null
+  try { now = JSON.parse(await readFile(join(root, 'protocol.json'), 'utf8')) } catch { /* unreadable: the checks report it */ }
+  if (typeof expected !== 'string' && !heldOf(now) && !carried) return 'none'
+  let release: Buffer | null = null, how: 'carried' | 'library' | 'unverified' = 'unverified'
+  if (typeof expected === 'string' && /^[0-9a-f]{64}$/.test(expected)) {
+    if (carried && sha256(carried) === expected) { release = carried; how = 'carried' }
+    else {
+      const got = await fetchRelease(context!).catch(() => null)
+      if (got && sha256(got) === expected) { release = got; how = 'library' }
+    }
+  }
+  let parsed: unknown = null
+  try { parsed = release ? JSON.parse(release.toString('utf8')) : null } catch { release = null; how = 'unverified' }
+  return withPinLock(cacheDir, async () => {
+    const file = join(cacheDir, 'pins.json')
+    let pins: Record<string, string> = {}
+    try { pins = JSON.parse(await readFile(file, 'utf8')) } catch { /* none yet */ }
+    const pinFrom = release ? parsed : now
+    const dist = (pinFrom as { distribution?: unknown } | null)?.distribution
+    if (dist && typeof dist === 'object') pins[root] = sha256(JSON.stringify(dist))
+    else delete pins[root]
+    await mkdir(join(cacheDir, 'received'), { recursive: true })
+    await writeFile(receivedPath(cacheDir, root), release ?? JSON.stringify(UNVERIFIED_RELEASE) + '\n')
+    const tmp = `${file}.${process.pid}.tmp`
+    await writeFile(tmp, JSON.stringify(pins, null, 1), 'utf8')
+    await rename(tmp, file)
+    return how
+  })
 }

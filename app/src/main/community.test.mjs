@@ -229,3 +229,20 @@ test('protocol allowlist rejects private sources, runs, traversal and app config
  for(const path of ['sources/private/x.pdf','sources/researcher/x.txt','artifacts/runs/x.json','artifacts/records.jsonl','runs/a.json','../protocol.json','.opencode/hsenv.py','sources/open/.env','review/raw-chat.json','paper/paper.pdf','capabilities-other.json','Effects.json'])assert.equal(lib.protocolAssetPath(path),false,path)
  for(const path of ['protocol.json','study.json','capabilities.json','effects.json','sourcetext/a.txt','sources/open/survey.qsf','review/fidelity-review-1.md','review/checks-latest.json','variants/a.json','package/x/study.json'])assert.equal(lib.protocolAssetPath(path),true,path)
 })
+
+test('the release a downloaded study names is fetched from its revision folder and checked by its sha256',async()=>{
+ const release=Buffer.from('{"distribution":{"held":{}}}\n')
+ const files=[{path:'protocol.json',sha256:createHash('sha256').update(release).digest('hex')}]
+ const identity=createHash('sha256').update(JSON.stringify(files.map(({path,sha256})=>({path,sha256})))).digest('hex')
+ const context={id:'paper_x',commit,assetRoot:`community/paper_x/revisions/${identity}`,assetFiles:files}
+ const asked=[],saved=globalThis.fetch
+ globalThis.fetch=async url=>{asked.push(String(url));return new Response(String(url).endsWith(`/${identity}/protocol.json`)?release:'{"edited":true}')}
+ try{
+  assert.ok((await lib.fetchReleasedProtocol(context)).equals(release))
+  assert.equal(asked[0],`https://raw.githubusercontent.com/HumanStudy-Hub/HumanStudy-Bench/${commit}/community/paper_x/revisions/${identity}/protocol.json`)
+  // a revision folder that is not the manifest's identity, or content that does not match, is refused
+  assert.equal(await lib.fetchReleasedProtocol({...context,assetRoot:'community/paper_x/revisions/'+'e'.repeat(64)}),null)
+  assert.equal(await lib.fetchReleasedProtocol({...context,assetFiles:[{path:'protocol.json',sha256:'f'.repeat(64)}],assetRoot:`community/paper_x/revisions/${createHash('sha256').update(JSON.stringify([{path:'protocol.json',sha256:'f'.repeat(64)}])).digest('hex')}`}),null)
+  assert.equal(await lib.fetchReleasedProtocol({...context,commit:'main'}),null)
+ }finally{globalThis.fetch=saved}
+})

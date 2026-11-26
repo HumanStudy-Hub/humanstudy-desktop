@@ -13,6 +13,7 @@ import { kernelBinary, managedBinary } from './opencode-install'
 import {
   communityStudies,
   communityStudy,
+  fetchReleasedProtocol,
   forkCommunityStudy,
   isAllowedExternal,
   setCommunityCacheDir,
@@ -46,7 +47,7 @@ import { confirmedLibrarySha, heldTextsOf, passedProtocolSha, selectedResults, s
 import { legacyFileIsolationAvailable, scientificReadiness } from './scientific-readiness'
 import { onRuntimeProgress, readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf, protocolProblems } from './package-readiness'
-import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, receivedPath, restoredRunFiles, restoreSlot, writeAgentStatus } from './original-text'
+import { adoptRelease, fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, releasedStudy, releaseSnapshot, restorationFiles, restoredChecksProblem, restoredProtocolText, receivedPath, restoredRunFiles, restoreSlot, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
 import { configureReceivedProtocol, protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
@@ -851,7 +852,7 @@ app.whenReady().then(() => {
   ipcMain.handle('projects:exportPreview', async (_e, dir: string) => {
     const d = transferProject(dir)
     if (!d) throw new Error('This folder is not a HumanStudy project.')
-    return previewExport(d, { published: await isPublishedStudy(d).catch(() => false) })
+    return previewExport(d, { published: await releasedStudy(originalTextCache(), d), keepBack: await restorationFiles(originalTextCache(), d).catch(() => []) })
   })
   ipcMain.handle('projects:exportStudy', async (e, dir: string, options: StudyExportOptions): Promise<StudyExportResult | null> => {
     const d = transferProject(dir)
@@ -873,7 +874,10 @@ app.whenReady().then(() => {
       const out = await exportStudy(d, target, {
         conversations: options?.conversations !== false,
         source: { platform: ONLINE ? 'online' : 'desktop', appVersion: app.getVersion() },
-        published: await isPublishedStudy(d).catch(() => false),
+        // decided by what the study was received as (never the editable protocol.json alone; unreadable = published)
+        published: await releasedStudy(originalTextCache(), d),
+        keepBack: await restorationFiles(originalTextCache(), d).catch(() => []),
+        release: await releaseSnapshot(originalTextCache(), d),
       })
       telemetry.track('project.exported', { metadata: { files: out.files, bytes: out.bytes, conversations: out.manifest.includes.conversations, privateFiles: out.manifest.includes.privateFiles.length } }, d)
       return { ok: true, savedPath: out.path, bytes: out.bytes, files: out.files }
@@ -945,6 +949,9 @@ app.whenReady().then(() => {
     const file = resolve(path)
     try {
       const out = await importStudy(file, ensureProjectsRoot())
+      // Before anything checks it: the release the study was received as (carried, or fetched from the Library and
+      // checked by its sha256), never the opened file's own protocol.json (original-text.ts adoptRelease).
+      await adoptRelease(originalTextCache(), out.dir, fetchReleasedProtocol).catch(() => undefined)
       // The app's own agent files are not in a study file (they may hold a provider key): install this version's.
       await refreshPack(out.dir).catch(() => undefined)
       if (out.privateFiles > 0 && (await isPublishedStudy(out.dir).catch(() => false))) {

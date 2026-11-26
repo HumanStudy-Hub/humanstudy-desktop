@@ -357,6 +357,24 @@ async function pinnedCommunityStudy(id: string, expectedRevision?: string): Prom
 
 const rawUrl = (id: string, rel: string): string => `${RAW}/studies/${id}/${rel.split('/').map(encodeURIComponent).join('/')}`
 
+/** The protocol.json of the Library release a project's .humanstudy/community.json names (`commit`, `assetRoot`,
+ *  `assetFiles`), from the official repository at that commit; null unless the revision folder is the manifest's own
+ *  identity and the file's sha256 is the manifest's (a study opened from a downloaded file: original-text.ts
+ *  adoptRelease). */
+export async function fetchReleasedProtocol(context: Record<string, unknown>): Promise<Buffer | null> {
+  try {
+    const files = Array.isArray(context.assetFiles) ? context.assetFiles as { path: string; sha256: string }[] : []
+    const want = files.find((f) => f?.path === 'protocol.json')?.sha256
+    const commit = context.commit
+    const root = typeof context.assetRoot === 'string' ? context.assetRoot : ''
+    const identity = createHash('sha256').update(JSON.stringify(files.map((file) => ({ path: file.path, sha256: file.sha256 })))).digest('hex')
+    if (typeof want !== 'string' || typeof commit !== 'string' || !/^[0-9a-f]{40}$/.test(commit)
+      || !/^community\/[A-Za-z0-9_.-]+\/revisions\/[a-f0-9]{64}$/.test(root) || !root.endsWith('/' + identity)) return null
+    const raw = Buffer.from(await (await get(`https://raw.githubusercontent.com/${OWNER_REPO}/${commit}/${root}/protocol.json`, '*/*')).arrayBuffer())
+    return createHash('sha256').update(raw).digest('hex') === want ? raw : null
+  } catch { return null }
+}
+
 /** Creates a local project from a community study and returns its directory. */
 export async function forkCommunityStudy(
   rawId: string,
