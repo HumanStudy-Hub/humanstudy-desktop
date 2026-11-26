@@ -243,6 +243,39 @@ test('a released study\'s chat history goes in only when ticked; an ordinary pro
   assert.deepEqual([undefined, true, false].map((x) => S.includesChat(false, x)), [true, true, false])
 })
 
+test('a released study: pictures and PDFs by content, and the generated preview, stay back; decided on the bytes written', async () => {
+  const root = project(fresh('desk'))
+  put(root, 'notes/figure.dat', Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.from('a held picture')]))
+  put(root, 'notes/scan.bin', '%PDF-1.4 a scanned page')
+  put(root, 'notes/photo', Buffer.concat([Buffer.from('ffd8ffe0', 'hex'), Buffer.from('jpeg')]))
+  put(root, 'notes/anim', 'GIF89a...')
+  put(root, 'notes/pic', Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBPVP8 ')]))
+  put(root, 'artifacts/preview.html', '<img src="data:image/png;base64,AAAA">')
+  put(root, 'artifacts/preview.prev.html', '<img src="data:image/png;base64,BBBB">')
+  put(root, 'notes/plain.txt', 'plain notes')
+  const released = { shipped: new Set() }
+  const back = (await S.previewExport(root, { released })).privateFiles.map((f) => f.path)
+  for (const p of ['notes/figure.dat', 'notes/scan.bin', 'notes/photo', 'notes/anim', 'notes/pic', 'artifacts/preview.html', 'artifacts/preview.prev.html']) assert.ok(back.includes(p), p)
+  assert.equal(back.includes('notes/plain.txt'), false)
+  const r = await exportTo(root, { released, conversations: false })
+  const paths = r.manifest.files.map((f) => f.path)
+  for (const p of back) assert.equal(paths.includes(p), false, p)
+  assert.ok(paths.includes('notes/plain.txt'))
+  // the generated preview as the release shipped it goes in
+  const shipped = await exportTo(root, { released: { shipped: new Set([sha('<img src="data:image/png;base64,AAAA">')]) }, conversations: false })
+  assert.ok(shipped.manifest.files.some((f) => f.path === 'artifacts/preview.html'))
+  // a plain file that turns into a picture after it was listed is judged on the bytes actually written
+  const swap = project(fresh('desk'))
+  put(swap, 'notes/later.txt', 'harmless')
+  const listed = await S.previewExport(swap, { released })
+  assert.equal(listed.privateFiles.some((f) => f.path === 'notes/later.txt'), false)
+  put(swap, 'notes/later.txt', '%PDF-1.4 swapped in')
+  const out = await exportTo(swap, { released, conversations: false })
+  assert.equal(out.manifest.files.some((f) => f.path === 'notes/later.txt'), false)
+  assert.equal(S.keptBack('notes/later.txt', Buffer.from('%PDF-1.4 swapped in'), released), true)
+  assert.equal(S.keptBack('notes/later.txt', Buffer.from('harmless'), released), false)
+})
+
 test('chat history: included by default, left out entirely when unticked', async () => {
   const root = project(fresh('desk'))
   const without = await exportTo(root, { conversations: false })

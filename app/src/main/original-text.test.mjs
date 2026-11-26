@@ -260,33 +260,66 @@ test('engine checks: a Library study whose release is not confirmed yet has noth
   } finally { R.configureReceivedProtocol(async () => null) }
 })
 
-test('study downloads: a released study is a Library protocol release or holds wording back; an ordinary project never is', async () => {
+/** A Library fork's provenance as forkCommunityStudy writes it: this paper's own revision folder and manifest. */
+const forkContext = (assetFiles, id = 'paper_x') => {
+  const identity = O.manifestIdentity(assetFiles)
+  return { id, commit: 'c'.repeat(40), assetRoot: `community/${id}/revisions/${identity}`, baseRevision: identity, assetFiles }
+}
+
+test('study downloads: released is sticky once seen, fails closed on an unreadable or unverified record; ordinary stays ordinary', async () => {
   const { proj, close } = await publishedProject()
   close()
-  assert.equal(await O.releasedStudy(proj), true, 'holds wording back')
+  const cache = mkdtempSync(join(tmpdir(), 'released-'))
+  assert.equal(await O.releasedStudy(cache, proj), true, 'holds wording back')
+  // the held block removed, then the file broken: it stays released (recorded the first time)
   const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
   delete p.distribution
   writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p))
-  assert.equal(await O.releasedStudy(proj), false, 'no provenance, nothing held: an ordinary project, as on dev')
+  assert.equal(await O.releasedStudy(cache, proj), true)
   writeFileSync(join(proj, 'protocol.json'), '{not json')
-  assert.equal(await O.releasedStudy(proj), false, 'an ordinary project with a broken protocol.json is still ordinary')
+  assert.equal(await O.releasedStudy(cache, proj), true)
+  // a held-list pin alone counts too
+  const pinned = mkdtempSync(join(tmpdir(), 'released-pin-'))
+  writeFileSync(join(pinned, 'protocol.json'), JSON.stringify({ id: 'x' }))
+  writeFileSync(join(cache, 'pins.json'), JSON.stringify({ [await realpath(pinned)]: 'a'.repeat(64) }))
+  assert.equal(await O.releasedStudy(cache, pinned), true)
+  // without any record on this computer: the provenance decides, failing closed
+  const fresh = mkdtempSync(join(tmpdir(), 'released-none-'))
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p))
+  assert.equal(await O.releasedStudy(fresh, proj), false, 'no provenance, nothing held: an ordinary project, as on dev')
+  writeFileSync(join(proj, 'protocol.json'), '{not json')
+  assert.equal(await O.releasedStudy(fresh, proj), false, 'an ordinary project with a broken protocol.json is still ordinary')
   mkdirSync(join(proj, '.humanstudy'), { recursive: true })
-  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify({ id: 'paper_x', assetFiles: [{ path: 'protocol.json', sha256: 'a'.repeat(64) }] }))
-  assert.equal(await O.releasedStudy(proj), true, 'the held block removed or the file broken: the provenance still says released')
+  const files = [{ path: 'program.json', sha256: 'b'.repeat(64) }, { path: 'protocol.json', sha256: 'a'.repeat(64) }]
+  const own = forkContext(files)
+  for (const [context, why] of [
+    [own, 'names a protocol release'],
+    [{ ...own, assetFiles: files.slice(0, 1) }, 'its protocol.json entry deleted: the manifest no longer matches its revision'],
+    [{ ...own, id: 'paper_other' }, 'another paper id than the revision folder'],
+    [{ ...own, baseRevision: 'e'.repeat(64) }, 'another revision'],
+  ]) {
+    const c = mkdtempSync(join(tmpdir(), 'released-c-'))
+    writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify(context))
+    assert.equal(await O.releasedStudy(c, proj), true, why)
+  }
   writeFileSync(join(proj, '.humanstudy', 'community.json'), '{broken')
-  assert.equal(await O.releasedStudy(proj), true)
+  assert.equal(await O.releasedStudy(mkdtempSync(join(tmpdir(), 'released-b-')), proj), true, 'unreadable')
+  // a verified program-only revision and a legacy study are not protocol releases
+  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify(forkContext(files.slice(0, 1))))
+  assert.equal(await O.releasedStudy(mkdtempSync(join(tmpdir(), 'released-p-')), proj), false)
   writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify({ id: 'study_001' }))
-  assert.equal(await O.releasedStudy(proj), false, 'a legacy fork with no protocol release')
+  assert.equal(await O.releasedStudy(mkdtempSync(join(tmpdir(), 'released-l-')), proj), false)
 })
 
-test('release baseline: only the official release the provenance names, verified; offline then online recovers', async () => {
+test('release baseline: only the official release of this paper and revision, verified; offline then online recovers', async () => {
   const { proj, close } = await publishedProject()
   close()
   const cache = mkdtempSync(join(tmpdir(), 'baseline-'))
   const release = readFileSync(join(proj, 'protocol.json'))
   const assetFiles = [{ path: 'program.json', sha256: 'b'.repeat(64) }, { path: 'protocol.json', sha256: sha(release) }]
+  const own = forkContext(assetFiles)
   mkdirSync(join(proj, '.humanstudy'), { recursive: true })
-  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify({ id: 'paper_x', commit: 'c'.repeat(40), assetFiles }))
+  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify(own))
   // the project's own copy edited: it is never the baseline
   const edited = JSON.parse(release.toString('utf8'))
   edited.stages.intro.content.push({ id: 'p', value: 'An added quote.', cite: { label: 'verbatim', source: 'paper', page: 3 } })
@@ -306,15 +339,20 @@ test('release baseline: only the official release the provenance names, verified
   // a fetch that answers with other bytes is refused
   const other = mkdtempSync(join(tmpdir(), 'baseline-other-'))
   assert.equal(await O.releaseBaseline(other, proj, async () => Buffer.from(JSON.stringify(edited)), t0 + 5 * O.RELEASE_RETRY_MS), 'unverified')
-  // a manifest edited to claim the edited copy is another identity: it needs its own fetch, which cannot match
-  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify({ id: 'paper_x', commit: 'c'.repeat(40), assetFiles: [{ path: 'protocol.json', sha256: sha(JSON.stringify(edited)) }] }))
-  assert.equal(await O.releaseBaseline(cache, proj, online, t0 + 3 * O.RELEASE_RETRY_MS), 'unverified')
+  // a manifest edited to claim the edited copy no longer matches its revision: unconfirmed, no fetch
+  const n = calls
+  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify({ ...own, assetFiles: [{ path: 'protocol.json', sha256: sha(JSON.stringify(edited)) }] }))
+  assert.equal(await O.releaseBaseline(cache, proj, online, t0 + 6 * O.RELEASE_RETRY_MS), 'unverified')
+  // the same manifest claimed for another paper: its cached release (from paper_x's folder) is not used
+  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify({ ...own, id: 'paper_y', assetRoot: own.assetRoot.replace('paper_x', 'paper_y') }))
+  assert.equal(await O.releaseBaseline(cache, proj, async () => null, t0 + 7 * O.RELEASE_RETRY_MS), 'unverified')
+  assert.equal(calls, n)
   // a fork stores its verified release, so it never needs the network
   const forked = mkdtempSync(join(tmpdir(), 'baseline-fork-'))
-  await O.storeRelease(forked, assetFiles, release)
-  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify({ id: 'paper_x', commit: 'c'.repeat(40), assetFiles }))
+  await O.storeRelease(forked, assetFiles, release, own.assetRoot)
+  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify(own))
   assert.ok((await O.releaseBaseline(forked, proj, offline, t0)).protocol.equals(release))
-  await O.storeRelease(forked, assetFiles, Buffer.from('{}'))   // bytes that are not the manifest's are never stored
+  await O.storeRelease(forked, assetFiles, Buffer.from('{}'), own.assetRoot)   // bytes that are not the manifest's are never stored
   assert.ok((await O.releaseBaseline(forked, proj, offline, t0)).protocol.equals(release))
   // held wording without any provenance: unconfirmed; an ordinary project: none
   const bare = mkdtempSync(join(tmpdir(), 'baseline-bare-'))
@@ -322,6 +360,60 @@ test('release baseline: only the official release the provenance names, verified
   assert.equal(await O.releaseBaseline(cache, bare, online, t0), 'unverified')
   writeFileSync(join(bare, 'protocol.json'), JSON.stringify({ id: 'x' }))
   assert.equal(await O.releaseBaseline(cache, bare, online, t0), null)
+})
+
+test('engine checks: a failure while the release is unconfirmed is marked retry, so the readiness cache never keeps it', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.intro.content.push({ id: 'p', value: 'Please walk as you usually do.', cite: { label: 'verbatim', source: 'paper', page: 3 } })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  let received = O.UNVERIFIED_RELEASE
+  R.configureReceivedProtocol(async () => received)
+  try {
+    const offline = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.ok(offline.length && offline.every((x) => x.retry === true), JSON.stringify(offline))
+    // through the readiness cache: the same files, the release now fetched, passes on the next check
+    P.configureProtocolChecks((project) => R.protocolReadiness(python, ENGINE, project, ''), 'test-retry')
+    received = O.UNVERIFIED_RELEASE
+    assert.ok((await P.protocolProblems(proj)).length)
+    received = structuredClone(p)
+    assert.deepEqual(await P.protocolProblems(proj), [])
+  } finally { R.configureReceivedProtocol(async () => null); P.configureProtocolChecks(async () => [], 'unconfigured') }
+})
+
+test('engine checks: each anchor is a text of its own with the shared cite, as the engine checks it', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.q.responses.push({ id: 'scale', kind: 'scale', prompt: 'How was it?', range: [1, 7], anchors: { '1': 'Not at all', '7': 'Very much' }, anchors_cite: { label: 'verbatim', source: 'paper', page: 3 } })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    const before = (await R.protocolReadiness(python, ENGINE, proj, '')).filter((x) => /changed on this computer/.test(x.reason))
+    assert.deepEqual(before, [])
+    // the same anchor wording under other keys is the same texts; one anchor reworded is one local text
+    p.stages.q.responses.at(-1).anchors = { low: 'Not at all', high: 'Very much' }
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).filter((x) => /changed on this computer/.test(x.reason)), [])
+    p.stages.q.responses.at(-1).anchors.high = 'Extremely'
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.ok((await R.protocolReadiness(python, ENGINE, proj, '')).some((x) => /^1 text\(s\) cited word for word/.test(x.reason)))
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('candidate files never follow a link, not even one inside the project', async () => {
+  const proj = mkdtempSync(join(tmpdir(), 'links-'))
+  mkdirSync(join(proj, 'sources', 'private'), { recursive: true })
+  mkdirSync(join(proj, 'notes'))
+  writeFileSync(join(proj, 'notes', 'copy.html'), '<p>held wording</p>')
+  writeFileSync(join(proj, 'sources', 'private', 'mine.txt'), 'mine')
+  symlinkSync(join(proj, 'notes', 'copy.html'), join(proj, 'sources', 'linked.html'))
+  symlinkSync(join(proj, 'notes'), join(proj, 'sources', 'notes-dir'))
+  symlinkSync(join(proj, 'notes', 'copy.html'), join(proj, 'paper.pdf'))
+  const got = (await O.candidateFiles(proj)).map((f) => relative(realpathSync(proj), f).split(sep).join('/'))
+  assert.deepEqual(got, ['sources/private/mine.txt'])
 })
 
 test('held source texts: placeholders before, the restored texts after; a project sourcetext file wins', async () => {

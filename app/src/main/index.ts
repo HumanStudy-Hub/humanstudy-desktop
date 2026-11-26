@@ -49,7 +49,7 @@ import { onRuntimeProgress, readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf, protocolProblems } from './package-readiness'
 import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, releaseBaseline, releasedStudy, restoredChecksProblem, restoredProtocolText, restoredRunFiles, restoreSlot, UNVERIFIED_RELEASE, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
-import { configureReceivedProtocol, protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
+import { configureReceivedProtocol, releaseUnconfirmed, protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
 import { closeProjectRelays, isRunStop } from './run-stop'
@@ -564,7 +564,10 @@ app.whenReady().then(() => {
       if (!restoredChecks.has(key)) {
         const found = await restoredReadiness(python, engine, project, restored, join(originalTextCache(), slot), process.env.HUMANSTUDY_RUNTIME_BIN || '')
         if (found.some((p) => p.check === 'runtime' || p.check === 'limits')) return found.map((p) => ({ check: 'runtime', reason: "The study's checks with its original wording filled in could not complete. Retry." }))
-        restoredChecks.set(key, found.length ? [restoredChecksProblem(studyTitle(restored))] : [])
+        const outcome = found.length ? [restoredChecksProblem(studyTitle(restored))] : []
+        // checked without the Library release (not fetched yet): a failure may clear once it is, so it is not kept
+        if (outcome.length && await releaseUnconfirmed(project)) return outcome.map((p) => ({ ...p, retry: true }))
+        restoredChecks.set(key, outcome)
       }
       return restoredChecks.get(key)!
     } catch {
@@ -862,7 +865,7 @@ app.whenReady().then(() => {
   })
   /** A released (Library) study: the sha256 of every file its verified release shipped (none while unconfirmed). */
   async function releasedFor(d: string): Promise<{ shipped: Set<string> } | undefined> {
-    if (!(await releasedStudy(d))) return undefined
+    if (!(await releasedStudy(originalTextCache(), d))) return undefined
     const b = await releaseBaseline(originalTextCache(), d, fetchReleasedProtocol).catch(() => 'unverified' as const)
     return { shipped: new Set(b && b !== 'unverified' ? b.assetFiles.map((f) => f.sha256) : []) }
   }

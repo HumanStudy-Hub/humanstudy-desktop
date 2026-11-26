@@ -61,13 +61,16 @@ export async function isPublishedStudy(project: string): Promise<boolean> {
 
 /** The project files the researcher may have supplied a source in: sources/private/ first (where the app puts a
  *  file dropped into a published study), then paper.pdf and the rest of sources/. Regular files inside the
- *  project only (links that lead out of it are skipped). */
+ *  project only; a link is never followed (a study download keeps back what is under sources/, so a link there to
+ *  a file elsewhere in the project would let that file's wording out). */
 export async function candidateFiles(project: string): Promise<string[]> {
   const root = await realpath(project)
+  const isLink = async (p: string): Promise<boolean> => (await lstat(p).catch(() => null))?.isSymbolicLink() ?? false
   const visit = async (dir: string, depth: number, into: string[]): Promise<string[]> => {
+    if (await isLink(dir)) return into
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
     for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
-      if (into.length >= MAX_FILES || e.name.startsWith('.')) continue
+      if (into.length >= MAX_FILES || e.name.startsWith('.') || e.isSymbolicLink()) continue
       const real = await realpath(join(dir, e.name)).catch(() => null)
       if (!real || !real.startsWith(root + sep)) continue
       const st = await lstat(real).catch(() => null)
@@ -76,7 +79,7 @@ export async function candidateFiles(project: string): Promise<string[]> {
     }
     return into
   }
-  const paper = await realpath(join(root, 'paper.pdf')).catch(() => null)
+  const paper = (await isLink(join(root, 'paper.pdf'))) ? null : await realpath(join(root, 'paper.pdf')).catch(() => null)
   const all = [...await visit(join(root, 'sources', 'private'), 1, []),
     ...(paper && paper.startsWith(root + sep) ? [paper] : []), ...await visit(join(root, 'sources'), 1, [])]
   return [...new Set(all)].slice(0, MAX_FILES)
@@ -307,39 +310,73 @@ export interface ReleaseContext { assetFiles: { path: string; sha256: string }[]
 export const manifestIdentity = (files: { path: string; sha256: string }[]): string =>
   sha256(JSON.stringify(files.map((f) => ({ path: f.path, sha256: f.sha256 }))))
 
-/** 'none': no community.json, or one naming no protocol release; null: present but unreadable; else that release. */
+const REVISION_ROOT = /^community\/([A-Za-z0-9_-][A-Za-z0-9_.-]*)\/revisions\/([a-f0-9]{64})$/
+/** 'none': no community.json, or a verified one naming no protocol release (a program-only revision, a legacy
+ *  study); null: present but unreadable, or a revision whose manifest does not match its own record (paper id,
+ *  revision folder, base revision); else that protocol release. */
 async function releaseContext(project: string): Promise<ReleaseContext | 'none' | null> {
   let raw: string
   try { raw = await readFile(join(project, '.humanstudy', 'community.json'), 'utf8') } catch (e) { return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'none' : null }
-  let c: unknown
+  let c: Record<string, unknown>
   try { c = JSON.parse(raw) } catch { return null }
   if (!c || typeof c !== 'object' || Array.isArray(c)) return null
-  const files = (c as { assetFiles?: unknown }).assetFiles
-  if (!Array.isArray(files)) return 'none'
+  const revision = c.baseRevision ?? c.currentRevision
+  const files = c.assetFiles
+  if (revision === undefined && c.assetRoot === undefined && !Array.isArray(files)) return 'none'   // a legacy study
+  if (!Array.isArray(files)) return null
   const list = files.filter((f): f is { path: string; sha256: string } => !!f && typeof f.path === 'string' && typeof f.sha256 === 'string')
+  const identity = manifestIdentity(list)
+  const root = typeof c.assetRoot === 'string' ? REVISION_ROOT.exec(c.assetRoot) : null
+  // the manifest, the paper and the revision folder must all be this fork's own (forkCommunityStudy writes them so)
+  if (list.length !== files.length || !root || root[1] !== c.id || root[2] !== identity || revision !== identity) return null
   const protocol = list.find((f) => f.path === 'protocol.json')
   if (!protocol) return 'none'
-  return { assetFiles: list, identity: manifestIdentity(list), protocolSha256: protocol.sha256, context: c as Record<string, unknown> }
+  return { assetFiles: list, identity, protocolSha256: protocol.sha256, context: c }
 }
 
-/** Whether a project is a released (Library) study for a study download: its provenance names a protocol release
- *  (an unreadable one counts), or its protocol.json holds wording back. An ordinary project is never one. */
-export async function releasedStudy(project: string): Promise<boolean> {
+/** Whether a project is a released (Library) study for a study download (its private files, files that can carry
+ *  restored wording and, unless ticked, its chat history stay on this computer): once classified so on this
+ *  computer, always (<cache>/released.json, beside the held-list pins, which count too); a community.json that names
+ *  a protocol release or cannot be read or verified; or held wording. A removed or emptied record or held list
+ *  never turns a released study back into an ordinary one; an ordinary project never becomes one. */
+export async function releasedStudy(cacheDir: string, project: string): Promise<boolean> {
+  let root: string
+  try { root = await realpath(project) } catch { return true }
+  const json = async (path: string): Promise<unknown> => {
+    try { return JSON.parse(await readFile(path, 'utf8')) } catch (e) { return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? {} : undefined }
+  }
+  const [pins, sticky] = [await json(join(cacheDir, 'pins.json')), await json(join(cacheDir, 'released.json'))]
+  if (pins === undefined || sticky === undefined) return true
+  if ((pins as Record<string, unknown>)[root] !== undefined || (sticky as Record<string, unknown>)[root] !== undefined) return true
   const ctx = await releaseContext(project)
-  return ctx !== 'none' || await isPublishedStudy(project)
+  if (ctx === 'none' && !(await isPublishedStudy(project))) return false
+  await withPinLock(cacheDir, async () => {
+    const now = (await json(join(cacheDir, 'released.json'))) as Record<string, unknown> | undefined
+    await mkdir(cacheDir, { recursive: true })
+    const file = join(cacheDir, 'released.json'), tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+    await writeFile(tmp, JSON.stringify({ ...(now ?? {}), [root]: true }, null, 1), 'utf8')
+    await rename(tmp, file)
+  }).catch(() => undefined)
+  return true
 }
 
 /** Verified releases in app storage, content-addressed: <cache>/releases/<manifest identity>/protocol.json exists
  *  only once that protocol.json was fetched from the official repository (or written by the fork) and matched the
  *  manifest whose identity names the folder, so a folder found by a project's manifest authenticates that manifest. */
 const releaseDir = (cacheDir: string, identity: string): string => join(cacheDir, 'releases', identity)
-export async function storeRelease(cacheDir: string, assetFiles: { path: string; sha256: string }[], protocol: Buffer): Promise<void> {
-  if (assetFiles.find((f) => f.path === 'protocol.json')?.sha256 !== sha256(protocol)) return
-  const dir = releaseDir(cacheDir, manifestIdentity(assetFiles))
+export async function storeRelease(cacheDir: string, assetFiles: { path: string; sha256: string }[], protocol: Buffer, assetRoot: string): Promise<void> {
+  const identity = manifestIdentity(assetFiles)
+  if (assetFiles.find((f) => f.path === 'protocol.json')?.sha256 !== sha256(protocol) || REVISION_ROOT.exec(assetRoot)?.[2] !== identity) return
+  const dir = releaseDir(cacheDir, identity)
   await mkdir(dir, { recursive: true })
-  const tmp = join(dir, `protocol.json.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`)
-  await writeFile(tmp, protocol)
-  await rename(tmp, join(dir, 'protocol.json'))
+  const put = async (name: string, data: Buffer | string) => {
+    const tmp = join(dir, `${name}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`)
+    await writeFile(tmp, data)
+    await rename(tmp, join(dir, name))
+  }
+  // which paper's revision folder it came from: a cache hit must be the same paper and folder (releaseBaseline)
+  await put('release.json', JSON.stringify({ assetRoot }) + '\n')
+  await put('protocol.json', protocol)
 }
 
 /** What the published checks treat as received when no release could be confirmed: nothing (protocol-readiness.ts). */
@@ -359,12 +396,14 @@ export async function releaseBaseline(cacheDir: string, project: string,
   if (!ctx) return 'unverified'
   const file = join(releaseDir(cacheDir, ctx.identity), 'protocol.json')
   const ok = (b: Buffer | null) => b && sha256(b) === ctx.protocolSha256 ? { protocol: b, assetFiles: ctx.assetFiles } : null
-  const cached = ok(await readFile(file).catch(() => null))
+  let from: unknown = null
+  try { from = JSON.parse(await readFile(join(releaseDir(cacheDir, ctx.identity), 'release.json'), 'utf8'))?.assetRoot } catch { /* none */ }
+  const cached = from === ctx.context.assetRoot ? ok(await readFile(file).catch(() => null)) : null
   if (cached) return cached
   if ((failedFetch.get(ctx.identity) ?? -Infinity) + RELEASE_RETRY_MS > now) return 'unverified'
   const got = ok(await fetchRelease(ctx.context).catch(() => null))
   if (!got) { failedFetch.set(ctx.identity, now); return 'unverified' }
   failedFetch.delete(ctx.identity)
-  await storeRelease(cacheDir, ctx.assetFiles, got.protocol).catch(() => undefined)
+  await storeRelease(cacheDir, ctx.assetFiles, got.protocol, ctx.context.assetRoot as string).catch(() => undefined)
   return got
 }

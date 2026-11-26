@@ -238,7 +238,7 @@ test('the release a project names is fetched only from its revision folder, with
  const release=Buffer.from('{"distribution":{"held":{}}}\n')
  const files=[{path:'protocol.json',sha256:createHash('sha256').update(release).digest('hex')}]
  const identity=createHash('sha256').update(JSON.stringify(files.map(({path,sha256})=>({path,sha256})))).digest('hex')
- const context={id:'paper_x',commit,assetRoot:`community/paper_x/revisions/${identity}`,assetFiles:files}
+ const context={id:'paper_x',commit,assetRoot:`community/paper_x/revisions/${identity}`,baseRevision:identity,assetFiles:files}
  const asked=[],saved=globalThis.fetch
  let body=()=>release
  globalThis.fetch=async(url,init)=>{asked.push({url:String(url),redirect:init?.redirect});return new Response(body())}
@@ -250,6 +250,10 @@ test('the release a project names is fetched only from its revision folder, with
   for(const assetRoot of ['community/paper_x/revisions/'+'e'.repeat(64),`community/../revisions/${identity}`,`community/./revisions/${identity}`,`studies/study_001/${identity}`])
    assert.equal(await lib.fetchReleasedProtocol({...context,assetRoot}),null,assetRoot)
   assert.equal(await lib.fetchReleasedProtocol({...context,commit:'main'}),null)
+  // a valid revision folder of another paper, or another revision than the fork recorded
+  assert.equal(await lib.fetchReleasedProtocol({...context,id:'paper_y'}),null)
+  assert.equal(await lib.fetchReleasedProtocol({...context,assetRoot:`community/paper_y/revisions/${identity}`}),null)
+  assert.equal(await lib.fetchReleasedProtocol({...context,baseRevision:'e'.repeat(64)}),null)
   assert.equal(asked.length,n)
   // other bytes, or more than the cap (streamed), are refused
   body=()=>Buffer.from('{"edited":true}')

@@ -372,7 +372,12 @@ export async function fetchReleasedProtocol(context: Record<string, unknown>): P
     const want = files.find((f) => f.path === 'protocol.json')?.sha256
     const commit = context.commit, root = context.assetRoot
     if (typeof want !== 'string' || typeof commit !== 'string' || !/^[0-9a-f]{40}$/.test(commit) || typeof root !== 'string'
-      || !RELEASE_ROOT.test(root) || root.split('/').some((p) => p === '.' || p === '..') || !root.endsWith('/' + manifestIdentity(files))) return null
+      || !RELEASE_ROOT.test(root) || root.split('/').some((p) => p === '.' || p === '..')) return null
+    // this project's own paper and revision: the folder names the paper id and the manifest identity, which is also
+    // the revision the fork recorded
+    const identity = manifestIdentity(files)
+    const revision = context.baseRevision ?? context.currentRevision
+    if (typeof context.id !== 'string' || root !== `community/${context.id}/revisions/${identity}` || revision !== identity) return null
     const url = new URL(`https://raw.githubusercontent.com/${OWNER_REPO}/${commit}/${root}/protocol.json`)
     if (url.host !== 'raw.githubusercontent.com' || url.pathname !== `/${OWNER_REPO}/${commit}/${root}/protocol.json`) return null
     const ctrl = new AbortController()
@@ -466,7 +471,7 @@ export async function forkCommunityStudy(
     if (protocolRelease) {
       await repinHeld(join(cacheDir!, 'original-text'), dir)
       // the verified release, so the published checks and downloads never need to fetch it again (releaseBaseline)
-      await storeRelease(join(cacheDir!, 'original-text'), detail.assetFiles || [], assets.find(f => f.path === 'protocol.json')!.raw).catch(() => undefined)
+      await storeRelease(join(cacheDir!, 'original-text'), detail.assetFiles || [], assets.find(f => f.path === 'protocol.json')!.raw, root).catch(() => undefined)
     }
     return dir
   }

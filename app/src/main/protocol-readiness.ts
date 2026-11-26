@@ -9,7 +9,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join, sep } from 'node:path'
 import type { ProtocolBudget } from '../shared/run-limits'
 
-export interface ProtocolProblem { check: string; reason: string }
+/** `retry`: the outcome depends on something that may become available without any study file changing (the
+ *  Library release, while it cannot be fetched): never kept by the readiness cache. */
+export interface ProtocolProblem { check: string; reason: string; retry?: boolean }
 
 /** Random-answer sessions the gate plays (the converter's own gate plays 1,000). */
 export const PROTOCOL_SESSIONS = 50
@@ -165,6 +167,11 @@ function verbatimTexts(o: unknown, out: VerbatimText[] = [], top = true): Verbat
       if (!field || d[field] === undefined) continue
       const inline = d[field] && typeof d[field] === 'object' && !Array.isArray(d[field]) && typeof (d[field] as Record<string, unknown>).text === 'string'
         ? d[field] as Record<string, unknown> : null
+      // anchors ({left, right, ...}) are each a text of their own with the shared cite (check_verbatim walks them so)
+      if (k === 'anchors_cite' && d.anchors && typeof d.anchors === 'object' && !Array.isArray(d.anchors)) {
+        for (const lab of Object.values(d.anchors as Record<string, unknown>)) add(lab, cite)
+        continue
+      }
       add(inline ? inline.text : d[field], cite)
       for (const sp of [inline?.spans, k === 'cite' ? d.spans : undefined].flatMap((x) => (Array.isArray(x) ? x : [])))
         if (sp && typeof sp === 'object' && typeof (sp as Record<string, unknown>).tooltip === 'string') add((sp as Record<string, unknown>).tooltip, cite)
@@ -182,6 +189,12 @@ function verbatimTexts(o: unknown, out: VerbatimText[] = [], top = true): Verbat
  *  restored; the held list is pinned) and a text it checks against the project's own sourcetext/ file of a source
  *  that is not held and not read from an image. A Library study whose release could not be fetched yet
  *  (UNVERIFIED_RELEASE, original-text.ts releaseBaseline) has nothing received; the next check tries again. */
+/** True while the Library release a published study is checked against is not confirmed (UNVERIFIED_RELEASE). */
+export async function releaseUnconfirmed(project: string): Promise<boolean> {
+  const received = await receivedProtocol(project).catch(() => null)
+  return Boolean(received && typeof received === 'object' && (received as Record<string, unknown>).humanstudyRelease === 'unverified')
+}
+
 async function editedVerbatimTexts(project: string): Promise<ProtocolProblem[]> {
   const received = await receivedProtocol(project).catch(() => null)
   if (!received || typeof received !== 'object') return []
@@ -202,7 +215,7 @@ async function editedVerbatimTexts(project: string): Promise<ProtocolProblem[]> 
     else others++
   }
   const out: ProtocolProblem[] = []
-  if (unverified && images + others) return [{ check: 'verbatim', reason: `This study's published version could not be fetched from the Library yet, so ${images + others} text(s) cited word for word cannot be checked against their source. Connect to the internet and check again.` }]
+  if (unverified && images + others) return [{ check: 'verbatim', reason: `This study's published version could not be fetched from the Library yet, so ${images + others} text(s) cited word for word cannot be checked against their source. Connect to the internet and check again.`, retry: true }]
   if (images) out.push({ check: 'verbatim', reason: `${images} text(s) read from a page image of the paper were changed on this computer, so they can no longer be checked against the paper. Put back the wording as published, or keep the change as a separate, labelled variant.` })
   if (others) out.push({ check: 'verbatim', reason: `${others} text(s) cited word for word from a source this study does not include were changed on this computer (their wording or their citation), so they can no longer be checked against that source. Put back the wording as published, or keep the change as a separate, labelled variant.` })
   return out
@@ -393,7 +406,11 @@ export async function protocolReadiness(python: string | null, engine: [string, 
       if (run.limit) return [ENGINE_LIMIT]
       if (/\bMemoryError\b/.test(run.stderr) && !run.stdout.includes('{')) return [ENGINE_LIMIT]
       const found = protocolOutcome(run.stdout, run.stderr)
-      return (await publicMode(project)).length ? [...found, ...await editedVerbatimTexts(project)] : found
+      if (!(await publicMode(project)).length) return found
+      // without the Library release the held sources' check texts lack the released strings: whatever fails now may
+      // pass once it is fetched, so nothing found is kept by the readiness cache
+      const all = [...found, ...await editedVerbatimTexts(project)]
+      return (await releaseUnconfirmed(project)) ? all.map((p) => ({ ...p, retry: true })) : all
     })
   } catch { return [ENGINE_FAILED] }
 }

@@ -177,9 +177,22 @@ export async function scanProject(root: string, limits: Limits = LIMITS, publish
 /** A released (Library) study (original-text.ts releasedStudy): `shipped` holds the sha256 of every file its
  *  release manifest lists (empty while the release is not confirmed). */
 export interface Released { shipped: ReadonlySet<string> }
-/** Files the original-wording restore can read (original-text.ts candidateFiles, picture fills): paper.pdf, anything
- *  under sources/, and any PDF or image in the project. */
-const RESTORABLE = /^(?:paper\.pdf|sources\/.+|.+\.(?:pdf|png|jpe?g|gif|webp|bmp|tiff?|svg))$/i
+/** Files that can carry a released study's restored wording, by name: what the original-wording restore reads
+ *  (original-text.ts candidateFiles: paper.pdf, anything under sources/), any PDF or image, and the generated preview
+ *  and its backup (preview-preparation.ts), which can embed a local picture. */
+const RESTORABLE = /^(?:paper\.pdf|sources\/.+|artifacts\/preview(?:\.prev)?\.html|.+\.(?:pdf|png|jpe?g|gif|webp|bmp|tiff?|svg))$/i
+/** ... and by content, whatever the name: a PDF, or a picture the fills file accepts (hs_original_text.py
+ *  picture_file: PNG, JPEG, GIF, WebP). */
+export const restorableBytes = (b: Uint8Array): boolean => {
+  const head = Buffer.from(b.subarray(0, 12))
+  return head.subarray(0, 5).toString('latin1') === '%PDF-' || head.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
+    || head.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex')) || ['GIF87a', 'GIF89a'].includes(head.subarray(0, 6).toString('latin1'))
+    || (head.subarray(0, 4).toString('latin1') === 'RIFF' && head.subarray(8, 12).toString('latin1') === 'WEBP')
+}
+/** Whether a released study's file stays back: it can carry restored wording (by name or content) and its bytes are
+ *  not a file the release shipped. Decided on the very bytes that would be written. */
+export const keptBack = (rel: string, data: Uint8Array, released: Released): boolean =>
+  (RESTORABLE.test(rel) || restorableBytes(data)) && !released.shipped.has(sha256(data))
 /** Undo keeps the whole earlier conversation here (threads-core.ts fromNative): never in a study file. */
 const UNDO_ARCHIVE = '.humanstudy/thread-history/'
 
@@ -189,11 +202,10 @@ const UNDO_ARCHIVE = '.humanstudy/thread-history/'
 export async function exportFiles(root: string, limits: Limits, o: { published?: boolean; released?: Released }): Promise<ScannedFile[]> {
   const files = (await scanProject(root, limits, o.published === true || Boolean(o.released))).filter((f) => !f.path.startsWith(UNDO_ARCHIVE))
   if (!o.released) return files
-  const shipped = o.released.shipped
   for (const f of files) {
-    if (f.kind !== 'study' || !RESTORABLE.test(f.path)) continue
+    if (f.kind !== 'study') continue
     const bytes = await readFile(join(root, ...f.path.split('/'))).catch(() => null)
-    if (!bytes || !shipped.has(sha256(bytes))) f.kind = 'private'
+    if (!bytes || keptBack(f.path, bytes, o.released)) f.kind = 'private'
   }
   return files
 }
@@ -580,7 +592,8 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
   // An ordinary project's private files are included (the researcher's own copy); a released study's stay on this
   // computer, since the file may be handed on and they can hold wording the release holds back. The chat history
   // can be left out.
-  const chosen = (await exportFiles(root, limits, o)).filter((f) =>
+  // a released study's files are decided again on the bytes written (keptBack), never on an earlier read
+  const chosen = (await exportFiles(root, limits, { ...o, released: undefined, published: o.published === true || Boolean(o.released) })).filter((f) =>
     f.kind === 'study' || (f.kind === 'private' && !o.released) || (f.kind === 'conversation' && o.conversations === true))
   if (chosen.length > limits.maxFiles) fail('too-large', `more than ${limits.maxFiles} files`)
   let planned = 0
@@ -600,6 +613,7 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
     const zip = new ZipWriter(fh, now)
     for (const f of chosen) {
       let data: Buffer = await readFile(join(root, ...f.path.split('/')))
+      if (o.released && f.kind === 'study' && keptBack(f.path, data, o.released)) continue
       if (isThread(f.path)) data = withoutNativeSession(data)
       if (data.length > limits.maxFileBytes) fail('too-large', `a file larger than ${limits.maxFileBytes} bytes`, f.path)
       total += data.length

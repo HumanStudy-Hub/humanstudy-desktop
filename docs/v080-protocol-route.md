@@ -365,8 +365,11 @@ computer:
   skipped). That release is never the project's own copy: the fork stores it, verified, under
   `<userData>/original-text/releases/<manifest identity>/`, and otherwise it is fetched from the official repository
   at the recorded commit (only `community/<paper>/revisions/<identity>/protocol.json`, no redirects, 20 MB cap,
-  sha256 checked; `releaseBaseline`, community.ts `fetchReleasedProtocol`). While it cannot be fetched nothing is
-  stored, every verbatim text other than a held placeholder blocks, and a later check tries again (30 s apart). A
+  sha256 checked; `releaseBaseline`, community.ts `fetchReleasedProtocol`). The paper id, the revision folder, the
+  recorded base revision and the manifest identity must all agree, on a cache hit (the stored release remembers its
+  folder) and on a fetch. While it cannot be fetched nothing is stored, every verbatim text other than a held
+  placeholder blocks, and a later check tries again (30 s apart); such outcomes are marked `retry` and never kept by
+  the readiness caches (package-readiness.ts, the restored-copy check in index.ts). A
   text added or changed on this computer, or one whose cite changed, including released wording copied into another
   field, blocks unless the engine checks it against the project's own sourcetext/ file of a source that is not held
   and it was not read from a page image (`protocol-readiness.ts` editedVerbatimTexts).
@@ -391,10 +394,12 @@ computer:
   into a published study goes to `sources/private/` (never exported or collected) and never becomes paper.pdf. The
   project gets `.humanstudy/original-text.json`: counts, titles, formats and what each source needs, no wording.
   "Download this study" (`study-transfer.ts`) of a released study (a Library protocol release, or held wording:
-  `releasedStudy`) lists but never includes private files (sources/private/ with the fills file, sources/researcher/,
-  original-text/ folders, run outputs) and every file the restore could read (paper.pdf, anything under sources/,
-  any PDF or image) unless its sha256 is a file the verified release shipped; while the release is unconfirmed none
-  counts as shipped. Its chat history is left out unless ticked. An ordinary project's download is as before. Undo's
+  `releasedStudy`; once classified so, always: `<userData>/original-text/released.json` and the held-list pins; an
+  unreadable or unverifiable community.json counts) lists but never includes private files (sources/private/ with the
+  fills file, sources/researcher/, original-text/ folders, run outputs) and every file that can carry restored
+  wording (paper.pdf, anything under sources/, any PDF or image by name or by content, the generated
+  artifacts/preview.html and its backup) unless its sha256 is a file the verified release shipped, decided on the
+  very bytes written; while the release is unconfirmed none counts as shipped. The restore never follows a link. Its chat history is left out unless ticked. An ordinary project's download is as before. Undo's
   archive of earlier conversations (.humanstudy/thread-history) never goes into a download (project sync keeps it).
   Community sharing and publishing never include any of these. Project sync, private per account, carries them.
 - **Wording pasted into the chat.** When the researcher pastes a passage for the fills file, the message is an
