@@ -697,19 +697,21 @@ class Round3(unittest.TestCase):
               % ({k: a["tokens_per_member"] for k, a in b["arms"].items()}, b["arms"]["a1"]["calls"], format(needed, ",")))
         return b, needed
 
-    def test_1_the_survey_budget_dropped(self):
-        """The reservation for 2 conditions x 60 participants x 20 pages of modest text: about 25M (it was about 70-87M
-        at f33c68a and about 35M before this PR). Guards against it growing again."""
+    def test_1_an_ordinary_survey_fits_the_ceiling(self):
+        """2 conditions x 60 participants x 20 pages of modest text fit the 16,000,000 ceiling now that the relay
+        reserves tokens (text bytes / 3), not bytes. Guard: the figure must not creep back up."""
         b, needed = self.measure_survey()
         self.assertEqual(b["output_tokens"], 768)
-        self.assertLess(needed, 26_000_000)
+        self.assertLess(needed, 16_000_000)
+        self.assertLess(needed, 12_500_000, "guard on the measured figure (about 11.5M when written)")
 
-    @unittest.expectedFailure
-    def test_1_the_survey_fits_the_ceiling(self):
-        """Not yet: the relay reserves request BYTES as tokens, so 20 pages that each repeat the earlier pages need
-        about 7,000 per call x 20 x 1.5 x 121 members. Fitting 16,000,000 needs a decision on the relay's counting or
-        the ceiling (reported to the owner, not changed here)."""
-        self.assertLess(self.measure_survey()[1], 16_000_000)
+    def test_1_budget_and_relay_reserve_alike(self):
+        import budget
+        self.assertEqual(budget.BYTES_PER_TOKEN, 3)
+        self.assertEqual(budget.tokens_of(10), 4)
+        body = {"model": budget.MODEL_PLACEHOLDER, "messages": [{"role": "system", "content": "S"}, {"role": "user", "content": "页面"}],
+                "temperature": 1.0, "max_tokens": 768}
+        self.assertEqual(budget.call_charge("S", "页面", 0, 768), -(-len(json.dumps(body).encode()) // 3) + 512 + 768)
 
     def test_2_raw_answers_for_replay_stay_private(self):
         sys.path.insert(0, str(RUNTIME / "hsenv"))

@@ -13,7 +13,8 @@ page asking for a long free-text answer), every earlier free-text answer adds CA
 text than the oracle), and every picture on the page is reserved as an image the model may be shown
 (participants.IMAGE_RESERVE_TOKENS, as the relay charges it), so the budget does not depend on
 simulation/participants.json or the model chosen. The relay reserves, per call, the request body's bytes (JSON as
-humanstudy_llm sends it, non-ASCII escaped) + 256 per message + the output limit; this counts the same. Prints one JSON line:
+humanstudy_llm sends it, non-ASCII escaped) / 3 + 256 per message + the output limit, and settles each call at the
+provider's reported usage; this counts the same reservation. Prints one JSON line:
 
     {"arms": {"<arm>": {"group_size": g, "calls": c, "tokens_per_member": t}}, "output_tokens": 768}
 
@@ -37,6 +38,7 @@ import participants as _participants   # noqa: E402
 
 OUTPUT_TOKENS = _participants.OUTPUT_TOKENS   # a page's output limit (participants.output_limit; LONG_OUTPUT_TOKENS for long text)
 PER_MESSAGE = 256            # the relay's reserve per message
+BYTES_PER_TOKEN = 3          # model-relay.ts BYTES_PER_TOKEN: the relay reserves ceil(text bytes / 3) input tokens
 # refused answers, longer replies in the history, retries, and about 10% of pages asked once more because the reply
 # could not be read (app_run's single re-ask): all inside this one margin
 MARGIN = 1.5
@@ -51,14 +53,19 @@ MODEL_PLACEHOLDER = "m" * 120
 
 def call_charge(system: str, page: str, images: int = 0, output: int | None = None) -> int:
     """What the relay reserves for one call of the default f: the request body exactly as humanstudy_llm.chat
-    serialises it, + 256 per message + the page's output limit (participants.output_limit), + per picture the
-    relay's image reserve and its part."""
+    serialises it, divided by 3 (rounded up), + 256 per message + the page's output limit (participants.output_limit),
+    + per picture the relay's image reserve and its part."""
     import participants
     output = output or participants.OUTPUT_TOKENS
     body = {"model": MODEL_PLACEHOLDER, "messages": [{"role": "system", "content": system}, {"role": "user", "content": page}],
             "temperature": 1.0, "max_tokens": output}
     pictures = images * (participants.IMAGE_RESERVE_TOKENS + participants.IMAGE_PART_BYTES) + (32 if images else 0)
-    return len(json.dumps(body).encode("utf-8")) + 2 * PER_MESSAGE + output + pictures
+    return tokens_of(len(json.dumps(body).encode("utf-8"))) + 2 * PER_MESSAGE + output + pictures
+
+
+def tokens_of(text_bytes: int) -> int:
+    """The relay's input-token reservation for this many request bytes (model-relay.ts callReservation)."""
+    return -(-int(text_bytes) // BYTES_PER_TOKEN)
 
 
 def text_ids(state) -> set:
@@ -99,7 +106,7 @@ def measure(project: Path, scratch: Path, per_arm: int = 3) -> dict:
         def g(state, ctx):
             texts.update(text_ids(state))
             charge = call_charge(system, render.render_state(state), pictures(state), participants.output_limit(state)) \
-                + carried_text(state, texts)
+                + tokens_of(carried_text(state, texts))
             seen.setdefault((ctx.participant, ctx.member), []).append(charge)
             return f(state, ctx)
         g.needs_operator = getattr(f, "needs_operator", False)

@@ -18,8 +18,9 @@ arm on its own. The calls and prompt lengths per session of each arm are average
 tokens: a heuristic, not a tokenizer; free-text screens run longer.
 
 It also says whether one run fits the hosted model relay of a macOS simulation (simulate/SKILL.md): the
-relay reserves, per call, the request body's bytes + 256 per message + the call's output limit (4,096 when
-none is given), never refunded, and stops at 200,000 reserved tokens or after 30 minutes. The numbers are the
+relay reserves, per call, the request body's bytes / 3 (rounded up) + 256 per message + the call's output limit
+(4,096 when none is given), settles each call at the provider's reported usage, and stops at 200,000 reserved
+tokens or after 30 minutes. This counts the reservation (an upper bound). The numbers are the
 RELAY_* constants below, copied from the app's relay (app/src/main/model-relay.ts, startModelRelay); change
 them together. The time is a rough guess (RELAY_CONCURRENCY calls at once, SECONDS_PER_CALL each).
 
@@ -44,6 +45,7 @@ RELAY_TOKEN_CAP = 200_000      # reserved tokens per run
 RELAY_MINUTES = 30             # the relay closes after this
 RELAY_DEFAULT_MAX_TOKENS = 4096   # reserved per call when the request names no output limit
 RELAY_PER_MESSAGE = 256        # reserved per message (framing)
+RELAY_BYTES_PER_TOKEN = 3      # model-relay.ts BYTES_PER_TOKEN: request bytes per reserved input token
 BODY_FRAME = 80                # {"model": ..., "messages": [{"role": "user", "content": ...}]} around the prompt
 RELAY_CONCURRENCY = 8          # humanstudy_llm's default HUMANSTUDY_LLM_CONCURRENCY
 SECONDS_PER_CALL = 4           # rough model latency
@@ -92,7 +94,8 @@ def estimate(capture, n, price_in=1.0, price_out=5.0, max_tokens=None, agents=1)
         calls = r["calls"] / sessions
         body = (r.get("bodyChars") or sum(r.get("lengths") or [])) / sessions
         per_arm[r["arms"][0] if r.get("arms") else ("run", index)] = (
-            calls, sum(r.get("lengths") or []) / sessions, body + calls * (BODY_FRAME + RELAY_PER_MESSAGE + out_limit))
+            calls, sum(r.get("lengths") or []) / sessions,
+            (body + calls * BODY_FRAME) / RELAY_BYTES_PER_TOKEN + calls * (RELAY_PER_MESSAGE + out_limit))
     mean = tuple(statistics.mean(v[i] for v in per_arm.values()) for i in range(3))
     # Cell sizes: each arm by its own n; an arm the stand-in run did not measure takes the mean over arms.
     cells = {k: v for k, v in n.items() if v} if isinstance(n, dict) else {None: n}

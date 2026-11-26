@@ -232,15 +232,21 @@ model as OpenAI-style `image_url` parts with inline data URLs; otherwise text on
 one call per page, and each prompt carries every earlier page and answer.
 - When protocol.json passes its checks, the app measures the run's budget with `skills/run/budget.py`. It runs
   confined, from the app's own copy, like the checks. It plays three random+gates participants per arm through
-  run_study and counts what the default renderer would send: bytes + 256 per message + the output limit per call,
+  run_study and counts what the relay reserves for what the default renderer would send: request bytes / 3 (rounded
+  up) + 256 per message + the output limit per call,
   with the longest participant system prompt a run may send (`participants.budget_system`, a 1,500-byte persona;
   app_run refuses longer ones), the page's output limit (768, or 2,048 for a long free-text answer), 5,000 tokens
   per picture on the page and 800 bytes per earlier free-text answer (a model writes longer text than the oracle).
   It keeps the largest member per arm, adds a 1.5x margin (which includes about 10% of pages asked once more) and
-  records group sizes. The relay counts request bytes as tokens, so a 20-page survey whose pages repeat the earlier
-  ones still reserves about 7,000 per call: 2 conditions × 60 participants × 20 pages need about 25,000,000, over
-  the 16,000,000 ceiling (it was about 35,000,000 before the participant changes); fitting it needs a decision on
-  the relay's counting or the ceiling.
+  records group sizes. 2 conditions × 60 participants × 20 pages of modest text need about 11,550,000 under the
+  16,000,000 ceiling (about 35,000,000 before, when the relay reserved bytes as tokens and 4,096 output tokens a
+  call).
+- The relay reserves tokens, not bytes (owner decision, review of PR #187): text bytes / 3, rounded up (`BYTES_PER_TOKEN`,
+  conservative for English, about a token per CJK character as `\uXXXX`), + 256 per message + 5,000 per picture
+  + the call's max_tokens. When the provider reports usage (prompt_tokens and completion_tokens, also through the
+  hosted endpoint), the call is settled at those tokens and the rest of its reservation is released; without usage
+  the reservation stands. A call that used more than it reserved counts its actual tokens, and once the cap is
+  reached no further call is issued (HTTP 402).
   - The fixture needs about 4,700 tokens per participant, a 33-page survey about 180,000, and a 4-person game
     about 2,000,000 per member.
 - The measurement counts each call's exact request body as `humanstudy_llm.chat` serialises it: JSON with

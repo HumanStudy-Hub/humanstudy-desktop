@@ -42,15 +42,15 @@ per call. Its token cap and lifetime follow the approved plan: 40,000 tokens per
 16,000,000; 0.2 minutes per participant, at least 30 and at most 120 minutes. Only text messages
 are supported. Do not retry a token-cap refusal.
 
-Each call reserves, before it runs: its request size in bytes + 256 per message + its output
-limit. `humanstudy_llm` (and `study_core.http_llm`) send an output limit of 512 tokens per call
+Each call reserves, before it runs: its request size in bytes / 3 (rounded up) + 256 per message + its
+output limit; when the provider answers, the call is settled at the tokens it reports and the rest is released. `humanstudy_llm` (and `study_core.http_llm`) send an output limit of 512 tokens per call
 by default, enough for a participant's answer with a short reason. In a run script you write, pass
 a larger `max_tokens` only to a call whose reply genuinely needs it (a long essay, a multi-question block), never as a
 blanket setting. Package adapters call `llm(prompt)` with no arguments; when a package's
 participants must write long replies (`task/task.json` has `"maxOutputTokens"`, or a trial run
 logs truncated replies), set `HUMANSTUDY_LLM_MAX_OUTPUT` to that number for the whole run instead,
 and count it in the estimate below. Before a real run, estimate one participant: the sum over its calls of (prompt
-bytes + 256 x messages + output limit), about 4,000 for a 3 KB prompt, more when a conversation
+bytes / 3 + 256 x messages + output limit), about 1,600 for a 3 KB prompt, more when a conversation
 resends its history. If that exceeds 40,000 (or the run would pass 16,000,000), say so in the run
 confirmation, with how many participants fit, instead of letting the cap stop the run halfway.
 Real upstream credentials stay in the app process.

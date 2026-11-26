@@ -35,6 +35,20 @@ export const MAX_REQUEST_BYTES = 4_000_000
 /** Reserved per picture instead of its base64 bytes (a model bills a picture by its pixels; Claude models stay under
  *  this); skills/run/participants.py IMAGE_RESERVE_TOKENS, which budget.py counts, must say the same. */
 export const IMAGE_RESERVE_TOKENS = 5000
+/** Request bytes per reserved input token: conservative for English (about 4 bytes a token) and about one token a
+ *  CJK character (6 bytes as \\uXXXX). skills/run/budget.py BYTES_PER_TOKEN must say the same. */
+export const BYTES_PER_TOKEN = 3
+/** What one call reserves before it runs: its text bytes / 3 (rounded up) + 256 per message + IMAGE_RESERVE_TOKENS per
+ *  picture + its output limit. */
+export const callReservation = (textBytes: number, messages: number, pictures: number, maxTokens: number): number =>
+  Math.ceil(textBytes / BYTES_PER_TOKEN) + 256 * messages + IMAGE_RESERVE_TOKENS * pictures + maxTokens
+/** The tokens a provider reports for a call (prompt + completion), or null when it reports none: the call then keeps
+ *  its reservation. */
+export function actualTokens(usage: any): number | null {
+  const ok = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0
+  if (ok(usage?.prompt_tokens) && ok(usage?.completion_tokens)) return usage.prompt_tokens + usage.completion_tokens
+  return null
+}
 const DATA_IMAGE = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/
 
 type Part = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
@@ -134,8 +148,9 @@ export async function startModelRelay(options: RelayOptions) {
       if (body.model !== options.model || !Array.isArray(body.messages) || !body.messages.length || body.stream) return fail(400, 'Unsupported model or request.')
       const max = body.max_tokens ?? body.max_completion_tokens ?? DEFAULT_OUTPUT_TOKENS
       if (!Number.isSafeInteger(max) || max < 1 || max > MAX_OUTPUT_TOKENS) return fail(400, 'Output limit must be 1–4096 tokens.')
-      // UTF-8 bytes upper-bound text tokens; extra framing reserve per message; a fixed reserve per picture. Tools,
-      // external URLs and provider-specific routing cannot bypass the reservation.
+      // Text bytes / 3 bound the input tokens; extra framing reserve per message; a fixed reserve per picture. Tools,
+      // external URLs and provider-specific routing cannot bypass the reservation. The call is settled at the
+      // provider's reported usage when it answers (callReservation, actualTokens).
       const contents = body.messages.map((m: any) => relayContent(m, options.images === true))
       const bad = contents.find((c: unknown) => typeof c === 'string')
       if (bad) return fail(400, bad)
@@ -143,7 +158,7 @@ export async function startModelRelay(options: RelayOptions) {
       const pictureBytes = contents.reduce((n: number, c: any) => n + c.pictureBytes, 0)
       if (pictures > MAX_IMAGES) return fail(413, 'Too many pictures in one request.')
       if (bytes - pictureBytes > MAX_TEXT_BYTES) return fail(413, 'Run request is too large.')
-      const charge = bytes - pictureBytes + IMAGE_RESERVE_TOKENS * pictures + 256 * body.messages.length + max
+      const charge = callReservation(bytes - pictureBytes, body.messages.length, pictures, max)
       if (reserved + charge > cap) return fail(402, 'Run token cap reached.')
       reserved += charge; held = charge // synchronous: concurrent requests cannot oversubscribe; refunded only when the provider rejects the call
       await logUsage({ event: 'reserved', model: options.model, reserved: charge })
@@ -172,7 +187,13 @@ export async function startModelRelay(options: RelayOptions) {
       const choices = Array.isArray(reply.choices) ? reply.choices.map((c: any, index: number) => ({ index, message: { role: 'assistant', content: typeof c.message?.content === 'string' ? c.message.content : '' }, finish_reason: c.finish_reason })) : []
       const usage = Object.fromEntries(['prompt_tokens', 'completion_tokens', 'total_tokens'].map(k => [k, Number.isSafeInteger(reply.usage?.[k]) && reply.usage[k] >= 0 ? reply.usage[k] : 0]))
       const finish = choices.map((c: any) => typeof c.finish_reason === 'string' ? c.finish_reason.slice(0, 32) : null)
-      await logUsage({ event: 'completed', model: options.model, reserved: charge, usage, finish_reason: finish[0] ?? null, truncated: finish.includes('length') })
+      // Settle at what the provider reports: the unused rest of the reservation is released, and a call that used more
+      // than it reserved counts its actual tokens (later calls are refused once the cap is reached). Without usage
+      // the reservation stands.
+      const actual = actualTokens(reply.usage)
+      const settled = actual ?? charge
+      reserved += settled - charge
+      await logUsage({ event: 'completed', model: options.model, reserved: charge, settled, settledFrom: actual === null ? 'reservation' : 'usage', usage, finish_reason: finish[0] ?? null, truncated: finish.includes('length') })
       res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ choices, usage, model: options.model }))
     } catch (error) {
       // A connection refused or a name that does not resolve never reached the provider: refund it too.

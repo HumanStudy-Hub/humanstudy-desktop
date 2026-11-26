@@ -67,7 +67,7 @@ test('output limit: absent reserves and forwards 512, alias becomes max_tokens, 
     const log = (await readFile(relayDescriptor(storage, project) + '.usage.jsonl', 'utf8')).trim().split('\n').map(l => JSON.parse(l))
     const reserved = log.filter(e => e.event === 'reserved').map(e => e.reserved)
     const bytes = Buffer.byteLength(JSON.stringify(base))
-    assert.equal(reserved[0], bytes + 256 + 512)
+    assert.equal(reserved[0], Math.ceil(bytes / 3) + 256 + 512, 'text bytes / 3 + 256 per message + the output limit')
     const completed = log.filter(e => e.event === 'completed')
     assert.deepEqual(completed.map(e => e.truncated), [false, false, true])
     assert.equal(completed[2].finish_reason, 'length')
@@ -252,7 +252,7 @@ test('pictures: a run whose upstream takes them passes inline images within the 
     assert.deepEqual(seen[0].messages[1].content, [{ type: 'text', text: 'page' }, img(big), img(png(8))], 'only text and url are forwarded')
     const log = (await readFile(relayDescriptor(storage, project) + '.usage.jsonl', 'utf8')).trim().split('\n').map(l => JSON.parse(l))
     const body = JSON.stringify(message(img(big), { type: 'image_url', image_url: { url: png(8), detail: 'high' }, extra: 1 }))
-    assert.equal(log.find(e => e.event === 'reserved').reserved, Buffer.byteLength(body) - big.length - png(8).length + 2 * R.IMAGE_RESERVE_TOKENS + 2 * 256 + 10)
+    assert.equal(log.find(e => e.event === 'reserved').reserved, Math.ceil((Buffer.byteLength(body) - big.length - png(8).length) / 3) + 2 * R.IMAGE_RESERVE_TOKENS + 2 * 256 + 10)
     // refused: an oversized picture, too many, a remote URL, a non-picture part, a picture outside a user message
     assert.equal((await call(message(img(png(R.MAX_IMAGE_BYTES))))).status, 400)
     assert.equal((await call(message(...Array.from({ length: R.MAX_IMAGES + 1 }, () => img(png(8)))))).status, 413)
@@ -267,5 +267,45 @@ test('pictures: a run whose upstream takes them passes inline images within the 
   try {
     assert.equal((await call(message(img(png(8))))).status, 400, 'text only unless the run passes images')
     assert.equal((await call({ model: 'allowed', max_tokens: 10, messages: [{ role: 'user', content: 'hello' }] })).status, 200)
+  } finally { await relay.close(); await new Promise(resolve => stub.close(resolve)) }
+})
+
+test('tokens, not bytes: a call reserves text bytes / 3 and is settled at the provider\'s usage; the cap still binds', async () => {
+  const R = await import(pathToFileURL(join(temp, 'relay.mjs')))
+  assert.equal(R.callReservation(3001, 2, 1, 768), 1001 + 512 + R.IMAGE_RESERVE_TOKENS + 768)
+  assert.equal(R.actualTokens({ prompt_tokens: 120, completion_tokens: 30, total_tokens: 150 }), 150)
+  assert.equal(R.actualTokens({ total_tokens: 3 }), null, 'no prompt/completion split: the reservation stands')
+  let usage = { prompt_tokens: 100, completion_tokens: 20 }
+  const stub = createServer(async (req, res) => {
+    for await (const _ of req) { /* drain */ }
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }], ...(usage ? { usage } : {}) }))
+  })
+  await new Promise(resolve => stub.listen(0, '127.0.0.1', resolve))
+  const project = join(temp, 'settle-project'); await mkdir(project)
+  const storage = join(temp, 'settle-app')
+  const relay = await startModelRelay({ project, storage, model: 'allowed', upstream: `http://127.0.0.1:${stub.address().port}`, key: 'k', tokenCap: 5000, publish: false })
+  const call = () => fetch(relay.baseURL + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${relay.token}` },
+    body: JSON.stringify({ model: 'allowed', max_tokens: 1000, messages: [{ role: 'user', content: 'hello' }] }) })
+  try {
+    // Each call reserves about 1,272 (bytes/3 + 256 + 1,000) but settles at 120: far more than four calls fit in 5,000.
+    for (let i = 0; i < 10; i++) assert.equal((await call()).status, 200, `call ${i}`)
+    const log = (await readFile(relayDescriptor(storage, project) + '.usage.jsonl', 'utf8')).trim().split('\n').map(l => JSON.parse(l))
+    const done = log.filter(e => e.event === 'completed')
+    assert.ok(done.every(e => e.settled === 120 && e.settledFrom === 'usage'))
+    // A call that uses more than it reserved counts its actual tokens; once the cap is reached no call is issued.
+    usage = { prompt_tokens: 3000, completion_tokens: 900 }
+    assert.equal((await call()).status, 200)
+    assert.equal((await call()).status, 402, '1,200 + 3,900 is over the 5,000 cap: refused')
+    // Without usage the reservation stands.
+    usage = null
+    const relay2 = await startModelRelay({ project: join(temp, 'settle-project'), storage: join(temp, 'settle-app2'), model: 'allowed', upstream: `http://127.0.0.1:${stub.address().port}`, key: 'k', tokenCap: 3000, publish: false })
+    const call2 = () => fetch(relay2.baseURL + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${relay2.token}` },
+      body: JSON.stringify({ model: 'allowed', max_tokens: 1000, messages: [{ role: 'user', content: 'hello' }] }) })
+    try {
+      assert.equal((await call2()).status, 200)
+      assert.equal((await call2()).status, 200)
+      assert.equal((await call2()).status, 402, 'three reservations of about 1,272 do not fit 3,000')
+    } finally { await relay2.close() }
   } finally { await relay.close(); await new Promise(resolve => stub.close(resolve)) }
 })

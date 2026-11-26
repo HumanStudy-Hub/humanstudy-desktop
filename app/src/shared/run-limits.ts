@@ -2,7 +2,7 @@
 // researcher approved (participants = conditions x per condition), by the main process for the relay
 // and by the Simulation tab for the run confirmation, so the two always state the same figures.
 
-/** Token reservation per AI participant. The relay reserves request bytes + 256 per message + the output
+/** Token reservation per AI participant. The relay reserves request bytes / 3 + 256 per message + the output
  *  limit (default 512) for every call: about 4,000 for a 3 KB prompt, so this covers five such calls, or
  *  a five-turn conversation whose history grows, plus a trial run. Reservations overstate real use. */
 export const TOKENS_PER_PARTICIPANT = 40_000
