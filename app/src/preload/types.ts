@@ -231,9 +231,14 @@ export interface StudyExportPreview {
   /** Study files that are always included (program, protocol, package, results, notes, the paper). */
   study: { files: number; bytes: number }
   hasPaper: boolean
-  /** The chat history (.humanstudy/threads), included unless the researcher unticks it. */
+  /** A released (Library) study: its private files are listed but stay on this computer, and the chat history is
+   *  never included (it may quote original wording the researcher supplied). */
+  released: boolean
+  /** The chat history (.humanstudy/threads), included unless the researcher unticks it (a released study: never). */
   conversations: { count: number; files: number; bytes: number }
-  /** Files the researcher supplied privately (sources/private/ and the like): included, like every project file. */
+  /** Files the researcher supplied privately (sources/private/ and the like): included, like every project file,
+   *  except in a released study (with every file the original-wording restore could read that the release did not
+   *  ship). */
   privateFiles: { path: string; bytes: number }[]
   /** The limits a study file has to stay within (the same ones checked when it is opened). */
   limits: { maxFiles: number; maxTotalBytes: number; maxFileBytes: number }
@@ -245,7 +250,8 @@ export interface StudyExportOptions {
 /** Plain reasons a study file could not be written or opened; the renderer words them (i18n `transfer.err_*`). */
 export type StudyTransferErrorCode = 'not-package' | 'newer' | 'damaged' | 'unsafe' | 'too-large' | 'not-project' | 'failed'
 export interface StudyTransferFailure { ok: false; code: StudyTransferErrorCode; file?: string; detail?: string }
-export type StudyExportResult = { ok: true; savedPath: string; bytes: number; files: number } | StudyTransferFailure
+/** `chatLeftOut`: a released (Library) study, whose chat history never goes in. */
+export type StudyExportResult = { ok: true; savedPath: string; bytes: number; files: number; chatLeftOut?: boolean } | StudyTransferFailure
 export type StudyImportResult =
   | { ok: true; dir: string; name: string; renamed: boolean; conversations: number; privateFiles: number }
   | StudyTransferFailure

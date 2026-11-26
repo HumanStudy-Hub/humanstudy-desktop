@@ -9,7 +9,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join, sep } from 'node:path'
 import type { ProtocolBudget } from '../shared/run-limits'
 
-export interface ProtocolProblem { check: string; reason: string }
+/** `retry`: the outcome depends on something that may become available without any study file changing (the
+ *  Library release, while it cannot be fetched): never kept by the readiness cache. */
+export interface ProtocolProblem { check: string; reason: string; retry?: boolean }
 
 /** Random-answer sessions the gate plays (the converter's own gate plays 1,000). */
 export const PROTOCOL_SESSIONS = 50
@@ -137,28 +139,96 @@ function releasedStrings(o: unknown, out: string[] = [], top = true): string[] {
 const canonical = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x)
   ? Object.fromEntries(Object.entries(x as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1))) : x))
 
-/** Every object carrying a verbatim cite read from a page image (`cite` or `*_cite` with read: "image"), canonical. */
-function imageReadTexts(o: unknown, out: string[] = []): string[] {
-  if (Array.isArray(o)) for (const v of o) imageReadTexts(v, out)
+/** The fields that can hold a cited text's wording next to its `cite`, in the order checks.py check_verbatim reads
+ *  them. A `<field>_cite` cites its own field. */
+const WORDING = ['value', 'text', 'label', 'prompt'] as const
+const PLACEHOLDER_ONLY = /^░+$/
+/** NFC and the engine's whitespace rule (checks.py _norm: runs of whitespace are one space, trimmed). */
+const normWording = (v: unknown): unknown => typeof v === 'string' ? v.normalize('NFC').replace(/\s+/g, ' ').trim()
+  : Array.isArray(v) ? v.map(normWording)
+  : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, normWording(x)])) : v
+interface VerbatimText { key: string; source: unknown; image: boolean; held: boolean }
+/** Every text a protocol cites verbatim, the way checks.py check_verbatim reads them: its plain wording, normalised,
+ *  with its cite (canonical), never the name of the field it sits in nor its styling spans, so the same wording with
+ *  the same cite in any valid form is the same key. An object with a `cite` contributes its first wording field (an
+ *  inline text dict counting as its text); a `<field>_cite` contributes that field; each span tooltip is a text of
+ *  its own with the same cite. Only the top-level `distribution` block is skipped. `held`: the wording is a held
+ *  placeholder (checked by its hash). */
+function verbatimTexts(o: unknown, out: VerbatimText[] = [], top = true): VerbatimText[] {
+  if (Array.isArray(o)) for (const v of o) verbatimTexts(v, out, false)
   else if (o && typeof o === 'object') {
     const d = o as Record<string, unknown>
-    if (Object.entries(d).some(([k, c]) => (k === 'cite' || k.endsWith('_cite')) && c && typeof c === 'object'
-      && (c as Record<string, unknown>).label === 'verbatim' && (c as Record<string, unknown>).read === 'image')) out.push(canonical(d))
-    for (const [k, v] of Object.entries(d)) if (k !== 'distribution') imageReadTexts(v, out)
+    const add = (wording: unknown, cite: Record<string, unknown>) => out.push({ key: canonical({ wording: normWording(wording), cite }),
+      source: cite.source, image: cite.read === 'image', held: typeof wording === 'string' && PLACEHOLDER_ONLY.test(wording) })
+    for (const [k, c] of Object.entries(d)) {
+      if (!(k === 'cite' || k.endsWith('_cite')) || !c || typeof c !== 'object' || (c as Record<string, unknown>).label !== 'verbatim') continue
+      const cite = c as Record<string, unknown>
+      // only the field the engine renders: `value` if present, else `text` (engine.py _make_page), then label and
+      // prompt; so a value added beside a released text, or value and text swapped, is a local text
+      const rendered = k === 'cite' ? WORDING.find((f) => d[f] !== undefined) : k.slice(0, -'_cite'.length)
+      const fields = rendered !== undefined && d[rendered] !== undefined ? [rendered] : []
+      for (const field of fields) {
+        const inline = d[field] && typeof d[field] === 'object' && !Array.isArray(d[field]) && typeof (d[field] as Record<string, unknown>).text === 'string'
+          ? d[field] as Record<string, unknown> : null
+        // an inline text dict with a cite of its own is checked once, with that cite (check_verbatim: the inner cite
+        // wins), when the walk reaches it
+        if (inline && inline.cite !== undefined) continue
+        // anchors ({left, right, ...}) are each a text of their own with the shared cite (check_verbatim walks them so)
+        if (k === 'anchors_cite' && d.anchors && typeof d.anchors === 'object' && !Array.isArray(d.anchors)) {
+          for (const lab of Object.values(d.anchors as Record<string, unknown>)) add(lab, cite)
+          continue
+        }
+        add(inline ? inline.text : d[field], cite)
+        for (const sp of [inline?.spans, k === 'cite' && field === fields[0] ? d.spans : undefined].flatMap((x) => (Array.isArray(x) ? x : [])))
+          if (sp && typeof sp === 'object' && typeof (sp as Record<string, unknown>).tooltip === 'string') add((sp as Record<string, unknown>).tooltip, cite)
+      }
+    }
+    // nested texts (inline {text, cite} objects) only inside the rendered wording field: the others are never shown
+    const shown = WORDING.find((f) => d[f] !== undefined)
+    for (const [k, v] of Object.entries(d))
+      if (!(top && k === 'distribution') && !((WORDING as readonly string[]).includes(k) && k !== shown)) verbatimTexts(v, out, false)
   }
   return out
 }
 
-/** In public mode the engine leaves a text read from a page image without shipped readings to Bench's private
- *  check, so it cannot see a change made on this computer: such a text (with its cite) must be exactly as received. */
-async function editedImageReadings(project: string): Promise<ProtocolProblem[]> {
+/** In public mode the engine cannot verify a verbatim text made or changed on this computer: a text read from a page
+ *  image, or cited from a source whose text was not shipped, is left to Bench's private check, and a held source's
+ *  check text holds every released string (heldSourceTexts), so released wording copied into another field is found.
+ *  Every verbatim text (its wording with its cite) must therefore be one the study was received with; a text may
+ *  move, but each received text counts once. Left to the engine: a held placeholder (checked by its hash once
+ *  restored; the held list is pinned) and a text it checks against the project's own sourcetext/ file of a source
+ *  that is not held and not read from an image. A Library study whose release could not be fetched yet
+ *  (UNVERIFIED_RELEASE, original-text.ts releaseBaseline) has nothing received; the next check tries again. */
+/** True while the Library release a published study is checked against is not confirmed (UNVERIFIED_RELEASE). */
+export async function releaseUnconfirmed(project: string): Promise<boolean> {
+  const received = await receivedProtocol(project).catch(() => null)
+  return Boolean(received && typeof received === 'object' && (received as Record<string, unknown>).humanstudyRelease === 'unverified')
+}
+
+async function editedVerbatimTexts(project: string): Promise<ProtocolProblem[]> {
   const received = await receivedProtocol(project).catch(() => null)
   if (!received || typeof received !== 'object') return []
+  const unverified = (received as Record<string, unknown>).humanstudyRelease === 'unverified'
   let now: unknown
   try { now = JSON.parse(await readFile(join(project, 'protocol.json'), 'utf8')) } catch { return [] }
-  const shipped = new Set(imageReadTexts(received))
-  const changed = imageReadTexts(now).filter((x) => !shipped.has(x)).length
-  return changed ? [{ check: 'verbatim', reason: `${changed} text(s) read from a page image of the paper were changed on this computer, so they can no longer be checked against the paper. Put back the wording as published, or keep the change as a separate, labelled variant.` }] : []
+  const held = await heldSources(project)
+  const own = new Set((await sourceTextArgs(project)).filter((_, i, a) => i > 0 && a[i - 1] === '--source-text').map((x) => x.split('=')[0]))
+  const shipped = new Map<string, number>()
+  if (!unverified) for (const t of verbatimTexts(received)) shipped.set(t.key, (shipped.get(t.key) ?? 0) + 1)
+  let images = 0, others = 0
+  for (const t of verbatimTexts(now)) {
+    const left = shipped.get(t.key) ?? 0
+    if (left > 0) { shipped.set(t.key, left - 1); continue }
+    if (t.held) continue
+    if (t.image) images++
+    else if (typeof t.source === 'string' && own.has(t.source) && !held.has(t.source)) continue
+    else others++
+  }
+  const out: ProtocolProblem[] = []
+  if (unverified && images + others) return [{ check: 'verbatim', reason: `This study's published version could not be fetched from the Library yet, so ${images + others} text(s) cited word for word cannot be checked against their source. Connect to the internet and check again.`, retry: true }]
+  if (images) out.push({ check: 'verbatim', reason: `${images} text(s) read from a page image of the paper were changed on this computer, so they can no longer be checked against the paper. Put back the wording as published, or keep the change as a separate, labelled variant.` })
+  if (others) out.push({ check: 'verbatim', reason: `${others} text(s) cited word for word from a source this study does not include were changed on this computer (their wording or their citation), so they can no longer be checked against that source. Put back the wording as published, or keep the change as a separate, labelled variant.` })
+  return out
 }
 
 /** For a published protocol.json: per held source, the text its served strings must be found in, by the engine's own
@@ -195,7 +265,8 @@ export async function heldSourceTexts(project: string, restored?: Record<string,
     // held fields (checked by Bench against the source) is found as released, while a text changed or added on
     // this computer is not, so it still blocks
     const received = await receivedProtocol(project).catch(() => null)
-    const shipped = received && typeof received === 'object' ? releasedStrings(received).join('\n') : ''
+    const shipped = received && typeof received === 'object' && (received as Record<string, unknown>).humanstudyRelease !== 'unverified'
+      ? releasedStrings(received).join('\n') : ''
     for (const [k, list_] of pieces)
       out.set(k, (restored ? list_.join('\n') : list_.reduce((a, b) => (b.length > a.length ? b : a), '')) + (shipped ? '\n' + shipped : ''))
   } catch { /* unreadable: the checks report it */ }
@@ -332,6 +403,7 @@ export async function protocolReadiness(python: string | null, engine: [string, 
   if (!engine.some(([rel]) => rel === 'hsenv/checks.py')) return [ENGINE_FAILED]
   const incompatible = await requiredEngine(project, engine)
   if (incompatible) return [incompatible]
+  const unconfirmed = await releaseUnconfirmed(project)   // the snapshot the retry mark is decided by
   try {
     return await withScratch(engine, async (work, home) => {
       const held: string[] = []
@@ -345,7 +417,12 @@ export async function protocolReadiness(python: string | null, engine: [string, 
       if (run.limit) return [ENGINE_LIMIT]
       if (/\bMemoryError\b/.test(run.stderr) && !run.stdout.includes('{')) return [ENGINE_LIMIT]
       const found = protocolOutcome(run.stdout, run.stderr)
-      return (await publicMode(project)).length ? [...found, ...await editedImageReadings(project)] : found
+      if (!(await publicMode(project)).length) return found
+      // without the Library release the held sources' check texts lack the released strings: whatever fails now may
+      // pass once it is fetched, so nothing found is kept by the readiness cache. Decided by the snapshot taken
+      // before the check (a release stored meanwhile never makes a failure computed without it look final).
+      const all = [...found, ...await editedVerbatimTexts(project)]
+      return unconfirmed ? all.map((p) => ({ ...p, retry: true })) : all
     })
   } catch { return [ENGINE_FAILED] }
 }

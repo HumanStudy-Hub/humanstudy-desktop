@@ -5,6 +5,7 @@ link-tier text handout, a user-tier HTML booklet and a user-tier PDF leaflet.
 import contextlib
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -788,6 +789,14 @@ class HeldPictures(Published):
             st = self.run_pic(path, entry)
             self.assertFalse(st["complete"], entry)
             self.assertEqual(st["fills"]["problems"], [{"held": "h9", "why": why}], entry)
+
+    def test_a_hard_linked_picture_is_refused(self):
+        (self.tmp / "project" / "notes").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "project" / "notes" / "fig.png").write_bytes(self.PNG)
+        os.link(self.tmp / "project" / "notes" / "fig.png", self.files / "fig.png")
+        st = self.run_pic(self.picture_study(), {"file": "project/sources/private/fig.png", "origin": "user"})
+        self.assertFalse(st["complete"])
+        self.assertEqual(st["fills"]["problems"], [{"held": "h9", "why": "file must not be a link"}])
 
     def test_the_run_accepts_only_the_project_picture_it_was_given(self):
         sys.path.insert(0, str(RUNTIME.parent / "skills" / "run"))
