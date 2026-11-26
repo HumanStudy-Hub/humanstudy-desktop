@@ -156,6 +156,7 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState('')
+  const [chatLeftOut, setChatLeftOut] = useState(false)
   const box = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -194,6 +195,7 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
       const r = await window.humanstudy.projects.exportStudy(dir, { conversations })
       if (!r) return // the save dialog was cancelled
       if (!r.ok) return setError(transferErrorText(r, 'export'))
+      setChatLeftOut(r.chatLeftOut === true)
       setSaved(r.savedPath.split(/[\\/]/).pop() || r.savedPath)
     } catch (e) {
       setError(errorText(e, t('transfer.err_export_title')))
@@ -220,7 +222,7 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
         )}
         {saved ? (
           <>
-            <p className="transfer-text">{mode === 'share' ? t(WEB_EDITION ? 'share.saved_web' : 'share.saved', { name: saved }) : t(WEB_EDITION ? 'transfer.saved_web' : 'transfer.saved', { name: saved })}</p>
+            <p className="transfer-text">{mode === 'share' ? t(WEB_EDITION ? 'share.saved_web' : 'share.saved', { name: saved }) : t(WEB_EDITION ? 'transfer.saved_web' : 'transfer.saved', { name: saved }) + (chatLeftOut ? ' ' + t('transfer.chat_left_out') : '')}</p>
             <div className="row-end">
               <button className="primary" autoFocus onClick={onClose}>{t('transfer.done')}</button>
             </div>

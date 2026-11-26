@@ -16,10 +16,11 @@
 // the assistant: text the researcher pasted or a reconstruction they agreed to). All three count for a run; the
 // status says how many of each, and lists what is still unresolved (ids and titles, never text).
 import { createHash } from 'node:crypto'
-import { lstat, mkdir, readdir, readFile, realpath, rename, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import type { OriginalTextNeed, OriginalTextReason } from '../shared/package-readiness'
 import { confinedPython, heldSources, runner, withScratch, type Limits } from './protocol-readiness'
+import { ensureProjectId } from './study-transfer'
 
 export interface OriginalTextSource {
   key: string; title: string; tier: 'link' | 'user' | 'hosted'; format: string
@@ -80,8 +81,10 @@ export async function candidateFiles(project: string): Promise<string[]> {
     return into
   }
   const paper = (await isLink(join(root, 'paper.pdf'))) ? null : await realpath(join(root, 'paper.pdf')).catch(() => null)
-  const all = [...await visit(join(root, 'sources', 'private'), 1, []),
-    ...(paper && paper.startsWith(root + sep) ? [paper] : []), ...await visit(join(root, 'sources'), 1, [])]
+  // sources/ (and sources/private/) must be real folders at every step: a linked one is refused, never followed
+  const sources = (await isLink(join(root, 'sources'))) ? null : join(root, 'sources')
+  const all = [...(sources ? await visit(join(sources, 'private'), 1, []) : []),
+    ...(paper && paper.startsWith(root + sep) ? [paper] : []), ...(sources ? await visit(sources, 1, []) : [])]
   return [...new Set(all)].slice(0, MAX_FILES)
 }
 
@@ -334,30 +337,54 @@ async function releaseContext(project: string): Promise<ReleaseContext | 'none' 
   return { assetFiles: list, identity, protocolSha256: protocol.sha256, context: c }
 }
 
-/** Whether a project is a released (Library) study for a study download (its private files, files that can carry
- *  restored wording and, unless ticked, its chat history stay on this computer): once classified so on this
- *  computer, always (<cache>/released.json, beside the held-list pins, which count too); a community.json that names
- *  a protocol release or cannot be read or verified; or held wording. A removed or emptied record or held list
- *  never turns a released study back into an ordinary one; an ordinary project never becomes one. */
+/** Whether a project is a released (Library) study for a study download and research capture (its private files,
+ *  files that can carry restored wording and, unless ticked, its chat history stay on this computer): once
+ *  classified so on this computer, always (<cache>/released.json, keyed by the project's own id from
+ *  .humanstudy/project.json, so a rename keeps it and a new project at the same path never inherits it); a
+ *  community.json that names a protocol release or cannot be read or verified; or held wording. A removed or emptied
+ *  record or held list never turns a released study back into an ordinary one; an ordinary project never becomes
+ *  one. */
 export async function releasedStudy(cacheDir: string, project: string): Promise<boolean> {
   let root: string
   try { root = await realpath(project) } catch { return true }
-  const json = async (path: string): Promise<unknown> => {
-    try { return JSON.parse(await readFile(path, 'utf8')) } catch (e) { return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? {} : undefined }
+  const file = join(cacheDir, 'released.json')
+  const read = async (): Promise<Record<string, unknown> | undefined> => {
+    try { const v = JSON.parse(await readFile(file, 'utf8')); return v && typeof v === 'object' ? v : undefined } catch (e) { return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? {} : undefined }
   }
-  const [pins, sticky] = [await json(join(cacheDir, 'pins.json')), await json(join(cacheDir, 'released.json'))]
-  if (pins === undefined || sticky === undefined) return true
-  if ((pins as Record<string, unknown>)[root] !== undefined || (sticky as Record<string, unknown>)[root] !== undefined) return true
-  const ctx = await releaseContext(project)
-  if (ctx === 'none' && !(await isPublishedStudy(project))) return false
-  await withPinLock(cacheDir, async () => {
-    const now = (await json(join(cacheDir, 'released.json'))) as Record<string, unknown> | undefined
+  const sticky = await read()
+  if (sticky === undefined) return true
+  const id = await ensureProjectId(root).catch(() => null)
+  if (id && sticky['id:' + id] !== undefined) return true
+  const ctx = await releaseContext(root)
+  if (ctx === 'none' && !(await isPublishedStudy(root))) return false
+  if (id) await withPinLock(cacheDir, async () => {
     await mkdir(cacheDir, { recursive: true })
-    const file = join(cacheDir, 'released.json'), tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
-    await writeFile(tmp, JSON.stringify({ ...(now ?? {}), [root]: true }, null, 1), 'utf8')
+    const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+    await writeFile(tmp, JSON.stringify({ ...((await read()) ?? {}), ['id:' + id]: true }, null, 1), 'utf8')
     await rename(tmp, file)
   }).catch(() => undefined)
   return true
+}
+
+/** The app renamed (`to`) or deleted (`to` null) a project folder: its path-keyed records in app storage (the
+ *  held-list pin and the received copy) move with it or are cleared, so a new project at the old path inherits
+ *  nothing. `from` and `to` are real paths. */
+export function moveProjectRecords(cacheDir: string, from: string, to: string | null): Promise<void> {
+  return withPinLock(cacheDir, async () => {
+    const file = join(cacheDir, 'pins.json')
+    let pins: Record<string, string> | null = null
+    try { pins = JSON.parse(await readFile(file, 'utf8')) } catch { /* none */ }
+    if (pins && pins[from] !== undefined) {
+      if (to) pins[to] = pins[from]
+      delete pins[from]
+      const tmp = `${file}.${process.pid}.tmp`
+      await writeFile(tmp, JSON.stringify(pins, null, 1), 'utf8')
+      await rename(tmp, file)
+    }
+    const old = receivedPath(cacheDir, from)
+    if (to) await rename(old, receivedPath(cacheDir, to)).catch(() => undefined)
+    else await rm(old, { force: true }).catch(() => undefined)
+  })
 }
 
 /** Verified releases in app storage, content-addressed: <cache>/releases/<manifest identity>/protocol.json exists

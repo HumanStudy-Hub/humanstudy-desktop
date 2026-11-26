@@ -399,7 +399,14 @@ computer:
   fills file, sources/researcher/, original-text/ folders, run outputs) and every file that can carry restored
   wording (paper.pdf, anything under sources/, any PDF or image by name or by content, the generated
   artifacts/preview.html and its backup) unless its sha256 is a file the verified release shipped, decided on the
-  very bytes written; while the release is unconfirmed none counts as shipped. The restore never follows a link. Its chat history is left out unless ticked. An ordinary project's download is as before. Undo's
+  very bytes written; while the release is unconfirmed none counts as shipped. The restore never follows a link. Research capture never collects such a file of a released study either (telemetry-core.ts canCarryRestored,
+  the same predicate). A ticked chat history of a released study has every restored or supplied held passage the
+  redaction index recognises replaced by ░; without this project's index it is left out and the result says so.
+  The released record is keyed by the project's id; the app moves the path-keyed pin and received copy when it
+  renames a project and clears them when it deletes one. A linked sources/ or sources/private/ is refused by the
+  restore. Out of scope (deliberate tampering by the local user, not accidental redistribution): swapping in a
+  complete, genuine community.json from another paper's fork, and replacing a scanned file with a link between
+  the scan and the read. Its chat history is left out unless ticked. An ordinary project's download is as before. Undo's
   archive of earlier conversations (.humanstudy/thread-history) never goes into a download (project sync keeps it).
   Community sharing and publishing never include any of these. Project sync, private per account, carries them.
 - **Wording pasted into the chat.** When the researcher pastes a passage for the fills file, the message is an

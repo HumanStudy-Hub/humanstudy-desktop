@@ -3,7 +3,7 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
+import { open, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { artifactPath, isProhibitedEventType, LIMITS, researchUuid, semanticId, SESSION_END_REASONS, type SessionEndReason, type SimulationStage } from '../shared/research-contract'
 import type { SimulationMetadata } from './simulation-research'
@@ -172,10 +172,16 @@ async function queueSource(projectDir: string, rel: string, trigger: 'baseline' 
   const ext = extname(path).toLowerCase()
   // Never a file that quotes private material, nor one that cannot be checked while any is indexed.
   const text = TEXT_EXTS.has(ext.slice(1)) ? await readFile(path, 'utf8').catch(() => undefined) : undefined
-  if (!mayCollectFile({ rel, text, published: await publishedProject(projectDir), index: privateIndex, hasPrivate: existsSync(join(projectDir, 'sources', 'private')) })) return
+  if (!mayCollectFile({ rel, text, bytes: text === undefined ? await fileHead(path) : undefined, published: await publishedProject(projectDir), index: privateIndex, hasPrivate: existsSync(join(projectDir, 'sources', 'private')) })) return
   const mime = ext === '.pdf' ? 'application/pdf' : ext === '.zip' ? 'application/zip' : ext === '.json' ? 'application/json' : 'application/octet-stream'
   const link = imported && Date.now() - imported.at <= IMPORT_LINK_MS ? researchAgent.sourceLink(imported.ref) : researchAgent.sourceLink(undefined, trigger)
   await sourceCollector().queueSource(path, projectId, mime, link)
+}
+/** The first bytes of a file (its content signature, telemetry-core.ts restorableBytes). */
+async function fileHead(path: string): Promise<Uint8Array | undefined> {
+  const fh = await open(path, 'r').catch(() => null)
+  if (!fh) return undefined
+  try { const b = Buffer.alloc(16); const { bytesRead } = await fh.read(b, 0, 16, 0); return b.subarray(0, bytesRead) } catch { return undefined } finally { await fh.close().catch(() => undefined) }
 }
 /** Run only after renewed agreement and on explicit project open, never scan the user's disk. */
 async function queueProjectSources(projectDir: string): Promise<void> {
@@ -513,6 +519,9 @@ function fit(out: Record<string, unknown>, key: string, value: string | undefine
 // per session and again after each check and each drop (refreshPrivateIndex).
 let privateIndex: PrivateIndex = EMPTY_INDEX
 const originalTextDir = (): string => join(app.getPath('userData'), 'original-text')
+/** The research-capture redaction index (restored and supplied held wording, as hashes): a study download redacts a
+ *  released study's chat history with it. */
+export function currentPrivateIndex(): PrivateIndex { return privateIndex }
 export async function refreshPrivateIndex(dir = join(originalTextDir(), 'redact')): Promise<void> {
   privateIndex = await loadPrivateIndexDir(dir)
 }
@@ -526,6 +535,17 @@ function publishedProjectSync(projectDir: string): boolean {
   let yes = false
   try { yes = Boolean(JSON.parse(readFileSync(join(key, 'protocol.json'), 'utf8'))?.distribution) } catch { /* none */ }
   if (!yes) try { yes = Object.prototype.hasOwnProperty.call(JSON.parse(readFileSync(join(originalTextDir(), 'pins.json'), 'utf8')), realpathSync.native(key)) } catch { /* none */ }   // .native: the same form as fs/promises realpath, which keys the pins (Windows short names)
+  // a released (Library) study, as a study download decides it (original-text.ts releasedStudy): recorded by the
+  // project's id, or a community.json naming a protocol release (an unreadable one counts)
+  if (!yes) try {
+    const id = JSON.parse(readFileSync(join(key, '.humanstudy', 'project.json'), 'utf8'))?.id
+    yes = typeof id === 'string' && Object.prototype.hasOwnProperty.call(JSON.parse(readFileSync(join(originalTextDir(), 'released.json'), 'utf8')), 'id:' + id)
+  } catch { /* none */ }
+  if (!yes) {
+    let raw: string | null = null
+    try { raw = readFileSync(join(key, '.humanstudy', 'community.json'), 'utf8') } catch { /* none */ }
+    if (raw !== null) try { const c = JSON.parse(raw); yes = Array.isArray(c?.assetFiles) && c.assetFiles.some((f: { path?: unknown }) => f?.path === 'protocol.json') } catch { yes = true }
+  }
   publishedSeen.set(key, { at: Date.now(), yes })
   return yes
 }
@@ -685,7 +705,7 @@ async function snapshotFileNow(projectDir: string, rel: string, owner: string | 
   // Run outputs of a published study, a file that quotes private material, and (while any is indexed) a file that
   // cannot be read as text are never collected: only the fact that a file was written is recorded.
   const textForCheck = TEXT_EXTS.has(ext) ? await readFile(path, 'utf8').catch(() => undefined) : undefined
-  if (!mayCollectFile({ rel, text: textForCheck, published: await publishedProject(projectDir), index: privateIndex, hasPrivate: existsSync(join(projectDir, 'sources', 'private')) })) {
+  if (!mayCollectFile({ rel, text: textForCheck, bytes: textForCheck === undefined ? await fileHead(path) : undefined, published: await publishedProject(projectDir), index: privateIndex, hasPrivate: existsSync(join(projectDir, 'sources', 'private')) })) {
     track('project.file_written', { target: rel, metadata: { ...metadata, withheld: 'private-material' } }, projectDir)
     return
   }

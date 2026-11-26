@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { CommunityStudy, CommunityStudyDetail } from '../preload/types'
 import { catalogPublicationFields, catalogSearchFields } from '../shared/research-search'
-import { manifestIdentity, repinHeld, storeRelease } from './original-text'
+import { manifestIdentity, releasedStudy, repinHeld, storeRelease } from './original-text'
 import { assertPaperRevision } from '../shared/paper-handoff'
 
 const OWNER_REPO = 'HumanStudy-Hub/HumanStudy-Bench'
@@ -472,6 +472,7 @@ export async function forkCommunityStudy(
       await repinHeld(join(cacheDir!, 'original-text'), dir)
       // the verified release, so the published checks and downloads never need to fetch it again (releaseBaseline)
       await storeRelease(join(cacheDir!, 'original-text'), detail.assetFiles || [], assets.find(f => f.path === 'protocol.json')!.raw, root).catch(() => undefined)
+      await releasedStudy(join(cacheDir!, 'original-text'), dir).catch(() => undefined)   // a released study from now on
     }
     return dir
   }

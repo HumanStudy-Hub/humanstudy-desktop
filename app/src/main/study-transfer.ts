@@ -34,7 +34,7 @@ import { mkdir, open, readdir, readFile, rename, rm, writeFile, type FileHandle 
 import { basename, dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 import * as zlib from 'node:zlib'
-import { PRIVATE_MATERIAL } from './telemetry-core'
+import { canCarryRestored, PRIVATE_MATERIAL, restorableBytes } from './telemetry-core'
 import { safeName } from './project-name'
 import type { StudyExportOptions, StudyExportPreview, StudyTransferErrorCode } from '../preload/types'
 
@@ -177,22 +177,11 @@ export async function scanProject(root: string, limits: Limits = LIMITS, publish
 /** A released (Library) study (original-text.ts releasedStudy): `shipped` holds the sha256 of every file its
  *  release manifest lists (empty while the release is not confirmed). */
 export interface Released { shipped: ReadonlySet<string> }
-/** Files that can carry a released study's restored wording, by name: what the original-wording restore reads
- *  (original-text.ts candidateFiles: paper.pdf, anything under sources/), any PDF or image, and the generated preview
- *  and its backup (preview-preparation.ts), which can embed a local picture. */
-const RESTORABLE = /^(?:paper\.pdf|sources\/.+|artifacts\/preview(?:\.prev)?\.html|.+\.(?:pdf|png|jpe?g|gif|webp|bmp|tiff?|svg))$/i
-/** ... and by content, whatever the name: a PDF, or a picture the fills file accepts (hs_original_text.py
- *  picture_file: PNG, JPEG, GIF, WebP). */
-export const restorableBytes = (b: Uint8Array): boolean => {
-  const head = Buffer.from(b.subarray(0, 12))
-  return head.subarray(0, 5).toString('latin1') === '%PDF-' || head.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
-    || head.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex')) || ['GIF87a', 'GIF89a'].includes(head.subarray(0, 6).toString('latin1'))
-    || (head.subarray(0, 4).toString('latin1') === 'RIFF' && head.subarray(8, 12).toString('latin1') === 'WEBP')
-}
 /** Whether a released study's file stays back: it can carry restored wording (by name or content) and its bytes are
  *  not a file the release shipped. Decided on the very bytes that would be written. */
 export const keptBack = (rel: string, data: Uint8Array, released: Released): boolean =>
-  (RESTORABLE.test(rel) || restorableBytes(data)) && !released.shipped.has(sha256(data))
+  canCarryRestored(rel, data) && !released.shipped.has(sha256(data))
+export { canCarryRestored, restorableBytes }
 /** Undo keeps the whole earlier conversation here (threads-core.ts fromNative): never in a study file. */
 const UNDO_ARCHIVE = '.humanstudy/thread-history/'
 
@@ -583,6 +572,9 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
   published?: boolean
   /** A released (Library) study: its private files stay on this computer (exportFiles). */
   released?: Released
+  /** Applied to every conversation file that goes in (a released study: its held wording redacted,
+   *  telemetry-core.ts redactThreadFile); null leaves the file out. */
+  chatFilter?: (data: Buffer) => Buffer | null
   limits?: Limits
   now?: Date
 }): Promise<ExportResult> {
@@ -592,8 +584,9 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
   // An ordinary project's private files are included (the researcher's own copy); a released study's stay on this
   // computer, since the file may be handed on and they can hold wording the release holds back. The chat history
   // can be left out.
-  // a released study's files are decided again on the bytes written (keptBack), never on an earlier read
-  const chosen = (await exportFiles(root, limits, { ...o, released: undefined, published: o.published === true || Boolean(o.released) })).filter((f) =>
+  // what a released study keeps back is left out before the limits are checked (only what goes in counts), and
+  // decided again on the very bytes written (keptBack)
+  const chosen = (await exportFiles(root, limits, o)).filter((f) =>
     f.kind === 'study' || (f.kind === 'private' && !o.released) || (f.kind === 'conversation' && o.conversations === true))
   if (chosen.length > limits.maxFiles) fail('too-large', `more than ${limits.maxFiles} files`)
   let planned = 0
@@ -615,6 +608,7 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
       let data: Buffer = await readFile(join(root, ...f.path.split('/')))
       if (o.released && f.kind === 'study' && keptBack(f.path, data, o.released)) continue
       if (isThread(f.path)) data = withoutNativeSession(data)
+      if (f.kind === 'conversation' && o.chatFilter) { const kept = o.chatFilter(data); if (!kept) continue; data = kept }
       if (data.length > limits.maxFileBytes) fail('too-large', `a file larger than ${limits.maxFileBytes} bytes`, f.path)
       total += data.length
       if (total > limits.maxTotalBytes) fail('too-large', `more than ${limits.maxTotalBytes} bytes in all`)

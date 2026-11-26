@@ -167,6 +167,9 @@ function verbatimTexts(o: unknown, out: VerbatimText[] = [], top = true): Verbat
       if (!field || d[field] === undefined) continue
       const inline = d[field] && typeof d[field] === 'object' && !Array.isArray(d[field]) && typeof (d[field] as Record<string, unknown>).text === 'string'
         ? d[field] as Record<string, unknown> : null
+      // an inline text dict with a cite of its own is checked once, with that cite (check_verbatim: the inner cite
+      // wins), when the walk reaches it
+      if (inline && inline.cite !== undefined) continue
       // anchors ({left, right, ...}) are each a text of their own with the shared cite (check_verbatim walks them so)
       if (k === 'anchors_cite' && d.anchors && typeof d.anchors === 'object' && !Array.isArray(d.anchors)) {
         for (const lab of Object.values(d.anchors as Record<string, unknown>)) add(lab, cite)
@@ -393,6 +396,7 @@ export async function protocolReadiness(python: string | null, engine: [string, 
   if (!engine.some(([rel]) => rel === 'hsenv/checks.py')) return [ENGINE_FAILED]
   const incompatible = await requiredEngine(project, engine)
   if (incompatible) return [incompatible]
+  const unconfirmed = await releaseUnconfirmed(project)   // the snapshot the retry mark is decided by
   try {
     return await withScratch(engine, async (work, home) => {
       const held: string[] = []
@@ -408,9 +412,10 @@ export async function protocolReadiness(python: string | null, engine: [string, 
       const found = protocolOutcome(run.stdout, run.stderr)
       if (!(await publicMode(project)).length) return found
       // without the Library release the held sources' check texts lack the released strings: whatever fails now may
-      // pass once it is fetched, so nothing found is kept by the readiness cache
+      // pass once it is fetched, so nothing found is kept by the readiness cache. Decided by the snapshot taken
+      // before the check (a release stored meanwhile never makes a failure computed without it look final).
       const all = [...found, ...await editedVerbatimTexts(project)]
-      return (await releaseUnconfirmed(project)) ? all.map((p) => ({ ...p, retry: true })) : all
+      return unconfirmed ? all.map((p) => ({ ...p, retry: true })) : all
     })
   } catch { return [ENGINE_FAILED] }
 }

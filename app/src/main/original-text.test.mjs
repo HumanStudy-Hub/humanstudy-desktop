@@ -5,7 +5,7 @@ import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { realpath } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -278,11 +278,6 @@ test('study downloads: released is sticky once seen, fails closed on an unreadab
   assert.equal(await O.releasedStudy(cache, proj), true)
   writeFileSync(join(proj, 'protocol.json'), '{not json')
   assert.equal(await O.releasedStudy(cache, proj), true)
-  // a held-list pin alone counts too
-  const pinned = mkdtempSync(join(tmpdir(), 'released-pin-'))
-  writeFileSync(join(pinned, 'protocol.json'), JSON.stringify({ id: 'x' }))
-  writeFileSync(join(cache, 'pins.json'), JSON.stringify({ [await realpath(pinned)]: 'a'.repeat(64) }))
-  assert.equal(await O.releasedStudy(cache, pinned), true)
   // without any record on this computer: the provenance decides, failing closed
   const fresh = mkdtempSync(join(tmpdir(), 'released-none-'))
   writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p))
@@ -414,6 +409,123 @@ test('candidate files never follow a link, not even one inside the project', asy
   symlinkSync(join(proj, 'notes', 'copy.html'), join(proj, 'paper.pdf'))
   const got = (await O.candidateFiles(proj)).map((f) => relative(realpathSync(proj), f).split(sep).join('/'))
   assert.deepEqual(got, ['sources/private/mine.txt'])
+})
+
+test('research capture never collects what a released study\'s download keeps back, however short its wording', () => {
+  const index = T.privateIndexOf(['A restored passage long enough to be indexed by the forty letter window.'])
+  // a short restored answer in sources/: shorter than the matching window, still never collected
+  assert.equal(T.mayCollectFile({ rel: 'sources/questionnaire.txt', text: 'Yes, daily.', published: true, index }), false)
+  assert.equal(T.mayCollectFile({ rel: 'paper.pdf', published: true, index: T.EMPTY_INDEX }), false)
+  assert.equal(T.mayCollectFile({ rel: 'notes/figure.dat', bytes: Buffer.from('89504e470d0a1a0a', 'hex'), published: true, index: T.EMPTY_INDEX }), false)
+  assert.equal(T.mayCollectFile({ rel: 'artifacts/preview.html', text: '<p>preview</p>', published: true, index: T.EMPTY_INDEX }), false)
+  assert.equal(T.mayCollectFile({ rel: 'notes/plan.md', text: 'my plan', published: true, index }), true)
+  // an ordinary project keeps collecting its sources and PDFs, as before
+  assert.equal(T.mayCollectFile({ rel: 'sources/questionnaire.txt', text: 'Yes, daily.', published: false, index: T.EMPTY_INDEX }), true)
+  assert.equal(T.mayCollectFile({ rel: 'paper.pdf', published: false, index: T.EMPTY_INDEX }), true)
+  // one predicate for both: what capture refuses by name or content is what a download keeps back
+  assert.equal(T.canCarryRestored('sources/a.txt'), true)
+  assert.equal(T.canCarryRestored('notes/x', Buffer.from('%PDF-1.7')), true)
+  assert.equal(T.canCarryRestored('notes/x.txt', Buffer.from('plain')), false)
+})
+
+test('a released study\'s chat history: held wording the index recognises becomes the release\'s placeholder', () => {
+  const held = 'Please describe how you walked to the bakery this morning in detail.'
+  const index = T.privateIndexOf([held])
+  const said = `Here it is: "${held}" Thanks!`
+  const out = T.redactHeldRuns(said, index)
+  assert.ok(out.startsWith('Here it is: "') && out.endsWith('" Thanks!'), out)
+  assert.equal(Array.from(out).length, Array.from(said).length)
+  assert.ok(!/bakery/.test(out) && /░{40,}/.test(out))
+  assert.equal(T.redactHeldRuns('Nothing private here at all, just a long sentence about the weather.', index), 'Nothing private here at all, just a long sentence about the weather.')
+  // re-numbered so the plain pass misses it: the whole string becomes placeholders
+  const numbered = 'Please describe how you walked\nQ1: to the bakery this morning in detail.'
+  assert.equal(/bakery/.test(T.redactHeldRuns(numbered, index)), false)
+  const thread = { id: 'thr_a', messages: [{ role: 'user', parts: [{ kind: 'text', text: said }] }, { role: 'assistant', parts: [{ kind: 'tool', input: { content: held }, output: `wrote ${held}` }] }] }
+  const red = JSON.parse(T.redactThreadFile(Buffer.from(JSON.stringify(thread)), index).toString('utf8'))
+  assert.equal(red.id, 'thr_a')
+  assert.ok(!JSON.stringify(red).includes('bakery'))
+  assert.equal(T.redactThreadFile(Buffer.from('{not json'), index), null)
+})
+
+test('the released record follows the project\'s id: a rename keeps it, a new project at the old path never inherits it', async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const cache = mkdtempSync(join(tmpdir(), 'released-id-'))
+  assert.equal(await O.releasedStudy(cache, proj), true)
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  delete p.distribution
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p))
+  // renamed: still released (its id travels with it)
+  const moved = proj + '-renamed'
+  renameSync(proj, moved)
+  assert.equal(await O.releasedStudy(cache, moved), true)
+  // a new ordinary project at the old path: not released
+  mkdirSync(proj)
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify({ id: 'ordinary' }))
+  assert.equal(await O.releasedStudy(cache, proj), false)
+  // the path-keyed pin and received copy move with an app rename and are cleared on delete
+  const a = mkdtempSync(join(tmpdir(), 'records-a-')), b = mkdtempSync(join(tmpdir(), 'records-b-'))
+  const [ra, rb] = [await realpath(a), await realpath(b)]
+  mkdirSync(join(cache, 'received'), { recursive: true })
+  writeFileSync(join(cache, 'pins.json'), JSON.stringify({ [ra]: 'f'.repeat(64) }))
+  writeFileSync(O.receivedPath(cache, ra), '{"received":true}')
+  await O.moveProjectRecords(cache, ra, rb)
+  assert.deepEqual(JSON.parse(readFileSync(join(cache, 'pins.json'), 'utf8')), { [rb]: 'f'.repeat(64) })
+  assert.equal(existsSync(O.receivedPath(cache, ra)), false)
+  assert.equal(readFileSync(O.receivedPath(cache, rb), 'utf8'), '{"received":true}')
+  await O.moveProjectRecords(cache, rb, null)
+  assert.deepEqual(JSON.parse(readFileSync(join(cache, 'pins.json'), 'utf8')), {})
+  assert.equal(existsSync(O.receivedPath(cache, rb)), false)
+})
+
+test('the restore refuses a linked sources/ or sources/private/', async () => {
+  const proj = mkdtempSync(join(tmpdir(), 'linked-sources-'))
+  const real = join(proj, 'elsewhere')
+  mkdirSync(join(real, 'private'), { recursive: true })
+  writeFileSync(join(real, 'copy.html'), '<p>held</p>')
+  writeFileSync(join(real, 'private', 'mine.txt'), 'mine')
+  symlinkSync(real, join(proj, 'sources'))
+  assert.deepEqual(await O.candidateFiles(proj), [])
+  const other = mkdtempSync(join(tmpdir(), 'linked-private-'))
+  mkdirSync(join(other, 'sources'))
+  writeFileSync(join(other, 'sources', 'open.txt'), 'open')
+  mkdirSync(join(other, 'kept'))
+  writeFileSync(join(other, 'kept', 'mine.txt'), 'mine')
+  symlinkSync(join(other, 'kept'), join(other, 'sources', 'private'))
+  assert.deepEqual((await O.candidateFiles(other)).map((f) => relative(realpathSync(other), f).split(sep).join('/')), ['sources/open.txt'])
+})
+
+test('engine checks: the retry mark follows the release as it was when the check began', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.intro.content.push({ id: 'p', value: 'Please walk as you usually do.', cite: { label: 'verbatim', source: 'paper', page: 3 } })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const released = structuredClone(p)
+  released.stages.intro.content.pop()
+  let calls = 0
+  // the first lookup (the snapshot) finds nothing; the release arrives during the check
+  R.configureReceivedProtocol(async () => (calls++ === 0 ? O.UNVERIFIED_RELEASE : released))
+  try {
+    const found = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.ok(found.length && found.every((x) => x.retry === true), JSON.stringify(found))
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('engine checks: an inline label repeating the option\'s cite is one text, as the engine counts it', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  const cite = { label: 'verbatim', source: 'paper', page: 3 }
+  p.stages.q.responses[1].options[0] = { code: 'a', label: 'Yes', cite }
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    p.stages.q.responses[1].options[0] = { code: 'a', label: { text: 'Yes', cite }, cite }
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).filter((x) => /changed on this computer/.test(x.reason)), [])
+  } finally { R.configureReceivedProtocol(async () => null) }
 })
 
 test('held source texts: placeholders before, the restored texts after; a project sourcetext file wins', async () => {

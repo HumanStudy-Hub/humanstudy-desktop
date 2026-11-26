@@ -622,6 +622,7 @@ const ROWS: Row[] = [
   ['transfer.private_kept_one', 'Not included: your private files (1 file)', '不包含：你的私有文件（1 个文件）'],
   ['transfer.private_kept_n', 'Not included: your private files ({n} files)', '不包含：你的私有文件（{n} 个文件）'],
   ['transfer.private_kept_hint', 'Your copies of the study\'s sources, pictures and other files the original wording can be filled in from stay on this computer, so a study file you pass on never includes them.', '你的原始资料副本、图片以及其他可用于补全原文的文件都会留在这台电脑上，因此你转交的研究文件不会包含它们。'],
+  ['transfer.chat_left_out', 'The chat history was left out: the original wording it may quote could not be recognised on this computer yet, so it could not be removed.', '对话记录未包含：这台电脑尚无法识别其中可能引用的原文，因此无法将其移除。'],
   ['transfer.never', 'Your account, keys and settings are never included.', '你的账户、密钥和设置永远不会包含在内。'],
   ['transfer.size', 'Size: {size}', '大小：{size}'],
   ['transfer.too_big', 'This is more than one study file can hold ({limit}). Leave the chat history out, or move large files out of the project.', '超过了单个研究文件的容量（{limit}）。请不包含对话记录，或把大文件移出项目。'],

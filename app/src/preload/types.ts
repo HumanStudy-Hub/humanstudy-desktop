@@ -251,7 +251,9 @@ export interface StudyExportOptions {
 /** Plain reasons a study file could not be written or opened; the renderer words them (i18n `transfer.err_*`). */
 export type StudyTransferErrorCode = 'not-package' | 'newer' | 'damaged' | 'unsafe' | 'too-large' | 'not-project' | 'failed'
 export interface StudyTransferFailure { ok: false; code: StudyTransferErrorCode; file?: string; detail?: string }
-export type StudyExportResult = { ok: true; savedPath: string; bytes: number; files: number } | StudyTransferFailure
+/** `chatLeftOut`: the chat history was asked for but left out (a released study whose held wording could not be
+ *  recognised on this computer, so it could not be redacted). */
+export type StudyExportResult = { ok: true; savedPath: string; bytes: number; files: number; chatLeftOut?: boolean } | StudyTransferFailure
 export type StudyImportResult =
   | { ok: true; dir: string; name: string; renamed: boolean; conversations: number; privateFiles: number }
   | StudyTransferFailure

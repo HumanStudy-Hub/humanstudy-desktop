@@ -5,6 +5,7 @@ import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'elect
 import { applyCredentials, providers, setKey } from './credentials'
 import { applyAccount, getAccount } from './account'
 import * as telemetry from './telemetry'
+import { INDEX_FORMAT, redactThreadFile } from './telemetry-core'
 import { setupMenu } from './menu'
 import { createSupport } from './support-core'
 import * as notify from './notify'
@@ -30,7 +31,7 @@ import { createReadStream, existsSync } from 'node:fs'
 import { watchFolder, type FolderWatch } from './project-watch'
 import { fileVersion } from '../shared/file-version'
 import { manifestSourceDigests, protocolSourceDigests } from '../shared/source-target'
-import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -47,7 +48,7 @@ import { confirmedLibrarySha, heldTextsOf, passedProtocolSha, selectedResults, s
 import { legacyFileIsolationAvailable, scientificReadiness } from './scientific-readiness'
 import { onRuntimeProgress, readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf, protocolProblems } from './package-readiness'
-import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, releaseBaseline, releasedStudy, restoredChecksProblem, restoredProtocolText, restoredRunFiles, restoreSlot, UNVERIFIED_RELEASE, writeAgentStatus } from './original-text'
+import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, moveProjectRecords, originalTextProblems, releaseBaseline, releasedStudy, restoredChecksProblem, restoredProtocolText, restoredRunFiles, restoreSlot, UNVERIFIED_RELEASE, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
 import { configureReceivedProtocol, releaseUnconfirmed, protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
@@ -543,6 +544,7 @@ app.whenReady().then(() => {
   void telemetry.refreshPrivateIndex().catch(() => undefined)
   const restoredChecks = new Map<string, ScientificProblemLike[]>()
   configureOriginalText(async (project) => {
+    await releasedStudy(originalTextCache(), project).catch(() => undefined)   // recorded the first time it is seen
     const pinned = await heldPinProblem(originalTextCache(), project).catch(() => null)
     if (pinned) return [pinned]
     if (!(await isPublishedStudy(project))) return []
@@ -562,11 +564,12 @@ app.whenReady().then(() => {
       // failure or a time/memory stop is checked again next time).
       const key = createHash('sha256').update(restored).update(await sourceTextStamp(project)).digest('hex')
       if (!restoredChecks.has(key)) {
+        const unconfirmed = await releaseUnconfirmed(project)   // snapshot before the check decides whether it is kept
         const found = await restoredReadiness(python, engine, project, restored, join(originalTextCache(), slot), process.env.HUMANSTUDY_RUNTIME_BIN || '')
         if (found.some((p) => p.check === 'runtime' || p.check === 'limits')) return found.map((p) => ({ check: 'runtime', reason: "The study's checks with its original wording filled in could not complete. Retry." }))
         const outcome = found.length ? [restoredChecksProblem(studyTitle(restored))] : []
         // checked without the Library release (not fetched yet): a failure may clear once it is, so it is not kept
-        if (outcome.length && await releaseUnconfirmed(project)) return outcome.map((p) => ({ ...p, retry: true }))
+        if (outcome.length && unconfirmed) return outcome.map((p) => ({ ...p, retry: true }))
         restoredChecks.set(key, outcome)
       }
       return restoredChecks.get(key)!
@@ -761,8 +764,11 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('projects:rename', async (_e, dir: string, name: string) => {
     const from = resolve(dir)
+    const fromReal = await realpath(from).catch(() => from)
     const to = await renameProject(from, name)
     if (to !== from) unwatch(from)
+    // path-keyed app records (held-list pin, received copy) follow the project, never stay for the old path
+    if (to !== from) await moveProjectRecords(originalTextCache(), fromReal, await realpath(to).catch(() => to)).catch(() => undefined)
     projectSync?.touch(to) // the cloud copy takes the new name
     return to
   })
@@ -770,7 +776,9 @@ app.whenReady().then(() => {
     unwatch(resolve(dir))
     // The cloud copy is soft-deleted first (restorable for 30 days); offline, the delete is sent later.
     if (isInside(getSettings().projectsRoot, resolve(dir)) && isProject(resolve(dir))) await projectSync?.trashed(resolve(dir)).catch(() => undefined)
+    const real = await realpath(resolve(dir)).catch(() => null)
     await trashProject(dir)
+    if (real) await moveProjectRecords(originalTextCache(), real, null).catch(() => undefined)
   })
 
   // ---- project sync: every project privately in the account's cloud storage (project-sync.ts) -------------------
@@ -887,15 +895,23 @@ app.whenReady().then(() => {
     if (ONLINE) await sweepOnlineDownloads(dirname(target))
     try {
       const released = await releasedFor(d)
+      // a released study's chat history only when ticked (it may quote original wording the researcher supplied), and
+      // then with every restored or supplied held passage redacted by the redaction index; without this project's
+      // index the chat is left out and the result says so
+      let conversations = includesChat(Boolean(released), options?.conversations)
+      const index = telemetry.currentPrivateIndex()
+      const indexed = released ? index.size > 0 && existsSync(join(originalTextCache(), 'redact', `${createHash('sha256').update(await realpath(d)).digest('hex')}.v${INDEX_FORMAT}.bin`)) : true
+      const chatLeftOut = conversations && !indexed
+      if (chatLeftOut) conversations = false
       const out = await exportStudy(d, target, {
-        // a released study's chat history only when ticked (it may quote original wording the researcher supplied)
-        conversations: includesChat(Boolean(released), options?.conversations),
+        conversations,
+        chatFilter: released ? (data) => redactThreadFile(data, index) : undefined,
         released,
         source: { platform: ONLINE ? 'online' : 'desktop', appVersion: app.getVersion() },
         published: await isPublishedStudy(d).catch(() => false),
       })
       telemetry.track('project.exported', { metadata: { files: out.files, bytes: out.bytes, conversations: out.manifest.includes.conversations, privateFiles: out.manifest.includes.privateFiles.length } }, d)
-      return { ok: true, savedPath: out.path, bytes: out.bytes, files: out.files }
+      return { ok: true, savedPath: out.path, bytes: out.bytes, files: out.files, ...(chatLeftOut ? { chatLeftOut: true } : {}) }
     } catch (err) {
       return transferFailure(err)
     }

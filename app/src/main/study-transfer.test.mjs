@@ -276,6 +276,25 @@ test('a released study: pictures and PDFs by content, and the generated preview,
   assert.equal(S.keptBack('notes/later.txt', Buffer.from('harmless'), released), false)
 })
 
+test('a released study: files kept back never count toward the limits; the chat filter applies to what goes in', async () => {
+  const root = project(fresh('desk'))
+  put(root, 'sources/private/huge-copy.pdf', Buffer.concat([Buffer.from('%PDF-1.4\n'), randomBytes(60_000)]))
+  const released = { shipped: new Set() }
+  // only what goes in counts: a kept-back file larger than the per-file limit does not block the download
+  const r = await exportTo(root, { released, conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } })
+  assert.equal(r.manifest.files.some((f) => f.path === 'sources/private/huge-copy.pdf'), false)
+  // the same project as an ordinary one still meets the limit
+  await assert.rejects(exportTo(root, { conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } }), (e) => e.code === 'too-large')
+  // conversations go through the filter; a file it refuses is left out
+  const seen = []
+  const chats = await exportTo(root, { released, conversations: true, chatFilter: (b) => { const t = JSON.parse(b.toString('utf8')); seen.push(t.id); return t.id === 'thr_b' ? null : Buffer.from(JSON.stringify({ ...t, redacted: true })) } })
+  assert.deepEqual(seen.sort(), ['thr_a', 'thr_b'])
+  const files = chats.manifest.files.filter((f) => f.path.startsWith('.humanstudy/threads/')).map((f) => f.path)
+  assert.deepEqual(files, ['.humanstudy/threads/thr_a.json'])
+  const imp = await S.importStudy(chats.zip, fresh('projects'), { now: NOW })
+  assert.equal(JSON.parse(readFileSync(join(imp.dir, '.humanstudy', 'threads', 'thr_a.json'), 'utf8')).redacted, true)
+})
+
 test('chat history: included by default, left out entirely when unticked', async () => {
   const root = project(fresh('desk'))
   const without = await exportTo(root, { conversations: false })
