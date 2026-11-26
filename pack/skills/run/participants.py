@@ -538,3 +538,39 @@ def split_reply(text: str):
 
 def parse_answer(text: str) -> dict:
     return split_reply(text)[1]
+
+
+def check(project: Path) -> dict:
+    """What the agent runs after writing the file: {"ok", "summary", "sha256"} or {"ok": false, "problem"}."""
+    project = Path(project)
+    try:
+        spec, sha = load(project)
+        protocol = json.loads((project / "protocol.json").read_text(encoding="utf-8"))
+    except SpecError as e:
+        return {"ok": False, "problem": str(e)}
+    except (OSError, ValueError) as e:
+        return {"ok": False, "problem": "protocol.json cannot be read: %s" % e}
+    try:
+        program = json.loads((project / "program.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        program = None
+    arms = [a for a in protocol.get("arms") or [] if isinstance(a, dict) and a.get("runnable") is not False]
+    plan = {a["id"]: 3 for a in arms if "id" in a}
+    ppl = people(spec, sha, protocol, program, plan, {a["id"]: a.get("group_size") or 1 for a in arms if "id" in a}, [1],
+                 lambda s, a, i: "%s-%s" % (a, i))
+    long = [k for k, p in ppl.items() if spec["mode"] != "blank" and not fits_budget(system_text(
+        p["persona"], spec.get("system"), dict(p["attributes"], group=p["group"] or "")))]
+    if long:
+        return {"ok": False, "problem": "some participant prompts are too long for the run's measured budget: shorten the personas"}
+    example = next(iter(ppl.values()), None)
+    return {"ok": True, "mode": spec["mode"], "summary": summary(spec, protocol, program), "sha256": sha,
+            "example": example and {"attributes": example["attributes"], "persona": example["persona"]}}
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) != 3 or sys.argv[1] != "check":
+        raise SystemExit("python .opencode/skills/run/participants.py check <project folder>")
+    result = check(Path(sys.argv[2]))
+    print(json.dumps(result, ensure_ascii=False, indent=1))
+    raise SystemExit(0 if result["ok"] else 1)

@@ -9,7 +9,13 @@ import { realpath, stat } from 'node:fs/promises'
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, sep } from 'node:path'
 
-export interface ProtocolRunPlan { perArm: number; arms: string[] | null; seeds: number[]; temperature: number }
+export interface ProtocolRunPlan {
+  perArm: number; arms: string[] | null; seeds: number[]; temperature: number
+  /** SHA-256 of simulation/participants.json at approval (who takes part); null: no file, sample-matched default. */
+  participantsSha256?: string | null
+  /** The run's model route passes pictures (the relay was started with `images`). */
+  images?: boolean
+}
 export interface RelayAccess { baseURL: string; token: string; model: string; expiresAt: number }
 export interface Binding { route: 'protocol'; runId: string; approvedAt: number; protocolSha256: string }
 
@@ -27,12 +33,22 @@ export function newRunFolder(project: string, now = new Date()): string {
  *  (HUMANSTUDY_RUN_PLAN), and app_run refuses a plan.json that differs (review 5, M1). */
 export function approvedPlan(binding: Binding, plan: ProtocolRunPlan) {
   return { route: 'protocol' as const, protocolSha256: binding.protocolSha256, perArm: plan.perArm, arms: plan.arms,
-    seeds: plan.seeds, temperature: plan.temperature }
+    seeds: plan.seeds, temperature: plan.temperature, participantsSha256: plan.participantsSha256 ?? null, images: plan.images === true }
 }
 
 /** plan.json as app_run.py reads it: the approved plan, as a record in the run folder. */
 export function planJson(binding: Binding, plan: ProtocolRunPlan): string {
   return JSON.stringify({ ...approvedPlan(binding, plan), startedBy: 'app' }, null, 1) + '\n'
+}
+
+export const PARTICIPANTS_FILE = 'simulation/participants.json'
+/** SHA-256 of the project's simulation/participants.json bytes, or null when there is none. */
+export async function participantsSha256(project: string): Promise<string | null> {
+  const bytes = await readFile(join(project, ...PARTICIPANTS_FILE.split('/'))).catch((e: NodeJS.ErrnoException) => {
+    if (e.code === 'ENOENT') return null
+    throw e
+  })
+  return bytes ? createHash('sha256').update(bytes).digest('hex') : null
 }
 
 /** The run folder must stay inside the project, whatever links the project holds (review 5, S4). */
@@ -96,6 +112,8 @@ export async function launchProtocolRun(o: {
   const bytes = await readFile(join(o.project, 'protocol.json'))
   if (createHash('sha256').update(bytes).digest('hex') !== o.binding.protocolSha256)
     throw Error('The study changed after approval. Review the simulation scope again.')
+  if (await participantsSha256(o.project) !== (o.plan.participantsSha256 ?? null))
+    throw Error('Who takes part (simulation/participants.json) changed after approval. Review the simulation scope again.')
   // A variant (variant.json) is not the original experiment and is not part of the approval: not on this path.
   if (await stat(join(o.project, 'variant.json')).then(() => true, () => false))
     throw Error('This project holds a variant (variant.json); variants are not run from the Simulation tab.')

@@ -226,3 +226,46 @@ test('review 5 M3: a protocol run\'s relay writes no descriptor, so the agent ne
   const relay = await startModelRelay({ project, storage, model: 'm', upstream: 'http://127.0.0.1:9', key: 'k', publish: false })
   try { await assert.rejects(readFile(relayDescriptor(storage, project)), /ENOENT/) } finally { await relay.close() }
 })
+
+test('pictures: a run whose upstream takes them passes inline images within the caps, charged per picture', async () => {
+  const R = await import(pathToFileURL(join(temp, 'relay.mjs')))
+  const seen = []
+  const stub = createServer(async (req, res) => {
+    const chunks = []; for await (const p of req) chunks.push(p)
+    seen.push(JSON.parse(Buffer.concat(chunks)))
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }], usage: { total_tokens: 3 } }))
+  })
+  await new Promise(resolve => stub.listen(0, '127.0.0.1', resolve))
+  const project = join(temp, 'image-project'); await mkdir(project)
+  const storage = join(temp, 'image-app')
+  const start = (images, tokenCap = 200_000) => startModelRelay({ project, storage, model: 'allowed', upstream: `http://127.0.0.1:${stub.address().port}`, key: 'k', tokenCap, images, publish: false })
+  const png = (n) => 'data:image/png;base64,' + 'A'.repeat(n)
+  const message = (...parts) => ({ model: 'allowed', max_tokens: 10, messages: [{ role: 'system', content: 'be a person' }, { role: 'user', content: [{ type: 'text', text: 'page' }, ...parts] }] })
+  const img = (url) => ({ type: 'image_url', image_url: { url } })
+  let relay = await start(true)
+  const call = (body) => fetch(relay.baseURL + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${relay.token}` }, body: JSON.stringify(body) })
+  try {
+    const big = png(800_000)
+    const ok = await call(message(img(big), { type: 'image_url', image_url: { url: png(8), detail: 'high' }, extra: 1 }))
+    assert.equal(ok.status, 200)
+    assert.deepEqual(seen[0].messages[1].content, [{ type: 'text', text: 'page' }, img(big), img(png(8))], 'only text and url are forwarded')
+    const log = (await readFile(relayDescriptor(storage, project) + '.usage.jsonl', 'utf8')).trim().split('\n').map(l => JSON.parse(l))
+    const body = JSON.stringify(message(img(big), { type: 'image_url', image_url: { url: png(8), detail: 'high' }, extra: 1 }))
+    assert.equal(log.find(e => e.event === 'reserved').reserved, Buffer.byteLength(body) - big.length - png(8).length + 2 * R.IMAGE_RESERVE_TOKENS + 2 * 256 + 10)
+    // refused: an oversized picture, too many, a remote URL, a non-picture part, a picture outside a user message
+    assert.equal((await call(message(img(png(R.MAX_IMAGE_BYTES))))).status, 400)
+    assert.equal((await call(message(...Array.from({ length: R.MAX_IMAGES + 1 }, () => img(png(8)))))).status, 413)
+    assert.equal((await call(message(img('https://example.test/a.png')))).status, 400)
+    assert.equal((await call(message(img('data:text/html;base64,AAAA')))).status, 400)
+    assert.equal((await call(message({ type: 'input_audio', input_audio: { data: 'AAAA' } }))).status, 400)
+    assert.equal((await call({ ...message(), messages: [{ role: 'system', content: [{ type: 'text', text: 'x' }, img(png(8))] }, { role: 'user', content: 'p' }] })).status, 400)
+    assert.equal((await call(message(...Array.from({ length: 5 }, () => img(png(1_400_000)))))).status, 413, 'the whole request stays under its cap')
+    assert.equal(seen.length, 1)
+  } finally { await relay.close() }
+  relay = await start(undefined)
+  try {
+    assert.equal((await call(message(img(png(8))))).status, 400, 'text only unless the run passes images')
+    assert.equal((await call({ model: 'allowed', max_tokens: 10, messages: [{ role: 'user', content: 'hello' }] })).status, 200)
+  } finally { await relay.close(); await new Promise(resolve => stub.close(resolve)) }
+})

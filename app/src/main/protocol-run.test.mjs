@@ -28,7 +28,7 @@ const walk = (d) => readdirSync(d).flatMap((n) => (statSync(join(d, n)).isDirect
 const read = (p) => readFileSync(p, 'utf8')
 const FILES = [
   ...walk(join(packDir, 'runtime/hsenv')).map((p) => ['hsenv/' + relative(join(packDir, 'runtime/hsenv'), p), read(p)]),
-  ...['run_study.py', 'fspec.py', 'render.py', 'app_run.py', 'protocol_report.py', 'launch.py'].map((f) => ['skills/run/' + f, read(join(packDir, 'skills/run', f))]),
+  ...['run_study.py', 'fspec.py', 'render.py', 'app_run.py', 'protocol_report.py', 'launch.py', 'participants.py'].map((f) => ['skills/run/' + f, read(join(packDir, 'skills/run', f))]),
   ['skills/build/sandbox_run.py', read(join(packDir, 'skills/build/sandbox_run.py'))],
   ...readdirSync(join(packDir, 'artifact-kit')).filter((f) => f !== '__pycache__').map((f) => ['artifact-kit/' + f, read(join(packDir, 'artifact-kit', f))]),
   // The runtime's humanstudy_llm lives in the bundled Python's site-packages; this test Python has none, so the
@@ -73,7 +73,52 @@ test('a new run folder never reuses an existing one; plan.json comes from the ap
   mkdirSync(first, { recursive: true })
   assert.match(R.newRunFolder(dir, at), /2026-11-09-1405-2$/)
   const plan = JSON.parse(R.planJson({ route: 'protocol', runId: 'r', approvedAt: 1, protocolSha256: 'abc' }, { perArm: 7, arms: null, seeds: [1], temperature: 1 }))
-  assert.deepEqual(plan, { route: 'protocol', protocolSha256: 'abc', perArm: 7, arms: null, seeds: [1], temperature: 1, startedBy: 'app' })
+  assert.deepEqual(plan, { route: 'protocol', protocolSha256: 'abc', perArm: 7, arms: null, seeds: [1], temperature: 1, participantsSha256: null, images: false, startedBy: 'app' })
+  const who = JSON.parse(R.planJson({ route: 'protocol', runId: 'r', approvedAt: 1, protocolSha256: 'abc' }, { perArm: 7, arms: null, seeds: [1], temperature: 1, participantsSha256: 'e'.repeat(64), images: true }))
+  assert.equal(who.participantsSha256, 'e'.repeat(64))
+  assert.equal(who.images, true)
+})
+
+test('who takes part is approved by its hash: a participants file added or changed after approval is refused', async () => {
+  const dir = project()
+  const binding = { route: 'protocol', runId: 'p', approvedAt: Date.now(), protocolSha256: sha(join(dir, 'protocol.json')) }
+  const launch = (plan, name) => R.launchProtocolRun({ python: 'python3', files: FILES, codeDir: join(out, 'code-' + name), project: dir, runDir: join(dir, 'artifacts/simulations', name), binding, plan })
+  mkdirSync(join(dir, 'simulation'))
+  writeFileSync(join(dir, 'simulation/participants.json'), JSON.stringify({ mode: 'blank' }))
+  await assert.rejects(launch({ perArm: 2, arms: null, seeds: [1], temperature: 1 }, 'p1'), /participants\.json\) changed after approval/)
+  await assert.rejects(launch({ perArm: 2, arms: null, seeds: [1], temperature: 1, participantsSha256: 'f'.repeat(64) }, 'p2'), /changed after approval/)
+  assert.equal(await R.participantsSha256(dir), sha(join(dir, 'simulation/participants.json')))
+  assert.ok(!existsSync(join(dir, 'artifacts/simulations/p1/plan.json')) && !existsSync(join(dir, 'artifacts/simulations/p2/plan.json')))
+})
+
+test('an approved custom participants file is what the run plays: per-participant prompts, recorded with the run', { skip: !python }, async () => {
+  const dir = project()
+  mkdirSync(join(dir, 'simulation'))
+  writeFileSync(join(dir, 'simulation/participants.json'), JSON.stringify({ version: 1, mode: 'custom', groups: [
+    { id: 'nurses', weight: 1, persona: 'You are a hospital nurse.', attributes: { age: { min: 30, max: 50 } } },
+    { id: 'pilots', weight: 1, persona: 'You are an airline pilot.' }] }))
+  const systems = []
+  const server = await fakeModel(false, messages => systems.push(messages[0].content))
+  try {
+    const runDir = R.newRunFolder(dir)
+    const binding = { route: 'protocol', runId: 'run-who', approvedAt: Date.now(), protocolSha256: sha(join(dir, 'protocol.json')) }
+    let ended
+    const endedP = new Promise((res) => { ended = res })
+    await R.launchProtocolRun({ python, files: FILES, codeDir: join(out, 'code-who'), project: dir, runDir, binding, onExit: (code) => ended(code),
+      plan: { perArm: 2, arms: null, seeds: [1], temperature: 1, participantsSha256: sha(join(dir, 'simulation/participants.json')) },
+      env: { ...processEnv(), HUMANSTUDY_HOSTED_BASEURL: `http://127.0.0.1:${server.address().port}/v1`, HUMANSTUDY_DESKTOP_KEY: 'fake-key', HUMANSTUDY_SIM_MODEL: 'stub' } })
+    assert.equal(await endedP, 0, readFileSync(join(runDir, 'run.log'), 'utf8'))
+    assert.equal(JSON.parse(readFileSync(join(runDir, 'progress.json'), 'utf8')).stage, 'done', readFileSync(join(runDir, 'run.log'), 'utf8'))
+    assert.ok(systems.some(s => s.startsWith('You are a hospital nurse.')) && systems.some(s => s.startsWith('You are an airline pilot.')))
+    assert.ok(systems.every(s => s.includes('```json')), 'think, then a fenced JSON answer')
+    const meta = JSON.parse(readFileSync(join(runDir, 'run.json'), 'utf8'))
+    assert.equal(meta.participants_spec.mode, 'custom')
+    assert.equal(meta.participants_spec.sha256, sha(join(dir, 'simulation/participants.json')))
+    assert.match(meta.participants_spec.images, /^NOT shown/)
+    const rows = readFileSync(join(runDir, 'participants.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    assert.ok(rows.length > 0 && rows.every(r => !('arm' in r) && ['nurses', 'pilots'].includes(r.group)))
+    assert.match(readFileSync(join(runDir, 'results.html'), 'utf8'), /Participants: Custom: 2 groups/)
+  } finally { server.close() }
 })
 
 test('the app refuses to start a run whose protocol changed after approval', async () => {

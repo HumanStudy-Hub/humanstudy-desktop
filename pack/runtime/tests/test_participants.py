@@ -155,6 +155,23 @@ class PaperDefault(unittest.TestCase):
         self.assertIn("mean age was 32.3", person["persona"])
 
 
+class CheckCommand(unittest.TestCase):
+    def test_check_reports_a_summary_or_the_problem(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "protocol.json").write_text(json.dumps(PROTOCOL), encoding="utf-8")
+            r = P.check(d)
+            self.assertTrue(r["ok"] and r["mode"] == "paper" and r["sha256"] is None, r)
+            (d / "simulation").mkdir()
+            (d / P.SPEC_PATH).write_text(json.dumps(CUSTOM), encoding="utf-8")
+            r = P.check(d)
+            self.assertEqual(r["summary"], "Custom: 2 groups by weight: students (3), retirees (1)")
+            (d / P.SPEC_PATH).write_text(json.dumps({"mode": "custom", "groups": [{"persona": "é" * 1400}]}), encoding="utf-8")
+            self.assertIn("too long", P.check(d)["problem"])
+            (d / P.SPEC_PATH).write_text('{"mode": "x"}', encoding="utf-8")
+            self.assertIn("mode must be", P.check(d)["problem"])
+
+
 class PromptAndReply(unittest.TestCase):
     def test_system_prompt(self):
         s = P.system_text("You are a 20-year-old woman.")
@@ -244,6 +261,11 @@ class AppRunUses(unittest.TestCase):
         self.assertEqual(ctx.note["reasoning"], "Seems fine to me.")
         self.assertEqual(ctx.note["images_sent"], 1)
         self.assertNotIn("base64", json.dumps(ctx.note), "the picture itself is never stored")
+        private = A.participant_f(complete, people, {"mode": "paper"}, True, "sent", "s", keep_text=False)
+        ctx3 = Ctx()
+        self.assertEqual(private(state, ctx3), {"q1": "o2"})
+        self.assertEqual(ctx3.note, {"reply_chars": len('Seems fine to me.\n```json\n{"q1": "o2"}\n```'), "images_sent": 1},
+                         "a restored study's replies (which may quote its wording) are not kept")
         ctx2 = Ctx()
         ctx2.participant = "zzz"
         with self.assertRaises(RuntimeError):

@@ -78,7 +78,10 @@ async function approveSimulation(dir: string, program: HumanProgram, studyId: st
   if (plan.route === 'protocol') {
     // The protocol route (v0.8): the approval names protocol.json by the hash of its bytes; the engine runs it.
     const raw = await window.humanstudy.project.readText(`${dir}/protocol.json`)
-    return `[Simulation scope approved]\n${JSON.stringify({ route: 'protocol', protocolHash: await sha(raw), hashFormat: 'protocol.json UTF-8 file bytes', lang: getLang(), programId: program.id, studyId, scope: scope.fields, plan: { perCondition: plan.perCondition, conditions: plan.conditions, model: plan.model, tokenBudget: plan.tokenBudget } })}\n${request}`
+    // Who takes part (simulation/participants.json, written by the agent) is approved by its hash too; null: none, so
+    // the participants are sample-matched to the paper.
+    const people = await window.humanstudy.project.readText(`${dir}/simulation/participants.json`).catch(() => null)
+    return `[Simulation scope approved]\n${JSON.stringify({ route: 'protocol', protocolHash: await sha(raw), hashFormat: 'protocol.json UTF-8 file bytes', participantsSha256: people === null ? null : await sha(people), lang: getLang(), programId: program.id, studyId, scope: scope.fields, plan: { perCondition: plan.perCondition, conditions: plan.conditions, model: plan.model, tokenBudget: plan.tokenBudget } })}\n${request}`
   }
   const raw = await window.humanstudy.project.readText(`${dir}/program.json`)
   if (JSON.stringify(JSON.parse(raw)) !== JSON.stringify(program)) throw new Error(t('simulation.changed'))

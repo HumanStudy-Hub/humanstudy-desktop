@@ -23,6 +23,40 @@ function isFile(path: string): boolean {
  *  one (default 512); this only bounds other callers. Reservation always equals the forwarded limit. */
 export const DEFAULT_OUTPUT_TOKENS = 512
 export const MAX_OUTPUT_TOKENS = 4096
+/** Text of one request (everything but its pictures), as before pictures were allowed. */
+export const MAX_TEXT_BYTES = 1_000_000
+/** Pictures (a run's `images`): data URLs of PNG, JPEG, GIF or WebP in user messages, at most this many per request,
+ *  each at most MAX_IMAGE_BYTES of data URL, all together at most MAX_REQUEST_BYTES with the text. */
+export const MAX_IMAGES = 8
+export const MAX_IMAGE_BYTES = 1_500_000
+export const MAX_REQUEST_BYTES = 6_000_000
+/** Reserved per picture instead of its base64 bytes (a model bills a picture by its pixels; Claude models stay under
+ *  this); skills/run/participants.py IMAGE_RESERVE_TOKENS, which budget.py counts, must say the same. */
+export const IMAGE_RESERVE_TOKENS = 5000
+const DATA_IMAGE = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/
+
+type Part = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
+/** A message's content as the relay forwards it, or an error. Text everywhere; with `images`, a user message may be
+ *  a list of text and image_url parts whose URL is an inline picture (never a remote URL, which the provider would
+ *  fetch). Returns the content and the bytes of its pictures' URLs. */
+export function relayContent(m: any, images: boolean): { content: string | Part[]; pictures: number; pictureBytes: number } | string {
+  if (!m || !['system', 'user', 'assistant'].includes(m.role)) return 'Only text messages are supported.'
+  if (typeof m.content === 'string') return { content: m.content, pictures: 0, pictureBytes: 0 }
+  if (!images || m.role !== 'user' || !Array.isArray(m.content) || !m.content.length) return 'Only text messages are supported.'
+  const parts: Part[] = []
+  let pictureBytes = 0
+  for (const p of m.content) {
+    if (p?.type === 'text' && typeof p.text === 'string') parts.push({ type: 'text', text: p.text })
+    else if (p?.type === 'image_url' && typeof p.image_url?.url === 'string') {
+      const url: string = p.image_url.url
+      if (!DATA_IMAGE.test(url)) return 'Pictures must be inline PNG, JPEG, GIF or WebP images.'
+      if (url.length > MAX_IMAGE_BYTES) return 'A picture is too large.'
+      pictureBytes += url.length
+      parts.push({ type: 'image_url', image_url: { url } })
+    } else return 'Only text and picture parts are supported.'
+  }
+  return { content: parts, pictures: parts.filter((p) => p.type === 'image_url').length, pictureBytes }
+}
 
 export interface RelayOptions {
   project: string
@@ -43,6 +77,9 @@ export interface RelayOptions {
   /** Write the descriptor the agent's runs read (default true). A protocol run gets its capability from the app
    *  directly (protocol-run.ts), so its descriptor is never written: the agent never holds that token (review 5, M3). */
   publish?: boolean
+  /** Accept pictures in user messages (relayContent), for a protocol run whose upstream takes them. Default false:
+   *  text only. A picture is charged IMAGE_RESERVE_TOKENS instead of its bytes. */
+  images?: boolean
 }
 
 /** Upstream statuses that mean the provider did not process (or bill) the call: only these are refunded
@@ -88,21 +125,27 @@ export async function startModelRelay(options: RelayOptions) {
       const chunks: Buffer[] = []
       for await (const part of req) {
         bytes += part.length
-        if (bytes > 1_000_000) return fail(413, 'Run request is too large.')
+        if (bytes > (options.images ? MAX_REQUEST_BYTES : MAX_TEXT_BYTES)) return fail(413, 'Run request is too large.')
         chunks.push(part)
       }
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
       if (body.model !== options.model || !Array.isArray(body.messages) || !body.messages.length || body.stream) return fail(400, 'Unsupported model or request.')
       const max = body.max_tokens ?? body.max_completion_tokens ?? DEFAULT_OUTPUT_TOKENS
       if (!Number.isSafeInteger(max) || max < 1 || max > MAX_OUTPUT_TOKENS) return fail(400, 'Output limit must be 1–4096 tokens.')
-      // UTF-8 bytes upper-bound text tokens; extra framing reserve per message. Multimodal,
-      // tools, external URLs and provider-specific routing cannot bypass the reservation.
-      if (body.messages.some((m: any) => !m || !['system', 'user', 'assistant'].includes(m.role) || typeof m.content !== 'string')) return fail(400, 'Only text messages are supported.')
-      const charge = bytes + 256 * body.messages.length + max
+      // UTF-8 bytes upper-bound text tokens; extra framing reserve per message; a fixed reserve per picture. Tools,
+      // external URLs and provider-specific routing cannot bypass the reservation.
+      const contents = body.messages.map((m: any) => relayContent(m, options.images === true))
+      const bad = contents.find((c: unknown) => typeof c === 'string')
+      if (bad) return fail(400, bad)
+      const pictures = contents.reduce((n: number, c: any) => n + c.pictures, 0)
+      const pictureBytes = contents.reduce((n: number, c: any) => n + c.pictureBytes, 0)
+      if (pictures > MAX_IMAGES) return fail(413, 'Too many pictures in one request.')
+      if (bytes - pictureBytes > MAX_TEXT_BYTES) return fail(413, 'Run request is too large.')
+      const charge = bytes - pictureBytes + IMAGE_RESERVE_TOKENS * pictures + 256 * body.messages.length + max
       if (reserved + charge > cap) return fail(402, 'Run token cap reached.')
       reserved += charge; held = charge // synchronous: concurrent requests cannot oversubscribe; refunded only when the provider rejects the call
       await logUsage({ event: 'reserved', model: options.model, reserved: charge })
-      const outgoing = { model: options.model, messages: body.messages.map((m: any) => ({ role: m.role, content: m.content })), max_tokens: max,
+      const outgoing = { model: options.model, messages: body.messages.map((m: any, i: number) => ({ role: m.role, content: contents[i].content })), max_tokens: max,
         ...(typeof body.temperature === 'number' ? { temperature: body.temperature } : {}),
         ...(Number.isSafeInteger(body.seed) ? { seed: body.seed } : {}) }
       const upstream = await fetch(options.upstream.replace(/\/$/, '') + '/chat/completions', {

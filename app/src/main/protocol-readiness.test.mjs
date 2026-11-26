@@ -117,7 +117,7 @@ test('review 1 S1: an expression too large to check stops at the CPU or memory b
 const packRoot = join(here, '../../../pack')
 const BUDGET_FILES = [
   ...ENGINE.map(([rel, text]) => ['hsenv/' + rel, text]),
-  ...['run_study.py', 'fspec.py', 'render.py', 'budget.py'].map((f) => ['skills/run/' + f, readFileSync(join(packRoot, 'skills/run', f), 'utf8')]),
+  ...['run_study.py', 'fspec.py', 'render.py', 'budget.py', 'participants.py'].map((f) => ['skills/run/' + f, readFileSync(join(packRoot, 'skills/run', f), 'utf8')]),
 ]
 
 test('review 2 M3: the budget line is parsed strictly; anything malformed is an error, never a small budget', () => {

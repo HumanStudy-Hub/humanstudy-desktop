@@ -7,7 +7,9 @@ description: Run the study's replay package with a language model playing every 
 
 **Two routes.** An approval whose JSON has `"route": "protocol"` runs `protocol.json` with the engine: follow the
 `run` skill (`.opencode/skills/run/SKILL.md`) instead of this page's procedure; the model access rules below
-apply to it unchanged. An approval with `"route": "package"`, or with no route, runs `package/<paper-slug>/` as
+apply to it unchanged. Who the AI participants are (sample-matched to the paper, the researcher's own groups, or
+blank) is set in `simulation/participants.json`, which you write when the researcher describes the participants:
+see "Who takes part" in the run skill. That file is not a paid-model script; writing it is always allowed. An approval with `"route": "package"`, or with no route, runs `package/<paper-slug>/` as
 described here.
 
 A simulation runs the participants of `package/<paper-slug>/` (prompts and reply parsing in

@@ -134,15 +134,64 @@ The agent only follows `progress.json` and reports. `app_run.py new` remains onl
 agent's skill tells it never to start a protocol run.
 
 f is `make_chat_f` over the app's model client (`humanstudy_llm.chat`, so keys stay in the relay), with the
-default renderer: one fresh call per page, JSON answers, text only. `run.json` records the model, the renderer and
+default renderer: one fresh call per page, one `make_chat_f` per participant with that participant's own system
+prompt (see "Who takes part" below). `run.json` records the model, the renderer, the participant description and
 the protocol's SHA-256. `progress.json` follows the simkit conventions, so the Simulation tab shows a protocol run
 like a package run. `records.jsonl` stands in for `sessions.jsonl`.
+
+**Who takes part (participant spec).** How participants are simulated is the researcher's choice, recorded with
+the run ("protocol, not agent"). It lives in `simulation/participants.json`, which the agent writes when the
+researcher describes the participants (`skills/run/SKILL.md`, "Who takes part"); `skills/run/participants.py`
+validates it, draws the participants and builds their prompts.
+- `mode: "paper"`, also when the file is absent: sample-matched. Each participant's persona comes from the paper's
+  own account of its sample, protocol.json `meta.sample` first, then the program's `participants` node for the
+  arm's study. The population is quoted as printed (counts in parentheses removed). An age is drawn from a printed
+  mean and SD (clipped to ±2.5 SD and to a printed range) or a printed range; a mean alone is stated about the
+  sample, not drawn. A gender is drawn from printed counts or percentages (one printed share leaves the rest to the
+  other gender; shares that do not add up leave the rest unstated). Nothing the paper does not state is added: no
+  age, gender or country is invented.
+- `mode: "custom"`: up to 12 groups with weights, each a persona text and optional attributes (`age` as a number,
+  `{min, max}` or `{mean, sd}`; `gender`, `country`, `occupation`, `education` as text, list or `{text: weight}`;
+  `notes`). Every condition is split across groups by largest remainder, the same rule as the web's persona groups
+  (`humanstudy-hub-web/lib/persona-groups.ts`, `HumanStudy-Bench/playground/personas.py`).
+- `system` (paper or custom): a whole system prompt with `{{persona}} {{age}} {{gender}} {{country}}
+  {{occupation}} {{education}} {{group}}`; the reply format is always appended.
+- `mode: "blank"`: the earlier behaviour (no persona, bare JSON answers), kept for comparison.
+- Draws use a generator keyed by the file's SHA-256, the seed, the arm and the participant's index, so a resumed
+  run plays the same people. The persona never names the condition. Each participant's group and attributes are
+  written to `participants.jsonl` (opaque id, member, group, attributes); `run.json` `participants_spec` holds the
+  mode, the file's SHA-256, a one-line summary and whether pictures were shown; the results page states it.
+- Approval: the Simulation tab shows the summary under "Who takes part" (`shared/participants-summary.ts`) and the
+  approval carries `participantsSha256` (null without a file). The main process puts it in the approved plan
+  (`HUMANSTUDY_RUN_PLAN`, plan.json); `launchProtocolRun` and `app_run` both refuse a file whose hash is not that
+  one, as for protocol.json.
+
+**Think, then answer.** Outside blank mode the participant first writes one to three sentences in character (under
+60 words), then its answers as one fenced ```json object at the end. `participants.split_reply` takes the last
+fenced JSON object (else the last complete object), so braces in the reaction are never read as answers. The
+reaction is kept in `records.jsonl` as `note.reasoning`. The output limit stays 4,096 per call (SIM_MAX_TOKENS),
+which the budget already reserves.
+
+**Pictures.** When the run's model route passes pictures and the model is known to accept them
+(`participants.IMAGE_MODELS`: Claude Haiku, Sonnet and Opus 5 and later), the current screen's pictures go to the
+model as OpenAI-style `image_url` parts with inline data URLs; otherwise text only, and `run.json` says why.
+- The relay accepts picture parts only when it is started with `images` (a protocol run whose upstream is
+  OpenRouter with the user's own key). The hosted HumanStudy Hub endpoint accepts text parts only for now
+  (`humanstudy-hub-web` `textMessage`), so hosted and pre-relay runs stay text-only until the Hub passes pictures.
+- Caps: PNG, JPEG, GIF or WebP data URLs in user messages only, at most 8 per request and 1.5 MB each, 6 MB per
+  request, text at most 1 MB. Remote URLs are refused (the provider would fetch them). A picture is reserved at
+  5,000 tokens instead of its base64 bytes; `budget.py` reserves the same for every picture on a page.
+- A picture restored from a published study's held material is sent only in the model call of that approved run,
+  like the restored text; the run keeps no screens for such a study, `ctx.note` records only how many pictures
+  were sent, and nothing is written to exports or capture.
 
 **Budget (review 2, M3).** The package allowance (40,000 tokens per participant) does not fit a protocol: there is
 one call per page, and each prompt carries every earlier page and answer.
 - When protocol.json passes its checks, the app measures the run's budget with `skills/run/budget.py`. It runs
   confined, from the app's own copy, like the checks. It plays three random+gates participants per arm through
-  run_study and counts what the default renderer would send: bytes + 256 per message + 512 output per call. It
+  run_study and counts what the default renderer would send: bytes + 256 per message + the output limit per call,
+  with the longest participant system prompt a run may send (`participants.budget_system`, a 4,000-byte persona;
+  app_run refuses longer ones) and 5,000 tokens per picture on the page. It
   keeps the largest member per arm, adds a 1.5x margin and records group sizes.
   - The fixture needs about 4,700 tokens per participant, a 33-page survey about 180,000, and a 4-person game
     about 2,000,000 per member.

@@ -167,15 +167,28 @@ def plan_members(protocol: dict, per_arm: int, arms: list | None) -> tuple[dict,
     return plan, sizes
 
 
-def participant_f(complete, people: dict, spec: dict, images: bool, images_note: str, summary: str):
+def without_text(f):
+    """For a published study played from wording restored on this computer: the reply (which may quote that wording)
+    is not kept in the run's records; only its length and how many pictures were sent."""
+    def wrapped(state, ctx):
+        answers = f(state, ctx)
+        note = ctx.note if isinstance(ctx.note, dict) else {}
+        ctx.note = {"reply_chars": len(note.get("reply") or ""), **({"images_sent": note["images_sent"]} if "images_sent" in note else {})}
+        return answers
+    wrapped.__dict__.update(f.__dict__)
+    return wrapped
+
+
+def participant_f(complete, people: dict, spec: dict, images: bool, images_note: str, summary: str, keep_text: bool = True):
     """f for every participant: each one's own system prompt (persona), the default renderer, think-then-answer.
-    Blank mode is make_chat_f's bare prompt with bare JSON answers, kept for comparison."""
+    Blank mode is make_chat_f's bare prompt with bare JSON answers, kept for comparison. keep_text False: replies
+    are not stored (a restored published study)."""
     import participants as P
     from render import make_chat_f, render_state
     if spec["mode"] == "blank":
         f = make_chat_f(complete, render=render_state, images=images)
         f.description = dict(f.description, participants=summary, images=images_note)
-        return f
+        return f if keep_text else without_text(f)
     made = {}
 
     def f(state, ctx):
@@ -195,7 +208,7 @@ def participant_f(complete, people: dict, spec: dict, images: bool, images_note:
                      "system": spec.get("system") or P.system_text("{{persona}}"),
                      "answer": "a short in-character reaction (one to three sentences), then one fenced JSON object",
                      "memory": "state only (seen + answered); one fresh call per page", "images": images_note}
-    return f
+    return f if keep_text else without_text(f)
 
 
 class Refused(SystemExit):
@@ -699,7 +712,8 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
         complete, model = relay_complete(plan.get("temperature", 1.0)), model_name()
     who = participants_for(out, project, plan, restored, trial)
     images, images_note = image_choice(plan, model)
-    f = reask_unreadable(participant_f(complete, who["people"], who["spec"], images, images_note, who["info"]["summary"]))
+    f = reask_unreadable(participant_f(complete, who["people"], who["spec"], images, images_note, who["info"]["summary"],
+                                       keep_text=restored is None))
     # retries 0: humanstudy_llm already retries 429/5xx; a call that still fails (transport, allowance, a refusal)
     # ends that participant as incomplete. Only an unreadable reply is asked once more (reask_unreadable).
     spec = {"kind": "llm", "name": "desktop model", "model": model or "unknown", "renderer": "default",

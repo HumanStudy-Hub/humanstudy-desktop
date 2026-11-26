@@ -1165,9 +1165,14 @@ app.whenReady().then(() => {
 
   /** An approved protocol run, started here from the app's trusted copy (review 4, S1), never by the agent: the
    *  run folder and plan.json come from the checked approval, and the run ends its relay when it exits. */
-  async function startProtocolRun(projectDir: string, approved: { lang?: unknown; plan?: { perCondition?: unknown; model?: unknown; conditions?: unknown } }, binding: ProtocolBinding, relay: { baseURL: string; token: string; model: string; expiresAt: number } | undefined, ended: () => void) {
+  async function startProtocolRun(projectDir: string, approved: { lang?: unknown; participantsSha256?: unknown; plan?: { perCondition?: unknown; model?: unknown; conditions?: unknown } }, binding: ProtocolBinding, relay: { baseURL: string; token: string; model: string; expiresAt: number } | undefined, ended: () => void, images = false) {
     const per = approved.plan?.perCondition
     if (!Number.isSafeInteger(per) || (per as number) < 1 || (per as number) > 60) throw Error('Participants per condition must be a whole number from 1 to 60. Review the simulation scope again.')
+    // Who takes part is part of the approval: the SHA-256 of simulation/participants.json the Simulation tab showed
+    // (null: no file, sample-matched). launchProtocolRun and app_run both refuse a file that is not that one.
+    const participants = approved.participantsSha256 ?? null
+    if (participants !== null && (typeof participants !== 'string' || !/^[0-9a-f]{64}$/.test(participants)))
+      throw Error('The approval names an unreadable participant description. Review the simulation scope again.')
     const python = await readyPython()
     if (!python) throw Error('The research runtime is not installed yet, so the run cannot start. Try again in a minute.')
     const runDir = newRunFolder(projectDir)
@@ -1178,7 +1183,7 @@ app.whenReady().then(() => {
     if (detached) await runJournal.prepare()
     await launchProtocolRun({
       python, files: [...trustedRunFiles(), ...restored], codeDir: join(app.getPath('userData'), 'protocol-runs', binding.runId), project: projectDir, runDir, binding,
-      plan: { perArm: per as number, arms: null, seeds: [1], temperature: 1.0 },
+      plan: { perArm: per as number, arms: null, seeds: [1], temperature: 1.0, participantsSha256: participants, images: Boolean(relay) && images },
       relay: relay ? { baseURL: relay.baseURL, token: relay.token, model: relay.model, expiresAt: relay.expiresAt } : undefined,
       // Pre-relay path: the same environment the agent's runs get there (the run confirmation said the key is readable).
       env: relay ? { PATH: (process.env.HUMANSTUDY_RUNTIME_BIN ? process.env.HUMANSTUDY_RUNTIME_BIN + (process.platform === 'win32' ? ';' : ':') : '') + (process.env.PATH ?? '') } : { ...process.env,
@@ -1244,14 +1249,17 @@ app.whenReady().then(() => {
         // A protocol run gets its capability from the app directly: no descriptor for the agent (review 5, M3).
         // Removals are by owner, so this relay closing late never frees the next run's (review 5, M2).
         let ownClose: (() => Promise<void>) | undefined
-        const relay = await startModelRelay({ project: projectDir, model, key, storage: process.env.HUMANSTUDY_RELAY_DIR!, tokenCap: limits.tokens, expiryMinutes: limits.minutes, binding, publish: route !== 'protocol',
+        // Pictures go to the model only where the upstream takes image parts: OpenRouter with the user's own key. The
+        // hosted HumanStudy Hub endpoint accepts text only for now, so hosted runs stay text-only (run.json says so).
+        const images = route === 'protocol' && !process.env.HUMANSTUDY_DESKTOP_KEY
+        const relay = await startModelRelay({ images, project: projectDir, model, key, storage: process.env.HUMANSTUDY_RELAY_DIR!, tokenCap: limits.tokens, expiryMinutes: limits.minutes, binding, publish: route !== 'protocol',
         onClose: () => { if (ownClose) runs.forget(id, ownClose); runs.release(projectDir!, owner) },
         upstream: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_HOSTED_BASEURL || 'https://humanstudy-hub.com/api/desktop/v1' : 'https://openrouter.ai/api/v1',
         bypass: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_SERVER_BYPASS : undefined })
         ownClose = relay.close
         runs.register(id, { project: projectDir, close: relay.close })
         startedRelay = true
-        if (route === 'protocol') await startProtocolRun(projectDir, approved, binding as ProtocolBinding, relay, () => { runs.forget(id, relay.close); void relay.close() })
+        if (route === 'protocol') await startProtocolRun(projectDir, approved, binding as ProtocolBinding, relay, () => { runs.forget(id, relay.close); void relay.close() }, images)
       } catch (error) {
         if (protocolBinding) await finishRunResearch(protocolBinding, null)
         if (startedRelay) await closeRunRelay(id)

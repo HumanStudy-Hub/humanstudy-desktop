@@ -17,6 +17,7 @@ import { holdAction, track } from '../telemetry'
 import { allowanceMessage } from '../allowance'
 import { WEB_EDITION } from '../edition'
 import { formatDuration } from '../format'
+import { participantsSummary, type ParticipantsView } from '../../shared/participants-summary'
 
 interface Props {
   project: ProjectSnapshot
@@ -155,6 +156,22 @@ export function SimulationPanel(props: Props) {
   // same figure the main process recomputes; the approval carries it and is refused for any other number.
   const protocolLimits = route === 'protocol' ? protocolRunLimits(readiness?.protocol?.budget, perCondition) : null
   const access = protocolLimits ?? runLimits({ conditions: runConditions, perCondition })
+  // Who takes part (a protocol run): simulation/participants.json, which the agent writes when the researcher
+  // describes the participants, else sample-matched to the paper. The approval carries the file's hash.
+  const whoFiles = allEntries(project.tree).filter((e) => e.rel === 'simulation/participants.json' || e.rel === 'protocol.json')
+  const whoStamp = whoFiles.map((e) => `${e.rel}:${e.mtime ?? ''}:${e.size ?? ''}`).join('|')
+  const [who, setWho] = useState<ParticipantsView | null>(null)
+  useEffect(() => {
+    if (route !== 'protocol') { setWho(null); return }
+    let live = true
+    const read = (rel: string) => window.humanstudy.project.readText(`${dir}/${rel}`).catch(() => null)
+    void Promise.all([read('simulation/participants.json'), read('protocol.json')]).then(([spec, protocol]) => {
+      let parsed: unknown = null
+      try { parsed = protocol ? JSON.parse(protocol) : null } catch { /* the protocol checks report it */ }
+      if (live) setWho(participantsSummary(spec, parsed, program))
+    })
+    return () => { live = false }
+  }, [dir, route, whoStamp, program])
   const accessVars = { tokens: formatTokens(access.tokens), minutes: access.minutes }
 
   // Run folders and the two small files each one writes while and after it runs.
@@ -390,6 +407,10 @@ export function SimulationPanel(props: Props) {
                   {t(runConditions.length > 1 ? 'sim.per_condition' : 'sim.in_total_one', { total: estimate.participants })}
                   {plan.paperPerCondition && <span className="muted small"> · {plan.paperPerCondition === perCondition ? t('sim.same_as_paper') : t('sim.paper_had', { n: plan.paperPerCondition })}</span>}
                 </dd>
+                {who && (<>
+                  <dt>{t('sim.who')}</dt>
+                  <dd>{who.text}{who.problem && <span className="sim-blocked small"> · {who.problem}</span>}</dd>
+                </>)}
                 <dt>{t('sim.model')}</dt>
                 <dd>{modelName}</dd>
                 {hosted && (<>
