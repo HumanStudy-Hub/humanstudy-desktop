@@ -8,7 +8,8 @@ Plays a few participants per runnable arm through run_study.run() with the rando
 gate, so every page is reached), and measures what the default renderer sends the model on each call: the system
 text and the rendered page, which grows with every earlier page and answer. The system text is the longest a run
 may send (participants.budget_system: the participant prompt with a persona of PERSONA_BUDGET_BYTES; app_run
-refuses longer personas), and every picture on the page is reserved as an image the model may be shown
+refuses longer personas), every call is counted twice (a reply that cannot be read is asked once more), every
+earlier free-text answer adds CARRY_BYTES (a model writes longer text than the oracle), and every picture on the page is reserved as an image the model may be shown
 (participants.IMAGE_RESERVE_TOKENS, as the relay charges it), so the budget does not depend on
 simulation/participants.json or the model chosen. The reply's in-character reaction is within the output limit. The relay reserves, per call, the
 request body's bytes (JSON as humanstudy_llm sends it, non-ASCII escaped) + 256 per message + the output limit;
@@ -35,6 +36,8 @@ sys.path.insert(0, str(HERE))
 OUTPUT_TOKENS = 4096         # app_run.SIM_MAX_TOKENS: the output limit each simulation call sends (the relay reserves it)
 PER_MESSAGE = 256            # the relay's reserve per message
 MARGIN = 1.5                 # refused answers, longer replies in the history, retries
+REASK = 2                    # app_run asks a page once more when its reply cannot be read: every call may be made twice
+CARRY_BYTES = 800            # a model's free-text answer as later prompts carry it (JSON-escaped), per earlier text answer
 
 
 # The relay charges the HTTP body's bytes. humanstudy_llm.chat sends json.dumps(body) with ensure_ascii on, so a
@@ -53,6 +56,23 @@ def call_charge(system: str, page: str, images: int = 0) -> int:
     return len(json.dumps(body).encode("utf-8")) + 2 * PER_MESSAGE + OUTPUT_TOKENS + pictures
 
 
+def text_ids(state) -> set:
+    """The free-text questions on this page (their answers are carried into later prompts)."""
+    return {r.get("id") for r in (state.get("screen") or {}).get("responses", []) if r.get("kind") == "text"}
+
+
+def carried_text(state, texts: set) -> int:
+    """Headroom for free text a model writes and every later page shows again (the oracle's own texts are short):
+    CARRY_BYTES per earlier free-text answer (a text question, or an option's text box)."""
+    return CARRY_BYTES * sum(1 for a in state.get("answered") or [] if isinstance(a, dict)
+                             and (a.get("response") in texts or a.get("text")))
+
+
+def with_headroom(calls: int, tokens: int) -> tuple[int, int]:
+    """(calls, tokens) per member with the margin and one re-ask per page."""
+    return int(calls * REASK * MARGIN + 0.999), int(tokens * REASK * MARGIN + 0.999)
+
+
 def pictures(state) -> int:
     """Pictures on the current screen (what make_chat_f(images=True) would send)."""
     return sum(1 for it in (state.get("screen") or {}).get("items", []) if isinstance(it.get("src"), str))
@@ -65,13 +85,15 @@ def measure(project: Path, scratch: Path, per_arm: int = 3) -> dict:
     import participants
     system = participants.budget_system()
     seen: dict[tuple, list[int]] = {}
+    texts: set = set()
     original = fspec.random_f
 
     def counting(protocol, spec, assist=False):
         f, d = original(protocol, spec, assist)
 
         def g(state, ctx):
-            charge = call_charge(system, render.render_state(state), pictures(state))
+            texts.update(text_ids(state))
+            charge = call_charge(system, render.render_state(state), pictures(state)) + carried_text(state, texts)
             seen.setdefault((ctx.participant, ctx.member), []).append(charge)
             return f(state, ctx)
         g.needs_operator = getattr(f, "needs_operator", False)
@@ -100,8 +122,7 @@ def measure(project: Path, scratch: Path, per_arm: int = 3) -> dict:
         a["calls"] = max(a["calls"], len(charges))
         a["tokens_per_member"] = max(a["tokens_per_member"], sum(charges))
     for arm, a in arms.items():
-        a["calls"] = int(a["calls"] * MARGIN + 0.999)
-        a["tokens_per_member"] = int(a["tokens_per_member"] * MARGIN + 0.999)
+        a["calls"], a["tokens_per_member"] = with_headroom(a["calls"], a["tokens_per_member"])
     missing = sorted(set(groups) - set(arms))
     if missing:
         raise SystemExit("no participant of arm(s) %s could be measured" % ", ".join(missing))

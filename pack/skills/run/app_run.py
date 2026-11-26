@@ -64,7 +64,7 @@ def project_of(run_dir: Path) -> Path:
 
 
 def new(run_dir: Path, per_arm: int, protocol_hash: str, arms: list[str] | None, seeds: list[int],
-        temperature: float, participants_hash: str | None = None) -> dict:
+        temperature: float, participants_hash: str | None = None, program_hash: str | None = None) -> dict:
     project = project_of(run_dir)
     protocol = project / "protocol.json"
     if not protocol.is_file():
@@ -73,11 +73,13 @@ def new(run_dir: Path, per_arm: int, protocol_hash: str, arms: list[str] | None,
         raise SystemExit("protocol.json changed after approval: ask the researcher to press Run simulation again")
     if participants_sha(project) != participants_hash:
         raise SystemExit(PARTICIPANTS_CHANGED)
+    if program_sha(project) != program_hash:
+        raise SystemExit(PROGRAM_CHANGED)
     if not 1 <= per_arm <= 60:
         raise SystemExit("--per-arm must be 1 to 60 (the approved plan)")
     run_dir.mkdir(parents=True, exist_ok=True)
     plan = {"route": "protocol", "protocolSha256": protocol_hash, "perArm": per_arm, "arms": arms, "seeds": seeds,
-            "temperature": temperature, "participantsSha256": participants_hash}
+            "temperature": temperature, "participantsSha256": participants_hash, "programSha256": program_hash}
     (run_dir / "plan.json").write_text(json.dumps(plan, indent=1) + "\n", encoding="utf-8")
     (run_dir / "run.py").write_text(RUN_PY, encoding="utf-8")
     return plan
@@ -136,11 +138,22 @@ def relay_complete(temperature: float):
 
 PARTICIPANTS_CHANGED = ("simulation/participants.json changed after approval (who takes part is part of the approval): "
                         "ask the researcher to press Run simulation again")
+PROGRAM_CHANGED = ("program.json changed after approval (the participants are described from it): ask the researcher "
+                   "to press Run simulation again")
+OLD_APPROVAL = ("this run was approved by an earlier version of HumanStudy Hub, which did not record who takes part: "
+                "press Run simulation again to approve it with this version")
+OLD_RUN = ("this run folder was started by an earlier version of HumanStudy Hub or with other settings, so it cannot be "
+           "continued in place: press Run simulation to start a new run")
 
 
 def participants_sha(project: Path) -> str | None:
     import participants as P
     path = project / P.SPEC_PATH
+    return sha256(path) if path.is_file() else None
+
+
+def program_sha(project: Path) -> str | None:
+    path = project / "program.json"
     return sha256(path) if path.is_file() else None
 
 
@@ -167,48 +180,291 @@ def plan_members(protocol: dict, per_arm: int, arms: list | None) -> tuple[dict,
     return plan, sizes
 
 
-def without_text(f):
-    """For a published study played from wording restored on this computer: the reply (which may quote that wording)
-    is not kept in the run's records; only its length and how many pictures were sent."""
-    def wrapped(state, ctx):
-        answers = f(state, ctx)
-        note = ctx.note if isinstance(ctx.note, dict) else {}
-        ctx.note = {"reply_chars": len(note.get("reply") or ""), **({"images_sent": note["images_sent"]} if "images_sent" in note else {})}
-        return answers
-    wrapped.__dict__.update(f.__dict__)
-    return wrapped
+# ------------------------------------------------------------------------------------------------ pictures
+# The relay's caps (model-relay.ts MAX_IMAGES, MAX_IMAGE_BYTES, MAX_REQUEST_BYTES): a page over them goes text only.
+MAX_IMAGES, MAX_IMAGE_BYTES, MAX_REQUEST_BYTES = 8, 1_000_000, 4_000_000
+IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
 
 
-def participant_f(complete, people: dict, spec: dict, images: bool, images_note: str, summary: str, keep_text: bool = True):
-    """f for every participant: each one's own system prompt (persona), the default renderer, think-then-answer.
-    Blank mode is make_chat_f's bare prompt with bare JSON answers, kept for comparison. keep_text False: replies
-    are not stored (a restored published study)."""
+def picture_digests(protocol: dict, root: Path) -> dict:
+    """{src: sha256} of every local picture the protocol shows, read at run start. A picture whose item declares a
+    sha256 must be exactly that file, or the run is refused before any participant starts."""
+    out = {}
+
+    def walk(o):
+        if isinstance(o, dict):
+            src = o.get("src")
+            if isinstance(src, str) and not src.startswith(("http://", "https://")) and src not in out:
+                data = picture_bytes(root, src)
+                if data is not None:
+                    digest = hashlib.sha256(data).hexdigest()
+                    declared = o.get("sha256")
+                    if isinstance(declared, str) and declared and declared != digest:
+                        raise Refused("the picture %s is not the one the study declares (its SHA-256 differs): put back "
+                                      "the original file, then press Run simulation again" % src)
+                    out[src] = digest
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(protocol)
+    return out
+
+
+class Pictures:
+    """What a run does with the current screen's pictures: each copy the runner hands f must be a picture pinned at
+    run start (a picture changed during the run ends that participant), a page over the relay's caps goes text only,
+    and the SHA-256 of every picture sent is recorded."""
+
+    def __init__(self, pinned: dict):
+        import threading
+        self.pinned = set(pinned.values())
+        self.sent, self.over_caps, self.pages = set(), 0, 0
+        self.lock = threading.Lock()
+
+    def page(self, state, ctx, text_bytes: int):
+        """-> None when the page's pictures may be sent, else why it goes text only. Raises when a picture changed."""
+        import mimetypes
+        refs = [it["src"] for it in (state.get("screen") or {}).get("items", []) if isinstance(it.get("src"), str)
+                and it["src"].startswith("asset:")]
+        sizes, digests = [], []
+        for ref in refs:
+            path = ctx.asset_path(ref) if getattr(ctx, "asset_path", None) else None
+            if not path:
+                continue
+            data = Path(path).read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            if digest not in self.pinned or not digest.startswith(ref[len("asset:"):]):
+                raise RuntimeError("a picture of this study changed during the run, so it was not sent")
+            mime = mimetypes.guess_type(path)[0] or "image/png"
+            if mime not in IMAGE_TYPES:
+                return "a picture is not PNG, JPEG, GIF or WebP"
+            sizes.append(len("data:%s;base64," % mime) + 4 * ((len(data) + 2) // 3))
+            digests.append(digest)
+        why = ("more than %d pictures" % MAX_IMAGES if len(sizes) > MAX_IMAGES else
+               "a picture over %d bytes" % MAX_IMAGE_BYTES if any(s > MAX_IMAGE_BYTES for s in sizes) else
+               "pictures over the request limit" if sum(sizes) + text_bytes + 4096 > MAX_REQUEST_BYTES else None)
+        with self.lock:
+            if why:
+                self.over_caps += 1
+            elif digests:
+                self.pages += 1
+                self.sent.update(digests)
+        return why
+
+    def record(self) -> dict:
+        return {"pages_with_pictures": self.pages, "pages_text_only_over_caps": self.over_caps,
+                "pictures_sent_sha256": sorted(self.sent)}
+
+
+# ------------------------------------------------------------------------------------------------ restored wording
+WINDOW = 40   # hs_original_text PRIVATE_RUN: a run of 40 letters quoted from held wording is redacted
+
+
+def _letters(text: str) -> list:
+    import unicodedata
+    out = []
+    for i, ch in enumerate(text):
+        for c in unicodedata.normalize("NFKC", ch).lower():
+            if unicodedata.category(c)[0] == "L":
+                out.append((ord(c), i))
+    return out
+
+
+def _window(cps) -> tuple:
+    a, b = 0x811C9DC5, 0x9747B28C
+    for cp in cps:
+        a = ((a ^ cp) * 0x01000193) & 0xFFFFFFFF
+        b = ((b ^ cp) * 0x5BD1E995) & 0xFFFFFFFF
+        b = (b ^ (b >> 15)) & 0xFFFFFFFF
+    return a, b
+
+
+class Redactor:
+    """Redacts restored held wording (the same letters-only, 40-letter windows as the research-capture redaction
+    index, hs_original_text) inside text a run stores: each character of a quoted run becomes PLACEHOLDER."""
+
+    def __init__(self, texts):
+        self.windows = set()
+        for t in texts:
+            cps = [c for c, _ in _letters(t)]
+            self.windows.update(_window(cps[i:i + WINDOW]) for i in range(len(cps) - WINDOW + 1))
+
+    def text(self, s: str) -> str:
+        if not self.windows or len(s) < WINDOW:
+            return s
+        letters = _letters(s)
+        cps = [c for c, _ in letters]
+        marked = set()
+        for i in range(len(cps) - WINDOW + 1):
+            if _window(cps[i:i + WINDOW]) in self.windows:
+                marked.update(range(letters[i][1], letters[i + WINDOW - 1][1] + 1))
+        return "".join(PLACEHOLDER if i in marked else ch for i, ch in enumerate(s)) if marked else s
+
+    def obj(self, o):
+        if isinstance(o, str):
+            return self.text(o)
+        if isinstance(o, list):
+            return [self.obj(v) for v in o]
+        if isinstance(o, dict):
+            return {k: self.obj(v) for k, v in o.items()}
+        return o
+
+    def line(self, line: str) -> str:
+        try:
+            return json.dumps(self.obj(json.loads(line)), ensure_ascii=False, default=str)
+        except ValueError:
+            return self.text(line)
+
+
+def held_texts(projection: dict, restored: dict) -> list:
+    """The restored wording of every held text item (and the text lines of held pictures)."""
+    out = []
+    for h in ((projection.get("distribution") or {}).get("held") or {}).values():
+        try:
+            v = _get(restored, h["path"])
+        except (KeyError, IndexError, ValueError, TypeError):
+            continue
+        out.extend(x for x in ([v] if isinstance(v, str) else (v.get("lines") or []) if isinstance(v, dict) else [])
+                   if isinstance(x, str))
+    return out
+
+
+class _RedactingFile:
+    def __init__(self, fh, red):
+        self.fh, self.red = fh, red
+
+    def write(self, s):
+        return self.fh.write("\n".join(self.red.line(x) if x.strip() else x for x in s.split("\n")))
+
+    def __getattr__(self, name):
+        return getattr(self.fh, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.fh.close()
+        return False
+
+
+class _RedactingPath:
+    """A run_study output path whose files are written redacted (reads are unchanged)."""
+
+    def __init__(self, path, red):
+        self._path, self._red = Path(path), red
+
+    def open(self, mode="r", *a, **k):
+        fh = self._path.open(mode, *a, **k)
+        return _RedactingFile(fh, self._red) if any(m in mode for m in "aw") else fh
+
+    def __getattr__(self, name):
+        return getattr(self._path, name)
+
+    def __fspath__(self):
+        return str(self._path)
+
+    def __str__(self):
+        return str(self._path)
+
+    def __truediv__(self, other):
+        return self._path / other
+
+
+class redacted_records:
+    """While active, steps.jsonl, records.jsonl and operator.jsonl are written with restored wording redacted. The
+    engine and the scores keep the answers as given; only the stored copy changes."""
+
+    def __init__(self, red):
+        self.red = red
+
+    def __enter__(self):
+        import run_study
+        self.R, self.original = run_study.Runner, run_study.Runner.__init__
+        original, red = self.original, self.red
+
+        def init(runner, *a, **k):
+            original(runner, *a, **k)
+            for name in ("steps_path", "records_path", "operator_path"):
+                setattr(runner, name, _RedactingPath(getattr(runner, name), red))
+        self.R.__init__ = init
+        return self
+
+    def __exit__(self, *exc):
+        self.R.__init__ = self.original
+        return False
+
+
+def redact_file(path: Path, red) -> None:
+    """Rewrite a JSON file the run wrote at the end (evaldata.json, effects.json) with restored wording redacted."""
+    if path.is_file():
+        data = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps(red.obj(data), ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+
+
+# ------------------------------------------------------------------------------------------------ f
+def participant_f(complete, people: dict, spec: dict, images: bool, images_note: str, summary: str, keep_text: bool = True,
+                  pictures: Pictures | None = None):
+    """f for every participant: each one's own system prompt (persona), the default renderer, think-then-answer. The
+    full reply is parsed once; its reasoning goes to the step's note (the note's reply is an excerpt for the log
+    only). Pictures are sent within the relay's caps, else the page goes text only (said in the note). Blank mode
+    is exactly the earlier f: make_chat_f's bare prompt, bare JSON answers, text only. keep_text False (a restored
+    published study): replies are not stored and answers keep only this page's question ids."""
+    import threading
     import participants as P
     from render import make_chat_f, render_state
     if spec["mode"] == "blank":
-        f = make_chat_f(complete, render=render_state, images=images)
-        f.description = dict(f.description, participants=summary, images=images_note)
-        return f if keep_text else without_text(f)
-    made = {}
+        base = make_chat_f(complete, render=render_state)
+        f = base
+        if not keep_text:
+            def f(state, ctx):
+                return page_answers(state, base(state, ctx), ctx, keep_text)
+        f.description = dict(base.description, participants=summary,
+                             images="NOT shown: text only (blank mode keeps the earlier prompt)")
+        return f
+    made, tls = {}, threading.local()
+
+    def parse(text):
+        tls.reasoning, answers = P.split_reply(text)
+        return answers
 
     def f(state, ctx):
         key = (ctx.participant, ctx.member)
         person = people.get(key)
         if person is None:
             raise RuntimeError("this participant has no description (participants.py assigned none)")
-        g = made.get(key)
+        why = None
+        if images and pictures is not None:
+            why = pictures.page(state, ctx, len(json.dumps(person["system"])) + len(json.dumps(render_state(state))))
+        send = images and why is None
+        g = made.get((key, send))
         if g is None:
-            g = made[key] = make_chat_f(complete, system=person["system"], render=render_state, parse=P.parse_answer,
-                                        images=images)
+            g = made[(key, send)] = make_chat_f(complete, system=person["system"], render=render_state, parse=parse,
+                                                images=send)
+        tls.reasoning = ""
         answers = g(state, ctx)
-        if isinstance(ctx.note, dict) and isinstance(ctx.note.get("reply"), str):
-            ctx.note["reasoning"] = P.split_reply(ctx.note["reply"])[0][:1000]
-        return answers
+        if isinstance(ctx.note, dict):
+            ctx.note["reasoning"] = tls.reasoning[:1000]
+            if why:
+                ctx.note["images_skipped"] = why
+        return page_answers(state, answers, ctx, keep_text)
     f.description = {"renderer": "render_state", "participants": summary,
                      "system": spec.get("system") or P.system_text("{{persona}}"),
                      "answer": "a short in-character reaction (one to three sentences), then one fenced JSON object",
                      "memory": "state only (seen + answered); one fresh call per page", "images": images_note}
-    return f if keep_text else without_text(f)
+    return f
+
+
+def page_answers(state, answers: dict, ctx, keep_text: bool) -> dict:
+    """keep_text False: only this page's question ids are kept, and the note keeps no reply text."""
+    if keep_text:
+        return answers
+    ids = {r.get("id") for r in (state.get("screen") or {}).get("responses", [])}
+    note = ctx.note if isinstance(ctx.note, dict) else {}
+    ctx.note = {"reply_chars": len(note.get("reply") or ""),
+                **{k: note[k] for k in ("images_sent", "images_skipped") if k in note}}
+    return {k: v for k, v in answers.items() if k in ids}
 
 
 class Refused(SystemExit):
@@ -227,7 +483,8 @@ def binding() -> dict:
     return out
 
 
-PLAN_KEYS = ("route", "protocolSha256", "perArm", "arms", "seeds", "temperature", "participantsSha256", "images")
+PLAN_KEYS = ("route", "protocolSha256", "perArm", "arms", "seeds", "temperature", "participantsSha256", "programSha256",
+             "images")
 
 
 def approved_plan(run_dir: Path) -> dict:
@@ -254,8 +511,12 @@ def check_approval(run_dir: Path, project: Path, plan: dict, bound: dict) -> str
     actual = sha256(project / "protocol.json")
     if actual != plan.get("protocolSha256"):
         raise Refused("protocol.json changed after approval: ask the researcher to press Run simulation again")
+    if "programSha256" not in plan and "participantsSha256" not in plan and (project / "program.json").is_file():
+        raise Refused(OLD_APPROVAL)   # a plan written before who-takes-part was approved (and pinned)
     if participants_sha(project) != plan.get("participantsSha256"):
         raise Refused(PARTICIPANTS_CHANGED)
+    if program_sha(project) != plan.get("programSha256"):
+        raise Refused(PROGRAM_CHANGED)
     if bound and (project / "variant.json").exists():
         raise Refused("this project holds a variant (variant.json), which is not part of the approval: not run")
     if bound:
@@ -635,10 +896,24 @@ def wording_note(labels: dict) -> dict | None:
     return counts if any(counts.values()) else None
 
 
+def check_resumable(out: Path) -> None:
+    """An in-place resume of a run started before participants were recorded cannot continue: say so plainly."""
+    prior = out / "run.json"
+    if prior.is_file():
+        try:
+            old_spec = (json.loads(prior.read_text(encoding="utf-8")).get("f") or {}).get("spec") or {}
+        except ValueError:
+            old_spec = {}
+        if "participants" not in old_spec:
+            raise Refused(OLD_RUN)
+
+
 def participants_for(out: Path, project: Path, plan: dict, restored: dict | None, trial: bool) -> dict:
     """Who plays each planned participant: the approved simulation/participants.json (or the paper's sample when
-    there is none), drawn per participant and written to <out>/participants.jsonl (opaque id, member, group,
-    attributes; never the condition). Refused when the file is not the approved one or a prompt outgrows the budget."""
+    there is none), described from protocol.json as approved and the pinned program.json, drawn per participant and
+    kept in <out>/participants.jsonl (opaque id, member, group, attributes, persona; never the condition). A resumed
+    run reads its participants back from that file and only appends ones it lacks. Refused when an input is not the
+    approved one, a description names a condition, or a prompt outgrows the budget."""
     import hmac
     import participants as P
     import run_study
@@ -649,19 +924,41 @@ def participants_for(out: Path, project: Path, plan: dict, restored: dict | None
                       "simulation again" % e)
     if sha != plan.get("participantsSha256"):
         raise Refused(PARTICIPANTS_CHANGED)
-    protocol = restored if restored is not None else json.loads((project / "protocol.json").read_text(encoding="utf-8"))
+    raw = (project / "program.json").read_bytes() if (project / "program.json").is_file() else None
+    if (hashlib.sha256(raw).hexdigest() if raw is not None else None) != plan.get("programSha256"):
+        raise Refused(PROGRAM_CHANGED)
     try:
-        program = json.loads((project / "program.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        program = json.loads(raw.decode("utf-8")) if raw is not None else None
+    except ValueError:
         program = None
+    # Described from the published (approved) protocol.json, never from wording restored on this computer.
+    protocol = json.loads((project / "protocol.json").read_text(encoding="utf-8"))
+    problem = P.condition_problem(spec, protocol, program) if spec["mode"] == "custom" or spec.get("system") else None
+    if problem:
+        raise Refused("simulation/participants.json cannot be used: %s. Ask the agent to fix it, then press Run "
+                      "simulation again" % problem)
     per, seeds = (1, [1]) if trial else (int(plan["perArm"]), [int(s) for s in plan["seeds"]])
-    counts, sizes = plan_members(protocol, per, plan.get("arms"))
+    counts, sizes = plan_members(restored if restored is not None else protocol, per, plan.get("arms"))
     out.mkdir(parents=True, exist_ok=True)
     salt = run_study.load_salt(out)   # the same per-run secret run_study names participants with
 
     def opaque(seed, arm, index):
         return hmac.new(salt, ("%s|%s|%s" % (seed, arm, index)).encode(), hashlib.sha256).hexdigest()[:16]
     people = P.people(spec, sha, protocol, program, counts, sizes, seeds, opaque)
+    path = out / "participants.jsonl"
+    kept = {}
+    for line in path.read_text(encoding="utf-8").splitlines() if path.is_file() else []:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue   # a line cut off by an interruption: that participant is drawn again (it had not started)
+        if r.get("spec_sha256", "none") != (sha or None):
+            raise Refused(OLD_RUN)
+        kept[(r["opaque_id"], r["member"])] = r
+    for key, person in people.items():
+        if key in kept:   # a resumed run plays exactly the people it started with
+            person.update(group=kept[key].get("group"), attributes=kept[key].get("attributes") or {},
+                          persona=kept[key].get("persona", person["persona"]))
     for person in people.values():
         a = person["attributes"]
         person["system"] = P.system_text(person["persona"], spec.get("system"),
@@ -669,11 +966,15 @@ def participants_for(out: Path, project: Path, plan: dict, restored: dict | None
         if spec["mode"] != "blank" and not P.fits_budget(person["system"]):
             raise Refused("the participant descriptions in simulation/participants.json are too long for the measured "
                           "model budget: ask the agent to shorten them, then press Run simulation again")
-    with (out / "participants.jsonl").open("w", encoding="utf-8") as fh:
-        for (oid, member), person in sorted(people.items()):
-            fh.write(json.dumps({"opaque_id": oid, "member": member, "group": person["group"],
-                                 "attributes": person["attributes"]}, ensure_ascii=False) + "\n")
+    new_rows = [(k, p) for k, p in sorted(people.items()) if k not in kept]
+    if new_rows:
+        with path.open("a", encoding="utf-8") as fh:
+            for (oid, member), person in new_rows:
+                fh.write(json.dumps({"opaque_id": oid, "member": member, "group": person["group"],
+                                     "attributes": person["attributes"], "persona": person["persona"],
+                                     "spec_sha256": sha}, ensure_ascii=False) + "\n")
     info = {"mode": spec["mode"], "sha256": sha, "file": P.SPEC_PATH if sha else None,
+            "programSha256": plan.get("programSha256"),
             "summary": P.summary(spec, protocol, program, plan.get("arms")), "records": "participants.jsonl",
             "answer": "blank: bare JSON" if spec["mode"] == "blank" else "a short in-character reaction, then JSON"}
     if spec.get("system"):
@@ -710,10 +1011,18 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     if complete is None:
         from humanstudy_llm import model_name
         complete, model = relay_complete(plan.get("temperature", 1.0)), model_name()
+    check_resumable(out)
     who = participants_for(out, project, plan, restored, trial)
     images, images_note = image_choice(plan, model)
+    if who["spec"]["mode"] == "blank":
+        images, images_note = False, "NOT shown: text only (blank mode keeps the earlier prompt)"
+    # Pictures are pinned now: a declared digest must match, and a picture changed during the run is never sent.
+    pictures = Pictures(picture_digests(restored if restored is not None else
+                                        json.loads((project / "protocol.json").read_text(encoding="utf-8")), project))
     f = reask_unreadable(participant_f(complete, who["people"], who["spec"], images, images_note, who["info"]["summary"],
-                                       keep_text=restored is None))
+                                       keep_text=restored is None, pictures=pictures))
+    red = Redactor(held_texts(json.loads((project / "protocol.json").read_text(encoding="utf-8")), restored)) \
+        if restored is not None else None
     # retries 0: humanstudy_llm already retries 429/5xx; a call that still fails (transport, allowance, a refusal)
     # ends that participant as incomplete. Only an unreadable reply is asked once more (reask_unreadable).
     spec = {"kind": "llm", "name": "desktop model", "model": model or "unknown", "renderer": "default",
@@ -742,20 +1051,32 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     unofficial = never_official() if note else None
     if unofficial is not None:
         unofficial.__enter__()
+    redacting = redacted_records(red) if red is not None else None
+    if redacting is not None:
+        redacting.__enter__()
     try:
         meta = run_study.run(project, spec, n=1 if trial else int(plan["perArm"]), seeds=[1] if trial else plan["seeds"],
                              out=out, host_f=f, arms=plan.get("arms"), quiet=True, baseline=not trial,
                              top_up=False,   # exactly the approved n: no extra sessions beyond the measured budget
                              # a restored study's wording stays out of the project: records keep answers, no screens
                              **({"states": "none"} if restored is not None else {}))
+    except SystemExit as e:
+        if "holds a different run" in str(e.code):
+            raise Refused(OLD_RUN)
+        raise
     finally:
+        if redacting is not None:
+            redacting.__exit__(None, None, None)
         run_study.baseline_cached, run_study.Progress.stage = original_cache, original_stage
         run_study.load_protocol = original_load
         if unofficial is not None:
             unofficial.__exit__(None, None, None)
     if note and isinstance(meta.get("plan"), dict):
         meta["plan"]["official"] = False
-    meta["participants_spec"] = dict(who["info"], images=images_note)
+    meta["participants_spec"] = dict(who["info"], images=images_note, pictures=pictures.record())
+    if red is not None:
+        for name in ("evaldata.json", "effects.json"):
+            redact_file(out / name, red)
     # The protocol the engine actually loaded must be the approved one: run_study reads protocol.json again after
     # check_approval hashed it (review 5, S3).
     if meta.get("protocol_sha256") != plan.get("protocolSha256") or (bound and meta.get("variant") is not None):
@@ -807,6 +1128,7 @@ def main(argv=None) -> None:
     n.add_argument("--per-arm", type=int, required=True)
     n.add_argument("--protocol-hash", required=True, help="protocolHash from the researcher's approval")
     n.add_argument("--participants-hash", help="participantsSha256 from the approval (absent: no participants.json)")
+    n.add_argument("--program-hash", help="programSha256 from the approval (absent: no program.json)")
     n.add_argument("--arms", help="comma-separated arm ids (default: every runnable arm)")
     n.add_argument("--seeds", default="1")
     n.add_argument("--temperature", type=float, default=1.0)
@@ -819,7 +1141,7 @@ def main(argv=None) -> None:
         print(json.dumps({"status": meta.get("status"), "app": meta.get("app")}, default=str))
         return
     plan = new(Path(a.run_dir), a.per_arm, a.protocol_hash, a.arms.split(",") if a.arms else None,
-               [int(x) for x in a.seeds.split(",")], a.temperature, a.participants_hash)
+               [int(x) for x in a.seeds.split(",")], a.temperature, a.participants_hash, a.program_hash)
     print("ready: %s (%s per arm). Trial: run_confined.py %s/run.py --trial; then simkit.py start %s"
           % (a.run_dir, plan["perArm"], a.run_dir, a.run_dir))
 

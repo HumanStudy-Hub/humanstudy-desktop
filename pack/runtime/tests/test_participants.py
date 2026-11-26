@@ -155,6 +155,82 @@ class PaperDefault(unittest.TestCase):
         self.assertIn("mean age was 32.3", person["persona"])
 
 
+class Gender(unittest.TestCase):
+    """Review item 1: only printed categories, at printed shares; an undescribed rest is left unstated."""
+
+    def test_only_printed_categories(self):
+        self.assertEqual(P.stats("62% female")["gender"], {"woman": 0.62, None: 0.38})
+        g = P.stats("48% women, 50% men and 2% nonbinary")["gender"]
+        self.assertEqual(g, {"woman": 0.48, "man": 0.5, "nonbinary person": 0.02})
+        g = P.stats("N = 100 (40 women, 55 men)")["gender"]
+        self.assertAlmostEqual(g["woman"], 0.40)
+        self.assertAlmostEqual(g["man"], 0.55)
+        self.assertAlmostEqual(g[None], 0.05)
+        self.assertNotIn("gender", P.stats("171 women took part"), "one count without an N states no share")
+
+    def test_the_unstated_rest_gets_no_gender(self):
+        proto = {"meta": {"sample": "Undergraduates (62% female)."}, "arms": [{"id": "s1"}]}
+        ppl = P.people({"mode": "paper"}, None, proto, None, {"s1": 200}, {}, [1], opaque)
+        genders = [p["attributes"].get("gender") for p in ppl.values()]
+        self.assertEqual(set(genders), {"woman", None}, "never a man: the paper only says 62% female")
+        self.assertTrue(40 < genders.count(None) < 120)
+        for p in ppl.values():
+            if "gender" not in p["attributes"]:
+                self.assertNotRegex(p["persona"], r"\b(?:man|woman)\b")
+        self.assertIn("You are a nonbinary person.", P.persona_text(None, {"gender": "nonbinary person"}))
+
+
+class OwnStudyNoConditions(unittest.TestCase):
+    """Review item 2: each participant gets its own study's sample, and no condition is ever named."""
+    PROTO = {"meta": {"sample": "Study 1 participants were undergraduates at a US university. Study 2 participants "
+                                "were hospital nurses in Germany."},
+             "arms": [{"id": "s1-reminder", "label": "Study 1: Reminder"}, {"id": "s1-control", "label": "Study 1: Control"},
+                      {"id": "s2-reminder", "label": "Study 2: Reminder"}]}
+    PROGRAM = {"studies": [{"id": "s1", "title": "Study 1", "type": "empirical"}, {"id": "s2", "title": "Study 2", "type": "empirical"}],
+               "nodes": [{"id": "c1", "kind": "condition", "title": "Gratitude prime", "fields": []},
+                         {"id": "pp", "kind": "participants", "studyIds": ["s1"], "fields": [
+                             {"id": "population", "label": "Population", "state": "confirmed",
+                              "value": "Students assigned to the gratitude prime or the control group. Members of a sports club."}]}]}
+
+    def test_each_study_its_own_sample(self):
+        a1, _, a3 = self.PROTO["arms"]
+        self.assertIn("undergraduates", P.paper_profile(self.PROTO, None, a1)["description"])
+        self.assertNotIn("nurses", P.paper_profile(self.PROTO, None, a1)["description"])
+        self.assertIn("nurses", P.paper_profile(self.PROTO, None, a3)["description"])
+        self.assertNotIn("undergraduates", P.paper_profile(self.PROTO, None, a3)["description"])
+
+    def test_no_condition_id_or_label_reaches_a_system_prompt(self):
+        proto = {"meta": {}, "arms": self.PROTO["arms"]}
+        names = P.condition_names(proto, self.PROGRAM)
+        self.assertIn("Gratitude prime", names)
+        ppl = P.people({"mode": "paper"}, None, proto, self.PROGRAM, {a["id"]: 3 for a in proto["arms"]}, {}, [1], opaque)
+        self.assertTrue(any("Members of a sports club" in p["persona"] for p in ppl.values()))
+        for p in ppl.values():
+            system = P.system_text(p["persona"])
+            for a in proto["arms"]:
+                for n in (a["id"], a["label"], a["label"].split(":")[1].strip(), "gratitude prime", "control group"):
+                    self.assertNotIn(n.lower(), system.lower())
+
+    def test_a_custom_persona_naming_a_condition_is_refused(self):
+        spec = P.validate({"mode": "custom", "groups": [{"persona": "You were given the gratitude prime."}]})
+        self.assertIn("Gratitude prime", P.condition_problem(spec, self.PROTO, self.PROGRAM))
+        self.assertIsNone(P.condition_problem(P.validate(CUSTOM), self.PROTO, self.PROGRAM))
+
+
+class Budget(unittest.TestCase):
+    """Review item 10: one re-ask per page and carried free text are reserved."""
+
+    def test_headroom(self):
+        import budget
+        self.assertEqual(budget.with_headroom(10, 1000), (30, 3000))
+        page = {"screen": {"responses": [{"id": "why", "kind": "text"}, {"id": "pick", "kind": "choice"}]}}
+        self.assertEqual(budget.text_ids(page), {"why"})
+        state = {"answered": [{"response": "pick", "value": "Agree"}, {"response": "why", "value": "a long essay"},
+                              {"response": "pick2", "value": "Other", "text": "x"}]}
+        self.assertEqual(budget.carried_text(state, {"why"}), 2 * budget.CARRY_BYTES)
+        self.assertEqual(budget.carried_text({}, {"why"}), 0)
+
+
 class CheckCommand(unittest.TestCase):
     def test_check_reports_a_summary_or_the_problem(self):
         with tempfile.TemporaryDirectory() as d:
@@ -185,16 +261,23 @@ class PromptAndReply(unittest.TestCase):
         self.assertFalse(P.fits_budget(P.system_text("é" * 1000)), "JSON-escaped bytes count, as the relay counts them")
 
     def test_reasoning_before_the_fenced_json(self):
-        reply = 'Honestly {"r1": "o9"} looks like a trap to me, so I pick the first {one}.\n```json\n{"r1": "o1", "r2": {"code": "o3", "text": "x"}}\n```'
+        reply = 'Honestly {"r1": "o9"} looks like a trap to me, so I pick the first {one}.\n```json\n{"r1": "o1", "r2": {"code": "o3", "text": "x"}}\n```\n'
         reasoning, answers = P.split_reply(reply)
-        self.assertEqual(answers, {"r1": "o1", "r2": {"code": "o3", "text": "x"}})
+        self.assertEqual(answers, {"r1": "o1", "r2": {"code": "o3", "text": "x"}}, "braces in the reasoning are never the answer")
         self.assertTrue(reasoning.startswith("Honestly") and reasoning.endswith("{one}."))
         self.assertEqual(P.parse_answer('I like it.\n```json\n{"a": 1}\n```\nmore\n```json\n{"a": 2}\n```'), {"a": 2}, "the last block")
-        self.assertEqual(P.split_reply('Not sure {at all}. {"q": 5}'), ("Not sure {at all}.", {"q": 5}), "unfenced: the last object")
-        self.assertEqual(P.parse_answer('{"q": {"code": "o1", "text": "t"}}'), {"q": {"code": "o1", "text": "t"}}, "outermost")
-        self.assertEqual(P.parse_answer("{}"), {})
-        with self.assertRaisesRegex(ValueError, "no JSON object"):
-            P.parse_answer("I would rather not say.")
+        self.assertEqual(P.parse_answer('Fine.\n```json\n{"t": "a { b } c {", "u": "}"}\n```'), {"t": "a { b } c {", "u": "}"},
+                         "a literal brace inside a JSON string")
+        self.assertEqual(P.parse_answer('{"q": {"code": "o1", "text": "t"}}'), {"q": {"code": "o1", "text": "t"}}, "a bare object")
+        self.assertEqual(P.parse_answer("  {}  "), {})
+        for bad in ['```json\n{"a": 1}\n```\nActually, make that o2.',        # text after the answer
+                    'Not sure {at all}. {"q": 5}',                             # an object inside prose, no fence
+                    'I pick {"q": "o1"} as my answer.',
+                    '```json\n{"a": 1}\n```\n```\n{"a": 2}\n```',          # the last block is not a json block
+                    '```json\n{"a": 1} {"b": 2}\n```',                       # two objects in the block
+                    '```json\n["o1"]\n```', "I would rather not say."]:
+            with self.assertRaisesRegex(ValueError, "no JSON object", msg=bad):
+                P.parse_answer(bad)
 
 
 class AppRunUses(unittest.TestCase):
@@ -235,6 +318,25 @@ class AppRunUses(unittest.TestCase):
         self.assertEqual(len(A.local_images_only(msgs)[0]["content"]), 2, "remote pictures never go to the relay")
         self.assertEqual(A.local_images_only([{"role": "user", "content": msgs[0]["content"][:2]}])[0]["content"], "p")
 
+    def state(self, srcs=("asset:ff",), qid="q1"):
+        return {"step": 1, "page": 1, "screen": {"items": [{"id": "i%d" % i, "src": s} for i, s in enumerate(srcs)],
+                                                 "responses": [{"id": qid, "kind": "single", "prompt": "Pick",
+                                                                "options": [{"code": "o1", "label": "A"}, {"code": "o2", "label": "B"}]}]}}
+
+    def ctx(self, files, participant="abc"):
+        class Ctx:
+            member, note = "p1", None
+        c = Ctx()
+        c.participant = participant
+        c.asset_path = lambda ref: files.get(ref)
+        return c
+
+    def picture(self, name, data):
+        path = self.tmp / name
+        path.write_bytes(data)
+        digest = hashlib.sha256(data).hexdigest()
+        return path, digest, "asset:" + digest[:16]
+
     def test_participant_f_sends_persona_images_and_keeps_the_reasoning(self):
         A = self.A
         sent = []
@@ -242,18 +344,12 @@ class AppRunUses(unittest.TestCase):
         def complete(messages):
             sent.append(messages)
             return 'Seems fine to me.\n```json\n{"q1": "o2"}\n```'
-        img = self.tmp / "pic.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        img, digest, ref = self.picture("pic.png", b"\x89PNG\r\n\x1a\nfake")
         people = {("abc", "p1"): {"group": None, "attributes": {}, "persona": "", "system": P.system_text("You are a nurse.")}}
-        f = A.participant_f(complete, people, {"mode": "paper"}, True, "sent", "Sample-matched: nurses")
-
-        class Ctx:
-            participant, member, note = "abc", "p1", None
-            asset_path = staticmethod(lambda ref: str(img))
-        state = {"step": 1, "page": 1, "screen": {"items": [{"id": "i1", "src": "asset:ff"}],
-                                                   "responses": [{"id": "q1", "kind": "single", "prompt": "Pick", "options": [{"code": "o1", "label": "A"}, {"code": "o2", "label": "B"}]}]}}
-        ctx = Ctx()
-        self.assertEqual(f(state, ctx), {"q1": "o2"})
+        pics = A.Pictures({"pic.png": digest})
+        f = A.participant_f(complete, people, {"mode": "paper"}, True, "sent", "Sample-matched: nurses", pictures=pics)
+        ctx = self.ctx({ref: str(img)})
+        self.assertEqual(f(self.state([ref]), ctx), {"q1": "o2"})
         system, user = sent[0]
         self.assertTrue(system["content"].startswith("You are a nurse."))
         self.assertEqual([p["type"] for p in user["content"]], ["text", "image_url"])
@@ -261,15 +357,144 @@ class AppRunUses(unittest.TestCase):
         self.assertEqual(ctx.note["reasoning"], "Seems fine to me.")
         self.assertEqual(ctx.note["images_sent"], 1)
         self.assertNotIn("base64", json.dumps(ctx.note), "the picture itself is never stored")
-        private = A.participant_f(complete, people, {"mode": "paper"}, True, "sent", "s", keep_text=False)
-        ctx3 = Ctx()
-        self.assertEqual(private(state, ctx3), {"q1": "o2"})
-        self.assertEqual(ctx3.note, {"reply_chars": len('Seems fine to me.\n```json\n{"q1": "o2"}\n```'), "images_sent": 1},
-                         "a restored study's replies (which may quote its wording) are not kept")
-        ctx2 = Ctx()
-        ctx2.participant = "zzz"
+        self.assertEqual(pics.record(), {"pages_with_pictures": 1, "pages_text_only_over_caps": 0, "pictures_sent_sha256": [digest]})
         with self.assertRaises(RuntimeError):
-            f(state, ctx2)
+            f(self.state([ref]), self.ctx({ref: str(img)}, participant="zzz"))
+
+    def test_item6_a_restored_study_keeps_only_page_question_ids_and_no_reply(self):
+        A = self.A
+
+        def complete(messages):
+            return 'It said "the held words here".\n```json\n{"q1": "o2", "held passage": "copied text", "q9": 1}\n```'
+        people = {("abc", "p1"): {"group": None, "attributes": {}, "persona": "", "system": P.system_text("")}}
+        f = A.participant_f(complete, people, {"mode": "paper"}, False, "no", "s", keep_text=False)
+        ctx = self.ctx({})
+        self.assertEqual(f(self.state(()), ctx), {"q1": "o2"}, "keys that are not this page's questions are dropped")
+        self.assertEqual(set(ctx.note), {"reply_chars"}, "no reply text is kept")
+        blank = A.participant_f(lambda m: '{"q1": "o1", "junk": "x"}', people, {"mode": "blank"}, False, "no", "s", keep_text=False)
+        self.assertEqual(blank(self.state(()), self.ctx({})), {"q1": "o1"})
+
+    def test_item6_restored_wording_is_redacted_in_stored_records(self):
+        A = self.A
+        held = "The quick brown fox jumps over the lazy dog while the farmer watches from the old red barn."
+        projection = {"distribution": {"held": {"h1": {"path": "/stages/s/text"}, "h2": {"path": "/stages/p/value"}}},
+                      "stages": {"s": {"text": "░" * len(held)}, "p": {"value": {"src": "x", "lines": ["░" * 10]}}}}
+        restored = {"stages": {"s": {"text": held}, "p": {"value": {"src": "x", "lines": ["Short line"]}}}}
+        self.assertEqual(A.held_texts(projection, restored), [held, "Short line"])
+        red = A.Redactor(A.held_texts(projection, restored))
+        answer = "I remember: " + held.upper() + " That is all."
+        out = red.text(answer)
+        self.assertTrue(out.startswith("I remember: ") and out.endswith(" That is all."))
+        self.assertNotIn("FOX", out)
+        self.assertIn("░" * 20, out)
+        self.assertEqual(red.text("A short reply about a fox and a dog."), "A short reply about a fox and a dog.")
+        path = A._RedactingPath(self.tmp / "steps.jsonl", red)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"answers": {"q1": answer, "q2": "o1"}}) + "\n")
+        row = json.loads((self.tmp / "steps.jsonl").read_text(encoding="utf-8"))
+        self.assertNotIn("FOX", row["answers"]["q1"])
+        self.assertEqual(row["answers"]["q2"], "o1")
+        self.assertTrue(path.exists() and str(path) == str(self.tmp / "steps.jsonl"))
+
+    def test_item7_declared_picture_digests_and_changes_during_the_run(self):
+        A = self.A
+        img, digest, ref = self.picture("a.png", b"\x89PNG\r\n\x1a\nAAA")
+        protocol = {"stages": {"s": {"content": [{"value": {"src": "a.png", "sha256": digest}}, {"value": {"src": "https://x/y.png"}}]}}}
+        self.assertEqual(A.picture_digests(protocol, self.tmp), {"a.png": digest})
+        protocol["stages"]["s"]["content"][0]["value"]["sha256"] = "0" * 64
+        with self.assertRaisesRegex(A.Refused, "not the one the study declares"):
+            A.picture_digests(protocol, self.tmp)
+        pics = A.Pictures({"a.png": digest})
+        img.write_bytes(b"\x89PNG\r\n\x1a\nCHANGED")
+        with self.assertRaisesRegex(RuntimeError, "changed during the run"):
+            pics.page(self.state([ref]), self.ctx({ref: str(img)}), 100)
+
+    def test_item8_the_full_reply_is_parsed_once_not_the_excerpt(self):
+        A = self.A
+        long = "Let me think. " + "very " * 1200 + "long.\n```json\n{\"q1\": \"o1\"}\n```"
+        self.assertGreater(len(long), 4000)
+        people = {("abc", "p1"): {"group": None, "attributes": {}, "persona": "", "system": P.system_text("")}}
+        f = A.participant_f(lambda m: long, people, {"mode": "paper"}, False, "no", "s")
+        ctx = self.ctx({})
+        self.assertEqual(f(self.state(()), ctx), {"q1": "o1"})
+        self.assertEqual(len(ctx.note["reply"]), 4000, "the stored reply is only an excerpt")
+        self.assertTrue(ctx.note["reasoning"].startswith("Let me think."))
+
+    def test_item9_a_page_over_the_caps_goes_text_only_and_blank_is_text_only(self):
+        A = self.A
+        sent = []
+
+        def complete(messages):
+            sent.append(messages[-1]["content"])
+            return '```json\n{"q1": "o1"}\n```'
+        people = {("abc", "p1"): {"group": None, "attributes": {}, "persona": "", "system": P.system_text("")}}
+        files, pinned, refs = {}, {}, []
+        for i in range(A.MAX_IMAGES + 1):
+            path, digest, ref = self.picture("p%d.png" % i, b"\x89PNG" + bytes([i]) * 10)
+            files[ref], pinned[path.name], refs = str(path), digest, refs + [ref]
+        pics = A.Pictures(pinned)
+        f = A.participant_f(complete, people, {"mode": "paper"}, True, "sent", "s", pictures=pics)
+        ctx = self.ctx(files)
+        f(self.state(refs), ctx)
+        self.assertIsInstance(sent[-1], str, "nine pictures: the page goes text only")
+        self.assertIn("more than", ctx.note["images_skipped"])
+        big, bd, bref = self.picture("big.png", b"\x89PNG" + b"x" * 800_000)
+        pics2 = A.Pictures({"big.png": bd})
+        g = A.participant_f(complete, people, {"mode": "paper"}, True, "sent", "s", pictures=pics2)
+        ctx2 = self.ctx({bref: str(big)})
+        g(self.state([bref]), ctx2)
+        self.assertIsInstance(sent[-1], str)
+        self.assertIn("over", ctx2.note["images_skipped"])
+        self.assertEqual(pics.record()["pages_text_only_over_caps"] + pics2.record()["pages_text_only_over_caps"], 2)
+        blank = A.participant_f(complete, people, {"mode": "blank"}, True, "sent", "s", pictures=pics)
+        blank(self.state(refs[:1]), self.ctx(files))
+        self.assertIsInstance(sent[-1], str, "blank mode: exactly the earlier text-only f")
+
+    def test_item4_program_is_pinned_and_participants_are_read_back_on_resume(self):
+        A = self.A
+        (self.tmp / "program.json").write_text('{"studies": [], "nodes": []}', encoding="utf-8")
+        prog = hashlib.sha256((self.tmp / "program.json").read_bytes()).hexdigest()
+        plan = dict(self.plan, participantsSha256=None, programSha256=prog, perArm=2, seeds=[1], arms=None)
+        A.check_approval(self.tmp, self.tmp, plan, {})
+        with self.assertRaisesRegex(A.Refused, "program.json changed after approval"):
+            A.check_approval(self.tmp, self.tmp, dict(plan, programSha256="0" * 64), {})
+        out = self.tmp / "artifacts" / "simulations" / "r1"
+        sys.path.insert(0, str(RUNTIME / "hsenv"))   # run_study imports the engine
+        who = A.participants_for(out, self.tmp, plan, None, False)
+        lines = (out / "participants.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 4)
+        first = json.loads(lines[0])
+        self.assertEqual(set(first), {"opaque_id", "member", "group", "attributes", "persona", "spec_sha256"})
+        tampered = dict(first, attributes={"age": 99}, persona="A person drawn when the run started.")
+        (out / "participants.jsonl").write_text("\n".join([json.dumps(tampered)] + lines[1:3]) + "\n", encoding="utf-8")
+        again = A.participants_for(out, self.tmp, plan, None, False)
+        person = again["people"][(first["opaque_id"], first["member"])]
+        self.assertEqual(person["attributes"], {"age": 99}, "a resumed run reads its people back")
+        self.assertTrue(person["system"].startswith("A person drawn when the run started."))
+        after = (out / "participants.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(after[0], json.dumps(tampered), "rows of started participants are never rewritten")
+        self.assertEqual(len(after), 4, "only the missing participant is appended")
+        self.assertEqual(again["info"]["programSha256"], prog)
+        self.assertIn("programSha256", A.PLAN_KEYS)
+
+    def test_item11_upgrades_say_what_to_do(self):
+        A = self.A
+        A.check_approval(self.tmp, self.tmp, dict(self.plan), {})   # no participants file, no key: fine
+        (self.tmp / "program.json").write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(A.Refused, "press Run simulation again"):
+            A.check_approval(self.tmp, self.tmp, dict(self.plan), {})   # a plan from before this version
+        out = self.tmp / "old-run"
+        out.mkdir()
+        (out / "run.json").write_text(json.dumps({"f": {"spec": {"kind": "llm"}}}), encoding="utf-8")
+        with self.assertRaisesRegex(A.Refused, "earlier version of HumanStudy Hub.*start a new run"):
+            A.check_resumable(out)
+        (out / "run.json").write_text(json.dumps({"f": {"spec": {"kind": "llm", "participants": {"mode": "paper"}}}}), encoding="utf-8")
+        A.check_resumable(out)
+        (out / "participants.jsonl").write_text(json.dumps({"opaque_id": "x", "member": "p1", "group": None, "attributes": {}}) + "\n", encoding="utf-8")
+        plan = dict(self.plan, participantsSha256=None, programSha256=hashlib.sha256(b"{}").hexdigest(), perArm=1, seeds=[1], arms=None)
+        sys.path.insert(0, str(RUNTIME / "hsenv"))
+        with self.assertRaisesRegex(A.Refused, "start a new run"):
+            A.participants_for(out, self.tmp, plan, None, False)
 
 
 @unittest.skipUnless(SAMPLE.is_dir(), "needs the app's protocol sample")
@@ -294,7 +519,8 @@ class EndToEnd(unittest.TestCase):
             run.mkdir(parents=True)
             sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()  # noqa: E731
             plan = {"route": "protocol", "protocolSha256": sha(project / "protocol.json"), "perArm": 4, "arms": ["s1"],
-                    "seeds": [1], "temperature": 1.0, "participantsSha256": sha(project / P.SPEC_PATH), "images": False}
+                    "seeds": [1], "temperature": 1.0, "participantsSha256": sha(project / P.SPEC_PATH),
+                    "programSha256": sha(project / "program.json"), "images": False}
             (run / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
             driver = tmp / "drive.py"
             driver.write_text(
@@ -319,13 +545,82 @@ class EndToEnd(unittest.TestCase):
             self.assertTrue(any(s.startswith("A retired schoolteacher.") for s in out["systems"]))
             rows = [json.loads(x) for x in (run / "participants.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertEqual(sorted(r["group"] for r in rows), ["retirees", "students", "students", "students"])
-            self.assertTrue(all(set(r) == {"opaque_id", "member", "group", "attributes"} for r in rows), "never the condition")
+            self.assertTrue(all(set(r) == {"opaque_id", "member", "group", "attributes", "persona", "spec_sha256"} for r in rows),
+                            "never the condition")
             notes = [e.get("note") for line in (run / "records.jsonl").read_text(encoding="utf-8").splitlines()
                      for e in json.loads(line)["transcript"] if e.get("note")]
             self.assertTrue(notes and all(n["reasoning"] == "Hmm {weird}. I go with the first." for n in notes))
             self.assertIn("Participants: Custom: 2 groups", (run / "results.html").read_text(encoding="utf-8"))
             runjson = json.loads((run / "run.json").read_text(encoding="utf-8"))
             self.assertEqual(runjson["f"]["spec"]["participants"]["sha256"], plan["participantsSha256"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+@unittest.skipUnless((PACK.parent / "app" / "src" / "main" / "fixtures" / "protocol-mini").is_dir(), "needs the app's fixture")
+class RestoredEndToEnd(unittest.TestCase):
+    """Review item 6, end to end: a published study played from restored wording keeps no held wording in its records."""
+    HELD = "Imagine that you found a wallet on the street with a large amount of cash inside and nobody around."
+
+    def test_restored_wording_never_reaches_the_records(self):
+        sys.path.insert(0, str(RUNTIME / "hsenv"))
+        from hsenv import distribution as D
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            code = tmp / "code"
+            shutil.copytree(RUNTIME / "hsenv", code / "hsenv", ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copytree(PACK / "artifact-kit", code / "artifact-kit", ignore=shutil.ignore_patterns("__pycache__"))
+            (code / "skills" / "run").mkdir(parents=True)
+            for f in RUN.glob("*.py"):
+                shutil.copy(f, code / "skills" / "run")
+            project = tmp / "project"
+            shutil.copytree(PACK.parent / "app" / "src" / "main" / "fixtures" / "protocol-mini", project)
+            (project / ".humanstudy").mkdir(exist_ok=True)
+            restored = json.loads((project / "protocol.json").read_text(encoding="utf-8"))
+            restored["stages"]["intro"]["content"][0]["value"] = self.HELD
+            restored["stages"]["opinion"] = {"responses": [{"id": "why", "kind": "text", "required": True, "prompt": "What would you do, and why?"}]}
+            restored["flow"]["seq"].insert(1, {"stage": "opinion"})
+            projection = json.loads(json.dumps(restored))
+            projection["stages"]["intro"]["content"][0]["value"] = D.PLACEHOLDER * len(self.HELD)
+            projection["distribution"] = {"held": {"h1": {"path": "/stages/intro/content/0/value", "kind": "text", "source": "survey",
+                                                          "length": len(self.HELD), "text_sha256": D.text_sha256(self.HELD), "locator": {}}}}
+            (project / "protocol.json").write_text(json.dumps(projection), encoding="utf-8")
+            (code / "restored").mkdir()
+            (code / "restored" / "protocol.json").write_text(json.dumps(restored), encoding="utf-8")
+            run = project / "artifacts" / "simulations" / "r1"
+            run.mkdir(parents=True)
+            sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()  # noqa: E731
+            plan = {"route": "protocol", "protocolSha256": sha(project / "protocol.json"), "perArm": 2, "arms": None, "seeds": [1],
+                    "temperature": 1.0, "participantsSha256": None, "programSha256": None, "images": False}
+            (run / "plan.json").write_text(json.dumps(plan), encoding="utf-8")
+            driver = tmp / "drive.py"
+            driver.write_text(
+                "import json, re, sys\nsys.path.insert(0, sys.argv[1])\nimport app_run\nfrom pathlib import Path\n"
+                "HELD = %r\n"
+                "def complete(m):\n"
+                "    page = m[-1]['content']\n"
+                "    ans = {}\n"
+                "    text = re.findall(r'Question (\\S+) \\(text', page)\n"
+                "    if 'What would you do' in page and text: ans = {text[-1]: 'As the page said: ' + HELD + ' I would return it.', 'quoted page': HELD}\n"
+                "    else: ans = {q: 'o1' for q in re.findall(r'Question (\\S+) \\(choice', page)}\n"
+                "    return 'Thinking about ' + HELD + '\\n```json\\n' + json.dumps(ans) + '\\n```'\n"
+                "meta = app_run.main_run(Path(sys.argv[2]), Path(sys.argv[3]), complete=complete, model='m')\n"
+                "print(json.dumps({'status': meta['status']}))\n" % self.HELD, encoding="utf-8")
+            r = subprocess.run([sys.executable, "-I", str(driver), str(code / "skills" / "run"), str(run), str(project)],
+                               capture_output=True, text=True, timeout=600)
+            self.assertEqual(r.returncode, 0, r.stderr[-3000:] + r.stdout[-2000:])
+            stored = {n: (run / n).read_text(encoding="utf-8") for n in ("steps.jsonl", "records.jsonl", "operator.jsonl", "participants.jsonl")
+                      if (run / n).is_file()}
+            self.assertTrue(stored["steps.jsonl"] and stored["records.jsonl"])
+            for name, text in stored.items():
+                for probe in ("wallet on the street", "large amount of cash", "quoted page", "Thinking about"):
+                    self.assertNotIn(probe, text, name)
+            whys = [v for l in stored["steps.jsonl"].splitlines() for v in json.loads(l).get("answers", {}).values()
+                    if isinstance(v, str) and v.startswith("As the page said")]
+            self.assertTrue(whys and all(w.startswith("As the page said: ") and D.PLACEHOLDER * 40 in w and w.endswith(" I would return it.") for w in whys), whys)
+            for name in ("evaldata.json", "effects.json"):
+                if (run / name).is_file():
+                    self.assertNotIn("wallet on the street", (run / name).read_text(encoding="utf-8"), name)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

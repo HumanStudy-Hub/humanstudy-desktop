@@ -233,11 +233,23 @@ AGE_MEAN = re.compile(r"\b(?:M\s*age|mean\s+age|average\s+age|age[sd]?\s*[:(,]?\
 AGE_SD = re.compile(r"^[^.;]{0,30}?(?:\bSD\s*[=:]?\s*|±\s*)(\d{1,2}(?:\.\d+)?)", re.I)
 AGE_RANGE = re.compile(r"\b(?:aged|ages|age range|ranging in age from|age(?:s)? (?:ranged|range) from)\s*(?:from|=|:|was)?\s*"
                        r"(\d{1,2})\s*(?:-|–|—|to)\s*(\d{1,3})\b", re.I)
-PCT = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%\s*(?:were\s+|of\s+(?:the\s+)?(?:participants|sample)\s+(?:were\s+)?)?(female|women|woman|male|men|man)\b", re.I)
-COUNT = re.compile(r"\b(\d{1,6})\s+(?:were\s+)?(female|females|women|male|males|men)\b", re.I)
-WOMEN = ("female", "females", "women", "woman")
+# Gender categories as papers print them; each maps to the word the persona uses. Only printed categories are drawn.
+GENDER_TERMS = r"(females?|women|woman|males?|men|man|non-?binary|gender[- ]?diverse|genderqueer|transgender|other genders?|another gender)"
+GENDER_OF = [(re.compile(r"^(?:females?|women|woman)$", re.I), "woman"), (re.compile(r"^(?:males?|men|man)$", re.I), "man"),
+             (re.compile(r"^(?:non-?binary|genderqueer|gender[- ]?diverse)$", re.I), "nonbinary person"),
+             (re.compile(r"^transgender$", re.I), "transgender person"),
+             (re.compile(r"^(?:other genders?|another gender)$", re.I), "person of another gender")]
+PCT = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%\s*(?:were\s+|of\s+(?:the\s+)?(?:participants|sample)\s+(?:were\s+)?|identified\s+as\s+)?"
+                 + GENDER_TERMS + r"\b", re.I)
+COUNT = re.compile(r"\b(\d{1,6})\s+(?:were\s+|identified\s+as\s+)?" + GENDER_TERMS + r"\b", re.I)
+TOTAL = re.compile(r"\bN\s*=\s*(\d[\d,]*)")
 DESC_FIELDS = re.compile(r"population|setting|sample|recruit|demograph|account|description|who|country|location", re.I)
 COUNT_FIELDS = re.compile(r"^n[-_]|compensation|pay|exclu", re.I)
+PLACEHOLDER = "░"   # a held text in a published study: never read from
+
+
+def gender_word(term: str):
+    return next((w for rx, w in GENDER_OF if rx.match(term.strip())), None)
 
 
 def study_number(arm: dict):
@@ -258,8 +270,21 @@ def segment(text: str, k) -> str | None:
     return None
 
 
+def own_text(text: str, k) -> str:
+    """What `text` says about study k only: everything before its first study mark (said of every study) and study
+    k's own part; other studies' parts are dropped."""
+    marks = list(MARK.finditer(text))
+    if not marks:
+        return text
+    own = segment(text, k)
+    return (text[:marks[0].start()] + " " + (own or "")).strip()
+
+
 def stats(text: str) -> dict:
-    """Age and gender figures printed in one passage: {"age": {...}, "gender": {...}} with only what it states."""
+    """Age and gender figures printed in one passage: {"age": {...}, "gender": {category: share, None: rest}} with
+    only what it states. Gender shares come from printed percentages, or printed counts over a printed N (or, with
+    no N, over the counts printed together). A share the categories do not cover stays unstated (None): it is never
+    given to another gender."""
     out = {}
     m = AGE_MEAN.search(text)
     if m:
@@ -270,35 +295,70 @@ def stats(text: str) -> dict:
     r = AGE_RANGE.search(text)
     if r and int(r.group(1)) <= int(r.group(2)):
         out.setdefault("age", {}).update(min=int(r.group(1)), max=int(r.group(2)))
-    pct = {("woman" if w.lower() in WOMEN else "man"): float(p) / 100 for p, w in PCT.findall(text)}
-    cnt = {}
+    pct, cnt = {}, {}
+    for p, w in PCT.findall(text):
+        if gender_word(w):
+            pct.setdefault(gender_word(w), float(p) / 100)
     for n, w in COUNT.findall(text):
-        cnt.setdefault("woman" if w.lower() in WOMEN else "man", int(n))
-    total = re.search(r"\bN\s*=\s*(\d[\d,]*)", text)
+        if gender_word(w):
+            cnt.setdefault(gender_word(w), int(n))
+    total = TOTAL.search(text)
+    total = int(total.group(1).replace(",", "")) if total else None
+    g = {}
     if pct and all(0 <= v <= 1 for v in pct.values()) and sum(pct.values()) <= 1.0001:
         g = dict(pct)
-    elif len(cnt) == 2 and sum(cnt.values()) > 0:
+    elif cnt and total and sum(cnt.values()) <= total:
+        g = {k: v / total for k, v in cnt.items()}
+    elif len(cnt) >= 2 and not total:
         g = {k: v / sum(cnt.values()) for k, v in cnt.items()}
-    elif len(cnt) == 1 and total and 0 < next(iter(cnt.values())) <= int(total.group(1).replace(",", "")):
-        g = {k: v / int(total.group(1).replace(",", "")) for k, v in cnt.items()}
-    else:
-        g = {}
     if g:
-        if len(g) == 1:   # only one share printed: the rest is the other gender, unless the paper says otherwise
-            (k, v), = g.items()
-            g["man" if k == "woman" else "woman"] = max(0.0, 1 - v)
         rest = 1 - sum(g.values())
         if rest > 0.001:
-            g[None] = rest   # neither stated: the participant's gender is then left out
+            g[None] = rest   # not described by the paper: those participants' gender is left out
         out["gender"] = g
     return out
+
+
+def condition_names(protocol: dict, program: dict | None) -> list:
+    """Every name of a condition: protocol arm ids and labels (and a label's part after a colon), program condition
+    node ids and titles. Single letters and very short words are left out (they would match ordinary text)."""
+    names = set()
+    for a in protocol.get("arms") or []:
+        if isinstance(a, dict):
+            for v in (a.get("id"), a.get("label")):
+                if isinstance(v, str):
+                    names.add(v)
+                    if ":" in v:
+                        names.add(v.split(":", 1)[1])
+    for n in (program or {}).get("nodes") or []:
+        if isinstance(n, dict) and n.get("kind") == "condition":
+            for v in (n.get("id"), n.get("title")):
+                if isinstance(v, str):
+                    names.add(v)
+    return sorted({x.strip() for x in names if len(x.strip()) >= 2 and x.strip().lower() not in ("a", "an", "the", "no")},
+                  key=len, reverse=True)
+
+
+def names_condition(text: str, names: list):
+    low = text.lower()
+    for n in names:
+        if re.search(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(n.lower()), low):
+            return n
+    return None
+
+
+def without_conditions(text: str, names: list) -> str:
+    """`text` without any sentence or clause that names a condition."""
+    parts = re.split(r"(?<=[.;])\s+", text)
+    return " ".join(p for p in parts if not names_condition(p, names)).strip()
 
 
 def _clean(text: str) -> str:
     """The population as printed, without counts: parentheticals holding numbers and a trailing study breakdown go."""
     t = re.sub(r"\s*\([^()]*\d[^()]*\)", "", text)
+    t = re.sub(r"\s*\([^()]*$", "", t)   # a parenthesis left open where the text was cut at a study mark
     t = re.split(r":\s*(?=(?:study|experiment|exp\.?)\s*\d)", t, flags=re.I)[0]
-    t = re.split(r"(?<=[a-z0-9)])\.\s", t)[0].strip().rstrip(".;,")
+    t = re.split(r"(?<=[a-z0-9)])\.\s", t)[0].strip().rstrip(".;,:")
     t = re.sub(r"^(?:the\s+)?(?:n\s*=\s*)?\d[\d,]*\s+", "", t, flags=re.I)   # "120 undergraduates" -> "undergraduates"
     return t[:MAX_TEXT]
 
@@ -316,7 +376,8 @@ def _texts(value):
 
 def paper_sources(protocol: dict, program: dict | None, arm: dict) -> list:
     """[(where, text, describes the population)] for one arm, most specific first: protocol.json meta.sample, then
-    the program's participants nodes for this arm's study (all of them when the program has one study only)."""
+    the program's participants nodes for this arm's study (all of them when the program has one study only).
+    Texts holding a published study's placeholders are skipped."""
     out = []
     sample = (protocol.get("meta") or {}).get("sample")
     if isinstance(sample, str):
@@ -325,42 +386,50 @@ def paper_sources(protocol: dict, program: dict | None, arm: dict) -> list:
         for k, v in sample.items():
             if isinstance(v, str) and k not in ("cite", "note"):
                 out.append(("protocol.meta.sample.%s" % k, v, bool(DESC_FIELDS.search(k))))
-    if not isinstance(program, dict):
-        return out
-    studies = [s for s in program.get("studies") or [] if isinstance(s, dict)]
-    k = study_number(arm)
-    label = str(arm.get("label") or "").lower()
-    match = {s.get("id") for s in studies if s.get("id") == arm.get("id")
-             or (label and str(s.get("title") or "").lower().split(":")[0].strip() == label.split(":")[0].strip())}
-    if not match and k is not None and len(studies) >= k:
-        empirical = [s for s in studies if s.get("type") != "analysis"]
-        match = {empirical[k - 1].get("id")} if len(empirical) >= k else set()
-    for n in program.get("nodes") or []:
-        if not isinstance(n, dict) or n.get("kind") != "participants":
-            continue
-        ids = n.get("studyIds") or []
-        if ids and not (set(ids) & match) and len(studies) > 1:
-            continue
-        for f in n.get("fields") or []:
-            if not isinstance(f, dict) or f.get("state") == "missing" or f.get("value") is None:
+    if isinstance(program, dict):
+        studies = [s for s in program.get("studies") or [] if isinstance(s, dict)]
+        k = study_number(arm)
+        label = str(arm.get("label") or "").lower()
+        match = {s.get("id") for s in studies if s.get("id") == arm.get("id")
+                 or (label and str(s.get("title") or "").lower().split(":")[0].strip() == label.split(":")[0].strip())}
+        if not match and k is not None and len(studies) >= k:
+            empirical = [s for s in studies if s.get("type") != "analysis"]
+            match = {empirical[k - 1].get("id")} if len(empirical) >= k else set()
+        for n in program.get("nodes") or []:
+            if not isinstance(n, dict) or n.get("kind") != "participants":
                 continue
-            name = "%s %s" % (f.get("id", ""), f.get("label", ""))
-            for t in _texts(f.get("value")):
-                out.append(("program.%s.%s" % (n.get("id"), f.get("id")), t,
-                            bool(DESC_FIELDS.search(name)) and not COUNT_FIELDS.search(str(f.get("id", "")))))
-    return out
+            ids = n.get("studyIds") or []
+            if ids and not (set(ids) & match) and len(studies) > 1:
+                continue
+            for f in n.get("fields") or []:
+                if not isinstance(f, dict) or f.get("state") == "missing" or f.get("value") is None:
+                    continue
+                name = "%s %s" % (f.get("id", ""), f.get("label", ""))
+                for t in _texts(f.get("value")):
+                    out.append(("program.%s.%s" % (n.get("id"), f.get("id")), t,
+                                bool(DESC_FIELDS.search(name)) and not COUNT_FIELDS.search(str(f.get("id", "")))))
+    return [x for x in out if PLACEHOLDER not in x[1]]
 
 
 def paper_profile(protocol: dict, program: dict | None, arm: dict) -> dict:
     """What the paper states about one arm's participants: {"description", "age", "gender", "age_mean_only",
-    "sources"}; keys it does not state are absent."""
+    "sources"}; keys it does not state are absent. Each text is first cut to what it says about this arm's study,
+    and a sentence naming any condition is dropped, so a persona never carries another study's sample or a
+    condition's name."""
     k = study_number(arm)
+    names = condition_names(protocol, program)
     prof, used = {}, []
     for where, text, describes in paper_sources(protocol, program, arm):
         if describes and "description" not in prof:
-            d = _clean(text)
-            if d and not re.fullmatch(r"[\d\s,.;:()%-]*", d):
-                prof["description"] = d
+            marks = list(MARK.finditer(text))
+            pieces = [text[:marks[0].start()] if marks else text]
+            own = segment(text, k) if marks else None
+            if own and not re.search(r"\d", own):   # a study's own part, when it is words rather than figures
+                pieces.append(own)
+            d = "; ".join(x for x in (_clean(without_conditions(p, names)) for p in pieces)
+                          if x and not re.fullmatch(r"[\d\s,.;:()%-]*", x))
+            if d:
+                prof["description"] = d[:MAX_TEXT]
                 used.append(where)
         part = segment(text, k)
         if part is None:
@@ -377,7 +446,7 @@ def paper_profile(protocol: dict, program: dict | None, arm: dict) -> dict:
 
 
 # ------------------------------------------------------------------------------------------------ personas
-GENDER_WORD = {"woman": "woman", "man": "man"}
+GENDER_WORD = {w for _, w in GENDER_OF}
 
 
 def persona_text(group_persona: str | None, attrs: dict, sample: str | None = None, age_mean: float | None = None) -> str:
@@ -387,7 +456,8 @@ def persona_text(group_persona: str | None, attrs: dict, sample: str | None = No
     gender = attrs.get("gender")
     if gender in GENDER_WORD:
         age = attrs.get("age")
-        article = "an" if age is not None and (str(age).startswith("8") or age in (11, 18)) else "a"
+        first = str(age) if age is not None else gender
+        article = "an" if (age is not None and (first.startswith("8") or age in (11, 18))) or (age is None and first[0] in "aeiou") else "a"
         lines.append("You are %s %s%s." % (article, "%s-year-old " % age if age is not None else "", gender))
     else:
         if "age" in attrs:
@@ -404,6 +474,21 @@ def persona_text(group_persona: str | None, attrs: dict, sample: str | None = No
     if age_mean is not None:
         lines.append("The participants' mean age was %s." % ("%g" % age_mean))
     return "\n".join(lines)
+
+
+def condition_problem(spec: dict, protocol: dict, program: dict | None):
+    """A custom persona, note or system prompt that names a condition (it would reach every participant): the
+    problem in plain words, else None."""
+    names = condition_names(protocol, program)
+    texts = [("system", spec.get("system") or "")] + [
+        ("group %s" % g["id"], " ".join([g.get("persona") or "", (g.get("attributes") or {}).get("notes") or ""]))
+        for g in spec.get("groups") or []]
+    for where, text in texts:
+        hit = names_condition(text, names)
+        if hit:
+            return ("the %s text names the condition \"%s\"; participant descriptions go to every condition, so they "
+                    "must not name one" % (where, hit))
+    return None
 
 
 def fill(template: str, values: dict) -> str:
@@ -505,35 +590,36 @@ def fits_budget(system: str) -> bool:
     return len(json.dumps(system)) <= len(json.dumps(budget_system()))
 
 
-FENCE = re.compile(r"```(?:json|JSON)?\s*(\{.*?\})\s*```", re.S)
+FENCE = re.compile(r"```[ \t]*(?:json|JSON)[ \t]*\n?(.*?)```", re.S)
 
 
 def split_reply(text: str):
-    """-> (reasoning, answers): the LAST fenced JSON object in the reply (else the last complete {...} object), and
-    the text before it. Braces inside the reasoning are never taken for the answer. ValueError when there is none."""
-    for m in reversed(list(FENCE.finditer(text))):
+    """-> (reasoning, answers). The answer is the LAST ```json fenced block, and it must end the reply (only
+    whitespace after it); without any fence, the whole reply must be one JSON object. The fenced body is read with
+    json's own decoder, so braces inside strings or in the reasoning never confuse it. Anything else raises
+    ValueError ("no JSON object in the reply"), which app_run treats as unreadable (asked once more)."""
+    fences = list(FENCE.finditer(text))
+    if fences:
+        m = fences[-1]
+        if text[m.end():].strip():
+            raise ValueError("no JSON object in the reply: text follows the last fenced answer")
+        body = m.group(1).strip()
         try:
-            v = json.loads(m.group(1))
+            value, end = json.JSONDecoder().raw_decode(body)
         except ValueError:
-            continue
-        if isinstance(v, dict):
-            return text[:m.start()].strip(), v
-    best = None
-    for start in [i for i, ch in enumerate(text) if ch == "{"]:
-        depth = 0
-        for i in range(start, len(text)):
-            depth += {"{": 1, "}": -1}.get(text[i], 0)
-            if depth == 0:
-                try:
-                    v = json.loads(text[start:i + 1])
-                except ValueError:
-                    break
-                if isinstance(v, dict) and (best is None or i > best[1] or (i == best[1] and start < best[0])):
-                    best = (start, i, v)
-                break
-    if best is None:
+            raise ValueError("no JSON object in the reply: the fenced answer is not JSON")
+        if not isinstance(value, dict) or body[end:].strip():
+            raise ValueError("no JSON object in the reply: the fenced answer is not one JSON object")
+        return text[:m.start()].strip(), value
+    if "```" in text:
+        raise ValueError("no JSON object in the reply: the answer block is not a ```json block")
+    try:
+        value = json.loads(text.strip())
+    except ValueError:
         raise ValueError("no JSON object in the reply")
-    return text[:best[0]].strip().rstrip("`").strip(), best[2]
+    if not isinstance(value, dict):
+        raise ValueError("no JSON object in the reply")
+    return "", value
 
 
 def parse_answer(text: str) -> dict:
