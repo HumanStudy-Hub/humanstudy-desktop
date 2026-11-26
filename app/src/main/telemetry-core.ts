@@ -10,7 +10,7 @@
 // - Every event passes `sanitizeEvent`: no emails, no key/token-shaped strings, no absolute paths
 //   (project paths become project-relative). Large payloads use blob references.
 import { createHash, randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve as resolvePath } from 'node:path'
 import type {
   TelemetryConsent,
   TelemetryRecent,
@@ -172,10 +172,13 @@ export interface RowBase {
 /** Paths to material that must never leave this computer: the researcher's private copies (sources/private/, e.g. a
  *  copy of a paper dropped in to fill in a published study's wording), the app-storage folder of restored wording
  *  (…/original-text/…, a folder: `.humanstudy/original-text.json`, a status without wording, is not one) and a run's
- *  private answers (artifacts/simulations/<run>/.private/: what a resume of a published study replays, unredacted). Matched
+ *  private answers (any `.private` path segment, e.g. artifacts/simulations/<run>/.private/: what a resume of a
+ *  published study replays, unredacted). Matched
  *  on the text URL-decoded and with `./` segments removed; a command that names both `sources` and `private`, or
  *  globs or searches under sources/, counts too (the agent may build the path in pieces). */
-export const PRIVATE_MATERIAL = /(?:^|[^A-Za-z0-9_-])sources[\\/]+(?:private|researcher|quarantine)(?=$|[^A-Za-z0-9_.-])|(?:^|[\\/])original-text[\\/]|(?:^|[^A-Za-z0-9_-])artifacts[\\/]+simulations[\\/]+[^\\/\s'"]+[\\/]+\.private(?=$|[\\/\s'"])/i
+export const PRIVATE_MATERIAL = /(?:^|[^A-Za-z0-9_-])sources[\\/]+(?:private|researcher|quarantine)(?=$|[^A-Za-z0-9_.-])|(?:^|[\\/])original-text[\\/]|(?:^|[\\/\s'"=:])\.private(?=$|[\\/\s'"])/i
+/** A run's private answers: any `.private` path segment (artifacts/simulations/<run>/.private/). */
+export const RUN_PRIVATE = /(?:^|[\\/\s'"=:])\.private(?=$|[\\/\s'"])/
 export const REDACTED_PRIVATE = '[redacted: private material]'
 /** A study file made by "Download this study": never collected, wherever it is saved. */
 export const STUDY_PACKAGE = /\.humanstudy\.zip$/i
@@ -185,6 +188,21 @@ function decoded(s: string): string {
   for (let i = 0; i < 3; i++) { try { const d = decodeURIComponent(out); if (d === out) break; out = d } catch { break } }
   return out.replace(/(^|[\\/])(?:\.[\\/])+/g, '$1')
 }
+/** True when a tool call's input names private material, with its paths resolved against the tool's own working
+ *  folder: the input text itself, the folder it runs in (`workdir`/`cwd`/`directory` in the input, else `cwd`
+ *  supplied separately) and each path field, absolute or relative to that folder. `pattern`: what counts. */
+export function toolNamesPrivate(input: unknown, cwd?: string, pattern: RegExp = PRIVATE_MATERIAL): boolean {
+  const test = (s: string) => pattern === PRIVATE_MATERIAL ? namesPrivatePath(s) : pattern.test(decoded(s))
+  const text = typeof input === 'string' ? input : JSON.stringify(input) ?? ''
+  if (test(text)) return true
+  const o = input && typeof input === 'object' ? input as Record<string, unknown> : {}
+  const base = ([o.workdir, o.cwd, o.directory].find((v) => typeof v === 'string') as string | undefined) ?? cwd
+  if (base !== undefined && test(base)) return true
+  for (const k of ['filePath', 'file_path', 'path', 'file', 'target', 'pattern'])
+    if (typeof o[k] === 'string' && test(isAbsolute(o[k] as string) || base === undefined ? o[k] as string : resolvePath(base, o[k] as string))) return true
+  return false
+}
+
 /** True when a tool call's text names private material by path (see PRIVATE_MATERIAL). */
 export function namesPrivatePath(text: string, globs = true): boolean {
   const t = decoded(text)

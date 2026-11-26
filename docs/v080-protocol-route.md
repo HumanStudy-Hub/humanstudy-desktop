@@ -162,7 +162,8 @@ validates it, draws the participants and builds their prompts.
   `notes`). Every condition is split across groups by largest remainder, the same rule as the web's persona groups
   (`humanstudy-hub-web/lib/persona-groups.ts`, `HumanStudy-Bench/playground/personas.py`). Any rendered text that
   names a condition is refused (it would reach every condition): `system`, a group's id, label, persona and notes,
-  and every value of its gender, country, occupation and education. Personas are at most 1,200 characters and
+  and every value of its gender, country, occupation and education; and, after interpolation, every participant's
+  rendered prompt (the app's fixed wording on how to take part and reply aside), in `check` and again at run time. Personas are at most 1,200 characters and
   `system` 1,500; a prompt longer than the budget's allowance is refused at check time.
 - `system` (paper or custom): a whole system prompt with `{{persona}} {{age}} {{gender}} {{country}}
   {{occupation}} {{education}} {{group}}`; the reply format is always appended.
@@ -189,8 +190,9 @@ validates it, draws the participants and builds their prompts.
 **Think, then answer.** Outside blank mode the participant first writes one to three sentences in character (under
 60 words), then its answers as one fenced ```json object at the end. `participants.split_reply` finds the last
 ```json opener and reads the object after it with json's own decoder (braces or backticks inside strings never
-confuse it); the closing ``` must follow, with nothing but whitespace after it. Without a ```json opener the whole
-reply must be one JSON object. NaN and Infinity are refused. Anything else is unreadable and asked once more. The full
+confuse it), followed only by an optional closing ``` and whitespace; the openers are tried from the last to the first.
+Without a ```json opener the whole reply must be one JSON object. Non-finite numbers (NaN, Infinity, 1e400) are
+refused. Blank mode reads its replies with the same parser. Anything else is unreadable and asked once more. The full
 reply is parsed once; the reaction is kept in `records.jsonl` as `note.reasoning`, and the note's `reply` is only a
 4,000-character excerpt for the log. Each call's output limit (max_tokens, what the relay reserves) is 768 tokens, or
 2,048 on a page with a free-text question asking for a long answer (a declared length, a text area):
@@ -211,22 +213,30 @@ model as OpenAI-style `image_url` parts with inline data URLs; otherwise text on
   would refuse. Blank mode follows the same rules.
 - Pictures are pinned when the run first starts: a picture whose protocol item declares a `sha256` must match it or
   the run is refused before anyone starts, and every local picture's digest is recorded in `pictures.json` in the
-  run folder; an in-place resume uses those digests, never a fresh set. A picture the runner hands f
+  run folder; an in-place resume uses those digests, and a resume whose pictures.json is missing or unreadable is
+  refused: the pins are never rebuilt. A picture the runner hands f
   that is not one of those (changed during the run) is never sent and ends that participant. `run.json` lists the
   SHA-256 of every picture sent (`pictures_sent_sha256`).
 - A picture restored from a published study's held material is sent only in the model call of that approved run,
   like the restored text; the run keeps no screens for such a study, `ctx.note` records only how many pictures
   were sent, and nothing is written to exports or capture.
 - Restored wording in what a run stores: for a published study played from restored wording, answers keep only the
-  page's question ids, each cut to its question's schema (a code or {code, text} for a choice, codes for a multiple
-  choice, a number or "NA", a string for text; any other nested key is dropped), and notes keep no reply text.
+  page's question ids, each cut to its question's schema (a code, or {code, text} only for an option with a text box;
+  codes for a multiple choice; a number; a string for text; "NA" for any question with a not-applicable box; any
+  other nested key is dropped), and notes keep no reply text.
   steps.jsonl, records.jsonl, operator.jsonl and every JSON file the evaluation writes (effects.json,
-  evaldata.json, rewards.json) are redacted in memory before they are written: any 40 characters equal to held
-  wording once both are normalised (NFC, whitespace collapsed, case kept) become ░, one per character, and only that
-  span; only free-text values are touched, never keys or structural values (ids, codes, steps, statuses). The
-  answers as given go to `<run>/.private/answers.jsonl`, which a resume replays; that folder is never in a study
-  file (study-transfer classify) and never collected (telemetry-core PRIVATE_MATERIAL, which also redacts any agent
-  call that names it). The engine and the scores keep the answers as given.
+  evaldata.json, rewards.json) are redacted in memory before they are written. A free-text string is NFC-normalised
+  first; any 40 characters of it equal to held wording (whitespace runs read as one space, case kept) become ░, one
+  per character, and only that span; the normalised string is stored. Run records are read by their schema:
+  structural fields at known places (ids, steps, statuses and timing at the top of a row, question ids as keys,
+  option codes) are left alone, and every other string is free text, whatever its key; evaluation files are free
+  text throughout. The answers as given go to `<run>/.private/answers.jsonl`, which a resume replays (a torn last
+  row is mended before appending). An in-place resume of a restored run whose journal is missing is refused with
+  "start a new run", never replayed from the masked answers. Any `.private` path segment is never in a study file
+  (study-transfer classify) and never collected (telemetry-core PRIVATE_MATERIAL); an agent tool call that names
+  one, with its paths resolved against the tool's own working folder (`toolNamesPrivate`), keeps its input and
+  output out of research capture, and its output is stored in the conversation (which syncs) as "[private run
+  file]". The engine and the scores keep the answers as given.
 
 **Budget (review 2, M3).** The package allowance (40,000 tokens per participant) does not fit a protocol: there is
 one call per page, and each prompt carries every earlier page and answer.
@@ -243,10 +253,13 @@ one call per page, and each prompt carries every earlier page and answer.
   call).
 - The relay reserves tokens, not bytes (owner decision, review of PR #187): text bytes / 3, rounded up (`BYTES_PER_TOKEN`,
   conservative for English, about a token per CJK character as `\uXXXX`), + 256 per message + 5,000 per picture
-  + the call's max_tokens. When the provider reports usage (prompt_tokens and completion_tokens, also through the
-  hosted endpoint), the call is settled at those tokens and the rest of its reservation is released; without usage
-  the reservation stands. A call that used more than it reserved counts its actual tokens, and once the cap is
-  reached no further call is issued (HTTP 402).
+  + the call's max_tokens. When the provider reports usage (also through the hosted endpoint), the call is settled at
+  it and the rest of its reservation is released: prompt_tokens + completion_tokens when both are non-negative safe
+  integers (total_tokens instead when it is larger), else a valid total_tokens above 0; with nothing usable the
+  reservation stands, and a call is never settled at 0 while total_tokens is above 0.
+- Admission: a call starts only if what is used, plus every call in flight counted at 1.5 times its reservation,
+  plus this call's reservation stays within 95% of the cap (`admits`). Actual spend can pass the cap only by the
+  estimate error of calls already in flight beyond that headroom; once it has, no further call is admitted (402).
   - The fixture needs about 4,700 tokens per participant, a 33-page survey about 180,000, and a 4-person game
     about 2,000,000 per member.
 - The measurement counts each call's exact request body as `humanstudy_llm.chat` serialises it: JSON with

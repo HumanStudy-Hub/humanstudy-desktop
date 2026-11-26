@@ -273,39 +273,66 @@ test('pictures: a run whose upstream takes them passes inline images within the 
 test('tokens, not bytes: a call reserves text bytes / 3 and is settled at the provider\'s usage; the cap still binds', async () => {
   const R = await import(pathToFileURL(join(temp, 'relay.mjs')))
   assert.equal(R.callReservation(3001, 2, 1, 768), 1001 + 512 + R.IMAGE_RESERVE_TOKENS + 768)
+  // usage: both parts valid -> their sum (or a larger total); a valid total alone; never 0 while the total is above 0
   assert.equal(R.actualTokens({ prompt_tokens: 120, completion_tokens: 30, total_tokens: 150 }), 150)
-  assert.equal(R.actualTokens({ total_tokens: 3 }), null, 'no prompt/completion split: the reservation stands')
+  assert.equal(R.actualTokens({ prompt_tokens: 120, completion_tokens: 30, total_tokens: 190 }), 190, 'a larger total wins')
+  assert.equal(R.actualTokens({ prompt_tokens: 120, completion_tokens: 30, total_tokens: 10 }), 150)
+  assert.equal(R.actualTokens({ total_tokens: 3 }), 3)
+  assert.equal(R.actualTokens({ prompt_tokens: 0, completion_tokens: 0, total_tokens: 40 }), 40, 'never 0 while the total is above 0')
+  assert.equal(R.actualTokens({ prompt_tokens: 12.5, completion_tokens: 3, total_tokens: 20 }), 20, 'a fractional part is invalid: the total')
+  for (const bad of [undefined, null, {}, { total_tokens: 0 }, { prompt_tokens: -1, completion_tokens: 5 }, { prompt_tokens: '9', completion_tokens: 1 },
+    { prompt_tokens: Infinity, completion_tokens: 1 }, { prompt_tokens: 2 ** 60, completion_tokens: 1 }, { total_tokens: NaN }])
+    assert.equal(R.actualTokens(bad), null, JSON.stringify(bad))
+  // admission: used + 1.5 x in flight + this call <= 95% of the cap
+  assert.equal(R.admits({ used: 0, outstanding: 0, charge: 950, cap: 1000 }), true)
+  assert.equal(R.admits({ used: 0, outstanding: 0, charge: 951, cap: 1000 }), false)
+  assert.equal(R.admits({ used: 100, outstanding: 400, charge: 251, cap: 1000 }), false, '100 + 600 + 251 > 950')
   let usage = { prompt_tokens: 100, completion_tokens: 20 }
+  let hold = null   // while set, the stub answers only when it is resolved (calls stay in flight)
   const stub = createServer(async (req, res) => {
     for await (const _ of req) { /* drain */ }
+    if (hold) await hold
     res.setHeader('content-type', 'application/json')
     res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }], ...(usage ? { usage } : {}) }))
   })
   await new Promise(resolve => stub.listen(0, '127.0.0.1', resolve))
   const project = join(temp, 'settle-project'); await mkdir(project)
-  const storage = join(temp, 'settle-app')
-  const relay = await startModelRelay({ project, storage, model: 'allowed', upstream: `http://127.0.0.1:${stub.address().port}`, key: 'k', tokenCap: 5000, publish: false })
-  const call = () => fetch(relay.baseURL + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${relay.token}` },
+  const start = (dir, tokenCap) => startModelRelay({ project, storage: join(temp, dir), model: 'allowed', upstream: `http://127.0.0.1:${stub.address().port}`, key: 'k', tokenCap, publish: false })
+  const caller = (relay) => () => fetch(relay.baseURL + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${relay.token}` },
     body: JSON.stringify({ model: 'allowed', max_tokens: 1000, messages: [{ role: 'user', content: 'hello' }] }) })
+  const relay = await start('settle-app', 5000)
+  const call = caller(relay)
   try {
     // Each call reserves about 1,272 (bytes/3 + 256 + 1,000) but settles at 120: far more than four calls fit in 5,000.
     for (let i = 0; i < 10; i++) assert.equal((await call()).status, 200, `call ${i}`)
-    const log = (await readFile(relayDescriptor(storage, project) + '.usage.jsonl', 'utf8')).trim().split('\n').map(l => JSON.parse(l))
-    const done = log.filter(e => e.event === 'completed')
-    assert.ok(done.every(e => e.settled === 120 && e.settledFrom === 'usage'))
-    // A call that uses more than it reserved counts its actual tokens; once the cap is reached no call is issued.
+    const log = (await readFile(relayDescriptor(join(temp, 'settle-app'), project) + '.usage.jsonl', 'utf8')).trim().split('\n').map(l => JSON.parse(l))
+    assert.ok(log.filter(e => e.event === 'completed').every(e => e.settled === 120 && e.settledFrom === 'usage'))
+    // A call already in flight that uses more than it reserved still counts its actual tokens (the only way past the
+    // cap); after it, nothing more is admitted.
     usage = { prompt_tokens: 3000, completion_tokens: 900 }
     assert.equal((await call()).status, 200)
-    assert.equal((await call()).status, 402, '1,200 + 3,900 is over the 5,000 cap: refused')
-    // Without usage the reservation stands.
-    usage = null
-    const relay2 = await startModelRelay({ project: join(temp, 'settle-project'), storage: join(temp, 'settle-app2'), model: 'allowed', upstream: `http://127.0.0.1:${stub.address().port}`, key: 'k', tokenCap: 3000, publish: false })
-    const call2 = () => fetch(relay2.baseURL + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${relay2.token}` },
-      body: JSON.stringify({ model: 'allowed', max_tokens: 1000, messages: [{ role: 'user', content: 'hello' }] }) })
-    try {
-      assert.equal((await call2()).status, 200)
-      assert.equal((await call2()).status, 200)
-      assert.equal((await call2()).status, 402, 'three reservations of about 1,272 do not fit 3,000')
-    } finally { await relay2.close() }
-  } finally { await relay.close(); await new Promise(resolve => stub.close(resolve)) }
+    assert.equal((await call()).status, 402, 'used 5,100 of 5,000: refused')
+  } finally { await relay.close() }
+  // Concurrency: calls in flight count at 1.5x, so a burst cannot overshoot the cap by its estimates.
+  usage = { prompt_tokens: 100, completion_tokens: 20 }
+  let release
+  hold = new Promise((resolve) => { release = resolve })
+  const burst = await start('settle-burst', 5000)
+  try {
+    const go = caller(burst)
+    const first = go(), second = go()
+    await new Promise((r) => setTimeout(r, 150))   // both admitted and waiting on the provider
+    assert.equal((await go()).status, 402, '1.5 x 2 x about 1,290 + 1,290 > 4,750: the third waits for room')
+    release(); hold = null
+    assert.deepEqual([(await first).status, (await second).status], [200, 200])
+    assert.equal((await go()).status, 200, 'settled at 120 each: room again')
+  } finally { await burst.close() }
+  // Without usage the reservation stands.
+  usage = null
+  const relay2 = await start('settle-app2', 2500)
+  const call2 = caller(relay2)
+  try {
+    assert.equal((await call2()).status, 200)
+    assert.equal((await call2()).status, 402, 'about 1,290 kept + 1,290 > 2,375 (95% of 2,500)')
+  } finally { await relay2.close(); await new Promise(resolve => stub.close(resolve)) }
 })

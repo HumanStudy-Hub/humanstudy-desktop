@@ -42,13 +42,25 @@ export const BYTES_PER_TOKEN = 3
  *  picture + its output limit. */
 export const callReservation = (textBytes: number, messages: number, pictures: number, maxTokens: number): number =>
   Math.ceil(textBytes / BYTES_PER_TOKEN) + 256 * messages + IMAGE_RESERVE_TOKENS * pictures + maxTokens
-/** The tokens a provider reports for a call (prompt + completion), or null when it reports none: the call then keeps
- *  its reservation. */
+/** The tokens a provider reports for a call, or null when it reports nothing usable: the call then keeps its
+ *  reservation. prompt_tokens + completion_tokens when both are non-negative safe integers (total_tokens instead when
+ *  it is larger); a valid total_tokens alone; never 0 while total_tokens is above 0. */
 export function actualTokens(usage: any): number | null {
-  const ok = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0
-  if (ok(usage?.prompt_tokens) && ok(usage?.completion_tokens)) return usage.prompt_tokens + usage.completion_tokens
-  return null
+  const ok = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
+  const total = ok(usage?.total_tokens) ? usage.total_tokens : null
+  if (ok(usage?.prompt_tokens) && ok(usage?.completion_tokens)) {
+    const sum = usage.prompt_tokens + usage.completion_tokens
+    return total !== null && total > sum ? total : sum
+  }
+  return total !== null && total > 0 ? total : null
 }
+/** Admission: a call starts only if what is used, plus every call in flight at 1.5x its reservation, plus this
+ *  call's reservation stays within ADMIT_SHARE of the cap. Actual spend can pass the cap only by the estimate error of
+ *  calls already in flight beyond that headroom; once it does, no further call is admitted. */
+export const ADMIT_SHARE = 0.95
+export const IN_FLIGHT_FACTOR = 1.5
+export const admits = (o: { used: number; outstanding: number; charge: number; cap: number }): boolean =>
+  o.used + IN_FLIGHT_FACTOR * o.outstanding + o.charge <= ADMIT_SHARE * o.cap
 const DATA_IMAGE = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/
 
 type Part = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
@@ -108,7 +120,8 @@ export async function startModelRelay(options: RelayOptions) {
   const cap = options.tokenCap ?? 200_000
   const minutes = options.expiryMinutes ?? 30
   if (!options.model || !Number.isSafeInteger(cap) || cap <= 0 || !Number.isSafeInteger(minutes) || minutes <= 0 || minutes > 24 * 60) throw Error('Invalid run limits.')
-  let reserved = 0
+  let used = 0          // settled calls: their actual tokens (or their reservation when no usage came back)
+  let outstanding = 0   // reservations of the calls in flight
   let refunded = 0
   const folder = options.storage
   const path = relayDescriptor(folder, options.project)
@@ -136,6 +149,8 @@ export async function startModelRelay(options: RelayOptions) {
     const controller = new AbortController()
     requests.add(controller)
     let held = 0   // what this request has reserved, for a refund when it never reached the provider
+    let open = false   // reserved and not yet settled
+    const settle = (amount: number) => { if (!open) return; open = false; outstanding -= held; used += amount }
     try {
       let bytes = 0
       const chunks: Buffer[] = []
@@ -159,8 +174,8 @@ export async function startModelRelay(options: RelayOptions) {
       if (pictures > MAX_IMAGES) return fail(413, 'Too many pictures in one request.')
       if (bytes - pictureBytes > MAX_TEXT_BYTES) return fail(413, 'Run request is too large.')
       const charge = callReservation(bytes - pictureBytes, body.messages.length, pictures, max)
-      if (reserved + charge > cap) return fail(402, 'Run token cap reached.')
-      reserved += charge; held = charge // synchronous: concurrent requests cannot oversubscribe; refunded only when the provider rejects the call
+      if (!admits({ used, outstanding, charge, cap })) return fail(402, 'Run token cap reached.')
+      outstanding += charge; held = charge; open = true // synchronous: concurrent requests cannot oversubscribe; refunded only when the provider rejects the call
       await logUsage({ event: 'reserved', model: options.model, reserved: charge })
       const outgoing = { model: options.model, messages: body.messages.map((m: any, i: number) => ({ role: m.role, content: contents[i].content })), max_tokens: max,
         ...(typeof body.temperature === 'number' ? { temperature: body.temperature } : {}),
@@ -176,9 +191,9 @@ export async function startModelRelay(options: RelayOptions) {
         // Refund only a call the provider did not process (review 4, S5; review 5, S1), and never more in total than
         // the cap itself: a rejected call costs nothing, but a 5xx may come after the model ran and billed.
         if (NOT_PROCESSED.has(upstream.status) && refunded + charge <= cap) {
-          reserved -= charge; refunded += charge
+          settle(0); refunded += charge
           await logUsage({ event: 'refunded', model: options.model, reserved: -charge, upstream_status: upstream.status })
-        } else await logUsage({ event: 'failed', model: options.model, reserved: charge, upstream_status: upstream.status })
+        } else { settle(charge); await logUsage({ event: 'failed', model: options.model, reserved: charge, upstream_status: upstream.status }) }
         return fail(502, 'Model provider rejected the request.')
       }
       const reply = await upstream.json() as any
@@ -192,20 +207,20 @@ export async function startModelRelay(options: RelayOptions) {
       // the reservation stands.
       const actual = actualTokens(reply.usage)
       const settled = actual ?? charge
-      reserved += settled - charge
+      settle(settled)
       await logUsage({ event: 'completed', model: options.model, reserved: charge, settled, settledFrom: actual === null ? 'reservation' : 'usage', usage, finish_reason: finish[0] ?? null, truncated: finish.includes('length') })
       res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ choices, usage, model: options.model }))
     } catch (error) {
       // A connection refused or a name that does not resolve never reached the provider: refund it too.
       const cause = (error as { cause?: { code?: string; errors?: { code?: string }[] } })?.cause
       const code = cause?.code ?? cause?.errors?.find((e) => e?.code)?.code
-      if (held > 0 && (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EAI_AGAIN') && refunded + held <= cap) {
-        reserved -= held; refunded += held
+      if (open && (code === 'ECONNREFUSED' || code === 'ENOTFOUND' || code === 'EAI_AGAIN') && refunded + held <= cap) {
+        settle(0); refunded += held
         await logUsage({ event: 'refunded', model: options.model, reserved: -held, upstream_error: code }).catch(() => undefined)
       }
       if (!res.headersSent) fail(502, 'Run model request failed.')
     }
-    finally { requests.delete(controller) }
+    finally { settle(held); requests.delete(controller) }   // anything still open (an abort, an error after the call) counts in full
   })
   server.requestTimeout = 30_000
   server.headersTimeout = 10_000

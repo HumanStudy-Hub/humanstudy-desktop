@@ -582,4 +582,11 @@ test('a run\'s private answers (artifacts/simulations/<run>/.private/) never go 
   assert.ok(TC.PRIVATE_MATERIAL.test(rel))
   assert.ok(TC.namesPrivatePath('cat "artifacts/simulations/2026-11-26-1000/.private/answers.jsonl"'))
   assert.ok(!TC.namesPrivatePath('cat artifacts/simulations/2026-11-26-1000/steps.jsonl'))
+  // tool calls, with paths resolved against the tool's own working folder
+  assert.ok(TC.toolNamesPrivate({ filePath: '/p/artifacts/simulations/r/.private/answers.jsonl' }))
+  assert.ok(TC.toolNamesPrivate({ filePath: 'answers.jsonl', workdir: '/p/artifacts/simulations/r/.private' }), 'relative to a private workdir')
+  assert.ok(TC.toolNamesPrivate({ filePath: '.private/answers.jsonl' }, '/p/artifacts/simulations/r'), 'relative, cwd supplied separately')
+  assert.ok(TC.toolNamesPrivate({ command: 'head -5 answers.jsonl' }, '/p/artifacts/simulations/r/.private'), 'the cwd itself is private')
+  assert.ok(!TC.toolNamesPrivate({ filePath: 'steps.jsonl' }, '/p/artifacts/simulations/r'))
+  assert.ok(!TC.toolNamesPrivate({ command: 'ls' }, '/p'))
 })

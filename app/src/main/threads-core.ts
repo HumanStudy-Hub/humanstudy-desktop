@@ -12,6 +12,7 @@ import { updateQuestion } from '../shared/question'
 import { mkdir, readFile, readdir, rename as fsRename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { withWorkspaceContext } from '../shared/workspace-context'
+import { RUN_PRIVATE, toolNamesPrivate } from './telemetry-core'
 import type {
   KernelEvent,
   Thread,
@@ -155,10 +156,13 @@ export function appendEvent(
   return fresh ? [...ms, msg] : replaceLast(ms, msg)
 }
 
-/** Adds the full tool input/output to a tool part when present (the research transcript needs them). */
+/** What a stored conversation keeps of a tool's output that read a run's private answers (a `.private` folder). */
+export const PRIVATE_RUN_FILE = '[private run file]'
+/** Adds the full tool input/output to a tool part when present (the research transcript needs them). The output of a
+ *  call that reads a run's `.private` folder is stored as PRIVATE_RUN_FILE: thread JSON syncs with the project. */
 function withIO(part: Extract<ThreadPart, { kind: 'tool' }>, input: unknown, output: string | undefined): ThreadPart {
   if (input !== undefined) part.input = input
-  if (output !== undefined) part.output = output
+  if (output !== undefined) part.output = input !== undefined && toolNamesPrivate(input, undefined, RUN_PRIVATE) ? PRIVATE_RUN_FILE : output
   return part
 }
 
