@@ -19,7 +19,7 @@ import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
 import { getSettings } from './settings'
 import { loadPrivateIndexDir } from './private-index'
-import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, namesPrivatePath, mayCollectFile, programDiff, PRIVATE_MATERIAL, REDACTED_PRIVATE, STUDY_PACKAGE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
+import { accountHash, throughLink, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, namesPrivatePath, mayCollectFile, programDiff, PRIVATE_MATERIAL, REDACTED_PRIVATE, STUDY_PACKAGE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
 import { createReplay, REPLAY_FLUSH_MS, type Replay, type ReplayFile, type ReplayFs } from './replay-core'
 import type { Capture } from './threads-core'
 import type { KernelEvent } from './kernel-types'
@@ -169,6 +169,8 @@ async function queueSource(projectDir: string, rel: string, trigger: 'baseline' 
   const imported = importRefs.get(join(resolve(projectDir), rel)) ?? (created && rel.startsWith('sources/') ? created : undefined)
   const actual = await realpath(path), root = await realpath(projectDir)
   if (!actual.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) return
+  // a file reached through a link is never collected: what it is (its real path) may be something a download keeps back
+  if (throughLink(actual, root, rel)) return
   const ext = extname(path).toLowerCase()
   // Never a file that quotes private material, nor one that cannot be checked while any is indexed.
   const text = TEXT_EXTS.has(ext.slice(1)) ? await readFile(path, 'utf8').catch(() => undefined) : undefined
@@ -697,6 +699,7 @@ async function snapshotFileNow(projectDir: string, rel: string, owner: string | 
   const path = join(projectDir, rel)
   const actual = await realpath(path).catch(() => null), root = await realpath(projectDir)
   if (!actual?.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) return
+  if (throughLink(actual, root, rel)) return   // reached through a link: never collected
   const st = await stat(path).catch(() => null)
   if (!st?.isFile()) return
   const ext = extname(rel).slice(1).toLowerCase()

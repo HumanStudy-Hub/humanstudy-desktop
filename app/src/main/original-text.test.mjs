@@ -5,7 +5,7 @@ import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { realpath } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -553,6 +553,28 @@ test('engine checks: an inline label repeating the option\'s cite is one text, a
     writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
     assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).filter((x) => /changed on this computer/.test(x.reason)), [])
   } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('a hard-linked source, paper or fills file is never a restoration input; capture never collects a file reached through a link', async () => {
+  const proj = mkdtempSync(join(tmpdir(), 'hardlinks-'))
+  mkdirSync(join(proj, 'sources', 'private'), { recursive: true })
+  mkdirSync(join(proj, 'notes'))
+  writeFileSync(join(proj, 'sources', 'private', 'mine.txt'), 'mine')
+  writeFileSync(join(proj, 'notes', 'copy.html'), '<p>held</p>')
+  linkSync(join(proj, 'notes', 'copy.html'), join(proj, 'sources', 'copy.html'))
+  writeFileSync(join(proj, 'notes', 'paper.pdf'), '%PDF-1.4')
+  linkSync(join(proj, 'notes', 'paper.pdf'), join(proj, 'paper.pdf'))
+  const root = await realpath(proj)
+  assert.deepEqual((await O.candidateFiles(proj)).map((f) => relative(root, f).split(sep).join('/')), ['sources/private/mine.txt'])
+  writeFileSync(join(proj, 'notes', 'fills.json'), '{}')
+  linkSync(join(proj, 'notes', 'fills.json'), join(proj, O.FILLS_FILE))
+  assert.equal(await O.fillsPath(root), null)
+  rmSync(join(proj, O.FILLS_FILE))
+  writeFileSync(join(proj, O.FILLS_FILE), '{}')
+  assert.equal(await O.fillsPath(root), join(root, ...O.FILLS_FILE.split('/')))
+  // capture: a file whose real path is not the path it was named by is never collected
+  assert.equal(T.throughLink(join(root, 'notes', 'copy.html'), root, 'sources/copy.html'), true)
+  assert.equal(T.throughLink(join(root, 'notes', 'plan.md'), root, 'notes/plan.md'), false)
 })
 
 test('held source texts: placeholders before, the restored texts after; a project sourcetext file wins', async () => {

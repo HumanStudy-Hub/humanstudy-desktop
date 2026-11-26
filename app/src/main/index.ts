@@ -809,6 +809,8 @@ app.whenReady().then(() => {
       if (threadsInitialized) await threads().forgetDir(dir)
     },
     onChange: () => broadcast('sync:changed', null),
+    // a rename that arrives through sync moves the path-keyed records as the app's own rename does
+    moved: (from, to) => moveProjectRecords(originalTextCache(), from, to),
     readPending: () => {
       try {
         const v = JSON.parse(readFileSync(pendingFile(), 'utf8')) as unknown

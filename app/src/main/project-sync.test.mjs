@@ -5,9 +5,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync as require_rename, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync as require_rename, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -610,7 +610,8 @@ test('an interrupted pull is finished next time; with an edit made since, the co
 
 test('a rename reaches the other device on open and is not sent back', async () => {
   const db = fakeSupabase()
-  const a = device(db, 'Laptop'), b = device(db, 'Office PC')
+  const moves = []
+  const a = device(db, 'Laptop'), b = device(db, 'Office PC', { moved: (from, to) => { moves.push([from, to]) } })
   const dir = project(a.root, 'Old name')
   await a.engine.syncNow(dir)
   const other = await b.engine.download((await b.engine.list()).cloudOnly[0].projectId)
@@ -622,6 +623,8 @@ test('a rename reaches the other device on open and is not sent back', async () 
   assert.equal([...db.rows.values()][0].name, 'New name')
   const opened = await b.engine.beforeOpen(other)
   assert.equal(opened.dir, join(b.root, 'New name'))
+  // the app's path-keyed records follow the folder (real paths, the old one taken before the rename)
+  assert.deepEqual(moves, [[realpathSync(dirname(other)) + sep + basename(other), realpathSync(opened.dir)]])
   assert.ok(existsSync(join(b.root, 'New name', 'program.json')))
   await b.engine.syncNow(opened.dir)
   assert.equal([...db.rows.values()][0].name, 'New name')

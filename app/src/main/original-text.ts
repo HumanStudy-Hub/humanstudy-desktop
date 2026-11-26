@@ -70,6 +70,14 @@ export async function linkFree(root: string, rel: string): Promise<boolean> {
   return true
 }
 
+/** The project's fills file (a real path), or null: only through real folders (a linked sources/ or sources/private/
+ *  means no fills, as in candidateFiles), only a regular file with one name (a hard link could sit anywhere). */
+export async function fillsPath(root: string): Promise<string | null> {
+  if (!(await linkFree(root, FILLS_FILE))) return null
+  const fills = await realpath(join(root, ...FILLS_FILE.split('/'))).catch(() => null)
+  return fills && fills.startsWith(root + sep) && (await lstat(fills).then((x) => x.isFile() && x.nlink <= 1, () => false)) ? fills : null
+}
+
 /** The project files the researcher may have supplied a source in: sources/private/ first (where the app puts a
  *  file dropped into a published study), then paper.pdf and the rest of sources/. Regular files inside the
  *  project only; a link is never followed (a study download keeps back what is under sources/, so a link there to
@@ -86,11 +94,13 @@ export async function candidateFiles(project: string): Promise<string[]> {
       if (!real || !real.startsWith(root + sep)) continue
       const st = await lstat(real).catch(() => null)
       if (st?.isDirectory() && depth < MAX_DEPTH) await visit(real, depth + 1, into)
-      else if (st?.isFile() && e.name !== 'SOURCE.json' && relative(root, real).split(sep).join('/') !== FILLS_FILE) into.push(real)
+      // a hard-linked file (more than one name) is never an input: its other name could sit anywhere and be exported
+      else if (st?.isFile() && st.nlink <= 1 && e.name !== 'SOURCE.json' && relative(root, real).split(sep).join('/') !== FILLS_FILE) into.push(real)
     }
     return into
   }
-  const paper = (await isLink(join(root, 'paper.pdf'))) ? null : await realpath(join(root, 'paper.pdf')).catch(() => null)
+  const paperStat = await lstat(join(root, 'paper.pdf')).catch(() => null)
+  const paper = !paperStat || paperStat.isSymbolicLink() || paperStat.nlink > 1 ? null : await realpath(join(root, 'paper.pdf')).catch(() => null)
   // sources/ (and sources/private/) must be real folders at every step: a linked one is refused, never followed
   const sources = (await isLink(join(root, 'sources'))) ? null : join(root, 'sources')
   const all = [...(sources ? await visit(join(sources, 'private'), 1, []) : []),
@@ -117,9 +127,8 @@ export async function fillOriginalText(python: string, files: [string, string][]
   const received = receivedPath(cacheDir, await realpath(project))
   const receivedArgs = (await lstat(received).then((x) => x.isFile(), () => false)) ? ['--received', received] : []
   const root = await realpath(project)
-  // the fills file only through real folders (a linked sources/ or sources/private/ means no fills), as candidateFiles
-  const fills = (await linkFree(root, FILLS_FILE)) ? await realpath(join(root, ...FILLS_FILE.split('/'))).catch(() => null) : null
-  const fillsArgs = fills && fills.startsWith(root + sep) && (await lstat(fills).then((x) => x.isFile(), () => false)) ? ['--fills', fills] : []
+  const fills = await fillsPath(root)
+  const fillsArgs = fills ? ['--fills', fills] : []
   const args = [...receivedArgs, ...fillsArgs, '--project-key', sha256(root), ...(o.allowLocal ? ['--allow-local'] : []), ...(o.offline ? ['--offline'] : []), ...(o.indexOnly ? ['--index-only'] : []),
     ...(await candidateFiles(project)).flatMap((f) => ['--file', f])]
   return withScratch(files, async (work, home) => {

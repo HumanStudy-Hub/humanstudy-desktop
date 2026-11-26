@@ -10,6 +10,7 @@
 // - Every event passes `sanitizeEvent`: no emails, no key/token-shaped strings, no absolute paths
 //   (project paths become project-relative). Large payloads use blob references.
 import { createHash, randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import type {
   TelemetryConsent,
   TelemetryRecent,
@@ -383,6 +384,10 @@ export const restorableBytes = (b: Uint8Array): boolean => {
  *  such a file back unless the release shipped its bytes (study-transfer.ts keptBack); research capture never
  *  collects one (mayCollectFile). One predicate, so the two never drift. */
 export const canCarryRestored = (rel: string, data?: Uint8Array): boolean => RESTORABLE.test(rel) || (data !== undefined && restorableBytes(data))
+
+/** True when a project file was reached through a link (its real path is not the path it was named by): research
+ *  capture never collects one, since the alias says nothing about what it is. `actual` and `root` are real paths. */
+export const throughLink = (actual: string, root: string, rel: string): boolean => actual !== join(root, ...rel.split('/'))
 
 /** Whether research capture may collect a project file. Never: run outputs (artifacts/simulations/, runs/) of a
  *  published study (its AI participants' replies can quote the restored wording); a text file that quotes private
