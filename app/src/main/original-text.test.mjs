@@ -136,7 +136,7 @@ test('engine checks: wording a release cites verbatim from a held source outside
     assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
     p.stages.q.responses[1].options[0].label = 'Absolutely, I walked every single day'   // changed on this computer
     writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
-    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).map((x) => x.check), ['verbatim'])
+    assert.deepEqual([...new Set((await R.protocolReadiness(python, ENGINE, proj, '')).map((x) => x.check))], ['verbatim'])
   } finally { R.configureReceivedProtocol(async () => null) }
 })
 
@@ -155,6 +155,57 @@ test('engine checks: a published study\'s image-read text changed on this comput
     const problems = await R.protocolReadiness(python, ENGINE, proj, '')
     assert.deepEqual(problems.map((x) => x.check), ['verbatim'])
     assert.match(problems[0].reason, /read from a page image of the paper were changed on this computer/)
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('engine checks: released wording copied into another verbatim field of a published study blocks; reordering does not', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.q.responses[1].options[0].cite = { label: 'verbatim', source: 'booklet', page: 1 }
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+    // the released option moved: the same texts with the same cites, in another order, still pass as received
+    const moved = structuredClone(p)
+    moved.stages.q.responses[1].options.reverse()
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(moved, null, 1))
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+    // a second option given the released option's wording and cite: local wording, so it is verified strictly
+    p.stages.q.responses[1].options[1] = { code: 'b', label: 'Yes', cite: { label: 'verbatim', source: 'booklet', page: 1 } }
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    const problems = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.deepEqual(problems.map((x) => x.check), ['verbatim'])
+    assert.match(problems.at(-1).reason, /changed on this computer/)
+    // wording copied from a released field that is not verbatim at all (an option without a cite) blocks the same way
+    p.stages.q.responses[1].options[1] = { code: 'b', label: 'No', cite: { label: 'verbatim', source: 'booklet', page: 1 } }
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).map((x) => x.check), ['verbatim'])
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('engine checks: a published study\'s text cited from an unshipped source and changed on this computer blocks', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.intro.content.push({ id: 'p', value: 'Please walk as you usually do.', cite: { label: 'verbatim', source: 'paper', page: 3 } })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+    p.stages.intro.content.at(-1).value = 'Please walk faster than you usually do.'   // the cite kept, the wording changed
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    const problems = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.deepEqual(problems.map((x) => x.check), ['verbatim'])
+    assert.match(problems[0].reason, /changed on this computer/)
+    // the cite changed instead (a page of its own choosing): also a local edit
+    p.stages.intro.content.at(-1).value = 'Please walk as you usually do.'
+    p.stages.intro.content.at(-1).cite.page = 4
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).map((x) => x.check), ['verbatim'])
   } finally { R.configureReceivedProtocol(async () => null) }
 })
 

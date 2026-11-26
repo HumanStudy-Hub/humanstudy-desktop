@@ -137,28 +137,57 @@ function releasedStrings(o: unknown, out: string[] = [], top = true): string[] {
 const canonical = (v: unknown): string => JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x)
   ? Object.fromEntries(Object.entries(x as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1))) : x))
 
-/** Every object carrying a verbatim cite read from a page image (`cite` or `*_cite` with read: "image"), canonical. */
-function imageReadTexts(o: unknown, out: string[] = []): string[] {
-  if (Array.isArray(o)) for (const v of o) imageReadTexts(v, out)
+/** The fields that hold a cited text's wording, next to its `cite` (checks.py check_verbatim reads these). */
+const WORDING = new Set(['text', 'value', 'label', 'prompt', 'instruction', 'anchors', 'spans'])
+interface VerbatimText { key: string; source: unknown; image: boolean }
+/** Every text a protocol cites verbatim, each with the wording and the cite that belong to it (canonical, so the
+ *  same text with the same cite anywhere is the same key): an object with a `cite` (its wording fields with the
+ *  cite; its other fields, such as an id or a timing, are not wording) and, per `<field>_cite`, that field with its
+ *  cite. The `distribution` block is skipped. */
+function verbatimTexts(o: unknown, out: VerbatimText[] = []): VerbatimText[] {
+  if (Array.isArray(o)) for (const v of o) verbatimTexts(v, out)
   else if (o && typeof o === 'object') {
     const d = o as Record<string, unknown>
-    if (Object.entries(d).some(([k, c]) => (k === 'cite' || k.endsWith('_cite')) && c && typeof c === 'object'
-      && (c as Record<string, unknown>).label === 'verbatim' && (c as Record<string, unknown>).read === 'image')) out.push(canonical(d))
-    for (const [k, v] of Object.entries(d)) if (k !== 'distribution') imageReadTexts(v, out)
+    for (const [k, c] of Object.entries(d)) {
+      if (!(k === 'cite' || k.endsWith('_cite')) || !c || typeof c !== 'object' || (c as Record<string, unknown>).label !== 'verbatim') continue
+      const cite = c as Record<string, unknown>
+      const own = k === 'cite'
+        ? Object.fromEntries(Object.entries(d).filter(([f]) => f === 'cite' || WORDING.has(f)))
+        : { [k.slice(0, -'_cite'.length)]: d[k.slice(0, -'_cite'.length)], [k]: c }
+      out.push({ key: canonical(own), source: cite.source, image: cite.read === 'image' })
+    }
+    for (const [k, v] of Object.entries(d)) if (k !== 'distribution') verbatimTexts(v, out)
   }
   return out
 }
 
-/** In public mode the engine leaves a text read from a page image without shipped readings to Bench's private
- *  check, so it cannot see a change made on this computer: such a text (with its cite) must be exactly as received. */
-async function editedImageReadings(project: string): Promise<ProtocolProblem[]> {
+/** In public mode the engine cannot verify a verbatim text made or changed on this computer: a text read from a page
+ *  image, or cited from a source whose text was not shipped, is left to Bench's private check, and a held source's
+ *  check text holds every released string (heldSourceTexts), so released wording copied into another field is found.
+ *  Every verbatim text (with its cite) must therefore be one the study was received with; a text may move, but each
+ *  received text counts once. Only a text the engine checks against the project's own sourcetext/ file of a source
+ *  that is not held, and not read from an image, is left to the engine. */
+async function editedVerbatimTexts(project: string): Promise<ProtocolProblem[]> {
   const received = await receivedProtocol(project).catch(() => null)
   if (!received || typeof received !== 'object') return []
   let now: unknown
   try { now = JSON.parse(await readFile(join(project, 'protocol.json'), 'utf8')) } catch { return [] }
-  const shipped = new Set(imageReadTexts(received))
-  const changed = imageReadTexts(now).filter((x) => !shipped.has(x)).length
-  return changed ? [{ check: 'verbatim', reason: `${changed} text(s) read from a page image of the paper were changed on this computer, so they can no longer be checked against the paper. Put back the wording as published, or keep the change as a separate, labelled variant.` }] : []
+  const held = await heldSources(project)
+  const own = new Set((await sourceTextArgs(project)).filter((_, i, a) => i > 0 && a[i - 1] === '--source-text').map((x) => x.split('=')[0]))
+  const shipped = new Map<string, number>()
+  for (const t of verbatimTexts(received)) shipped.set(t.key, (shipped.get(t.key) ?? 0) + 1)
+  let images = 0, others = 0
+  for (const t of verbatimTexts(now)) {
+    const left = shipped.get(t.key) ?? 0
+    if (left > 0) { shipped.set(t.key, left - 1); continue }
+    if (t.image) images++
+    else if (typeof t.source === 'string' && own.has(t.source) && !held.has(t.source)) continue
+    else others++
+  }
+  const out: ProtocolProblem[] = []
+  if (images) out.push({ check: 'verbatim', reason: `${images} text(s) read from a page image of the paper were changed on this computer, so they can no longer be checked against the paper. Put back the wording as published, or keep the change as a separate, labelled variant.` })
+  if (others) out.push({ check: 'verbatim', reason: `${others} text(s) cited word for word from a source this study does not include were changed on this computer (their wording or their citation), so they can no longer be checked against that source. Put back the wording as published, or keep the change as a separate, labelled variant.` })
+  return out
 }
 
 /** For a published protocol.json: per held source, the text its served strings must be found in, by the engine's own
@@ -345,7 +374,7 @@ export async function protocolReadiness(python: string | null, engine: [string, 
       if (run.limit) return [ENGINE_LIMIT]
       if (/\bMemoryError\b/.test(run.stderr) && !run.stdout.includes('{')) return [ENGINE_LIMIT]
       const found = protocolOutcome(run.stdout, run.stderr)
-      return (await publicMode(project)).length ? [...found, ...await editedImageReadings(project)] : found
+      return (await publicMode(project)).length ? [...found, ...await editedVerbatimTexts(project)] : found
     })
   } catch { return [ENGINE_FAILED] }
 }

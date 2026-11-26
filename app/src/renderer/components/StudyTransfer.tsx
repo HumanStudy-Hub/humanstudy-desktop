@@ -175,10 +175,10 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
 
   const size = useMemo(() => {
     if (!preview) return { bytes: 0, files: 0 }
-    // Private files are always included (the researcher's own copy); only the chat history can be left out.
+    // Private files stay on this computer (study-transfer.ts); only the chat history can be left out.
     return {
-      bytes: preview.study.bytes + (conversations ? preview.conversations.bytes : 0) + preview.privateFiles.reduce((n, f) => n + f.bytes, 0),
-      files: preview.study.files + (conversations ? preview.conversations.files : 0) + preview.privateFiles.length,
+      bytes: preview.study.bytes + (conversations ? preview.conversations.bytes : 0),
+      files: preview.study.files + (conversations ? preview.conversations.files : 0),
     }
   }, [preview, conversations])
   const tooBig = Boolean(preview && (size.bytes > preview.limits.maxTotalBytes || size.files > preview.limits.maxFiles))
@@ -239,7 +239,7 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
                   </li>
                   {preview.privateFiles.length > 0 && (
                     <li>
-                      <input type="checkbox" checked disabled aria-hidden />
+                      <input type="checkbox" checked={false} disabled aria-hidden />
                       <span>
                         {t(preview.privateFiles.length === 1 ? 'transfer.private_one' : 'transfer.private_n', { n: preview.privateFiles.length })}
                         <span className="muted small transfer-hint">{t('transfer.private_hint')}</span>

@@ -11,15 +11,17 @@
 //   study/<path>            the project files, exactly as listed
 //
 // What goes in (`classify`): the study (program.json, protocol.json, package/, artifacts/ with simulation results,
-// notes, sources, the paper, .humanstudy/project.json and community.json), the chat history (.humanstudy/threads and
-// thread-history; the researcher can untick it) and the researcher's private files (sources/private/,
-// sources/researcher/, sources/quarantine/, any original-text/ folder: the same rule research capture uses,
-// telemetry-core.ts PRIVATE_MATERIAL). The study file is the researcher's own copy, like their cloud copy
-// (project-sync.ts), so private files go in; privacy and copyright checks apply when publishing to the community
-// (community.ts), not here. Never: hidden files and folders (.git, .env, .opencode with its possible
-// provider config, .DS_Store, ...), node_modules, caches, save temporaries, other study files, and from .humanstudy
-// everything else (original-text.json, tmp/, versions/). Account, keys, settings, consent and the restored-wording
-// cache live in app storage, outside the project, and the scan never leaves the project folder or follows a link.
+// notes, sources, the paper, .humanstudy/project.json and community.json) and the chat history (.humanstudy/threads
+// and thread-history; the researcher can untick it). The researcher's private files (sources/private/ with a
+// published study's restored-wording fills file, sources/researcher/, sources/quarantine/, any original-text/
+// folder: the same rule research capture uses, telemetry-core.ts PRIVATE_MATERIAL; and a published study's run
+// outputs, which can quote the restored wording, see kindOf) are listed but stay on this computer: a study file can
+// be handed to someone else, and it must never redistribute wording a study holds back or a copy of a source
+// (project sync, project-sync.ts, is the private per-account copy). Never: hidden files and folders (.git, .env,
+// .opencode with its possible provider config, .DS_Store, ...), node_modules, caches, save temporaries, other study
+// files, and from .humanstudy everything else (original-text.json, tmp/, versions/). Account, keys, settings, consent
+// and the restored-wording cache live in app storage, outside the project, and the scan never leaves the project
+// folder or follows a link.
 //
 // Opening is strict and always makes a NEW project. Before anything is written, the whole file is checked: a plain
 // zip (no encryption, no zip64, no links, no folders, no overlapping or duplicate entries), every name safe on every
@@ -139,7 +141,7 @@ export function classify(rel: string): FileKind {
 
 export interface ScannedFile { path: string; size: number; kind: Exclude<FileKind, 'never'> }
 
-/** In a published study, AI participants' replies can quote the restored wording, so its run outputs are offered as
+/** In a published study, AI participants' replies can quote the restored wording, so its run outputs are kept back as
  *  private files like the sources (research capture withholds the same folders: telemetry-core.ts mayCollectFile). */
 const RUN_OUTPUTS = /^(?:artifacts\/simulations|runs)(?:\/|$)/
 export function kindOf(rel: string, published: boolean): FileKind {
@@ -535,7 +537,7 @@ export interface ExportResult { path: string; bytes: number; files: number; mani
 /** Writes the study file to `outPath` (through a temporary next to it, so a failure never leaves a partial file). */
 export async function exportStudy(root: string, outPath: string, o: StudyExportOptions & {
   source: { platform: Platform; appVersion: string }
-  /** A published study: its run outputs are private files (see kindOf). */
+  /** A published study: its run outputs are private files (see kindOf), left out like the rest. */
   published?: boolean
   limits?: Limits
   now?: Date
@@ -543,9 +545,9 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
   const limits = o.limits ?? LIMITS
   const now = o.now ?? new Date()
   const id = await ensureProjectId(root)
-  // Private files are included (the researcher's own copy); only the chat history can be left out.
+  // Private files stay on this computer (a study file may be handed on); the chat history can be left out.
   const chosen = (await scanProject(root, limits, o.published === true)).filter((f) =>
-    f.kind === 'study' || f.kind === 'private' || (f.kind === 'conversation' && o.conversations === true))
+    f.kind === 'study' || (f.kind === 'conversation' && o.conversations === true))
   if (chosen.length > limits.maxFiles) fail('too-large', `more than ${limits.maxFiles} files`)
   let planned = 0
   for (const f of chosen) {
@@ -578,7 +580,7 @@ export async function exportStudy(root: string, outPath: string, o: StudyExportO
       name: basename(root),
       source: o.source,
       exportedAt: now.toISOString(),
-      includes: { conversations: o.conversations === true, privateFiles: chosen.filter((f) => f.kind === 'private').map((f) => f.path) },
+      includes: { conversations: o.conversations === true, privateFiles: [] },   // kept for the format: private files stay on this computer
       files,
     }
     await zip.add(MANIFEST_NAME, Buffer.from(JSON.stringify(manifest, null, 2) + '\n', 'utf8'))

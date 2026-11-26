@@ -358,6 +358,11 @@ computer:
   `checks --public`, as Bench checks a release: a text read from a page image of a source whose blind readings were
   not shipped (and a cite whose source text is not here) is checked privately by Bench, not unconfirmed. Held texts
   are still checked against their placeholders or restored wording; the researcher's own projects stay strict.
+  Only wording as received passes this way: every verbatim text (its wording fields with its cite) must be one the
+  study was received with (the copy in app storage; a text may move, each received text counts once). A text added
+  or changed on this computer, or one whose cite changed, including released wording copied into another field,
+  blocks unless the engine checks it against the project's own sourcetext/ file of a source that is not held and it
+  was not read from a page image (`protocol-readiness.ts` editedVerbatimTexts).
 - **Approximate and supplied (three tiers).** After the exact pass, an item that failed it but carries an `approx`
   fingerprint (written by Bench `scripts/research/approx_text.py`, a copy of `pack/runtime/lib/hs_approx_text.py`)
   is located in the researcher's own PDF of that source (status `approx`, with its score). Then the project's fills
@@ -378,6 +383,19 @@ computer:
   sha256 of protocol.json), never in the project, so neither exports nor research capture see them. A file dropped
   into a published study goes to `sources/private/` (never exported or collected) and never becomes paper.pdf. The
   project gets `.humanstudy/original-text.json`: counts, titles, formats and what each source needs, no wording.
+  "Download this study" (`study-transfer.ts`) lists private files (sources/private/ with the fills file, any
+  original-text/ folder, a published study's run outputs) but never puts them in the study file, which may be
+  handed to someone else; community sharing and publishing never include them either. Project sync, private per
+  account, does carry them.
+- **Wording pasted into the chat.** When the researcher pastes a passage for the fills file, the message is an
+  ordinary sent message: it stays in the project's conversation (`.humanstudy/threads`), which syncs privately per
+  account and goes into "Download this study" with the chat history unless the researcher unticks it (the dialog
+  says conversations may quote their files); community sharing and publishing never include conversations. Research data
+  records it as the contract allows for a sent message (`conversation.submission` / `conversation.message`, full
+  text, never draft text). The assistant's write to the fills file names `sources/private/` and is redacted, and
+  once the fills file is applied its `user` text joins the redaction index, so later quotes of it (messages, tool
+  output, files) are redacted; the first sent copy is not, because nothing can recognise held wording before it
+  is supplied.
 - **Run.** Missing wording is a blocking protocol problem (the Simulation tab words it, en and zh), The engine checks
   of a published study get, for each held source without its own sourcetext/ file, a source text that is one run of
   placeholders as long as its longest held text: by the engine's own verbatim rule every held placeholder is found
