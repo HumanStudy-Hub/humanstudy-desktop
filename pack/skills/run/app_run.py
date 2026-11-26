@@ -141,8 +141,9 @@ PROGRAM_CHANGED = ("program.json changed after approval (the participants are de
                    "to press Run simulation again")
 OLD_APPROVAL = ("this run was approved by an earlier version of HumanStudy Hub, which did not record who takes part: "
                 "press Run simulation again to approve it with this version")
-OLD_RUN = ("this run folder was started by an earlier version of HumanStudy Hub or with other settings, so it cannot be "
-           "continued in place: press Run simulation to start a new run")
+OLD_RUN = "This run was started with an earlier version of the app; start a new run."
+CANNOT_RESUME = ("This run cannot be continued in place (a file it needs to continue is missing or was changed); "
+                 "start a new run.")
 
 
 def participants_sha(project: Path) -> str | None:
@@ -222,7 +223,7 @@ def pinned_pictures(out: Path, protocol: dict, root: Path) -> dict:
         except (OSError, ValueError, AttributeError):
             pinned = None
         if not (isinstance(pinned, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in pinned.items())):
-            raise Refused(OLD_RUN)
+            raise Refused(CANNOT_RESUME)
         return pinned
     pinned = picture_digests(protocol, root)
     out.mkdir(parents=True, exist_ok=True)
@@ -572,8 +573,6 @@ def schema_answer(r: dict, v):
         return None
     if isinstance(v, (int, float)):
         return v
-    if kind in ("number", "scale", "slider", "range"):
-        return None   # a string here is not a number ("NA" only with a not-applicable box, above)
     if isinstance(v, list):   # a grid or several values: numbers, codes or short strings only
         return [x for x in v if isinstance(x, (int, float, str)) and not isinstance(x, bool)]
     return v if isinstance(v, str) else None
@@ -1087,7 +1086,7 @@ def participants_for(out: Path, project: Path, plan: dict, restored: dict | None
         except ValueError:
             continue   # a line cut off by an interruption: that participant is drawn again (it had not started)
         if r.get("spec_sha256", "none") != (sha or None):
-            raise Refused(OLD_RUN)
+            raise Refused(OLD_RUN if "spec_sha256" not in r else CANNOT_RESUME)
         kept[(r["opaque_id"], r["member"])] = r
     for key, person in people.items():
         if key in kept:   # a resumed run plays exactly the people it started with
@@ -1098,7 +1097,11 @@ def participants_for(out: Path, project: Path, plan: dict, restored: dict | None
         a = person["attributes"]
         person["system"] = P.system_text(person["persona"], spec.get("system"),
                                          dict(a, group=person["group"] or "", age=a.get("age", ""), gender=a.get("gender", "")))
-        hit = P.names_condition(P.researcher_text(person["system"]), names) if spec["mode"] != "blank" else None
+        # the check reads what is written by the researcher or quoted from the paper: the generated categorical values
+        # (gender, age, country) are drawn independently of the condition and cannot reveal it
+        hit = P.names_condition(P.researcher_text(P.system_text(person["check"], spec.get("system"),
+                                                                dict(person["check_values"], group=person["group"] or ""))), names) \
+            if spec["mode"] != "blank" else None
         if hit:
             raise Refused("simulation/participants.json cannot be used: a participant's prompt names the condition \"%s\" "
                           "once it is filled in. Ask the agent to fix it, then press Run simulation again" % hit)
@@ -1166,7 +1169,7 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     steps = out / "steps.jsonl"
     if red is not None and steps.is_file() and steps.stat().st_size and not (out / PRIVATE_DIR / "answers.jsonl").is_file():
         # an in-place resume of a restored run needs the answers as given; the stored ones are masked
-        raise Refused(OLD_RUN)
+        raise Refused(CANNOT_RESUME)
     # retries 0: humanstudy_llm already retries 429/5xx; a call that still fails (transport, allowance, a refusal)
     # ends that participant as incomplete. Only an unreadable reply is asked once more (reask_unreadable).
     spec = {"kind": "llm", "name": "desktop model", "model": model or "unknown", "renderer": "default",

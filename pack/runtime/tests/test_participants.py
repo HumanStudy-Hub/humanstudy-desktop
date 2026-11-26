@@ -137,7 +137,8 @@ class PaperDefault(unittest.TestCase):
             self.assertNotRegex(p["persona"], r"years old|year-old|woman|\bman\b|gender|mean age")
             self.assertIn("Visitors to a public park in Manhattan", p["persona"])
         nothing = P.people({"mode": "paper"}, None, {"arms": [{"id": "s1"}]}, None, {"s1": 1}, {}, [1], opaque)
-        self.assertEqual(next(iter(nothing.values())), {"group": None, "attributes": {}, "persona": ""})
+        self.assertEqual({k: v for k, v in next(iter(nothing.values())).items() if k in ("group", "attributes", "persona")},
+                         {"group": None, "attributes": {}, "persona": ""})
 
     def test_a_mean_alone_is_stated_not_drawn(self):
         proto = {"meta": {"sample": {"population": "Amazon Mechanical Turk workers (Study 1: 228 men, 171 women, mean age 32.3; "
@@ -501,7 +502,7 @@ class AppRunUses(unittest.TestCase):
         out = self.tmp / "old-run"
         out.mkdir()
         (out / "run.json").write_text(json.dumps({"f": {"spec": {"kind": "llm"}}}), encoding="utf-8")
-        with self.assertRaisesRegex(A.Refused, "earlier version of HumanStudy Hub.*start a new run"):
+        with self.assertRaisesRegex(A.Refused, r"^This run was started with an earlier version of the app; start a new run\.$"):
             A.check_resumable(out)
         (out / "run.json").write_text(json.dumps({"f": {"spec": {"kind": "llm", "participants": {"mode": "paper"}}}}), encoding="utf-8")
         A.check_resumable(out)
@@ -773,7 +774,7 @@ class Round3(unittest.TestCase):
         self.assertEqual(nobox, "o1", "no text box: the text is dropped")
         for kind in ("choice", "multi", "scale", "number", "text", "slider"):
             self.assertEqual(A.schema_answer({"id": "x", "kind": kind, "na_option": True, "options": [{"code": "o1"}]}, "NA"), "NA", kind)
-            if kind != "text":
+            if kind in ("choice", "multi"):
                 self.assertIsNone(A.schema_answer({"id": "x", "kind": kind, "options": [{"code": "o1"}]}, "NA"), kind)
 
     def test_6_condition_names_in_any_rendered_field(self):
@@ -781,7 +782,7 @@ class Round3(unittest.TestCase):
         for group in ({"id": "gratitude-group", "persona": "x"}, {"id": "g", "label": "Control people", "persona": "x"},
                       {"id": "g", "attributes": {"education": "Gratitude condition graduates"}},
                       {"id": "g", "attributes": {"occupation": ["nurse", "control room operator"]}},
-                      {"id": "g", "attributes": {"country": {"Gratitude": 1}}}, {"id": "g", "attributes": {"notes": "In the control."}}):
+                      {"id": "g", "attributes": {"notes": "In the control."}}):
             spec = P.validate({"mode": "custom", "groups": [group]})
             self.assertIsNotNone(P.condition_problem(spec, proto, None), group)
         self.assertIsNone(P.condition_problem(P.validate({"mode": "custom", "groups": [{"id": "nurses", "persona": "A nurse."}]}), proto, None))
@@ -899,7 +900,7 @@ class Round4(unittest.TestCase):
             self.assertIn("Gratitude", P.researcher_text(P.system_text("You are in Gratitude.")))
             self.assertNotIn(P.THINK_FORMAT, P.researcher_text(P.system_text("x")), "the app's fixed wording is not read")
         src = (RUN / "app_run.py").read_text(encoding="utf-8")
-        self.assertIn("P.names_condition(P.researcher_text(person[\"system\"]), names)", src, "refused at run time too")
+        self.assertIn("hit = P.names_condition(P.researcher_text(P.system_text(person[\"check\"]", src, "refused at run time too")
 
     def test_9_the_summary_shows_studies_with_other_figures(self):
         proto = {"meta": {"sample": "Students (Study 1: 70% female; Study 2: 30% female)"},
@@ -907,6 +908,49 @@ class Round4(unittest.TestCase):
         line = P.summary({"mode": "paper"}, proto, None)
         self.assertIn("Students, 70% women", line)
         self.assertIn("Students, 30% women", line)
+
+
+class Round5(unittest.TestCase):
+    """The final check of PR #187."""
+
+    def test_1_numeric_strings_reach_the_engine(self):
+        import app_run as A
+        for kind in ("number", "scale", "slider"):
+            self.assertEqual(A.schema_answer({"id": "n", "kind": kind}, "1,200"), "1,200", kind)
+            self.assertEqual(A.schema_answer({"id": "n", "kind": kind}, 7), 7)
+
+    def test_2_a_json_only_reply_may_hold_backticks(self):
+        self.assertEqual(P.parse_answer('{"t": "I would write ``` here", "q": "o1"}'), {"t": "I would write ``` here", "q": "o1"})
+        self.assertEqual(P.parse_answer('{"t": "```json {\\"x\\": 1}```"}'), {"t": '```json {"x": 1}```'})
+        with self.assertRaisesRegex(ValueError, "no JSON object"):
+            P.parse_answer('{"n": 1e400}')
+
+    def test_3_demographic_condition_names_with_a_matching_sample(self):
+        proto = {"meta": {"sample": "120 women recruited at a US university (100% female, mean age 21.0, SD 2.0)."},
+                 "arms": [{"id": "woman", "label": "Woman"}, {"id": "man", "label": "Man"}]}
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "protocol.json").write_text(json.dumps(proto), encoding="utf-8")
+            r = P.check(d)
+            self.assertTrue(r["ok"], r)
+            ppl = P.people({"mode": "paper"}, None, proto, None, {"woman": 2, "man": 2}, {}, [1], lambda s, a, i: "%s-%s" % (a, i))
+            self.assertTrue(all("You are a" in p["persona"] and "woman." in p["persona"] for p in ppl.values()), "the gender is still said")
+            (d / "simulation").mkdir()
+            (d / P.SPEC_PATH).write_text(json.dumps({"mode": "custom", "groups": [
+                {"id": "g", "persona": "A student.", "attributes": {"gender": {"woman": 1, "man": 1}, "country": "Man"}}]}), encoding="utf-8")
+            self.assertTrue(P.check(d)["ok"], "categorical gender and country values are not checked")
+            for group in ({"id": "g", "persona": "A student in the Woman condition."}, {"id": "g", "label": "Woman group", "persona": "x"},
+                          {"id": "g", "persona": "x", "attributes": {"occupation": "Man"}},
+                          {"id": "g", "persona": "x", "attributes": {"notes": "Woman"}}):
+                (d / P.SPEC_PATH).write_text(json.dumps({"mode": "custom", "groups": [group]}), encoding="utf-8")
+                self.assertFalse(P.check(d)["ok"], group)
+            (d / P.SPEC_PATH).write_text(json.dumps({"mode": "custom", "system": "You are {{persona}} ({{gender}}). Woman.",
+                                                     "groups": [{"id": "g", "persona": "x"}]}), encoding="utf-8")
+            self.assertFalse(P.check(d)["ok"], "the researcher's own system text is checked")
+
+    def test_4_the_cross_version_message_is_plain(self):
+        import app_run as A
+        self.assertEqual(A.OLD_RUN, "This run was started with an earlier version of the app; start a new run.")
 
 
 if __name__ == "__main__":

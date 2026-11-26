@@ -162,8 +162,10 @@ validates it, draws the participants and builds their prompts.
   `notes`). Every condition is split across groups by largest remainder, the same rule as the web's persona groups
   (`humanstudy-hub-web/lib/persona-groups.ts`, `HumanStudy-Bench/playground/personas.py`). Any rendered text that
   names a condition is refused (it would reach every condition): `system`, a group's id, label, persona and notes,
-  and every value of its gender, country, occupation and education; and, after interpolation, every participant's
-  rendered prompt (the app's fixed wording on how to take part and reply aside), in `check` and again at run time. Personas are at most 1,200 characters and
+  its occupation and education values, the paper's sample description; and, after interpolation, every participant's
+  rendered prompt (the app's fixed wording on how to take part and reply aside), in `check` and again at run time.
+  The generated categorical values (gender, age, country) and their sentences are not checked: they are drawn
+  independently of the condition and cannot reveal it, so a study whose conditions are named "Woman" and "Man" runs. Personas are at most 1,200 characters and
   `system` 1,500; a prompt longer than the budget's allowance is refused at check time.
 - `system` (paper or custom): a whole system prompt with `{{persona}} {{age}} {{gender}} {{country}}
   {{occupation}} {{education}} {{group}}`; the reply format is always appended.
@@ -188,7 +190,8 @@ validates it, draws the participants and builds their prompts.
   simulation again (a new approval) or start a new run.
 
 **Think, then answer.** Outside blank mode the participant first writes one to three sentences in character (under
-60 words), then its answers as one fenced ```json object at the end. `participants.split_reply` finds the last
+60 words), then its answers as one fenced ```json object at the end. A reply that is one JSON object as a whole is
+taken first (backticks inside its strings included). Otherwise `participants.split_reply` finds the last
 ```json opener and reads the object after it with json's own decoder (braces or backticks inside strings never
 confuse it), followed only by an optional closing ``` and whitespace; the openers are tried from the last to the first.
 Without a ```json opener the whole reply must be one JSON object. Non-finite numbers (NaN, Infinity, 1e400) are
@@ -222,8 +225,8 @@ model as OpenAI-style `image_url` parts with inline data URLs; otherwise text on
   were sent, and nothing is written to exports or capture.
 - Restored wording in what a run stores: for a published study played from restored wording, answers keep only the
   page's question ids, each cut to its question's schema (a code, or {code, text} only for an option with a text box;
-  codes for a multiple choice; a number; a string for text; "NA" for any question with a not-applicable box; any
-  other nested key is dropped), and notes keep no reply text.
+  codes for a multiple choice; a number, or a string the engine then validates ("1,200"); a string for text; "NA" for
+  any question with a not-applicable box; any other nested key is dropped), and notes keep no reply text.
   steps.jsonl, records.jsonl, operator.jsonl and every JSON file the evaluation writes (effects.json,
   evaldata.json, rewards.json) are redacted in memory before they are written. A free-text string is NFC-normalised
   first; any 40 characters of it equal to held wording (whitespace runs read as one space, case kept) become ░, one

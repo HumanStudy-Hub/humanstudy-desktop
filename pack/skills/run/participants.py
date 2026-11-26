@@ -495,13 +495,18 @@ def condition_problem(spec: dict, protocol: dict, program: dict | None):
         a = g.get("attributes") or {}
         texts += [("group id", g["id"]), ("group %s label" % g["id"], g.get("label") or ""),
                   ("group %s persona" % g["id"], g.get("persona") or ""), ("group %s notes" % g["id"], a.get("notes") or "")]
-        texts += [("group %s %s" % (g["id"], k), v) for k in CHOICE_ATTRS for v in (a.get(k) or {})]
+        # occupation and education are free text; gender and country are categorical values drawn independently of
+        # the condition (they cannot reveal it), so a study whose conditions are named "Woman"/"Man" can still run
+        texts += [("group %s %s" % (g["id"], k), v) for k in ("occupation", "education") for v in (a.get(k) or {})]
     for where, text in texts:
         hit = names_condition(text, names)
         if hit:
             return ("the %s text names the condition \"%s\"; participant descriptions go to every condition, so they "
                     "must not name one" % (where, hit))
     return None
+
+
+CATEGORICAL = ("gender", "age", "country")   # drawn independently of the condition: never read by the condition check
 
 
 def fill(template: str, values: dict) -> str:
@@ -536,8 +541,17 @@ def people(spec: dict, sha: str | None, protocol: dict, program: dict | None, pl
                         persona = persona_text(None, attrs, prof.get("description"), prof.get("age_mean_only"))
                     else:
                         attrs, persona = {}, ""
+                    free = {k: v for k, v in attrs.items() if k not in CATEGORICAL}
+                    if spec["mode"] == "custom":
+                        check = persona_text(grp.get("persona"), free)
+                    elif spec["mode"] == "paper":
+                        check = persona_text(None, free, prof.get("description"))
+                    else:
+                        check = ""
                     out[(opaque(seed, arm_id, i), "p%d" % (m + 1))] = {
-                        "group": grp["id"] if grp else None, "attributes": attrs, "persona": persona}
+                        "group": grp["id"] if grp else None, "attributes": attrs, "persona": persona,
+                        # what the condition check reads: the persona without its generated categorical values
+                        "check": check, "check_values": free}
     return out
 
 
@@ -638,6 +652,12 @@ def split_reply(text: str):
     opener (and no other fence), the whole reply must be one JSON object. Non-finite numbers (NaN, Infinity, 1e400)
     are refused. Anything else raises ValueError ("no JSON object in the reply"), which app_run treats as unreadable
     (asked once more)."""
+    try:   # a reply that is one JSON object, whatever its strings hold (``` included)
+        value = _decode_whole(text.strip())
+        if isinstance(value, dict):
+            return "", value
+    except (ValueError, OverflowError):
+        pass
     openers = list(OPENER.finditer(text))
     for m in reversed(openers):
         body = text[m.end():]
@@ -720,7 +740,7 @@ def check(project: Path) -> dict:
                  lambda s, a, i: "%s-%s" % (a, i))
     names = condition_names(protocol, program)
     for p in ppl.values():   # every rendered prompt (a sample per group and condition), after interpolation
-        hit = names_condition(researcher_text(system_text(p["persona"], spec.get("system"), dict(p["attributes"], group=p["group"] or ""))), names) \
+        hit = names_condition(researcher_text(system_text(p["check"], spec.get("system"), dict(p["check_values"], group=p["group"] or ""))), names) \
             if spec["mode"] != "blank" else None
         if hit:
             return dict(out, ok=False, problem="a participant's prompt names the condition \"%s\" once it is filled in; "
