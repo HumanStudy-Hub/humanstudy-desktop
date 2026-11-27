@@ -9,7 +9,7 @@ import { cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, read
 import { realpath } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative, sep } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -407,7 +407,7 @@ test('candidate files never follow a link, not even one inside the project', asy
   symlinkSync(join(proj, 'notes', 'copy.html'), join(proj, 'sources', 'linked.html'))
   symlinkSync(join(proj, 'notes'), join(proj, 'sources', 'notes-dir'))
   symlinkSync(join(proj, 'notes', 'copy.html'), join(proj, 'paper.pdf'))
-  const got = (await O.candidateFiles(proj)).map((f) => relative(realpathSync(proj), f).split(sep).join('/'))
+  const got = (await O.candidateFiles(proj)).map((f) => relative(realpathSync.native(proj), f).split(sep).join('/'))
   assert.deepEqual(got, ['sources/private/mine.txt'])
 })
 
@@ -519,7 +519,7 @@ test('the restore refuses a linked sources/ or sources/private/', async () => {
   mkdirSync(join(other, 'kept'))
   writeFileSync(join(other, 'kept', 'mine.txt'), 'mine')
   symlinkSync(join(other, 'kept'), join(other, 'sources', 'private'))
-  assert.deepEqual((await O.candidateFiles(other)).map((f) => relative(realpathSync(other), f).split(sep).join('/')), ['sources/open.txt'])
+  assert.deepEqual((await O.candidateFiles(other)).map((f) => relative(realpathSync.native(other), f).split(sep).join('/')), ['sources/open.txt'])
 })
 
 test('engine checks: the retry mark follows the release as it was when the check began', { skip: !python }, async () => {
@@ -602,11 +602,11 @@ test('a name with a line break or a line separator is still matched by the keep-
 })
 
 test('capture of program.json follows the same rules as every other file', async () => {
-  const root = '/p'
-  assert.equal(T.mayCaptureProgram({ actual: '/p/program.json', root, published: true, head: Buffer.from('{"source":') }), true)
-  assert.equal(T.mayCaptureProgram({ actual: '/p/notes/real.json', root, published: false, head: Buffer.from('{}') }), false, 'reached through a link')
-  assert.equal(T.mayCaptureProgram({ actual: '/p/program.json', root, published: true, head: Buffer.from('%PDF-1.7') }), false, 'a released study: bytes that can carry restored wording')
-  assert.equal(T.mayCaptureProgram({ actual: '/p/program.json', root, published: false, head: Buffer.from('%PDF-1.7') }), true, 'an ordinary project as before')
+  const root = resolve('/p'), prog = join(root, 'program.json')
+  assert.equal(T.mayCaptureProgram({ actual: prog, root, published: true, head: Buffer.from('{"source":') }), true)
+  assert.equal(T.mayCaptureProgram({ actual: join(root, 'notes', 'real.json'), root, published: false, head: Buffer.from('{}') }), false, 'reached through a link')
+  assert.equal(T.mayCaptureProgram({ actual: prog, root, published: true, head: Buffer.from('%PDF-1.7') }), false, 'a released study: bytes that can carry restored wording')
+  assert.equal(T.mayCaptureProgram({ actual: prog, root, published: false, head: Buffer.from('%PDF-1.7') }), true, 'an ordinary project as before')
 })
 
 test('engine checks: a value added beside a released text is a local text (the engine renders value first)', { skip: !python }, async () => {

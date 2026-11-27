@@ -37,7 +37,7 @@ test('the main process uses owner-checked removal for relays and projects, and n
   const send = index.slice(index.indexOf('const sendToKernel = async'))
   assert.match(send, /publish: route !== 'protocol'/)
   assert.match(send, /onClose: \(\) => \{ if \(ownClose\) runs\.forget\(id, ownClose\); runs\.release\(projectDir!, owner\) \}/)
-  assert.match(send, /startProtocolRun\(projectDir, approved, binding as ProtocolBinding, relay, \(\) => \{ runs\.forget\(id, relay\.close\); void relay\.close\(\) \}\)/)
+  assert.match(send, /startProtocolRun\(projectDir, approved, binding as ProtocolBinding, relay, \(\) => \{ runs\.forget\(id, relay\.close\); void relay\.close\(\) \}, images\)/)
   assert.match(send, /const owner = runs\.claim\(projectDir\)\n\s+if \(!owner\) throw Error\('A simulation is already active in this project\.'\)/, 'pre-relay path: one run per project')
   assert.ok(!/relayProjects/.test(index))
 })

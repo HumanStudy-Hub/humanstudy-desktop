@@ -92,7 +92,9 @@ function fakeSupabase() {
         const hit = mine.filter((r) => matches(r, f))
         for (const r of hit) {
           if ('revision' in body && body.revision !== r.revision + 1) return json(400, { message: 'revision must increase by one' })
-          Object.assign(r, body, { updated_at: new Date(state.clock++).toISOString() })
+          // As the table's trigger does: deleted_at is stamped by the server's clock, kept if already set.
+          const stamped = 'deleted_at' in body ? { deleted_at: body.deleted_at == null ? null : (r.deleted_at ?? new Date(state.clock).toISOString()) } : {}
+          Object.assign(r, body, stamped, { updated_at: new Date(state.clock++).toISOString() })
         }
         return json(200, hit)
       }
@@ -624,7 +626,7 @@ test('a rename reaches the other device on open and is not sent back', async () 
   const opened = await b.engine.beforeOpen(other)
   assert.equal(opened.dir, join(b.root, 'New name'))
   // the app's path-keyed records follow the folder (real paths, the old one taken before the rename)
-  assert.deepEqual(moves, [[realpathSync(dirname(other)) + sep + basename(other), realpathSync(opened.dir)]])
+  assert.deepEqual(moves, [[realpathSync.native(dirname(other)) + sep + basename(other), realpathSync.native(opened.dir)]])
   assert.ok(existsSync(join(b.root, 'New name', 'program.json')))
   await b.engine.syncNow(opened.dir)
   assert.equal([...db.rows.values()][0].name, 'New name')
