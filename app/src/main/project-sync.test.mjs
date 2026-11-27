@@ -92,7 +92,9 @@ function fakeSupabase() {
         const hit = mine.filter((r) => matches(r, f))
         for (const r of hit) {
           if ('revision' in body && body.revision !== r.revision + 1) return json(400, { message: 'revision must increase by one' })
-          Object.assign(r, body, { updated_at: new Date(state.clock++).toISOString() })
+          // As the table's trigger does: deleted_at is stamped by the server's clock, kept if already set.
+          const stamped = 'deleted_at' in body ? { deleted_at: body.deleted_at == null ? null : (r.deleted_at ?? new Date(state.clock).toISOString()) } : {}
+          Object.assign(r, body, stamped, { updated_at: new Date(state.clock++).toISOString() })
         }
         return json(200, hit)
       }
