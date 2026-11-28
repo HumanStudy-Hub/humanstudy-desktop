@@ -16,7 +16,7 @@
 // local only.
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { copyFile, lstat, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from 'node:fs/promises'
+import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, rmdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { checkManifest, FORMAT, FORMAT_VERSION, LIMITS, readMarker, writeMarker, type Limits, type Manifest, type ManifestFile } from './study-transfer'
 import { safeName } from './project-name'
@@ -50,6 +50,9 @@ export interface SyncEngineDeps {
   release(dir: string): Promise<void> | void
   /** The status of some project changed (the renderer re-reads the list). */
   onChange(): void
+  /** Sync renamed a project folder (a name given on another device): the app moves its path-keyed records (real
+   *  paths, `from` taken before the rename). Sync never deletes a local folder. */
+  moved?(from: string, to: string): Promise<void> | void
   /** Deletes made while offline, sent later (a small file in app storage), each with the account it belongs to (a
    *  bare id: written by 0.8.2, owner unknown, sent with the signed-in account as before). */
   readPending(): PendingDelete[]
@@ -381,8 +384,10 @@ export function createProjectSync(deps: SyncEngineDeps) {
     if (name === basename(dir) || existsSync(join(dirname(dir), name))) return dir
     await deps.release(dir)
     const to = join(dirname(dir), name)
+    const from = await realpath(dir).catch(() => dir)
     try { await rename(dir, to) } catch { return dir }
     await writeState(to, { ...state, name }).catch(() => undefined)
+    await Promise.resolve(deps.moved?.(from, await realpath(to).catch(() => to))).catch(() => undefined)
     return to
   }
 

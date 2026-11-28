@@ -10,6 +10,7 @@
 // - Every event passes `sanitizeEvent`: no emails, no key/token-shaped strings, no absolute paths
 //   (project paths become project-relative). Large payloads use blob references.
 import { createHash, randomUUID } from 'node:crypto'
+import { isAbsolute, join, resolve as resolvePath } from 'node:path'
 import type {
   TelemetryConsent,
   TelemetryRecent,
@@ -169,11 +170,15 @@ export interface RowBase {
 
 /** Builds the exact row that is sent, or null when the event is not allowed. */
 /** Paths to material that must never leave this computer: the researcher's private copies (sources/private/, e.g. a
- *  copy of a paper dropped in to fill in a published study's wording) and the app-storage folder of restored wording
- *  (…/original-text/…, a folder: `.humanstudy/original-text.json`, a status without wording, is not one). Matched
+ *  copy of a paper dropped in to fill in a published study's wording), the app-storage folder of restored wording
+ *  (…/original-text/…, a folder: `.humanstudy/original-text.json`, a status without wording, is not one) and a run's
+ *  private answers (any `.private` path segment, e.g. artifacts/simulations/<run>/.private/: what a resume of a
+ *  published study replays, unredacted). Matched
  *  on the text URL-decoded and with `./` segments removed; a command that names both `sources` and `private`, or
  *  globs or searches under sources/, counts too (the agent may build the path in pieces). */
-export const PRIVATE_MATERIAL = /(?:^|[^A-Za-z0-9_-])sources[\\/]+(?:private|researcher|quarantine)(?=$|[^A-Za-z0-9_.-])|(?:^|[\\/])original-text[\\/]/i
+export const PRIVATE_MATERIAL = /(?:^|[^A-Za-z0-9_-])sources[\\/]+(?:private|researcher|quarantine)(?=$|[^A-Za-z0-9_.-])|(?:^|[\\/])original-text[\\/]|(?:^|[\\/\s'"=:])\.private(?=$|[\\/\s'"])/i
+/** A run's private answers: any `.private` path segment (artifacts/simulations/<run>/.private/). */
+export const RUN_PRIVATE = /(?:^|[\\/\s'"=:])\.private(?=$|[\\/\s'"])/
 export const REDACTED_PRIVATE = '[redacted: private material]'
 /** A study file made by "Download this study": never collected, wherever it is saved. */
 export const STUDY_PACKAGE = /\.humanstudy\.zip$/i
@@ -183,6 +188,21 @@ function decoded(s: string): string {
   for (let i = 0; i < 3; i++) { try { const d = decodeURIComponent(out); if (d === out) break; out = d } catch { break } }
   return out.replace(/(^|[\\/])(?:\.[\\/])+/g, '$1')
 }
+/** True when a tool call's input names private material, with its paths resolved against the tool's own working
+ *  folder: the input text itself, the folder it runs in (`workdir`/`cwd`/`directory` in the input, else `cwd`
+ *  supplied separately) and each path field, absolute or relative to that folder. `pattern`: what counts. */
+export function toolNamesPrivate(input: unknown, cwd?: string, pattern: RegExp = PRIVATE_MATERIAL): boolean {
+  const test = (s: string) => pattern === PRIVATE_MATERIAL ? namesPrivatePath(s) : pattern.test(decoded(s))
+  const text = typeof input === 'string' ? input : JSON.stringify(input) ?? ''
+  if (test(text)) return true
+  const o = input && typeof input === 'object' ? input as Record<string, unknown> : {}
+  const base = ([o.workdir, o.cwd, o.directory].find((v) => typeof v === 'string') as string | undefined) ?? cwd
+  if (base !== undefined && test(base)) return true
+  for (const k of ['filePath', 'file_path', 'path', 'file', 'target', 'pattern'])
+    if (typeof o[k] === 'string' && test(isAbsolute(o[k] as string) || base === undefined ? o[k] as string : resolvePath(base, o[k] as string))) return true
+  return false
+}
+
 /** True when a tool call's text names private material by path (see PRIVATE_MATERIAL). */
 export function namesPrivatePath(text: string, globs = true): boolean {
   const t = decoded(text)
@@ -367,13 +387,43 @@ export function redactPrivatePart<T extends { kind: string }>(part: T, index: Pr
   return part
 }
 
+/** Files that can carry a released study's restored wording, by name: what the original-wording restore reads
+ *  (original-text.ts candidateFiles: paper.pdf, anything under sources/), any PDF or image, and the generated preview
+ *  and its backup (preview-preparation.ts), which can embed a local picture. */
+// `s`: a name may hold a line break or a line/paragraph separator (U+2028/U+2029); `.` must match it too
+export const RESTORABLE = /^(?:paper\.pdf|sources\/.+|artifacts\/preview(?:\.prev)?\.html|.+\.(?:pdf|png|jpe?g|gif|webp|bmp|tiff?|svg))$/is
+/** ... and by content, whatever the name: a PDF, or a picture the fills file accepts (hs_original_text.py
+ *  picture_file: PNG, JPEG, GIF, WebP). */
+export const restorableBytes = (b: Uint8Array): boolean => {
+  const head = Buffer.from(b.subarray(0, 12))
+  return head.subarray(0, 5).toString('latin1') === '%PDF-' || head.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
+    || head.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex')) || ['GIF87a', 'GIF89a'].includes(head.subarray(0, 6).toString('latin1'))
+    || (head.subarray(0, 4).toString('latin1') === 'RIFF' && head.subarray(8, 12).toString('latin1') === 'WEBP')
+}
+/** Whether a file of a released study can carry its restored wording: by name or by content. A study download keeps
+ *  such a file back unless the release shipped its bytes (study-transfer.ts keptBack); research capture never
+ *  collects one (mayCollectFile). One predicate, so the two never drift. */
+export const canCarryRestored = (rel: string, data?: Uint8Array): boolean => RESTORABLE.test(rel) || (data !== undefined && restorableBytes(data))
+
+/** True when a project file was reached through a link (its real path is not the path it was named by): research
+ *  capture never collects one, since the alias says nothing about what it is. `actual` and `root` are real paths. */
+export const throughLink = (actual: string, root: string, rel: string): boolean => actual !== join(root, ...rel.split('/'))
+
+/** Whether research capture may take a version of program.json: as for every other file, never through a link
+ *  and, in a released study, never one whose bytes can carry restored wording. `actual`/`root` are real paths. */
+export const mayCaptureProgram = (o: { actual: string; root: string; published: boolean; head?: Uint8Array }): boolean =>
+  !throughLink(o.actual, o.root, 'program.json') && !(o.published && canCarryRestored('program.json', o.head))
+
 /** Whether research capture may collect a project file. Never: run outputs (artifacts/simulations/, runs/) of a
  *  published study (its AI participants' replies can quote the restored wording); a text file that quotes private
  *  material; and, while any private material is indexed, a file that cannot be read as text (it cannot be checked). */
-export function mayCollectFile(o: { rel: string; text?: string; published: boolean; index: PrivateIndex; hasPrivate?: boolean }): boolean {
+export function mayCollectFile(o: { rel: string; text?: string; /** the raw first bytes, as read from disk */ bytes?: Uint8Array; published: boolean; index: PrivateIndex; hasPrivate?: boolean }): boolean {
   const rel = o.rel.split('\\').join('/')
   const strict = o.published || Boolean(o.hasPrivate)
   if (PRIVATE_MATERIAL.test(decoded(rel))) return false
+  // a released study: nothing the restore reads or a download keeps back (anything under sources/, paper.pdf, a PDF or
+  // a picture by name or content, the generated preview), however short the wording it holds
+  if (o.published && canCarryRestored(rel, o.bytes)) return false   // `bytes`: the file's raw first bytes, never decoded text
   // A downloaded study (study-transfer.ts) saved into a project: its contents may include private files and chats.
   if (STUDY_PACKAGE.test(decoded(rel))) return false
   if (o.published && /^(?:artifacts\/simulations|runs)(?:\/|$)/.test(rel)) return false

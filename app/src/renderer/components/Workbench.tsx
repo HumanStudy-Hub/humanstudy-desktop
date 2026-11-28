@@ -73,12 +73,18 @@ const sha = async (raw: string) => Array.from(new Uint8Array(await crypto.subtle
 
 /** The researcher's confirmation, sent as the agent message: the program's hash at the moment of the
  *  click, the study, the five section-12 fields and the plan the Simulation tab showed. */
-async function approveSimulation(dir: string, program: HumanProgram, studyId: string, request: string, plan: { perCondition: number; model: string; route: 'protocol' | 'package'; conditions: string[]; tokenBudget?: number }): Promise<string> {
+async function approveSimulation(dir: string, program: HumanProgram, studyId: string, request: string, plan: { perCondition: number; model: string; route: 'protocol' | 'package'; conditions: string[]; tokenBudget?: number }, who?: { participantsSha256: string | null; programSha256: string | null; protocolSha256: string | null }): Promise<string> {
   const scope = simulationScope(program, studyId)
   if (plan.route === 'protocol') {
     // The protocol route (v0.8): the approval names protocol.json by the hash of its bytes; the engine runs it.
     const raw = await window.humanstudy.project.readText(`${dir}/protocol.json`)
-    return `[Simulation scope approved]\n${JSON.stringify({ route: 'protocol', protocolHash: await sha(raw), hashFormat: 'protocol.json UTF-8 file bytes', lang: getLang(), programId: program.id, studyId, scope: scope.fields, plan: { perCondition: plan.perCondition, conditions: plan.conditions, model: plan.model, tokenBudget: plan.tokenBudget } })}\n${request}`
+    // Who takes part is approved as the tab showed it: the hashes of simulation/participants.json (null: none, so
+    // sample-matched), program.json and protocol.json that its summary was read from. The app refuses to start if
+    // any of them changed; a protocol.json changed since the summary was read is refused here already.
+    if (!who) throw new Error(t('simulation.changed'))
+    const current = await sha(raw)
+    if (who.protocolSha256 !== null && who.protocolSha256 !== current) throw new Error(t('simulation.changed'))
+    return `[Simulation scope approved]\n${JSON.stringify({ route: 'protocol', protocolHash: who.protocolSha256 ?? current, hashFormat: 'protocol.json UTF-8 file bytes', participantsSha256: who.participantsSha256, programSha256: who.programSha256, lang: getLang(), programId: program.id, studyId, scope: scope.fields, plan: { perCondition: plan.perCondition, conditions: plan.conditions, model: plan.model, tokenBudget: plan.tokenBudget } })}\n${request}`
   }
   const raw = await window.humanstudy.project.readText(`${dir}/program.json`)
   if (JSON.stringify(JSON.parse(raw)) !== JSON.stringify(program)) throw new Error(t('simulation.changed'))
@@ -573,12 +579,12 @@ export function Workbench({ ref, project, source, onRestoreSource, onClearSelect
               agentActivity={agentActivity}
               canRun={canRun}
               modelAccess={modelAccess}
-              onRun={async (perCondition, route, conditions, tokenBudget) => {
+              onRun={async (perCondition, route, conditions, tokenBudget, who) => {
                 if (!canRun) return   // signed out: the tab says "Sign in to run"; nothing is sent
                 const study = simStudies.find(st => st.id === simStudyId)?.title ?? simStudyId
                 const request = t('sim.request', { study, n: perCondition, model: model || 'selected in the app' })
                 try {
-                  onRunSimulation?.(await approveSimulation(project.dir, simProgram, simStudyId, request, { perCondition, model, route, conditions, tokenBudget }))
+                  onRunSimulation?.(await approveSimulation(project.dir, simProgram, simStudyId, request, { perCondition, model, route, conditions, tokenBudget }, who))
                 } catch (e) {
                   setEditError(e instanceof Error ? e.message : String(e))
                   throw e

@@ -13,12 +13,13 @@ import { kernelBinary, managedBinary } from './opencode-install'
 import {
   communityStudies,
   communityStudy,
+  fetchReleasedProtocol,
   forkCommunityStudy,
   isAllowedExternal,
   setCommunityCacheDir,
 } from './community'
 import { createProject, isInside, isProject, isWithin, listProjects, renameProject, trashProject } from './projects'
-import { exportStudy, importStudy, PACKAGE_SUFFIX, packageName, previewExport, sweepImports, TransferError } from './study-transfer'
+import { exportStudy, importStudy, includesChat, PACKAGE_SUFFIX, packageName, previewExport, sweepImports, TransferError } from './study-transfer'
 import { createProjectSync, sweepSyncTemps, type PendingDelete, type SyncEngine } from './project-sync'
 import { createCloud } from './project-sync-cloud'
 import { deviceLabel } from './project-sync-core'
@@ -46,9 +47,9 @@ import { confirmedLibrarySha, heldTextsOf, passedProtocolSha, selectedResults, s
 import { legacyFileIsolationAvailable, scientificReadiness } from './scientific-readiness'
 import { onRuntimeProgress, readyPython } from './runtime-install'
 import { assertRunnablePackage, projectPackageReadiness, configureScientificChecks, configureProtocolChecks, configureOriginalText, originalTextProblemsOf, protocolProblems } from './package-readiness'
-import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, originalTextProblems, restoredChecksProblem, restoredProtocolText, receivedPath, restoredRunFiles, restoreSlot, writeAgentStatus } from './original-text'
+import { fillOriginalText, heldPinProblem, indexPrivateCopies, isPublishedStudy, moveProjectRecords, originalTextProblems, releaseBaseline, releasedStudy, restoredChecksProblem, restoredProtocolText, restoredRunFiles, restoreSlot, UNVERIFIED_RELEASE, writeAgentStatus } from './original-text'
 type ScientificProblemLike = { check: string; reason: string }
-import { configureReceivedProtocol, protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
+import { configureReceivedProtocol, releaseUnconfirmed, participantsCheck, protocolBudget, protocolReadiness, protocolDraftCertificate, restoredReadiness, sourceTextArgs } from './protocol-readiness'
 import { startModelRelay, relaySupported } from './model-relay'
 import { approvedRunLimits } from './run-approval'
 import { closeProjectRelays, isRunStop } from './run-stop'
@@ -532,10 +533,17 @@ app.whenReady().then(() => {
   // A published study's original wording, filled in on this computer (original-text.ts): downloads and the restored
   // protocol stay in app storage; the project gets only a status for the agent.
   const textFiles = trustedOriginalTextFiles()
-  configureReceivedProtocol(async (project) => JSON.parse(await readFile(receivedPath(originalTextCache(), await realpath(project)), 'utf8')))
+  // The published checks compare with the Library release the project names, fetched and verified (never the
+  // project's own copy or anything a study file carried); unconfirmed, nothing counts as received and the next check
+  // tries again (original-text.ts releaseBaseline).
+  configureReceivedProtocol(async (project) => {
+    const b = await releaseBaseline(originalTextCache(), project, fetchReleasedProtocol)
+    return b === null ? null : b === 'unverified' ? UNVERIFIED_RELEASE : JSON.parse(b.protocol.toString('utf8'))
+  })
   void telemetry.refreshPrivateIndex().catch(() => undefined)
   const restoredChecks = new Map<string, ScientificProblemLike[]>()
   configureOriginalText(async (project) => {
+    await releasedStudy(originalTextCache(), project).catch(() => undefined)   // recorded the first time it is seen
     const pinned = await heldPinProblem(originalTextCache(), project).catch(() => null)
     if (pinned) return [pinned]
     if (!(await isPublishedStudy(project))) return []
@@ -555,9 +563,13 @@ app.whenReady().then(() => {
       // failure or a time/memory stop is checked again next time).
       const key = createHash('sha256').update(restored).update(await sourceTextStamp(project)).digest('hex')
       if (!restoredChecks.has(key)) {
+        const unconfirmed = await releaseUnconfirmed(project)   // snapshot before the check decides whether it is kept
         const found = await restoredReadiness(python, engine, project, restored, join(originalTextCache(), slot), process.env.HUMANSTUDY_RUNTIME_BIN || '')
         if (found.some((p) => p.check === 'runtime' || p.check === 'limits')) return found.map((p) => ({ check: 'runtime', reason: "The study's checks with its original wording filled in could not complete. Retry." }))
-        restoredChecks.set(key, found.length ? [restoredChecksProblem(studyTitle(restored))] : [])
+        const outcome = found.length ? [restoredChecksProblem(studyTitle(restored))] : []
+        // checked without the Library release (not fetched yet): a failure may clear once it is, so it is not kept
+        if (outcome.length && unconfirmed) return outcome.map((p) => ({ ...p, retry: true }))
+        restoredChecks.set(key, outcome)
       }
       return restoredChecks.get(key)!
     } catch {
@@ -644,6 +656,9 @@ app.whenReady().then(() => {
     return r.filePath
   })
   ipcMain.handle('project:packageReadiness', async (_e, dir: string, studyId: string, execute?: boolean) => ({ ...await projectPackageReadiness(ownedPath(dir), studyId, execute === true, true), modelAccess: RELAY ? 'relay' as const : 'key' as const }))
+  // Who takes part (the Simulation tab's summary): the app's own participants.py, with the hashes it read.
+  ipcMain.handle('project:participants', async (_e, dir: string) =>
+    participantsCheck(await readyPython(), trustedBudgetFiles(), ownedPath(dir), process.env.HUMANSTUDY_RUNTIME_BIN || ''))
   ipcMain.handle('project:readText', async (_e, p: string) => {
     const q = ownedPath(p)
     if ((await stat(q)).size > TEXT_LIMIT) throw new Error('file is larger than 4 MB')
@@ -751,8 +766,11 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('projects:rename', async (_e, dir: string, name: string) => {
     const from = resolve(dir)
+    const fromReal = await realpath(from).catch(() => from)
     const to = await renameProject(from, name)
     if (to !== from) unwatch(from)
+    // path-keyed app records (held-list pin, received copy) follow the project, never stay for the old path
+    if (to !== from) await moveProjectRecords(originalTextCache(), fromReal, await realpath(to).catch(() => to)).catch(() => undefined)
     projectSync?.touch(to) // the cloud copy takes the new name
     return to
   })
@@ -760,7 +778,9 @@ app.whenReady().then(() => {
     unwatch(resolve(dir))
     // The cloud copy is soft-deleted first (restorable for 30 days); offline, the delete is sent later.
     if (isInside(getSettings().projectsRoot, resolve(dir)) && isProject(resolve(dir))) await projectSync?.trashed(resolve(dir)).catch(() => undefined)
+    const real = await realpath(resolve(dir)).catch(() => null)
     await trashProject(dir)
+    if (real) await moveProjectRecords(originalTextCache(), real, null).catch(() => undefined)
   })
 
   // ---- project sync: every project privately in the account's cloud storage (project-sync.ts) -------------------
@@ -792,6 +812,8 @@ app.whenReady().then(() => {
       if (threadsInitialized) await threads().forgetDir(dir)
     },
     onChange: () => broadcast('sync:changed', null),
+    // a rename that arrives through sync moves the path-keyed records as the app's own rename does
+    moved: (from, to) => moveProjectRecords(originalTextCache(), from, to),
     readPending: () => {
       try {
         const v = JSON.parse(readFileSync(pendingFile(), 'utf8')) as unknown
@@ -851,8 +873,14 @@ app.whenReady().then(() => {
   ipcMain.handle('projects:exportPreview', async (_e, dir: string) => {
     const d = transferProject(dir)
     if (!d) throw new Error('This folder is not a HumanStudy project.')
-    return previewExport(d, { published: await isPublishedStudy(d).catch(() => false) })
+    return previewExport(d, { published: await isPublishedStudy(d).catch(() => false), released: await releasedFor(d) })
   })
+  /** A released (Library) study: the sha256 of every file its verified release shipped (none while unconfirmed). */
+  async function releasedFor(d: string): Promise<{ shipped: Set<string> } | undefined> {
+    if (!(await releasedStudy(originalTextCache(), d))) return undefined
+    const b = await releaseBaseline(originalTextCache(), d, fetchReleasedProtocol).catch(() => 'unverified' as const)
+    return { shipped: new Set(b && b !== 'unverified' ? b.assetFiles.map((f) => f.sha256) : []) }
+  }
   ipcMain.handle('projects:exportStudy', async (e, dir: string, options: StudyExportOptions): Promise<StudyExportResult | null> => {
     const d = transferProject(dir)
     if (!d) return { ok: false, code: 'not-project' }
@@ -870,13 +898,17 @@ app.whenReady().then(() => {
     // Online, earlier study files left in the sandbox's download folder (the browser has its copy) are removed.
     if (ONLINE) await sweepOnlineDownloads(dirname(target))
     try {
+      const released = await releasedFor(d)
+      // a released (Library) study's chat history never goes in (it may quote original wording the researcher
+      // supplied); the result says so
       const out = await exportStudy(d, target, {
-        conversations: options?.conversations !== false,
+        conversations: includesChat(Boolean(released), options?.conversations),
+        released,
         source: { platform: ONLINE ? 'online' : 'desktop', appVersion: app.getVersion() },
         published: await isPublishedStudy(d).catch(() => false),
       })
       telemetry.track('project.exported', { metadata: { files: out.files, bytes: out.bytes, conversations: out.manifest.includes.conversations, privateFiles: out.manifest.includes.privateFiles.length } }, d)
-      return { ok: true, savedPath: out.path, bytes: out.bytes, files: out.files }
+      return { ok: true, savedPath: out.path, bytes: out.bytes, files: out.files, ...(released ? { chatLeftOut: true } : {}) }
     } catch (err) {
       return transferFailure(err)
     }
@@ -1136,9 +1168,15 @@ app.whenReady().then(() => {
 
   /** An approved protocol run, started here from the app's trusted copy (review 4, S1), never by the agent: the
    *  run folder and plan.json come from the checked approval, and the run ends its relay when it exits. */
-  async function startProtocolRun(projectDir: string, approved: { lang?: unknown; plan?: { perCondition?: unknown; model?: unknown; conditions?: unknown } }, binding: ProtocolBinding, relay: { baseURL: string; token: string; model: string; expiresAt: number } | undefined, ended: () => void) {
+  async function startProtocolRun(projectDir: string, approved: { lang?: unknown; participantsSha256?: unknown; programSha256?: unknown; plan?: { perCondition?: unknown; model?: unknown; conditions?: unknown } }, binding: ProtocolBinding, relay: { baseURL: string; token: string; model: string; expiresAt: number } | undefined, ended: () => void, images = false) {
     const per = approved.plan?.perCondition
     if (!Number.isSafeInteger(per) || (per as number) < 1 || (per as number) > 60) throw Error('Participants per condition must be a whole number from 1 to 60. Review the simulation scope again.')
+    // Who takes part is part of the approval: the SHA-256 of simulation/participants.json the Simulation tab showed
+    // (null: no file, sample-matched). launchProtocolRun and app_run both refuse a file that is not that one.
+    const participants = approved.participantsSha256 ?? null
+    const programSha = approved.programSha256 ?? null
+    for (const v of [participants, programSha]) if (v !== null && (typeof v !== 'string' || !/^[0-9a-f]{64}$/.test(v)))
+      throw Error('The approval names an unreadable participant description. Review the simulation scope again.')
     const python = await readyPython()
     if (!python) throw Error('The research runtime is not installed yet, so the run cannot start. Try again in a minute.')
     const runDir = newRunFolder(projectDir)
@@ -1149,7 +1187,7 @@ app.whenReady().then(() => {
     if (detached) await runJournal.prepare()
     await launchProtocolRun({
       python, files: [...trustedRunFiles(), ...restored], codeDir: join(app.getPath('userData'), 'protocol-runs', binding.runId), project: projectDir, runDir, binding,
-      plan: { perArm: per as number, arms: null, seeds: [1], temperature: 1.0 },
+      plan: { perArm: per as number, arms: null, seeds: [1], temperature: 1.0, participantsSha256: participants as string | null, programSha256: programSha as string | null, images: Boolean(relay) && images },
       relay: relay ? { baseURL: relay.baseURL, token: relay.token, model: relay.model, expiresAt: relay.expiresAt } : undefined,
       // Pre-relay path: the same environment the agent's runs get there (the run confirmation said the key is readable).
       env: relay ? { PATH: (process.env.HUMANSTUDY_RUNTIME_BIN ? process.env.HUMANSTUDY_RUNTIME_BIN + (process.platform === 'win32' ? ';' : ':') : '') + (process.env.PATH ?? '') } : { ...process.env,
@@ -1215,14 +1253,18 @@ app.whenReady().then(() => {
         // A protocol run gets its capability from the app directly: no descriptor for the agent (review 5, M3).
         // Removals are by owner, so this relay closing late never frees the next run's (review 5, M2).
         let ownClose: (() => Promise<void>) | undefined
-        const relay = await startModelRelay({ project: projectDir, model, key, storage: process.env.HUMANSTUDY_RELAY_DIR!, tokenCap: limits.tokens, expiryMinutes: limits.minutes, binding, publish: route !== 'protocol',
+        // Pictures go to the model on protocol runs: OpenRouter with the user's own key, or the hosted HumanStudy Hub
+        // endpoint, which accepts image parts for image-capable models (humanstudy-hub-web#134). Whether a
+        // model is sent pictures at all is skills/run's image_choice (participants.IMAGE_MODELS); run.json says so.
+        const images = route === 'protocol'
+        const relay = await startModelRelay({ images, project: projectDir, model, key, storage: process.env.HUMANSTUDY_RELAY_DIR!, tokenCap: limits.tokens, expiryMinutes: limits.minutes, binding, publish: route !== 'protocol',
         onClose: () => { if (ownClose) runs.forget(id, ownClose); runs.release(projectDir!, owner) },
         upstream: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_HOSTED_BASEURL || 'https://humanstudy-hub.com/api/desktop/v1' : 'https://openrouter.ai/api/v1',
         bypass: process.env.HUMANSTUDY_DESKTOP_KEY ? process.env.HUMANSTUDY_SERVER_BYPASS : undefined })
         ownClose = relay.close
         runs.register(id, { project: projectDir, close: relay.close })
         startedRelay = true
-        if (route === 'protocol') await startProtocolRun(projectDir, approved, binding as ProtocolBinding, relay, () => { runs.forget(id, relay.close); void relay.close() })
+        if (route === 'protocol') await startProtocolRun(projectDir, approved, binding as ProtocolBinding, relay, () => { runs.forget(id, relay.close); void relay.close() }, images)
       } catch (error) {
         if (protocolBinding) await finishRunResearch(protocolBinding, null)
         if (startedRelay) await closeRunRelay(id)

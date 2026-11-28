@@ -224,8 +224,41 @@ test('a protocol-only revision imports exact files and pins its received held li
  const root=Object.keys(pins)[0]
  const received=JSON.parse(await readFile(join(cache,'original-text/received',createHash('sha256').update(root).digest('hex')+'.json'),'utf8'))
  assert.deepEqual(received,protocol)
+ // the verified release is stored by its manifest identity, so the published checks never need to fetch it
+ assert.deepEqual(await readFile(join(cache,'original-text/releases',rev,'protocol.json')),files['protocol.json'])
+ const context=JSON.parse(await readFile(join(dir,'.humanstudy/community.json'),'utf8'))
+ assert.deepEqual(context.assetFiles.map(f=>f.path).sort(),manifest.map(f=>f.path).sort())
 })
 test('protocol allowlist rejects private sources, runs, traversal and app configuration',()=>{
  for(const path of ['sources/private/x.pdf','sources/researcher/x.txt','artifacts/runs/x.json','artifacts/records.jsonl','runs/a.json','../protocol.json','.opencode/hsenv.py','sources/open/.env','review/raw-chat.json','paper/paper.pdf','capabilities-other.json','Effects.json'])assert.equal(lib.protocolAssetPath(path),false,path)
  for(const path of ['protocol.json','study.json','capabilities.json','effects.json','sourcetext/a.txt','sources/open/survey.qsf','review/fidelity-review-1.md','review/checks-latest.json','variants/a.json','package/x/study.json'])assert.equal(lib.protocolAssetPath(path),true,path)
+})
+
+test('the release a project names is fetched only from its revision folder, without redirects, capped, and checked by sha256',async()=>{
+ const release=Buffer.from('{"distribution":{"held":{}}}\n')
+ const files=[{path:'protocol.json',sha256:createHash('sha256').update(release).digest('hex')}]
+ const identity=createHash('sha256').update(JSON.stringify(files.map(({path,sha256})=>({path,sha256})))).digest('hex')
+ const context={id:'paper_x',commit,assetRoot:`community/paper_x/revisions/${identity}`,baseRevision:identity,assetFiles:files}
+ const asked=[],saved=globalThis.fetch
+ let body=()=>release
+ globalThis.fetch=async(url,init)=>{asked.push({url:String(url),redirect:init?.redirect});return new Response(body())}
+ try{
+  assert.ok((await lib.fetchReleasedProtocol(context)).equals(release))
+  assert.deepEqual(asked[0],{url:`https://raw.githubusercontent.com/HumanStudy-Hub/HumanStudy-Bench/${commit}/community/paper_x/revisions/${identity}/protocol.json`,redirect:'error'})
+  // not the manifest's identity, dot segments, another folder, a non-commit ref: refused before any request
+  const n=asked.length
+  for(const assetRoot of ['community/paper_x/revisions/'+'e'.repeat(64),`community/../revisions/${identity}`,`community/./revisions/${identity}`,`studies/study_001/${identity}`])
+   assert.equal(await lib.fetchReleasedProtocol({...context,assetRoot}),null,assetRoot)
+  assert.equal(await lib.fetchReleasedProtocol({...context,commit:'main'}),null)
+  // a valid revision folder of another paper, or another revision than the fork recorded
+  assert.equal(await lib.fetchReleasedProtocol({...context,id:'paper_y'}),null)
+  assert.equal(await lib.fetchReleasedProtocol({...context,assetRoot:`community/paper_y/revisions/${identity}`}),null)
+  assert.equal(await lib.fetchReleasedProtocol({...context,baseRevision:'e'.repeat(64)}),null)
+  assert.equal(asked.length,n)
+  // other bytes, or more than the cap (streamed), are refused
+  body=()=>Buffer.from('{"edited":true}')
+  assert.equal(await lib.fetchReleasedProtocol(context),null)
+  body=()=>new ReadableStream({start(c){for(let i=0;i<25;i++)c.enqueue(new Uint8Array(1024*1024));c.close()}})
+  assert.equal(await lib.fetchReleasedProtocol(context),null)
+ }finally{globalThis.fetch=saved}
 })

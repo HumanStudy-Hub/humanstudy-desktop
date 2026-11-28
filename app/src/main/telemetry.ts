@@ -2,8 +2,8 @@
 // PostgREST credentials, project ids, IPC, and main-process capture of kernel/session events.
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { createHash, randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { open, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, resolve, sep } from 'node:path'
 import { artifactPath, isProhibitedEventType, LIMITS, researchUuid, semanticId, SESSION_END_REASONS, type SessionEndReason, type SimulationStage } from '../shared/research-contract'
 import type { SimulationMetadata } from './simulation-research'
@@ -19,7 +19,7 @@ import { strToU8, zipSync } from 'fflate'
 import { getAccount } from './account'
 import { getSettings } from './settings'
 import { loadPrivateIndexDir } from './private-index'
-import { accountHash, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, namesPrivatePath, mayCollectFile, programDiff, PRIVATE_MATERIAL, REDACTED_PRIVATE, STUDY_PACKAGE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
+import { accountHash, mayCaptureProgram, throughLink, createTelemetry, EMPTY_INDEX, FLUSH_INTERVAL_MS, holdsPrivate, namesPrivatePath, mayCollectFile, programDiff, PRIVATE_MATERIAL, REDACTED_PRIVATE, STUDY_PACKAGE, redactCapture, redactPrivatePart, scrubString, type PrivateIndex, type StoredState, type Telemetry } from './telemetry-core'
 import { createReplay, REPLAY_FLUSH_MS, type Replay, type ReplayFile, type ReplayFs } from './replay-core'
 import type { Capture } from './threads-core'
 import type { KernelEvent } from './kernel-types'
@@ -169,13 +169,21 @@ async function queueSource(projectDir: string, rel: string, trigger: 'baseline' 
   const imported = importRefs.get(join(resolve(projectDir), rel)) ?? (created && rel.startsWith('sources/') ? created : undefined)
   const actual = await realpath(path), root = await realpath(projectDir)
   if (!actual.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) return
+  // a file reached through a link is never collected: what it is (its real path) may be something a download keeps back
+  if (throughLink(actual, root, rel)) return
   const ext = extname(path).toLowerCase()
   // Never a file that quotes private material, nor one that cannot be checked while any is indexed.
   const text = TEXT_EXTS.has(ext.slice(1)) ? await readFile(path, 'utf8').catch(() => undefined) : undefined
-  if (!mayCollectFile({ rel, text, published: await publishedProject(projectDir), index: privateIndex, hasPrivate: existsSync(join(projectDir, 'sources', 'private')) })) return
+  if (!mayCollectFile({ rel, text, bytes: await fileHead(path), published: await publishedProject(projectDir), index: privateIndex, hasPrivate: existsSync(join(projectDir, 'sources', 'private')) })) return
   const mime = ext === '.pdf' ? 'application/pdf' : ext === '.zip' ? 'application/zip' : ext === '.json' ? 'application/json' : 'application/octet-stream'
   const link = imported && Date.now() - imported.at <= IMPORT_LINK_MS ? researchAgent.sourceLink(imported.ref) : researchAgent.sourceLink(undefined, trigger)
   await sourceCollector().queueSource(path, projectId, mime, link)
+}
+/** The first bytes of a file (its content signature, telemetry-core.ts restorableBytes). */
+async function fileHead(path: string): Promise<Uint8Array | undefined> {
+  const fh = await open(path, 'r').catch(() => null)
+  if (!fh) return undefined
+  try { const b = Buffer.alloc(16); const { bytesRead } = await fh.read(b, 0, 16, 0); return b.subarray(0, bytesRead) } catch { return undefined } finally { await fh.close().catch(() => undefined) }
 }
 /** Run only after renewed agreement and on explicit project open, never scan the user's disk. */
 async function queueProjectSources(projectDir: string): Promise<void> {
@@ -526,6 +534,21 @@ function publishedProjectSync(projectDir: string): boolean {
   let yes = false
   try { yes = Boolean(JSON.parse(readFileSync(join(key, 'protocol.json'), 'utf8'))?.distribution) } catch { /* none */ }
   if (!yes) try { yes = Object.prototype.hasOwnProperty.call(JSON.parse(readFileSync(join(originalTextDir(), 'pins.json'), 'utf8')), realpathSync.native(key)) } catch { /* none */ }   // .native: the same form as fs/promises realpath, which keys the pins (Windows short names)
+  // a released (Library) study, as a study download decides it (original-text.ts releasedStudy): recorded by the
+  // project's id, or a community.json naming a protocol release (an unreadable one counts)
+  if (!yes) try {
+    let id: unknown
+    try { id = JSON.parse(readFileSync(join(key, '.humanstudy', 'project.json'), 'utf8'))?.id } catch { /* no id */ }
+    const sticky = JSON.parse(readFileSync(join(originalTextDir(), 'released.json'), 'utf8'))
+    yes = (typeof id === 'string' && Object.prototype.hasOwnProperty.call(sticky, 'id:' + id)) || Object.prototype.hasOwnProperty.call(sticky, realpathSync.native(key))
+  } catch { /* none */ }
+  // a fills file (regular, not a link): held wording was supplied for this project
+  if (!yes) try { yes = lstatSync(join(key, 'sources', 'private', 'original-text-fills.json')).isFile() && !lstatSync(join(key, 'sources')).isSymbolicLink() && !lstatSync(join(key, 'sources', 'private')).isSymbolicLink() } catch { /* none */ }
+  if (!yes) {
+    let raw: string | null = null
+    try { raw = readFileSync(join(key, '.humanstudy', 'community.json'), 'utf8') } catch { /* none */ }
+    if (raw !== null) try { const c = JSON.parse(raw); yes = Array.isArray(c?.assetFiles) && c.assetFiles.some((f: { path?: unknown }) => f?.path === 'protocol.json') } catch { yes = true }
+  }
   publishedSeen.set(key, { at: Date.now(), yes })
   return yes
 }
@@ -640,6 +663,8 @@ async function snapshotProgramNow(projectDir: string, owner: string | null, stat
   const path = join(projectDir, 'program.json')
   const actual = await realpath(path), root = await realpath(projectDir)
   if (!actual.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) return
+  // as every other capture path: never through a link, never a file a released study's download keeps back
+  if (!mayCaptureProgram({ actual, root, published: await publishedProject(projectDir), head: await fileHead(path) })) return
   const raw = written ?? await readFile(path, 'utf8')
   const hash = createHash('sha1').update(raw).digest('hex')
   const prev = programState.get(stateKey)
@@ -678,6 +703,7 @@ async function snapshotFileNow(projectDir: string, rel: string, owner: string | 
   const path = join(projectDir, rel)
   const actual = await realpath(path).catch(() => null), root = await realpath(projectDir)
   if (!actual?.startsWith(root + (process.platform === 'win32' ? '\\' : '/'))) return
+  if (throughLink(actual, root, rel)) return   // reached through a link: never collected
   const st = await stat(path).catch(() => null)
   if (!st?.isFile()) return
   const ext = extname(rel).slice(1).toLowerCase()
@@ -685,7 +711,7 @@ async function snapshotFileNow(projectDir: string, rel: string, owner: string | 
   // Run outputs of a published study, a file that quotes private material, and (while any is indexed) a file that
   // cannot be read as text are never collected: only the fact that a file was written is recorded.
   const textForCheck = TEXT_EXTS.has(ext) ? await readFile(path, 'utf8').catch(() => undefined) : undefined
-  if (!mayCollectFile({ rel, text: textForCheck, published: await publishedProject(projectDir), index: privateIndex, hasPrivate: existsSync(join(projectDir, 'sources', 'private')) })) {
+  if (!mayCollectFile({ rel, text: textForCheck, bytes: await fileHead(path), published: await publishedProject(projectDir), index: privateIndex, hasPrivate: existsSync(join(projectDir, 'sources', 'private')) })) {
     track('project.file_written', { target: rel, metadata: { ...metadata, withheld: 'private-material' } }, projectDir)
     return
   }

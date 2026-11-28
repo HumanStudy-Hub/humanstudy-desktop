@@ -67,7 +67,7 @@ test('output limit: absent reserves and forwards 512, alias becomes max_tokens, 
     const log = (await readFile(relayDescriptor(storage, project) + '.usage.jsonl', 'utf8')).trim().split('\n').map(l => JSON.parse(l))
     const reserved = log.filter(e => e.event === 'reserved').map(e => e.reserved)
     const bytes = Buffer.byteLength(JSON.stringify(base))
-    assert.equal(reserved[0], bytes + 256 + 512)
+    assert.equal(reserved[0], Math.ceil(bytes / 3) + 256 + 512, 'text bytes / 3 + 256 per message + the output limit')
     const completed = log.filter(e => e.event === 'completed')
     assert.deepEqual(completed.map(e => e.truncated), [false, false, true])
     assert.equal(completed[2].finish_reason, 'length')
@@ -225,4 +225,114 @@ test('review 5 M3: a protocol run\'s relay writes no descriptor, so the agent ne
   const storage = join(temp, 'publish-app')
   const relay = await startModelRelay({ project, storage, model: 'm', upstream: 'http://127.0.0.1:9', key: 'k', publish: false })
   try { await assert.rejects(readFile(relayDescriptor(storage, project)), /ENOENT/) } finally { await relay.close() }
+})
+
+test('pictures: a run whose upstream takes them passes inline images within the caps, charged per picture', async () => {
+  const R = await import(pathToFileURL(join(temp, 'relay.mjs')))
+  const seen = []
+  const stub = createServer(async (req, res) => {
+    const chunks = []; for await (const p of req) chunks.push(p)
+    seen.push(JSON.parse(Buffer.concat(chunks)))
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }], usage: { total_tokens: 3 } }))
+  })
+  await new Promise(resolve => stub.listen(0, '127.0.0.1', resolve))
+  const project = join(temp, 'image-project'); await mkdir(project)
+  const storage = join(temp, 'image-app')
+  const start = (images, tokenCap = 200_000) => startModelRelay({ project, storage, model: 'allowed', upstream: `http://127.0.0.1:${stub.address().port}`, key: 'k', tokenCap, images, publish: false })
+  const png = (n) => 'data:image/png;base64,' + 'A'.repeat(n)
+  const message = (...parts) => ({ model: 'allowed', max_tokens: 10, messages: [{ role: 'system', content: 'be a person' }, { role: 'user', content: [{ type: 'text', text: 'page' }, ...parts] }] })
+  const img = (url) => ({ type: 'image_url', image_url: { url } })
+  let relay = await start(true)
+  const call = (body) => fetch(relay.baseURL + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${relay.token}` }, body: JSON.stringify(body) })
+  try {
+    const big = png(800_000)
+    const ok = await call(message(img(big), { type: 'image_url', image_url: { url: png(8), detail: 'high' }, extra: 1 }))
+    assert.equal(ok.status, 200)
+    assert.deepEqual(seen[0].messages[1].content, [{ type: 'text', text: 'page' }, img(big), img(png(8))], 'only text and url are forwarded')
+    const log = (await readFile(relayDescriptor(storage, project) + '.usage.jsonl', 'utf8')).trim().split('\n').map(l => JSON.parse(l))
+    const body = JSON.stringify(message(img(big), { type: 'image_url', image_url: { url: png(8), detail: 'high' }, extra: 1 }))
+    assert.equal(log.find(e => e.event === 'reserved').reserved, Math.ceil((Buffer.byteLength(body) - big.length - png(8).length) / 3) + 2 * R.IMAGE_RESERVE_TOKENS + 2 * 256 + 10)
+    // refused: an oversized picture, too many, a remote URL, a non-picture part, a picture outside a user message
+    assert.equal((await call(message(img(png(R.MAX_IMAGE_BYTES))))).status, 400)
+    assert.equal((await call(message(...Array.from({ length: R.MAX_IMAGES + 1 }, () => img(png(8)))))).status, 413)
+    assert.equal((await call(message(img('https://example.test/a.png')))).status, 400)
+    assert.equal((await call(message(img('data:text/html;base64,AAAA')))).status, 400)
+    assert.equal((await call(message({ type: 'input_audio', input_audio: { data: 'AAAA' } }))).status, 400)
+    assert.equal((await call({ ...message(), messages: [{ role: 'system', content: [{ type: 'text', text: 'x' }, img(png(8))] }, { role: 'user', content: 'p' }] })).status, 400)
+    assert.equal((await call(message(...Array.from({ length: 5 }, () => img(png(900_000)))))).status, 413, 'the whole request stays under its cap')
+    assert.equal(seen.length, 1)
+  } finally { await relay.close() }
+  relay = await start(undefined)
+  try {
+    assert.equal((await call(message(img(png(8))))).status, 400, 'text only unless the run passes images')
+    assert.equal((await call({ model: 'allowed', max_tokens: 10, messages: [{ role: 'user', content: 'hello' }] })).status, 200)
+  } finally { await relay.close(); await new Promise(resolve => stub.close(resolve)) }
+})
+
+test('tokens, not bytes: a call reserves text bytes / 3 and is settled at the provider\'s usage; the cap still binds', async () => {
+  const R = await import(pathToFileURL(join(temp, 'relay.mjs')))
+  assert.equal(R.callReservation(3001, 2, 1, 768), 1001 + 512 + R.IMAGE_RESERVE_TOKENS + 768)
+  // usage: both parts valid -> their sum (or a larger total); a valid total alone; never 0 while the total is above 0
+  assert.equal(R.actualTokens({ prompt_tokens: 120, completion_tokens: 30, total_tokens: 150 }), 150)
+  assert.equal(R.actualTokens({ prompt_tokens: 120, completion_tokens: 30, total_tokens: 190 }), 190, 'a larger total wins')
+  assert.equal(R.actualTokens({ prompt_tokens: 120, completion_tokens: 30, total_tokens: 10 }), 150)
+  assert.equal(R.actualTokens({ total_tokens: 3 }), 3)
+  assert.equal(R.actualTokens({ prompt_tokens: 0, completion_tokens: 0, total_tokens: 40 }), 40, 'never 0 while the total is above 0')
+  assert.equal(R.actualTokens({ prompt_tokens: 12.5, completion_tokens: 3, total_tokens: 20 }), 20, 'a fractional part is invalid: the total')
+  for (const bad of [undefined, null, {}, { total_tokens: 0 }, { prompt_tokens: -1, completion_tokens: 5 }, { prompt_tokens: '9', completion_tokens: 1 },
+    { prompt_tokens: Infinity, completion_tokens: 1 }, { prompt_tokens: 2 ** 60, completion_tokens: 1 }, { total_tokens: NaN }])
+    assert.equal(R.actualTokens(bad), null, JSON.stringify(bad))
+  // admission: used + 1.5 x in flight + this call <= 95% of the cap
+  assert.equal(R.admits({ used: 0, outstanding: 0, charge: 950, cap: 1000 }), true)
+  assert.equal(R.admits({ used: 0, outstanding: 0, charge: 951, cap: 1000 }), false)
+  assert.equal(R.admits({ used: 100, outstanding: 400, charge: 251, cap: 1000 }), false, '100 + 600 + 251 > 950')
+  let usage = { prompt_tokens: 100, completion_tokens: 20 }
+  let hold = null   // while set, the stub answers only when it is resolved (calls stay in flight)
+  const stub = createServer(async (req, res) => {
+    for await (const _ of req) { /* drain */ }
+    if (hold) await hold
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }], ...(usage ? { usage } : {}) }))
+  })
+  await new Promise(resolve => stub.listen(0, '127.0.0.1', resolve))
+  const project = join(temp, 'settle-project'); await mkdir(project)
+  const start = (dir, tokenCap) => startModelRelay({ project, storage: join(temp, dir), model: 'allowed', upstream: `http://127.0.0.1:${stub.address().port}`, key: 'k', tokenCap, publish: false })
+  const caller = (relay) => () => fetch(relay.baseURL + '/chat/completions', { method: 'POST', headers: { authorization: `Bearer ${relay.token}` },
+    body: JSON.stringify({ model: 'allowed', max_tokens: 1000, messages: [{ role: 'user', content: 'hello' }] }) })
+  const relay = await start('settle-app', 5000)
+  const call = caller(relay)
+  try {
+    // Each call reserves about 1,272 (bytes/3 + 256 + 1,000) but settles at 120: far more than four calls fit in 5,000.
+    for (let i = 0; i < 10; i++) assert.equal((await call()).status, 200, `call ${i}`)
+    const log = (await readFile(relayDescriptor(join(temp, 'settle-app'), project) + '.usage.jsonl', 'utf8')).trim().split('\n').map(l => JSON.parse(l))
+    assert.ok(log.filter(e => e.event === 'completed').every(e => e.settled === 120 && e.settledFrom === 'usage'))
+    // A call already in flight that uses more than it reserved still counts its actual tokens (the only way past the
+    // cap); after it, nothing more is admitted.
+    usage = { prompt_tokens: 3000, completion_tokens: 900 }
+    assert.equal((await call()).status, 200)
+    assert.equal((await call()).status, 402, 'used 5,100 of 5,000: refused')
+  } finally { await relay.close() }
+  // Concurrency: calls in flight count at 1.5x, so a burst cannot overshoot the cap by its estimates.
+  usage = { prompt_tokens: 100, completion_tokens: 20 }
+  let release
+  hold = new Promise((resolve) => { release = resolve })
+  const burst = await start('settle-burst', 5000)
+  try {
+    const go = caller(burst)
+    const first = go(), second = go()
+    await new Promise((r) => setTimeout(r, 150))   // both admitted and waiting on the provider
+    assert.equal((await go()).status, 402, '1.5 x 2 x about 1,290 + 1,290 > 4,750: the third waits for room')
+    release(); hold = null
+    assert.deepEqual([(await first).status, (await second).status], [200, 200])
+    assert.equal((await go()).status, 200, 'settled at 120 each: room again')
+  } finally { await burst.close() }
+  // Without usage the reservation stands.
+  usage = null
+  const relay2 = await start('settle-app2', 2500)
+  const call2 = caller(relay2)
+  try {
+    assert.equal((await call2()).status, 200)
+    assert.equal((await call2()).status, 402, 'about 1,290 kept + 1,290 > 2,375 (95% of 2,500)')
+  } finally { await relay2.close(); await new Promise(resolve => stub.close(resolve)) }
 })

@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -148,6 +148,7 @@ test('round trip: every study file arrives byte for byte; the native session is 
   const after = tree(imp.dir)
   for (const [rel, bytes] of before) {
     if (rel === '.humanstudy/project.json' || rel === '.humanstudy/threads/thr_a.json') continue
+    if (rel.startsWith('.humanstudy/thread-history/')) { assert.ok(!after.has(rel), `Undo archive travelled: ${rel}`); continue }
     assert.ok(after.has(rel), `missing ${rel}`)
     assert.ok(after.get(rel).equals(bytes), `bytes differ: ${rel}`)
   }
@@ -202,6 +203,128 @@ test('private files are listed by name and included by default (no per-file opt-
   assert.equal(old.manifest.files.length, all.manifest.files.length)
 })
 
+test('Undo\'s archive stays out of downloads only: project sync\'s scanner still sees it, old study files with it open', async () => {
+  const root = project(fresh('desk'))
+  assert.ok((await S.scanProject(root)).some((f) => f.path === '.humanstudy/thread-history/thr_a/history_1.json'))
+  assert.equal((await S.previewExport(root)).conversations.files, 2)
+  const imp = await S.importStudy(hostile([{ path: '.humanstudy/thread-history/thr_a/h.json', data: '{"old":true}' }, { path: 'program.json', data: '{}' }]), fresh('projects'), { now: NOW })
+  assert.ok(existsSync(join(imp.dir, 'program.json')))
+})
+
+test('a released study: private files and every file restoration could read stay back unless the release shipped it', async () => {
+  const root = project(fresh('desk'))
+  put(root, 'sources/materials/booklet.pdf', '%PDF-1.4 the researcher\'s restoring copy')
+  put(root, 'assets/figure.png', 'a screenshot of a held picture')
+  put(root, 'package/stimuli/shipped.png', 'a picture the release ships')
+  put(root, 'sources/open/handout.txt', 'an open source the release ships')
+  const shipped = new Set([sha('a picture the release ships'), sha('an open source the release ships')])
+  const released = { shipped }
+  const preview = await S.previewExport(root, { released })
+  assert.equal(preview.released, true)
+  assert.equal(preview.hasPaper, false, 'a paper the release did not ship stays back')
+  const back = preview.privateFiles.map((f) => f.path)
+  for (const p of ['paper.pdf', 'sources/materials/booklet.pdf', 'assets/figure.png', 'sources/study.json', 'sources/private/my copy.pdf',
+    'sources/researcher/booklet.txt', 'artifacts/simulations/2026-11-02-1000/results.html']) assert.ok(back.includes(p), p)
+  const r = await exportTo(root, { released, conversations: false })
+  const paths = r.manifest.files.map((f) => f.path)
+  for (const p of back) assert.equal(paths.includes(p), false, p)
+  for (const p of ['program.json', 'protocol.json', 'package/stimuli/shipped.png', 'sources/open/handout.txt', 'artifacts/notes.md']) assert.ok(paths.includes(p), p)
+  assert.deepEqual(r.manifest.includes.privateFiles, [])
+  // while the release is not confirmed nothing counts as shipped
+  const unconfirmed = await exportTo(root, { released: { shipped: new Set() }, conversations: false })
+  assert.equal(unconfirmed.manifest.files.some((f) => f.path === 'package/stimuli/shipped.png'), false)
+  // an ordinary project is exactly as before: everything, private files included
+  const plain = await exportTo(root, { conversations: false })
+  for (const p of ['paper.pdf', 'sources/private/my copy.pdf', 'sources/researcher/booklet.txt', 'assets/figure.png']) assert.ok(plain.manifest.files.some((f) => f.path === p), p)
+})
+
+test('a released study\'s chat history never goes in; an ordinary project\'s unless unticked', () => {
+  assert.deepEqual([undefined, true, false].map((x) => S.includesChat(true, x)), [false, false, false], 'a released study: never')
+  assert.deepEqual([undefined, true, false].map((x) => S.includesChat(false, x)), [true, true, false])
+})
+
+test('a released study: pictures and PDFs by content, and the generated preview, stay back; decided on the bytes written', async () => {
+  const root = project(fresh('desk'))
+  put(root, 'notes/figure.dat', Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.from('a held picture')]))
+  put(root, 'notes/scan.bin', '%PDF-1.4 a scanned page')
+  put(root, 'notes/photo', Buffer.concat([Buffer.from('ffd8ffe0', 'hex'), Buffer.from('jpeg')]))
+  put(root, 'notes/anim', 'GIF89a...')
+  put(root, 'notes/pic', Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBPVP8 ')]))
+  put(root, 'artifacts/preview.html', '<img src="data:image/png;base64,AAAA">')
+  put(root, 'artifacts/preview.prev.html', '<img src="data:image/png;base64,BBBB">')
+  put(root, 'notes/plain.txt', 'plain notes')
+  const released = { shipped: new Set() }
+  const back = (await S.previewExport(root, { released })).privateFiles.map((f) => f.path)
+  for (const p of ['notes/figure.dat', 'notes/scan.bin', 'notes/photo', 'notes/anim', 'notes/pic', 'artifacts/preview.html', 'artifacts/preview.prev.html']) assert.ok(back.includes(p), p)
+  assert.equal(back.includes('notes/plain.txt'), false)
+  const r = await exportTo(root, { released, conversations: false })
+  const paths = r.manifest.files.map((f) => f.path)
+  for (const p of back) assert.equal(paths.includes(p), false, p)
+  assert.ok(paths.includes('notes/plain.txt'))
+  // the generated preview as the release shipped it goes in
+  const shipped = await exportTo(root, { released: { shipped: new Set([sha('<img src="data:image/png;base64,AAAA">')]) }, conversations: false })
+  assert.ok(shipped.manifest.files.some((f) => f.path === 'artifacts/preview.html'))
+  // a plain file that turns into a picture after it was listed is judged on the bytes actually written
+  const swap = project(fresh('desk'))
+  put(swap, 'notes/later.txt', 'harmless')
+  const listed = await S.previewExport(swap, { released })
+  assert.equal(listed.privateFiles.some((f) => f.path === 'notes/later.txt'), false)
+  put(swap, 'notes/later.txt', '%PDF-1.4 swapped in')
+  const out = await exportTo(swap, { released, conversations: false })
+  assert.equal(out.manifest.files.some((f) => f.path === 'notes/later.txt'), false)
+  assert.equal(S.keptBack('notes/later.txt', Buffer.from('%PDF-1.4 swapped in'), released), true)
+  assert.equal(S.keptBack('notes/later.txt', Buffer.from('harmless'), released), false)
+})
+
+test('a released study: files kept back never count toward the limits', async () => {
+  const root = project(fresh('desk'))
+  put(root, 'sources/private/huge-copy.pdf', Buffer.concat([Buffer.from('%PDF-1.4\n'), randomBytes(60_000)]))
+  const released = { shipped: new Set() }
+  // only what goes in counts: a kept-back file larger than the per-file limit does not block the download
+  const r = await exportTo(root, { released, conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } })
+  assert.equal(r.manifest.files.some((f) => f.path === 'sources/private/huge-copy.pdf'), false)
+  // the chat history never goes in, even when asked for
+  const asked = await exportTo(root, { released, conversations: true, limits: { ...S.LIMITS, maxFileBytes: 50_000 } })
+  assert.equal(asked.manifest.files.some((f) => f.path.startsWith('.humanstudy/thread')), false)
+  assert.equal(asked.manifest.includes.conversations, false)
+  // the same project as an ordinary one still meets the limit
+  await assert.rejects(exportTo(root, { conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } }), (e) => e.code === 'too-large')
+})
+
+test('a released study: a file over the size limit is not read and fails with the size error; an unreadable one is an error', async () => {
+  const root = project(fresh('desk'))
+  put(root, 'notes/big.txt', 'x'.repeat(60_000))
+  const released = { shipped: new Set() }
+  await assert.rejects(exportTo(root, { released, conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } }),
+    (e) => e.code === 'too-large' && e.file === 'notes/big.txt')
+  // a file whose name keeps it back is not read and does not block (it could not go in anyway)
+  const kept = project(fresh('desk'))
+  put(kept, 'sources/huge-copy.txt', 'y'.repeat(60_000))
+  const ok = await exportTo(kept, { released, conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } })
+  assert.equal(ok.manifest.files.some((f) => f.path === 'sources/huge-copy.txt'), false)
+  // oversized: only its first bytes are read. A PDF saved under another name is left out; a file that could go in
+  // (sources/open/, which the release may ship) gives the size error
+  const pdf = project(fresh('desk'))
+  put(pdf, 'notes/scan.bin', Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(60_000)]))
+  const left = await exportTo(pdf, { released, conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } })
+  assert.equal(left.manifest.files.some((f) => f.path === 'notes/scan.bin'), false)
+  const open_ = project(fresh('desk'))
+  put(open_, 'sources/open/handout.txt', 'z'.repeat(60_000))
+  await assert.rejects(exportTo(open_, { released, conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } }),
+    (e) => e.code === 'too-large' && e.file === 'sources/open/handout.txt')
+  // an ordinary project gives the very same error
+  await assert.rejects(exportTo(root, { conversations: false, limits: { ...S.LIMITS, maxFileBytes: 50_000 } }), (e) => e.code === 'too-large' && e.file === 'notes/big.txt')
+  if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+    const locked = project(fresh('desk'))
+    put(locked, 'notes/locked.txt', 'secret')
+    chmodSync(join(locked, 'notes', 'locked.txt'), 0o000)
+    try {
+      // never silently treated as private and left out: the download fails
+      await assert.rejects(exportTo(locked, { released, conversations: false }))
+    } finally { chmodSync(join(locked, 'notes', 'locked.txt'), 0o644) }
+  }
+})
+
 test('chat history: included by default, left out entirely when unticked', async () => {
   const root = project(fresh('desk'))
   const without = await exportTo(root, { conversations: false })
@@ -212,7 +335,7 @@ test('chat history: included by default, left out entirely when unticked', async
   assert.equal(imp.conversations, 0)
   const withChats = await exportTo(root)
   assert.deepEqual(withChats.manifest.files.filter((f) => f.path.startsWith('.humanstudy/thread')).map((f) => f.path).sort(),
-    ['.humanstudy/thread-history/thr_a/history_1.json', '.humanstudy/threads/thr_a.json', '.humanstudy/threads/thr_b.json'])
+    ['.humanstudy/threads/thr_a.json', '.humanstudy/threads/thr_b.json'], 'Undo\'s archive never goes in')
 })
 
 test('never included: hidden files, tools, caches, app state, agent config, other study files, links', async () => {
@@ -441,4 +564,29 @@ test('the download is written through a save temporary that file watching and re
   const r = await exportTo(root)
   assert.match(r.manifest.projectId, /^[0-9a-f-]{36}$/)
   assert.equal(readFileSync(join(root, '.humanstudy', 'project.json'), 'utf8'), '{not json')
+})
+
+test('a run\'s private answers (artifacts/simulations/<run>/.private/) never go into a download and are never collected', async () => {
+  const root = fresh('private-answers')
+  mkdirSync(join(root, 'artifacts/simulations/2026-11-26-1000/.private'), { recursive: true })
+  writeFileSync(join(root, 'artifacts/simulations/2026-11-26-1000/.private/answers.jsonl'), '{"answers": {"q": "held wording"}}\n')
+  writeFileSync(join(root, 'artifacts/simulations/2026-11-26-1000/steps.jsonl'), '{"answers": {"q": "░░░"}}\n')
+  writeFileSync(join(root, 'protocol.json'), '{}')
+  const rel = 'artifacts/simulations/2026-11-26-1000/.private/answers.jsonl'
+  assert.equal(S.classify(rel), 'never')
+  assert.equal(S.classify('artifacts/simulations/2026-11-26-1000/.private'), 'never')
+  const files = (await S.scanProject(root)).map((f) => f.path)
+  assert.ok(files.includes('artifacts/simulations/2026-11-26-1000/steps.jsonl') && !files.some((p) => p.includes('.private')))
+  for (const published of [false, true])
+    assert.equal(TC.mayCollectFile({ rel, text: '{}', published, index: TC.EMPTY_INDEX }), false, `collected (published ${published})`)
+  assert.ok(TC.PRIVATE_MATERIAL.test(rel))
+  assert.ok(TC.namesPrivatePath('cat "artifacts/simulations/2026-11-26-1000/.private/answers.jsonl"'))
+  assert.ok(!TC.namesPrivatePath('cat artifacts/simulations/2026-11-26-1000/steps.jsonl'))
+  // tool calls, with paths resolved against the tool's own working folder
+  assert.ok(TC.toolNamesPrivate({ filePath: '/p/artifacts/simulations/r/.private/answers.jsonl' }))
+  assert.ok(TC.toolNamesPrivate({ filePath: 'answers.jsonl', workdir: '/p/artifacts/simulations/r/.private' }), 'relative to a private workdir')
+  assert.ok(TC.toolNamesPrivate({ filePath: '.private/answers.jsonl' }, '/p/artifacts/simulations/r'), 'relative, cwd supplied separately')
+  assert.ok(TC.toolNamesPrivate({ command: 'head -5 answers.jsonl' }, '/p/artifacts/simulations/r/.private'), 'the cwd itself is private')
+  assert.ok(!TC.toolNamesPrivate({ filePath: 'steps.jsonl' }, '/p/artifacts/simulations/r'))
+  assert.ok(!TC.toolNamesPrivate({ command: 'ls' }, '/p'))
 })

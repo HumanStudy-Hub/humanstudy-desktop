@@ -134,16 +134,135 @@ The agent only follows `progress.json` and reports. `app_run.py new` remains onl
 agent's skill tells it never to start a protocol run.
 
 f is `make_chat_f` over the app's model client (`humanstudy_llm.chat`, so keys stay in the relay), with the
-default renderer: one fresh call per page, JSON answers, text only. `run.json` records the model, the renderer and
+default renderer: one fresh call per page, one `make_chat_f` per participant with that participant's own system
+prompt (see "Who takes part" below). `run.json` records the model, the renderer, the participant description and
 the protocol's SHA-256. `progress.json` follows the simkit conventions, so the Simulation tab shows a protocol run
 like a package run. `records.jsonl` stands in for `sessions.jsonl`.
+
+**Who takes part (participant spec).** How participants are simulated is the researcher's choice, recorded with
+the run ("protocol, not agent"). It lives in `simulation/participants.json`, which the agent writes when the
+researcher describes the participants (`skills/run/SKILL.md`, "Who takes part"); `skills/run/participants.py`
+validates it, draws the participants and builds their prompts.
+- `mode: "paper"`, also when the file is absent: sample-matched. Each participant's persona comes from the paper's
+  own account of its sample, protocol.json `meta.sample` first, then the program's `participants` node for the
+  arm's study. Each text is first cut to what it says of the arm's own study ("Study 1: …; Study 2: …"), and any
+  sentence naming a condition (protocol arm ids and labels, program condition names) is dropped, so no persona
+  carries another study's sample or a condition's name. The population is quoted as printed ("Study 1: 60 nurses"
+  keeps "60 nurses"; counts in parentheses and a study part that only repeats the age and gender figures are left
+  out). An age is drawn from a printed mean and SD (clipped to ±2.5 SD and to a printed range) or a
+  printed range; a mean alone is stated about the sample, not drawn. A gender is drawn only among the categories
+  the paper prints (women, men, nonbinary and other stated categories), at the printed shares: percentages, or
+  counts over a printed N (or, without an N, over the counts printed together). Whatever share the printed
+  categories do not cover stays unstated: those participants get no gender, and it is never given to another
+  gender. Nothing the paper does not state is added: no age, gender or country is invented. Texts holding a
+  published study's placeholders are skipped; personas come from protocol.json as approved, never from wording
+  restored on this computer.
+- `mode: "custom"`: up to 12 groups with weights, each a persona text and optional attributes (`age` as a number,
+  `{min, max}` or `{mean, sd}`; `gender`, `country`, `occupation`, `education` as text, list or `{text: weight}`;
+  `notes`). Every condition is split across groups by largest remainder, the same rule as the web's persona groups
+  (`humanstudy-hub-web/lib/persona-groups.ts`, `HumanStudy-Bench/playground/personas.py`). Any rendered text that
+  names a condition is refused (it would reach every condition): `system`, a group's id, label, persona and notes,
+  its occupation and education values, the paper's sample description; and, after interpolation, every participant's
+  rendered prompt (the app's fixed wording on how to take part and reply aside), in `check` and again at run time.
+  The generated categorical values (gender, age, country) and their sentences are not checked: they are drawn
+  independently of the condition and cannot reveal it, so a study whose conditions are named "Woman" and "Man" runs. Personas are at most 1,200 characters and
+  `system` 1,500; a prompt longer than the budget's allowance is refused at check time.
+- `system` (paper or custom): a whole system prompt with `{{persona}} {{age}} {{gender}} {{country}}
+  {{occupation}} {{education}} {{group}}`; the reply format is always appended.
+- `mode: "blank"`: no persona and the earlier bare prompt with bare JSON answers, kept for comparison; it gets the
+  same pictures as any run on the same route.
+- Draws use a generator keyed by the file's SHA-256, the seed, the arm and the participant's index. Each
+  participant's group, attributes, persona and the spec's SHA-256 are written to `participants.jsonl` (opaque id,
+  member; never the condition). A resumed run reads its participants back from that file and only appends the ones
+  it lacks; rows of started participants are never rewritten, and rows from another spec end the resume with a plain
+  "start a new run". `run.json` `participants_spec` holds the mode, the file's and program.json's SHA-256, a
+  one-line summary and what was done with pictures; the results page states it.
+- Approval: the Simulation tab shows the summary under "Who takes part". It comes from the app's own
+  participants.py (`check <project> --json`, run confined by the main process: `participantsCheck`), the one
+  implementation, together with the SHA-256 of the very files it read. Run is disabled while it is re-read or when
+  the check reports a problem, and the approval sends exactly those hashes: `protocolHash` (the protocol.json the
+  summary was read from), `participantsSha256` (null without a file) and `programSha256` (null without
+  program.json). The main process puts them in the approved plan (`HUMANSTUDY_RUN_PLAN`, plan.json);
+  `launchProtocolRun` and `app_run` both refuse a file whose hash is not the approved one, as for protocol.json.
+- Upgrades: a plan with no participant file and no `participantsSha256` is fine; a plan from before this version in
+  a project with program.json, an in-place resume of a run started before participants were recorded, and an
+  approved token budget that no longer matches the new measurement each stop with a plain message to press Run
+  simulation again (a new approval) or start a new run.
+
+**Think, then answer.** Outside blank mode the participant first writes one to three sentences in character (under
+60 words), then its answers as one fenced ```json object at the end. A reply that is one JSON object as a whole is
+taken first (backticks inside its strings included). Otherwise `participants.split_reply` finds the last
+```json opener and reads the object after it with json's own decoder (braces or backticks inside strings never
+confuse it), followed only by an optional closing ``` and whitespace; the openers are tried from the last to the first.
+Without a ```json opener the whole reply must be one JSON object. Non-finite numbers (NaN, Infinity, 1e400) are
+refused. Blank mode reads its replies with the same parser. Anything else is unreadable and asked once more. The full
+reply is parsed once; the reaction is kept in `records.jsonl` as `note.reasoning`, and the note's `reply` is only a
+4,000-character excerpt for the log. Each call's output limit (max_tokens, what the relay reserves) is 768 tokens, or
+2,048 on a page with a free-text question asking for a long answer (a declared length, a text area):
+`participants.output_limit`.
+
+**Pictures.** When the run's model route passes pictures and the model is known to accept them
+(`participants.IMAGE_MODELS`: Claude Haiku, Sonnet and Opus 5 and later), the current screen's pictures go to the
+model as OpenAI-style `image_url` parts with inline data URLs; otherwise text only, and `run.json` says why.
+- The relay accepts picture parts only when it is started with `images` (every protocol run: OpenRouter with the
+  user's own key, or the hosted HumanStudy Hub endpoint, which takes image parts for image-capable models since
+  humanstudy-hub-web#134). Pre-relay runs stay text-only.
+- Caps (the same as the hosted endpoint's): PNG, JPEG, GIF or WebP data URLs in user messages only, at most 8 per
+  request and 1,000,000 bytes each, 4,000,000 bytes per request, text at most 1 MB. Remote URLs are refused (the
+  provider would fetch them). A picture is reserved at 5,000 tokens instead of its base64 bytes; `budget.py`
+  reserves the same for every picture on a page. app_run checks the same caps first: a page over them (or with a
+  picture that is not PNG, JPEG, GIF or WebP) goes text only, says so in the step's note (`images_skipped`) and
+  counts in `run.json` (`participants_spec.pictures.pages_text_only_over_caps`); the relay never sees a request it
+  would refuse. Blank mode follows the same rules.
+- Pictures are pinned when the run first starts: a picture whose protocol item declares a `sha256` must match it or
+  the run is refused before anyone starts, and every local picture's digest is recorded in `pictures.json` in the
+  run folder; an in-place resume uses those digests, and a resume whose pictures.json is missing or unreadable is
+  refused: the pins are never rebuilt. A picture the runner hands f
+  that is not one of those (changed during the run) is never sent and ends that participant. `run.json` lists the
+  SHA-256 of every picture sent (`pictures_sent_sha256`).
+- A picture restored from a published study's held material is sent only in the model call of that approved run,
+  like the restored text; the run keeps no screens for such a study, `ctx.note` records only how many pictures
+  were sent, and nothing is written to exports or capture.
+- Restored wording in what a run stores: for a published study played from restored wording, answers keep only the
+  page's question ids, each cut to its question's schema (a code, or {code, text} only for an option with a text box;
+  codes for a multiple choice; a number, or a string the engine then validates ("1,200"); a string for text; "NA" for
+  any question with a not-applicable box; any other nested key is dropped), and notes keep no reply text.
+  steps.jsonl, records.jsonl, operator.jsonl and every JSON file the evaluation writes (effects.json,
+  evaldata.json, rewards.json) are redacted in memory before they are written. A free-text string is NFC-normalised
+  first; any 40 characters of it equal to held wording (whitespace runs read as one space, case kept) become ░, one
+  per character, and only that span; the normalised string is stored. Run records are read by their schema:
+  structural fields at known places (ids, steps, statuses and timing at the top of a row, question ids as keys,
+  option codes) are left alone, and every other string is free text, whatever its key; evaluation files are free
+  text throughout. The answers as given go to `<run>/.private/answers.jsonl`, which a resume replays (a torn last
+  row is mended before appending). An in-place resume of a restored run whose journal is missing is refused with
+  "start a new run", never replayed from the masked answers. Any `.private` path segment is never in a study file
+  (study-transfer classify) and never collected (telemetry-core PRIVATE_MATERIAL); an agent tool call that names
+  one, with its paths resolved against the tool's own working folder (`toolNamesPrivate`), keeps its input and
+  output out of research capture, and its output is stored in the conversation (which syncs) as "[private run
+  file]". The engine and the scores keep the answers as given.
 
 **Budget (review 2, M3).** The package allowance (40,000 tokens per participant) does not fit a protocol: there is
 one call per page, and each prompt carries every earlier page and answer.
 - When protocol.json passes its checks, the app measures the run's budget with `skills/run/budget.py`. It runs
   confined, from the app's own copy, like the checks. It plays three random+gates participants per arm through
-  run_study and counts what the default renderer would send: bytes + 256 per message + 512 output per call. It
-  keeps the largest member per arm, adds a 1.5x margin and records group sizes.
+  run_study and counts what the relay reserves for what the default renderer would send: request bytes / 3 (rounded
+  up) + 256 per message + the output limit per call,
+  with the longest participant system prompt a run may send (`participants.budget_system`, a 1,500-byte persona;
+  app_run refuses longer ones), the page's output limit (768, or 2,048 for a long free-text answer), 5,000 tokens
+  per picture on the page and 800 bytes per earlier free-text answer (a model writes longer text than the oracle).
+  It keeps the largest member per arm, adds a 1.5x margin (which includes about 10% of pages asked once more) and
+  records group sizes. 2 conditions × 60 participants × 20 pages of modest text need about 11,550,000 under the
+  16,000,000 ceiling (about 35,000,000 before, when the relay reserved bytes as tokens and 4,096 output tokens a
+  call).
+- The relay reserves tokens, not bytes (owner decision, review of PR #187): text bytes / 3, rounded up (`BYTES_PER_TOKEN`,
+  conservative for English, about a token per CJK character as `\uXXXX`), + 256 per message + 5,000 per picture
+  + the call's max_tokens. When the provider reports usage (also through the hosted endpoint), the call is settled at
+  it and the rest of its reservation is released: prompt_tokens + completion_tokens when both are non-negative safe
+  integers (total_tokens instead when it is larger), else a valid total_tokens above 0; with nothing usable the
+  reservation stands, and a call is never settled at 0 while total_tokens is above 0.
+- Admission: a call starts only if what is used, plus every call in flight counted at 1.5 times its reservation,
+  plus this call's reservation stays within 95% of the cap (`admits`). Actual spend can pass the cap only by the
+  estimate error of calls already in flight beyond that headroom; once it has, no further call is admitted (402).
   - The fixture needs about 4,700 tokens per participant, a 33-page survey about 180,000, and a 4-person game
     about 2,000,000 per member.
 - The measurement counts each call's exact request body as `humanstudy_llm.chat` serialises it: JSON with
@@ -358,6 +477,21 @@ computer:
   `checks --public`, as Bench checks a release: a text read from a page image of a source whose blind readings were
   not shipped (and a cite whose source text is not here) is checked privately by Bench, not unconfirmed. Held texts
   are still checked against their placeholders or restored wording; the researcher's own projects stay strict.
+  Only wording as released passes this way: every verbatim text (its plain wording, NFC with whitespace runs as
+  one space, plus its canonical cite; never the field it sits in nor its styling spans; each tooltip is a text of
+  its own) must be one of the Library release the project's .humanstudy/community.json names (a text may move
+  between places and valid field forms, each released text counts once; only the top-level `distribution` block is
+  skipped). That release is never the project's own copy: the fork stores it, verified, under
+  `<userData>/original-text/releases/<manifest identity>/`, and otherwise it is fetched from the official repository
+  at the recorded commit (only `community/<paper>/revisions/<identity>/protocol.json`, no redirects, 20 MB cap,
+  sha256 checked; `releaseBaseline`, community.ts `fetchReleasedProtocol`). The paper id, the revision folder, the
+  recorded base revision and the manifest identity must all agree, on a cache hit (the stored release remembers its
+  folder) and on a fetch. While it cannot be fetched nothing is stored, every verbatim text other than a held
+  placeholder blocks, and a later check tries again (30 s apart); such outcomes are marked `retry` and never kept by
+  the readiness caches (package-readiness.ts, the restored-copy check in index.ts). A
+  text added or changed on this computer, or one whose cite changed, including released wording copied into another
+  field, blocks unless the engine checks it against the project's own sourcetext/ file of a source that is not held
+  and it was not read from a page image (`protocol-readiness.ts` editedVerbatimTexts).
 - **Approximate and supplied (three tiers).** After the exact pass, an item that failed it but carries an `approx`
   fingerprint (written by Bench `scripts/research/approx_text.py`, a copy of `pack/runtime/lib/hs_approx_text.py`)
   is located in the researcher's own PDF of that source (status `approx`, with its score). Then the project's fills
@@ -378,6 +512,44 @@ computer:
   sha256 of protocol.json), never in the project, so neither exports nor research capture see them. A file dropped
   into a published study goes to `sources/private/` (never exported or collected) and never becomes paper.pdf. The
   project gets `.humanstudy/original-text.json`: counts, titles, formats and what each source needs, no wording.
+  "Download this study" (`study-transfer.ts`) of a released study (a Library protocol release, or held wording:
+  `releasedStudy`; once classified so, always: `<userData>/original-text/released.json` and the held-list pins; an
+  unreadable or unverifiable community.json counts) lists but never includes private files (sources/private/ with the
+  fills file, sources/researcher/, original-text/ folders, run outputs) and every file that can carry restored
+  wording (paper.pdf, anything under sources/, any PDF or image by name or by content, the generated
+  artifacts/preview.html and its backup) unless its sha256 is a file the verified release shipped, decided on the
+  very bytes written; while the release is unconfirmed none counts as shipped. The restore never follows a link. Research capture never collects such a file of a released study either (telemetry-core.ts canCarryRestored,
+  the same predicate, on the file's raw first bytes). A released study's download never includes its chat history
+  (the tick is ignored; the saved message says chat is not included for studies with held-back wording). Program-only
+  and legacy Library forks hold nothing back and are not released studies, so their chat history may travel. Released is any one of:
+  the record in `<userData>/original-text/released.json` by the project's id (read from .humanstudy/project.json,
+  never written by the classifier: only project sync assigns ids) or, without an id, by its path; an existing
+  held-list pin; community.json; a fills file (sources/private/original-text-fills.json, a regular file through
+  real folders: it syncs, so a second device with an unreadable protocol.json still counts it); held wording. A path record moves to the id key once there is an id; the app moves
+  the path-keyed pin, released record and received copy when it renames a project and clears them when it deletes
+  one, including a rename that arrives through project sync (sync never deletes a local folder). A linked sources/
+  or sources/private/ is refused by the restore, and the fills file is never read through one; a hard-linked source
+  or fills file, or a held picture (more than one name), is never a restoration input. Research capture never collects a file reached
+  through a link.
+- **Boundary.** The app guarantees that restoration sources, the fills file and restored protocol bytes never leave
+  the computer through a study download or research capture. Wording the researcher or the assistant copies by hand
+  into their own notes, Markdown files or a standalone chat export (/export) is the researcher's responsibility,
+  like copying from a PDF they own; a send-time detector for such copies is an open decision for the owner. Known
+  limits: copies in notes, /export, and short items (held wording shorter than the 40-character matching window is
+  not recognised by the redaction index). Out of scope (deliberate tampering by the local user, not accidental redistribution): swapping in a
+  complete, genuine community.json from another paper's fork, and replacing a scanned file with a link between
+  the scan and the read. Its chat history is left out unless ticked. An ordinary project's download is as before. Undo's
+  archive of earlier conversations (.humanstudy/thread-history) never goes into a download (project sync keeps it).
+  Community sharing and publishing never include any of these. Project sync, private per account, carries them.
+- **Wording pasted into the chat.** When the researcher pastes a passage for the fills file, the message is an
+  ordinary sent message: it stays in the project's conversation (`.humanstudy/threads`), which syncs privately per
+  account and never goes into a released study's "Download this study" (the dialog says chat is not included for
+  studies with held-back wording); community sharing and publishing never include conversations. Research data
+  records it as the contract allows for a sent message (`conversation.submission` / `conversation.message`, full
+  text, never draft text). The assistant's write to the fills file names `sources/private/` and is redacted, and
+  once the fills file is applied its `user` text joins the redaction index, so later quotes of it (messages, tool
+  output, files) are redacted; the first sent copy is not, because nothing can recognise held wording before it
+  is supplied.
 - **Run.** Missing wording is a blocking protocol problem (the Simulation tab words it, en and zh), The engine checks
   of a published study get, for each held source without its own sourcetext/ file, a source text that is one run of
   placeholders as long as its longest held text: by the engine's own verbatim rule every held placeholder is found

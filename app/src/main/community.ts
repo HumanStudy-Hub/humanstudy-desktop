@@ -7,7 +7,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { CommunityStudy, CommunityStudyDetail } from '../preload/types'
 import { catalogPublicationFields, catalogSearchFields } from '../shared/research-search'
-import { repinHeld } from './original-text'
+import { manifestIdentity, releasedStudy, repinHeld, storeRelease } from './original-text'
 import { assertPaperRevision } from '../shared/paper-handoff'
 
 const OWNER_REPO = 'HumanStudy-Hub/HumanStudy-Bench'
@@ -357,6 +357,48 @@ async function pinnedCommunityStudy(id: string, expectedRevision?: string): Prom
 
 const rawUrl = (id: string, rel: string): string => `${RAW}/studies/${id}/${rel.split('/').map(encodeURIComponent).join('/')}`
 
+/** The largest protocol.json a release fetch reads (the response is aborted past it). */
+export const MAX_RELEASE_BYTES = 20 * 1024 * 1024
+const RELEASE_ROOT = /^community\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\/revisions\/[a-f0-9]{64}$/
+
+/** The protocol.json of the Library release a project's .humanstudy/community.json names, from the official
+ *  repository at the recorded commit: only a `community/<paper>/revisions/<identity>` folder whose identity is the
+ *  manifest's own (so the manifest is authenticated too), no dot segments, no redirects, at most MAX_RELEASE_BYTES,
+ *  within the timeout, and only when its sha256 is the manifest's. Null otherwise (original-text.ts releaseBaseline). */
+export async function fetchReleasedProtocol(context: Record<string, unknown>): Promise<Buffer | null> {
+  try {
+    const files = Array.isArray(context.assetFiles) ? context.assetFiles.filter((f): f is { path: string; sha256: string } =>
+      !!f && typeof f.path === 'string' && typeof f.sha256 === 'string') : []
+    const want = files.find((f) => f.path === 'protocol.json')?.sha256
+    const commit = context.commit, root = context.assetRoot
+    if (typeof want !== 'string' || typeof commit !== 'string' || !/^[0-9a-f]{40}$/.test(commit) || typeof root !== 'string'
+      || !RELEASE_ROOT.test(root) || root.split('/').some((p) => p === '.' || p === '..')) return null
+    // this project's own paper and revision: the folder names the paper id and the manifest identity, which is also
+    // the revision the fork recorded
+    const identity = manifestIdentity(files)
+    const revision = context.baseRevision ?? context.currentRevision
+    if (typeof context.id !== 'string' || root !== `community/${context.id}/revisions/${identity}` || revision !== identity) return null
+    const url = new URL(`https://raw.githubusercontent.com/${OWNER_REPO}/${commit}/${root}/protocol.json`)
+    if (url.host !== 'raw.githubusercontent.com' || url.pathname !== `/${OWNER_REPO}/${commit}/${root}/protocol.json`) return null
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
+    try {
+      const res = await fetch(url, { redirect: 'error', signal: ctrl.signal, headers: { Accept: '*/*', 'User-Agent': 'HumanStudy-Desktop' } })
+      if (!res.ok || !res.body) return null
+      if (Number(res.headers.get('content-length') || 0) > MAX_RELEASE_BYTES) { ctrl.abort(); return null }
+      const chunks: Buffer[] = []
+      let n = 0
+      for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+        n += chunk.length
+        if (n > MAX_RELEASE_BYTES) { ctrl.abort(); return null }
+        chunks.push(Buffer.from(chunk))
+      }
+      const raw = Buffer.concat(chunks)
+      return createHash('sha256').update(raw).digest('hex') === want ? raw : null
+    } finally { clearTimeout(timer) }
+  } catch { return null }
+}
+
 /** Creates a local project from a community study and returns its directory. */
 export async function forkCommunityStudy(
   rawId: string,
@@ -426,7 +468,12 @@ export async function forkCommunityStudy(
     await writeFile(join(dir, '.humanstudy/community.json'), context)
     if (!assets.some(f => f.path === 'sources/study.json')) await writeFile(join(dir, 'sources/study.json'), context)
     // Only this verified import boundary may accept a new published held-text list.
-    if (protocolRelease) await repinHeld(join(cacheDir!, 'original-text'), dir)
+    if (protocolRelease) {
+      await repinHeld(join(cacheDir!, 'original-text'), dir)
+      // the verified release, so the published checks and downloads never need to fetch it again (releaseBaseline)
+      await storeRelease(join(cacheDir!, 'original-text'), detail.assetFiles || [], assets.find(f => f.path === 'protocol.json')!.raw, root).catch(() => undefined)
+      await releasedStudy(join(cacheDir!, 'original-text'), dir).catch(() => undefined)   // a released study from now on
+    }
     return dir
   }
   const dir = await createProject({ name: detail.title || id })

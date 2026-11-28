@@ -156,13 +156,15 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState('')
+  const [chatLeftOut, setChatLeftOut] = useState(false)
   const box = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     box.current?.focus()
     let live = true
     window.humanstudy.projects.exportPreview(dir).then(
-      (p) => { if (live) setPreview(p) },
+      // a released study's chat history never goes in: it may quote original wording the researcher supplied
+      (p) => { if (live) { setPreview(p); if (p.released) setConversations(false) } },
       (e: unknown) => { if (live) setError(errorText(e, t('transfer.err_not-project'))) },
     )
     return () => { live = false }
@@ -175,10 +177,12 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
 
   const size = useMemo(() => {
     if (!preview) return { bytes: 0, files: 0 }
-    // Private files are always included (the researcher's own copy); only the chat history can be left out.
+    // Private files are included (the researcher's own copy), except in a released study; the chat history can be
+    // left out.
+    const priv = preview.released ? [] : preview.privateFiles
     return {
-      bytes: preview.study.bytes + (conversations ? preview.conversations.bytes : 0) + preview.privateFiles.reduce((n, f) => n + f.bytes, 0),
-      files: preview.study.files + (conversations ? preview.conversations.files : 0) + preview.privateFiles.length,
+      bytes: preview.study.bytes + (conversations ? preview.conversations.bytes : 0) + priv.reduce((n, f) => n + f.bytes, 0),
+      files: preview.study.files + (conversations ? preview.conversations.files : 0) + priv.length,
     }
   }, [preview, conversations])
   const tooBig = Boolean(preview && (size.bytes > preview.limits.maxTotalBytes || size.files > preview.limits.maxFiles))
@@ -191,6 +195,7 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
       const r = await window.humanstudy.projects.exportStudy(dir, { conversations })
       if (!r) return // the save dialog was cancelled
       if (!r.ok) return setError(transferErrorText(r, 'export'))
+      setChatLeftOut(r.chatLeftOut === true)
       setSaved(r.savedPath.split(/[\\/]/).pop() || r.savedPath)
     } catch (e) {
       setError(errorText(e, t('transfer.err_export_title')))
@@ -217,7 +222,7 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
         )}
         {saved ? (
           <>
-            <p className="transfer-text">{mode === 'share' ? t(WEB_EDITION ? 'share.saved_web' : 'share.saved', { name: saved }) : t(WEB_EDITION ? 'transfer.saved_web' : 'transfer.saved', { name: saved })}</p>
+            <p className="transfer-text">{mode === 'share' ? t(WEB_EDITION ? 'share.saved_web' : 'share.saved', { name: saved }) : t(WEB_EDITION ? 'transfer.saved_web' : 'transfer.saved', { name: saved }) + (chatLeftOut ? ' ' + t('transfer.chat_left_out') : '')}</p>
             <div className="row-end">
               <button className="primary" autoFocus onClick={onClose}>{t('transfer.done')}</button>
             </div>
@@ -239,10 +244,12 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
                   </li>
                   {preview.privateFiles.length > 0 && (
                     <li>
-                      <input type="checkbox" checked disabled aria-hidden />
+                      <input type="checkbox" checked={!preview.released} disabled aria-hidden />
                       <span>
-                        {t(preview.privateFiles.length === 1 ? 'transfer.private_one' : 'transfer.private_n', { n: preview.privateFiles.length })}
-                        <span className="muted small transfer-hint">{t('transfer.private_hint')}</span>
+                        {preview.released
+                          ? t(preview.privateFiles.length === 1 ? 'transfer.private_kept_one' : 'transfer.private_kept_n', { n: preview.privateFiles.length })
+                          : t(preview.privateFiles.length === 1 ? 'transfer.private_one' : 'transfer.private_n', { n: preview.privateFiles.length })}
+                        <span className="muted small transfer-hint">{t(preview.released ? 'transfer.private_kept_hint' : 'transfer.private_hint')}</span>
                       </span>
                       <span className="muted small">{formatBytes(preview.privateFiles.reduce((n, f) => n + f.bytes, 0))}</span>
                     </li>
@@ -250,10 +257,10 @@ export function ExportStudyDialog({ dir, onClose }: { dir: string; onClose(): vo
                   {preview.conversations.count > 0 && (
                     <li>
                       <label>
-                        <input type="checkbox" checked={conversations} disabled={busy} onChange={(e) => setConversations(e.target.checked)} />
+                        <input type="checkbox" checked={conversations} disabled={busy || preview.released} onChange={(e) => setConversations(e.target.checked)} />
                         <span>
                           {preview.conversations.count === 1 ? t('transfer.conversations_one') : t('transfer.conversations', { n: preview.conversations.count })}
-                          <span className="muted small transfer-hint">{t('transfer.conversations_hint')}</span>
+                          <span className="muted small transfer-hint">{t(preview.released ? 'transfer.conversations_hint_released' : 'transfer.conversations_hint')}</span>
                         </span>
                       </label>
                       <span className="muted small">{formatBytes(preview.conversations.bytes)}</span>

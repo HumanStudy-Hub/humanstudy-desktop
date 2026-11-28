@@ -21,6 +21,24 @@ await build({
 const T = await import(pathToFileURL(join(out, 'threads-core.js')).href)
 const K = await import(pathToFileURL(join(out, 'kernel', 'index.js')).href)
 
+// ---- a tool that reads a run's private answers keeps no output in the stored conversation --------------
+{
+  let n = 0
+  const ids = () => `p${++n}`
+  const at = () => '2026-01-01T00:00:00.000Z'
+  for (const input of [{ filePath: '/Users/r/study/artifacts/simulations/2026-11-26-1000/.private/answers.jsonl' },
+    { command: 'cat answers.jsonl', workdir: '/Users/r/study/artifacts/simulations/x/.private' },
+    { command: 'cat .private/answers.jsonl', workdir: '/Users/r/study/artifacts/simulations/x' }]) {
+    let ms = T.appendEvent([], { sessionId: 's', type: 'tool', tool: 'read', text: 'running', input }, at, ids)
+    ms = T.appendEvent(ms, { sessionId: 's', type: 'tool', tool: 'read', text: 'completed', output: '{"answers": {"q": "held wording"}}' }, at, ids)
+    const part = ms[0].parts[0]
+    assert.equal(part.output, T.PRIVATE_RUN_FILE, JSON.stringify(input))
+    assert.ok(!JSON.stringify(ms).includes('held wording'))
+  }
+  const ok = T.appendEvent([], { sessionId: 's', type: 'tool', tool: 'read', text: 'completed', input: { filePath: 'artifacts/simulations/x/steps.jsonl' }, output: 'steps' }, at, ids)
+  assert.equal(ok[0].parts[0].output, 'steps')
+}
+
 // ---- appendEvent ---------------------------------------------------------------------
 {
   let n = 0

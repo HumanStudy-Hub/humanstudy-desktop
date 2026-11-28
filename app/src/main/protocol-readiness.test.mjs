@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { cpSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
@@ -117,7 +117,7 @@ test('review 1 S1: an expression too large to check stops at the CPU or memory b
 const packRoot = join(here, '../../../pack')
 const BUDGET_FILES = [
   ...ENGINE.map(([rel, text]) => ['hsenv/' + rel, text]),
-  ...['run_study.py', 'fspec.py', 'render.py', 'budget.py'].map((f) => ['skills/run/' + f, readFileSync(join(packRoot, 'skills/run', f), 'utf8')]),
+  ...['run_study.py', 'fspec.py', 'render.py', 'budget.py', 'participants.py'].map((f) => ['skills/run/' + f, readFileSync(join(packRoot, 'skills/run', f), 'utf8')]),
 ]
 
 test('review 2 M3: the budget line is parsed strictly; anything malformed is an error, never a small budget', () => {
@@ -147,6 +147,23 @@ test('review 2 M3: the budget is measured from the protocol with the bundled run
   writeFileSync(join(longer, 'protocol.json'), JSON.stringify(p))
   const b2 = await R.protocolBudget(python, BUDGET_FILES, longer, '')
   assert.ok(b2.arms.control.tokens_per_member > b.arms.control.tokens_per_member)
+})
+
+test('who takes part comes from the app\'s participants.py, with the hashes of the files it read', { skip: !python }, async () => {
+  const dir = fixture()
+  const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex')
+  const paper = await R.participantsCheck(python, BUDGET_FILES, dir, '')
+  assert.equal(paper.ok, true, JSON.stringify(paper))
+  assert.match(paper.summary, /^Sample-matched: /)
+  assert.deepEqual([paper.participantsSha256, paper.programSha256, paper.protocolSha256], [null, null, sha(join(dir, 'protocol.json'))])
+  mkdirSync(join(dir, 'simulation'))
+  writeFileSync(join(dir, 'simulation/participants.json'), JSON.stringify({ mode: 'custom', groups: [{ id: 'treatment-people', persona: 'x' }] }))
+  const named = await R.participantsCheck(python, BUDGET_FILES, dir, '')
+  assert.equal(named.ok, false)
+  assert.match(named.problem, /names the condition "treatment"/)
+  assert.equal(named.participantsSha256, sha(join(dir, 'simulation/participants.json')))
+  assert.equal(await R.participantsCheck(null, BUDGET_FILES, dir, ''), null)
+  assert.throws(() => R.parseParticipantsCheck('{"ok": true, "participantsSha256": "x"}'))
 })
 
 test('engine requirements accept documented ranges and refuse incompatible or unknown syntax',()=>{

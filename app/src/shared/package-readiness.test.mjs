@@ -440,7 +440,7 @@ test('v0.8: the Simulation tab rechecks when a protocol input changes', () => {
 test('review 2 M3: a protocol run is sized from its measured budget, and the approval must name that figure', async () => {
   const dir = withProtocol(mkdtempSync(join(tmpdir(), 'protocol-budget-')))
   await M.assertRunnablePackage(dir, protocolApproval())
-  await assert.rejects(M.assertRunnablePackage(dir, protocolApproval(PROTOCOL, { perCondition: 5 })), /approved token budget is not this run's \(200,000 tokens\)/)
+  await assert.rejects(M.assertRunnablePackage(dir, protocolApproval(PROTOCOL, { perCondition: 5 })), /approved token budget is not this run's \(200,000 tokens\).*Press Run simulation again to approve the new budget/)
   await assert.rejects(M.assertRunnablePackage(dir, protocolApproval(PROTOCOL, { perCondition: 5, tokenBudget: 16_000_000 })), /not this run's/, 'a larger number is not approved either')
   await assert.rejects(M.assertRunnablePackage(dir, protocolApproval(PROTOCOL, { perCondition: 61, tokenBudget: 200_000 })), /whole number from 1 to 60/)
   // A long survey with groups: 4 members x 2,000,000 tokens; 2 groups per arm need 2 x 2 x 4 x 2M + trial > 16M.
@@ -478,7 +478,7 @@ test('review 2 M3: the Simulation tab shows and sends the same budget the main p
   assert.equal(L.protocolRunLimits(BUDGET, 5).tokens, 200_000)
   const panel = readFileSync(join(here, '../renderer/components/SimulationPanel.tsx'), 'utf8')
   assert.match(panel, /protocolRunLimits\(readiness\?\.protocol\?\.budget, perCondition\)/)
-  assert.match(panel, /protocolLimits\?\.tokens\) \} catch/, 'the approval carries the figure shown')
+  assert.match(panel, /protocolLimits\?\.tokens,\s*\n\s*route === 'protocol' && who/, 'the approval carries the figure shown')
   assert.match(panel, /protocolLimits\?\.fits === false/, 'a plan over the ceiling cannot be run')
   const bench = readFileSync(join(here, '../renderer/components/Workbench.tsx'), 'utf8')
   assert.match(bench, /tokenBudget: plan\.tokenBudget/)

@@ -70,6 +70,7 @@ const api: HumanStudyApi = {
     saveCopy: (path) => ipcRenderer.invoke('project:saveCopy', path),
     readText: (path) => ipcRenderer.invoke('project:readText', path),
     packageReadiness: (dir, studyId, execute) => ipcRenderer.invoke('project:packageReadiness', dir, studyId, execute),
+    participants: (dir) => ipcRenderer.invoke('project:participants', dir),
     writeText: (path, text, ifUnchanged, action) => ipcRenderer.invoke('project:writeText', path, text, ifUnchanged, action),
     importFiles: (dir, paths, action) => ipcRenderer.invoke('project:importFiles', dir, paths, action),
     onChanged: (cb) => listen<string>('project:changed', cb),

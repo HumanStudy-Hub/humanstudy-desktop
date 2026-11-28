@@ -4,7 +4,7 @@ app's model behind the approved-run relay. App-owned (run_study.py, fspec.py and
 from the sandbox; this file is not).
 
     python .opencode/skills/run/app_run.py new artifacts/simulations/<stamp> --per-arm N --protocol-hash <sha256>
-           [--arms a,b] [--seeds 1] [--temperature 1.0]
+           [--participants-hash <sha256>] [--arms a,b] [--seeds 1] [--temperature 1.0]
     python .opencode/skills/simulate/run_confined.py artifacts/simulations/<stamp>/run.py --trial
     python .opencode/skills/simulate/simkit.py start artifacts/simulations/<stamp>
 
@@ -14,8 +14,12 @@ run_study.run(), writes run.json, progress.json (the Simulation tab reads it), r
 effects.json, then results.html (human vs AI per effect, an offline report) and summary.json. STOP in the run
 folder stops it; starting it again resumes. `--trial` plays one participant per arm into <run>/trial/.
 
-f: the default renderer of skills/run (render.render_state) and make_chat_f, one fresh model call per page,
-JSON answers, the model and temperature recorded in run.json. Keys never reach this process: humanstudy_llm reads
+f: the default renderer of skills/run (render.render_state) and make_chat_f, one fresh model call per page, the
+model and temperature recorded in run.json. Who each participant is comes from simulation/participants.json
+(participants.py: sample-matched to the paper by default, the researcher's groups, or blank), approved by its
+SHA-256 like protocol.json; each participant writes a short in-character reaction, then a fenced JSON answer.
+The current screen's pictures are sent as image parts when the approved route passes images and the model is
+known to accept them (participants.IMAGE_MODELS); otherwise text only, and run.json says which. Keys never reach this process: humanstudy_llm reads
 the relay's per-run capability from the environment run_confined.py sets.
 """
 from __future__ import annotations
@@ -60,18 +64,22 @@ def project_of(run_dir: Path) -> Path:
 
 
 def new(run_dir: Path, per_arm: int, protocol_hash: str, arms: list[str] | None, seeds: list[int],
-        temperature: float) -> dict:
+        temperature: float, participants_hash: str | None = None, program_hash: str | None = None) -> dict:
     project = project_of(run_dir)
     protocol = project / "protocol.json"
     if not protocol.is_file():
         raise SystemExit("this project has no protocol.json")
     if sha256(protocol) != protocol_hash:
         raise SystemExit("protocol.json changed after approval: ask the researcher to press Run simulation again")
+    if participants_sha(project) != participants_hash:
+        raise SystemExit(PARTICIPANTS_CHANGED)
+    if program_sha(project) != program_hash:
+        raise SystemExit(PROGRAM_CHANGED)
     if not 1 <= per_arm <= 60:
         raise SystemExit("--per-arm must be 1 to 60 (the approved plan)")
     run_dir.mkdir(parents=True, exist_ok=True)
     plan = {"route": "protocol", "protocolSha256": protocol_hash, "perArm": per_arm, "arms": arms, "seeds": seeds,
-            "temperature": temperature}
+            "temperature": temperature, "participantsSha256": participants_hash, "programSha256": program_hash}
     (run_dir / "plan.json").write_text(json.dumps(plan, indent=1) + "\n", encoding="utf-8")
     (run_dir / "run.py").write_text(RUN_PY, encoding="utf-8")
     return plan
@@ -103,15 +111,488 @@ def reask_unreadable(f):
 SIM_MAX_TOKENS = 4096   # the most the macOS relay accepts per call (model-relay MAX_OUTPUT_TOKENS)
 
 
+def local_images_only(messages):
+    """Image parts as data URLs only (pictures copied from the study): the relay accepts no remote URL."""
+    out = []
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, list):
+            c = [p for p in c if p.get("type") != "image_url" or str((p.get("image_url") or {}).get("url", "")).startswith("data:image/")]
+            if len(c) == 1 and c[0].get("type") == "text":
+                c = c[0]["text"]
+        out.append(dict(m, content=c))
+    return out
+
+
 def relay_complete(temperature: float):
-    """complete(messages) -> text through the app's model client (relay on macOS; never a key in this process)."""
+    """complete(messages, max_tokens) -> text through the app's model client (relay on macOS; never a key in this
+    process). The output limit is the page's (participants.output_limit: 768, or 2,048 for a long free-text answer),
+    which is what the relay reserves and what budget.py counts."""
     from humanstudy_llm import chat
 
-    def complete(messages):
-        # 512 (the library default) and 1536 were too small for a participant page reply: models that think first end with
-        # finish_reason=length and no text, and the participant is lost. Unused tokens are not charged.
-        return chat(messages, temperature=temperature, max_tokens=SIM_MAX_TOKENS)
+    def complete(messages, max_tokens=SIM_MAX_TOKENS):
+        return chat(local_images_only(messages), temperature=temperature, max_tokens=min(int(max_tokens), SIM_MAX_TOKENS))
     return complete
+
+
+PARTICIPANTS_CHANGED = ("simulation/participants.json changed after approval (who takes part is part of the approval): "
+                        "ask the researcher to press Run simulation again")
+PROGRAM_CHANGED = ("program.json changed after approval (the participants are described from it): ask the researcher "
+                   "to press Run simulation again")
+OLD_APPROVAL = ("this run was approved by an earlier version of HumanStudy Hub, which did not record who takes part: "
+                "press Run simulation again to approve it with this version")
+OLD_RUN = "This run was started with an earlier version of the app; start a new run."
+CANNOT_RESUME = ("This run cannot be continued in place (a file it needs to continue is missing or was changed); "
+                 "start a new run.")
+
+
+def participants_sha(project: Path) -> str | None:
+    import participants as P
+    path = project / P.SPEC_PATH
+    return sha256(path) if path.is_file() else None
+
+
+def program_sha(project: Path) -> str | None:
+    path = project / "program.json"
+    return sha256(path) if path.is_file() else None
+
+
+def image_choice(plan: dict, model: str | None) -> tuple[bool, str]:
+    """(send images?, what run.json says). Images go only where the app's approved route passes them (plan.images)
+    and to a model known to accept them."""
+    import participants as P
+    if not plan.get("images"):
+        return False, ("NOT shown: text only (this run's model route does not pass pictures); images appear as opaque "
+                       "ids and their verified text lines")
+    if not P.IMAGE_MODELS.match(str(model or "")):
+        return False, ("NOT shown: text only (%s is not known to accept pictures); images appear as opaque ids and "
+                       "their verified text lines" % (model or "the model"))
+    return True, "sent as image parts with the current screen"
+
+
+def plan_members(protocol: dict, per_arm: int, arms: list | None) -> tuple[dict, dict]:
+    """({arm: participants per arm}, {arm: group size}) for the runnable arms the plan plays (run_study.n_per_arm)."""
+    plan, sizes = {}, {}
+    for a in protocol.get("arms") or []:
+        if a.get("runnable") is False or (arms and a.get("id") not in arms):
+            continue
+        plan[a["id"]], sizes[a["id"]] = int(per_arm), int(a.get("group_size") or 1)
+    return plan, sizes
+
+
+# ------------------------------------------------------------------------------------------------ pictures
+# The relay's caps (model-relay.ts MAX_IMAGES, MAX_IMAGE_BYTES, MAX_REQUEST_BYTES): a page over them goes text only.
+MAX_IMAGES, MAX_IMAGE_BYTES, MAX_REQUEST_BYTES = 8, 1_000_000, 4_000_000
+IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif", "image/webp")
+
+
+def picture_digests(protocol: dict, root: Path) -> dict:
+    """{src: sha256} of every local picture the protocol shows, read at run start. A picture whose item declares a
+    sha256 must be exactly that file, or the run is refused before any participant starts."""
+    out = {}
+
+    def walk(o):
+        if isinstance(o, dict):
+            src = o.get("src")
+            if isinstance(src, str) and not src.startswith(("http://", "https://")) and src not in out:
+                data = picture_bytes(root, src)
+                if data is not None:
+                    digest = hashlib.sha256(data).hexdigest()
+                    declared = o.get("sha256")
+                    if isinstance(declared, str) and declared and declared != digest:
+                        raise Refused("the picture %s is not the one the study declares (its SHA-256 differs): put back "
+                                      "the original file, then press Run simulation again" % src)
+                    out[src] = digest
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    walk(protocol)
+    return out
+
+
+def pinned_pictures(out: Path, protocol: dict, root: Path) -> dict:
+    """The picture digests of this run: recorded in <out>/pictures.json when it first starts, and read back from there
+    on an in-place resume (never a fresh set, so a picture changed in between is not sent). A resume whose
+    pictures.json is missing or unreadable is refused: the pins are never rebuilt."""
+    path = out / "pictures.json"
+    if resuming(out):
+        try:
+            pinned = json.loads(path.read_text(encoding="utf-8")).get("pinned")
+        except (OSError, ValueError, AttributeError):
+            pinned = None
+        if not (isinstance(pinned, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in pinned.items())):
+            raise Refused(CANNOT_RESUME)
+        return pinned
+    pinned = picture_digests(protocol, root)
+    out.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"pinned": pinned}, indent=1) + "\n", encoding="utf-8")
+    return pinned
+
+
+class Pictures:
+    """What a run does with the current screen's pictures: each copy the runner hands f must be a picture pinned at
+    run start (a picture changed during the run ends that participant), a page over the relay's caps goes text only,
+    and the SHA-256 of every picture sent is recorded."""
+
+    def __init__(self, pinned: dict):
+        import threading
+        self.pinned = set(pinned.values())
+        self.sent, self.over_caps, self.pages = set(), 0, 0
+        self.lock = threading.Lock()
+
+    def page(self, state, ctx, text_bytes: int):
+        """-> None when the page's pictures may be sent, else why it goes text only. Raises when a picture changed."""
+        import mimetypes
+        refs = [it["src"] for it in (state.get("screen") or {}).get("items", []) if isinstance(it.get("src"), str)
+                and it["src"].startswith("asset:")]
+        sizes, digests = [], []
+        for ref in refs:
+            path = ctx.asset_path(ref) if getattr(ctx, "asset_path", None) else None
+            if not path:
+                continue
+            data = Path(path).read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            if digest not in self.pinned or not digest.startswith(ref[len("asset:"):]):
+                raise RuntimeError("a picture of this study changed during the run, so it was not sent")
+            mime = mimetypes.guess_type(path)[0] or "image/png"
+            if mime not in IMAGE_TYPES:
+                return "a picture is not PNG, JPEG, GIF or WebP"
+            sizes.append(len("data:%s;base64," % mime) + 4 * ((len(data) + 2) // 3))
+            digests.append(digest)
+        why = ("more than %d pictures" % MAX_IMAGES if len(sizes) > MAX_IMAGES else
+               "a picture over %d bytes" % MAX_IMAGE_BYTES if any(s > MAX_IMAGE_BYTES for s in sizes) else
+               "pictures over the request limit" if sum(sizes) + text_bytes + 4096 > MAX_REQUEST_BYTES else None)
+        with self.lock:
+            if why:
+                self.over_caps += 1
+            elif digests:
+                self.pages += 1
+                self.sent.update(digests)
+        return why
+
+    def record(self) -> dict:
+        return {"pages_with_pictures": self.pages, "pages_text_only_over_caps": self.over_caps,
+                "pictures_sent_sha256": sorted(self.sent)}
+
+
+# ------------------------------------------------------------------------------------------------ restored wording
+WINDOW = 40   # characters of held wording, as normalised, that count as a quote of it
+
+
+def _normalised(text: str) -> list:
+    """[(character, index in text)]: NFC per character, every run of whitespace as one space (at its first index);
+    case is kept."""
+    import unicodedata
+    out, space = [], False
+    for i, ch in enumerate(text):
+        if ch.isspace():
+            if not space:
+                out.append((" ", i))
+            space = True
+            continue
+        space = False
+        for c in unicodedata.normalize("NFC", ch):
+            out.append((c, i))
+    return out
+
+
+class Redactor:
+    """Masks restored held wording quoted in what a run stores. A free-text string is NFC-normalised first; any WINDOW
+    characters of it equal to held wording (also NFC, both with whitespace runs read as one space, case kept) become
+    PLACEHOLDER, one per character, and only that span; the normalised string is what is stored. Run records are
+    read by their schema (`row`): structural fields at known places (ids, steps, statuses, timing, question ids as
+    keys, option codes) are left alone; every other string is free text. Other JSON (`obj`) is free text throughout."""
+    ROW_KEYS = {"seed", "participant", "opaque_id", "member", "step", "attempt", "screen_sha", "at", "status", "arm",
+                "index", "f_ms", "f_tries", "participant_key"}
+
+    def __init__(self, texts):
+        import unicodedata
+        self.windows = set()
+        for t in texts:
+            s = "".join(c for c, _ in _normalised(unicodedata.normalize("NFC", t)))
+            self.windows.update(s[i:i + WINDOW] for i in range(len(s) - WINDOW + 1))
+
+    def text(self, s: str) -> str:
+        import unicodedata
+        s = unicodedata.normalize("NFC", s)
+        if not self.windows or len(s) < WINDOW:
+            return s
+        norm = _normalised(s)
+        chars = "".join(c for c, _ in norm)
+        marked = set()
+        for i in range(len(chars) - WINDOW + 1):
+            if chars[i:i + WINDOW] in self.windows:
+                marked.update(range(norm[i][1], norm[i + WINDOW - 1][1] + 1))
+        return "".join(PLACEHOLDER if i in marked else ch for i, ch in enumerate(s)) if marked else s
+
+    def obj(self, o):
+        if isinstance(o, str):
+            return self.text(o)
+        if isinstance(o, list):
+            return [self.obj(v) for v in o]
+        if isinstance(o, dict):
+            return {k: self.obj(v) for k, v in o.items()}
+        return o
+
+    def answer(self, v):
+        """One answer: a string is free text; {code, text} keeps its code; a list keeps its codes."""
+        if isinstance(v, str):
+            return self.text(v)
+        if isinstance(v, dict):
+            return {k: (x if k == "code" else self.obj(x)) for k, x in v.items()}
+        if isinstance(v, list):
+            return [x if isinstance(x, str) else self.answer(x) for x in v]
+        return v
+
+    def answers(self, a):
+        return {k: self.answer(v) for k, v in a.items()} if isinstance(a, dict) else self.obj(a)
+
+    def row(self, r):
+        """A steps/records/operator row by its schema."""
+        if not isinstance(r, dict):
+            return self.obj(r)
+        out = {}
+        for k, v in r.items():
+            if k in self.ROW_KEYS:
+                out[k] = v
+            elif k in ("answers", "system_filled"):
+                out[k] = self.answers(v)
+            elif k == "transcript" and isinstance(v, list):
+                out[k] = [self.row(x) for x in v]
+            else:
+                out[k] = self.obj(v)
+        return out
+
+    def line(self, line: str) -> str:
+        try:
+            return json.dumps(self.row(json.loads(line)), ensure_ascii=False, default=str)
+        except ValueError:
+            return self.text(line)
+
+
+def held_texts(projection: dict, restored: dict) -> list:
+    """The restored wording of every held text item (and the text lines of held pictures)."""
+    out = []
+    for h in ((projection.get("distribution") or {}).get("held") or {}).values():
+        try:
+            v = _get(restored, h["path"])
+        except (KeyError, IndexError, ValueError, TypeError):
+            continue
+        out.extend(x for x in ([v] if isinstance(v, str) else (v.get("lines") or []) if isinstance(v, dict) else [])
+                   if isinstance(x, str))
+    return out
+
+
+PRIVATE_DIR = ".private"   # <run>/.private/: never in a study file, never collected (study-transfer, telemetry-core)
+
+
+class _RedactingFile:
+    """Writes each line redacted; `raw`, when given, receives the line as written by the runner (for replay)."""
+
+    def __init__(self, fh, red, raw=None):
+        self.fh, self.red, self.raw = fh, red, raw
+
+    def write(self, s):
+        if self.raw is not None:
+            self.raw.write(s)
+            self.raw.flush()
+        return self.fh.write("\n".join(self.red.line(x) if x.strip() else x for x in s.split("\n")))
+
+    def close(self):
+        if self.raw is not None:
+            self.raw.close()
+        return self.fh.close()
+
+    def __getattr__(self, name):
+        return getattr(self.fh, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+class _RedactingPath:
+    """A run_study output path whose files are written redacted (reads are unchanged). `raw`: a private file that
+    receives the unredacted lines too (steps.jsonl: what a resume replays)."""
+
+    def __init__(self, path, red, raw: Path | None = None):
+        self._path, self._red, self._raw = Path(path), red, raw
+
+    def open(self, mode="r", *a, **k):
+        fh = self._path.open(mode, *a, **k)
+        if not any(m in mode for m in "aw"):
+            return fh
+        raw = None
+        if self._raw is not None:
+            self._raw.parent.mkdir(parents=True, exist_ok=True)
+            torn = self._raw.is_file() and self._raw.stat().st_size and not self._raw.read_bytes().endswith(b"\n")
+            raw = self._raw.open(mode, *a, **k)
+            if torn and "a" in mode:
+                raw.write("\n")   # a row cut off by an interruption: the next row starts on its own line
+        return _RedactingFile(fh, self._red, raw)
+
+    def __getattr__(self, name):
+        return getattr(self._path, name)
+
+    def __fspath__(self):
+        return str(self._path)
+
+    def __str__(self):
+        return str(self._path)
+
+    def __truediv__(self, other):
+        return self._path / other
+
+
+class redacted_records:
+    """While active, steps.jsonl, records.jsonl and operator.jsonl, and every JSON file the evaluation writes
+    (effects.json, evaldata.json, rewards.json), are written with restored wording redacted, in memory before the
+    write. The unredacted steps go to <run>/.private/answers.jsonl, which a resume replays (the engine and the
+    scores keep the answers as given)."""
+
+    def __init__(self, red):
+        self.red = red
+
+    def __enter__(self):
+        import run_study
+        self.R, self.original, self.write_json = run_study, run_study.Runner.__init__, run_study.write_json
+        original, red, write_json = self.original, self.red, self.write_json
+
+        def init(runner, *a, **k):
+            original(runner, *a, **k)
+            private = Path(runner.dir) / PRIVATE_DIR / "answers.jsonl"
+            for line in private.read_text(encoding="utf-8").splitlines() if private.is_file() else []:
+                try:
+                    r = json.loads(line)   # the answers as given, for replay (steps.jsonl holds the redacted copy)
+                    runner.cache[(r["seed"], r["participant"], r["member"], r["step"], r["attempt"])] = r
+                except (ValueError, KeyError):
+                    continue
+            runner.steps_path = _RedactingPath(runner.steps_path, red, private)
+            for name in ("records_path", "operator_path"):
+                setattr(runner, name, _RedactingPath(getattr(runner, name), red))
+
+        def redacted_json(path, data):
+            return write_json(path, data if Path(path).name in ("run.json", "progress.json") else red.obj(data))
+        self.R.Runner.__init__ = init
+        self.R.write_json = redacted_json
+        return self
+
+    def __exit__(self, *exc):
+        self.R.Runner.__init__ = self.original
+        self.R.write_json = self.write_json
+        return False
+
+
+# ------------------------------------------------------------------------------------------------ f
+def _limited(complete):
+    """complete(messages, max_tokens) when the host's complete takes an output limit (the relay's), else as given."""
+    import inspect
+    try:
+        takes = "max_tokens" in inspect.signature(complete).parameters
+    except (TypeError, ValueError):
+        takes = False
+    return (lambda messages, limit: complete(messages, max_tokens=limit)) if takes else (lambda messages, limit: complete(messages))
+
+
+def participant_f(complete, people: dict, spec: dict, images: bool, images_note: str, summary: str, keep_text: bool = True,
+                  pictures: Pictures | None = None):
+    """f for every participant: each one's own system prompt (persona), the default renderer, think-then-answer, an
+    output limit per page (participants.output_limit). The full reply is parsed once; its reasoning goes to the step's
+    note (the note's reply is an excerpt for the log only). Pictures are sent within the relay's caps, else the page
+    goes text only (said in the note). Blank mode keeps make_chat_f's bare prompt and bare JSON answers, with the same
+    pictures as any run. keep_text False (a restored published study): replies are not stored and answers are cut to
+    each question's own schema."""
+    import threading
+    import participants as P
+    from render import make_chat_f, render_state
+    call, blank = _limited(complete), spec["mode"] == "blank"
+    made, tls = {}, threading.local()
+
+    def parse(text):
+        tls.reasoning, answers = P.split_reply(text)
+        return answers
+
+    def f(state, ctx):
+        key = (ctx.participant, ctx.member)
+        person = people.get(key)
+        if person is None:
+            raise RuntimeError("this participant has no description (participants.py assigned none)")
+        why = None
+        system = None if blank else person["system"]
+        if images and pictures is not None:
+            why = pictures.page(state, ctx, len(json.dumps(system or "")) + len(json.dumps(render_state(state))))
+        send, limit = images and why is None, P.output_limit(state)
+        g = made.get((key, send, limit))
+        if g is None:
+            g = made[(key, send, limit)] = make_chat_f(lambda m: call(m, limit), system=system, render=render_state,
+                                                       parse=parse, images=send)
+        tls.reasoning = ""
+        answers = g(state, ctx)
+        if isinstance(ctx.note, dict):
+            if not blank:
+                ctx.note["reasoning"] = tls.reasoning[:1000]
+            if why:
+                ctx.note["images_skipped"] = why
+        return page_answers(state, answers, ctx, keep_text)
+    f.description = {"renderer": "render_state", "participants": summary,
+                     "system": "make_chat_f's bare prompt" if blank else spec.get("system") or P.system_text("{{persona}}"),
+                     "answer": "bare JSON" if blank else "a short in-character reaction (one to three sentences), then one fenced JSON object",
+                     "output_tokens": "%d per page, %d on a page asking for a long free-text answer" % (P.OUTPUT_TOKENS, P.LONG_OUTPUT_TOKENS),
+                     "memory": "state only (seen + answered); one fresh call per page", "images": images_note}
+    return f
+
+
+def schema_answer(r: dict, v):
+    """An answer cut to its question's schema (None: dropped): choice -> a code, or {code, text}; multi -> codes (or
+    {code, text} for an option with a box); number/scale/slider -> a number or "NA"; text -> a string."""
+    codes = {o.get("code") for o in r.get("options") or [] if isinstance(o, dict)}
+    boxes = {o.get("code") for o in r.get("options") or [] if isinstance(o, dict) and o.get("text_entry")}
+    kind = r.get("kind")
+    if v == "NA" and r.get("na_option"):   # the "not applicable" box, for any question that has one (engine._validate)
+        return "NA"
+
+    def option(x):
+        if isinstance(x, str) and (not codes or x in codes):
+            return x
+        if isinstance(x, dict) and isinstance(x.get("code"), str) and (not codes or x["code"] in codes):
+            # text only for an option that has a text box
+            return {"code": x["code"], "text": x["text"]} if x["code"] in boxes and isinstance(x.get("text"), str) else x["code"]
+        return None
+    if kind in ("choice", "single"):
+        return option(v)
+    if kind == "multi":
+        return [y for y in (option(x) for x in v) if y is not None] if isinstance(v, list) else None
+    if kind == "text":
+        return v if isinstance(v, str) else None
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, list):   # a grid or several values: numbers, codes or short strings only
+        return [x for x in v if isinstance(x, (int, float, str)) and not isinstance(x, bool)]
+    return v if isinstance(v, str) else None
+
+
+def page_answers(state, answers: dict, ctx, keep_text: bool) -> dict:
+    """keep_text False: only this page's question ids, each cut to its question's schema; the note keeps no reply."""
+    if keep_text:
+        return answers
+    responses = {r.get("id"): r for r in (state.get("screen") or {}).get("responses", [])}
+    note = ctx.note if isinstance(ctx.note, dict) else {}
+    ctx.note = {"reply_chars": len(note.get("reply") or ""),
+                **{k: note[k] for k in ("images_sent", "images_skipped") if k in note}}
+    out = {}
+    for k, v in answers.items():
+        if k in responses:
+            clean = schema_answer(responses[k], v)
+            if clean is not None:
+                out[k] = clean
+    return out
 
 
 class Refused(SystemExit):
@@ -130,7 +611,8 @@ def binding() -> dict:
     return out
 
 
-PLAN_KEYS = ("route", "protocolSha256", "perArm", "arms", "seeds", "temperature")
+PLAN_KEYS = ("route", "protocolSha256", "perArm", "arms", "seeds", "temperature", "participantsSha256", "programSha256",
+             "images")
 
 
 def approved_plan(run_dir: Path) -> dict:
@@ -157,6 +639,12 @@ def check_approval(run_dir: Path, project: Path, plan: dict, bound: dict) -> str
     actual = sha256(project / "protocol.json")
     if actual != plan.get("protocolSha256"):
         raise Refused("protocol.json changed after approval: ask the researcher to press Run simulation again")
+    if "programSha256" not in plan and "participantsSha256" not in plan and (project / "program.json").is_file():
+        raise Refused(OLD_APPROVAL)   # a plan written before who-takes-part was approved (and pinned)
+    if participants_sha(project) != plan.get("participantsSha256"):
+        raise Refused(PARTICIPANTS_CHANGED)
+    if program_sha(project) != plan.get("programSha256"):
+        raise Refused(PROGRAM_CHANGED)
     if bound and (project / "variant.json").exists():
         raise Refused("this project holds a variant (variant.json), which is not part of the approval: not run")
     if bound:
@@ -536,6 +1024,108 @@ def wording_note(labels: dict) -> dict | None:
     return counts if any(counts.values()) else None
 
 
+def resuming(out: Path) -> bool:
+    """True for an in-place resume: the runner already started in this folder (its run.json exists)."""
+    return (out / "run.json").is_file()
+
+
+def check_resumable(out: Path) -> None:
+    """An in-place resume of a run started before participants were recorded cannot continue: say so plainly."""
+    prior = out / "run.json"
+    if prior.is_file():
+        try:
+            old_spec = (json.loads(prior.read_text(encoding="utf-8")).get("f") or {}).get("spec") or {}
+        except ValueError:
+            old_spec = {}
+        if "participants" not in old_spec:
+            raise Refused(OLD_RUN)
+
+
+def participants_for(out: Path, project: Path, plan: dict, restored: dict | None, trial: bool) -> dict:
+    """Who plays each planned participant: the approved simulation/participants.json (or the paper's sample when
+    there is none), described from protocol.json as approved and the pinned program.json, drawn per participant and
+    kept in <out>/participants.jsonl (opaque id, member, group, attributes, persona; never the condition). A resumed
+    run reads its participants back from that file and only appends ones it lacks. Refused when an input is not the
+    approved one, a description names a condition, or a prompt outgrows the budget."""
+    import hmac
+    import participants as P
+    import run_study
+    try:
+        spec, sha = P.load(project)
+    except P.SpecError as e:
+        raise Refused("simulation/participants.json cannot be used: %s. Ask the agent to fix it, then press Run "
+                      "simulation again" % e)
+    if sha != plan.get("participantsSha256"):
+        raise Refused(PARTICIPANTS_CHANGED)
+    raw = (project / "program.json").read_bytes() if (project / "program.json").is_file() else None
+    if (hashlib.sha256(raw).hexdigest() if raw is not None else None) != plan.get("programSha256"):
+        raise Refused(PROGRAM_CHANGED)
+    try:
+        program = json.loads(raw.decode("utf-8")) if raw is not None else None
+    except ValueError:
+        program = None
+    # Described from the published (approved) protocol.json, never from wording restored on this computer.
+    protocol = json.loads((project / "protocol.json").read_text(encoding="utf-8"))
+    problem = P.condition_problem(spec, protocol, program) if spec["mode"] == "custom" or spec.get("system") else None
+    if problem:
+        raise Refused("simulation/participants.json cannot be used: %s. Ask the agent to fix it, then press Run "
+                      "simulation again" % problem)
+    per, seeds = (1, [1]) if trial else (int(plan["perArm"]), [int(s) for s in plan["seeds"]])
+    counts, sizes = plan_members(restored if restored is not None else protocol, per, plan.get("arms"))
+    out.mkdir(parents=True, exist_ok=True)
+    salt = run_study.load_salt(out)   # the same per-run secret run_study names participants with
+
+    def opaque(seed, arm, index):
+        return hmac.new(salt, ("%s|%s|%s" % (seed, arm, index)).encode(), hashlib.sha256).hexdigest()[:16]
+    people = P.people(spec, sha, protocol, program, counts, sizes, seeds, opaque)
+    path = out / "participants.jsonl"
+    kept = {}
+    for line in path.read_text(encoding="utf-8").splitlines() if path.is_file() else []:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue   # a line cut off by an interruption: that participant is drawn again (it had not started)
+        if r.get("spec_sha256", "none") != (sha or None):
+            raise Refused(OLD_RUN if "spec_sha256" not in r else CANNOT_RESUME)
+        kept[(r["opaque_id"], r["member"])] = r
+    for key, person in people.items():
+        if key in kept:   # a resumed run plays exactly the people it started with
+            person.update(group=kept[key].get("group"), attributes=kept[key].get("attributes") or {},
+                          persona=kept[key].get("persona", person["persona"]))
+    names = P.condition_names(protocol, program)
+    for person in people.values():
+        a = person["attributes"]
+        person["system"] = P.system_text(person["persona"], spec.get("system"),
+                                         dict(a, group=person["group"] or "", age=a.get("age", ""), gender=a.get("gender", "")))
+        # the check reads what is written by the researcher or quoted from the paper: the generated categorical values
+        # (gender, age, country) are drawn independently of the condition and cannot reveal it
+        hit = P.names_condition(P.researcher_text(P.system_text(person["check"], spec.get("system"),
+                                                                dict(person["check_values"], group=person["group"] or ""))), names) \
+            if spec["mode"] != "blank" else None
+        if hit:
+            raise Refused("simulation/participants.json cannot be used: a participant's prompt names the condition \"%s\" "
+                          "once it is filled in. Ask the agent to fix it, then press Run simulation again" % hit)
+        if spec["mode"] != "blank" and not P.fits_budget(person["system"]):
+            raise Refused("the participant descriptions in simulation/participants.json are too long for the measured "
+                          "model budget: ask the agent to shorten them, then press Run simulation again")
+    new_rows = [(k, p) for k, p in sorted(people.items()) if k not in kept]
+    if new_rows:
+        with path.open("a", encoding="utf-8") as fh:
+            if path.stat().st_size and not path.read_bytes().endswith(b"\n"):
+                fh.write("\n")   # a line cut off by an interruption: the next row starts on its own line
+            for (oid, member), person in new_rows:
+                fh.write(json.dumps({"opaque_id": oid, "member": member, "group": person["group"],
+                                     "attributes": person["attributes"], "persona": person["persona"],
+                                     "spec_sha256": sha}, ensure_ascii=False) + "\n")
+    info = {"mode": spec["mode"], "sha256": sha, "file": P.SPEC_PATH if sha else None,
+            "programSha256": plan.get("programSha256"),
+            "summary": P.summary(spec, protocol, program, plan.get("arms")), "records": "participants.jsonl",
+            "answer": "blank: bare JSON" if spec["mode"] == "blank" else "a short in-character reaction, then JSON"}
+    if spec.get("system"):
+        info["system"] = spec["system"]
+    return {"spec": spec, "people": people, "info": info}
+
+
 def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, model: str | None = None) -> dict:
     """Play the approved plan. `complete` (messages -> text) and `model` replace the app's model client in tests.
     A run is `done`, with a results page, only when every planned participant finished without a failed model
@@ -553,7 +1143,6 @@ def main_run(run_dir: Path, project: Path, trial: bool = False, complete=None, m
 
 def _main_run(run_dir, project, plan, bound, trial, complete, model):
     import run_study
-    from render import make_chat_f, render_state
     restored = restored_protocol(project)
     out = run_dir / "trial" if trial else run_dir
     if not trial:
@@ -566,12 +1155,28 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     if complete is None:
         from humanstudy_llm import model_name
         complete, model = relay_complete(plan.get("temperature", 1.0)), model_name()
-    f = reask_unreadable(make_chat_f(complete, render=render_state))
+    check_resumable(out)
+    who = participants_for(out, project, plan, restored, trial)
+    images, images_note = image_choice(plan, model)
+    # Pictures are pinned when the run first starts: a declared digest must match, and a picture changed during the
+    # run (or before an in-place resume) is never sent.
+    pictures = Pictures(pinned_pictures(out, restored if restored is not None else
+                                        json.loads((project / "protocol.json").read_text(encoding="utf-8")), project))
+    f = reask_unreadable(participant_f(complete, who["people"], who["spec"], images, images_note, who["info"]["summary"],
+                                       keep_text=restored is None, pictures=pictures))
+    red = Redactor(held_texts(json.loads((project / "protocol.json").read_text(encoding="utf-8")), restored)) \
+        if restored is not None else None
+    steps = out / "steps.jsonl"
+    if red is not None and steps.is_file() and steps.stat().st_size and not (out / PRIVATE_DIR / "answers.jsonl").is_file():
+        # an in-place resume of a restored run needs the answers as given; the stored ones are masked
+        raise Refused(CANNOT_RESUME)
     # retries 0: humanstudy_llm already retries 429/5xx; a call that still fails (transport, allowance, a refusal)
     # ends that participant as incomplete. Only an unreadable reply is asked once more (reask_unreadable).
     spec = {"kind": "llm", "name": "desktop model", "model": model or "unknown", "renderer": "default",
             "temperature": plan.get("temperature", 1.0), "retries": 0, "fill_platform_ids": True,
-            "host": "the desktop app's model relay (humanstudy_llm), passed in-process"}
+            "host": "the desktop app's model relay (humanstudy_llm), passed in-process",
+            "persona": who["info"]["summary"], "images": images_note,
+            "participants": {k: who["info"][k] for k in ("mode", "sha256")}}
     # The floor baseline's cache stays inside this run folder (run_study keeps it beside the run folders, which the
     # macOS sandbox does not let the run write, and which the Simulation tab would list as a run).
     original_cache, original_stage = run_study.baseline_cached, run_study.Progress.stage
@@ -593,19 +1198,29 @@ def _main_run(run_dir, project, plan, bound, trial, complete, model):
     unofficial = never_official() if note else None
     if unofficial is not None:
         unofficial.__enter__()
+    redacting = redacted_records(red) if red is not None else None
+    if redacting is not None:
+        redacting.__enter__()
     try:
         meta = run_study.run(project, spec, n=1 if trial else int(plan["perArm"]), seeds=[1] if trial else plan["seeds"],
                              out=out, host_f=f, arms=plan.get("arms"), quiet=True, baseline=not trial,
                              top_up=False,   # exactly the approved n: no extra sessions beyond the measured budget
                              # a restored study's wording stays out of the project: records keep answers, no screens
                              **({"states": "none"} if restored is not None else {}))
+    except SystemExit as e:
+        if "holds a different run" in str(e.code):
+            raise Refused(OLD_RUN)
+        raise
     finally:
+        if redacting is not None:
+            redacting.__exit__(None, None, None)
         run_study.baseline_cached, run_study.Progress.stage = original_cache, original_stage
         run_study.load_protocol = original_load
         if unofficial is not None:
             unofficial.__exit__(None, None, None)
     if note and isinstance(meta.get("plan"), dict):
         meta["plan"]["official"] = False
+    meta["participants_spec"] = dict(who["info"], images=images_note, pictures=pictures.record())
     # The protocol the engine actually loaded must be the approved one: run_study reads protocol.json again after
     # check_approval hashed it (review 5, S3).
     if meta.get("protocol_sha256") != plan.get("protocolSha256") or (bound and meta.get("variant") is not None):
@@ -656,6 +1271,8 @@ def main(argv=None) -> None:
     n.add_argument("run_dir")
     n.add_argument("--per-arm", type=int, required=True)
     n.add_argument("--protocol-hash", required=True, help="protocolHash from the researcher's approval")
+    n.add_argument("--participants-hash", help="participantsSha256 from the approval (absent: no participants.json)")
+    n.add_argument("--program-hash", help="programSha256 from the approval (absent: no program.json)")
     n.add_argument("--arms", help="comma-separated arm ids (default: every runnable arm)")
     n.add_argument("--seeds", default="1")
     n.add_argument("--temperature", type=float, default=1.0)
@@ -668,7 +1285,7 @@ def main(argv=None) -> None:
         print(json.dumps({"status": meta.get("status"), "app": meta.get("app")}, default=str))
         return
     plan = new(Path(a.run_dir), a.per_arm, a.protocol_hash, a.arms.split(",") if a.arms else None,
-               [int(x) for x in a.seeds.split(",")], a.temperature)
+               [int(x) for x in a.seeds.split(",")], a.temperature, a.participants_hash, a.program_hash)
     print("ready: %s (%s per arm). Trial: run_confined.py %s/run.py --trial; then simkit.py start %s"
           % (a.run_dir, plan["perArm"], a.run_dir, a.run_dir))
 

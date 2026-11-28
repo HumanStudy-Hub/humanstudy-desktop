@@ -5,11 +5,11 @@ import { build } from 'esbuild'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { realpath } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative, sep } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -136,7 +136,7 @@ test('engine checks: wording a release cites verbatim from a held source outside
     assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
     p.stages.q.responses[1].options[0].label = 'Absolutely, I walked every single day'   // changed on this computer
     writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
-    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).map((x) => x.check), ['verbatim'])
+    assert.deepEqual([...new Set((await R.protocolReadiness(python, ENGINE, proj, '')).map((x) => x.check))], ['verbatim'])
   } finally { R.configureReceivedProtocol(async () => null) }
 })
 
@@ -155,6 +155,496 @@ test('engine checks: a published study\'s image-read text changed on this comput
     const problems = await R.protocolReadiness(python, ENGINE, proj, '')
     assert.deepEqual(problems.map((x) => x.check), ['verbatim'])
     assert.match(problems[0].reason, /read from a page image of the paper were changed on this computer/)
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('engine checks: released wording copied into another verbatim field of a published study blocks; reordering does not', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.q.responses[1].options[0].cite = { label: 'verbatim', source: 'booklet', page: 1 }
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+    // the released option moved: the same texts with the same cites, in another order, still pass as received
+    const moved = structuredClone(p)
+    moved.stages.q.responses[1].options.reverse()
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(moved, null, 1))
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+    // a second option given the released option's wording and cite: local wording, so it is verified strictly
+    p.stages.q.responses[1].options[1] = { code: 'b', label: 'Yes', cite: { label: 'verbatim', source: 'booklet', page: 1 } }
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    const problems = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.deepEqual(problems.map((x) => x.check), ['verbatim'])
+    assert.match(problems.at(-1).reason, /changed on this computer/)
+    // wording copied from a released field that is not verbatim at all (an option without a cite) blocks the same way
+    p.stages.q.responses[1].options[1] = { code: 'b', label: 'No', cite: { label: 'verbatim', source: 'booklet', page: 1 } }
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).map((x) => x.check), ['verbatim'])
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('engine checks: a published study\'s text cited from an unshipped source and changed on this computer blocks', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.intro.content.push({ id: 'p', value: 'Please walk as you usually do.', cite: { label: 'verbatim', source: 'paper', page: 3 } })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+    p.stages.intro.content.at(-1).value = 'Please walk faster than you usually do.'   // the cite kept, the wording changed
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    const problems = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.deepEqual(problems.map((x) => x.check), ['verbatim'])
+    assert.match(problems[0].reason, /changed on this computer/)
+    // the cite changed instead (a page of its own choosing): also a local edit
+    p.stages.intro.content.at(-1).value = 'Please walk as you usually do.'
+    p.stages.intro.content.at(-1).cite.page = 4
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).map((x) => x.check), ['verbatim'])
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('engine checks: an invented verbatim quote under a nested distribution key is not skipped', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    p.data = { distribution: { note: { text: 'An invented sentence the paper never printed.', cite: { label: 'verbatim', source: 'paper', page: 2 } } } }
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    const problems = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.ok(problems.some((x) => x.check === 'verbatim' && /changed on this computer/.test(x.reason)), JSON.stringify(problems))
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('engine checks: the same released wording in another field form, or differing only by NFC or whitespace, passes', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  const cite = { label: 'verbatim', source: 'paper', page: 3 }
+  p.stages.intro.content.push({ id: 'p', value: 'Please walk as you usually do in the café.', cite })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+    // a stage content value turned into an inline text dict, decomposed é, a line break, doubled spaces, a styling span
+    p.stages.intro.content[2] = { id: 'p', value: { text: 'Please walk  as you usually do\nin the cafe\u0301.', spans: [{ start: 0, end: 6, style: 'bold' }] }, cite }
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).filter((x) => /changed on this computer/.test(x.reason)), [])
+    // a tooltip is on-screen wording of its own: one added on this computer is a local text
+    p.stages.intro.content[2].value.spans[0].tooltip = 'Walk slowly.'
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.ok((await R.protocolReadiness(python, ENGINE, proj, '')).some((x) => /1 text\(s\) cited word for word/.test(x.reason)))
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('engine checks: a Library study whose release is not confirmed yet has nothing received', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  R.configureReceivedProtocol(async () => O.UNVERIFIED_RELEASE)
+  try {
+    // only held placeholders are cited verbatim: they are checked by their hash, so nothing blocks
+    assert.deepEqual(await R.protocolReadiness(python, ENGINE, proj, ''), [])
+    p.stages.intro.content.push({ id: 'p', value: 'Please walk as you usually do.', cite: { label: 'verbatim', source: 'paper', page: 3 } })
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    const problems = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.ok(problems.some((x) => /could not be fetched from the Library yet/.test(x.reason)), JSON.stringify(problems))
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+/** A Library fork's provenance as forkCommunityStudy writes it: this paper's own revision folder and manifest. */
+const forkContext = (assetFiles, id = 'paper_x') => {
+  const identity = O.manifestIdentity(assetFiles)
+  return { id, commit: 'c'.repeat(40), assetRoot: `community/${id}/revisions/${identity}`, baseRevision: identity, assetFiles }
+}
+
+test('study downloads: released is sticky once seen, fails closed on an unreadable or unverified record; ordinary stays ordinary', async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const cache = mkdtempSync(join(tmpdir(), 'released-'))
+  assert.equal(await O.releasedStudy(cache, proj), true, 'holds wording back')
+  // the held block removed, then the file broken: it stays released (recorded the first time)
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  delete p.distribution
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p))
+  assert.equal(await O.releasedStudy(cache, proj), true)
+  writeFileSync(join(proj, 'protocol.json'), '{not json')
+  assert.equal(await O.releasedStudy(cache, proj), true)
+  // without any record on this computer: the provenance decides, failing closed
+  const fresh = mkdtempSync(join(tmpdir(), 'released-none-'))
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p))
+  assert.equal(await O.releasedStudy(fresh, proj), false, 'no provenance, nothing held: an ordinary project, as on dev')
+  writeFileSync(join(proj, 'protocol.json'), '{not json')
+  assert.equal(await O.releasedStudy(fresh, proj), false, 'an ordinary project with a broken protocol.json is still ordinary')
+  mkdirSync(join(proj, '.humanstudy'), { recursive: true })
+  const files = [{ path: 'program.json', sha256: 'b'.repeat(64) }, { path: 'protocol.json', sha256: 'a'.repeat(64) }]
+  const own = forkContext(files)
+  for (const [context, why] of [
+    [own, 'names a protocol release'],
+    [{ ...own, assetFiles: files.slice(0, 1) }, 'its protocol.json entry deleted: the manifest no longer matches its revision'],
+    [{ ...own, id: 'paper_other' }, 'another paper id than the revision folder'],
+    [{ ...own, baseRevision: 'e'.repeat(64) }, 'another revision'],
+  ]) {
+    const c = mkdtempSync(join(tmpdir(), 'released-c-'))
+    writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify(context))
+    assert.equal(await O.releasedStudy(c, proj), true, why)
+  }
+  writeFileSync(join(proj, '.humanstudy', 'community.json'), '{broken')
+  assert.equal(await O.releasedStudy(mkdtempSync(join(tmpdir(), 'released-b-')), proj), true, 'unreadable')
+  // a verified program-only revision and a legacy study are not protocol releases
+  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify(forkContext(files.slice(0, 1))))
+  assert.equal(await O.releasedStudy(mkdtempSync(join(tmpdir(), 'released-p-')), proj), false)
+  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify({ id: 'study_001' }))
+  assert.equal(await O.releasedStudy(mkdtempSync(join(tmpdir(), 'released-l-')), proj), false)
+})
+
+test('release baseline: only the official release of this paper and revision, verified; offline then online recovers', async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const cache = mkdtempSync(join(tmpdir(), 'baseline-'))
+  const release = readFileSync(join(proj, 'protocol.json'))
+  const assetFiles = [{ path: 'program.json', sha256: 'b'.repeat(64) }, { path: 'protocol.json', sha256: sha(release) }]
+  const own = forkContext(assetFiles)
+  mkdirSync(join(proj, '.humanstudy'), { recursive: true })
+  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify(own))
+  // the project's own copy edited: it is never the baseline
+  const edited = JSON.parse(release.toString('utf8'))
+  edited.stages.intro.content.push({ id: 'p', value: 'An added quote.', cite: { label: 'verbatim', source: 'paper', page: 3 } })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(edited))
+  let calls = 0
+  const offline = async () => { calls++; return null }
+  const online = async (c) => { calls++; return c.id === 'paper_x' ? release : null }
+  const t0 = 1_000_000
+  assert.equal(await O.releaseBaseline(cache, proj, offline, t0), 'unverified')
+  assert.equal(existsSync(join(cache, 'releases')), false, 'nothing is stored while offline')
+  assert.equal(await O.releaseBaseline(cache, proj, online, t0 + 1000), 'unverified', 'a failed fetch is not retried at once')
+  assert.equal(calls, 1)
+  const got = await O.releaseBaseline(cache, proj, online, t0 + O.RELEASE_RETRY_MS + 1)
+  assert.ok(got.protocol.equals(release) && got.assetFiles.length === 2, 'recovers on a later check once online')
+  assert.ok((await O.releaseBaseline(cache, proj, offline, t0 + 2 * O.RELEASE_RETRY_MS)).protocol.equals(release), 'then kept, offline too')
+  assert.equal(calls, 2)
+  // a fetch that answers with other bytes is refused
+  const other = mkdtempSync(join(tmpdir(), 'baseline-other-'))
+  assert.equal(await O.releaseBaseline(other, proj, async () => Buffer.from(JSON.stringify(edited)), t0 + 5 * O.RELEASE_RETRY_MS), 'unverified')
+  // a manifest edited to claim the edited copy no longer matches its revision: unconfirmed, no fetch
+  const n = calls
+  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify({ ...own, assetFiles: [{ path: 'protocol.json', sha256: sha(JSON.stringify(edited)) }] }))
+  assert.equal(await O.releaseBaseline(cache, proj, online, t0 + 6 * O.RELEASE_RETRY_MS), 'unverified')
+  // the same manifest claimed for another paper: its cached release (from paper_x's folder) is not used
+  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify({ ...own, id: 'paper_y', assetRoot: own.assetRoot.replace('paper_x', 'paper_y') }))
+  assert.equal(await O.releaseBaseline(cache, proj, async () => null, t0 + 7 * O.RELEASE_RETRY_MS), 'unverified')
+  assert.equal(calls, n)
+  // a fork stores its verified release, so it never needs the network
+  const forked = mkdtempSync(join(tmpdir(), 'baseline-fork-'))
+  await O.storeRelease(forked, assetFiles, release, own.assetRoot)
+  writeFileSync(join(proj, '.humanstudy', 'community.json'), JSON.stringify(own))
+  assert.ok((await O.releaseBaseline(forked, proj, offline, t0)).protocol.equals(release))
+  await O.storeRelease(forked, assetFiles, Buffer.from('{}'), own.assetRoot)   // bytes that are not the manifest's are never stored
+  assert.ok((await O.releaseBaseline(forked, proj, offline, t0)).protocol.equals(release))
+  // held wording without any provenance: unconfirmed; an ordinary project: none
+  const bare = mkdtempSync(join(tmpdir(), 'baseline-bare-'))
+  writeFileSync(join(bare, 'protocol.json'), release)
+  assert.equal(await O.releaseBaseline(cache, bare, online, t0), 'unverified')
+  writeFileSync(join(bare, 'protocol.json'), JSON.stringify({ id: 'x' }))
+  assert.equal(await O.releaseBaseline(cache, bare, online, t0), null)
+})
+
+test('engine checks: a failure while the release is unconfirmed is marked retry, so the readiness cache never keeps it', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.intro.content.push({ id: 'p', value: 'Please walk as you usually do.', cite: { label: 'verbatim', source: 'paper', page: 3 } })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  let received = O.UNVERIFIED_RELEASE
+  R.configureReceivedProtocol(async () => received)
+  try {
+    const offline = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.ok(offline.length && offline.every((x) => x.retry === true), JSON.stringify(offline))
+    // through the readiness cache: the same files, the release now fetched, passes on the next check
+    P.configureProtocolChecks((project) => R.protocolReadiness(python, ENGINE, project, ''), 'test-retry')
+    received = O.UNVERIFIED_RELEASE
+    assert.ok((await P.protocolProblems(proj)).length)
+    received = structuredClone(p)
+    assert.deepEqual(await P.protocolProblems(proj), [])
+  } finally { R.configureReceivedProtocol(async () => null); P.configureProtocolChecks(async () => [], 'unconfigured') }
+})
+
+test('engine checks: each anchor is a text of its own with the shared cite, as the engine checks it', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.q.responses.push({ id: 'scale', kind: 'scale', prompt: 'How was it?', range: [1, 7], anchors: { '1': 'Not at all', '7': 'Very much' }, anchors_cite: { label: 'verbatim', source: 'paper', page: 3 } })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    const before = (await R.protocolReadiness(python, ENGINE, proj, '')).filter((x) => /changed on this computer/.test(x.reason))
+    assert.deepEqual(before, [])
+    // the same anchor wording under other keys is the same texts; one anchor reworded is one local text
+    p.stages.q.responses.at(-1).anchors = { low: 'Not at all', high: 'Very much' }
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).filter((x) => /changed on this computer/.test(x.reason)), [])
+    p.stages.q.responses.at(-1).anchors.high = 'Extremely'
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.ok((await R.protocolReadiness(python, ENGINE, proj, '')).some((x) => /^1 text\(s\) cited word for word/.test(x.reason)))
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('candidate files never follow a link, not even one inside the project', async () => {
+  const proj = mkdtempSync(join(tmpdir(), 'links-'))
+  mkdirSync(join(proj, 'sources', 'private'), { recursive: true })
+  mkdirSync(join(proj, 'notes'))
+  writeFileSync(join(proj, 'notes', 'copy.html'), '<p>held wording</p>')
+  writeFileSync(join(proj, 'sources', 'private', 'mine.txt'), 'mine')
+  symlinkSync(join(proj, 'notes', 'copy.html'), join(proj, 'sources', 'linked.html'))
+  symlinkSync(join(proj, 'notes'), join(proj, 'sources', 'notes-dir'))
+  symlinkSync(join(proj, 'notes', 'copy.html'), join(proj, 'paper.pdf'))
+  const got = (await O.candidateFiles(proj)).map((f) => relative(realpathSync.native(proj), f).split(sep).join('/'))
+  assert.deepEqual(got, ['sources/private/mine.txt'])
+})
+
+test('research capture never collects what a released study\'s download keeps back, however short its wording', () => {
+  const index = T.privateIndexOf(['A restored passage long enough to be indexed by the forty letter window.'])
+  // a short restored answer in sources/: shorter than the matching window, still never collected
+  assert.equal(T.mayCollectFile({ rel: 'sources/questionnaire.txt', text: 'Yes, daily.', published: true, index }), false)
+  assert.equal(T.mayCollectFile({ rel: 'paper.pdf', published: true, index: T.EMPTY_INDEX }), false)
+  assert.equal(T.mayCollectFile({ rel: 'notes/figure.dat', bytes: Buffer.from('89504e470d0a1a0a', 'hex'), published: true, index: T.EMPTY_INDEX }), false)
+  assert.equal(T.mayCollectFile({ rel: 'artifacts/preview.html', text: '<p>preview</p>', published: true, index: T.EMPTY_INDEX }), false)
+  assert.equal(T.mayCollectFile({ rel: 'notes/plan.md', text: 'my plan', published: true, index }), true)
+  // an ordinary project keeps collecting its sources and PDFs, as before
+  assert.equal(T.mayCollectFile({ rel: 'sources/questionnaire.txt', text: 'Yes, daily.', published: false, index: T.EMPTY_INDEX }), true)
+  assert.equal(T.mayCollectFile({ rel: 'paper.pdf', published: false, index: T.EMPTY_INDEX }), true)
+  // one predicate for both: what capture refuses by name or content is what a download keeps back
+  assert.equal(T.canCarryRestored('sources/a.txt'), true)
+  assert.equal(T.canCarryRestored('notes/x', Buffer.from('%PDF-1.7')), true)
+  assert.equal(T.canCarryRestored('notes/x.txt', Buffer.from('plain')), false)
+})
+
+test('capture checks a file\'s raw bytes for a picture or PDF, never text decoded from them', () => {
+  const jpeg = Buffer.concat([Buffer.from('ffd8ffe0', 'hex'), Buffer.from('a scan saved as text')])
+  // decoded as UTF-8 the signature is gone; the raw first bytes still show a picture
+  assert.equal(T.canCarryRestored('notes/scan.txt', Buffer.from(jpeg.toString('utf8'), 'utf8')), false)
+  assert.equal(T.mayCollectFile({ rel: 'notes/scan.txt', text: jpeg.toString('utf8'), bytes: jpeg.subarray(0, 16), published: true, index: T.EMPTY_INDEX }), false)
+  assert.equal(T.mayCollectFile({ rel: 'notes/plan.txt', text: 'my plan', bytes: Buffer.from('my plan'), published: true, index: T.EMPTY_INDEX }), true)
+})
+
+test('the released record: by id when the project has one (never written here), else by path; pins and old path records count', async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const cache = mkdtempSync(join(tmpdir(), 'released-id-'))
+  // no id: recorded by path, and the classifier never writes .humanstudy/project.json (only project sync assigns ids)
+  assert.equal(await O.releasedStudy(cache, proj), true)
+  assert.equal(existsSync(join(proj, '.humanstudy', 'project.json')), false)
+  const root = await realpath(proj)
+  assert.equal(JSON.parse(readFileSync(join(cache, 'released.json'), 'utf8'))[root], true)
+  // sync gives it an id: the path record moves to the id key on the next check
+  mkdirSync(join(proj, '.humanstudy'), { recursive: true })
+  writeFileSync(join(proj, '.humanstudy', 'project.json'), JSON.stringify({ id: 'proj-released-1' }))
+  assert.equal(await O.releasedStudy(cache, proj), true)
+  assert.deepEqual(JSON.parse(readFileSync(join(cache, 'released.json'), 'utf8')), { 'id:proj-released-1': true })
+  // its held block removed and the folder renamed outside the app: still released, by its id
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  delete p.distribution
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p))
+  const moved = proj + '-renamed'
+  renameSync(proj, moved)
+  assert.equal(await O.releasedStudy(cache, moved), true)
+  // a new ordinary project at the old path: not released
+  mkdirSync(proj)
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify({ id: 'ordinary' }))
+  assert.equal(await O.releasedStudy(cache, proj), false)
+  // upgrade: an existing held-list pin, or a path record written by an earlier build, counts
+  const pinned = mkdtempSync(join(tmpdir(), 'released-pin-'))
+  writeFileSync(join(pinned, 'protocol.json'), JSON.stringify({ id: 'x' }))
+  writeFileSync(join(cache, 'pins.json'), JSON.stringify({ [await realpath(pinned)]: 'a'.repeat(64) }))
+  assert.equal(await O.releasedStudy(cache, pinned), true)
+  const legacy = mkdtempSync(join(tmpdir(), 'released-legacy-'))
+  writeFileSync(join(legacy, 'protocol.json'), JSON.stringify({ id: 'y' }))
+  const sticky = JSON.parse(readFileSync(join(cache, 'released.json'), 'utf8'))
+  writeFileSync(join(cache, 'released.json'), JSON.stringify({ ...sticky, [await realpath(legacy)]: true }))
+  assert.equal(await O.releasedStudy(cache, legacy), true)
+  // the path-keyed pin, released record and received copy move with an app rename and are cleared on delete
+  const a = mkdtempSync(join(tmpdir(), 'records-a-')), b = mkdtempSync(join(tmpdir(), 'records-b-'))
+  const [ra, rb] = [await realpath(a), await realpath(b)]
+  mkdirSync(join(cache, 'received'), { recursive: true })
+  writeFileSync(join(cache, 'pins.json'), JSON.stringify({ [ra]: 'f'.repeat(64) }))
+  writeFileSync(join(cache, 'released.json'), JSON.stringify({ [ra]: true }))
+  writeFileSync(O.receivedPath(cache, ra), '{"received":true}')
+  await O.moveProjectRecords(cache, ra, rb)
+  assert.deepEqual(JSON.parse(readFileSync(join(cache, 'pins.json'), 'utf8')), { [rb]: 'f'.repeat(64) })
+  assert.deepEqual(JSON.parse(readFileSync(join(cache, 'released.json'), 'utf8')), { [rb]: true })
+  assert.equal(existsSync(O.receivedPath(cache, ra)), false)
+  assert.equal(readFileSync(O.receivedPath(cache, rb), 'utf8'), '{"received":true}')
+  await O.moveProjectRecords(cache, rb, null)
+  assert.deepEqual(JSON.parse(readFileSync(join(cache, 'pins.json'), 'utf8')), {})
+  assert.deepEqual(JSON.parse(readFileSync(join(cache, 'released.json'), 'utf8')), {})
+  assert.equal(existsSync(O.receivedPath(cache, rb)), false)
+})
+
+test('the fills file is never read through a linked sources/ or sources/private/', async () => {
+  const proj = mkdtempSync(join(tmpdir(), 'linked-fills-'))
+  mkdirSync(join(proj, 'elsewhere', 'private'), { recursive: true })
+  writeFileSync(join(proj, 'elsewhere', 'private', 'original-text-fills.json'), '{}')
+  symlinkSync(join(proj, 'elsewhere'), join(proj, 'sources'))
+  assert.equal(await O.linkFree(await realpath(proj), O.FILLS_FILE), false)
+  const ok = mkdtempSync(join(tmpdir(), 'real-fills-'))
+  mkdirSync(join(ok, 'sources', 'private'), { recursive: true })
+  writeFileSync(join(ok, O.FILLS_FILE), '{}')
+  assert.equal(await O.linkFree(await realpath(ok), O.FILLS_FILE), true)
+  const inner = mkdtempSync(join(tmpdir(), 'linked-private-fills-'))
+  mkdirSync(join(inner, 'sources')); mkdirSync(join(inner, 'kept'))
+  symlinkSync(join(inner, 'kept'), join(inner, 'sources', 'private'))
+  assert.equal(await O.linkFree(await realpath(inner), O.FILLS_FILE), false)
+})
+
+test('the restore refuses a linked sources/ or sources/private/', async () => {
+  const proj = mkdtempSync(join(tmpdir(), 'linked-sources-'))
+  const real = join(proj, 'elsewhere')
+  mkdirSync(join(real, 'private'), { recursive: true })
+  writeFileSync(join(real, 'copy.html'), '<p>held</p>')
+  writeFileSync(join(real, 'private', 'mine.txt'), 'mine')
+  symlinkSync(real, join(proj, 'sources'))
+  assert.deepEqual(await O.candidateFiles(proj), [])
+  const other = mkdtempSync(join(tmpdir(), 'linked-private-'))
+  mkdirSync(join(other, 'sources'))
+  writeFileSync(join(other, 'sources', 'open.txt'), 'open')
+  mkdirSync(join(other, 'kept'))
+  writeFileSync(join(other, 'kept', 'mine.txt'), 'mine')
+  symlinkSync(join(other, 'kept'), join(other, 'sources', 'private'))
+  assert.deepEqual((await O.candidateFiles(other)).map((f) => relative(realpathSync.native(other), f).split(sep).join('/')), ['sources/open.txt'])
+})
+
+test('engine checks: the retry mark follows the release as it was when the check began', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  p.stages.intro.content.push({ id: 'p', value: 'Please walk as you usually do.', cite: { label: 'verbatim', source: 'paper', page: 3 } })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const released = structuredClone(p)
+  released.stages.intro.content.pop()
+  let calls = 0
+  // the first lookup (the snapshot) finds nothing; the release arrives during the check
+  R.configureReceivedProtocol(async () => (calls++ === 0 ? O.UNVERIFIED_RELEASE : released))
+  try {
+    const found = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.ok(found.length && found.every((x) => x.retry === true), JSON.stringify(found))
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('engine checks: an inline label repeating the option\'s cite is one text, as the engine counts it', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  const cite = { label: 'verbatim', source: 'paper', page: 3 }
+  p.stages.q.responses[1].options[0] = { code: 'a', label: 'Yes', cite }
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    p.stages.q.responses[1].options[0] = { code: 'a', label: { text: 'Yes', cite }, cite }
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).filter((x) => /changed on this computer/.test(x.reason)), [])
+  } finally { R.configureReceivedProtocol(async () => null) }
+})
+
+test('a hard-linked source, paper or fills file is never a restoration input; capture never collects a file reached through a link', async () => {
+  const proj = mkdtempSync(join(tmpdir(), 'hardlinks-'))
+  mkdirSync(join(proj, 'sources', 'private'), { recursive: true })
+  mkdirSync(join(proj, 'notes'))
+  writeFileSync(join(proj, 'sources', 'private', 'mine.txt'), 'mine')
+  writeFileSync(join(proj, 'notes', 'copy.html'), '<p>held</p>')
+  linkSync(join(proj, 'notes', 'copy.html'), join(proj, 'sources', 'copy.html'))
+  writeFileSync(join(proj, 'notes', 'paper.pdf'), '%PDF-1.4')
+  linkSync(join(proj, 'notes', 'paper.pdf'), join(proj, 'paper.pdf'))
+  const root = await realpath(proj)
+  assert.deepEqual((await O.candidateFiles(proj)).map((f) => relative(root, f).split(sep).join('/')), ['sources/private/mine.txt'])
+  writeFileSync(join(proj, 'notes', 'fills.json'), '{}')
+  linkSync(join(proj, 'notes', 'fills.json'), join(proj, O.FILLS_FILE))
+  assert.equal(await O.fillsPath(root), null)
+  rmSync(join(proj, O.FILLS_FILE))
+  writeFileSync(join(proj, O.FILLS_FILE), '{}')
+  assert.equal(await O.fillsPath(root), join(root, ...O.FILLS_FILE.split('/')))
+  // capture: a file whose real path is not the path it was named by is never collected
+  assert.equal(T.throughLink(join(root, 'notes', 'copy.html'), root, 'sources/copy.html'), true)
+  assert.equal(T.throughLink(join(root, 'notes', 'plan.md'), root, 'notes/plan.md'), false)
+})
+
+test('a fills file marks held-back wording, so a synced copy with an unreadable protocol.json stays released', async () => {
+  const proj = mkdtempSync(join(tmpdir(), 'fills-signal-'))
+  writeFileSync(join(proj, 'protocol.json'), '{not json')
+  const cache = mkdtempSync(join(tmpdir(), 'fills-signal-cache-'))
+  assert.equal(await O.releasedStudy(cache, proj), false, 'no fills file: an ordinary project')
+  mkdirSync(join(proj, 'sources', 'private'), { recursive: true })
+  writeFileSync(join(proj, O.FILLS_FILE), '{}')
+  assert.equal(await O.releasedStudy(mkdtempSync(join(tmpdir(), 'fills-signal-c2-')), proj), true)
+  // only a regular file through real folders counts
+  const linked = mkdtempSync(join(tmpdir(), 'fills-signal-linked-'))
+  writeFileSync(join(linked, 'protocol.json'), '{not json')
+  mkdirSync(join(linked, 'elsewhere', 'private'), { recursive: true })
+  writeFileSync(join(linked, 'elsewhere', 'private', 'original-text-fills.json'), '{}')
+  symlinkSync(join(linked, 'elsewhere'), join(linked, 'sources'))
+  assert.equal(await O.releasedStudy(mkdtempSync(join(tmpdir(), 'fills-signal-c3-')), linked), false)
+})
+
+test('a name with a line break or a line separator is still matched by the keep-back rule', () => {
+  for (const rel of ['sources/a b.txt', 'sources/a\nb.txt', 'sources/a b.txt', 'notes/scan .pdf', 'notes/x\r.png'])
+    assert.equal(T.canCarryRestored(rel), true, JSON.stringify(rel))
+  assert.equal(T.mayCollectFile({ rel: 'sources/a b.txt', text: 'short', bytes: Buffer.from('short'), published: true, index: T.EMPTY_INDEX }), false)
+  assert.equal(T.canCarryRestored('notes/plan .md'), false)
+})
+
+test('capture of program.json follows the same rules as every other file', async () => {
+  const root = resolve('/p'), prog = join(root, 'program.json')
+  assert.equal(T.mayCaptureProgram({ actual: prog, root, published: true, head: Buffer.from('{"source":') }), true)
+  assert.equal(T.mayCaptureProgram({ actual: join(root, 'notes', 'real.json'), root, published: false, head: Buffer.from('{}') }), false, 'reached through a link')
+  assert.equal(T.mayCaptureProgram({ actual: prog, root, published: true, head: Buffer.from('%PDF-1.7') }), false, 'a released study: bytes that can carry restored wording')
+  assert.equal(T.mayCaptureProgram({ actual: prog, root, published: false, head: Buffer.from('%PDF-1.7') }), true, 'an ordinary project as before')
+})
+
+test('engine checks: a value added beside a released text is a local text (the engine renders value first)', { skip: !python }, async () => {
+  const { proj, close } = await publishedProject()
+  close()
+  const p = JSON.parse(readFileSync(join(proj, 'protocol.json'), 'utf8'))
+  const cite = { label: 'verbatim', source: 'booklet', page: 1, read: 'image' }
+  p.stages.intro.content.push({ id: 'scan', text: 'Walk at your own pace.', cite })
+  writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+  const received = structuredClone(p)
+  R.configureReceivedProtocol(async () => received)
+  try {
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).filter((x) => /changed on this computer/.test(x.reason)), [])
+    p.stages.intro.content.at(-1).value = 'Run as fast as you can.'
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(p, null, 1))
+    const problems = await R.protocolReadiness(python, ENGINE, proj, '')
+    assert.ok(problems.some((x) => /read from a page image of the paper were changed on this computer/.test(x.reason)), JSON.stringify(problems))
+    // value and text swapped: the same two strings, but the wording shown changes
+    const both = structuredClone(received)
+    both.stages.intro.content.at(-1).value = 'Walk slowly.'
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(both, null, 1))
+    R.configureReceivedProtocol(async () => structuredClone(both))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).filter((x) => /changed on this computer/.test(x.reason)), [])
+    const swapped = structuredClone(both)
+    Object.assign(swapped.stages.intro.content.at(-1), { value: 'Walk at your own pace.', text: 'Walk slowly.' })
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(swapped, null, 1))
+    assert.ok((await R.protocolReadiness(python, ENGINE, proj, '')).some((x) => /changed on this computer/.test(x.reason)))
+    // the same swap with separately cited inline objects nested in value and text
+    const c2 = { label: 'verbatim', source: 'paper', page: 3 }
+    const nested = structuredClone(received)
+    nested.stages.intro.content.push({ id: 'pair', value: { text: 'Shown wording.', cite: c2 }, text: { text: 'Hidden wording.', cite: c2 } })
+    R.configureReceivedProtocol(async () => structuredClone(nested))
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(nested, null, 1))
+    assert.deepEqual((await R.protocolReadiness(python, ENGINE, proj, '')).filter((x) => /changed on this computer/.test(x.reason)), [])
+    const nestedSwap = structuredClone(nested)
+    Object.assign(nestedSwap.stages.intro.content.at(-1), { value: { text: 'Hidden wording.', cite: c2 }, text: { text: 'Shown wording.', cite: c2 } })
+    writeFileSync(join(proj, 'protocol.json'), JSON.stringify(nestedSwap, null, 1))
+    assert.ok((await R.protocolReadiness(python, ENGINE, proj, '')).some((x) => /changed on this computer/.test(x.reason)))
   } finally { R.configureReceivedProtocol(async () => null) }
 })
 

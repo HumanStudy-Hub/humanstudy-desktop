@@ -23,7 +23,7 @@ export async function communityRunNotice(projectDir: string): Promise<string | u
   }
 }
 
-export interface ScientificProblem { check: string; reason: string; text?: OriginalTextNeed }
+export interface ScientificProblem { check: string; reason: string; text?: OriginalTextNeed; retry?: boolean }
 type ScientificCheck = (project: string, slug: string) => Promise<ScientificReport | ScientificProblem[]>
 const NOT_CONFIGURED: ScientificProblem = { check: 'runtime', reason: 'The build checks are not available yet, so the package cannot be confirmed.' }
 const PENDING: ScientificProblem = { check: 'unchecked', reason: 'Check the current study files before running.' }
@@ -95,7 +95,8 @@ async function stampOf(paths: string[]): Promise<string> {
 const STAMPED_BESIDE = ['program.json', 'effects.json', 'capabilities.json', 'README.md']
 
 type Outcome = ScientificProblem[] | ScientificReport | ProtocolBudget
-const isRuntime = (o: Outcome): boolean => (Array.isArray(o) ? o : 'problems' in o ? o.problems : []).some((p) => p.check === 'runtime')
+/** Never kept: a missing runtime, and a problem marked `retry` (it may clear without any study file changing). */
+const isRuntime = (o: Outcome): boolean => (Array.isArray(o) ? o : 'problems' in o ? o.problems : []).some((p) => p.check === 'runtime' || (p as { retry?: boolean }).retry === true)
 type ReportStore<T> = { read(key: string): Promise<T | undefined>; write(key: string, value: T): Promise<void> }
 const digest = (s: string) => createHash('sha256').update(s).digest('hex')
 
@@ -181,7 +182,7 @@ export function configureProtocolChecks(check: ProtocolCheck, version: string, b
  *  sources/, assets/ and every local `src` the protocol serves. Throws when the inputs cannot be listed. */
 export async function protocolStamp(project: string): Promise<string> {
   const root = resolve(project)
-  const paths = ['protocol.json', 'study.json', 'sourcetext', 'sources', 'assets'].map((rel) => join(root, rel))
+  const paths = ['protocol.json', 'study.json', 'sourcetext', 'sources', 'assets', '.humanstudy/community.json'].map((rel) => join(root, rel))
   try {
     const srcs: string[] = []
     const visit = (v: unknown): void => {
@@ -383,7 +384,7 @@ export function approvedProtocolLimits(budget: ProtocolBudget | undefined, plan:
   if (!limits.fits)
     throw new Error(`This run would need ${formatTokens(limits.needed)} tokens, more than the limit of ${formatTokens(MAX_RUN_TOKENS)}. Choose fewer participants per condition.`)
   if (plan?.tokenBudget !== limits.tokens)
-    throw new Error(`The approved token budget is not this run's (${formatTokens(limits.tokens)} tokens). Review the simulation scope again.`)
+    throw new Error(`The approved token budget is not this run's (${formatTokens(limits.tokens)} tokens): the run's budget changed since it was shown, for example after an app update. Press Run simulation again to approve the new budget.`)
   return { participants: limits.participants, tokens: limits.tokens, minutes: limits.minutes }
 }
 

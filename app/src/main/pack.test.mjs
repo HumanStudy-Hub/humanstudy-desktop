@@ -579,8 +579,8 @@ body = lambda page: json.dumps({"model": budget.MODEL_PLACEHOLDER, "messages": [
 print(json.dumps({"output_tokens": budget.OUTPUT_TOKENS, "zh": budget.call_charge("S", page_zh), "zh_body": len(body(page_zh)), "zh_utf8": len(page_zh.encode("utf-8")), "en": budget.call_charge("S", page_en), "en_body": len(body(page_en))}))`, ''], { cwd: proj, encoding: 'utf8' })
   assert.equal(r.status, 0, r.stderr)
   const b = JSON.parse(r.stdout)
-  assert.equal(b.zh, b.zh_body + 2 * 256 + b.output_tokens, 'exactly the body the relay sees, + messages + output')
-  assert.equal(b.en, b.en_body + 2 * 256 + b.output_tokens)
+  assert.equal(b.zh, Math.ceil(b.zh_body / 3) + 2 * 256 + b.output_tokens, 'exactly the body the relay sees / 3, + messages + output')
+  assert.equal(b.en, Math.ceil(b.en_body / 3) + 2 * 256 + b.output_tokens)
   assert.ok(b.zh_body - b.en_body > b.zh_utf8, 'a CJK page costs its \\uXXXX escapes (6 bytes a character), not its 3 UTF-8 bytes')
   // The same serialisation as the runtime's client: humanstudy_llm.chat sends json.dumps(body) with ensure_ascii on.
   assert.match(readFileSync(join(packDir, 'runtime/lib/humanstudy_llm.py'), 'utf8'), /data = json\.dumps\(body\)\.encode\("utf-8"\)/)
